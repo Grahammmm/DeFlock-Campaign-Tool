@@ -6,7 +6,10 @@ if __package__:
 else:
     import folder as intake
 
-def run(out):
+def run(out, config=None):
+    config=config if config is not None else intake.load_config(output=str(out))
+    config={**config,"output":str(pathlib.Path(out).absolute())}
+    intake.validate_config(config,"report")
     os.umask(0o077); out=pathlib.Path(out).absolute()
     if out.resolve()!=out: raise ValueError("output must not contain symlinks")
     started=time.monotonic(); repair_id=uuid.uuid4().hex
@@ -38,7 +41,7 @@ def run(out):
             db.commit()
             for sha in sorted(intake.active(db)[0]):
                 row=db.execute("SELECT format,stage FROM docs WHERE sha=?",(sha,)).fetchone()
-                if row[0]=="docx" and row[1] in {"pending","running"}: intake.extract(db,out,intake.LIMITS,selection=sha)
+                if row[0]=="docx" and row[1] in {"pending","running"}: intake.extract(db,out,intake.LIMITS,selection=sha,config=config)
         db.commit(); after,inv=intake.active(db); after_set=set(after); blocked={r[0] for r in db.execute("SELECT sha FROM scope_exclusions WHERE sha!=''")}
         # Recheck all previously active copies, including newly retired DOCX parts.
         for sha in sorted(before_set|after_set):
@@ -52,7 +55,7 @@ def run(out):
         if receipts_before!=receipts_after: errors.append(dict(error="occurrence_receipts_changed"))
         if integrity!=["ok"] or fk: errors.append(dict(error="sqlite_integrity_failure"))
         if after_set&blocked or scope_units or scope_paths: errors.append(dict(error="scope_quarantine_integrity_failure"))
-        intake.report(db,out)
+        intake.report(db,out,config)
         result=dict(repair_id=repair_id,version=intake.VERSION,inventory_run=inv,source_originals_opened=0,source_originals_modified=0,
                     active_hashes_before=len(before),active_hashes_after=len(after),retired_hashes=sorted(before_set-after_set),
                     blobs_verified=checked,verified_bytes=checked_bytes,permissions_repaired=changed_modes,docx_hashes_reclassified=changes,
@@ -66,4 +69,9 @@ def run(out):
         return 1 if errors else 0
 
 if __name__=="__main__":
-    p=argparse.ArgumentParser(description=__doc__); p.add_argument("--output",required=True); a=p.parse_args(); raise SystemExit(run(a.output))
+    p=argparse.ArgumentParser(description=__doc__); p.add_argument("--output"); p.add_argument("--config"); a=p.parse_args()
+    try:
+        config=intake.load_config(a.config,output=a.output)
+        intake.validate_config(config,"report")
+    except (OSError,ValueError,TypeError) as error: p.error(str(error))
+    raise SystemExit(run(config["output"],config))

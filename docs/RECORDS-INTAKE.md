@@ -41,7 +41,8 @@ embedded binaries or external links are executed.
 
 The `docs`, `occurrences`, `units`, preservation, history and extraction-attempt
 schemas are retained. Content hashes, original occurrence identity construction,
-immutable blobs, unit locators and parser version labels are retained. Existing
+immutable blobs and parser lineage labels are retained. Corrected DOCX locators
+are revision-bound as described below; old extraction attempts remain history. Existing
 ledgers are not automatically migrated, copied or reprocessed by installing code.
 Do not point this candidate at a canonical ledger until the M1 import/backup and
 reconciliation step. Prior digests and reviews will be imported separately; an
@@ -85,3 +86,37 @@ M2 adds approved local OCR, M3 adds deterministic detectors, M4 prepares three
 reviewed factual drafts, and M5 integrates mail/export ownership and the schedule.
 Keep the pending tier/model/low-value decisions unchanged. No timer, host package,
 portal permission, outbound send or website publication is authorized by this PR.
+
+## PR10 review corrections
+
+The engine revision is `portable-intake-2`; the preserved source parser lineage
+remains `flock-intake-3.2`. Each new digest binds a parser-affecting policy hash.
+Archive/mail exclusion changes invalidate only those container digests, not all
+finished child text or unrelated files. Missing pre-port policy hashes require
+one refreshed container/DOCX extraction; unchanged legacy non-container text is
+retained. Agency routing and host/output paths do not invalidate extraction.
+DOCX source ordinals count every paragraph, including empty and table paragraphs,
+and restart within each XML part. This remains XML text extraction, not rendering.
+
+An extraction reconciles current child edges against a completed child inventory.
+Exclusions are disclosed as partial extraction, but exclusion-only results can
+establish a complete child inventory for the remaining scope. Other partial or
+failed enumeration never proves an unseen child absent. Explicitly excluded old
+links are retired even if another member fails. Each retired edge goes to
+`edge_history`, with reason and prior parser version; blobs, receipts, extracted
+child units and prior attempts remain preserved. Shared children stay active
+through another current parent or a directly inventoried original. An inactive
+child's retained units are history and are not counted in active coverage.
+
+Configured exclusions match paths relative to an input root or member names,
+never a host directory above that root. Both administrative helpers now accept
+`--config` and retain agency routing during reports and config during extraction;
+the legacy explicit `--output` invocation still works with unassigned routing.
+
+```sh
+python3 -m campaign_tool.records.intake.repair_intake --config "$RECORDS_CONFIG"
+python3 -m campaign_tool.records.intake.scope_quarantine --config "$RECORDS_CONFIG" "$EXACT_PRIVATE_SOURCE_PATH"
+```
+
+The new regression suite uses temporary synthetic originals only and does not
+promote extraction to independent review, run a live corpus, or enable a service.

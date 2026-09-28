@@ -67,3 +67,6 @@ The filesystem intake v3.2 port and its synthetic tests are documented in
 PDF/workbook extraction requires the pinned parser environment. The port is
 not an enabled mailbox service, OCR pipeline, or website publisher. Campaign
 configuration and every original remain outside this public repository.
+## Engine/campaign split
+
+The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). No production engine extraction has occurred yet; the private pilot audit requires owner approval first.

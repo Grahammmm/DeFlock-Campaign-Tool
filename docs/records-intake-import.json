@@ -6,19 +6,19 @@
       "source_relative_path": "scripts/intake.py",
       "source_sha256": "c37b6a831d7c0546f28c34db046b98c6d1fa56bd9bb815771c84679b7ab0244f",
       "engine_path": "campaign_tool/records/intake/folder.py",
-      "engine_sha256": "0ce8d1e11ff522c79759fff952681b8a441c7bfac17b7fef7cf3ad924342030a"
+      "engine_sha256": "88a0a0429745bbd24641b66d137dd99d1bfe80f3d0d5e88c35b397a7f19c44f8"
     },
     {
       "source_relative_path": "scripts/repair_intake.py",
       "source_sha256": "f77f4685d36584ee186eca3b150560550482f7b5b8e67b625738b3ea9cd4e6b0",
       "engine_path": "campaign_tool/records/intake/repair_intake.py",
-      "engine_sha256": "10aa1e55103775061786df07add0445549eeb00bfc357fc328f16dbbae1e1c5d"
+      "engine_sha256": "fa7f5a73fe82116a29cc4983631d80ad349641582f230ac526c6de868c9f6f2e"
     },
     {
       "source_relative_path": "scripts/scope_quarantine.py",
       "source_sha256": "303f96799d7818aec23895d6667e14bed6441ad0dbbb7f561a8c7d28fc286d7f",
       "engine_path": "campaign_tool/records/intake/scope_quarantine.py",
-      "engine_sha256": "77b4154f17d450989f87896950d54dc09cf0d96bbeeaf17a0e8796ead739a796"
+      "engine_sha256": "61114b1b3b2bfbc1fb4e201f5b66bb0ecb291eb9a5e602852f2b005480eb4f0e"
     },
     {
       "source_relative_path": "tests/test_intake.py",
@@ -39,7 +39,12 @@
     "Explicit private configuration; no pilot paths or agencies",
     "Config propagated to worker and report without mutable campaign globals",
     "Helpers import packaged folder module",
-    "Test module path updated; two DOCX statuses match already-existing handler; one test renamed"
+    "Test module path updated; two DOCX statuses match already-existing handler; one test renamed",
+    "Relative-root exclusions only; config-sensitive archive/mail extraction policy",
+    "Reconcile current edges while retaining edge history, shared children and prior artifacts",
+    "DOCX paragraph ordinals include blank and table paragraphs; part-local locators",
+    "Repair and quarantine accept explicit private config for extraction and reports"
   ],
-  "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported"
+  "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported",
+  "engine_revision": "portable-intake-2"
 }

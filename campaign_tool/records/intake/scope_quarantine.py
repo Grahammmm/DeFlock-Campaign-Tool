@@ -6,7 +6,10 @@ if __package__:
 else:
     import folder as intake
 
-def quarantine(out, paths):
+def quarantine(out, paths, config=None):
+    config=config if config is not None else intake.load_config(output=str(out))
+    config={**config,"output":str(pathlib.Path(out).absolute())}
+    intake.validate_config(config,"report")
     os.umask(0o077); out=pathlib.Path(out).absolute()
     with (out/"writer.lock").open("a") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -47,9 +50,14 @@ def quarantine(out, paths):
             intake.event(db,"scope-quarantine","scope","quarantined_personal_hash",sha=sha,detail="originals untouched; content removed from active derived store")
         db.commit(); q.close()
         intake.atomic(out/"scope-excluded-hashes.json",sorted({r[0] for r in db.execute("SELECT sha FROM scope_exclusions WHERE sha!=''")}))
-        intake.report(db,out)
+        intake.report(db,out,config)
         result=dict(at=stamp,excluded_paths=len(paths),quarantined_hashes=len(hashes),prior_extracted_units=units,moved_derived_directories=derived,moved_blobs=blobs,originals_modified=0)
         intake.atomic(out/"scope-event.json",result); print(intake.js(result)); db.close()
 
 if __name__=="__main__":
-    p=argparse.ArgumentParser(description=__doc__); p.add_argument("--output",required=True); p.add_argument("paths",nargs="+"); a=p.parse_args(); quarantine(a.output,a.paths)
+    p=argparse.ArgumentParser(description=__doc__); p.add_argument("--output"); p.add_argument("--config"); p.add_argument("paths",nargs="+"); a=p.parse_args()
+    try:
+        config=intake.load_config(a.config,output=a.output)
+        intake.validate_config(config,"report")
+    except (OSError,ValueError,TypeError) as error: p.error(str(error))
+    quarantine(config["output"],a.paths,config)

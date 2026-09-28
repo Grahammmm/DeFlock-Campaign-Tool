@@ -10,6 +10,7 @@ if __package__ in {None, ""}:
 from campaign_tool.records.config import load_config, validate_config
 
 VERSION = "flock-intake-3.2"
+ENGINE_REVISION = "portable-intake-2"
 LIMITS = dict(source_bytes=512*1024**2, member_bytes=128*1024**2, expanded_bytes=1024**3,
               members=10000, depth=5, ratio=1000, seconds=180, memory_bytes=3*1024**3)
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".cache", "deployment", "deployments", "site-packages", "dist-packages"}
@@ -136,7 +137,6 @@ def inventory(db, out, roots, config=None):
                         try:
                             st=os.lstat(path); relative=os.path.relpath(path,root)
                             why="out_of_scope_personal" if path in blocked_paths else "symlink" if stat.S_ISLNK(st.st_mode) else ("own_output" if path==str(out) or path.startswith(str(out)+"/") else excluded(relative, excluded_path_fragments=config["excluded_path_fragments"]))
-                            if not why and any(fragment in path.replace("\\", "/") for fragment in config["excluded_path_fragments"]): why="configured_path_fragment"
                             if why:
                                 if name in dirs: dirs.remove(name)
                                 rs["excluded"]+=1; record(dict(status="excluded",root=root,path=path,reason=why,directory=stat.S_ISDIR(st.st_mode)))
@@ -278,8 +278,7 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
                 if "word/document.xml" not in parts: raise ValueError("docx_missing_document_xml")
                 for name in parts:
                     root=ET.fromstring(z.read(name))
-                    count=0
-                    for para in root.iter(ns+"p"):
+                    for count,para in enumerate(root.iter(ns+"p"),1):
                         tokens=[]
                         for node in para.iter():
                             if node.tag==ns+"t" and node.text: tokens.append(node.text)
@@ -287,7 +286,7 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
                             elif node.tag in (ns+"br",ns+"cr"): tokens.append("\\n")
                         value="".join(tokens)
                         if value:
-                            count+=1;emit("docx_paragraph",dict(part=name,paragraph=count),value)
+                            emit("docx_paragraph",dict(part=name,paragraph=count),value)
                     stats["docx_parts"]+=1
                 if any(n.startswith("word/media/") or n.startswith("word/embeddings/") for n in names):
                     issue("docx_media_or_embeddings_not_visually_reviewed")
@@ -331,6 +330,9 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
     finally: uf.close(); tf.close()
     if issues and stage=="complete": stage="partial"
     result=dict(sha256=sha,version=VERSION,stage=stage,review_status="not_reviewed",effective_limits=limits,counts=dict(stats),issues=issues,children=children,seconds=round(time.monotonic()-started,3))
+    result["engine_revision"]=ENGINE_REVISION
+    result["extraction_policy_sha256"]=extraction_policy(form,config)
+    result["children_inventory_complete"]=stage in {"complete","partial"} and all(e["code"].startswith("excluded_") or e["code"]=="out_of_scope_child" for e in issues)
     result["artifacts"]={n:hashlib.sha256((dest/n).read_bytes()).hexdigest() for n in ("units.jsonl","text.txt")}
     atomic(dest/"digest.json",result)
 def active(db):
@@ -343,15 +345,50 @@ def active(db):
         for (child,) in db.execute("SELECT child FROM edges WHERE parent=?",(p,)):
             if child not in levels and child not in blocked: levels[child]=levels[p]+1; todo.append(child)
     return levels,r[0]
+def extraction_policy(form,config):
+    """Fingerprint parser-affecting settings, not host paths or agency routing."""
+    return hid(js(dict(format=form,paragraph_ordinals=2 if form=="docx" else None,
+                       excluded_path_fragments=sorted(set(config["excluded_path_fragments"])) if form in {"zip","eml"} else [])))
+def reconcile_edges(db,sha,digest,config,source_version):
+    """Retire only proven obsolete relationships; retain immutable history.
+
+    Partial/failed enumeration does not prove an unseen child absent. Explicit
+    exclusions still retire matching links. Other parents/direct originals keep
+    shared child hashes active; old blobs, receipts and units are not deleted.
+    """
+    incoming={js(child["locator"]):child for child in digest.get("children",[])}
+    complete=digest.get("children_inventory_complete") is True
+    stamp=now()
+    for edge in list(db.execute("SELECT * FROM edges WHERE parent=?",(sha,))):
+        new=incoming.get(edge["locator"])
+        reason=None
+        if new and (new["sha"]!=edge["child"] or new["name"]!=edge["name"]):
+            reason="observed_relationship_replaced"
+        elif not new and excluded(edge["name"],excluded_path_fragments=config["excluded_path_fragments"]):
+            reason="relationship_excluded_by_current_policy"
+        elif not new and complete:
+            reason="absent_from_completed_child_inventory"
+        if reason:
+            db.execute("INSERT INTO edge_history VALUES(?,?,?,?,?,?,?)",
+                       (sha,edge["locator"],edge["child"],edge["name"],stamp,reason,source_version))
+            db.execute("DELETE FROM edges WHERE parent=? AND locator=?",(sha,edge["locator"]))
 def extract(db,out,limits,retry=False,selection=None,config=None):
     config = config if config is not None else load_config(output=str(out))
     levels,inv=active(db)
     if selection is not None and (not re.fullmatch(r"[a-f0-9]{64}",selection) or selection not in levels): raise ValueError("--sha must be a known active lowercase SHA-256; invalid/inactive selector rejected")
     run=uuid.uuid4().hex; started=time.monotonic(); db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?)",(run,now(),None,"extraction","running",js(dict(limits=limits,selected_sha=selection)))); db.commit(); done=0
     todo=[selection] if selection else list(sorted(levels,key=lambda x:(levels[x],x)))
+    queued=set(todo)
     for sha in todo:
+        if sha not in levels: continue
         doc=dict(db.execute("SELECT * FROM docs WHERE sha=?",(sha,)).fetchone())
-        if doc["version"]==VERSION and doc["stage"] not in {"pending","running"} and not retry: continue
+        prior_digest=json.loads(doc["digest"] or "{}")
+        policy=extraction_policy(doc["format"],config)
+        previous_policy=prior_digest.get("extraction_policy_sha256")
+        # Old non-container/non-DOCX parsers are unchanged: keep finished work.
+        if previous_policy is None and doc["format"] not in {"zip","eml","docx"}:
+            previous_policy=policy
+        if doc["version"]==VERSION and previous_policy==policy and doc["stage"] not in {"pending","running"} and not retry: continue
         sources=db.execute("SELECT o.* FROM occurrences o JOIN seen s ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.sha=?",(inv,sha)).fetchall()
         blob=out/"blobs"/sha; src=str(blob) if blob.exists() else next((x["path"] for x in sources if os.path.isfile(x["path"])),str(blob)); dest=out/"derived"/sha
         attempt=uuid.uuid4().hex
@@ -371,20 +408,29 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
                 failure="worker_exit_"+str(p.returncode) if p.returncode else "missing_worker_digest"
             except subprocess.TimeoutExpired: failure="worker_timeout"
         digest=json.loads((dest/"digest.json").read_text()) if (dest/"digest.json").exists() else dict(stage="failed",counts={},issues=[dict(code=failure)],children=[],version=VERSION,review_status="not_reviewed")
+        digest["engine_revision"]=ENGINE_REVISION
+        digest["extraction_policy_sha256"]=policy
+        if failure!="missing_worker_digest":
+            digest["children_inventory_complete"]=False
+            digest["stage"]="failed"
+            digest["issues"].append(dict(code=failure))
         db.execute("DELETE FROM units WHERE sha=?",(sha,))
         if (dest/"units.jsonl").exists():
             with (dest/"units.jsonl").open() as f:
                 for n,line in enumerate(f,1):
                     try: u=json.loads(line)
-                    except ValueError: digest["issues"].append(dict(code="truncated_unit",line=n)); digest["stage"]="partial"; break
+                    except ValueError: digest["issues"].append(dict(code="truncated_unit",line=n)); digest["stage"]="partial"; digest["children_inventory_complete"]=False; break
                     db.execute("INSERT INTO units VALUES(?,?,?,?,?,?)",(sha,n,u["kind"],js(u["locator"]),u["text"],js(u["data"])))
+        reconcile_edges(db,sha,digest,config,doc["version"])
         for c in digest.get("children",[]):
             loc=js(c["locator"]); register(db,c["sha"],c["bytes"],c["format"],c["name"],"container",sha,c["locator"],dict(relation=c["relation"],parent_sha256=sha))
             db.execute("INSERT OR IGNORE INTO preservations VALUES(?,?,?,?)",(c["sha"],str(out/"blobs"/c["sha"]),now(),c["bytes"]))
             db.execute("INSERT OR REPLACE INTO edges VALUES(?,?,?,?)",(sha,loc,c["sha"],c["name"]))
-            if c["sha"] not in levels:
-                levels[c["sha"]]=levels[sha]+1
-                if selection is None: todo.append(c["sha"])
+        levels,_=active(db)
+        if selection is None:
+            for child in sorted(levels,key=lambda x:(levels[x],x)):
+                if child not in queued: todo.append(child); queued.add(child)
+        atomic(dest/"digest.json",digest)
         for e in digest["issues"]: event(db,run,"extraction",e["code"],src,sha,e.get("locator"),e.get("detail",""))
         db.execute("UPDATE docs SET stage=?,version=?,digest=? WHERE sha=?",(digest["stage"],VERSION,js(digest),sha))
         db.execute("UPDATE extraction_attempts SET finished=?,stage=?,digest=? WHERE id=?",(now(),digest["stage"],js(digest),attempt)); db.commit(); done+=1
