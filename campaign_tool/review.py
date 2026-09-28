@@ -23,11 +23,13 @@ def review_blockers(finding, receipts):
     for field in ("id", "author", "summary", "sources", "limitations", "counterevidence"):
         if field not in finding:
             blockers.append("missing_" + field)
-    if not finding.get("sources"):
+    sources = finding.get("sources")
+    if not isinstance(sources, list) or not sources:
         blockers.append("missing_evidence")
+        sources = []
     if not isinstance(finding.get("summary"), str) or not finding["summary"].strip():
         blockers.append("missing_summary")
-    for source in finding.get("sources", []):
+    for source in sources:
         if not isinstance(source, dict) or not source.get("locator") or not source.get("sha256"):
             blockers.append("source_missing_locator_or_hash")
         elif not isinstance(source["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
