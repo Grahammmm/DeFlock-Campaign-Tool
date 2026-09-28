@@ -120,3 +120,16 @@ python3 -m campaign_tool.records.intake.scope_quarantine --config "$RECORDS_CONF
 
 The new regression suite uses temporary synthetic originals only and does not
 promote extraction to independent review, run a live corpus, or enable a service.
+
+## Narrow provenance-hash scan approvals
+
+The owner approved the two existing import manifests' provenance hashes. The
+scan-result checker accepts only `Hex High Entropy String` hits on complete
+SHA-256 field lines in those exact manifests. The complete manifest bytes must
+match reviewed pins, the scanner's hashed value must match that exact line, and
+each referenced engine file must still match its recorded digest. Source hashes
+are pinned historical provenance, not claims that predecessor files are present.
+Symlinked/missing files, modified manifests, other paths or detector categories,
+and added credential fields fail closed. No detector or directory is excluded.
+Any later manifest revision requires a separately reviewed pin update. CI still
+runs the real scanner with network verification disabled and never prints values.
