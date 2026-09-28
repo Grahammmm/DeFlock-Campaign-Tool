@@ -60,6 +60,14 @@ Inspired by practical lessons from DeFlock SLO. No private SLO records, subscrib
 
 New repository code and documentation are Apache-2.0 licensed. Third-party data, source documents, logos, and map databases retain their own rights.
 
+## Optional records intake port
+
+The filesystem intake v3.2 port and its synthetic tests are documented in
+[Records intake](docs/RECORDS-INTAKE.md). Unlike the standard-library starter,
+PDF/workbook extraction requires the pinned parser environment. The port is
+not an enabled mailbox service, OCR pipeline, or website publisher. Campaign
+configuration and every original remain outside this public repository.
+
 ## Records pipeline M0a
 
 The reusable records gates and synthetic regression suite are now in the engine.

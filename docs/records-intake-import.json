@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "source_label": "flock-intake-3.2",
+  "files": [
+    {
+      "source_relative_path": "scripts/intake.py",
+      "source_sha256": "c37b6a831d7c0546f28c34db046b98c6d1fa56bd9bb815771c84679b7ab0244f",
+      "engine_path": "campaign_tool/records/intake/folder.py",
+      "engine_sha256": "81da5be8436b5b4c51778979195d8b66b5eeb2f1353de6d9f073a2b8a1949a3c"
+    },
+    {
+      "source_relative_path": "scripts/repair_intake.py",
+      "source_sha256": "f77f4685d36584ee186eca3b150560550482f7b5b8e67b625738b3ea9cd4e6b0",
+      "engine_path": "campaign_tool/records/intake/repair_intake.py",
+      "engine_sha256": "fa7f5a73fe82116a29cc4983631d80ad349641582f230ac526c6de868c9f6f2e"
+    },
+    {
+      "source_relative_path": "scripts/scope_quarantine.py",
+      "source_sha256": "303f96799d7818aec23895d6667e14bed6441ad0dbbb7f561a8c7d28fc286d7f",
+      "engine_path": "campaign_tool/records/intake/scope_quarantine.py",
+      "engine_sha256": "61114b1b3b2bfbc1fb4e201f5b66bb0ecb291eb9a5e602852f2b005480eb4f0e"
+    },
+    {
+      "source_relative_path": "tests/test_intake.py",
+      "source_sha256": "a278f9e1262e10098380590daf1ca66ff14a269561544d9fab9434808647b403",
+      "engine_path": "tests/records/test_intake.py",
+      "engine_sha256": "3faf9ba712b5beb14fa3ede36d5a27e5ed53192e7885fe806a43f09851d08e78"
+    }
+  ],
+  "sqlite_schema_unchanged": true,
+  "schema_sha256": "18ba07652fc23f4c6e3a197d4ca12994d4d6ed56a7dafe4db2c3637797236368",
+  "baseline_tests": {
+    "total": 20,
+    "passed": 18,
+    "failed": 2,
+    "failures": "obsolete unsupported DOCX expectations"
+  },
+  "port_adaptations": [
+    "Explicit private configuration; no pilot paths or agencies",
+    "Config propagated to worker and report without mutable campaign globals",
+    "Helpers import packaged folder module",
+    "Test module path updated; two DOCX statuses match already-existing handler; one test renamed",
+    "Relative-root exclusions only; config-sensitive archive/mail extraction policy",
+    "Reconcile current edges while retaining edge history, shared children and prior artifacts",
+    "DOCX paragraph ordinals include blank and table paragraphs; part-local locators",
+    "Repair and quarantine accept explicit private config for extraction and reports",
+    "Effective parser-budget binding retries containers when nesting allowance improves; retains prior attempts"
+  ],
+  "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported",
+  "engine_revision": "portable-intake-3"
+}

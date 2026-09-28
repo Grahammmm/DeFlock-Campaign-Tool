@@ -23,7 +23,7 @@ class MapContractTests(unittest.TestCase):
             ("candidate_property", "__proto__"),
             ("bounding_box_fallbacks", ["x", "x"]),
             ("source_map_url", "javascript:alert(1)"),
-            ("source_map_url", "https://user:password@example.invalid"),
+            ("source_map_url", "https://user:password@example.invalid"),  # pragma: allowlist secret -- synthetic rejected URL
             ("city_boundaries_url", "../private/records.json"),
             ("city_boundaries_url", "https://example.invalid/data.json"),
             ("initial_point_count", True), ("initial_point_count", -1),
