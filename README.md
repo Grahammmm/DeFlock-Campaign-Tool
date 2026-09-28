@@ -56,10 +56,10 @@ The offline starter needs no subscriptions. A live campaign will normally need a
 
 ## Independence and license
 
-Inspired by practical lessons from DeFlock SLO. No private SLO records, subscribers, secrets, or production code are included. This is an independent project; no endorsement by the broader DeFlock project is implied. Explore the existing [DeFlock map ecosystem](https://github.com/FoggedLens/deflock) before duplicating map work.
+Inspired by practical lessons from DeFlock SLO. No private SLO records, subscribers, secrets or account settings are included. The original page frame and CSS are the first extracted engine components; campaign content and third-party assets remain separate. This is an independent project; no endorsement by the broader DeFlock project is implied. Explore the existing [DeFlock map ecosystem](https://github.com/FoggedLens/deflock) before duplicating map work.
 
 New repository code and documentation are Apache-2.0 licensed. Third-party data, source documents, logos, and map databases retain their own rights.
 
 ## Engine/campaign split
 
-The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). No production engine extraction has occurred yet; the private pilot audit requires owner approval first.
+The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). The first extraction is the shared site shell and CSS, with owner approval of original-code rights. See [shell contract and limitations](docs/SITE-SHELL.md) and the [fictional example](examples/fictional-campaign/README.md). Maps, signup, analytics and deployment extraction remain unfinished.
