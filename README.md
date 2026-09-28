@@ -67,6 +67,15 @@ The filesystem intake v3.2 port and its synthetic tests are documented in
 PDF/workbook extraction requires the pinned parser environment. The port is
 not an enabled mailbox service, OCR pipeline, or website publisher. Campaign
 configuration and every original remain outside this public repository.
+
+## Records pipeline M0a
+
+The reusable records gates and synthetic regression suite are now in the engine.
+See [records pipeline implementation status](docs/RECORDS-PIPELINE.md) for commands,
+import provenance, limitations, and the ordered M0b-M5 work. Run the suite with
+`python3 -B -m unittest discover -v`. This tested offline slice does not mean the
+complete campaign platform, automatic intake, or a live deployment is ready.
+
 ## Engine/campaign split
 
 The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). No production engine extraction has occurred yet; the private pilot audit requires owner approval first.
