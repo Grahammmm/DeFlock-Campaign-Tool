@@ -172,7 +172,10 @@ def build_catalog(db, queue_rows, snapshot_rows, digests, *, blob_root=None):
             flags.append("absent_from_review_snapshot")
         if sha not in levels:
             flags.append("not_in_latest_active_inventory")
-        if not original["agency_hints"]:
+        named_hint = any(hint.strip() and hint.strip().casefold() != "unassigned"
+                         for hint in original["agency_hints"])
+        agency_status = "scope_excluded" if scoped_out else "hint_present" if named_hint else "unassigned"
+        if agency_status == "unassigned":
             flags.append("agency_unassigned")
         flags.append("document_date_unknown")
         if scoped_out:
@@ -184,6 +187,7 @@ def build_catalog(db, queue_rows, snapshot_rows, digests, *, blob_root=None):
         score = 0 if scoped_out else 10 if role == "project_artifact" else FORMAT_SCORES.get(doc["format"], 20)
         cards.append({"sha256": sha, "agency_hints": original["agency_hints"] if not scoped_out else [],
             "format": doc["format"], "bytes": doc["bytes"], "role": role,
+            "agency_status": agency_status,
             "catalog_status": "cataloged", "extraction_stage": doc["stage"],
             "analysis_state": evidence["analysis_state"], "digest_count": evidence["digest_count"],
             "dates": {"first_seen": doc["first_seen"], "last_seen": max(dates) if dates else None,
@@ -202,6 +206,7 @@ def build_catalog(db, queue_rows, snapshot_rows, digests, *, blob_root=None):
         "prior_queue_rows": len(queue), "review_snapshot_rows": len(snapshot),
         "active_inventory_hashes": len(levels), "occurrences": sum(c["occurrence_count"] for c in cards),
         "role_counts": dict(Counter(c["role"] for c in cards)),
+        "agency_attribution_counts": dict(Counter(c["agency_status"] for c in cards)),
         "extraction_counts": dict(Counter(c["extraction_stage"] for c in cards)),
         "analysis_counts": dict(Counter(c["analysis_state"] for c in cards)),
         "preservation_counts": dict(Counter(c["preservation"] for c in cards)),

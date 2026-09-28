@@ -59,3 +59,9 @@ substantive digestion, an ALPR detector, legal review, or a publisher.
 uses only synthetic records. The normal repository CI runs these along with the
 existing intake and gate tests. Host package installation is not part of this
 step. A private corpus import must be reported separately from synthetic tests.
+
+Agency attribution is classified separately as `hint_present`, `unassigned`, or
+`scope_excluded`. Empty/whitespace hints and the literal `UNASSIGNED` placeholder
+(case-insensitive, ignoring surrounding whitespace) do not establish attribution.
+Original hint strings are retained for provenance; a named hint is not independently
+verified agency attribution. Excluded identities are not agency-assignment work.
