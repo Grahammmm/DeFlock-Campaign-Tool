@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "Cedar County Records Project",
+  "county": "Cedar County (fictional)",
+  "state": "CA",
+  "country": "US",
+  "jurisdiction_verified": false,
+  "law_package_status": "unreviewed",
+  "external_sends": "disabled",
+  "publication": "manual",
+  "newsletter": {
+    "mode": "not_configured"
+  }
+}

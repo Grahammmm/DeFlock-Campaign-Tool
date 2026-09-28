@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trusted campaign shell input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "language",
+    "html",
+    "styles"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{1,8})*$"
+    },
+    "html": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head",
+        "header",
+        "main",
+        "footer"
+      ],
+      "properties": {
+        "head": {
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        },
+        "main": {
+          "type": "string"
+        },
+        "footer": {
+          "type": "string"
+        }
+      }
+    },
+    "styles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "font_family",
+        "font_faces"
+      ],
+      "properties": {
+        "font_family": {
+          "type": "string"
+        },
+        "font_faces": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

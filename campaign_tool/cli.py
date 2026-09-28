@@ -154,47 +154,13 @@ def doctor(root):
 
 
 def build(root):
+    from .site import preview
     cfg = read_config(root)
-    # Only these fields are exported. Evidence and arbitrary config never enter HTML.
-    name, county, state = (html.escape(cfg[k], quote=True)
-                           for k in ("name", "county", "state"))
+    site = preview(cfg)
     public = root / "public"
     public.mkdir(exist_ok=True)
-    page = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="A local initiative for transparent ALPR policies and evidence-based public participation.">
-<title>__NAME__ | Local accountability</title><link rel="stylesheet" href="style.css">
-</head><body><header><a href="#main">__NAME__</a><span>__COUNTY__, __STATE__</span></header>
-<main id="main"><p class="eyebrow">Local records. Public understanding.</p>
-<h1>Know how your community uses license plate readers.</h1>
-<p class="intro">We are building a source-backed picture of ALPR policies, contracts,
-and oversight in __COUNTY__. Questions deserve records, not assumptions.</p>
-<nav aria-label="Sections"><a href="#records">Our process</a><a href="#participate">Get involved</a></nav>
-<section id="records"><h2>From records to understanding</h2>
-<div class="grid"><article><span>01</span><h3>Request</h3><p>Identify agencies and ask for policies, agreements, sharing settings, and audit records.</p></article>
-<article><span>02</span><h3>Understand</h3><p>Preserve originals, compare applicable rules, and independently challenge every material finding.</p></article>
-<article><span>03</span><h3>Participate</h3><p>Share reviewed evidence and use official public-meeting channels to ask informed questions.</p></article></div></section>
-<section id="participate"><h2>A campaign built on evidence.</h2><p>This is a starter preview.
-Local contacts, meeting links, map data, newsletter signup, and reviewed findings have not yet been configured.</p>
-<p>No email addresses are collected by this preview.</p></section></main>
-<footer>Independent local initiative. No agency findings are asserted by this starter.
-Built with DeFlock Campaign Tool.</footer></body></html>"""
-    for key, value in (("__NAME__", name), ("__COUNTY__", county), ("__STATE__", state)):
-        page = page.replace(key, value)
-    (public / "index.html").write_text(page, encoding="utf-8")
-    css = """*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:#142e2d;background:#f4f0e5;font:18px/1.6 Georgia,serif}
-header,main,footer{max-width:1160px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #b3beb0}
-a{color:inherit;text-underline-offset:5px}header a{font-weight:bold}main{padding-top:72px;background:radial-gradient(ellipse at top right,#dce5ce,transparent 65%)}
-.eyebrow,article span{font:14px/1.4 monospace;text-transform:uppercase;letter-spacing:2px;color:#426952}
-h1{font-size:clamp(2.4rem,6vw,5rem);line-height:1.04;max-width:950px;font-weight:normal;letter-spacing:-2px;margin:28px 0}
-.intro{max-width:670px;font-size:22px}nav{display:flex;gap:24px;flex-wrap:wrap;margin:32px 0}
-nav a{background:#183e36;color:#fff;padding:12px 20px;text-decoration:none;border-radius:4px}
-section{padding:40px 0}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:28px}article{border-top:3px solid #b95436;padding-top:18px}
-h2{font-size:32px}h3{margin:12px 0}footer{font-size:14px;border-top:1px solid #b3beb0}
-a:focus-visible{outline:3px solid #b95436;outline-offset:5px}@media(max-width:640px){header{flex-direction:column}main{padding-top:36px}.grid{grid-template-columns:1fr}h1{letter-spacing:-1px}.intro{font-size:19px}}
-@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}"""
-    (public / "style.css").write_text(css, encoding="utf-8")
+    (public / "index.html").write_text(site["html"], encoding="utf-8")
+    (public / "style.css").write_text(site["css"], encoding="utf-8")
     (public / "_headers").write_text(
         "/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n"
         "  Content-Security-Policy: default-src 'none'; style-src 'self'; "
