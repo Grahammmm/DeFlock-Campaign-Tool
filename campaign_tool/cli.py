@@ -53,6 +53,9 @@ def database(root):
 
 
 def initialize(args, root):
+    for field in ('name', 'county'):
+        if not getattr(args, field).strip():
+            raise ValueError('Missing campaign field: ' + field)
     root.mkdir(parents=True, exist_ok=True)
     cfg = {"schema_version": 1, "name": args.name, "county": args.county,
            "state": args.state.upper(), "country": "US",

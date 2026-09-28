@@ -1,6 +1,7 @@
 """Content-binding checks, NOT authenticated authorization or legal validation."""
 import hashlib
 import json
+import re
 
 ROLES = frozenset(("factual", "legal", "privacy"))
 CLASSIFICATIONS = frozenset(("documented_fact", "apparent_conflict",
@@ -24,9 +25,13 @@ def review_blockers(finding, receipts):
             blockers.append("missing_" + field)
     if not finding.get("sources"):
         blockers.append("missing_evidence")
+    if not isinstance(finding.get("summary"), str) or not finding["summary"].strip():
+        blockers.append("missing_summary")
     for source in finding.get("sources", []):
         if not isinstance(source, dict) or not source.get("locator") or not source.get("sha256"):
             blockers.append("source_missing_locator_or_hash")
+        elif not isinstance(source["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
+            blockers.append("invalid_source_hash")
     if finding.get("classification") in ("apparent_conflict", "confirmed_conflict"):
         for field in ("event_date", "rule_version", "duty", "exceptions"):
             if not finding.get(field):
