@@ -1,0 +1,5 @@
+  function setCityText(slug) {
+    var c=slug?CITIES[slug]:{{COUNTY_PROFILE}};
+    document.getElementById("city-name").textContent=c.displayName||c.name; document.getElementById("city-vendor").textContent=c.vendor; document.getElementById("city-status").textContent=c.status; document.getElementById("city-summary").textContent=c.summary; document.getElementById("city-camera-count").textContent=c.cameraCount;document.getElementById("city-camera-count").hidden=!c.cameraCount; document.getElementById("city-open").textContent=c.open; var methodLink=document.getElementById("city-method-link"); if(methodLink)methodLink.href={{SOURCE_PREFIX}}+({{SOURCE_ROUTE}}); var sourceLink=document.getElementById("city-records-link"); if(sourceLink){sourceLink.href={{SOURCE_PREFIX}}+({{SOURCE_ROUTE}});sourceLink.textContent={{SOURCE_LINK_LABEL}};}
+    document.getElementById("city-facts").innerHTML=c.facts.map(function(f){return "<li>"+f+"</li>";}).join(""); document.getElementById("city-flags").innerHTML=c.flags.map(function(f){return "<span>"+f+"</span>";}).join("");
+  }
