@@ -62,12 +62,12 @@ class ProvenanceScanTests(unittest.TestCase):
         self.assertFalse(self.allowed(path="./" + self.manifest_name))
 
     def test_other_detector_is_never_exempt(self):
-        hit = {**self.hit, "type": "Secret Keyword"}  # pragma: allowlist secret
+        hit = {**self.hit, "type": "Secret Keyword"}
         self.assertFalse(self.allowed(hit))
 
     def test_hit_must_match_exact_line_and_exact_scanned_value(self):
         for change in ({"line_number": 1}, {"line_number": 0}, {"line_number": True},
-                       {"line_number": 1000}, {"hashed_secret": "wrong"}):
+                       {"line_number": 1000}, {"hashed_secret": "wrong"}):  # pragma: allowlist secret
             with self.subTest(change=change):
                 self.assertFalse(self.allowed({**self.hit, **change}))
 
