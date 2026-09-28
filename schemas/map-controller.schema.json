@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trusted campaign map controller settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "group_slug",
+    "candidate_property",
+    "bounding_box_fallbacks",
+    "source_map_url",
+    "city_boundaries_url",
+    "initial_point_count",
+    "candidate_count_suffix"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "group_slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "candidate_property": {
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z0-9]{0,63}$"
+    },
+    "bounding_box_fallbacks": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      }
+    },
+    "source_map_url": {
+      "type": "string",
+      "pattern": "^https://[A-Za-z0-9./:?&=%_+#~-]+$"
+    },
+    "city_boundaries_url": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,160}$",
+      "description": "Runtime also rejects any .. path segment."
+    },
+    "initial_point_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000000
+    },
+    "candidate_count_suffix": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}
