@@ -1,8 +1,8 @@
 """Fail closed on scan hits except exact, owner-approved provenance hashes.
 
 Approval pins bind the complete reviewed manifest bytes, not a field-name or
-path exemption. Pins are written as adjacent short literals so entropy scanning
-does not mistake these nonsecret approval anchors for additional credentials.
+path exemption. Pins are adjacent literals with exact-line scanner annotations for these
+reviewed, nonsecret approval anchors; no detector or directory is disabled.
 Never add credential values to this approval map.
 """
 import hashlib
@@ -14,16 +14,16 @@ import sys
 
 APPROVED_MANIFESTS = {
     'docs/records-gates-import.json': (
-        '73e48fa8dd9bb3ad'
-        '44f0c4a6d387edd1'
-        'af0fe2229cda663c'
-        '4833f4f63e937a79'
+        '73e48fa8dd9bb3ad'  # pragma: allowlist secret
+        '44f0c4a6d387edd1'  # pragma: allowlist secret
+        'af0fe2229cda663c'  # pragma: allowlist secret
+        '4833f4f63e937a79'  # pragma: allowlist secret
     ),
     'docs/records-intake-import.json': (
-        '24dfa4b022ca72fb'
-        '69285de638d61569'
-        'b0472167cc62ec3b'
-        'ac056ca6392eede8'
+        '24dfa4b022ca72fb'  # pragma: allowlist secret
+        '69285de638d61569'  # pragma: allowlist secret
+        'b0472167cc62ec3b'  # pragma: allowlist secret
+        'ac056ca6392eede8'  # pragma: allowlist secret
     ),
 }
 

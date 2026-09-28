@@ -53,7 +53,7 @@ class ProvenanceScanTests(unittest.TestCase):
         self.assertFalse(self.allowed(self.hit_for("source_sha256")))
 
     def test_added_credential_invalidates_entire_manifest_approval(self):
-        self.data["api_key"] = "synthetic-credential-" + "example" * 8
+        self.data["api_key"] = "synthetic-credential-" + "example" * 8  # pragma: allowlist secret
         self.path.write_text(json.dumps(self.data, indent=2) + "\n")
         self.assertFalse(self.allowed())
 
@@ -62,7 +62,7 @@ class ProvenanceScanTests(unittest.TestCase):
         self.assertFalse(self.allowed(path="./" + self.manifest_name))
 
     def test_other_detector_is_never_exempt(self):
-        hit = {**self.hit, "type": "Secret Keyword"}
+        hit = {**self.hit, "type": "Secret Keyword"}  # pragma: allowlist secret
         self.assertFalse(self.allowed(hit))
 
     def test_hit_must_match_exact_line_and_exact_scanned_value(self):

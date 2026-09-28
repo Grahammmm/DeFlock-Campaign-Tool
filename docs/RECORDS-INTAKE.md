@@ -133,3 +133,8 @@ Symlinked/missing files, modified manifests, other paths or detector categories,
 and added credential fields fail closed. No detector or directory is excluded.
 Any later manifest revision requires a separately reviewed pin update. CI still
 runs the real scanner with network verification disabled and never prints values.
+
+Reviewed nonsecret approval-pin literals and two synthetic adversarial-test
+lines use exact-line `pragma: allowlist secret` annotations. The scanner
+continues scanning every other line, including the complete manifests; these
+annotations must not be copied to credentials or private data.
