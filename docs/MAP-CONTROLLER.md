@@ -1,0 +1,53 @@
+# Map controller extraction
+
+The shared controller implements polygon/hole and MultiPolygon membership,
+configured bounding-box fallback, candidate-area filters, selection counts,
+viewport padding, reduced-motion fitting, map initialization, escaped popup text,
+source links and graceful loading failure. MapLibre and GeoJSON remain
+campaign-supplied; their licenses are not transferred by this extraction.
+
+## Explicit dependencies
+
+The generated fragment is assembled inside the existing application closure.
+The campaign provides CAMERA_DATA_URL, BOUNDARY_DATA_URL, COUNTY_BOUNDS, MAP_STYLE
+and CITIES (name and bounds per slug), a trusted setCityText function, and the
+existing county-map/city-picker/map-selection-count DOM contract. The current
+profile renderer and stories remain campaign-owned. This is an incremental
+compatibility interface, not the final launch wizard.
+
+Use campaign_tool.map_controller.render(config, profile_renderer). The JSON
+contract is in schemas/map-controller.schema.json. Settings select a group slug,
+candidate flag, fallback locality slugs, source-map URL, local city boundary file,
+initial display count and explicit uncertainty label. Runtime validation rejects
+unknown fields, unsafe identifiers/URLs, traversal and invalid counts. This
+renderer is build-time code generation: the profile hook is trusted reviewed
+source, never record text, user input or an AI draft.
+
+Geography and missing operator tags are research leads, not evidence of agency
+ownership. A group's label must say ownership is unconfirmed. The pilot retains
+its original classification behavior; changing evidence or classification is
+a separately reviewed change.
+
+## Privacy and safe defaults
+
+The fictional config uses an invalid example domain and invented place names.
+Tests use synthetic square polygons and mocked map/DOM objects, never external
+tiles or email delivery. No SLO records, coordinates, profiles, provider keys,
+MapLibre binary, font or photo is included.
+
+The default CLI starter still has no live map until a reviewed campaign supplies
+its data, markup, map library and provider configuration. No hosted example or
+provider capacity claim is made here. Future work will remove the compatibility
+globals and complete the campaign configuration/build adapters.
+
+## Validation
+
+Run Python tests with python3 -m unittest discover -s tests -v, then
+node --test tests/*.test.mjs. These cover the new renderer contract and focused
+controller behavior offline. They do not validate arbitrary malformed GeoJSON,
+dateline/polar geometry, exact boundary-point policy, real WebGL rendering or
+mobile performance. Campaign source provenance, attribution and browser review
+remain separate requirements.
+
+The pilot build must regenerate app.js byte-for-byte and then pass all existing
+asset, header, link and Worker tests. No public output change is intended.
