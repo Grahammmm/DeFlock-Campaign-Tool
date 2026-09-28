@@ -1,2 +1,61 @@
-# DeFlock-Campaign-Tool
-Open-source tools for local ALPR accountability: campaign websites, public-records workflows, evidence provenance, and independent review. Early development.
+# DeFlock Campaign Tool
+
+Open-source tools to help local organizers investigate automated license plate reader (ALPR) use, preserve public records, publish carefully reviewed findings, and participate in local government.
+
+**Status: early development, not a production-ready campaign platform.** The initial implementation is an offline starter. It does not contact agencies, send email, provision infrastructure, determine legal violations, or publish findings automatically.
+
+## Start locally
+
+Requires Python 3.11 or newer. No third-party Python packages are required.
+
+```sh
+git clone https://github.com/Grahammmm/DeFlock-Campaign-Tool.git
+cd DeFlock-Campaign-Tool
+python3 -m campaign_tool init --directory ../my-campaign --county "Your County" --state CA --name "Your Campaign"
+python3 -m campaign_tool doctor --directory ../my-campaign
+python3 -m campaign_tool build --directory ../my-campaign
+python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
+```
+
+Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, not a claim that any agency violated a law. Use an external campaign directory so private records do not live in the software repository.
+
+## Preserve a document
+
+```sh
+python3 -m campaign_tool ingest --directory ../my-campaign --file examples/synthetic-county/policy.txt --source-id demo-production-001
+python3 -m campaign_tool status --directory ../my-campaign
+```
+
+Original bytes are preserved under their SHA-256 hash. Separate receipt identities record where an identical document was received. Repeating the same source ID and bytes does not duplicate a receipt. A hash establishes byte identity, not authenticity or truth.
+
+## Included in this alpha
+
+- County/state configuration with safe defaults and local setup diagnostics.
+- Static, mobile-friendly website generation from an explicit public-field allowlist.
+- Private local document storage and SQLite receipt ledger.
+- A review-gate library binding independent review receipts to finding content.
+- Synthetic policy, search log, agreement, and agency reply fixtures.
+- Portable records-analysis and review skills.
+- Architecture, implementation roadmap, operator checklists, request templates, and contribution guidance.
+
+The initial code has not yet completed independent validation. No passing-test or capacity claim is made.
+
+## Planned, not yet implemented
+
+Resumable account setup; Cloudflare deployment automation; authenticated workspace; mailbox and MuckRock connectors; sandboxed PDF/spreadsheet extraction; reviewed state-law packages; authenticated review receipts; publication/correction workflows; newsletter integration; meeting tools; monitored scheduling and cost controls.
+
+See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
+
+## Evidence before conclusions
+
+Downloaded is not analyzed. Extracted is not reviewed. Missing text is not automatically proof of misconduct. Compare conduct with the rule and policy in force on the event date, consider exceptions and counterevidence, and retain exact source locators. AI assistance is not legal advice or a guarantee of accuracy.
+
+## Accounts and costs
+
+The offline starter needs no subscriptions. A live campaign will normally need a domain, hosting account, mailbox, and newsletter provider. AI/OCR, map services, and records fees may add costs. Organizers own their accounts and data. Paid provisioning and external sends require explicit authorization.
+
+## Independence and license
+
+Inspired by practical lessons from DeFlock SLO. No private SLO records, subscribers, secrets, or production code are included. This is an independent project; no endorsement by the broader DeFlock project is implied. Explore the existing [DeFlock map ecosystem](https://github.com/FoggedLens/deflock) before duplicating map work.
+
+New repository code and documentation are Apache-2.0 licensed. Third-party data, source documents, logos, and map databases retain their own rights.

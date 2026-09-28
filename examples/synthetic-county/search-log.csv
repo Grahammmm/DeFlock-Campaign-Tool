@@ -1,0 +1,4 @@
+fixture_only,event_id,event_type,purpose,export_note
+true,DEMO-001,vehicle_search,,purpose column blank in export; native field not provided
+true,DEMO-002,health_check,N/A,administrative operation
+true,DEMO-003,vehicle_search,fictional_case_reference,synthetic entry

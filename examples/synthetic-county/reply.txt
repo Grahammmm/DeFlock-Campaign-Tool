@@ -1,0 +1,5 @@
+FICTIONAL TRAINING MATERIAL
+The fictional custodian states that the CSV is a report export, not the native
+audit database. The export notes do not establish whether purpose is stored
+in a related table. The referenced sharing exhibit was not included.
+Useful next request: native field definitions and the missing exhibit.
