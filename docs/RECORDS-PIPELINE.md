@@ -37,8 +37,9 @@ no credentials, and synthetic data only.
 
 All operands below are operator-provided private paths. None belongs in Git.
 Use an owner-only batch directory and `umask 077`. Reports contain private
-locators; never serve them on a public route. Existing outputs must also be
-owner-only: the process umask governs newly created files, not existing ones.
+locators; never serve them on a public route. All four gate commands now atomically replace report files with mode 0600,
+reject symlink targets/ancestors, and never modify a linked target inode. Keep
+parent directories owner-controlled. Multi-file report sets are not transactional.
 
 ```sh
 python3 -m campaign_tool.records validate-findings "$FINDINGS" \
@@ -52,7 +53,8 @@ python3 -m campaign_tool.records batch-report "$BATCH" --output "$REPORT" \
 `--require-agency` is repeatable campaign configuration. No pilot agencies are
 implied by default. Existing JSON/JSONL schemas, hash bindings and classifications
 are preserved. `batch_report` now supports package-relative imports as well as
-direct-script use; the other gate implementation files are unchanged.
+direct-script use. Engine adaptations share secure output writing and collection-level
+duplicate-ID rejection; source and adapted hashes are retained in the import manifest.
 `validate-findings --require-ready` retains its nonzero exit for blocked or empty
 finding sets. Coverage counts and author-declared full review are not independent
 approval. A structural gate pass is not authenticated reviewer authorization,
@@ -103,3 +105,13 @@ issues. This PR is not merge-ready until corrections and regression tests pass:
    specific-blocker tests to prove each intended rejection independently.
 
 No corpus processing or production deployment was performed with this candidate.
+
+## Reconciliation and approved corrections
+
+The initial review findings above are retained as audit history. Corrections now
+include descriptor-relative private output writes, batch-wide duplicate-ID
+rejection (including cross-agency collisions), compact/punctuated credential
+detection, and supplemental positive-baseline tests with exact rejection reasons.
+The original 23 gate tests remain byte-for-byte intact. CI installs the intake
+test requirements only when that separate slice is present. Final independent
+review and CI results are recorded on the PR, not implied by this description.

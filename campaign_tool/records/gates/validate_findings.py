@@ -10,6 +10,15 @@ import json
 import re
 from datetime import date, datetime
 from pathlib import Path
+from collections import Counter
+
+if __package__:
+    from .safe_output import write_private
+else:
+    try:
+        from safe_output import write_private
+    except ModuleNotFoundError:
+        from campaign_tool.records.gates.safe_output import write_private
 
 CLASSES = {
     "NOT_ASSESSED", "NOT_APPLICABLE", "VERSION_OR_APPLICABILITY_UNRESOLVED",
@@ -230,6 +239,23 @@ def gate(finding, external_reviews=(), check_files=False):
             "source_bytes_checked": bool(check_files)}
 
 
+def block_duplicate_ids(reports):
+    """Apply across the entire batch, not merely one agency package."""
+    counts = Counter(r.get("finding_id") for r in reports
+                     if isinstance(r.get("finding_id"), str))
+    for item in reports:
+        identity = item.get("finding_id")
+        if isinstance(identity, str) and counts[identity] > 1:
+            item["ready"] = False
+            if "duplicate finding_id" not in item["blockers"]:
+                item["blockers"].append("duplicate finding_id")
+    return reports
+
+
+def gate_many(findings, reviews=(), check_files=False):
+    return block_duplicate_ids([gate(f, reviews, check_files) for f in findings])
+
+
 def objects(path, key):
     data = json.loads(Path(path).read_text())
     values = data.get(key) if isinstance(data, dict) else data
@@ -248,18 +274,13 @@ def main():
     args = p.parse_args()
     findings = objects(args.findings, "findings")
     reviews = objects(args.reviews, "reviews") if args.reviews else []
-    report = [gate(f, reviews, args.check_files) for f in findings]
-    ids = [r.get("finding_id") for r in report]
-    for item in report:
-        if ids.count(item.get("finding_id")) > 1:
-            item["ready"] = False
-            item["blockers"].append("duplicate finding_id")
+    report = gate_many(findings, reviews, args.check_files)
     output = {"total": len(report), "ready": sum(r["ready"] for r in report),
               "gate_scope": "structural evidence/review checks; no legal merits decision",
               "findings": report}
     rendered = json.dumps(output, indent=2) + "\n"
     if args.output:
-        Path(args.output).write_text(rendered)
+        write_private(args.output, rendered)
     else:
         print(rendered, end="")
     return 1 if args.require_ready and (not report or any(not r["ready"] for r in report)) else 0

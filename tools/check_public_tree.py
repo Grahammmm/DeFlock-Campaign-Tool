@@ -15,7 +15,7 @@ PATTERNS = {
     "brevo_key": re.compile(rb"xkeysib-[A-Za-z0-9_-]{30,}"),
     "openai_key": re.compile(rb"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{40,}"),
     "signed_url": re.compile(rb"[?&](?:X-Amz-Signature|X-Goog-Signature|sig)=[A-Za-z0-9%+/=_-]{16,}", re.I),
-    "literal_credential": re.compile(rb'''(?im)^\s*["']?(?:api_key|access_token|client_secret|password)["']?\s*[:=]\s*["'][A-Za-z0-9+/=_-]{20,}["']'''),
+    "literal_credential": re.compile(rb'''(?i)(?<![A-Za-z0-9_])["']?(?:api_key|access_token|client_secret|password)["']?\s*[:=]\s*(?:"[^"\r\n]{20,}"|'[^'\r\n]{20,}')'''),
     "pilot_host_path": re.compile(rb"/(?:workspace/" + rb"flockbot|Users/" + rb"gt)(?:/|\b)"),
 }
 DENIED_PARTS = {"private", "originals", "mail-history", "blobs", "credentials"}

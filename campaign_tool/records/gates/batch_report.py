@@ -5,9 +5,17 @@ import json
 from collections import Counter
 from pathlib import Path
 if __package__:
-    from .validate_findings import gate
+    from .validate_findings import gate_many, block_duplicate_ids
 else:
-    from validate_findings import gate
+    from validate_findings import gate_many, block_duplicate_ids
+
+if __package__:
+    from .safe_output import write_private
+else:
+    try:
+        from safe_output import write_private
+    except ModuleNotFoundError:
+        from campaign_tool.records.gates.safe_output import write_private
 
 
 def main():
@@ -54,13 +62,16 @@ def main():
                 dest.extend(items)
             except (ValueError, TypeError):
                 errors.append({"path": str(path), "error": "invalid " + key})
-        checks = [gate(f, reviews, args.check_files) for f in findings]
+        checks = gate_many(findings, reviews, args.check_files)
         results.append({"agency_package": agency.name, "document_digest_entries": len(digests),
                         "distinct_digest_hashes": len({d.get("sha256") for d in digests if d.get("sha256")}),
                         "declared_review_statuses": dict(Counter(str(d.get("review_status", "unspecified")) for d in digests)),
                         "findings": len(findings), "publication_ready": sum(c["ready"] for c in checks),
                         "classification_counts": dict(Counter(f.get("classification", "unspecified") for f in findings if isinstance(f, dict))),
                         "gates": checks})
+    block_duplicate_ids([check for result in results for check in result["gates"]])
+    for result in results:
+        result["publication_ready"] = sum(check["ready"] for check in result["gates"])
     required = set(args.require_agency)
     missing = sorted(required - {r["agency_package"] for r in results})
     output = {
@@ -71,7 +82,7 @@ def main():
         "errors": errors, "agencies": results,
         "exhaustive_legal_review_claimed": False,
     }
-    args.output.write_text(json.dumps(output, indent=2) + "\n")
+    write_private(args.output, json.dumps(output, indent=2) + "\n")
     print(json.dumps({k: v for k, v in output.items() if k != "agencies"}))
 
 

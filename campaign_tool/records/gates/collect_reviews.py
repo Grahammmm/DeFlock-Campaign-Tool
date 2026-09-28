@@ -6,6 +6,14 @@ import json
 import os
 from pathlib import Path
 
+if __package__:
+    from .safe_output import write_private
+else:
+    try:
+        from safe_output import write_private
+    except ModuleNotFoundError:
+        from campaign_tool.records.gates.safe_output import write_private
+
 
 def extract_receipts(data):
     values = data if isinstance(data, list) else data.get("reviews") if isinstance(data, dict) else None
@@ -52,9 +60,7 @@ def main():
             "scope": "Unmodified review entries only. This collection grants no factual, legal, privacy or publication approval.",
         }
         target = agency / "independent-reviews.json"
-        temporary = target.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(output, indent=2) + "\n")
-        temporary.replace(target)
+        write_private(target, json.dumps(output, indent=2) + "\n")
         summaries.append({"agency": agency.name, "receipts": len(reviews), "source_files": len(sources), "errors": len(errors)})
     print(json.dumps(summaries, indent=2))
 

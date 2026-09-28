@@ -7,6 +7,14 @@ import json
 import pathlib
 import re
 
+if __package__:
+    from .safe_output import write_private
+else:
+    try:
+        from safe_output import write_private
+    except ModuleNotFoundError:
+        from campaign_tool.records.gates.safe_output import write_private
+
 
 def rows(path):
     with path.open() as stream:
@@ -114,16 +122,9 @@ def main():
             digests.append(item)
     summary, details = reconcile(intake, digests)
     target = args.output or args.batch_root / "COVERAGE-RECONCILIATION.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(json.dumps(summary, indent=2) + "\n")
-    temporary.replace(target)
+    write_private(target, json.dumps(summary, indent=2) + "\n", create_parents=True)
     queue = target.with_name("DOCUMENT-REVIEW-QUEUE.jsonl")
-    temporary = queue.with_suffix(queue.suffix + ".tmp")
-    with temporary.open("w") as stream:
-        for item in details:
-            stream.write(json.dumps(item, sort_keys=True) + "\n")
-    temporary.replace(queue)
+    write_private(queue, "".join(json.dumps(item, sort_keys=True) + "\n" for item in details))
     print(json.dumps({k: v for k, v in summary.items() if k != "analyst_hashes_outside_intake"}, indent=2))
 
 

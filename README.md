@@ -67,3 +67,7 @@ See [records pipeline implementation status](docs/RECORDS-PIPELINE.md) for comma
 import provenance, limitations, and the ordered M0b-M5 work. Run the suite with
 `python3 -B -m unittest discover -v`. This tested offline slice does not mean the
 complete campaign platform, automatic intake, or a live deployment is ready.
+
+## Engine/campaign split
+
+The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). No production engine extraction has occurred yet; the private pilot audit requires owner approval first.
