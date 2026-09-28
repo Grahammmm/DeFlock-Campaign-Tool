@@ -59,3 +59,11 @@ The offline starter needs no subscriptions. A live campaign will normally need a
 Inspired by practical lessons from DeFlock SLO. No private SLO records, subscribers, secrets, or production code are included. This is an independent project; no endorsement by the broader DeFlock project is implied. Explore the existing [DeFlock map ecosystem](https://github.com/FoggedLens/deflock) before duplicating map work.
 
 New repository code and documentation are Apache-2.0 licensed. Third-party data, source documents, logos, and map databases retain their own rights.
+
+## Records pipeline M0a
+
+The reusable records gates and synthetic regression suite are now in the engine.
+See [records pipeline implementation status](docs/RECORDS-PIPELINE.md) for commands,
+import provenance, limitations, and the ordered M0b-M5 work. Run the suite with
+`python3 -B -m unittest discover -v`. This tested offline slice does not mean the
+complete campaign platform, automatic intake, or a live deployment is ready.
