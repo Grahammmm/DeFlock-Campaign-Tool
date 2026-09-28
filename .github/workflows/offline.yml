@@ -1,0 +1,27 @@
+name: Offline shell checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Optional records test dependencies (CI runner only)
+        run: |
+          if [ -f requirements-records-test.txt ]; then
+            python3 -m pip install -r requirements-records-test.txt
+          fi
+      - run: python3 -m unittest discover -s tests -v
+      - run: node --test tests/*.test.mjs
+      - run: python3 -m campaign_tool build --directory examples/fictional-campaign
+      - run: node scripts/scan-secrets.mjs

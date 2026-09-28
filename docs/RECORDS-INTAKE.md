@@ -138,3 +138,19 @@ Reviewed nonsecret approval-pin literals and two synthetic adversarial-test
 lines use exact-line `pragma: allowlist secret` annotations. The scanner
 continues scanning every other line, including the complete manifests; these
 annotations must not be copied to credentials or private data.
+
+## Effective extraction budget revision
+
+`portable-intake-3` adds a separate budget fingerprint to each attempt, including
+failures: non-depth resource limits plus remaining ZIP/EML nesting allowance. A
+new direct occurrence or changed resource limit retries once without `--retry`;
+an unchanged effective budget remains idempotent. Absolute invocation depth is
+retained for audit, not used as the identity of an equivalent budget. Legacy
+containers with unknown invocation depth refresh once; non-containers reuse
+complete recorded effective limits, or refresh once if those are unknown. Prior
+blobs, attempts and edges retain the existing preservation/reconciliation rules.
+The updated intake manifest pin binds this reviewed engine revision.
+
+Current main's site shell, map controller and agency cards are preserved. Its
+shell CI installs optional records test dependencies only on disposable runners.
+No canonical ledger, host packages, schedule or production site is changed.

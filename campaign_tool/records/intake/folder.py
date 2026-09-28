@@ -10,7 +10,7 @@ if __package__ in {None, ""}:
 from campaign_tool.records.config import load_config, validate_config
 
 VERSION = "flock-intake-3.2"
-ENGINE_REVISION = "portable-intake-2"
+ENGINE_REVISION = "portable-intake-3"
 LIMITS = dict(source_bytes=512*1024**2, member_bytes=128*1024**2, expanded_bytes=1024**3,
               members=10000, depth=5, ratio=1000, seconds=180, memory_bytes=3*1024**3)
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".cache", "deployment", "deployments", "site-packages", "dist-packages"}
@@ -349,6 +349,10 @@ def extraction_policy(form,config):
     """Fingerprint parser-affecting settings, not host paths or agency routing."""
     return hid(js(dict(format=form,paragraph_ordinals=2 if form=="docx" else None,
                        excluded_path_fragments=sorted(set(config["excluded_path_fragments"])) if form in {"zip","eml"} else [])))
+def extraction_budget(form,limits,depth):
+    """Bind effective parser resources, not the container's absolute location."""
+    return dict(limits={key:limits[key] for key in LIMITS if key!="depth"},
+                remaining_depth=max(0,limits["depth"]-depth) if form in {"zip","eml"} else None)
 def reconcile_edges(db,sha,digest,config,source_version):
     """Retire only proven obsolete relationships; retain immutable history.
 
@@ -385,10 +389,20 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
         prior_digest=json.loads(doc["digest"] or "{}")
         policy=extraction_policy(doc["format"],config)
         previous_policy=prior_digest.get("extraction_policy_sha256")
+        invocation_depth=levels[sha]
+        budget=extraction_budget(doc["format"],limits,invocation_depth)
+        budget_hash=hid(js(budget))
+        previous_budget=prior_digest.get("extraction_budget_sha256")
+        # Legacy container depth cannot be inferred from today's occurrence graph.
+        # Unchanged non-container work can retain its recorded effective limits.
+        if previous_budget is None and doc["format"] not in {"zip","eml"}:
+            old_limits=prior_digest.get("effective_limits")
+            if isinstance(old_limits,dict) and all(key in old_limits for key in LIMITS):
+                previous_budget=hid(js(extraction_budget(doc["format"],old_limits,0)))
         # Old non-container/non-DOCX parsers are unchanged: keep finished work.
         if previous_policy is None and doc["format"] not in {"zip","eml","docx"}:
             previous_policy=policy
-        if doc["version"]==VERSION and previous_policy==policy and doc["stage"] not in {"pending","running"} and not retry: continue
+        if doc["version"]==VERSION and previous_policy==policy and previous_budget==budget_hash and doc["stage"] not in {"pending","running"} and not retry: continue
         sources=db.execute("SELECT o.* FROM occurrences o JOIN seen s ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.sha=?",(inv,sha)).fetchall()
         blob=out/"blobs"/sha; src=str(blob) if blob.exists() else next((x["path"] for x in sources if os.path.isfile(x["path"])),str(blob)); dest=out/"derived"/sha
         attempt=uuid.uuid4().hex
@@ -410,6 +424,10 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
         digest=json.loads((dest/"digest.json").read_text()) if (dest/"digest.json").exists() else dict(stage="failed",counts={},issues=[dict(code=failure)],children=[],version=VERSION,review_status="not_reviewed")
         digest["engine_revision"]=ENGINE_REVISION
         digest["extraction_policy_sha256"]=policy
+        digest["extraction_budget"]=budget
+        digest["extraction_budget_sha256"]=budget_hash
+        digest["invocation_depth"]=invocation_depth
+        digest["effective_limits"]=dict(limits)
         if failure!="missing_worker_digest":
             digest["children_inventory_complete"]=False
             digest["stage"]="failed"

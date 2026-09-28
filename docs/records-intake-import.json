@@ -6,7 +6,7 @@
       "source_relative_path": "scripts/intake.py",
       "source_sha256": "c37b6a831d7c0546f28c34db046b98c6d1fa56bd9bb815771c84679b7ab0244f",
       "engine_path": "campaign_tool/records/intake/folder.py",
-      "engine_sha256": "88a0a0429745bbd24641b66d137dd99d1bfe80f3d0d5e88c35b397a7f19c44f8"
+      "engine_sha256": "81da5be8436b5b4c51778979195d8b66b5eeb2f1353de6d9f073a2b8a1949a3c"
     },
     {
       "source_relative_path": "scripts/repair_intake.py",
@@ -43,8 +43,9 @@
     "Relative-root exclusions only; config-sensitive archive/mail extraction policy",
     "Reconcile current edges while retaining edge history, shared children and prior artifacts",
     "DOCX paragraph ordinals include blank and table paragraphs; part-local locators",
-    "Repair and quarantine accept explicit private config for extraction and reports"
+    "Repair and quarantine accept explicit private config for extraction and reports",
+    "Effective parser-budget binding retries containers when nesting allowance improves; retains prior attempts"
   ],
   "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported",
-  "engine_revision": "portable-intake-2"
+  "engine_revision": "portable-intake-3"
 }

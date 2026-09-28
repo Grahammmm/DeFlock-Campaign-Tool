@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "group_slug": "rural-area",
+  "candidate_property": "ruralCandidate",
+  "bounding_box_fallbacks": [
+    "cedar"
+  ],
+  "source_map_url": "https://example.invalid/map#fictional",
+  "city_boundaries_url": "fictional-city-boundaries.geojson",
+  "initial_point_count": 3,
+  "candidate_count_suffix": " possible rural-area points; ownership unconfirmed"
+}
