@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "scope": "Generic source code and synthetic tests only; no campaign data",
+  "source_runtime_label": "flock-records-analysis",
+  "files": [
+    {
+      "source_relative_path": "gates/validate_findings.py",
+      "source_sha256": "24716e969cbc4ef4ba905c8c949f06e85dcc1439cc0c72f74163c1cd9670c42b",
+      "engine_path": "campaign_tool/records/gates/validate_findings.py",
+      "engine_sha256": "c7c989f5ca6c0007d2986a880571e74c7faef2b393391ffa3c98134b22700e44",
+      "identical_bytes": false
+    },
+    {
+      "source_relative_path": "gates/reconcile_coverage.py",
+      "source_sha256": "2e0cab68ce86e1af36cd4a345ef8883bcd2225511acd1419f241140613fda253",
+      "engine_path": "campaign_tool/records/gates/reconcile_coverage.py",
+      "engine_sha256": "fe68f252fefec40abdeff110fae1b846d002706a7b7f88e5ec05fba7d2a90b9b",
+      "identical_bytes": false
+    },
+    {
+      "source_relative_path": "gates/collect_reviews.py",
+      "source_sha256": "4e7d039cb6a84016d82a5d85b6be267c8ecbf037e671bd200af4adae8819053c",
+      "engine_path": "campaign_tool/records/gates/collect_reviews.py",
+      "engine_sha256": "cc35bf01a65633a87485cf8f27c4ba93fd0b4878de2bec47b47040ec17d907c8",
+      "identical_bytes": false
+    },
+    {
+      "source_relative_path": "gates/batch_report.py",
+      "source_sha256": "b67e675d9d1dd7590c275828e7a53a46ef3b93fefc2b9fea5b3866b53fe2ec08",
+      "engine_path": "campaign_tool/records/gates/batch_report.py",
+      "engine_sha256": "48a55b6b780b1655101e7e42cf0e9b344fa24d79f65824bce0db9cbe13d93682",
+      "identical_bytes": false
+    },
+    {
+      "source_relative_path": "gates/tests/test_gate.py",
+      "source_sha256": "664534899b0a658c37053646f5bc15f1214265d6e29ffe8060b61c7c867bba3e",
+      "engine_path": "campaign_tool/records/gates/tests/test_gate.py",
+      "engine_sha256": "664534899b0a658c37053646f5bc15f1214265d6e29ffe8060b61c7c867bba3e",
+      "identical_bytes": true
+    }
+  ]
+}
