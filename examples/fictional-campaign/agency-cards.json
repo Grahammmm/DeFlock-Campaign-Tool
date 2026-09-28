@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "county_profile": {
+    "name": "Cedar County (fictional)",
+    "vendor": "Synthetic records example",
+    "status": "Demonstration only",
+    "summary": "No claims about a real agency.",
+    "cameraCount": "",
+    "facts": [
+      "Synthetic example; no reviewed agency findings."
+    ],
+    "open": "Configure reviewed sources before publication.",
+    "flags": [
+      "Fictional example"
+    ]
+  },
+  "source_page": "sources.html",
+  "default_fragment": "library",
+  "source_aliases": {
+    "rural-area": "cedar-region"
+  },
+  "source_link_label": "Review the evidence notes →"
+}
