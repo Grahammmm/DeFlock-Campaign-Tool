@@ -37,6 +37,7 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 - Synthetic policy, search log, agreement, and agency reply fixtures.
 - Portable records-analysis and review skills.
 - Architecture, implementation roadmap, operator checklists, request templates, and contribution guidance.
+- A daily Reel generator that turns published, sourced facts into a finished vertical video with Google Veo backgrounds (see [social pipeline](docs/SOCIAL.md)).
 
 The initial code has not yet completed independent validation. No passing-test or capacity claim is made.
 

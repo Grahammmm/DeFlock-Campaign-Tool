@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "place": "Cedar County",
+  "brand": {
+    "name": "Cedar County Records Project",
+    "ink": "#16232e",
+    "cream": "#f7f4ee",
+    "coral": "#c2553f",
+    "mint": "#a8d8cf",
+    "muted": "#56626b"
+  },
+  "cta": {
+    "text": "Get alerts before the board votes",
+    "small": "Link in bio"
+  },
+  "caption": {
+    "first_line": "License plate cameras in {agency}: what the public records show.",
+    "sources_line": "Sources: link in bio.",
+    "cta": "Get meeting alerts: link in bio.",
+    "hashtags": [
+      "#CedarCounty",
+      "#LicensePlateReaders",
+      "#Privacy"
+    ],
+    "pinned_comment": "Sources: link in bio"
+  },
+  "map": {
+    "boundary": "boundary.geojson",
+    "points": "points.geojson",
+    "count_label": "24",
+    "caption": "fictional mapped reader locations in Cedar County"
+  },
+  "veo": {
+    "style": "Vertical 9:16 calm cinematic b-roll. No text, no logos, no readable license plates, no faces, no police, no cameras.",
+    "negative": "text, logo, license plate, police, camera, face"
+  },
+  "banned_terms": [
+    "illegal",
+    "criminal"
+  ],
+  "always_allowed_numbers": [
+    "24"
+  ],
+  "formats": [
+    "stat-drop",
+    "map-reveal",
+    "records-receipt"
+  ]
+}
