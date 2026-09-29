@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 
 
@@ -93,7 +94,7 @@ def reconcile(cards, records, aliases=None):
             continue
         exact = [{"agency": r["agency"], "canonical_agency": r["canonical_agency"], "source": r["source"]}
                  for r in matched[sha]]
-        parents, unresolved = [], []
+        parents, parent_digests, unresolved = [], [], []
         for parent in sorted(set(card["parents"])):
             parent_card = indexed.get(parent)
             if parent_card is None or parent_card["agency_status"] == "scope_excluded":
@@ -102,16 +103,21 @@ def reconcile(cards, records, aliases=None):
             for hint in sorted(set(parent_card["agency_hints"])):
                 if label(hint):
                     parents.append({"agency": hint, "canonical_agency": agency_key(hint), "parent_sha256": parent})
-        candidates = sorted({v["canonical_agency"] for v in exact + parents})
+            for record in matched[parent]:
+                parent_digests.append({"agency": record["agency"], "canonical_agency": record["canonical_agency"],
+                                       "parent_sha256": parent, "source": record["source"]})
+        candidates = sorted({v["canonical_agency"] for v in exact + parents + parent_digests})
         status = "no_evidence" if not candidates else "conflicting_candidates" if len(candidates) > 1 else "candidate_only"
         results.append({"sha256": sha, "role": card["role"], "exact_hash_candidates": exact,
-                        "parent_hints": parents, "unresolved_parent_hashes": unresolved,
+                        "parent_hints": parents, "parent_digest_candidates": parent_digests,
+                        "unresolved_parent_hashes": unresolved,
                         "canonical_candidates": candidates, "status": status,
                         "verified": False, "publication_ready": False})
     statuses = Counter(r["status"] for r in results)
     summary = {"target_count": len(results),
                "exact_hash_candidate_items": sum(bool(r["exact_hash_candidates"]) for r in results),
                "parent_hint_items": sum(bool(r["parent_hints"]) for r in results),
+               "parent_digest_candidate_items": sum(bool(r["parent_digest_candidates"]) for r in results),
                "either_source_items": sum(bool(r["canonical_candidates"]) for r in results),
                "no_evidence_items": statuses["no_evidence"],
                "conflicting_items": statuses["conflicting_candidates"],
@@ -190,9 +196,29 @@ def run(snapshot, output, aliases_path=None):
         raise ValueError("output must not contain alias input")
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     private_output(output, directory=True)
-    fd = os.open(output / "writer.lock", os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as lock:
-        private_output(output / "writer.lock")
+    lock_path = output / "writer.lock"
+    lock_flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        fd = os.open(lock_path, lock_flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created_lock = True
+    except FileExistsError:
+        # Never chmod or truncate a preexisting lock, even if it appeared in a race.
+        fd = os.open(lock_path, lock_flags)
+        created_lock = False
+    try:
+        if created_lock:
+            os.fchmod(fd, 0o600)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+            raise ValueError("writer lock must remain an owner-only regular file")
+        lock_metadata = private_output(lock_path).stat()
+        if (metadata.st_dev, metadata.st_ino) != (lock_metadata.st_dev, lock_metadata.st_ino):
+            raise ValueError("writer lock changed during validation")
+        lock = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)
+        raise
+    with lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         destination = output / run_id
         receipt = {"schema_version": 1, "run_id": run_id, "input_bindings": bindings,
@@ -210,6 +236,7 @@ def run(snapshot, output, aliases_path=None):
             try:
                 for name, data in (("candidates.json", result_bytes), ("receipt.json", receipt_bytes)):
                     with (stage / name).open("xb") as file:
+                        os.fchmod(file.fileno(), 0o600)
                         file.write(data)
                         file.flush()
                         os.fsync(file.fileno())
