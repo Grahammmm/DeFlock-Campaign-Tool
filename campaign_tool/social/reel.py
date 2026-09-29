@@ -169,9 +169,9 @@ class Reel:
         label = count_text(beat["big"], prog) if n else beat["big"]
         fb = font("Bold", 200)
         wb = fb.getlength(label)
-        shadowed(img, lambda dd, sh: dd.text(((W - wb) / 2, 860), label, font=fb, fill=sh or self.b.cream), radius=16, strength=200)
+        shadowed(img, lambda dd, sh: dd.text(((W - wb) / 2, 1000), label, font=fb, fill=sh or self.b.cream), radius=16, strength=200)
         fs, lines = fit(beat["small"], "SemiBold", SAFE_X1 - SAFE_X0, 46, 36, 3)
-        shadowed(img, lambda dd, sh: draw_lines(dd, lines, fs, 1090, sh or self.b.mint), radius=8, strength=200)
+        shadowed(img, lambda dd, sh: draw_lines(dd, lines, fs, 1225, sh or self.b.mint), radius=8, strength=200)
         return img
 
     def end_card(self, beat, t):
@@ -238,7 +238,7 @@ class Reel:
         enc = subprocess.Popen([
             "ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
             "-r", str(FPS), "-i", "-", "-i", str(audio), "-map", "0:v", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-maxrate", "12M", "-bufsize", "24M", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-maxrate", "8M", "-bufsize", "16M", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(out)], stdin=subprocess.PIPE)
         frames = int(total * FPS)
         cache = {}
@@ -256,8 +256,7 @@ class Reel:
             base = push_in(fr[min(len(fr) - 1, int(bt * FPS))], 1.0 + 0.05 * bt / seg["dur"])
             beat = seg["beat"]
             kind = beat["type"]
-            if kind != "hook":
-                base *= 0.72  # darken under graphics
+            base *= 0.84 if kind == "hook" else 0.72  # darken under text so it stays readable
             if kind in ("hook", "line"):
                 idx = sum(1 for w in seg["words"] if w[1] <= bt)
                 layer = cache.get((i, idx))
