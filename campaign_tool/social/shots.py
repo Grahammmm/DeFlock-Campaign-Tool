@@ -23,9 +23,12 @@ def shot_params(scene, fact=None, map_data=None, number=None):
         return {"count": int(number or 100), "seconds": 5.0}
     if scene == "retention_blocks":
         return {"days": int(number or 365), "seconds": 5.0}
+    if scene == "plate_scan":
+        return {"seconds": 4.0, "rev": 2}  # rev 2: car faces its direction of travel
     return {"seconds": 4.0}
 
 
+# Bump SCENE_VERSION to re-render every shot; add a "rev" to one scene's params to re-render only it.
 def shot_key(scene, params):
     blob = json.dumps({"scene": scene, "params": params, "v": SCENE_VERSION}, sort_keys=True)
     return f"{scene}-{hashlib.sha256(blob.encode()).hexdigest()[:12]}"

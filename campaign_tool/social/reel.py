@@ -169,9 +169,9 @@ class Reel:
         label = count_text(beat["big"], prog) if n else beat["big"]
         fb = font("Bold", 200)
         wb = fb.getlength(label)
-        shadowed(img, lambda dd, sh: dd.text(((W - wb) / 2, 360), label, font=fb, fill=sh or self.b.cream), radius=16, strength=200)
+        shadowed(img, lambda dd, sh: dd.text(((W - wb) / 2, 860), label, font=fb, fill=sh or self.b.cream), radius=16, strength=200)
         fs, lines = fit(beat["small"], "SemiBold", SAFE_X1 - SAFE_X0, 46, 36, 3)
-        shadowed(img, lambda dd, sh: draw_lines(dd, lines, fs, 590, sh or self.b.mint), radius=8, strength=200)
+        shadowed(img, lambda dd, sh: draw_lines(dd, lines, fs, 1090, sh or self.b.mint), radius=8, strength=200)
         return img
 
     def end_card(self, beat, t):

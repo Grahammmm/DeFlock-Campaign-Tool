@@ -304,6 +304,7 @@ def scene_plate_scan(params):
     _, lens = alpr_unit(at=(2.6, 2.0, 0))
     scan_cone((3.1, 1.9, 3.8))
     c = car()
+    c.rotation_euler.z = math.pi  # drive toward the viewer, headlights first
     key(c, "location", 1, Vector((0.9, 14, 0)))
     key(c, "location", s.frame_end, Vector((0.9, -10, 0)))
     area_light((0, -4, 9), (math.radians(20), 0, 0), 8, AMBER, 600)
@@ -489,7 +490,8 @@ def render(scene, out, params):
         vf = [] if step == 1 else ["-vf", f"minterpolate=fps={s.render.fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"]
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-framerate", f"{s.render.fps / step}",
                         "-i", os.path.join(tmp, "k_%04d.png"), *vf, "-c:v", "libx264", "-crf", "16",
-                        "-pix_fmt", "yuv420p", str(out)], check=True)
+                        "-pix_fmt", "yuv420p", str(out) + ".part.mp4"], check=True)
+    os.replace(str(out) + ".part.mp4", out)  # never leave a half-written shot where the library looks
 
 
 def main():
