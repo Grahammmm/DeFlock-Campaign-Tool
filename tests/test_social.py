@@ -99,5 +99,81 @@ class RenderTest(unittest.TestCase):
             self.assertGreater(stats["frames"], 200)
 
 
+class ReelV2PlanningTest(unittest.TestCase):
+    """Narration, pronunciation and scene choice for the v2 (narrated, 3D) Reel."""
+
+    def test_spoken_line_numbers_are_checked(self):
+        fact = load_facts(CAMPAIGN / "facts.json")[0]
+        script = template_script(fact, "stat-drop", cfg(), dt.date(2026, 10, 1))
+        script["beats"][1]["say"] = "They keep it for 4321 days."
+        self.assertIn("4321", " ".join(check_script(script, fact, cfg())))
+
+    def test_timed_words_cover_the_spoken_duration(self):
+        from campaign_tool.social.reel import timed_words
+        words = timed_words("Every source is at example.org.", 0.1, 2.0)
+        self.assertEqual([w for w, _ in words], ["Every", "source", "is", "at", "example.org."])
+        self.assertAlmostEqual(words[0][1], 0.1)
+        self.assertLess(words[-1][1], 2.1)
+        self.assertEqual(sorted(t for _, t in words), [t for _, t in words])
+
+    def test_scene_choice_uses_the_fact_frame(self):
+        from campaign_tool.social.reel import beat_scene
+        fact = load_facts(CAMPAIGN / "facts.json")[0]
+        self.assertIn(beat_scene({"type": "hook", "text": "x"}, fact, 0, 3), ("camera_hero", "plate_scan"))
+        self.assertEqual(beat_scene({"type": "map", "big": "24", "small": "x"}, fact, 1, 3), "county_pins")
+        fact.frame = "retention"
+        self.assertEqual(beat_scene({"type": "stat", "big": "365", "small": "days kept"}, fact, 1, 3), "retention_blocks")
+        self.assertNotEqual(beat_scene({"type": "stat", "big": "260×", "small": "longer than"}, fact, 1, 3),
+                            "retention_blocks")
+        self.assertEqual(beat_scene({"type": "stat", "big": "9", "small": "x", "scene": "plate_scan"}, fact, 1, 3),
+                         "plate_scan")
+
+    def test_shot_key_is_stable_and_data_dependent(self):
+        from campaign_tool.social.shots import shot_key, shot_params
+        self.assertEqual(shot_key("retention_blocks", shot_params("retention_blocks", number=90)),
+                         shot_key("retention_blocks", shot_params("retention_blocks", number=90)))
+        self.assertNotEqual(shot_key("retention_blocks", shot_params("retention_blocks", number=90)),
+                            shot_key("retention_blocks", shot_params("retention_blocks", number=30)))
+
+    def test_missing_blender_skips_shot(self):
+        from campaign_tool.social.shots import ensure_shot
+        old = os.environ.pop("SOCIAL_BLENDER_PYTHON", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertIsNone(ensure_shot("camera_hero", {"seconds": 4.0}, tmp, log=lambda *_: None))
+        finally:
+            if old:
+                os.environ["SOCIAL_BLENDER_PYTHON"] = old
+
+
+@unittest.skipUnless(HAVE_MEDIA, "needs numpy, Pillow and ffmpeg")
+class ReelV2RenderTest(unittest.TestCase):
+    def test_narrated_reel_renders_without_blender_or_voice(self):
+        from campaign_tool.social.reel import Reel
+        from campaign_tool.social.render import Brand
+        from campaign_tool.social import narration
+        c = cfg()
+        fact = load_facts(CAMPAIGN / "facts.json")[0]
+        script = {"beats": [{"type": "hook", "text": "A short hook"},
+                            {"type": "cta", "text": c["cta"]["text"], "small": c["cta"]["small"]}]}
+        old = os.environ.pop("SOCIAL_BLENDER_PYTHON", None)
+        real_which = narration.shutil.which
+        narration.shutil.which = lambda name: None if name == "espeak-ng" else real_which(name)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "reel.mp4"
+                stats = Reel(Brand(c["brand"]), c, None, Path(tmp) / "shots", log=lambda *_: None).build(
+                    script, fact, out, offline_voice=True)
+                self.assertEqual(stats["voice"], "silence")
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height",
+                                        "-of", "csv=p=0", str(out)], capture_output=True, text=True, check=True).stdout
+                self.assertIn("video,1080,1920", probe)
+                self.assertIn("audio", probe)
+        finally:
+            narration.shutil.which = real_which
+            if old:
+                os.environ["SOCIAL_BLENDER_PYTHON"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

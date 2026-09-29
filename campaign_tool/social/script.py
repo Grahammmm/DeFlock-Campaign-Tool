@@ -59,7 +59,8 @@ def template_script(fact, fmt, campaign, day):
         if step == "hook":
             beats.append({"type": "hook", "text": hook})
         elif step == "map":
-            beats.append({"type": "map", "big": campaign["map"]["count_label"], "small": campaign["map"]["caption"]})
+            beats.append({"type": "map", "big": campaign["map"]["count_label"], "small": campaign["map"]["caption"],
+                          **({"say": campaign["map"]["say"]} if campaign["map"].get("say") else {})})
         elif step == "fact_beats":
             beats += [dict(b, source=b.get("source", fact.source_label)) for b in fact.beats]
         elif step == "why":
@@ -93,8 +94,9 @@ def check_script(script, fact, campaign):
     problems = []
     texts, cited = [], []
     for beat in script["beats"]:
-        texts += [beat.get("text", ""), beat.get("big", ""), beat.get("small", "")]
+        texts += [beat.get("text", ""), beat.get("big", ""), beat.get("small", ""), beat.get("say", "")]
         cited.append(beat.get("source", ""))
+    texts.append(campaign.get("cta", {}).get("say", ""))
     # The caption quotes the published claim and its source verbatim; check everything else in it.
     texts.append(script["caption"].replace(fact.claim, "").replace(fact.source_label, ""))
     for text in texts + cited:
@@ -105,7 +107,7 @@ def check_script(script, fact, campaign):
             if re.search(r"\b" + re.escape(term) + r"\b", text, re.I):
                 problems.append(f"banned term '{term}' in '{text[:60]}'")
     for beat in script["beats"]:
-        if len(beat.get("text", "")) > 140 or len(beat.get("big", "")) > 24:
+        if len(beat.get("text", "")) > 140 or len(beat.get("big", "")) > 24 or len(beat.get("say", "")) > 180:
             problems.append(f"beat too long: {beat}")
     if not any(b["type"] == "cta" for b in script["beats"]):
         problems.append("no call to action")
