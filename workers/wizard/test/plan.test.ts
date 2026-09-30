@@ -23,8 +23,8 @@ export function fullState(): WizardState {
   s.accounts = {
     cloudflare: { api_token: "cf-test-token-not-a-real-credential", account_id: "a".repeat(32), zone_id: "b".repeat(32), access_team: "example-team" },
     mailbox: { mode: "email_routing", address: "requests@campaign.example.invalid" },
-    brevo: { api_key: "brevo-test-key-not-real", list_id: "7" },
-    model: { base_url: "https://model.example.invalid/v1", api_key: "model-test-key-not-real", model_id: "example-model" },
+    brevo: { api_key: "brevo-test-key", list_id: "7" },
+    model: { base_url: "https://model.example.invalid/v1", api_key: "model-test-key", model_id: "example-model" },
   };
   s.step = 6;
   return s;
@@ -49,7 +49,7 @@ describe("plan", () => {
     expect(cron.body).toEqual([{ cron: "0 7,13 * * *" }, { cron: "30 20 * * *" }]);
     // secrets are redacted in the displayed plan and the token never appears in it
     const shown = JSON.stringify(plan.map(redactStep));
-    expect(shown).not.toContain("brevo-test-key-not-real");
+    expect(shown).not.toContain("brevo-test-key");
     expect(shown).not.toContain("cf-test-token-not-a-real-credential");
     expect(shown).toContain("[redacted]");
   });
@@ -97,7 +97,7 @@ describe("apply", () => {
     // recorded bodies never hold secret values
     const recorded = JSON.stringify(client.calls);
     expect(recorded).not.toContain(r.generated.runner_token);
-    expect(recorded).not.toContain("brevo-test-key-not-real");
+    expect(recorded).not.toContain("brevo-test-key");
     expect(JSON.stringify(r.receipts)).not.toContain(r.generated.runner_token);
   });
 
