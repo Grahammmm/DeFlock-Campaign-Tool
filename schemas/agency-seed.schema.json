@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agency discovery seed",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "jurisdiction", "generated", "counties"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "jurisdiction": {"type": "string", "pattern": "^[a-z]{2}-[a-z]{2}$"},
+    "generated": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+    "counties": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+      "required": ["county_fips", "name", "seat", "agencies"],
+      "properties": {
+        "county_fips": {"type": "string", "pattern": "^\\d{5}$"},
+        "name": {"type": "string"}, "seat": {"type": "string"},
+        "agencies": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+          "required": ["agency_id", "name", "kind", "jurisdiction_name", "place_fips", "records_url", "records_email", "portal", "flock_transparency_slug", "muckrock_agency_id", "verified", "sources"],
+          "properties": {
+            "agency_id": {"type": "string", "pattern": "^[a-z]{2}-[a-z0-9-]+$"},
+            "name": {"type": "string"},
+            "kind": {"enum": ["sheriff", "police", "chp", "district_attorney", "county_board", "city_council", "other"]},
+            "jurisdiction_name": {"type": "string"},
+            "place_fips": {"type": ["string", "null"], "pattern": "^\\d{7}$"},
+            "records_url": {"type": ["string", "null"], "pattern": "^https://"},
+            "records_email": {"type": ["string", "null"]},
+            "portal": {"type": "object", "additionalProperties": false, "required": ["vendor", "url"],
+              "properties": {"vendor": {"enum": ["nextrequest", "govqa", "justfoia", "none", "unknown"]}, "url": {"type": ["string", "null"]}}},
+            "flock_transparency_slug": {"type": ["string", "null"]},
+            "muckrock_agency_id": {"type": ["integer", "null"]},
+            "verified": {"type": "boolean"},
+            "sources": {"type": "array", "items": {"type": "object", "required": ["title", "url", "accessed"]}}
+          }}}
+      }}}
+  }
+}
