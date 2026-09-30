@@ -3,11 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "description": "Public setup wizard: location, campaign, agencies, request drafts, accounts, plan/apply provisioning, handoff.",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev": "wrangler dev"
   },
   "dependencies": {
+    "@deflock/shared": "*",
     "hono": "^4.13.0"
   }
 }

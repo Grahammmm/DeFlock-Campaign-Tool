@@ -1,0 +1,11 @@
+// Setup wizard Worker. Sessions are encrypted blobs in KV with a one-hour TTL.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "deflock-wizard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [{ "binding": "SESSIONS", "id": "local" }]
+  // Secrets/vars (see dev.vars.example): SESSION_KEY (64 hex), DRY_RUN ("1" records API
+  // calls without performing them), CLOUDFLARE_API_BASE (tests only).
+}

@@ -381,7 +381,7 @@ export class Repo {
       "SELECT r.* FROM request r WHERE r.campaign_id = ? AND r.state IN ('sent','extended','acknowledged') " +
         "AND COALESCE(r.extension_claimed_until, r.determination_due) < ? " +
         "AND NOT EXISTS (SELECT 1 FROM correspondence c WHERE c.request_id = r.request_id AND c.direction = 'inbound' " +
-        "AND c.received_at > COALESCE(r.sent_at, r.created_at) AND c.classification IN ('production','partial_production','denial','fulfilled'))",
+        "AND c.received_at > COALESCE(r.sent_at, r.created_at) AND c.classification IN ('production','partial_production','denial'))",
       this.campaignId,
       today,
     );
