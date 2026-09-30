@@ -8,7 +8,7 @@ This is a staged product build, not a completed automation service.
 | M1 Offline vertical slice | Setup, byte intake and neutral site generator authored; validation pending | Synthetic request through digest, challenge, approved sanitized preview works end to end |
 | M2 Cloudflare launch wizard | Planned | New account launches public site and protected workspace; signup and restore verified |
 | M3 Reliable intake | Planned | Mail/MuckRock originals, retries, checkpoints, archive failures and duplicate sends covered |
-| M4 Evidence and law review | Structural gate authored only | Reviewed California package, original-level digestion, authenticated independent review and privacy gate |
+| M4 Evidence and law review | Structural gate authored; California law package drafted as data (`status: draft`, not independently reviewed) | Reviewed California package, original-level digestion, authenticated independent review and privacy gate |
 | M5 Public action | Planned | Source-linked content, correction propagation, verified meeting participation, branded signup |
 | M6 Supported pilots | Planned | SLO plus second CA locality; second state only after its own reviewed package |
 
@@ -38,6 +38,11 @@ legal support or of production readiness.
 
 ## Validation policy
 
-Tests and independent review are release gates. The first scaffold has not been
-executed or independently validated. Do not label a task passing because code exists.
-Keep run version, fixture, command, result and limitations in a release receipt.
+Tests and independent review are release gates. The offline suite
+(`python3 -B -m unittest discover -v`, synthetic fixtures, no network) runs in
+GitHub Actions on every pull request and push to `main`, together with the
+public-tree and secret scans. A green run shows the scaffold's structural checks
+hold; it is not independent legal, privacy or capacity validation, and no
+jurisdiction package or finding is treated as reviewed because its tests pass.
+Do not label a task passing because code exists. Keep run version, fixture,
+command, result and limitations in a release receipt.

@@ -133,12 +133,25 @@ def status(root):
         db.close()
 
 
+def law_package_report(cfg):
+    """Status of the jurisdiction law package: draft, reviewed or missing."""
+    from .law import package_status
+    jurisdiction = (str(cfg.get("country", "US")).lower() + "-" + cfg["state"].lower())
+    status, error = package_status(jurisdiction)
+    report = {"law_package_status": status, "reviewed_law_package": status == "reviewed"}
+    if error:
+        report["law_package_error"] = error
+    return report
+
+
 def doctor(root):
     cfg = read_config(root)
+    law = law_package_report(cfg)
     report = {
         "config_readable": True,
         "jurisdiction_verified": cfg.get("jurisdiction_verified") is True,
-        "reviewed_law_package": False,
+        "reviewed_law_package": law["reviewed_law_package"],
+        "law_package_status": law["law_package_status"],
         "public_deployment_checked": False,
         "newsletter_checked": False,
         "safe_to_send_automatically": False,
@@ -150,6 +163,8 @@ def doctor(root):
             "Configure and test signup and suppression with one approved address."
         ]
     }
+    if "law_package_error" in law:
+        report["law_package_error"] = law["law_package_error"]
     print(json.dumps(report, indent=2))
 
 
