@@ -2,6 +2,7 @@
 // scoped by campaign_id; identities are minted here per docs/CONTRACTS.md.
 import {
   newActionId,
+  newCorrectionId,
   newCorrespondenceId,
   newEventId,
   newIncidentId,
@@ -159,6 +160,18 @@ export interface PublicationRow {
   updated_at: string;
 }
 
+export interface CorrectionRow {
+  correction_id: string;
+  campaign_id: string;
+  publication_id: string;
+  reason: string;
+  replacement_finding_id: string | null;
+  corrected_at: string;
+  corrected_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SubscriberEventRow {
   event_id: string;
   campaign_id: string;
@@ -273,6 +286,14 @@ export const JOB_KINDS: readonly JobKind[] = [
   "intake", "extract", "digest", "classify_mail", "send_request", "draft_followup", "build_site", "newsletter_draft", "backup",
 ];
 
+/** Tables exported by /api/export.json, in dependency order (parents before children). */
+export const EXPORT_TABLES = [
+  "campaign", "setting", "agency", "request", "correspondence", "original", "receipt_occurrence", "extraction", "digest",
+  "finding", "review_receipt", "publication", "correction", "subscriber_event", "meeting", "job", "external_action", "incident",
+  "run_receipt",
+] as const;
+export type ExportTable = (typeof EXPORT_TABLES)[number];
+
 type Insertable<T> = Omit<T, "created_at" | "updated_at">;
 
 export class Repo {
@@ -356,6 +377,10 @@ export class Repo {
 
   createAgency(row: Omit<Insertable<AgencyRow>, "campaign_id">): Promise<AgencyRow> {
     return this.insert<AgencyRow>("agency", { ...row, campaign_id: this.campaignId });
+  }
+
+  selectedAgencies(): Promise<AgencyRow[]> {
+    return this.many<AgencyRow>("SELECT * FROM agency WHERE campaign_id = ? AND selected = 1 ORDER BY name", this.campaignId);
   }
 
   // request ------------------------------------------------------------------------
@@ -504,6 +529,49 @@ export class Repo {
     return this.insert<PublicationRow>("publication", { ...row, campaign_id: this.campaignId });
   }
 
+  publication(publicationId: string): Promise<PublicationRow | null> {
+    return this.one<PublicationRow>("SELECT * FROM publication WHERE campaign_id = ? AND publication_id = ?", this.campaignId, publicationId);
+  }
+
+  /** Latest publication row for a finding (a finding is published once per content hash). */
+  publicationForFinding(findingId: string): Promise<PublicationRow | null> {
+    return this.one<PublicationRow>(
+      "SELECT * FROM publication WHERE campaign_id = ? AND finding_id = ? ORDER BY published_at DESC LIMIT 1",
+      this.campaignId,
+      findingId,
+    );
+  }
+
+  updatePublication(publicationId: string, patch: Partial<PublicationRow>): Promise<void> {
+    return this.update("publication", "publication_id", publicationId, patch);
+  }
+
+  findingsByState(states: readonly string[]): Promise<FindingRow[]> {
+    if (!states.length) return Promise.resolve([]);
+    return this.many<FindingRow>(
+      `SELECT * FROM finding WHERE campaign_id = ? AND state IN (${states.map(() => "?").join(",")}) ORDER BY updated_at DESC`,
+      this.campaignId,
+      ...states,
+    );
+  }
+
+  // correction ---------------------------------------------------------------------
+  corrections(): Promise<CorrectionRow[]> {
+    return this.many<CorrectionRow>("SELECT * FROM correction WHERE campaign_id = ? ORDER BY corrected_at DESC", this.campaignId);
+  }
+
+  correctionsFor(publicationId: string): Promise<CorrectionRow[]> {
+    return this.many<CorrectionRow>(
+      "SELECT * FROM correction WHERE campaign_id = ? AND publication_id = ? ORDER BY corrected_at",
+      this.campaignId,
+      publicationId,
+    );
+  }
+
+  createCorrection(row: Omit<Insertable<CorrectionRow>, "campaign_id" | "correction_id">): Promise<CorrectionRow> {
+    return this.insert<CorrectionRow>("correction", { ...row, campaign_id: this.campaignId, correction_id: newCorrectionId() });
+  }
+
   // subscriber_event (counts only; identities stay with the provider) ---------------
   subscriberEvents(limit = 50): Promise<SubscriberEventRow[]> {
     return this.many<SubscriberEventRow>(
@@ -517,13 +585,33 @@ export class Repo {
     return this.insert<SubscriberEventRow>("subscriber_event", { ...row, campaign_id: this.campaignId, event_id: newEventId() });
   }
 
+  latestSubscriberEvent(kind: string): Promise<SubscriberEventRow | null> {
+    return this.one<SubscriberEventRow>(
+      "SELECT * FROM subscriber_event WHERE campaign_id = ? AND kind = ? ORDER BY occurred_at DESC LIMIT 1",
+      this.campaignId,
+      kind,
+    );
+  }
+
   // meeting ------------------------------------------------------------------------
   meetings(): Promise<MeetingRow[]> {
     return this.many<MeetingRow>("SELECT * FROM meeting WHERE campaign_id = ? ORDER BY starts_at DESC", this.campaignId);
   }
 
+  meeting(meetingId: string): Promise<MeetingRow | null> {
+    return this.one<MeetingRow>("SELECT * FROM meeting WHERE campaign_id = ? AND meeting_id = ?", this.campaignId, meetingId);
+  }
+
   createMeeting(row: Omit<Insertable<MeetingRow>, "campaign_id">): Promise<MeetingRow> {
     return this.insert<MeetingRow>("meeting", { ...row, campaign_id: this.campaignId });
+  }
+
+  updateMeeting(meetingId: string, patch: Partial<MeetingRow>): Promise<void> {
+    return this.update("meeting", "meeting_id", meetingId, patch);
+  }
+
+  upcomingMeetings(fromIso: string): Promise<MeetingRow[]> {
+    return this.many<MeetingRow>("SELECT * FROM meeting WHERE campaign_id = ? AND starts_at >= ? ORDER BY starts_at", this.campaignId, fromIso);
   }
 
   // job ----------------------------------------------------------------------------
@@ -533,6 +621,10 @@ export class Repo {
 
   job(jobId: string): Promise<JobRow | null> {
     return this.one<JobRow>("SELECT * FROM job WHERE campaign_id = ? AND job_id = ?", this.campaignId, jobId);
+  }
+
+  jobsByKind(kind: JobKind, limit = 50): Promise<JobRow[]> {
+    return this.many<JobRow>("SELECT * FROM job WHERE campaign_id = ? AND kind = ? ORDER BY enqueued_at DESC LIMIT ?", this.campaignId, kind, limit);
   }
 
   /** Idempotent enqueue: the same (campaign_id, idempotency_key) returns the existing job. */
@@ -700,6 +792,12 @@ export class Repo {
 
   finishRun(runId: string, patch: Partial<RunReceiptRow>): Promise<void> {
     return this.update("run_receipt", "run_id", runId, { ...patch, finished_at: nowIso() });
+  }
+
+  // export ---------------------------------------------------------------------------
+  /** Every row of one table for this campaign, in primary-key order; used by /api/export.json. */
+  exportTable(table: ExportTable): Promise<Record<string, unknown>[]> {
+    return this.many<Record<string, unknown>>(`SELECT * FROM ${table} WHERE campaign_id = ? ORDER BY created_at, rowid`, this.campaignId);
   }
 
   // counts for the dashboard ---------------------------------------------------------
