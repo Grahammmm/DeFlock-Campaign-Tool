@@ -1,0 +1,764 @@
+{
+ "description": "Synthetic review_blockers parity cases shared by campaign_tool/review.py and workers/shared/src/review.ts. Regenerate expected_blockers with tests/test_review_fixture.py --regenerate.",
+ "cases": [
+  {
+   "name": "valid_documented_fact_two_reviewers",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": []
+  },
+  {
+   "name": "missing_evidence_empty_sources",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "1952786515c4408f3e5db368d4e7a9ed7aaa77c3e863d1968e700b4b11f1a095",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "1952786515c4408f3e5db368d4e7a9ed7aaa77c3e863d1968e700b4b11f1a095",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "1952786515c4408f3e5db368d4e7a9ed7aaa77c3e863d1968e700b4b11f1a095",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_evidence"
+   ]
+  },
+  {
+   "name": "missing_sources_and_limitations_fields",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "5107e0cddf153a742eb6bd9944045e079aba1820a54d3b008537da39e177aa5c",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "5107e0cddf153a742eb6bd9944045e079aba1820a54d3b008537da39e177aa5c",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "5107e0cddf153a742eb6bd9944045e079aba1820a54d3b008537da39e177aa5c",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_evidence",
+    "missing_limitations",
+    "missing_sources"
+   ]
+  },
+  {
+   "name": "apparent_conflict_missing_rule_fields",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "apparent_conflict",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "c2ffdc557660cbdbe31c80ca1b7ec1ad68fa708ff14e5bde7cf676e5707514b4",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "c2ffdc557660cbdbe31c80ca1b7ec1ad68fa708ff14e5bde7cf676e5707514b4",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "c2ffdc557660cbdbe31c80ca1b7ec1ad68fa708ff14e5bde7cf676e5707514b4",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_duty",
+    "missing_event_date",
+    "missing_exceptions",
+    "missing_rule_version"
+   ]
+  },
+  {
+   "name": "confirmed_conflict_complete",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "confirmed_conflict",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": [],
+    "event_date": "2025-01-01",
+    "rule_version": "us-ca@1",
+    "duty": "post policy",
+    "exceptions": [
+     "none"
+    ]
+   },
+   "receipts": [
+    {
+     "content_sha256": "40afa82c29a11f5939138d76c74bcb1002e0564a1926cb44f6109e7c31212a93",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "40afa82c29a11f5939138d76c74bcb1002e0564a1926cb44f6109e7c31212a93",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "40afa82c29a11f5939138d76c74bcb1002e0564a1926cb44f6109e7c31212a93",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": []
+  },
+  {
+   "name": "unresolved_challenge",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "changes_requested",
+     "reviewer": "r3@example.invalid",
+     "role": "legal",
+     "rationale": "citation",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "unresolved_challenge"
+   ]
+  },
+  {
+   "name": "author_cannot_self_review",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "analyst@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "analyst@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_factual_review",
+    "missing_privacy_review",
+    "need_two_independent_reviewers"
+   ]
+  },
+  {
+   "name": "single_reviewer_all_roles",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "need_two_independent_reviewers"
+   ]
+  },
+  {
+   "name": "invalid_source_hash",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "XYZ",
+      "locator": "p1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "952edd11312926ed1a9f8f3f9de45ed4d84d54f28c7bd6216ec05f51bedcc443",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "952edd11312926ed1a9f8f3f9de45ed4d84d54f28c7bd6216ec05f51bedcc443",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "952edd11312926ed1a9f8f3f9de45ed4d84d54f28c7bd6216ec05f51bedcc443",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "invalid_source_hash"
+   ]
+  },
+  {
+   "name": "source_missing_locator_or_hash",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     "not a dict",
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     {
+      "locator": "p2",
+      "sha256": ""
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "e48bb8cf2da2b5a3534f3e75f9b57bd4effec91d84b03fdf5da3d0088e015d51",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "e48bb8cf2da2b5a3534f3e75f9b57bd4effec91d84b03fdf5da3d0088e015d51",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "e48bb8cf2da2b5a3534f3e75f9b57bd4effec91d84b03fdf5da3d0088e015d51",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "source_missing_locator_or_hash"
+   ]
+  },
+  {
+   "name": "unknown_classification_blank_summary",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "opinion",
+    "summary": "   ",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "2290fda0124e012ff4a0366b20308433b52bf683de3bd20e9db090bc24146a96",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "2290fda0124e012ff4a0366b20308433b52bf683de3bd20e9db090bc24146a96",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "2290fda0124e012ff4a0366b20308433b52bf683de3bd20e9db090bc24146a96",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_summary",
+    "unknown_classification"
+   ]
+  },
+  {
+   "name": "stale_receipts_hash_mismatch",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_factual_review",
+    "missing_legal_review",
+    "missing_privacy_review",
+    "need_two_independent_reviewers"
+   ]
+  },
+  {
+   "name": "receipt_without_rationale_ignored",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_factual_review"
+   ]
+  },
+  {
+   "name": "canonical_json_unicode_and_bool",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": null,
+    "event_date": 0,
+    "exceptions": [],
+    "nested": {
+     "z": 1,
+     "a": [
+      true,
+      1,
+      "\u00e9\n"
+     ]
+    }
+   },
+   "receipts": [
+    {
+     "content_sha256": "af3b8ed69cc582fb56ac99a25bb242d30462a3bd9d77df3441da5076ea565b8d",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "af3b8ed69cc582fb56ac99a25bb242d30462a3bd9d77df3441da5076ea565b8d",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "af3b8ed69cc582fb56ac99a25bb242d30462a3bd9d77df3441da5076ea565b8d",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": []
+  },
+  {
+   "name": "unknown_role_not_counted",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "editor",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_legal_review",
+    "need_two_independent_reviewers"
+   ]
+  },
+  {
+   "name": "reject_receipt_blocks_and_missing_role",
+   "finding": {
+    "id": "fnd_0000000000000001",
+    "author": "analyst@example.invalid",
+    "classification": "documented_fact",
+    "summary": "Synthetic: policy document exists.",
+    "sources": [
+     {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": "page 1"
+     }
+    ],
+    "limitations": "synthetic fixture",
+    "counterevidence": []
+   },
+   "receipts": [
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r1@example.invalid",
+     "role": "factual",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "approve",
+     "reviewer": "r2@example.invalid",
+     "role": "legal",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    },
+    {
+     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "decision": "reject",
+     "reviewer": "r1@example.invalid",
+     "role": "privacy",
+     "rationale": "checked against source",
+     "reviewed_at": "2026-09-30T00:00:00Z"
+    }
+   ],
+   "expected_blockers": [
+    "missing_privacy_review",
+    "unresolved_challenge"
+   ]
+  }
+ ]
+}

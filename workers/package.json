@@ -1,0 +1,32 @@
+{
+  "name": "deflock-workers",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloudflare Workers for the DeFlock Campaign Tool: setup wizard, organizer workspace, public site.",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "shared",
+    "wizard",
+    "workspace",
+    "public-site"
+  ],
+  "scripts": {
+    "sync": "node scripts/sync-data.mjs",
+    "sync:check": "node scripts/sync-data.mjs --check",
+    "build:bundle": "node scripts/build-workspace-bundle.mjs",
+    "typecheck": "npm run build:bundle && npm run typecheck --workspaces --if-present",
+    "test": "npm run build:bundle && npm run test --workspaces --if-present",
+    "check": "npm run sync:check && npm run typecheck && npm test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260930.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.145.0"
+  }
+}
