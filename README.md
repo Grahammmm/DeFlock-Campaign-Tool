@@ -79,3 +79,10 @@ complete campaign platform, automatic intake, or a live deployment is ready.
 ## Engine/campaign split
 
 The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). The first extraction is the shared site shell and CSS, with owner approval of original-code rights. See [shell contract and limitations](docs/SITE-SHELL.md) and the [fictional example](examples/fictional-campaign/README.md). Maps, signup, analytics and deployment extraction remain unfinished.
+
+## Records pipeline build and operation
+
+See [the records operating plan](docs/RECORDS-OPERATING-PLAN.md) for the implemented
+and planned stages, required runtime/access, inventory denominators, format
+recovery, review requirements, scheduling, acceptance tests and work order.
+Campaign records and configuration remain outside this public repository.
