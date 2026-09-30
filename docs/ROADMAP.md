@@ -16,7 +16,7 @@ This is a staged product build, not a completed automation service.
 
 1. Validate the offline CLI, permission boundaries, crash recovery and malformed inputs.
 2. Add schema contracts and a complete synthetic review journey with challenged findings.
-3. Build a resumable wizard, county/state disambiguation and official agency discovery.
+3. Build a resumable wizard, county/state disambiguation and official agency discovery. *Partly done:* offline county/city resolution and a California agency seed (all 58 counties, unverified contacts) drive `campaign_tool kit`; see [AGENCY-DISCOVERY.md](AGENCY-DISCOVERY.md). Wizard and verified custodian contacts remain open.
 4. Build Cloudflare account/zone/resource planning, explicit apply, and deployment receipts.
 5. Integrate hosted newsletter forms; verify CAPTCHA origins, CSP, consent and suppression.
 6. Build immutable export/restore and source manifests.

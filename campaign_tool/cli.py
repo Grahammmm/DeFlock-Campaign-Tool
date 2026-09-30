@@ -62,6 +62,8 @@ def initialize(args, root):
            "jurisdiction_verified": False, "law_package_status": "unreviewed",
            "external_sends": "disabled", "publication": "manual",
            "newsletter": {"mode": "not_configured"}}
+    if getattr(args, "location", None) and args.location.strip():
+        cfg["location_query"] = args.location.strip()
     if not re.fullmatch(r"[A-Z]{2}", cfg["state"]):
         raise ValueError("State must be a two-letter code")
     with (root / "campaign.json").open("x", encoding="utf-8") as out:
@@ -165,7 +167,16 @@ def doctor(root):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
+    from .kit import kit_status
+    report.update(kit_status(root))
     print(json.dumps(report, indent=2))
+
+
+def kit(args, root):
+    from .kit import build_kit
+    summary = build_kit(root, online=args.online, include=args.include)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
 def build(root):
@@ -194,10 +205,18 @@ def main():
             cmd.add_argument("--name", required=True)
             cmd.add_argument("--county", required=True)
             cmd.add_argument("--state", required=True)
+            cmd.add_argument("--location", help="City or county to resolve (default: the county)")
         if name == "ingest":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
+    kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
+    kit_cmd.add_argument("--directory", required=True)
+    kit_cmd.add_argument("--online", action="store_true",
+                         help="Fall back to the Census geocoder when the seed cannot resolve the location")
+    kit_cmd.add_argument("--include", action="append",
+                         help="Agency kind to include (repeatable): sheriff, police, county_board, "
+                              "city_council, district_attorney, chp")
     args = parser.parse_args()
     root = Path(args.directory).expanduser().resolve()
     try:
@@ -205,6 +224,8 @@ def main():
             initialize(args, root)
         elif args.command == "ingest":
             ingest(args, root)
+        elif args.command == "kit":
+            kit(args, root)
         else:
             {"doctor": doctor, "status": status, "build": build}[args.command](root)
     except (OSError, ValueError, sqlite3.Error) as exc:
