@@ -1,0 +1,11 @@
+From: records@example.invalid
+To: requests@campaign.example.invalid
+Subject: Automatic reply: out of office
+Date: Wed, 30 Sep 2026 10:00:00 +0000
+Message-ID: <ooo-1@example.invalid>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+FICTIONAL TRAINING MATERIAL. I am out of the office until further notice. Thi=
+s is an automatic reply.

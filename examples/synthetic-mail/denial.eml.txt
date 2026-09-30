@@ -1,0 +1,11 @@
+From: records@example.invalid
+To: requests@campaign.example.invalid
+Subject: Re: Request #2026-0042 determination
+Date: Wed, 30 Sep 2026 10:00:00 +0000
+Message-ID: <den-0042@example.invalid>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+FICTIONAL TRAINING MATERIAL. The requested audit logs are exempt from disclos=
+ure and are withheld under the investigatory records exemption.
