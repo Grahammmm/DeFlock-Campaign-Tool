@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "note": "Fictional. Cedar County and Pine Harbor do not exist.",
+  "facts": [
+    {
+      "id": "ph-retention",
+      "agency": "Pine Harbor",
+      "frame": "retention",
+      "claim": "Pine Harbor's fictional retention setting keeps detections for 730 days.",
+      "numbers": [
+        "730"
+      ],
+      "source_url": "https://example.org/fictional/pine-harbor",
+      "source_label": "Fictional example record",
+      "hooks": [
+        "How long does Pine Harbor keep where your car was seen?"
+      ],
+      "beats": [
+        {
+          "type": "stat",
+          "big": "730",
+          "small": "days of detections kept under the fictional setting"
+        }
+      ],
+      "why": "Ask why it needs to be kept that long.",
+      "visual": "Quiet harbor town at dusk, cars on a waterfront road"
+    },
+    {
+      "id": "cc-audits",
+      "agency": "Cedar County",
+      "frame": "audits",
+      "claim": "The fictional county produced no completed audit reports.",
+      "numbers": [],
+      "source_url": "https://example.org/fictional/cedar-audits",
+      "source_label": "Fictional example record",
+      "hooks": [
+        "The policy promises audits. We asked to see them."
+      ],
+      "beats": [
+        {
+          "type": "quote",
+          "text": "No completed audit reports produced."
+        }
+      ],
+      "why": "A safeguard nobody can see isn't one residents can trust.",
+      "visual": "Dim records room with filing cabinets, slow push"
+    }
+  ]
+}

@@ -5,3 +5,6 @@ Independent project. No endorsement or affiliation with map/data providers,
 government agencies, or the broader DeFlock project is implied.
 Synthetic fixtures are fictional and do not describe actual agencies or people.
 The repository license does not relicense third-party records or map data.
+
+IBM Plex Sans fonts in campaign_tool/social/fonts are Copyright IBM Corp. and licensed
+under the SIL Open Font License 1.1 (see campaign_tool/social/fonts/OFL.txt).

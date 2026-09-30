@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "place": "Cedar County",
+  "site": "example.org",
+  "voice": {
+    "gemini_voice": "Charon",
+    "elevenlabs_voice_id": "",
+    "pronounce": {
+      "example.org": "example dot org"
+    }
+  },
+  "brand": {
+    "name": "Cedar County Records Project",
+    "ink": "#16232e",
+    "cream": "#f7f4ee",
+    "coral": "#c2553f",
+    "mint": "#a8d8cf",
+    "muted": "#56626b"
+  },
+  "cta": {
+    "text": "Get alerts before the board votes",
+    "small": "Link in bio",
+    "say": "Get alerts before the board votes. Every source is at example.org."
+  },
+  "caption": {
+    "first_line": "License plate cameras in {agency}: what the public records show.",
+    "sources_line": "Sources: link in bio.",
+    "cta": "Get meeting alerts: link in bio.",
+    "hashtags": [
+      "#CedarCounty",
+      "#LicensePlateReaders",
+      "#Privacy"
+    ],
+    "pinned_comment": "Sources: link in bio"
+  },
+  "map": {
+    "boundary": "boundary.geojson",
+    "points": "points.geojson",
+    "count_label": "24",
+    "caption": "fictional mapped reader locations in Cedar County",
+    "say": "24 reader locations, mapped across Cedar County. This is a fictional example."
+  },
+  "veo": {
+    "style": "Vertical 9:16 calm cinematic b-roll. No text, no logos, no readable license plates, no faces, no police, no cameras.",
+    "negative": "text, logo, license plate, police, camera, face"
+  },
+  "banned_terms": [
+    "illegal",
+    "criminal"
+  ],
+  "always_allowed_numbers": [
+    "24"
+  ],
+  "formats": [
+    "stat-drop",
+    "map-reveal",
+    "records-receipt"
+  ]
+}
