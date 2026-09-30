@@ -198,12 +198,24 @@ def _output_root(output: Path, snapshot: Path, registry: Path) -> Path:
     if (output == snapshot or snapshot in output.parents or output in snapshot.parents
             or output == registry or output in registry.parents):
         raise LinkError("output_overlaps_input")
-    output.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
+        for directory in reversed((output, *output.parents)):
+            if directory.is_symlink():
+                raise LinkError("unsafe_output")
+            try:
+                directory.mkdir(mode=0o700)
+            except FileExistsError:
+                if not directory.is_dir():
+                    raise LinkError("unsafe_output")
+            else:
+                _owner_only(directory, directory=True)
         private_output(output, directory=True)
         _owner_only(output, directory=True)
+    except LinkError:
+        raise
     except (OSError, ValueError) as error:
         raise LinkError("unsafe_output") from error
+    _sync_output_path(output)
     return output
 
 
@@ -246,6 +258,22 @@ def _fsync_directory(path: Path):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _sync_directory(path: Path):
+    try:
+        _fsync_directory(path)
+    except OSError as error:
+        raise LinkError("output_sync_failed") from error
+
+
+def _sync_output_path(output: Path):
+    # Bottom-up syncing persists new directory entries, including partial setup
+    # left by an interrupted prior attempt, before any result can be returned.
+    for directory in (output, *output.parents):
+        if directory.is_symlink():
+            raise LinkError("unsafe_output")
+        _sync_directory(directory)
 
 
 def _write_new(path: Path, data: bytes):
@@ -300,15 +328,17 @@ def run(snapshot: str | Path, registry: str | Path, output: str | Path) -> dict:
         destination = output / run_id
         if destination.exists() or destination.is_symlink():
             _reuse(destination, expected)
+            _sync_directory(destination)
+            _sync_directory(output)
             reused = True
         else:
             stage = Path(tempfile.mkdtemp(prefix=".links-stage-", dir=output))
             try:
                 for name, data in expected.items():
                     _write_new(stage / name, data)
-                _fsync_directory(stage)
+                _sync_directory(stage)
                 stage.rename(destination)
-                _fsync_directory(output)
+                _sync_directory(output)
             finally:
                 if stage.exists():
                     shutil.rmtree(stage)

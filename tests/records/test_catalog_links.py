@@ -197,18 +197,86 @@ class CatalogLinksTests(unittest.TestCase):
         self.assertTrue(second["reused"])
         self.assertEqual(first["run_id"], second["run_id"])
 
-    def test_directory_fsync_on_new_publication_not_reuse(self):
+    def test_directory_fsync_on_new_publication_and_reuse(self):
         with mock.patch.object(catalog_links, "_fsync_directory",
                                wraps=catalog_links._fsync_directory) as sync:
             first = catalog_links.run(self.snapshot, self.registry_path, self.output)
-            self.assertEqual(sync.call_count, 2)
-            self.assertTrue(sync.call_args_list[0].args[0].name.startswith(".links-stage-"))
-            self.assertEqual(sync.call_args_list[1].args[0], self.output)
+            paths = [call.args[0] for call in sync.call_args_list]
+            self.assertTrue(any(path.name.startswith(".links-stage-") for path in paths))
+            self.assertGreaterEqual(paths.count(self.output), 2)
+            self.assertIn(self.output.parent, paths)
             sync.reset_mock()
             second = catalog_links.run(self.snapshot, self.registry_path, self.output)
-            sync.assert_not_called()
+            paths = [call.args[0] for call in sync.call_args_list]
+            self.assertIn(self.output / first["run_id"], paths)
+            self.assertGreaterEqual(paths.count(self.output), 2)
+            self.assertFalse(any(path.name.startswith(".links-stage-") for path in paths))
         self.assertEqual(first["run_id"], second["run_id"])
         self.assertTrue(second["reused"])
+
+    def test_new_output_ancestor_sync_failure_retry_recovers(self):
+        self.output = self.root / "new-parent" / "inner" / "output"
+        actual = catalog_links._fsync_directory
+        failed = False
+
+        def fail_parent_once(path):
+            nonlocal failed
+            if path == self.output.parent and not failed:
+                failed = True
+                raise OSError("synthetic parent sync failure")
+            actual(path)
+
+        with mock.patch.object(catalog_links, "_fsync_directory", side_effect=fail_parent_once):
+            self.assert_blocked("output_sync_failed")
+        self.assertTrue(self.output.is_dir())
+        self.assertFalse((self.output / "writer.lock").exists())
+        with mock.patch.object(catalog_links, "_fsync_directory", wraps=actual) as sync:
+            result = catalog_links.run(self.snapshot, self.registry_path, self.output)
+            paths = [call.args[0] for call in sync.call_args_list]
+        self.assertFalse(result["reused"])
+        self.assertIn(self.output.parent, paths)
+        self.assertIn(self.output.parent.parent, paths)
+        self.assertIn(self.root, paths)
+        self.assertTrue((self.output / result["run_id"] / "receipt.json").is_file())
+
+    def test_post_rename_sync_failure_requires_reuse_recovery(self):
+        actual = catalog_links._fsync_directory
+        failed = False
+
+        def fail_after_rename(path):
+            nonlocal failed
+            if (path == self.output and not failed and self.output.exists()
+                    and any(child.is_dir() and len(child.name) == 64
+                            for child in self.output.iterdir())):
+                failed = True
+                raise OSError("synthetic post-rename sync failure")
+            actual(path)
+
+        with mock.patch.object(catalog_links, "_fsync_directory", side_effect=fail_after_rename):
+            self.assert_blocked("output_sync_failed")
+        destinations = [path for path in self.output.iterdir()
+                        if path.is_dir() and len(path.name) == 64]
+        self.assertEqual(len(destinations), 1)
+        destination = destinations[0]
+        original = {path.name: path.read_bytes() for path in destination.iterdir()}
+
+        def fail_reuse_destination(path):
+            if path == destination:
+                raise OSError("synthetic recovery sync failure")
+            actual(path)
+
+        with mock.patch.object(catalog_links, "_fsync_directory",
+                               side_effect=fail_reuse_destination):
+            self.assert_blocked("output_sync_failed")
+        with mock.patch.object(catalog_links, "_fsync_directory", wraps=actual) as sync:
+            recovered = catalog_links.run(self.snapshot, self.registry_path, self.output)
+            paths = [call.args[0] for call in sync.call_args_list]
+        self.assertTrue(recovered["reused"])
+        self.assertEqual(recovered["run_id"], destination.name)
+        self.assertIn(destination, paths)
+        self.assertGreaterEqual(paths.count(self.output), 2)
+        self.assertEqual({path.name: path.read_bytes() for path in destination.iterdir()},
+                         original)
 
     def test_stale_snapshot_and_source_bindings_fail_closed(self):
         self.registry["snapshot_id"] = "f" * 64

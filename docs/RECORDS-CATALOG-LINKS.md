@@ -5,8 +5,10 @@ catalog snapshot and private agency/request registry. It writes candidate-only
 context links; it never edits the catalog, verifies attribution, digests records,
 invokes a model, or publishes anything.
 
-    python3 -m campaign_tool.records.catalog_links --snapshot /private/snapshot
-      --registry /private/registry.json --output /private/catalog-links
+    python3 -m campaign_tool.records.catalog_links \
+      --snapshot /private/snapshot \
+      --registry /private/registry.json \
+      --output /private/catalog-links
 
 The UTF-8 JSON registry has exactly these keys: schema_version (integer 1),
 snapshot_id, catalog_sha256, agencies, requests, and links. Agencies have unique
@@ -30,7 +32,11 @@ by a SHA-256 run ID. candidates.json and receipt.json bind snapshot, manifest,
 artifact inventory, registry, implementation, and result bytes. Accepted output
 bytes are capped to the same bound used for reuse validation. New files and the
 staging directory are synced before rename, then the output directory is synced.
-Unchanged runs reuse exact published bytes; changed inputs create a new receipt.
+New output-path directories use owner-only mode; the directory ancestor chain is
+synced bottom-up on every attempt, including retries after partial setup. Reuse
+validates exact published bytes, then syncs the destination and output directory
+before returning success. A failed sync blocks success without changing a receipt.
+Changed inputs create a new receipt; unchanged runs retain the existing identity.
 Existing mismatched output, including a symlinked published receipt, is rejected
 as existing_output_mismatch. The writer uses a local lock; output directories
 and files must be owner-only, and symlink paths are rejected. Keep output on a
