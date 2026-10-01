@@ -1,0 +1,126 @@
+# Shared contracts
+
+These interfaces are shared across the Python engine, the Cloudflare Workers, and the
+runner. Change them in their own PR with tests in every consumer. Every identifier is
+stable text; every timestamp is ISO-8601 UTC; every hash is lowercase hex SHA-256.
+
+## Layout
+
+| Path | Owner | Purpose |
+| --- | --- | --- |
+| `campaign_tool/` | Python engine | CLI, records pipeline, kit generation, site build, digest, outbox |
+| `jurisdictions/<country>-<state>/package.json` | Law packages | Reviewed rules as data (`schemas/law-package.schema.json`) |
+| `data/agencies/<country>-<state>.json` | Agency seeds | Discovery seed per state (`schemas/agency-seed.schema.json`) |
+| `workers/wizard/` | Wizard Worker | Public setup flow, provisioning plan/apply |
+| `workers/workspace/` | Workspace Worker | Access-protected UI + API over D1/R2, inbox handler, cron, queue |
+| `workers/schema/d1.sql` | D1 schema | Single source of truth for campaign state |
+| `runner/` | Runner | Container image; pulls jobs, runs engine, posts results |
+| `schemas/*.schema.json` | Everyone | JSON Schema for every cross-boundary document |
+
+## Identities
+
+- `campaign_id`: 26-char lowercase ULID-like string, minted by the wizard.
+- `agency_id`: `<state>-<slug>` from the seed (`ca-san-luis-obispo-county-sheriff`).
+- `request_id`: `req_` + 16 hex; `correspondence_id`: `cor_` + 16 hex.
+- `object_sha256`: the original bytes' hash; `receipt_id`: sha256 of `[source_id, object_sha256]` (matches `cli.ingest`).
+- `finding_id`: `fnd_` + 16 hex; `job_id`: `job_` + 16 hex; `receipt` for external actions: `act_` + 16 hex.
+
+## Law package (`schemas/law-package.schema.json`)
+
+```json
+{
+  "schema_version": 1,
+  "jurisdiction": "us-ca",
+  "status": "draft | reviewed",
+  "reviewed_by": [], "reviewed_at": null,
+  "records_law": {
+    "name": "California Public Records Act",
+    "citation": "Gov. Code § 7920.000 et seq.",
+    "determination_days": 10, "determination_extension_days": 14,
+    "day_type": "calendar", "fee_basis": "direct cost of duplication",
+    "appeal": "...", "sources": [{"title": "...", "url": "https://leginfo...", "accessed": "2026-09-30"}]
+  },
+  "rules": [
+    {
+      "rule_id": "ca-civ-1798.90.51-usage-privacy-policy",
+      "citation": "Civ. Code § 1798.90.51",
+      "actor": "ALPR operator", "activity": "operate ALPR",
+      "duty": "maintain and post a usage and privacy policy ...",
+      "exceptions": [], "remedy": "civil action, § 1798.90.54",
+      "effective_from": "2016-01-01", "effective_to": null,
+      "sources": [{"title": "...", "url": "...", "accessed": "..."}],
+      "review": "verified | likely | needs_attorney_review"
+    }
+  ],
+  "request_scopes": [ {"scope_id": "agreements", "title": "...", "items": ["..."], "rule_ids": ["..."]} ]
+}
+```
+
+Python: `campaign_tool.law.load_package(jurisdiction) -> dict` (validates, raises `ValueError`),
+`campaign_tool.law.rules_in_force(package, event_date) -> list`,
+`campaign_tool.law.deadline(package, sent_date, extension=False) -> date`.
+A package with `status: draft` can preview but `doctor` reports `reviewed_law_package: false`.
+
+## Agency seed (`schemas/agency-seed.schema.json`)
+
+```json
+{
+  "schema_version": 1, "jurisdiction": "us-ca", "generated": "2026-09-30",
+  "counties": [
+    {"county_fips": "06079", "name": "San Luis Obispo", "seat": "San Luis Obispo",
+     "agencies": [
+       {"agency_id": "ca-san-luis-obispo-county-sheriff", "name": "San Luis Obispo County Sheriff's Office",
+        "kind": "sheriff | police | chp | district_attorney | county_board | city_council | other",
+        "jurisdiction_name": "San Luis Obispo County", "place_fips": null,
+        "records_url": null, "records_email": null, "portal": {"vendor": "nextrequest | govqa | justfoia | none | unknown", "url": null},
+        "flock_transparency_slug": null, "muckrock_agency_id": null,
+        "verified": false, "sources": []}
+     ]}
+  ]
+}
+```
+
+Python: `campaign_tool.discovery.locate(query) -> Location` (county_fips, county_name, state, place_fips, place_name; offline seed first, Census geocoder only with `--online`),
+`campaign_tool.discovery.agencies_for(location, seed) -> list[Agency]`.
+`campaign_tool kit --directory D [--online]` writes `kit/agencies.json`, `kit/requests/<agency_id>.md`, `kit/summary.json`, `kit/law.json` and never sends anything.
+
+## D1 tables (`workers/schema/d1.sql`)
+
+campaign, agency, request, correspondence, original, receipt_occurrence, extraction,
+digest, finding, review_receipt, publication, correction, subscriber_event, meeting,
+job, external_action, incident, setting. Every row carries `campaign_id`, `created_at`,
+`updated_at`. Foreign keys on. Findings and review receipts mirror `review.py` fields exactly.
+
+## Queue job (`schemas/job.schema.json`)
+
+```json
+{"job_id": "job_...", "campaign_id": "...", "kind": "intake | extract | digest | classify_mail | send_request | draft_followup | build_site | newsletter_draft | backup",
+ "idempotency_key": "sha256 of kind+inputs", "inputs": {}, "attempt": 1, "max_attempts": 3,
+ "enqueued_at": "...", "privacy_tier": "redacted_cloud | strict_local"}
+```
+
+Runner API (workspace Worker, bearer token bound to one campaign):
+`GET /api/runner/jobs?lease=300` → next job or 204; `POST /api/runner/jobs/{job_id}/result` with
+`{"status": "done|failed|blocked", "outputs": {}, "receipt": {...}}`; `GET /api/runner/originals/{sha256}` → bytes;
+`PUT /api/runner/originals/{sha256}` → store. Runner never receives credentials for mail, MuckRock or Brevo;
+sends are performed by the workspace outbox after an organizer approval.
+
+## Approval card
+
+Every proposed external effect is a row in `external_action` with `state = proposed`. The workspace UI
+shows it as a card with Approve / Edit / Reject. Only `state = approved` rows with an `approved_by` identity
+from an Access JWT are executed, and execution writes `executed_at`, `provider_receipt`, `state = executed`.
+No code path sends without an approved row. Kinds: `send_request`, `send_followup`, `pay_fee`, `publish_finding`,
+`send_newsletter`, `post_social`, `deploy_site`.
+
+## Privacy tiers
+
+`redacted_cloud` (default): the runner redacts plate numbers, personal names, street addresses, phone numbers,
+emails and officer identifiers with `campaign_tool.digest.redact` before any external model call, and logs the
+redaction count. `strict_local`: no external model call; `MODEL_BASE_URL` must be a loopback or Tailscale address.
+
+## Confidence labels
+
+Every digest conclusion carries `confidence: verified | likely | needs_attorney_review` and at least one
+`sources[]` entry with `sha256`, `locator` (page/sheet/cell) and, for law, a `rule_id`. `needs_attorney_review`
+blocks `publish_finding`.

@@ -62,6 +62,8 @@ def initialize(args, root):
            "jurisdiction_verified": False, "law_package_status": "unreviewed",
            "external_sends": "disabled", "publication": "manual",
            "newsletter": {"mode": "not_configured"}}
+    if getattr(args, "location", None) and args.location.strip():
+        cfg["location_query"] = args.location.strip()
     if not re.fullmatch(r"[A-Z]{2}", cfg["state"]):
         raise ValueError("State must be a two-letter code")
     with (root / "campaign.json").open("x", encoding="utf-8") as out:
@@ -133,12 +135,25 @@ def status(root):
         db.close()
 
 
+def law_package_report(cfg):
+    """Status of the jurisdiction law package: draft, reviewed or missing."""
+    from .law import package_status
+    jurisdiction = (str(cfg.get("country", "US")).lower() + "-" + cfg["state"].lower())
+    status, error = package_status(jurisdiction)
+    report = {"law_package_status": status, "reviewed_law_package": status == "reviewed"}
+    if error:
+        report["law_package_error"] = error
+    return report
+
+
 def doctor(root):
     cfg = read_config(root)
+    law = law_package_report(cfg)
     report = {
         "config_readable": True,
         "jurisdiction_verified": cfg.get("jurisdiction_verified") is True,
-        "reviewed_law_package": False,
+        "reviewed_law_package": law["reviewed_law_package"],
+        "law_package_status": law["law_package_status"],
         "public_deployment_checked": False,
         "newsletter_checked": False,
         "safe_to_send_automatically": False,
@@ -150,22 +165,55 @@ def doctor(root):
             "Configure and test signup and suppression with one approved address."
         ]
     }
+    if "law_package_error" in law:
+        report["law_package_error"] = law["law_package_error"]
+    from .kit import kit_status
+    report.update(kit_status(root))
     print(json.dumps(report, indent=2))
 
 
-def build(root):
-    from .site import preview
-    cfg = read_config(root)
-    site = preview(cfg)
+def kit(args, root):
+    from .kit import build_kit
+    summary = build_kit(root, online=args.online, include=args.include)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
+
+
+def check_public_tree(public):
+    """Run the repository leak scan over public/; returns (path, line, label) hits."""
+    tools = Path(__file__).resolve().parents[1] / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from check_public_tree import violations
+    hits = []
+    for path in sorted(public.rglob("*")):
+        if path.is_symlink():
+            hits.append((str(path.relative_to(public)), 0, "symlink_not_scanned"))
+        elif path.is_file():
+            hits.extend(violations(str(path.relative_to(public)), path.read_bytes()))
+    return hits
+
+
+def build(root, check=False):
+    from .site import build_site
     public = root / "public"
-    public.mkdir(exist_ok=True)
-    (public / "index.html").write_text(site["html"], encoding="utf-8")
-    (public / "style.css").write_text(site["css"], encoding="utf-8")
-    (public / "_headers").write_text(
-        "/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n"
-        "  Content-Security-Policy: default-src 'none'; style-src 'self'; "
-        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'\n", encoding="utf-8")
-    print("Starter written to " + str(public) + ". No private documents exported.")
+    written = build_site(root)
+    content_mode = (root / "content").is_dir()
+    print(("Site" if content_mode else "Starter") + " written to " + str(public)
+          + ". No private documents exported.")
+    total = 0
+    for path in sorted(written):
+        size = path.stat().st_size
+        total += size
+        print(f"  {path.relative_to(public).as_posix():<40} {size:>9} bytes")
+    print(f"  {len(written)} files, {total} bytes")
+    if check:
+        hits = check_public_tree(public)
+        for path, line, label in hits:
+            print(f"public/{path}:{line}: {label}", file=sys.stderr)
+        if hits:
+            raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
+        print("Public tree check passed (pattern scan only; human review still required).")
 
 
 def main():
@@ -179,10 +227,21 @@ def main():
             cmd.add_argument("--name", required=True)
             cmd.add_argument("--county", required=True)
             cmd.add_argument("--state", required=True)
+            cmd.add_argument("--location", help="City or county to resolve (default: the county)")
         if name == "ingest":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
+        if name == "build":
+            cmd.add_argument("--check", action="store_true",
+                             help="Scan the generated public/ tree for private paths and credential patterns")
+    kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
+    kit_cmd.add_argument("--directory", required=True)
+    kit_cmd.add_argument("--online", action="store_true",
+                         help="Fall back to the Census geocoder when the seed cannot resolve the location")
+    kit_cmd.add_argument("--include", action="append",
+                         help="Agency kind to include (repeatable): sheriff, police, county_board, "
+                              "city_council, district_attorney, chp")
     args = parser.parse_args()
     root = Path(args.directory).expanduser().resolve()
     try:
@@ -190,8 +249,12 @@ def main():
             initialize(args, root)
         elif args.command == "ingest":
             ingest(args, root)
+        elif args.command == "kit":
+            kit(args, root)
+        elif args.command == "build":
+            build(root, check=args.check)
         else:
-            {"doctor": doctor, "status": status, "build": build}[args.command](root)
+            {"doctor": doctor, "status": status}[args.command](root)
     except (OSError, ValueError, sqlite3.Error) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         sys.exit(1)

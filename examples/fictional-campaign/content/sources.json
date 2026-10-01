@@ -1,0 +1,21 @@
+[
+  {
+    "sha256": "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe",
+    "title": "Synthetic Cedar Police ALPR policy",
+    "agency_id": "ca-cedar-police",
+    "received_at": "2026-01-20T16:30:00+00:00",
+    "public_url": null,
+    "fragment": "cedar-police-records",
+    "pages": 2,
+    "note": "Fixture bytes; not a real document."
+  },
+  {
+    "sha256": "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef",
+    "title": "Synthetic Cedar Police vendor agreement excerpt",
+    "agency_id": "ca-cedar-police",
+    "received_at": "2026-01-22T09:00:00+00:00",
+    "public_url": "https://example.invalid/fixtures/agreement-excerpt",
+    "fragment": "cedar-police-records",
+    "pages": 1
+  }
+]
