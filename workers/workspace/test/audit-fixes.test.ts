@@ -9,9 +9,10 @@ import { buildExecutors } from "../src/executors/index.ts";
 import { signDownload } from "../src/signing.ts";
 import { MAX_INBOUND_BYTES, emailHandler } from "../src/mail.ts";
 import type { Env } from "../src/env.ts";
+import type { AccessIdentity } from "../src/auth.ts";
 import { call, makeSigner, organizerRequest, seedCampaign } from "./helpers.ts";
 
-const ORG = { email: "organizer@example.invalid", sub: "sub-organizer" };
+const ORG: AccessIdentity = { email: "organizer@example.invalid", sub: "sub-organizer", issued_at: 0, expires_at: 0 };
 const HTML = '<p>Update</p><p><a href="{{ unsubscribe }}">Unsubscribe</a></p>';
 
 describe("cross-site requests", () => {
@@ -19,7 +20,7 @@ describe("cross-site requests", () => {
     const signer = await makeSigner();
     const repo = await seedCampaign();
     const { row } = await repo.propose("deploy_site", null, { site_version: "csrf1" }, "csrf-1", "job_csrf");
-    for (const headers of [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }]) {
+    for (const headers of [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }] as Record<string, string>[]) {
       const r = await organizerRequest(signer, ORG.email, `/approvals/${row.action_id}/approve`, { method: "POST", headers: { accept: "application/json", ...headers } });
       const res = await call(r.request, r.overrides);
       expect(res.status).toBe(403);
