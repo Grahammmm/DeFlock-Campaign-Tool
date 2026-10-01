@@ -24,7 +24,7 @@ class ReleaseManifestTests(unittest.TestCase):
         (self.root / "requirements-records-test.txt").write_bytes(self.lock)
         (self.package / "records" / "_release_dependencies.txt").write_bytes(self.lock)
         self.manifest = {"manifest_schema_version": 1, "commit": "1" * 40,
-                         "package_version": __version__, "ledger_schema_version": 0,
+                         "package_version": __version__, "ledger_schema_version": 1,
                          "dependency_lock_sha256": hashlib.sha256(self.lock).hexdigest(),
                          "enabled_features": list(FEATURES), "runtime_services_enabled": [],
                          "source_dirty": False, "release_tag": None, "release_status": "candidate",
@@ -33,7 +33,7 @@ class ReleaseManifestTests(unittest.TestCase):
     def test_valid_install_does_not_claim_tag_or_running_services(self):
         result = verify_installed(self.package, self.manifest)
         self.assertEqual(result["release_status"], "candidate")
-        self.assertEqual(result["ledger_schema_version"], 0)
+        self.assertEqual(result["ledger_schema_version"], 1)
         self.assertEqual(result["runtime_services_enabled"], [])
 
     def test_installed_code_change_rejected(self):
@@ -118,3 +118,11 @@ class ReleaseManifestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LedgerSchemaPinTests(unittest.TestCase):
+    def test_manifest_ledger_schema_matches_installed_migration(self):
+        from campaign_tool.records import release_manifest
+        from campaign_tool.records.ledger.migrations import v001
+        self.assertEqual(release_manifest.LEDGER_SCHEMA, v001.VERSION)
+        self.assertIn("canonical_ledger", release_manifest.FEATURES)

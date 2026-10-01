@@ -12,11 +12,11 @@ import tarfile
 from campaign_tool import __version__
 
 MANIFEST_SCHEMA = 1
-LEDGER_SCHEMA = 0  # The canonical seven-stage ledger is introduced by WP1.
+LEDGER_SCHEMA = 1  # campaign_tool.records.ledger.migrations.v001.VERSION (checked by tests).
 FEATURES = (
     "offline_finding_gates", "filesystem_intake", "catalog_snapshot_import",
     "private_catalog_board", "agency_candidate_reconciliation",
-    "release_manifest", "public_tree_scan",
+    "release_manifest", "public_tree_scan", "canonical_ledger",
 )
 GENERATED = {"records/_release_manifest.json", "records/_release_dependencies.txt"}
 
