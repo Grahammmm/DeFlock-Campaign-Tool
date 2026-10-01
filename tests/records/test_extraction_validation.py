@@ -281,18 +281,25 @@ class ExtractionValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(enrollment.ExtractionBindingError, 'extraction_incomplete'):
             self.validator.evidence(import_id)
 
-    def test_per_page_ocr_import_is_never_accepted(self):
+    def test_per_page_ocr_import_is_accepted_with_visual_hold_recorded(self):
         source, receipt, result, _ = self.ocr_bundle()
         enrolled = self.adapter.enroll(original_path=source, receipt_path=receipt,
                                        receipt_sha256=enrollment.sha(receipt.read_bytes()))
         self.assertIn('ocr_visual_review_required', enrolled['gaps'])
         self.install()
-        with self.assertRaises(enrollment.ExtractionBindingError):
-            self.validator.evidence(enrolled['import_id'])
+        raw, _, coverage = self.validator.evidence(enrolled['import_id'])
+        envelope = json.loads(raw)
+        self.assertEqual(envelope['ocr']['pages'], [2])
+        self.assertTrue(envelope['ocr']['visual_review_pending'])
+        self.assertEqual(coverage['denominator'], {'kind': 'pages', 'total': 2})
+        # Evidence alone never promotes; the hold stays on page_state for the reviewer.
         with self.store.ledger(self.database, readonly=True) as con:
             row = con.execute("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'",
                               (result['original_sha256'],)).fetchone()
+            holds = con.execute("SELECT page_no,needs_visual_review FROM page_state WHERE original_sha256=? ORDER BY page_no",
+                                (result['original_sha256'],)).fetchall()
         self.assertEqual(row[0], 'pending')
+        self.assertEqual([tuple(h) for h in holds], [(1, 1), (2, 1)])
 
     def test_ocr_receipt_page_marker_refuses_acceptance_hold(self):
         self.prepared()
