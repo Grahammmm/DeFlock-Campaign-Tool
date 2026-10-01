@@ -12,10 +12,13 @@ Requires Python 3.11 or newer. No third-party Python packages are required.
 git clone https://github.com/Grahammmm/DeFlock-Campaign-Tool.git
 cd DeFlock-Campaign-Tool
 python3 -m campaign_tool init --directory ../my-campaign --county "Your County" --state CA --name "Your Campaign"
+python3 -m campaign_tool kit --directory ../my-campaign
 python3 -m campaign_tool doctor --directory ../my-campaign
 python3 -m campaign_tool build --directory ../my-campaign
 python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
 ```
+
+`kit` resolves the county (or a city given with `init --location "Morro Bay"`) against the offline California agency seed and writes `../my-campaign/kit/`: an organizer-owned `agencies.json`, one draft records request per sheriff, police and CHP entry, governing bodies, and a law-package summary. Nothing is sent and no agency is asserted to use ALPR; see [docs/AGENCY-DISCOVERY.md](docs/AGENCY-DISCOVERY.md) for what to verify before sending.
 
 Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, not a claim that any agency violated a law. Use an external campaign directory so private records do not live in the software repository.
 
@@ -31,6 +34,7 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 ## Included in this alpha
 
 - County/state configuration with safe defaults and local setup diagnostics.
+- Offline agency discovery for all 58 California counties (`data/agencies/us-ca.json`, unverified seed) and a drafted-request kit.
 - Static, mobile-friendly website generation from an explicit public-field allowlist.
 - Private local document storage and SQLite receipt ledger.
 - A review-gate library binding independent review receipts to finding content.
