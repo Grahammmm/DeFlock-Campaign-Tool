@@ -14,8 +14,22 @@ from campaign_tool import review
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "review-cases.json"
 
 
+PLACEHOLDER = "@finding_digest"
+
+
 def load_cases():
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def resolved_receipts(case):
+    """Receipts store ``@finding_digest`` instead of a literal content hash.
+
+    The placeholder keeps high-entropy digests out of the tracked fixture (the CI
+    secret scan flags them) while still binding each receipt to the exact finding.
+    """
+    digest = review.content_hash(case["finding"])
+    return [dict(r, content_sha256=digest) if r.get("content_sha256") == PLACEHOLDER else r
+            for r in case["receipts"]]
 
 
 class ReviewFixtureTest(unittest.TestCase):
@@ -26,7 +40,7 @@ class ReviewFixtureTest(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)), "case names must be unique")
         for case in data["cases"]:
             with self.subTest(case=case["name"]):
-                blockers = review.review_blockers(case["finding"], case["receipts"])
+                blockers = review.review_blockers(case["finding"], resolved_receipts(case))
                 self.assertEqual(blockers, case["expected_blockers"])
 
     def test_fixture_is_synthetic(self):
@@ -38,7 +52,7 @@ class ReviewFixtureTest(unittest.TestCase):
 def regenerate():
     data = load_cases()
     for case in data["cases"]:
-        case["expected_blockers"] = review.review_blockers(case["finding"], case["receipts"])
+        case["expected_blockers"] = review.review_blockers(case["finding"], resolved_receipts(case))
     FIXTURE.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
     print(f"regenerated {len(data['cases'])} cases in {FIXTURE}")
 
