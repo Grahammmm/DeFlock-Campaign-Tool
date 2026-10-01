@@ -186,18 +186,36 @@ class RenderAndActivationTests(unittest.TestCase):
             self.assertEqual(oct(os.stat(self.root / "ops" / name).st_mode & 0o777), "0o600")
 
     @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze not installed")
-    def test_calendar_lines_are_accepted_by_systemd_and_elapse_in_the_zone(self):
+    def test_calendar_lines_are_accepted_by_systemd_and_elapse_at_the_zone_instant(self):
         schedule.render(self.root, engine_root=REPO)
         timer = (self.root / "ops/records-run.timer").read_text()
         specs = [line.split("=", 1)[1] for line in timer.splitlines() if line.startswith("OnCalendar=")]
         self.assertEqual(len(specs), 3)
+        base = datetime(2026, 11, 1, 0, 0, tzinfo=ZoneInfo("UTC"))  # DST ends in LA later this day
+        expected = []
+        for hour, minute in schedule.SLOTS:  # first elapse of each slot after base, in UTC
+            for day in range(0, 3):
+                date_ = (base.astimezone(LA) + timedelta(days=day)).date()
+                slot = datetime(date_.year, date_.month, date_.day, hour, minute, tzinfo=LA)
+                if slot > base:
+                    expected.append(slot.astimezone(ZoneInfo("UTC")))
+                    break
+        expected.sort()
+        elapses = []
         for spec in specs:
             result = subprocess.run(["systemd-analyze", "calendar", "--base-time=2026-11-01 00:00:00 UTC", spec],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Next elapse", result.stdout)
-            # The elapse is reported in the zone's local time (PDT/PST), not the host zone.
-            self.assertRegex(result.stdout, r"Next elapse: .* (PDT|PST)\n")
+            # systemd prints the elapse in the host zone and, when that differs, an "(in UTC)" line.
+            utc_line = next((l for l in result.stdout.splitlines() if "(in UTC)" in l), None)
+            line = utc_line or next(l for l in result.stdout.splitlines() if "Next elapse" in l)
+            stamp = line.split(":", 1)[1].strip()  # e.g. "Sun 2026-11-01 15:00:00 UTC"
+            parts = stamp.split()
+            self.assertEqual(parts[-1], "UTC", stamp)
+            elapses.append(datetime.fromisoformat(parts[1] + "T" + parts[2]).replace(tzinfo=ZoneInfo("UTC")))
+        self.assertEqual(sorted(elapses), expected)
+        # 20:30 PDT on Oct 31 is 03:30 UTC; 07:00 and 13:00 PST on Nov 1 are 15:00 and 21:00 UTC.
+        self.assertEqual([(e.day, e.hour, e.minute) for e in sorted(elapses)], [(1, 3, 30), (1, 15, 0), (1, 21, 0)])
 
     def test_activate_dry_run_changes_nothing(self):
         schedule.render(self.root, engine_root=REPO)
