@@ -87,3 +87,10 @@ complete campaign platform, automatic intake, or a live deployment is ready.
 ## Engine/campaign split
 
 The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). The first extraction is the shared site shell and CSS, with owner approval of original-code rights. See [shell contract and limitations](docs/SITE-SHELL.md) and the [fictional example](examples/fictional-campaign/README.md). Maps, signup, analytics and deployment extraction remain unfinished.
+
+## Records release identity
+
+`python3 -m campaign_tool.records version --json` reports the exact source build
+and distinguishes candidates from tagged releases. An installed wheel exposes
+`records` and verifies its embedded package manifest. See [WP0 release identity,
+strict public scanning and isolated installation](docs/RECORDS-RELEASE.md).
