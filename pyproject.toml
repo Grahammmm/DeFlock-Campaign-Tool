@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deflock-campaign-tool"
+dynamic = ["version"]
+description = "Offline public-records campaign engine with explicit evidence and review gates"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = []
+
+[project.scripts]
+records = "campaign_tool.records.cli:main"
+campaign-tool = "campaign_tool.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "campaign_tool.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["campaign_tool*"]
+
+[tool.setuptools.package-data]
+campaign_tool = ["assets/*.tmpl"]
+"campaign_tool.records" = ["_release_manifest.json", "_release_dependencies.txt"]
+"campaign_tool.records.runner" = ["templates/*.in"]
