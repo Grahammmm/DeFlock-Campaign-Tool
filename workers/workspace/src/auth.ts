@@ -84,6 +84,9 @@ async function loadKeys(env: Env, opts: AuthOptions, force: boolean): Promise<Ma
   if (!force && cached && now - cached.fetchedAt < CERT_TTL_MS) return cached.keys;
   let payload: { keys?: Jwk[] };
   if (env.ACCESS_CERTS_JSON) {
+    // Inline JWKS for tests. Whoever can set this var can equally set ACCESS_TEAM_DOMAIN
+    // and ACCESS_AUD to a team they control, so it grants nothing that var access does not
+    // already grant; keep all three out of reach (wrangler vars are deploy-time only).
     payload = JSON.parse(env.ACCESS_CERTS_JSON) as { keys?: Jwk[] };
   } else {
     const res = await (opts.fetcher ?? fetch)(certsUrl(team), { headers: { accept: "application/json" } });

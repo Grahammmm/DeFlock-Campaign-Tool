@@ -198,6 +198,7 @@ ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <label class="field">Hosted signup form URL (https://*.sibforms.com/...)<input type="url" name="form_url" value="${brevo?.form_url ?? ""}"></label>
 <label class="field">Sender name<input type="text" name="sender_name" value="${brevo?.sender_name ?? ""}"></label>
 <label class="field">Sender address (must be a verified Brevo sender)<input type="email" name="sender_email" value="${brevo?.sender_email ?? ""}"></label>
+<label class="field">Consent footer (your reviewed wording: why the reader receives this, who sends it and from where; must keep the sentence "Unsubscribe at any time." — drafts without a campaign footer carry a template marker and cannot be sent)<textarea name="consent_footer" rows="3" maxlength="600">${brevo?.consent_footer ?? ""}</textarea></label>
 <button class="secondary" type="submit">Save Brevo settings</button>${brevo?.updated_at ? html`<span class="meta"> saved ${brevo.updated_at} by ${brevo.updated_by ?? ""}</span>` : ""}</form>
 <h3>Test signup flow (docs/CLOUDFLARE.md step 9)</h3>
 <div class="checklist">${SIGNUP_TEST_CHECKLIST.map((item, i) => html`<label><input type="checkbox" name="signup_check_${i}"> ${item}</label>`)}</div>

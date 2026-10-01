@@ -60,6 +60,29 @@ class RedactTableTests(unittest.TestCase):
         self.assertEqual(result.text, text)
         self.assertEqual(result.total, 0)
 
+    def test_labelled_and_titled_names_are_redacted(self):
+        text = "Requester: John Smith wrote. Sincerely, Maria Lopez. cc: Ann Lee. Officer Dan Jones and Mr. Lee reviewed."
+        out = redact(text).text
+        for name in ("John Smith", "Maria Lopez", "Ann Lee", "Dan Jones", "Mr. Lee"):
+            self.assertNotIn(name, out)
+        self.assertIn("wrote", out)
+        self.assertIn("reviewed", out)
+        self.assertEqual(redact(text).counts["NAME"], 5)
+
+    def test_existing_placeholders_are_reserved_never_reused(self):
+        out = redact("[PLATE-1] seen; plate 7ABC123 and [PLATE-1] again").text
+        self.assertEqual(out, "[PLATE-1] seen; plate [PLATE-2] and [PLATE-1] again")
+        twice = redact(out).text
+        self.assertEqual(twice, out, "re-running over redacted text changes nothing")
+
+    def test_units_are_redacted_separately_and_locators_never_carry_names(self):
+        units = [{"text": "meet at 123", "locator": {"page": 1}},
+                 {"text": "Main Street tomorrow", "locator": {"page": 2, "member": "Deputy_Smith_7ABC123.csv", "scope": "attachment"}}]
+        redacted, counts = redact_units(units)
+        self.assertEqual([u["text"] for u in redacted], ["meet at 123", "Main Street tomorrow"])
+        self.assertEqual([u["locator"] for u in redacted], [{"page": 1}, {"page": 2, "member": "Deputy_Smith_7ABC123.csv", "scope": "attachment"}])
+        self.assertEqual([u["model_locator"] for u in redacted], [{"page": 1, "unit": 0}, {"page": 2, "scope": "attachment", "unit": 1}])
+
     def test_no_mapping_is_exposed(self):
         result = redact("plate 7ABC123")
         self.assertEqual(set(vars(result)), {"text", "counts"})

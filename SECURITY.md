@@ -10,3 +10,9 @@ without disclosing the vulnerability details.
 
 Authentication of review issuers, encrypted backups, hosted admin access and isolated
 document execution are planned, not provided by the offline prototype.
+
+Hosted workspace (`workers/`): organizer identity comes from a verified Cloudflare Access
+JWT; the runner's bearer token (`RUNNER_TOKEN`) can read every job, every original by hash
+and the complete D1 export, so treat it as a database credential and rotate it from
+Settings after any exposure. Backups are integrity-checked by `verify`; tamper detection
+needs the `manifest_sha256` printed at export, kept apart from the archive.

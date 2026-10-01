@@ -13,7 +13,7 @@ import { defaultChoices, reconcileDrafts } from "./drafts.ts";
 import type { Env } from "./env.ts";
 import { buildPlan, planNames, redactStep } from "./plan.ts";
 import * as S from "./screens.ts";
-import { SessionError, SessionStore, sessionIdFromCookie } from "./session.ts";
+import { decryptBlob, encryptBlob, SessionError, SessionStore, sessionIdFromCookie } from "./session.ts";
 import { emptyState, isStrictLocalUrl, isValidCron, isValidDomain, isValidEmail, stripSecrets, type Accounts, type Channel, type WizardState } from "./state.ts";
 
 const SEED = seedJson as AgencySeed;
@@ -245,7 +245,9 @@ app.post("/setup/6", async (c) => {
   // Handoff: account tokens are dropped from the session now; the runner token is shown once.
   const next: WizardState = { ...stripSecrets(s), plan: plan.map(redactStep), deploy, step: 7, handoff_at: new Date().toISOString() };
   const headers = await save(c, next);
-  await c.env.SESSIONS.put("handoff-token:" + (c.var.sid ?? "none"), generated.runner_token, { expirationTtl: 300 });
+  // Encrypted under the session key like the rest of the session: KV never holds the
+  // runner token in clear, even for the five minutes before the handoff screen reads it.
+  await c.env.SESSIONS.put("handoff-token:" + (c.var.sid ?? "none"), await encryptBlob(c.env.SESSION_KEY, generated.runner_token), { expirationTtl: 300 });
   return redirect("/setup/7", headers);
 });
 
@@ -259,8 +261,9 @@ app.get("/setup/7", async (c) => {
   const s = requireStep(c, 7);
   if (!s || !s.deploy) return redirect("/setup/6");
   const key = "handoff-token:" + (c.var.sid ?? "none");
-  const runnerToken = await c.env.SESSIONS.get(key);
-  if (runnerToken) await c.env.SESSIONS.delete(key);
+  const sealed = await c.env.SESSIONS.get(key);
+  if (sealed) await c.env.SESSIONS.delete(key);
+  const runnerToken = sealed ? await decryptBlob<string>(c.env.SESSION_KEY, sealed) : null;
   const u = urls(s);
   return page(c, 7, S.screenHandoff(s, u.workspace, u.public, runnerToken));
 });

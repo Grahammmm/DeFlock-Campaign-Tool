@@ -704,7 +704,12 @@ export class Repo {
     return this.one<ExternalActionRow>("SELECT * FROM external_action WHERE campaign_id = ? AND action_id = ?", this.campaignId, actionId);
   }
 
-  /** Idempotent proposal: the same idempotency_key returns the existing row untouched. */
+  /**
+   * Idempotent proposal: the same idempotency_key returns the existing row untouched,
+   * except a `failed` card, which is re-opened as `proposed` with the new proposal so a
+   * transient provider failure does not retire the key for good (approvals.ts: "a failed
+   * card must be proposed again"). The prior error is kept on the row for the record.
+   */
   async propose(
     kind: ActionKind,
     subjectId: string | null,
@@ -733,6 +738,15 @@ export class Repo {
       this.campaignId,
       idempotencyKey,
     );
+    if (existing?.state === "failed") {
+      const reopened = await this.db
+        .prepare(
+          "UPDATE external_action SET state = 'proposed', proposal_json = ?, proposed_by = ?, approved_by = NULL, approved_at = NULL, executed_at = NULL, provider_receipt = NULL, error = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed'",
+        )
+        .bind(JSON.stringify(proposal ?? {}), proposedBy, "re-proposed after: " + (existing.error ?? "failure"), this.campaignId, existing.action_id)
+        .run();
+      if (reopened.meta.changes === 1) return { row: (await this.action(existing.action_id))!, inserted: false };
+    }
     return { row: existing ?? res.row, inserted: false };
   }
 

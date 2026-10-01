@@ -27,6 +27,7 @@ describe("public site", () => {
 
   it("path normalization and header parsing", () => {
     expect(normalizePath("/")).toBe("/index.html");
+    expect(normalizePath("/%E0")).toBe("/404.html"); // malformed escape is a 404, never a 500
     expect(normalizePath("/findings/")).toBe("/findings/index.html");
     expect(normalizePath("/about")).toBe("/about.html");
     expect(normalizePath("/../x")).toBe("/404.html");

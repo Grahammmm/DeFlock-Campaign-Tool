@@ -54,7 +54,7 @@ class ModelConfig:
         if not base:
             return None
         return cls(base_url=base, api_key=env.get("MODEL_API_KEY", ""), model_id=env.get("MODEL_ID", "local"),
-                   privacy_tier=env.get("PRIVACY_TIER", "redacted_cloud"),
+                   privacy_tier=env.get("PRIVACY_TIER", "strict_local"),
                    timeout=int(env.get("MODEL_TIMEOUT", DEFAULT_TIMEOUT)))
 
 
@@ -133,26 +133,45 @@ def chat_json(config, messages, opener=None):
 
 
 def build_user_message(redacted_units, hits, rules, max_chars=60000):
-    """Assemble the data block for the model; truncates long text explicitly."""
+    """Assemble the data block for the model; truncates long text explicitly.
+
+    Only redacted text crosses this boundary: each unit's locator is sent in its
+    redacted form (``model_locator`` from :func:`build.redact_units`; attachment
+    member names and sheet titles are personal data as often as the text is),
+    and detector hits carry the same redacted locators.
+    """
     lines = []
     total = 0
     truncated = False
+    safe_locator = {}
+    for index, unit in enumerate(redacted_units):
+        real = json.dumps(unit.get("locator") or {}, sort_keys=True)
+        safe_locator[real] = unit.get("model_locator") if "model_locator" in unit else {**_strip_strings(unit.get("locator") or {}), "unit": index}
     for unit in redacted_units:
-        chunk = json.dumps(unit.get("locator") or {}, sort_keys=True) + "\t" + (unit.get("text") or "")
+        chunk = json.dumps(safe_locator[json.dumps(unit.get("locator") or {}, sort_keys=True)], sort_keys=True) + "\t" + (unit.get("text") or "")
         if total + len(chunk) > max_chars:
             truncated = True
             break
         lines.append(chunk)
         total += len(chunk) + 1
     rule_list = [{"rule_id": r["rule_id"], "citation": r["citation"], "duty": r["duty"][:300]} for r in rules]
-    hit_list = [{k: h[k] for k in ("detector", "rule_id", "locator", "excerpt", "kind", "detail")} for h in hits]
+    hit_list = []
+    for h in hits:
+        entry = {k: h[k] for k in ("detector", "rule_id", "locator", "excerpt", "kind", "detail")}
+        entry["locator"] = safe_locator.get(json.dumps(h.get("locator") or {}, sort_keys=True), _strip_strings(h.get("locator") or {}))
+        hit_list.append(entry)
     return json.dumps({
-        "instructions": "Data follows. Each text line is <locator JSON><TAB><text>.",
+        "instructions": "Data follows. Each text line is <locator JSON><TAB><text>. Cite a locator exactly as given, including its unit number.",
         "truncated": truncated,
         "rules": rule_list,
         "detector_hits": hit_list,
         "record_text": lines,
     }, ensure_ascii=True)
+
+
+def _strip_strings(locator):
+    """A locator with no free text at all, for a locator that has no redacted form."""
+    return {k: v for k, v in locator.items() if not isinstance(v, str) or k in ("scope", "kind", "type")}
 
 
 def narrative(config, redacted_units, hits, rules, opener=None):

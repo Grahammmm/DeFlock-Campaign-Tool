@@ -140,6 +140,15 @@ class BackupTests(unittest.TestCase):
         no_manifest = self._tamper(out, lambda n, d: None if n == "manifest.json" else d)
         with self.assertRaisesRegex(backup.BackupError, "manifest.json missing"):
             backup.verify(no_manifest)
+        # A rewritten archive whose manifest was rewritten to match passes the integrity
+        # check; only the digest recorded out of band at export time catches it.
+        manifest = backup.export(self.root, self.base / "again.tar")
+        self.assertRegex(manifest["manifest_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(backup.verify(self.base / "again.tar", expected_manifest_sha256=manifest["manifest_sha256"].upper())["ok"], True)
+        rewritten = self._tamper(self.base / "again.tar", lambda n, d: d.replace(b"\n", b"\n\n", 1) if n == "manifest.json" else d)
+        backup.verify(rewritten)  # integrity alone cannot tell
+        with self.assertRaisesRegex(backup.BackupError, "manifest_digest_mismatch"):
+            backup.verify(rewritten, expected_manifest_sha256=manifest["manifest_sha256"])
 
     def test_export_detects_corrupt_stored_object(self):
         (self.root / "private" / "objects" / self.sha).write_bytes(b"corrupted")

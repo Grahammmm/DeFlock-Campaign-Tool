@@ -24,6 +24,8 @@ export interface BrevoSettings {
   form_url: string | null;
   sender_name: string | null;
   sender_email: string | null;
+  /** The campaign's reviewed consent/sender footer; the engine's template is never sent. */
+  consent_footer?: string | null;
   updated_by?: string;
   updated_at?: string;
 }
@@ -86,9 +88,16 @@ export function findingDocument(finding: FindingRow, publication: PublicationRow
   const existing = Array.isArray(raw.corrections) ? (raw.corrections as Json[]) : [];
   doc.corrections = [
     ...existing,
+    // The organizer's reason stays in the workspace: it never passed the two-reviewer gate
+    // that the finding text did, so the public note records only the fact of the correction
+    // and, when there is one, the reviewed replacement finding.
     ...corrections.map((c) => ({
       date: c.corrected_at.slice(0, 10),
-      note: c.replacement_finding_id ? `${c.reason} Replaced by finding ${c.replacement_finding_id}.` : c.reason,
+      note: c.replacement_finding_id
+        ? `Corrected; replaced by finding ${c.replacement_finding_id}.`
+        : c.reason.startsWith("withdrawn:")
+          ? "Withdrawn."
+          : "Corrected.",
     })),
   ];
   for (const key of ["limitations", "counterevidence"]) if (!Array.isArray(doc[key])) doc[key] = [];
@@ -203,7 +212,12 @@ export async function newsletterManifest(repo: Repo, now: Date = new Date()): Pr
   }));
   return {
     schema_version: 1,
-    campaign: { name: campaign?.name ?? "Campaign", base_url: campaign?.public_hostname ? "https://" + campaign.public_hostname : null, county_name: campaign?.county_name ?? "" },
+    campaign: {
+      name: campaign?.name ?? "Campaign",
+      base_url: campaign?.public_hostname ? "https://" + campaign.public_hostname : null,
+      county_name: campaign?.county_name ?? "",
+      consent_footer: (await repo.setting<BrevoSettings>("brevo"))?.consent_footer ?? null,
+    },
     since,
     generated_at: now.toISOString(),
     findings,

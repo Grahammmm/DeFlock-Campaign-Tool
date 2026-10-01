@@ -59,7 +59,7 @@ class Log:
 class Settings:
     workspace_url: str = ""
     runner_token: str = ""
-    privacy_tier: str = "redacted_cloud"
+    privacy_tier: str = "strict_local"
     model_base_url: str = ""
     model_api_key: str = ""
     model_id: str = "local"
@@ -74,9 +74,16 @@ class Settings:
     @classmethod
     def from_env(cls, env=None):
         env = os.environ if env is None else env
-        tier = env.get("PRIVACY_TIER", "redacted_cloud")
+        # strict_local is the default: text leaves the box only when the operator opts
+        # in to redacted_cloud AND acknowledges that regex redaction does not catch
+        # every personal name (docs/RUNNER.md "Privacy tiers").
+        tier = env.get("PRIVACY_TIER", "strict_local")
         if tier not in ("redacted_cloud", "strict_local"):
             raise ValueError("PRIVACY_TIER must be redacted_cloud|strict_local")
+        if tier == "redacted_cloud" and env.get("REDACTED_CLOUD_ACKNOWLEDGED") != "names-may-remain":
+            raise ValueError("PRIVACY_TIER=redacted_cloud requires REDACTED_CLOUD_ACKNOWLEDGED=names-may-remain: "
+                             "regex redaction catches plates, contact details and labelled names, not every bare name; "
+                             "put every known name in REDACTION_DENYLIST or stay on strict_local")
         def csv(name):
             return [x.strip() for x in env.get(name, "").split(",") if x.strip()]
         jd = env.get("JURISDICTIONS_DIR")
@@ -138,7 +145,10 @@ class Context:
 
     @property
     def privacy_tier(self):
-        return self.job.get("privacy_tier") or self.settings.privacy_tier
+        # The stricter of the campaign's tier and the operator's: a strict_local box never
+        # labels its output redacted_cloud, and a strict_local campaign is honoured anywhere.
+        job_tier = self.job.get("privacy_tier") or self.settings.privacy_tier
+        return "strict_local" if "strict_local" in (job_tier, self.settings.privacy_tier) else job_tier
 
     def write(self, name, data):
         return private_write(self.dir / name, data)

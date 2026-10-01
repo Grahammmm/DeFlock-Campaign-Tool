@@ -1,13 +1,14 @@
 """Poll loop: lease -> dispatch -> result with the FakeWorkspace; backoff; --once; blocked kinds."""
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 
 from runner import __main__ as cli
 from runner.client import FakeWorkspace, WorkspaceError
 from runner.loop import Result, Runner, private_write
-from tests.runner.helpers import Silent, settings, tempdir
+from tests.runner.helpers import Silent, context, job, settings, tempdir
 
 
 def ok_handler(ctx):
@@ -151,6 +152,23 @@ class LoopTests(unittest.TestCase):
         finally:
             os.environ.clear()
             os.environ.update(old)
+
+    def test_privacy_tier_defaults_to_strict_local_and_cloud_needs_acknowledgement(self):
+        from runner.loop import Settings
+        self.assertEqual(Settings.from_env({}).privacy_tier, "strict_local")
+        with self.assertRaisesRegex(ValueError, "REDACTED_CLOUD_ACKNOWLEDGED"):
+            Settings.from_env({"PRIVACY_TIER": "redacted_cloud"})
+        ok = Settings.from_env({"PRIVACY_TIER": "redacted_cloud", "REDACTED_CLOUD_ACKNOWLEDGED": "names-may-remain"})
+        self.assertEqual(ok.privacy_tier, "redacted_cloud")
+
+    def test_job_tier_never_loosens_the_operator_tier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = context(tmp, job("digest", tier="redacted_cloud"), privacy_tier="strict_local")
+            self.assertEqual(ctx.privacy_tier, "strict_local")
+            ctx = context(tmp, job("digest", tier="strict_local"), privacy_tier="redacted_cloud")
+            self.assertEqual(ctx.privacy_tier, "strict_local")
+            ctx = context(tmp, job("digest", tier="redacted_cloud"), privacy_tier="redacted_cloud")
+            self.assertEqual(ctx.privacy_tier, "redacted_cloud")
 
     def test_structured_log_is_json(self):
         self.ws.enqueue("extract", {})

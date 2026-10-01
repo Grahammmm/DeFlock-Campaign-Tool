@@ -30,7 +30,13 @@ export function parseHeaders(text: string, path: string): Record<string, string>
 }
 
 export function normalizePath(pathname: string): string {
-  let p = decodeURIComponent(pathname).replace(/\/{2,}/g, "/");
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return "/404.html"; // malformed percent-escape is a 404, not a 500
+  }
+  let p = decoded.replace(/\/{2,}/g, "/");
   if (p.includes("..")) return "/404.html";
   if (p.endsWith("/")) p += "index.html";
   else if (!/\.[a-z0-9]+$/i.test(p)) p += ".html";

@@ -34,9 +34,24 @@ NOW = datetime(2026, 9, 30, tzinfo=timezone.utc)
 
 
 class NewsletterDraftTests(unittest.TestCase):
+    def test_campaign_consent_footer_replaces_the_template(self):
+        manifest = copy.deepcopy(MANIFEST)
+        manifest["campaign"]["consent_footer"] = "Sent by Example County ALPR Records, PO Box 1, Example CA. You asked for these updates at a meeting. Unsubscribe at any time."
+        draft = build_draft(manifest, now=NOW)
+        self.assertEqual(draft["consent_footer"], "campaign")
+        self.assertNotIn("[TEMPLATE CONSENT FOOTER", draft["text"] + draft["html"])
+        self.assertIn("PO Box 1", draft["text"])
+        self.assertIn('<a href="{{ unsubscribe }}">Unsubscribe</a>', draft["html"])
+        manifest["campaign"]["consent_footer"] = "No way out."
+        with self.assertRaisesRegex(DraftError, "Unsubscribe at any time"):
+            build_draft(manifest, now=NOW)
+
     def test_draft_shape_and_content(self):
         draft = build_draft(MANIFEST, now=NOW)
-        self.assertEqual(sorted(draft), ["counts", "html", "subject", "text"])
+        self.assertEqual(sorted(draft), ["consent_footer", "counts", "html", "subject", "text"])
+        self.assertEqual(draft["consent_footer"], "template")
+        self.assertIn("[TEMPLATE CONSENT FOOTER", draft["text"])
+        self.assertIn("[TEMPLATE CONSENT FOOTER", draft["html"])
         self.assertEqual(draft["subject"], "Example County ALPR Records: 2 new findings, 1 meeting coming up")
         self.assertEqual(draft["counts"], {"findings": 2, "meetings": 1})
         self.assertIn("Policy lacks a retention clause", draft["html"])

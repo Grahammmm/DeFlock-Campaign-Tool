@@ -9,14 +9,14 @@ engine has been deployed to a real account yet. The SLO pilot still runs its own
 
 | Path | What an organizer gets | Verified by |
 | --- | --- | --- |
-| Offline CLI (`python3 -m campaign_tool`) | `init` → `kit` (county or city → selected agencies, one drafted CPRA request per law-enforcement agency, governing bodies, law summary) → `build --check` (multi-page site with agency cards, map, findings, sources, meetings, Atom feed, strict CSP) → `backup`/`verify`/`restore` | 400 unittest cases, 18 node tests, CI on Python 3.11–3.13 |
+| Offline CLI (`python3 -m campaign_tool`) | `init` → `kit` (county or city → selected agencies, one drafted CPRA request per law-enforcement agency, governing bodies, law summary) → `build --check` (multi-page site with agency cards, map, findings, sources, meetings, Atom feed, strict CSP) → `backup`/`verify`/`restore` | 411 unittest cases, 18 node tests, CI on Python 3.11–3.13 |
 | California law package (`jurisdictions/us-ca`) | CPRA deadlines (10 days + 14-day extension), Civ. Code §§ 1798.90.5–.55, Veh. Code § 2413, SB 54, AG bulletin 2023-DLE-06; 9 rules verified against leginfo text, 2 marked likely; status `draft` until a second reviewer signs | `tests/test_law.py`, `docs/LAW-PACKAGES.md` |
 | Agency seed (`data/agencies/us-ca.json`) | 58 counties, 1,043 agencies (sheriff, board, DA, CHP per county; 329 police departments; 482 city councils). Custodian emails, portals and transparency slugs are `null` until an organizer verifies them | `tests/test_discovery.py` |
 | Wizard Worker (`workers/wizard`) | Seven screens: location → campaign → agencies → requests → accounts → deploy (plan, apply with per-resource receipts and rollback list) → handoff. Encrypted 1-hour session; no token kept after handoff | 13 vitest cases incl. a full DRY_RUN flow |
-| Workspace Worker (`workers/workspace`) | Access-protected organizer app: dashboard, requests with statutory clocks, inbox, records, findings with two-reviewer three-role gate, approvals (every external effect is a card), publish and corrections, subscribers (counts only), meetings and comment kits, settings. Runner API, cron (07:00, 13:00, 20:30 local), inbound mail handler, export.json | 40 vitest cases |
+| Workspace Worker (`workers/workspace`) | Access-protected organizer app: dashboard, requests with statutory clocks, inbox, records, findings with two-reviewer three-role gate, approvals (every external effect is a card), publish and corrections, subscribers (counts only), meetings and comment kits, settings. Runner API, cron (`0 7,13 * * *` and `30 20 * * *`, evaluated in UTC by Cloudflare: 00:00/06:00/13:30 Pacific until the wizard writes a local-time schedule), inbound mail handler, export.json | 40 vitest cases |
 | Public-site Worker | Serves the versioned static site from the public bucket with the site's `_headers` CSP | 3 vitest cases |
 | Runner (`runner/`) | Container that leases jobs and runs the engine: classify mail, store attachments by hash, sandboxed extraction, redaction, deterministic detectors, optional model over redacted text only, follow-up drafts, site builds. `strict_local` tier refuses non-local model hosts | `tests/runner/*`, end-to-end pipeline test |
-| Outbox (`campaign_tool/outbox.py`) | The only sending code: journal with idempotency keys, organizer approval and identity required, per-agency daily cap, fee cap, MuckRock 402 → blocked, ambiguous failures block resends | `tests/test_outbox.py` |
+| Outbox (`campaign_tool/outbox.py`) | The only code that sends records requests: journal with idempotency keys, organizer approval and identity required, per-agency daily cap, fee cap, MuckRock 402 → blocked, ambiguous failures block resends. (Newsletters go through the `send_newsletter` executor and Brevo, under an approval card; an ambiguous send there fails the card with the Brevo campaign id and must be checked at Brevo before a new draft is proposed) | `tests/test_outbox.py`, `workers/workspace/test/executors.test.ts` |
 
 ## Try it in ten minutes (no accounts)
 
@@ -59,8 +59,8 @@ with `DRY_RUN=1` and read the recorded plan before running it live.
 | --- | --- | --- |
 | Kit demo for three CA counties | Passed offline (SLO, Monterey, Santa Barbara resolve and draft) | — |
 | Fresh account live in under one hour | Not run | Deploy the wizard, run apply against a throwaway Cloudflare account and domain, record timing and cost in this file |
-| SLO cut over to the engine | Not started | Export the pilot's originals and ledger, import via `backup restore` + `export_hosted`, point the records mailbox at the workspace, retire the old exporter after one clean week |
-| Second organizer live, review passed | Not started | Recruit from the DeFlock victories list or Rural Privacy Coalition; the review is done in-chat per the owner's decision |
+| SLO cut over to the engine | Not started | Export the pilot's originals and ledger; write the import into D1 and R2 (`backup restore` extracts to a local directory and `export_hosted` only exports from a hosted workspace — a hosted restore is not written, see docs/BACKUP.md "Not done"); point the records mailbox at the workspace; retire the old exporter after one clean week |
+| Second organizer live, owner's in-chat review passed | Not started | Recruit from the DeFlock victories list or Rural Privacy Coalition; the review is the owner's in-chat review with Claude per the owner's decision, not an independent security or privacy review (ROADMAP item 15 still lists that as open) |
 | Law package `reviewed` | `draft` | A second reader checks each rule against the cited primary text and signs `reviewed_by` |
 
 ## Known gaps (also listed in README "Planned")
@@ -80,6 +80,7 @@ with `DRY_RUN=1` and read the recorded plan before running it live.
 ## Decisions recorded 2026-09-30
 
 Keep the name DeFlock Campaign Tool; runner default is a Cloudflare Container in the
-organizer's account; newsletter provider is Brevo; privacy tier default `redacted_cloud` with
-`strict_local` as a switch; SLO cuts over at the phase 2 gate; review is done in-chat with the
-owner, no outside reviewer.
+organizer's account; newsletter provider is Brevo; privacy tier default `strict_local`
+(changed from `redacted_cloud` at the 2026-10-01 audit: regex redaction cannot catch every
+bare name, so cloud models are an acknowledged opt-in); SLO cuts over at the phase 2 gate;
+review is done in-chat with the owner, no outside reviewer.

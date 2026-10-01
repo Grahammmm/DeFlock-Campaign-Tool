@@ -37,8 +37,16 @@ python3 -m campaign_tool verify  --file backup.tar
 python3 -m campaign_tool restore --file backup.tar --directory NEW_EMPTY_DIR
 ```
 
-`verify` re-hashes every member against the manifest and reports `ok`, `files`, `verified`
-and `problems` with stable codes: `hash_mismatch`, `size_mismatch` (reported once, not also
+`backup` prints `manifest_sha256`, the digest of the manifest as written. Record it
+somewhere the archive is not (the campaign's private notes, a password manager). Pass it
+back with `verify --expect-manifest-sha256 <digest>`: the manifest travels inside the
+archive, so without it `verify` is an integrity and consistency check (corruption, a
+truncated copy, a member swapped without updating the manifest), not tamper detection —
+whoever can rewrite a member can rewrite `manifest.json` in the same archive.
+
+`verify` re-hashes every member against the manifest and reports `ok`, `files`, `verified`,
+`manifest_sha256` and `problems` with stable codes: `manifest_digest_mismatch` (when an
+expected digest was given), `hash_mismatch`, `size_mismatch` (reported once, not also
 as missing), `missing_member`, `not_in_manifest`, `unsafe_member_name` (absolute paths,
 `..`, drive letters, NUL), `unsafe_member_type` (links, devices, FIFOs), and
 `manifest.json missing`. Any problem raises `BackupError`; the CLI exits 1 with
@@ -49,7 +57,8 @@ with `O_EXCL`, directories `0700` and files `0600`, re-hashes every file on disk
 the whole target if anything fails. The restored ledger is a working database
 (`campaign_tool status` reads it).
 
-Python API: `backup.export(root, out_path) -> manifest`, `backup.verify(path) -> report`,
+Python API: `backup.export(root, out_path) -> manifest` (with `manifest_sha256`),
+`backup.verify(path, expected_manifest_sha256=None) -> report`,
 `backup.restore(path, root) -> report`, `backup.export_hosted(client, out_path) -> manifest`
 where `client.get(path) -> bytes` is bound to the runner token.
 
@@ -58,7 +67,8 @@ where `client.get(path) -> bytes` is bound to the runner token.
 - `GET /api/export.json` (Access-protected) streams every D1 table for the campaign, table
   by table, as one JSON document (`schema_version`, `campaign_id`, `exported_at`, `tables`,
   `rows`). Originals are not included; they are fetched by hash.
-- `GET /api/runner/export.json` is the same document for the runner (bearer token).
+- `GET /api/runner/export.json` is the same document for the runner (bearer token), which
+  makes the runner token a whole-database credential (see WORKERS.md).
 - `POST /api/backup` (Settings > Queue backup job) enqueues one `backup` job per organizer
   per day (idempotency key `backup:<day>:<email>`). The runner (not yet built, see
   [ROADMAP.md](ROADMAP.md)) is expected to execute `export_hosted(client, out)` and store the

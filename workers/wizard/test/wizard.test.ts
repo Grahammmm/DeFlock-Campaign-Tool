@@ -108,6 +108,11 @@ describe("wizard flow (DRY_RUN=1)", () => {
     const decrypted = JSON.stringify(await decryptBlob(env.SESSION_KEY, blob!));
     expect(decrypted).not.toContain("cf-test-token-not-a-real-credential");
     expect(decrypted).not.toContain("rt_");
+    // the runner token waits for the handoff screen encrypted, never in clear in KV
+    const sealed = await env.SESSIONS.get("handoff-token:" + cookie.split("=")[1]);
+    expect(sealed).toBeTruthy();
+    expect(sealed).not.toContain("rt_");
+    expect(await decryptBlob(env.SESSION_KEY, sealed!)).toMatch(/^rt_[0-9a-f]{64}$/);
     const handoff = await (await req("/setup/7")).text();
     expect(handoff).toContain("https://workspace.campaign.example.invalid");
     expect(handoff).toContain("dry run: no resources were created");

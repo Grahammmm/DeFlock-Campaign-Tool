@@ -101,6 +101,21 @@ describe("apply", () => {
     expect(JSON.stringify(r.receipts)).not.toContain(r.generated.runner_token);
   });
 
+  it("organizer-typed request text is sent verbatim: a {{placeholder}} in a draft is never resolved", async () => {
+    const s = fullState();
+    const [first] = Object.keys(s.requests);
+    s.requests[first] = { ...s.requests[first], body_md: s.requests[first].body_md + "\nToken: {{generated.runner_token}} and {{d1_id}}" };
+    const plan = buildPlan(s);
+    const client = new CloudflareClient("t", { dryRun: true, fetcher: (async () => new Response("{}")) as unknown as typeof fetch });
+    const r = await applyPlan(plan, { client, bundles: BUNDLES });
+    expect(r.status).toBe("applied");
+    const seed = client.calls.filter((c) => c.path.endsWith("/query")).at(-1)!; // d1.migrate then d1.seed
+    const sql = JSON.stringify(seed.body);
+    expect(sql).toContain("{{generated.runner_token}}");
+    expect(sql).not.toContain(r.generated.runner_token);
+    expect(sql).not.toContain(r.outputs.d1_id);
+  });
+
   it("stops at the first failure and lists (or performs) the rollback of what was created", async () => {
     const s = fullState();
     const plan = buildPlan(s);

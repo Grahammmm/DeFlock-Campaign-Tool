@@ -12,19 +12,58 @@ from datetime import date
 from ..law import rules_in_force
 from .detectors import DETECTOR_VERSION, run_detectors
 from .model import ModelError, narrative
-from .redact import redact
+from .redact import Redactor
 from .schema import empty_digest, validate_digest
 
 
 def redact_units(units, allowlist=(), denylist=()):
-    """Redact every unit's text with one shared placeholder table."""
-    joined = "\n\x1e\n".join(unit.get("text") or "" for unit in units)
-    result = redact(joined, allowlist=allowlist, denylist=denylist)
-    pieces = result.text.split("\n\x1e\n")
-    if len(pieces) != len(units):  # a placeholder can never contain the separator, but be explicit
-        raise ValueError("redaction changed the unit count")
-    redacted = [{**unit, "text": piece} for unit, piece in zip(units, pieces)]
-    return redacted, result.counts
+    """Redact every unit's text with one shared placeholder table.
+
+    Units are redacted one at a time (never joined), so a pattern can never
+    match across a page break, and the locator's own strings (attachment
+    member names, sheet titles) are redacted with the same table.
+    """
+    redactor = Redactor(allowlist=allowlist, denylist=denylist)
+    counts = {}
+    redacted = []
+    for index, unit in enumerate(units):
+        result = redactor.redact(unit.get("text") or "")
+        for key, value in result.counts.items():
+            counts[key] = counts.get(key, 0) + value
+        redacted.append({**unit, "text": result.text, "model_locator": model_locator(unit.get("locator") or {}, index)})
+    return redacted, counts
+
+
+LOCATOR_SAFE_KEYS = ("scope", "kind", "type")
+
+
+def model_locator(locator, index):
+    """The locator as the model may see it: numbers and fixed vocabulary only.
+
+    Attachment member names and sheet titles are free text (often a person's
+    name), so they never cross the model boundary; ``unit`` lets
+    :func:`restore_locators` map the model's echo back to the real locator.
+    """
+    out = {k: v for k, v in locator.items() if not isinstance(v, str) or k in LOCATOR_SAFE_KEYS}
+    out["unit"] = index
+    return out
+
+
+def restore_locators(output, redacted):
+    """Replace every ``{..., "unit": i}`` locator the model echoed with unit i's real locator."""
+    def real(locator):
+        if isinstance(locator, dict) and isinstance(locator.get("unit"), int) and 0 <= locator["unit"] < len(redacted):
+            return dict(redacted[locator["unit"]].get("locator") or {})
+        return locator
+    for key in ("dates", "statements", "omissions", "counterevidence"):
+        for item in output.get(key) or []:
+            if isinstance(item, dict) and "locator" in item:
+                item["locator"] = real(item["locator"])
+    for conclusion in output.get("conclusions") or []:
+        for source in conclusion.get("sources") or []:
+            if isinstance(source, dict) and "locator" in source:
+                source["locator"] = real(source["locator"])
+    return output
 
 
 def _duties_from_hits(hits):
@@ -73,7 +112,10 @@ def build_digest(sha256, units, package, jurisdiction, law_package_version, priv
         digest["limitations"].append("No model configured: narrative fields are detector output only.")
     else:
         rules = rules_in_force(package, event_date or date.today())
-        output = narrative(model_config, redacted, hits, rules, opener=opener)
+        output = restore_locators(narrative(model_config, redacted, hits, rules, opener=opener), redacted)
+        # Units carry a model-facing locator; the digest records the real one.
+        for unit in redacted:
+            unit.pop("model_locator", None)
         digest["model_id"] = model_config.model_id
         for key in ("scope", "actors", "dates", "statements", "omissions", "counterevidence"):
             digest[key] = output[key]
