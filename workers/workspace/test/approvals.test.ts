@@ -19,13 +19,20 @@ describe("approval cards", () => {
     await expect(approveAction(repo, row.action_id, ORG)).rejects.toThrow(/not proposed/);
   });
 
-  it("execute refuses non-approved cards and cards without an executor", async () => {
+  it("execute refuses non-approved cards; send_request without a sender fails with sender_not_configured", async () => {
     const repo = await seedCampaign();
-    const { row } = await repo.propose("send_request", "req_1", { to: "records@example.invalid" }, "s1", "job_2");
+    const { row } = await repo.propose("send_request", null, { channel: "email", to: "records@example.invalid", subject: "Request", body_md: "Body" }, "s1", "job_2");
     await expect(executeAction(repo, env as Env, row.action_id, ORG)).rejects.toThrow(/only approved/);
     await approveAction(repo, row.action_id, ORG);
-    await expect(executeAction(repo, env as Env, row.action_id, ORG)).rejects.toThrow(/no executor registered/);
-    expect((await repo.action(row.action_id))!.state).toBe("approved");
+    const done = await executeAction(repo, env as Env, row.action_id, ORG);
+    expect(done.state).toBe("failed");
+    expect(done.error).toMatch(/^sender_not_configured: /);
+    // a card with no executor at all stays approved
+    await approveAction(repo, (await repo.propose("send_request", null, { channel: "email", subject: "x", body_md: "y" }, "s1b", "job_2b")).row.action_id, ORG);
+    const empty = new Map();
+    const stuck = (await repo.actions("approved"))[0];
+    await expect(executeAction(repo, env as Env, stuck.action_id, ORG, empty)).rejects.toThrow(/no executor registered/);
+    expect((await repo.action(stuck.action_id))!.state).toBe("approved");
   });
 
   it("deploy_site executes once, flips site_version and records a receipt", async () => {
@@ -38,7 +45,11 @@ describe("approval cards", () => {
     expect(done.provider_receipt).toContain('"previous":"v0"');
     expect(await repo.setting("site_version")).toBe("v1");
     expect(await env.CACHE.get("site_version")).toBe("v1");
-    await expect(executeAction(repo, env as Env, row.action_id, ORG)).rejects.toThrow(/only approved/);
+    // idempotent: a second execute is a no-op returning the same receipt
+    const again = await executeAction(repo, env as Env, row.action_id, ORG);
+    expect(again.state).toBe("executed");
+    expect(again.provider_receipt).toBe(done.provider_receipt);
+    expect(again.executed_at).toBe(done.executed_at);
   });
 
   it("HTTP: approve uses the Access identity, POST /api/deploy-site executes", async () => {
