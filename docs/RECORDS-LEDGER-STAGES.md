@@ -129,3 +129,6 @@ stream/hash the original, validate its verification receipt and acquisition evid
 Structural metadata checks alone never verify external bytes. The controller performs
 no original filesystem read here. The large-original test is a synthetic size declaration,
 not a real 9 MiB preservation/throughput claim.
+
+
+A replacement claim atomically reopens dependent stages and cancels their stale operational leases. Its own previous receipt remains attached while in progress, so promotion still requires exact supersession. Immutable earlier receipts and claims remain available for audit. A failed transaction leaves both the prior stages and leases unchanged.

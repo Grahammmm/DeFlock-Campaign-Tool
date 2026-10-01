@@ -326,10 +326,13 @@ def _change(connection, writer, subject, stage, status, receipt, owner, run_id, 
         (subject, stage)).fetchone()[0]
 
 
-def _invalidate(connection, writer, subject, stage, run_id, reason):
+def _invalidate(connection, writer, subject, stage, run_id, reason, *, include_self=True):
     _require(stage != "preserve", "preservation_is_immutable")
     changed = []
     for dependent in DEPENDENTS[stage]:
+        if dependent == stage and not include_self:
+            continue
+        connection.execute("DELETE FROM work_leases WHERE item_key=?", ("stage:" + subject + ":" + dependent,))
         row = connection.execute(
             "SELECT * FROM stage_state WHERE original_sha256=? AND stage=?", (subject, dependent)).fetchone()
         if row["status"] != "pending" or row["receipt_sha256"] is not None:
@@ -458,6 +461,10 @@ def claim(runner, subject, stage, *, ttl_seconds=300, supersedes=None):
                   "expires_at=excluded.expires_at,attempts=excluded.attempts,last_error=excluded.last_error,"
                   "next_eligible_at=excluded.next_eligible_at",
                   (key,stage,owner,issued,expires,attempts,None,None))
+        # A replacement claim immediately makes dependent acceptances stale.
+        # Keep this stage's prior receipt to enforce exact supersession at promotion.
+        if states[stage]["receipt_sha256"] is not None and stage != "preserve":
+            _invalidate(c, writer, subject, stage, run_id, "upstream_receipt_revalidation", include_self=False)
         _change(c, writer, subject, stage, "in_progress", states[stage]["receipt_sha256"], owner, run_id)
         return {"reused": False, "claim_id": claim_id, "expires_at": expires}
 

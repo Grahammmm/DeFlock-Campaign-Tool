@@ -480,5 +480,48 @@ class StageTests(unittest.TestCase):
                 self.runner.set_preservation_evidence(self.subject, evidence, author_id="author")
 
 
+    def test_supersession_claim_reopens_downstream_and_counts_remain_valid(self):
+        self.advance("privacy")
+        old=next(x for x in self.rows("stage_state") if x["original_sha256"]==self.subject and x["stage"]=="catalog")["receipt_sha256"]
+        packet=self.packet("catalog",supersedes=old,rationale="synthetic replacement check")
+        claim=self.runner.claim(self.subject,"catalog",supersedes=old)
+        counts=stages.counts(self.database)
+        self.assertEqual(counts["stages"]["catalog"]["in_progress"],1)
+        for stage in ("detect","review","compare","privacy"):
+            self.assertEqual(counts["stages"][stage]["done"],0)
+        current=next(x for x in self.rows("stage_state") if x["original_sha256"]==self.subject and x["stage"]=="catalog")
+        self.assertEqual(current["receipt_sha256"],old)
+        self.runner.promote(self.subject,"catalog",json.dumps(packet).encode(),claim_id=claim["claim_id"])
+        self.assertEqual(stages.counts(self.database)["stages"]["catalog"]["done"],1)
+        self.assertTrue(any(x["sha256"]==old for x in self.rows("receipts")))
+
+    def test_supersession_claim_atomically_releases_stale_downstream_lease(self):
+        self.advance("catalog")
+        self.prepare("review")
+        prior=self.runner.claim(self.subject,"review")
+        old=next(x for x in self.rows("stage_state") if x["original_sha256"]==self.subject and x["stage"]=="catalog")["receipt_sha256"]
+        replacement=self.packet("catalog",supersedes=old,rationale="synthetic fresh catalog acceptance")
+        claim=self.runner.claim(self.subject,"catalog",supersedes=old)
+        self.assertFalse(any(x["item_key"]=="stage:"+self.subject+":review" for x in self.rows("work_leases")))
+        self.runner.promote(self.subject,"catalog",json.dumps(replacement).encode(),claim_id=claim["claim_id"])
+        current=self.runner.claim(self.subject,"review")
+        self.assertNotEqual(prior["claim_id"],current["claim_id"])
+        with self.assertRaises(stages.StageError):
+            self.runner.promote(self.subject,"review",json.dumps(self.packet("review")).encode(),claim_id=prior["claim_id"])
+
+    def test_supersession_claim_interruption_rolls_back_dependents(self):
+        self.advance("privacy")
+        old=next(x for x in self.rows("stage_state") if x["original_sha256"]==self.subject and x["stage"]=="catalog")["receipt_sha256"]
+        before=(self.rows("stage_state"),self.rows("stage_events"),self.rows("work_leases"))
+        change=stages._change
+        def interrupt(*args,**kwargs):
+            if args[3:5]==("catalog","in_progress"):raise RuntimeError("synthetic interruption")
+            return change(*args,**kwargs)
+        with mock.patch.object(stages,"_change",interrupt):
+            with self.assertRaises(RuntimeError):self.runner.claim(self.subject,"catalog",supersedes=old)
+        self.assertEqual(before,(self.rows("stage_state"),self.rows("stage_events"),self.rows("work_leases")))
+        self.assertEqual(stages.counts(self.database)["synthetic_seven_stage_complete"],1)
+
+
 if __name__ == "__main__":
     unittest.main()
