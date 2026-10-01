@@ -18,6 +18,7 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 SAFE_PATH = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,120})(?:/[A-Za-z0-9_][A-Za-z0-9._-]{0,120})*$")
 SAFE_VERSION = re.compile(r"^[a-z0-9._-]{1,64}$")
 SITE_FILE_MAX_BYTES = 16 * 1024 * 1024
+JOB_KINDS = ("intake", "extract", "digest", "classify_mail", "send_request", "draft_followup", "build_site", "newsletter_draft", "backup")
 # Mirrors SITE_EXTENSIONS / SITE_CONTROL_FILES in workers/workspace/src/runner.ts.
 SITE_EXTENSIONS = frozenset({"html", "css", "js", "mjs", "map", "json", "geojson", "xml", "txt", "webmanifest",
                              "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf"})
@@ -225,8 +226,13 @@ class FakeWorkspace:
         self.results.append({"job_id": job_id, "status": status, "outputs": outputs, "error": error})
         followups = []
         if status == "done":
+            # Same rules as the Worker: only known kinds, never send_request, hex64 keys or derived keys.
             for item in outputs.get("followups") or []:
-                followups.append(self.enqueue(item["kind"], item.get("inputs") or {}, item.get("idempotency_key"))["job_id"])
+                if not isinstance(item, dict) or item.get("kind") not in JOB_KINDS or item.get("kind") == "send_request":
+                    continue
+                key = item.get("idempotency_key")
+                inputs = item.get("inputs") if isinstance(item.get("inputs"), dict) else {}
+                followups.append(self.enqueue(item["kind"], inputs, key if isinstance(key, str) and HEX64.match(key) else None)["job_id"])
         return {"job_id": job_id, "state": state, "followups": followups}
 
     def get_original(self, sha256):

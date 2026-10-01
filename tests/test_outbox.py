@@ -207,6 +207,72 @@ class OutboxTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_muckrock_5xx_is_ambiguous_and_auth_failure_is_failed(self):
+        def opener_503(request, timeout=0):
+            raise urllib.error.HTTPError(request.full_url, 503, "Unavailable", {}, io.BytesIO(b""))
+        row = self.box.propose(draft(request_id="req_mr5", agency="ca-mr5", channel="muckrock", to="5"))
+        self.box.approve(row["idempotency_key"], "o@example.invalid")
+        with self.assertRaises(ob.AmbiguousFailure):
+            self.box.send(row["idempotency_key"], lambda d: ob.file_muckrock(d, "tok", opener=opener_503))
+        self.assertEqual(self.box.row(row["idempotency_key"])["state"], "sending")
+        self.assertEqual(len(self.box.unresolved()), 1)
+        self.assertEqual(self.box.reconcile(row["idempotency_key"], "not_delivered", "o@example.invalid")["state"], "failed")
+        def opener_401(request, timeout=0):
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+        row2 = self.box.propose(draft(request_id="req_mr6", agency="ca-mr6", channel="muckrock", to="6"))
+        self.box.approve(row2["idempotency_key"], "o@example.invalid")
+        with self.assertRaises(ob.OutboxError):
+            self.box.send(row2["idempotency_key"], lambda d: ob.file_muckrock(d, "tok", opener=opener_401))
+        self.assertEqual(self.box.row(row2["idempotency_key"])["state"], "failed")
+        with self.assertRaises(ValueError):
+            ob.file_muckrock(draft(channel="muckrock", to="not-an-id"), "tok", opener=opener_401)
+        with self.assertRaises(ValueError):
+            ob.file_muckrock(draft(channel="muckrock", to="7"), "", opener=opener_401)
+
+    def test_followup_threads_in_reply_to_and_shares_the_daily_cap(self):
+        server = StubSmtpServer()
+        try:
+            settings = ob.SmtpSettings("127.0.0.1", server.port, starttls=False)
+            first = self.box.propose(draft())
+            self.box.approve(first["idempotency_key"], "o@example.invalid")
+            self.box.send(first["idempotency_key"], lambda d: ob.send_email(d, settings))
+            follow = draft(kind="send_followup")
+            follow.in_reply_to = "<ack-0042@example.invalid>"
+            row = self.box.propose(follow)
+            self.assertNotEqual(row["idempotency_key"], first["idempotency_key"])
+            self.box.approve(row["idempotency_key"], "o@example.invalid")
+            # same agency, same UTC day: the follow-up waits for tomorrow
+            with self.assertRaises(ob.Blocked) as ctx:
+                self.box.send(row["idempotency_key"], lambda d: ob.send_email(d, settings))
+            self.assertEqual(ctx.exception.reason, "daily_agency_cap")
+            self.clock.stamp = "2026-10-01T10:00:00Z"
+            sent = self.box.send(row["idempotency_key"], lambda d: ob.send_email(d, settings))
+            self.assertEqual(sent["state"], "sent")
+            self.assertEqual(len(server.messages), 2)
+            self.assertIn(b"In-Reply-To: <ack-0042@example.invalid>", server.messages[1])
+            self.assertIn(b"References: <ack-0042@example.invalid>", server.messages[1])
+        finally:
+            server.close()
+
+    def test_transport_crash_keeps_sending_and_approval_needs_identity(self):
+        row = self.box.propose(draft(request_id="req_crash", agency="ca-crash"))
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve(row["idempotency_key"], "")
+        self.box.approve(row["idempotency_key"], "o@example.invalid")
+        def boom(d):
+            raise RuntimeError("socket vanished")
+        with self.assertRaises(ob.AmbiguousFailure):
+            self.box.send(row["idempotency_key"], boom)
+        kept = self.box.row(row["idempotency_key"])
+        self.assertEqual(kept["state"], "sending")
+        self.assertIn("ambiguous", kept["error"])
+        with self.assertRaises(ob.OutboxError):
+            self.box.reconcile(row["idempotency_key"], "delivered", "")
+        with self.assertRaises(ValueError):
+            self.box.reconcile(row["idempotency_key"], "maybe", "o@example.invalid")
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve(row["idempotency_key"], "o@example.invalid")
+
     def test_cli_round_trip(self):
         draft_path = Path(self.tmp.name) / "draft.json"
         draft_path.write_text(draft().to_json())
