@@ -364,6 +364,29 @@ class CatalogLinksTests(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue()), {"status": "blocked", "code": "unknown_request_id"})
         self.assertNotIn(str(self.root), out.getvalue())
 
+    def test_registry_race_after_read_has_fixed_code(self):
+        real_read = catalog_links._read
+        for race in ("symlink", "missing"):
+            with self.subTest(race=race):
+                self.write_registry()
+                def read_then_race(path):
+                    data = real_read(path)
+                    if Path(path) == self.registry_path:
+                        self.registry_path.unlink()
+                        if race == "symlink":
+                            self.registry_path.symlink_to(self.snapshot / "catalog.json")
+                    return data
+                out = io.StringIO()
+                with mock.patch.object(catalog_links, "_read", side_effect=read_then_race), \
+                        contextlib.redirect_stdout(out):
+                    status = catalog_links.main(["--snapshot", str(self.snapshot),
+                                                 "--registry", str(self.registry_path),
+                                                 "--output", str(self.output)])
+                self.assertEqual(status, 2)
+                self.assertEqual(json.loads(out.getvalue()),
+                                 {"status": "blocked", "code": "unsafe_or_missing_input"})
+                self.registry_path.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()

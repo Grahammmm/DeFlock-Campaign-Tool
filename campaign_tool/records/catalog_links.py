@@ -53,9 +53,18 @@ def _decode(raw: bytes):
         raise LinkError("invalid_json") from error
 
 
+def _checked_input(path: Path) -> Path:
+    try:
+        return checked(path)
+    except LinkError:
+        raise
+    except (OSError, ValueError) as error:
+        raise LinkError("unsafe_or_missing_input") from error
+
+
 def _read(path: Path) -> bytes:
     try:
-        path = checked(path)
+        path = _checked_input(path)
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as source:
             before = os.fstat(source.fileno())
@@ -307,7 +316,7 @@ def run(snapshot: str | Path, registry: str | Path, output: str | Path) -> dict:
     snapshot, snapshot_id, cards, bindings = _snapshot(Path(snapshot))
     registry_path = Path(registry)
     registry_bytes = _read(registry_path)
-    registry_path = checked(registry_path)
+    registry_path = _checked_input(registry_path)
     result = _registry(registry_bytes, snapshot_id, bindings["catalog_sha256"], cards)
     result_bytes = (canonical(result) + "\n").encode("utf-8")
     bindings["registry_sha256"] = _sha(registry_bytes)
