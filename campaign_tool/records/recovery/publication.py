@@ -275,7 +275,11 @@ class PublicationOutbox:
         # Recover legacy blocked projections from retained successful events.
         row=self.db.execute("SELECT action FROM publication_events WHERE proposal_id=? AND result='complete' ORDER BY sequence DESC LIMIT 1",
                             (job['proposal_id'],)).fetchone()
-        return {'prepare':'prepared','deploy':'deployed','rollback':'rolled_back'}[row['action']] if row else job['state']
+        if row:return {'prepare':'prepared','deploy':'deployed','rollback':'rolled_back'}[row['action']]
+        # A blocked stage (e.g. a transient WP8 lock conflict) has completed no
+        # action; execute re-runs _authority and assess before prepare, so it is
+        # safe to treat it as staged instead of stranding it permanently.
+        return 'staged' if job['state']=='blocked' else job['state']
     def _block(self,job,action,reason):
         with self.db:
             self.db.execute("UPDATE publication_jobs SET state=?,blocked_reason=? WHERE proposal_id=?",

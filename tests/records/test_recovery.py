@@ -132,6 +132,15 @@ class ExplicitSyntheticReviewStub:
         yield {'test_only':True,'fixture_only':True}
 
 
+class TransientLockReviewStub(ExplicitSyntheticReviewStub):
+    """Simulates a WP8 review lock held by another process."""
+    locked=True
+    @contextmanager
+    def assess(self,job,*,owner,test_only):
+        if self.locked:raise p.ReviewGateError('wp8_review_lock_unavailable')
+        with super().assess(job,owner=owner,test_only=test_only) as result:yield result
+
+
 class PublicationTests(RecoveryFixtures):
     def setUp(self):
         super().setUp()
@@ -160,6 +169,20 @@ class PublicationTests(RecoveryFixtures):
         self.assertTrue(rollback['test_only']);self.assertFalse(rollback['production'])
         self.assertEqual((self.root/'outbox/site/sample.md').read_bytes(),self.content)
         self.assertEqual(sorted(path.name for path in (self.root/'outbox/site').iterdir()),['sample.md'])
+
+    def test_transiently_blocked_stage_can_prepare_after_lock_release(self):
+        gate=TransientLockReviewStub()
+        self.runtime=p.testing_runtime(self.authority,review_verifier=gate,rollback_authority=self.withdrawal)
+        staged=self.stage()
+        self.assertEqual((staged['state'],staged['blocked_reason']),('blocked','wp8_review_lock_unavailable'))
+        self.assertEqual(self.stage()['state'],'blocked')  # replay returns the stored row
+        held=self.box.execute(self.runtime,'sample','prepare')
+        self.assertEqual((held['state'],held['reason']),('blocked','wp8_review_lock_unavailable'))
+        gate.locked=False
+        prepared=self.box.execute(self.runtime,'sample','prepare')
+        self.assertEqual(prepared['action'],'prepare')
+        self.assertEqual(self.box.status()[0]['state'],'prepared')
+        self.assertEqual(self.box.execute(self.runtime,'sample','deploy')['action'],'deploy')
 
     def test_changed_content_or_bundle_not_authorized(self):
         approval=self.authority.approve('sample',self.content,self.review)

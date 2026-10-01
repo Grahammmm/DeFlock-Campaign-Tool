@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import unittest
 
-EXPECTED_TESTS = 59
+EXPECTED_TESTS = 61
 
 
 def require_origin(module_name, expected_file):

@@ -140,6 +140,14 @@ class PublicationReviewBridgeTests(unittest.TestCase):
         self.assertEqual(self.execute("deploy")["state"],"blocked")
         self.assertEqual(len(self.runtime.adapter.calls),1)
 
+    def test_stage_blocked_by_held_wp8_lock_recovers_after_release(self):
+        with wp8._locked(self.f.output):
+            staged=self.stage()
+        self.assertEqual((staged["state"],staged["blocked_reason"]),("blocked","wp8_review_lock_unavailable"))
+        prepared=self.execute()
+        self.assertEqual(prepared["action"],"prepare")
+        self.assertEqual(self.box.status()[0]["state"],"prepared")
+
     def test_changed_installed_policy_blocks(self):
         reference=json.loads(self.ref);reference["authority_policy_sha256"]=wp8.sha(b"different policy")
         self.assertEqual(self.stage(ref=wp8.encoded(reference))["blocked_reason"],"wp8_authority_policy_changed")
