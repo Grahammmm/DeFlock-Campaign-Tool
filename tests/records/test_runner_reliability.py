@@ -69,6 +69,46 @@ class FairnessTests(unittest.TestCase):
     def test_busy_folders_max_messages_one(self):self.folder_case(1,True)
     def test_busy_folders_max_messages_two(self):self.folder_case(2,True)
 
+    def reordered_folder_case(self,budget):
+        f=self.f;names=['First','Second','Third','Healthy']
+        scopes={name:Folder(name,9) for name in names}
+        f.profile.update(folders=names,max_messages=budget);f.write_profile()
+        attempts=[];inventories=[]
+        class ReorderingProvider(fixtures.Transcript):
+            def folders(self):
+                cursor=f.query('SELECT folder FROM runner_mail_cursor')
+                # Place Healthy immediately before the cursor. In provider order,
+                # rotation can repeatedly spend the whole budget on failed peers.
+                order=list(names)
+                if cursor and cursor[0][0]!='Healthy':
+                    last=cursor[0][0]
+                    order=['Healthy',last]+[n for n in names if n not in ('Healthy',last)]
+                inventories.append(order)
+                return [scopes[n] for n in order]
+            def uids(self,scope,after):return [64] if after<64 else []
+            def receipt(self,scope,uid):
+                attempts.append((scope.name,uid))
+                if scope.name!='Healthy':raise ConnectionError('synthetic failed UID')
+                return f.receipt(scope,uid)
+        for _ in range(8):
+            before=len(attempts)
+            provider=ReorderingProvider(list(scopes.values()),[64],f.receipt)
+            result=f.invoke(provider=provider);f.time+=2
+            self.assertLessEqual(len(attempts)-before,budget)
+            self.assertEqual(result['folder_alerts'],0)
+            self.assertFalse(result['release_ready'])
+        self.assertGreater(len({tuple(order) for order in inventories}),1)
+        self.assertEqual([name for name,uid in attempts[:4]],names)
+        self.assertEqual(attempts.count(('Healthy',64)),1)
+        checkpoints={name:(epoch,uid) for name,epoch,uid in f.query(
+            'SELECT folder,uidvalidity,highest_uid FROM runner_folders')}
+        self.assertEqual(checkpoints['Healthy'],(9,64))
+        self.assertTrue(all(checkpoints[name]==(9,0) for name in names if name!='Healthy'))
+        self.assertEqual(f.query("SELECT count(*) FROM runner_messages WHERE folder='Healthy'"),[(1,)])
+
+    def test_provider_reordering_max_messages_one(self):self.reordered_folder_case(1)
+    def test_provider_reordering_max_messages_two(self):self.reordered_folder_case(2)
+
     def test_additive_migration_keeps_v1_data_and_rejects_extension_tamper(self):
         f=self.f;path=f.root/'runner.sqlite'
         con=sqlite3.connect(path);path.chmod(0o600)

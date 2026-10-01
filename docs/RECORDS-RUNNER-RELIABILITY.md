@@ -21,6 +21,16 @@ message attempts never exceed max_messages, including failed attempts. Failed
 UID checkpoints remain unchanged. Empty folders and UIDVALIDITY changes keep
 native identity semantics. No receipt is marked received based on rotation.
 
+Provider inventory order is never used as the scheduling order: the available
+configured scopes are first normalized to the trusted profile's explicit folder
+list, then rotated using the persisted cursor. A provider changing its order
+between runs cannot repeatedly move a healthy folder ahead of the cursor to
+starve it. Unconfigured/missing-folder alerts and provider UIDVALIDITY values are
+preserved. No public interface, schema, workflow, launcher or profile file changes.
+Synthetic adversarial reordering regressions exercise max_messages=1 and 2 with
+three repeatedly failing folders, a healthy fourth folder, new provider objects
+on every run, strict per-run attempt bounds, and unchanged failed checkpoints.
+
 ## Durable canonical lifecycle requests
 
 A private runner_lifecycle outbox records exact identity, operation, outcome and

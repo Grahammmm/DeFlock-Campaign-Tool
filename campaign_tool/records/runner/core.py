@@ -217,7 +217,11 @@ def run(control_root,profile_path,exporter,backend,hooks,*,runtime_provider,cloc
                     event(con,rid,'folder_inventory',hid([profile['account_id'],name]),'unconfigured_folder' if name not in configured else 'configured_folder_unavailable')
                     summary['folder_alerts']+=1
             used=0
-            scopes=[scope for scope in scopes if scope.name in configured]
+            # Provider enumeration order is not a scheduling identity. Rotate a
+            # stable, trusted profile order so persisted cursors remain fair even
+            # when a provider changes its inventory order on every invocation.
+            available={scope.name:scope for scope in scopes}
+            scopes=[available[name] for name in profile['folders'] if name in available]
             cursor=con.execute('SELECT folder FROM runner_mail_cursor WHERE account=?',(profile['account_id'],)).fetchone()
             if cursor and cursor[0] in [scope.name for scope in scopes]:
                 offset=next(n for n,scope in enumerate(scopes) if scope.name==cursor[0])+1
