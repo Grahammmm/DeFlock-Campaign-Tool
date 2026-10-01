@@ -81,25 +81,34 @@ folders[{name,uidvalidity,messages[{uid,receipt}]}]. No flags/read-state filters
 CLI stage hooks and the canonical adapter are unavailable, so preserved input
 will be visibly blocked rather than falsely reported cataloged.
 
-## Scheduler preparation and rollback only
+## Scheduler, activation and rollback
 
-Packaged `.service.in` and `.timer.in` templates are deliberately unresolved and
-NOT installable as-is. The conceptual `records run --profile` launcher must be
-wired to the installed, pinned runtime only after WP0/WP1 interfaces exist.
-The three calendars use America/Los_Angeles and Persistent=true. Parent must
-prepare the exact host unit/container/mount/credential-file diff, migrate verified
-last-success/checkpoints, and obtain owner approval. Do not install/enable these
-files or create a second timer. Validate calendar/DST interpretation on the target
-host before approval; no live systemd check occurred in this slice.
+`records schedule render --root R --engine-root E [--python P] [--mail-config M] [--environment-file F] [--ocr]`
+writes fully resolved user-systemd units and two scripts into `R/ops/`:
 
-Activation plan: preserve old unit files/enabled state and runtime digest; stop
-and disable the old exporter owner before enabling one replacement runner;
-confirm shared lock, ledger and preserved mounts; prove unattended representative
-receipt-to-board delivery in WP9. Rollback: stop/disable replacement first,
-preserve its journal/new originals, restore old pinned launcher/unit state and
-carry forward reconciled successful mail receipts/checkpoints; verify no second
-writer. Never delete originals or roll checkpoints backward without receipt
-reconciliation. These are instructions, not executed changes.
+- `records-run.timer`: `OnCalendar` 07:00, 13:00 and 20:30 `America/Los_Angeles`, `Persistent=true`
+  (a run missed while the host was down is made up at boot), validated with `systemd-analyze calendar`.
+- `records-run.service`: `Type=oneshot`, `UMask=0077`, `NoNewPrivileges`, `PrivateTmp`; `ExecStart` runs
+  `records run` and `ExecStartPost` runs `records health --record`.
+- `activate.sh [--dry-run] [--retire legacy-mail.timer ...]`: records each retired timer's enabled/active
+  state in `ops/activation-state.txt`, disables it, installs the two units, `daemon-reload`, enables the timer.
+  One intake owner: retire the legacy exporter timer in the same step.
+- `rollback.sh [--dry-run]`: disables and removes the new units and re-enables every retired timer that
+  was enabled before. Originals, ledger and checkpoints are never touched.
+
+Both scripts are tested against a fake `systemctl` (`tests/records/test_schedule_health.py`). Rendering is
+not activation: running `activate.sh` without `--dry-run` on the host is the owner's one-time step and
+requires explicit approval. Nothing in the engine enables a timer by itself.
+
+`records health --root R [--now ISO] [--record] [--json]` derives health from the approved schedule and the
+ledger's `runs` rows, not from file timestamps or an hours-since threshold: per due slot `ok`, `late` (inside
+the 45-minute grace), `missed`, `failed`, `stalled` (started, never finalised) or `before_first_run`; overall
+`ok`, `late`, `degraded` (latest fine, an earlier slot in the lookback missed), `missed`, `failed`, `stalled`
+or `never`. Exit code 0 for `ok`/`late`, 1 otherwise, 2 when the root has no ledger. `--record` writes
+keyed `schedule:<status>:<slot>` alerts so `records status` shows them.
+
+The legacy `.service.in`/`.timer.in` templates under `campaign_tool/records/runner/templates/` remain as
+the unresolved historical form; the rendered units above supersede them for operation.
 
 ## Test scope and remaining gates
 
