@@ -97,14 +97,27 @@ function parseFollowups(value: unknown): { kind: JobKind; idempotency_key: strin
 
 // Public site staging (build_site job): PUT /api/runner/site/:version/<path> -> public bucket
 // sites/<version>/<path>. Nothing is served until a deploy_site card flips site_version.
-const SITE_VERSION = /^[a-z0-9._-]{1,64}$/;
+// Path safety: relative, plain segments (no "", ".", "..", leading dot or slash), an
+// allowlisted extension (or one of the Pages-style control files), <= 16 MiB, and the
+// caller's x-object-sha256 must match the bytes before anything is written.
+export const SITE_VERSION = /^[a-z0-9._-]{1,64}$/;
 const SITE_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,120}$/;
-const SITE_FILE_MAX_BYTES = 16 * 1024 * 1024;
+export const SITE_FILE_MAX_BYTES = 16 * 1024 * 1024;
+export const SITE_EXTENSIONS: ReadonlySet<string> = new Set([
+  "html", "css", "js", "mjs", "map", "json", "geojson", "xml", "txt", "webmanifest",
+  "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf",
+]);
+export const SITE_CONTROL_FILES: ReadonlySet<string> = new Set(["_headers", "_redirects"]);
 
 export function safeSitePath(path: string): string | null {
-  if (!path || path.length > 1024) return null;
+  if (!path || path.length > 1024 || path.includes("\\") || path.includes("\0")) return null;
   const parts = path.split("/");
-  if (parts.some((p) => !SITE_SEGMENT.test(p))) return null;
+  if (parts.length > 16 || parts.some((p) => !SITE_SEGMENT.test(p) || p === "." || p === "..")) return null;
+  const name = parts[parts.length - 1]!;
+  if (!SITE_CONTROL_FILES.has(name)) {
+    const dot = name.lastIndexOf(".");
+    if (dot <= 0 || !SITE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())) return null;
+  }
   return parts.join("/");
 }
 
@@ -112,16 +125,26 @@ runnerApi.put("/site/:version/*", async (c) => {
   const version = c.req.param("version");
   if (!SITE_VERSION.test(version)) return c.json({ error: "version must match [a-z0-9._-]{1,64}" }, 400);
   const raw = c.req.path.replace(/^\/api\/runner\/site\/[^/]+\/?/, "");
-  const path = safeSitePath(decodeURIComponent(raw));
-  if (!path) return c.json({ error: "path must be relative with plain segments" }, 400);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return c.json({ error: "path is not valid percent-encoding" }, 400);
+  }
+  const path = safeSitePath(decoded);
+  if (!path) return c.json({ error: "path must be relative with plain segments and an allowlisted extension" }, 400);
+  const expected = (c.req.header("x-object-sha256") ?? "").toLowerCase();
+  if (!HEX64.test(expected)) return c.json({ error: "x-object-sha256 header (64 lowercase hex) required" }, 400);
   const declared = Number(c.req.header("content-length") ?? "0");
   if (declared > SITE_FILE_MAX_BYTES) return c.json({ error: "file exceeds 16 MiB" }, 413);
   const bytes = new Uint8Array(await c.req.arrayBuffer());
   if (bytes.byteLength > SITE_FILE_MAX_BYTES) return c.json({ error: "file exceeds 16 MiB" }, 413);
+  const actual = await sha256Hex(bytes);
+  if (actual !== expected) return c.json({ error: "hash mismatch", expected, actual }, 400);
   const key = `sites/${version}/${path}`;
   const mediaType = c.req.header("content-type") ?? "application/octet-stream";
-  await c.env.PUBLIC_BUCKET.put(key, bytes, { httpMetadata: { contentType: mediaType } });
-  return c.json({ key, sha256: await sha256Hex(bytes), bytes: bytes.byteLength }, 201);
+  await c.env.PUBLIC_BUCKET.put(key, bytes, { httpMetadata: { contentType: mediaType }, customMetadata: { sha256: actual } });
+  return c.json({ key, sha256: actual, bytes: bytes.byteLength }, 201);
 });
 
 // GET /api/runner/originals/:sha256 -> bytes

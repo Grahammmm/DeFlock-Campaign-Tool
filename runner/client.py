@@ -18,6 +18,28 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 SAFE_PATH = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,120})(?:/[A-Za-z0-9_][A-Za-z0-9._-]{0,120})*$")
 SAFE_VERSION = re.compile(r"^[a-z0-9._-]{1,64}$")
 SITE_FILE_MAX_BYTES = 16 * 1024 * 1024
+# Mirrors SITE_EXTENSIONS / SITE_CONTROL_FILES in workers/workspace/src/runner.ts.
+SITE_EXTENSIONS = frozenset({"html", "css", "js", "mjs", "map", "json", "geojson", "xml", "txt", "webmanifest",
+                             "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf"})
+SITE_CONTROL_FILES = frozenset({"_headers", "_redirects"})
+
+
+def safe_site_path(path):
+    """Return the path when it is relative, plain and has an allowlisted extension; else None."""
+    if not isinstance(path, str) or not path or len(path) > 1024 or "\\" in path or "\0" in path:
+        return None
+    if not SAFE_PATH.match(path):
+        return None
+    parts = path.split("/")
+    if len(parts) > 16 or any(part in (".", "..") for part in parts):
+        return None
+    name = parts[-1]
+    if name in SITE_CONTROL_FILES:
+        return path
+    dot = name.rfind(".")
+    if dot <= 0 or name[dot + 1:].lower() not in SITE_EXTENSIONS:
+        return None
+    return path
 
 
 class WorkspaceError(Exception):
@@ -48,9 +70,9 @@ class Workspace:
         self.backoff_base = backoff_base
 
     # -- transport -----------------------------------------------------------
-    def _request(self, method, path, body=None, content_type="application/json", raw=False):
+    def _request(self, method, path, body=None, content_type="application/json", raw=False, extra_headers=None):
         data = None
-        headers = {"authorization": "Bearer " + self.token, "accept": "application/json"}
+        headers = {"authorization": "Bearer " + self.token, "accept": "application/json", **(extra_headers or {})}
         if body is not None:
             data = body if isinstance(body, (bytes, bytearray)) else json.dumps(body).encode("utf-8")
             headers["content-type"] = content_type
@@ -123,13 +145,19 @@ class Workspace:
 
     # -- public site ---------------------------------------------------------
     def put_site_file(self, version, path, data, media_type):
+        """Stage one public file. The Worker re-checks the path and verifies x-object-sha256."""
         if not SAFE_VERSION.match(version):
             raise ValueError("site version must match [a-z0-9._-]{1,64}")
-        if not SAFE_PATH.match(path):
-            raise ValueError("unsafe site path: " + path)
+        if safe_site_path(path) is None:
+            raise ValueError("unsafe site path: " + str(path)[:200])
         if len(data) > SITE_FILE_MAX_BYTES:
             raise ValueError("site file exceeds size cap: " + path)
-        return self._request("PUT", f"/site/{version}/{path}", bytes(data), content_type=media_type)
+        sha = sha256_hex(data)
+        result = self._request("PUT", f"/site/{version}/{path}", bytes(data), content_type=media_type,
+                               extra_headers={"x-object-sha256": sha})
+        if (result or {}).get("sha256") not in (None, sha):
+            raise WorkspaceError(0, "workspace stored a different hash for " + path)
+        return result
 
 
 class FakeWorkspace:
@@ -244,7 +272,7 @@ class FakeWorkspace:
 
     def put_site_file(self, version, path, data, media_type):
         self._maybe_fail()
-        if not SAFE_VERSION.match(version) or not SAFE_PATH.match(path):
+        if not SAFE_VERSION.match(version) or safe_site_path(path) is None:
             raise WorkspaceError(400, "unsafe path")
         if len(data) > SITE_FILE_MAX_BYTES:
             raise WorkspaceError(413, "too large")
