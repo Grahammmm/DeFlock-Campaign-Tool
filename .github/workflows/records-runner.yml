@@ -1,0 +1,31 @@
+name: Records runner integration
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Pinned public ledger candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: Grahammmm/DeFlock-Campaign-Tool
+          ref: 4a356f8dd7e4a2ea64fa271ab07e1e48cce6ebe3 # pragma: allowlist secret - verified public ledger commit
+          path: .wp1-dependency
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements-records-test.txt
+      - name: Required synthetic integration against pinned ledger
+        env:
+          WP1_OVERLAY: ${{ github.workspace }}/.wp1-dependency
+        run: |
+          python -B tests/records/run_runner_composition.py
