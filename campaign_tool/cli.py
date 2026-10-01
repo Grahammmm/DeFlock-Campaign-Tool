@@ -216,6 +216,46 @@ def build(root, check=False):
         print("Public tree check passed (pattern scan only; human review still required).")
 
 
+def backup_cmd(args, root):
+    from .backup import export
+    manifest = export(root, args.out)
+    print(json.dumps({"out": str(args.out), "files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"],
+                      "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"]},
+                     indent=2))
+    print("Archive is unencrypted; encrypt it before storing it anywhere shared.", file=sys.stdout)
+
+
+def restore_cmd(args, root):
+    from .backup import restore
+    report = restore(args.file, root)
+    print(json.dumps({"restored_to": report["restored_to"], "files": report["files"],
+                      "engine_version": report["engine_version"], "created_at": report["created_at"]}, indent=2))
+
+
+def verify_cmd(args):
+    from .backup import verify
+    report = verify(args.file)
+    print(json.dumps(report, indent=2))
+
+
+def meetings_cmd(args, root):
+    from datetime import date
+    from .meetings import LegistarClient, default_opener, fixture_opener, relevant_events, write_meetings
+    read_config(root)
+    if args.from_json:
+        opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
+    elif args.online:
+        opener = default_opener
+    else:
+        raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
+    client = LegistarClient(args.client, opener=opener)
+    since = date.fromisoformat(args.since) if args.since else None
+    meetings = relevant_events(client, since=since)
+    target = write_meetings(root, meetings, args.client)
+    print(json.dumps({"client": args.client, "matched_meetings": len(meetings), "written": str(target),
+                      "note": "keyword hits only; verify the posted agenda before publishing"}, indent=2))
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -242,7 +282,28 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
+    backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
+    backup_p.add_argument("--directory", required=True)
+    backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
+    restore_p = commands.add_parser("restore", help="Restore a backup into an empty directory")
+    restore_p.add_argument("--file", required=True)
+    restore_p.add_argument("--directory", required=True)
+    verify_p = commands.add_parser("verify", help="Re-hash every member of a backup against its manifest")
+    verify_p.add_argument("--file", required=True)
+    meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
+    meetings_p.add_argument("--directory", required=True)
+    meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
+    meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
+    meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
+    meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     args = parser.parse_args()
+    if args.command == "verify":
+        try:
+            verify_cmd(args)
+        except (OSError, ValueError) as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(1)
+        return
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
@@ -253,6 +314,12 @@ def main():
             kit(args, root)
         elif args.command == "build":
             build(root, check=args.check)
+        elif args.command == "backup":
+            backup_cmd(args, root)
+        elif args.command == "restore":
+            restore_cmd(args, root)
+        elif args.command == "meetings":
+            meetings_cmd(args, root)
         else:
             {"doctor": doctor, "status": status}[args.command](root)
     except (OSError, ValueError, sqlite3.Error) as exc:

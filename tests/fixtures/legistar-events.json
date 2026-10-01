@@ -1,0 +1,27 @@
+{
+  "_note": "Synthetic Legistar Web API responses keyed by URL path suffix. No real body, event or vendor data.",
+  "/v1/examplecity/events": [
+    {"EventId": 1001, "EventBodyName": "Example City Council", "EventDate": "2026-10-14T00:00:00", "EventTime": "6:00 PM",
+     "EventInSiteURL": "https://examplecity.legistar.example.invalid/MeetingDetail.aspx?ID=1001",
+     "EventAgendaFile": "https://examplecity.legistar.example.invalid/View.ashx?M=A&ID=1001"},
+    {"EventId": 1002, "EventBodyName": "Example Planning Commission", "EventDate": "2026-10-15T00:00:00", "EventTime": "7:00 PM",
+     "EventInSiteURL": "https://examplecity.legistar.example.invalid/MeetingDetail.aspx?ID=1002"},
+    {"EventId": 1003, "EventBodyName": "Example Public Safety Committee", "EventDate": "2026-10-21T00:00:00", "EventTime": null,
+     "EventInSiteURL": "http://insecure.example.invalid/MeetingDetail.aspx?ID=1003"},
+    {"EventId": 1004, "EventBodyName": "Example City Council", "EventDate": "not-a-date", "EventTime": "6:00 PM"}
+  ],
+  "/v1/examplecity/events/1001/eventitems": [
+    {"EventItemId": 1, "EventItemTitle": "Approval of minutes", "EventItemMatterName": null},
+    {"EventItemId": 2, "EventItemTitle": "Item 7: Renewal of the automated license plate reader services agreement with <vendor>", "EventItemMatterName": "ALPR Agreement Renewal", "EventItemMatterFile": "26-0412"},
+    {"EventItemId": 3, "EventItemTitle": "Item 8: Flock Safety camera locations report", "EventItemMatterName": null}
+  ],
+  "/v1/examplecity/events/1002/eventitems": [
+    {"EventItemId": 4, "EventItemTitle": "Zoning variance 26-11", "EventItemMatterName": "Variance"}
+  ],
+  "/v1/examplecity/events/1003/eventitems": [
+    {"EventItemId": 5, "EventItemTitle": "Surveillance technology annual report", "EventItemMatterName": "Surveillance report"}
+  ],
+  "/v1/examplecity/events/1004/eventitems": [
+    {"EventItemId": 6, "EventItemTitle": "License plate reader policy", "EventItemMatterName": null}
+  ]
+}
