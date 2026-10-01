@@ -14,7 +14,9 @@ for root in json.loads(os.environ.get("RECORDS_TEST_DEPENDENCIES", "[]")):
 from campaign_tool.records import catalog_stage as module
 try:
     from campaign_tool.records.ledger import store, stages
-except ImportError:
+except ModuleNotFoundError as error:
+    if error.name != "campaign_tool.records.ledger":
+        raise
     store = stages = None
 
 sha = lambda value: hashlib.sha256(value).hexdigest()
