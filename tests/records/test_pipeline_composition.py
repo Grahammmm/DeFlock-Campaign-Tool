@@ -34,6 +34,15 @@ def encoded(value):
     return (json.dumps(value, sort_keys=True, ensure_ascii=True) + "\n").encode()
 
 
+def unique(paths):
+    """Order-preserving de-duplication: in-tree labels may share one root."""
+    result = []
+    for path in paths:
+        if path not in result:
+            result.append(path)
+    return result
+
+
 def private_directory(path):
     path = Path(path)
     if not path.is_absolute() or path.resolve() != path:
@@ -75,12 +84,14 @@ class PipelineCompositionTests(unittest.TestCase):
         os.environ["TMPDIR"] = str(cls.output)
         tempfile.tempdir = str(cls.output)
         import campaign_tool.records
-        campaign_tool.records.__path__[:] = [str(cls.roots[key] / "campaign_tool/records")
-                                            for key in ("wp5", "wp2", "wp4", "wp1", "pr19")]
+        # In-tree dependencies share the engine root; keep each path once, in order.
+        campaign_tool.records.__path__[:] = unique(str(cls.roots[key] / "campaign_tool/records")
+                                                   for key in ("wp5", "wp2", "wp4", "wp1", "pr19"))
         import campaign_tool.records.intake
-        campaign_tool.records.intake.__path__.insert(0, str(cls.roots["wp2"] / "campaign_tool/records/intake"))
+        intake = campaign_tool.records.intake
+        intake.__path__[:] = unique([str(cls.roots["wp2"] / "campaign_tool/records/intake"), *intake.__path__])
         import tests.records
-        tests.records.__path__.insert(0, str(cls.roots["wp2"] / "tests/records"))
+        tests.records.__path__[:] = unique([str(cls.roots["wp2"] / "tests/records"), *tests.records.__path__])
         bindings = {
             "store": ("wp1", "campaign_tool.records.ledger.store"),
             "stages": ("wp1", "campaign_tool.records.ledger.stages"),

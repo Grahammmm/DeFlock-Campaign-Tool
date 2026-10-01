@@ -2,6 +2,11 @@
 
 Execute this file, not stdin, so multiprocessing spawn can reload its guarded
 entry point. No tests execute when a spawned interpreter imports the launcher.
+
+In-tree mode: when this checkout contains WP1_MARKER, the ledger is taken from
+the checkout itself. WP1_OVERLAY must then be unset or equal this checkout; an
+external overlay would be shadowed and is rejected. Without the marker the
+explicit separate WP1_OVERLAY remains required.
 """
 import importlib
 import os
@@ -10,6 +15,7 @@ import sys
 import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
+WP1_MARKER = 'campaign_tool/records/ledger/store.py'
 sys.path.insert(0, str(REPOSITORY))
 TEST_MODULES = (
     'tests.records.test_mail_delta',
@@ -44,21 +50,33 @@ def check_loaded_origins(overlay):
 
 def main():
     configured = os.environ.get('WP1_OVERLAY')
-    if not configured:
-        raise RuntimeError('WP1_OVERLAY is required; integration must not skip')
-    overlay = Path(configured).resolve(strict=True)
-    if overlay == REPOSITORY:
-        raise RuntimeError('WP1 must be a separate explicit source dependency')
+    in_tree = (REPOSITORY / WP1_MARKER).is_file()
+    if in_tree:
+        if configured and Path(configured).resolve(strict=True) != REPOSITORY:
+            raise RuntimeError('WP1 is in tree; unset WP1_OVERLAY instead of overlaying it')
+        overlay = REPOSITORY
+        # The WP1 tests read WP1_OVERLAY; in-tree mode must not append any path.
+        os.environ.pop('WP1_OVERLAY', None)
+        print('WP1 source: in-tree (' + WP1_MARKER + ')', flush=True)
+    else:
+        if not configured:
+            raise RuntimeError('WP1_OVERLAY is required; integration must not skip')
+        overlay = Path(configured).resolve(strict=True)
+        if overlay == REPOSITORY:
+            raise RuntimeError('WP1 must be a separate explicit source dependency')
+        print('WP1 source: pinned overlay ' + str(overlay), flush=True)
     source_root = os.environ.get('RECORDS_WP1_SOURCE_ROOT')
     if source_root and Path(source_root).resolve(strict=True) != overlay:
         raise RuntimeError('WP1 source-root configuration mismatch')
-    os.environ['RECORDS_WP1_SOURCE_ROOT'] = str(overlay)
+    if not in_tree:
+        os.environ['RECORDS_WP1_SOURCE_ROOT'] = str(overlay)
     records = importlib.import_module('campaign_tool.records')
     test_records = importlib.import_module('tests.records')
     require_origin(records, REPOSITORY / 'campaign_tool' / 'records' / '__init__.py')
     require_origin(test_records, REPOSITORY / 'tests' / 'records' / '__init__.py')
-    records.__path__.append(str(overlay / 'campaign_tool' / 'records'))
-    test_records.__path__.append(str(overlay / 'tests' / 'records'))
+    if not in_tree:
+        records.__path__.append(str(overlay / 'campaign_tool' / 'records'))
+        test_records.__path__.append(str(overlay / 'tests' / 'records'))
     for name in ('campaign_tool.records.ledger',
                  'campaign_tool.records.ledger.store',
                  'campaign_tool.records.ledger.stages'):

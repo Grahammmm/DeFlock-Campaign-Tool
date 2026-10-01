@@ -2,7 +2,9 @@
 
 No installs, checkout, network, source edits or production work. The workflow
 supplies four reviewed full commit IDs; the launcher checks them before hashing
-all installed Python inputs. All generated files live in a new owner-private
+all installed Python inputs. In-tree mode: a dependency whose marker file is
+present in this engine checkout must be passed as the engine root itself; its
+commit pin and distinctness checks are skipped and the receipt lists it. All generated files live in a new owner-private
 outside-Git directory. Child tests run this actual file, never Python stdin,
 so multiprocessing.spawn can safely import a real __main__ entry point.
 """
@@ -19,7 +21,7 @@ import unittest
 
 
 SUITES = {
-    "catalog": (64, (
+    "catalog": (66, (
         "tests.records.test_catalog_stage",
         "tests.records.test_catalog_stage_drift",
         "tests.records.test_ledger_catalog",
@@ -27,6 +29,13 @@ SUITES = {
     "composition": (4, ("tests.records.test_pipeline_composition",)),
 }
 DEPENDENCIES = ("wp1", "wp2", "wp4", "pr19")
+# Explicit file markers: a dependency is in tree when its marker exists here.
+IN_TREE_MARKERS = {
+    "wp1": "campaign_tool/records/ledger/store.py",
+    "wp2": "campaign_tool/records/runner/canonical_mail.py",
+    "wp4": "campaign_tool/records/extraction_ledger.py",
+    "pr19": "campaign_tool/records/catalog_links.py",
+}
 
 
 def require(value, reason):
@@ -76,6 +85,32 @@ def checked_root(path, revision=None):
     return root
 
 
+def in_tree_labels(engine, roots):
+    """Labels whose root is the engine checkout; each must carry its marker file.
+
+    A marker present in the engine with a different root is rejected, because
+    the engine copy would shadow the external overlay at import time.
+    """
+    labels = []
+    for name in DEPENDENCIES:
+        present = (engine / IN_TREE_MARKERS[name]).is_file()
+        if roots[name] == engine:
+            require(present, "in-tree dependency marker missing: " + name)
+            labels.append(name)
+        else:
+            require(not present, "dependency is in tree; pass the engine root: " + name)
+    return labels
+
+
+def unique(paths):
+    """Order-preserving de-duplication for package search paths."""
+    result = []
+    for path in paths:
+        if path not in result:
+            result.append(path)
+    return result
+
+
 def pins(root):
     files = sorted((root / "campaign_tool/records").rglob("*.py"))
     files += sorted((root / "tests/records").rglob("*.py"))
@@ -119,7 +154,8 @@ def worker(args):
     root = roots["wp5"]
     os.chdir(root)
     sys.path.insert(0, str(root))
-    os.environ["RECORDS_TEST_DEPENDENCIES"] = json.dumps([str(roots["wp1"]), str(roots["pr19"])])
+    external = [str(roots[name]) for name in ("wp1", "pr19") if roots[name] != root]
+    os.environ["RECORDS_TEST_DEPENDENCIES"] = json.dumps(unique(external))
     os.environ["RECORDS_COMPOSITION_MANIFEST"] = str(Path(args.manifest).resolve())
     output = Path(args.output).resolve(strict=True)
     outside_git(output)
@@ -140,6 +176,7 @@ def worker(args):
         "tests": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
         "skipped": len(result.skipped), "expected_failures": len(result.expectedFailures),
         "unexpected_successes": len(result.unexpectedSuccesses), "sources_unchanged": stable,
+        "in_tree": manifest.get("in_tree", []),
         "passed": successful(result, expected) and stable}
     write_private(output / "ci-test-result.json", report)
     print(json.dumps(report, sort_keys=True), flush=True)
@@ -147,11 +184,19 @@ def worker(args):
 
 
 def launch(args):
+    engine = checked_root(Path(__file__).resolve().parents[1])
+    requested = {name: Path(getattr(args, name)).resolve(strict=True) for name in DEPENDENCIES}
+    in_tree = in_tree_labels(engine, requested)
+    pinned = [name for name in DEPENDENCIES if name not in in_tree]
     # Check the pending WP4 decision before touching any checkout or output.
-    revisions = {name: commit(getattr(args, name + "_revision")) for name in DEPENDENCIES}
-    roots = {name: checked_root(getattr(args, name), revisions[name]) for name in DEPENDENCIES}
-    roots["wp5"] = checked_root(Path(__file__).resolve().parents[1])
-    require(len(set(roots.values())) == 5, "dependency checkouts must be distinct")
+    revisions = {name: commit(getattr(args, name + "_revision")) for name in pinned}
+    roots = {name: checked_root(requested[name], revisions[name]) for name in pinned}
+    roots.update({name: engine for name in in_tree})
+    roots["wp5"] = engine
+    require(len({roots[name] for name in pinned} | {engine}) == len(pinned) + 1,
+            "pinned dependency checkouts must be distinct from each other and the engine")
+    print("WP5 CI dependency sources: in-tree=" + (",".join(in_tree) or "none")
+          + " pinned=" + (",".join(pinned) or "none"), flush=True)
     parent = Path(args.output_parent).resolve(strict=True)
     outside_git(parent)
     root = Path(tempfile.mkdtemp(prefix="wp5-ci-", dir=parent))
@@ -159,7 +204,8 @@ def launch(args):
     manifest = {"roots": {key: str(value) for key, value in roots.items()},
                 "pins": {key: pins(value) for key, value in roots.items()},
                 "checkout_files": {key: checkout_files(value) for key, value in roots.items()},
-                "revisions": revisions, "wp5_revision": git(roots["wp5"], "rev-parse", "HEAD")}
+                "revisions": revisions, "in_tree": in_tree,
+                "wp5_revision": git(roots["wp5"], "rev-parse", "HEAD")}
     manifest_path = root / "composition-manifest.json"
     manifest_hash = write_private(manifest_path, manifest)
     outcomes = {}
@@ -174,7 +220,7 @@ def launch(args):
         except subprocess.TimeoutExpired:
             outcomes[suite] = 124
     write_private(root / "ci-run.json", {"schema": "wp5-ci-v1", "manifest_sha256": manifest_hash,
-        "python": sys.version.split()[0], "outcomes": outcomes,
+        "python": sys.version.split()[0], "outcomes": outcomes, "in_tree": in_tree,
         "scope": "synthetic offline tests only; no publication or deployment"})
     print("WP5 private CI receipt:", root / "ci-run.json", flush=True)
     return int(any(outcomes.values()))
@@ -190,6 +236,7 @@ def self_test():
         else:
             raise AssertionError("non-pinned revision accepted")
     assert commit("a" * 40) == "a" * 40
+    assert unique(["a", "b", "a", "c", "b"]) == ["a", "b", "c"]
     class Result:
         testsRun = 64
         skipped = []
@@ -205,7 +252,8 @@ def self_test():
     sample.skipped = []
     sample.expectedFailures = [("synthetic", "unresolved expectation")]
     assert not successful(sample, 64)
-    print("Launcher guards passed: exact commit pins, exact counts, zero skips, zero expected failures.")
+    print("Launcher guards passed: exact commit pins, exact counts, zero skips, zero expected failures, "
+          "order-preserving path de-duplication.")
     return 0
 
 

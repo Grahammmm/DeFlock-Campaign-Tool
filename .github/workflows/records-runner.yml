@@ -24,8 +24,15 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r requirements-records-test.txt
-      - name: Required synthetic integration against pinned ledger
-        env:
-          WP1_OVERLAY: ${{ github.workspace }}/.wp1-dependency
+      - name: Select in-tree or pinned WP1 ledger
+        shell: bash
+        run: |
+          # Explicit file-based detection: an in-tree ledger is used from this checkout.
+          if [[ -f campaign_tool/records/ledger/store.py ]]; then
+            printf '%s\n' 'WP1 in tree; WP1_OVERLAY left unset.'
+          else
+            printf 'WP1_OVERLAY=%s\n' "$GITHUB_WORKSPACE/.wp1-dependency" >> "$GITHUB_ENV"
+          fi
+      - name: Required synthetic integration against in-tree or pinned ledger
         run: |
           python -B tests/records/run_runner_composition.py

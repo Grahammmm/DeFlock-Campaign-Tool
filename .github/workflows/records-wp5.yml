@@ -70,14 +70,33 @@ jobs:
       - name: File launcher guards
         working-directory: engine
         run: python -B tools/run_wp5_ci.py --self-test
-      - name: Exact 64 catalog and 4 composition tests; no skips
+      - name: Select in-tree or pinned dependency roots
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Explicit file-based detection: a dependency present in the engine
+          # checkout is taken from it; otherwise its pinned checkout is used.
+          select_root() {
+            if [[ -f "$2" ]]; then
+              printf '%s in tree (%s); using the engine checkout\n' "$1" "$2"
+              printf '%s_ROOT=%s\n' "${1^^}" "$GITHUB_WORKSPACE/engine" >> "$GITHUB_ENV"
+            else
+              printf '%s_ROOT=%s\n' "${1^^}" "$GITHUB_WORKSPACE/dependencies/$1" >> "$GITHUB_ENV"
+            fi
+          }
+          select_root wp1 campaign_tool/records/ledger/store.py
+          select_root wp2 campaign_tool/records/runner/canonical_mail.py
+          select_root wp4 campaign_tool/records/extraction_ledger.py
+          select_root pr19 campaign_tool/records/catalog_links.py
+      - name: Exact 66 catalog and 4 composition tests; no skips
         working-directory: engine
         run: |
           python -B tools/run_wp5_ci.py \
-            --wp1 "$GITHUB_WORKSPACE/dependencies/wp1" \
-            --wp2 "$GITHUB_WORKSPACE/dependencies/wp2" \
-            --wp4 "$GITHUB_WORKSPACE/dependencies/wp4" \
-            --pr19 "$GITHUB_WORKSPACE/dependencies/pr19" \
+            --wp1 "$WP1_ROOT" \
+            --wp2 "$WP2_ROOT" \
+            --wp4 "$WP4_ROOT" \
+            --pr19 "$PR19_ROOT" \
             --output-parent "$RUNNER_TEMP"
       - name: Public-tree credential and private-path scan
         if: always()

@@ -3,6 +3,10 @@
 The workflow owns WP2's checkout. Four separate exact public dependency checkouts
 are verified with WP5's existing trusted manifest/hashing helper. Generated
 manifests, outputs and receipts are private and outside repository trees.
+
+In-tree mode: a dependency whose marker file exists in the candidate checkout
+must be passed as the candidate root. Its commit pin and distinctness checks are
+skipped, and the manifest and receipt list it; all other guards still apply.
 """
 import argparse
 import importlib
@@ -21,7 +25,42 @@ REVISIONS = {
     'wp5': 'b12129ac016f0129f092e80befc209e94f7f7f09', # pragma: allowlist secret - public commit
     'pr19': '543c5eaee5022409e66df7a9f7c81fd9d9bfbf57', # pragma: allowlist secret - public commit
 }
+IN_TREE_MARKERS = {
+    'wp1': 'campaign_tool/records/ledger/store.py',
+    'wp4': 'campaign_tool/records/extraction_ledger.py',
+    'wp5': 'campaign_tool/records/ledger_catalog.py',
+    'pr19': 'campaign_tool/records/catalog_links.py',
+}
 TARGET = 'tests.records.test_pipeline_connection'
+
+
+def unique(paths):
+    """Order-preserving de-duplication; in-tree labels share the candidate root."""
+    result = []
+    for path in paths:
+        if path not in result:
+            result.append(path)
+    return result
+
+
+def in_tree_labels(candidate, roots):
+    """Explicit file-based detection; a present marker forbids an external root."""
+    labels = []
+    for name in REVISIONS:
+        present = (candidate / IN_TREE_MARKERS[name]).is_file()
+        if roots[name] == candidate:
+            if not present:
+                raise ValueError('in-tree dependency marker missing: ' + name)
+            labels.append(name)
+        elif present:
+            raise ValueError('dependency is in tree; pass the candidate root: ' + name)
+    return labels
+
+
+def check_distinct(candidate, roots, in_tree):
+    pinned = [roots[name] for name in REVISIONS if name not in in_tree]
+    if len(set(pinned) | {candidate}) != len(pinned) + 1:
+        raise ValueError('pinned checkouts must be distinct from each other and the candidate')
 
 
 def helper_for(wp5):
@@ -49,17 +88,22 @@ def worker(args):
     raw = manifest_path.read_bytes()
     manifest = json.loads(raw)
     roots = {name: Path(path).resolve(strict=True) for name, path in manifest['roots'].items()}
-    if set(roots) != set(REVISIONS) | {'wp2'} or len(set(roots.values())) != 5:
-        raise ValueError('five distinct source roots required')
+    if set(roots) != set(REVISIONS) | {'wp2'}:
+        raise ValueError('five explicit source roots required')
     candidate = Path(args.candidate_root).resolve(strict=True)
     if roots['wp2'] != candidate:
         raise ValueError('WP2 must be the actual candidate checkout')
+    in_tree = in_tree_labels(candidate, roots)
+    if in_tree != manifest.get('in_tree', []):
+        raise ValueError('in-tree dependency labels changed')
+    check_distinct(candidate, roots, in_tree)
     helper, helper_path = helper_for(roots['wp5'])
     helper_hash = helper.sha(helper_path.read_bytes())
     if 'helper_sha256' in manifest:
         helper.require(helper_hash == manifest['helper_sha256'], 'trusted helper changed')
     if 'revisions' in manifest:
-        helper.require(manifest['revisions'] == REVISIONS, 'public dependency revisions mismatch')
+        helper.require(manifest['revisions'] == {k: v for k, v in REVISIONS.items() if k not in in_tree},
+                       'public dependency revisions mismatch')
     for name, root in roots.items():
         helper.require(helper.pins(root) == manifest['pins'][name], 'source pin mismatch: ' + name)
         if 'checkout_files' in manifest:
@@ -74,12 +118,13 @@ def worker(args):
     os.environ['TMPDIR'] = str(output)
     tempfile.tempdir = str(output)
     import campaign_tool.records
-    campaign_tool.records.__path__[:] = [str(roots[k] / 'campaign_tool/records')
-                                         for k in ('wp5', 'wp2', 'wp4', 'wp1', 'pr19')]
+    campaign_tool.records.__path__[:] = unique(str(roots[k] / 'campaign_tool/records')
+                                               for k in ('wp5', 'wp2', 'wp4', 'wp1', 'pr19'))
     import campaign_tool.records.intake
-    campaign_tool.records.intake.__path__.insert(0, str(candidate / 'campaign_tool/records/intake'))
+    intake = campaign_tool.records.intake
+    intake.__path__[:] = unique([str(candidate / 'campaign_tool/records/intake'), *intake.__path__])
     import tests.records
-    tests.records.__path__[:] = [str(candidate / 'tests/records'), str(roots['wp5'] / 'tests/records')]
+    tests.records.__path__[:] = unique([str(candidate / 'tests/records'), str(roots['wp5'] / 'tests/records')])
     bindings = {
         TARGET: 'wp2',
         'tests.records.test_pipeline_composition': 'wp5',
@@ -111,6 +156,7 @@ def worker(args):
                'manifest_sha256': helper.sha(raw), 'helper_sha256': helper_hash,
                'origins': bindings, 'passed': helper.successful(result, 1) and stable,
                'public_commit_verification': 'revisions' in manifest and 'checkout_files' in manifest,
+               'in_tree': in_tree,
                'release_ready': False, 'publication_ready': False, 'fresh_mailbox_coverage': False,
                'scope': 'synthetic prepared-artifact admission only'}
     helper.write_private(output / 'ci-test-result.json', receipt)
@@ -120,11 +166,16 @@ def worker(args):
 
 def launch(args):
     candidate = Path(args.candidate_root).resolve(strict=True)
-    helper, helper_path = helper_for(Path(args.wp5).resolve(strict=True))
-    roots = {name: helper.checked_root(getattr(args, name), revision)
+    requested = {name: Path(getattr(args, name)).resolve(strict=True) for name in REVISIONS}
+    in_tree = in_tree_labels(candidate, requested)
+    helper, helper_path = helper_for(requested['wp5'])
+    roots = {name: helper.checked_root(requested[name], None if name in in_tree else revision)
              for name, revision in REVISIONS.items()}
     roots['wp2'] = helper.checked_root(candidate)
-    helper.require(len(set(roots.values())) == 5, 'distinct checkouts required')
+    check_distinct(candidate, roots, in_tree)
+    revisions = {name: revision for name, revision in REVISIONS.items() if name not in in_tree}
+    print('WP2 connection CI dependency sources: in-tree=' + (','.join(in_tree) or 'none')
+          + ' pinned=' + (','.join(revisions) or 'none'), flush=True)
     parent = Path(args.output_parent).resolve(strict=True)
     helper.outside_git(parent)
     output = Path(tempfile.mkdtemp(prefix='wp2-connection-ci-', dir=parent))
@@ -132,7 +183,8 @@ def launch(args):
     manifest = {'roots': {name: str(root) for name, root in roots.items()},
                 'pins': {name: helper.pins(root) for name, root in roots.items()},
                 'checkout_files': {name: helper.checkout_files(root) for name, root in roots.items()},
-                'revisions': REVISIONS, 'wp2_revision': helper.git(candidate, 'rev-parse', 'HEAD'),
+                'revisions': revisions, 'in_tree': in_tree,
+                'wp2_revision': helper.git(candidate, 'rev-parse', 'HEAD'),
                 'helper_sha256': helper.sha(helper_path.read_bytes())}
     manifest_path = output / 'manifest.json'
     helper.write_private(manifest_path, manifest)

@@ -53,13 +53,32 @@ jobs:
       - name: Install existing test dependencies on disposable CI only
         working-directory: engine
         run: python -m pip install -r requirements-records-test.txt
+      - name: Select in-tree or pinned dependency roots
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Explicit file-based detection: a dependency present in the candidate
+          # checkout is taken from it; otherwise its pinned checkout is used.
+          select_root() {
+            if [[ -f "$2" ]]; then
+              printf '%s in tree (%s); using the candidate checkout\n' "$1" "$2"
+              printf '%s_ROOT=%s\n' "${1^^}" "$GITHUB_WORKSPACE/engine" >> "$GITHUB_ENV"
+            else
+              printf '%s_ROOT=%s\n' "${1^^}" "$GITHUB_WORKSPACE/dependencies/$1" >> "$GITHUB_ENV"
+            fi
+          }
+          select_root wp1 campaign_tool/records/ledger/store.py
+          select_root wp4 campaign_tool/records/extraction_ledger.py
+          select_root wp5 campaign_tool/records/ledger_catalog.py
+          select_root pr19 campaign_tool/records/catalog_links.py
       - name: Require exactly one prepared-admission test with zero skips
         working-directory: engine
         run: |
           python -B tools/run_wp2_pipeline_ci.py \
             --candidate-root "$GITHUB_WORKSPACE/engine" \
-            --wp1 "$GITHUB_WORKSPACE/dependencies/wp1" \
-            --wp4 "$GITHUB_WORKSPACE/dependencies/wp4" \
-            --wp5 "$GITHUB_WORKSPACE/dependencies/wp5" \
-            --pr19 "$GITHUB_WORKSPACE/dependencies/pr19" \
+            --wp1 "$WP1_ROOT" \
+            --wp4 "$WP4_ROOT" \
+            --wp5 "$WP5_ROOT" \
+            --pr19 "$PR19_ROOT" \
             --output-parent "$RUNNER_TEMP"
