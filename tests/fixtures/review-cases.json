@@ -10,7 +10,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe",
       "locator": "page 1"
      }
     ],
@@ -19,7 +19,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -27,7 +27,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -35,7 +35,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -58,7 +58,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "1952786515c4408f3e5db368d4e7a9ed7aaa77c3e863d1968e700b4b11f1a095",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -66,7 +66,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "1952786515c4408f3e5db368d4e7a9ed7aaa77c3e863d1968e700b4b11f1a095",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -74,7 +74,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "1952786515c4408f3e5db368d4e7a9ed7aaa77c3e863d1968e700b4b11f1a095",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -97,7 +97,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "5107e0cddf153a742eb6bd9944045e079aba1820a54d3b008537da39e177aa5c",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -105,7 +105,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "5107e0cddf153a742eb6bd9944045e079aba1820a54d3b008537da39e177aa5c",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -113,7 +113,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "5107e0cddf153a742eb6bd9944045e079aba1820a54d3b008537da39e177aa5c",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -136,7 +136,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef",
       "locator": "page 1"
      }
     ],
@@ -145,7 +145,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "c2ffdc557660cbdbe31c80ca1b7ec1ad68fa708ff14e5bde7cf676e5707514b4",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -153,7 +153,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "c2ffdc557660cbdbe31c80ca1b7ec1ad68fa708ff14e5bde7cf676e5707514b4",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -161,7 +161,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "c2ffdc557660cbdbe31c80ca1b7ec1ad68fa708ff14e5bde7cf676e5707514b4",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -185,7 +185,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "f00df00df00df00df00df00df00df00df00df00df00df00df00df00df00df00d",
       "locator": "page 1"
      }
     ],
@@ -200,7 +200,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "40afa82c29a11f5939138d76c74bcb1002e0564a1926cb44f6109e7c31212a93",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -208,7 +208,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "40afa82c29a11f5939138d76c74bcb1002e0564a1926cb44f6109e7c31212a93",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -216,7 +216,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "40afa82c29a11f5939138d76c74bcb1002e0564a1926cb44f6109e7c31212a93",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -235,7 +235,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
       "locator": "page 1"
      }
     ],
@@ -244,7 +244,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -252,7 +252,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -260,7 +260,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -268,7 +268,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "changes_requested",
      "reviewer": "r3@example.invalid",
      "role": "legal",
@@ -289,7 +289,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "fadefadefadefadefadefadefadefadefadefadefadefadefadefadefadefade",
       "locator": "page 1"
      }
     ],
@@ -298,7 +298,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "analyst@example.invalid",
      "role": "factual",
@@ -306,7 +306,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -314,7 +314,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "analyst@example.invalid",
      "role": "privacy",
@@ -337,7 +337,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "feedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
       "locator": "page 1"
      }
     ],
@@ -346,7 +346,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -354,7 +354,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "legal",
@@ -362,7 +362,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -392,7 +392,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "952edd11312926ed1a9f8f3f9de45ed4d84d54f28c7bd6216ec05f51bedcc443",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -400,7 +400,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "952edd11312926ed1a9f8f3f9de45ed4d84d54f28c7bd6216ec05f51bedcc443",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -408,7 +408,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "952edd11312926ed1a9f8f3f9de45ed4d84d54f28c7bd6216ec05f51bedcc443",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -430,7 +430,7 @@
     "sources": [
      "not a dict",
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "sha256": "deaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead"
      },
      {
       "locator": "p2",
@@ -442,7 +442,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "e48bb8cf2da2b5a3534f3e75f9b57bd4effec91d84b03fdf5da3d0088e015d51",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -450,7 +450,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "e48bb8cf2da2b5a3534f3e75f9b57bd4effec91d84b03fdf5da3d0088e015d51",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -458,7 +458,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "e48bb8cf2da2b5a3534f3e75f9b57bd4effec91d84b03fdf5da3d0088e015d51",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -479,7 +479,7 @@
     "summary": "   ",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "c0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0de",
       "locator": "page 1"
      }
     ],
@@ -488,7 +488,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "2290fda0124e012ff4a0366b20308433b52bf683de3bd20e9db090bc24146a96",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -496,7 +496,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "2290fda0124e012ff4a0366b20308433b52bf683de3bd20e9db090bc24146a96",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -504,7 +504,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "2290fda0124e012ff4a0366b20308433b52bf683de3bd20e9db090bc24146a96",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -526,7 +526,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe",
       "locator": "page 1"
      }
     ],
@@ -575,7 +575,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef",
       "locator": "page 1"
      }
     ],
@@ -584,7 +584,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -592,7 +592,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -600,7 +600,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -621,7 +621,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "f00df00df00df00df00df00df00df00df00df00df00df00df00df00df00df00d",
       "locator": "page 1"
      }
     ],
@@ -640,7 +640,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "af3b8ed69cc582fb56ac99a25bb242d30462a3bd9d77df3441da5076ea565b8d",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -648,7 +648,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "af3b8ed69cc582fb56ac99a25bb242d30462a3bd9d77df3441da5076ea565b8d",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -656,7 +656,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "af3b8ed69cc582fb56ac99a25bb242d30462a3bd9d77df3441da5076ea565b8d",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -675,7 +675,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "facefacefacefacefacefacefacefacefacefacefacefacefacefacefaceface",
       "locator": "page 1"
      }
     ],
@@ -684,7 +684,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -692,7 +692,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "editor",
@@ -700,7 +700,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "privacy",
@@ -722,7 +722,7 @@
     "summary": "Synthetic: policy document exists.",
     "sources": [
      {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "fadefadefadefadefadefadefadefadefadefadefadefadefadefadefadefade",
       "locator": "page 1"
      }
     ],
@@ -731,7 +731,7 @@
    },
    "receipts": [
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r1@example.invalid",
      "role": "factual",
@@ -739,7 +739,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "approve",
      "reviewer": "r2@example.invalid",
      "role": "legal",
@@ -747,7 +747,7 @@
      "reviewed_at": "2026-09-30T00:00:00Z"
     },
     {
-     "content_sha256": "96193fc17fe7497571007a1de993ec8540b5184c6c0653ecea50b827196648c1",
+     "content_sha256": "@finding_digest",
      "decision": "reject",
      "reviewer": "r1@example.invalid",
      "role": "privacy",

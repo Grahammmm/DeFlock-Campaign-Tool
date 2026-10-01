@@ -90,10 +90,10 @@ class SiteBuildTests(unittest.TestCase):
         self.build()
         page = self.read("findings/cedar-policy-posted.html")
         for needle in ("Documented fact", "Verified against the record", 'datetime="2026-01-15"',
-                       "sha256 0dfcc276d1ae", "page:1-2", 'id="corrections"', "Corrected the policy date",
+                       "sha256 cafecafecafe", "page:1-2", 'id="corrections"', "Corrected the policy date",
                        "This is not legal advice", 'href="/sources.html#cedar-police-records"'):
             self.assertIn(needle, page)
-        self.assertNotIn("0dfcc276d1aebf29de1ae966923773d9a2a3eb625ca653df1e97cc470df1da5a", page)
+        self.assertNotIn("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe", page)
         index = self.read("findings/index.html")
         self.assertIn('href="/findings/cedar-policy-posted.html"', index)
 
@@ -131,8 +131,8 @@ class SiteBuildTests(unittest.TestCase):
         cards = self.read("agency-cards.js")
         self.assertIn('slug==="cedar"?"cedar-police-records"', cards)
         self.assertIn('"sources.html#"', cards)
-        self.assertIn("sha256 0dfcc276d1ae", sources)
-        self.assertIn("sha256 6638df36da8d", sources)
+        self.assertIn("sha256 cafecafecafe", sources)
+        self.assertIn("sha256 beefbeefbeef", sources)
 
     def test_site_data_globals_and_controller_wiring(self):
         self.build()

@@ -24,7 +24,7 @@ class FindingValidationTests(unittest.TestCase):
     def test_example_finding_loads(self):
         finding = load_finding(example_finding(), "f")
         self.assertEqual(finding["slug"], "cedar-policy-posted")
-        self.assertEqual(finding["sources"][0]["sha256"][:12], "0dfcc276d1ae")
+        self.assertEqual(finding["sources"][0]["sha256"][:12], "cafecafecafe")
 
     def test_needs_attorney_review_is_refused_with_clear_error(self):
         finding = {**example_finding(), "confidence": "needs_attorney_review"}
