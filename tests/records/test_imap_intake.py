@@ -69,7 +69,7 @@ class IMAPIntakeTests(unittest.TestCase):
         os.chmod(self.base, 0o700)
         self.root = self.base / "root"
         self.config_path = self.base / "mail.json"
-        self.write_config({"host": "imap.example.invalid", "username": "records", "password": "not-a-real-secret",
+        self.write_config({"host": "imap.example.invalid", "username": "records", "password": "not-a-real-secret",  # pragma: allowlist secret - synthetic fixture
                            "account_id": "synthetic-account", "folders": ["INBOX", "Agencies"]})
 
     def write_config(self, config, mode=0o600):
