@@ -242,5 +242,12 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source',required=True);p.add_argument('--sha256',required=True);p.add_argument('--output-root',required=True);p.add_argument('--format');p.add_argument('--ocr-executable')
     a=p.parse_args();r=extract(a.source,a.sha256,a.output_root,a.format,ocr_executable=a.ocr_executable)
-    print(json.dumps({k:v for k,v in r.items() if k not in {'units','children'}}))
+    print(json.dumps(stdout_summary(r)))
+
+PRIVATE_PATH_FIELDS = {'run_path','ocr_derivative_path'}
+def stdout_summary(result):
+    """Operator summary without units or absolute private paths; run_id is the run directory name under --output-root."""
+    summary={k:v for k,v in result.items() if k not in {'units','children'}|PRIVATE_PATH_FIELDS}
+    if result.get('run_path'):summary['run_id']=Path(result['run_path']).name
+    return summary
 if __name__=='__main__':main()

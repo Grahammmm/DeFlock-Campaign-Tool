@@ -177,3 +177,23 @@ class OCRReextractionTests(unittest.TestCase):
         with patch.dict(sys.modules,{'PIL':module}):units,_,_=er._image(None,b'fixture')
         self.assertEqual([x['locator']['frame'] for x in units],[1,2,3])
         self.assertTrue(all(x['data']['visual_review']=='not_done' for x in units))
+
+class MainOutputTests(unittest.TestCase):
+    def test_main_stdout_omits_absolute_private_paths(self):
+        import contextlib,sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700);data=b'synthetic line\n'
+            source=root/'input.txt';source.write_bytes(data);out=root/'output';out.mkdir(mode=0o700)
+            real=er.extract
+            def extract(*args,**kwargs):
+                result=real(*args,**kwargs)
+                result['ocr_derivative_path']=result['run_path']+'/ocr.pdf'
+                return result
+            argv=['extraction_routes','--source',str(source),'--sha256',hashlib.sha256(data).hexdigest(),'--output-root',str(out),'--format','txt']
+            stream=io.StringIO()
+            with patch.object(sys,'argv',argv),patch.object(er,'extract',side_effect=extract),contextlib.redirect_stdout(stream):er.main()
+            printed=stream.getvalue();summary=json.loads(printed)
+            self.assertNotIn(tmp,printed)
+            self.assertFalse({'run_path','ocr_derivative_path','units','children'}&set(summary))
+            self.assertEqual(summary['status'],'complete')
+            self.assertEqual([p.name for p in out.iterdir()],[summary['run_id']])

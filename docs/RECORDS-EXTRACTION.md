@@ -6,7 +6,7 @@ This adapter reuses the existing intake worker in an isolated child process. An 
 python -m campaign_tool.records.extraction_routes --source /private/original --sha256 EXPECTED_HASH --output-root /private/derived --format pdf
 ```
 
-The output root must already be private, owned by the current actor, and free of symlink aliases. Each run retains a receipt, units and derivative files. Source, output size, child memory, time and unit count are bounded. Errors become explicit blocked results. No parser output or raw record can choose an executable.
+The output root must already be private, owned by the current actor, and free of symlink aliases. Each run retains a receipt, units and derivative files. The CLI summary on stdout omits units and absolute private paths (`run_path`, `ocr_derivative_path`); it reports `run_id`, the run directory name under the output root. The retained receipt keeps the full paths privately. Source, output size, child memory, time and unit count are bounded. Errors become explicit blocked results. No parser output or raw record can choose an executable.
 
 Text, email, CSV/TSV, Word, spreadsheets and archives use the existing parser. Spreadsheet formulas and macros are never executed. Image parsing records dimensions and requires visual review. MSG decoding preserves ordinary attachment bytes by hash and records attachment locators. Embedded message objects that do not expose original bytes remain explicit decoder gaps. Optional parser versions are pinned in requirements-records-parsers.txt for an isolated runtime; this package does not install them or change a host image.
 
