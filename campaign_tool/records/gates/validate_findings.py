@@ -32,6 +32,7 @@ CLASSES = {
 INCOMPLETE = {"NOT_ASSESSED", "VERSION_OR_APPLICABILITY_UNRESOLVED", "LEGAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE"}
 ROLES = {"factual", "legal", "privacy"}
 COVERAGE = {"selected", "full_text", "full_visual", "all_rows"}
+TIER_A_CLASSES = {"CONFIRMED_DOCUMENTARY_FACT", "REDACTION", "REDACTION_OR_EXPORT_LIMIT"}
 
 
 def agent_identity(value):
@@ -101,7 +102,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def gate(finding, external_reviews=(), check_files=False):
+def gate(finding, external_reviews=(), check_files=False, *, tier="B"):
     blocks = []
     if not isinstance(finding, dict):
         return {"ready": False, "blockers": ["finding is not an object"]}
@@ -116,6 +117,11 @@ def gate(finding, external_reviews=(), check_files=False):
     if not check_files:
         blocks.append("source byte verification required for readiness")
     classification = finding.get("classification")
+    required_roles = {"factual", "privacy"} if tier == "A" else ROLES
+    if tier not in ("A", "B"):
+        blocks.append("unrecognized review tier")
+    if tier == "A" and (not isinstance(classification, str) or classification not in TIER_A_CLASSES or finding.get("rules") != []):
+        blocks.append("tier A cannot carry legal classification or rules")
     if not isinstance(classification, str) or classification not in CLASSES:
         blocks.append("unrecognized classification")
     if isinstance(classification, str) and classification in INCOMPLETE:
@@ -229,8 +235,8 @@ def gate(finding, external_reviews=(), check_files=False):
                 continue
         roles.add(role)
         reviewers.add(reviewer)
-    if roles != ROLES:
-        blocks.append("missing independent roles: " + ", ".join(sorted(ROLES - roles)))
+    if not required_roles.issubset(roles):
+        blocks.append("missing independent roles: " + ", ".join(sorted(required_roles - roles)))
     if len(reviewers) < 2:
         blocks.append("at least two distinct independent reviewers required")
     return {"finding_id": identity, "finding_digest": content_hash,
