@@ -67,7 +67,12 @@ prints the counts, blocked items and proposals awaiting the owner. Model calls a
 Nothing is published or sent by this command. `records approve --root R --proposal ID --owner YOU`
 binds your decision to the exact public bytes; `records publish --root R --proposal ID --staging DIR`
 copies only approved bytes to a staging directory with versioned releases, and `--rollback`
-restores the previous release. There is no live target in the engine.
+restores the previous release. There is no live target in the engine. `records reopen --root R
+--proposal ID --reason "..."` is the correction path: it reopens review (or an earlier stage with
+`--stage`) for that record, clears the approval, and the next `records run` regenerates the public
+content for re-approval; `publish` then records a correction against the previous release.
+`records status` lists `drifted_proposals` whenever a public file on disk no longer matches the
+reviewed hash in the ledger; such a file can never be published.
 
 `records run` holds an exclusive lock on the root (`run.lock`), so a second run on the same
 root fails at once with `root_locked` instead of racing for stage leases. Under that lock it

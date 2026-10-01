@@ -33,6 +33,10 @@ class PublishError(ValueError):
     pass
 
 
+def encoded(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
 def require(condition, reason):
     if not condition:
         raise PublishError(reason)
@@ -243,6 +247,76 @@ def rollback(root, proposal_id, *, staging, reason=None):
             raise
     return {"proposal_id": proposal_id, "rolled_back": live["version"], "restored": previous,
             "version": manifest["version"], "withdrawn": content is None}
+
+
+REOPEN_STAGES = ("extract", "catalog", "detect", "review", "compare", "privacy")
+
+
+def reopen(root, proposal_id, *, stage="review", reason):
+    """Owner-initiated correction: invalidate ``stage`` (and everything after it) for the
+    proposal's original so the next ``records run`` regenerates the public content.
+
+    The proposal's approval is cleared at once (its bytes are about to change); the
+    staged publication, if any, stays as it is until a re-approved publish records
+    the correction or a rollback withdraws it. Original bytes are never touched.
+    """
+    from .run import OWNER, Pipeline, root_lock
+    require(stage in REOPEN_STAGES, "reopen_stage_invalid")
+    require(isinstance(reason, str) and reason.strip(), "reopen_reason_required")
+    root_ = Root(root)
+    pipeline = Pipeline(root_.path)  # prepares the root (briefly takes the lock itself)
+    with root_lock(root_.path):
+        with store.ledger(root_.ledger) as con:
+            proposal = _proposal(con, proposal_id)
+        subject = _subject(root_, proposal)
+        runner = pipeline._open_stage_run()["runner"]
+        try:
+            result = runner.invalidate(subject, stage, reason="owner_reopen:" + reason.strip()[:200])
+            with store.ledger(root_.ledger) as con:
+                con.execute("UPDATE proposals SET owner_approval='none',approved_content_sha256=NULL WHERE id=?", (proposal_id,))
+                con.commit()
+        finally:
+            pipeline._close_stage_run({"reopen": proposal_id, "stage": stage})
+    receipt = {"schema": "records-reopen-v1", "proposal_id": proposal_id, "original_sha256": subject, "stage": stage,
+               "reason": reason, "invalidated": result["invalidated"], "run_id": pipeline.run_id, "owner": OWNER,
+               "at": datetime.now(timezone.utc).isoformat()}
+    path = root_.sub("proposals/private") / (proposal_id + ".reopen." + pipeline.run_id + ".json")
+    path.write_bytes(encoded(receipt))
+    os.chmod(path, 0o600)
+    return receipt
+
+
+def drifted_proposals(root):
+    """Proposals whose public file on disk no longer matches the ledger's reviewed hash.
+
+    A hand edit of ``proposals/public/<id>.md`` is never publishable (``publish`` checks
+    the approved hash against the bytes), but it should be visible, not silent.
+    """
+    root_ = Root(root)
+    drifted = []
+    with store.ledger(root_.ledger, readonly=True) as con:
+        rows = [dict(r) for r in con.execute("SELECT id,public_content_sha256 FROM proposals ORDER BY id")]
+    for row in rows:
+        path = root_.sub("proposals/public") / (row["id"] + ".md")
+        if not path.is_file() or path.is_symlink():
+            drifted.append({"id": row["id"], "problem": "public_file_missing"})
+            continue
+        actual = sha(path.read_bytes())
+        if actual != row["public_content_sha256"]:
+            drifted.append({"id": row["id"], "problem": "public_file_drifted", "ledger_sha256": row["public_content_sha256"],
+                            "file_sha256": actual})
+    return drifted
+
+
+def reopen_main(argv=None):
+    parser = argparse.ArgumentParser(prog="records reopen", description="Reopen a proposal's record for correction.")
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--proposal", required=True)
+    parser.add_argument("--stage", default="review", choices=REOPEN_STAGES, help="first stage to redo (default review)")
+    parser.add_argument("--reason", required=True)
+    args = parser.parse_args(argv)
+    print(json.dumps(reopen(args.root, args.proposal, stage=args.stage, reason=args.reason), sort_keys=True))
+    return 0
 
 
 def approve_main(argv=None):
