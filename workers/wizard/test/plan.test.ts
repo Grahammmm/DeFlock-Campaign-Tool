@@ -23,8 +23,8 @@ export function fullState(): WizardState {
   s.accounts = {
     cloudflare: { api_token: "cf-test-token-not-a-real-credential", account_id: "a".repeat(32), zone_id: "b".repeat(32), access_team: "example-team" },
     mailbox: { mode: "email_routing", address: "requests@campaign.example.invalid" },
-    brevo: { api_key: "brevo-test-key", list_id: "7" },
-    model: { base_url: "https://model.example.invalid/v1", api_key: "model-test-key", model_id: "example-model" },
+    brevo: { api_key: "brevo-test-key", list_id: "7" }, // pragma: allowlist secret
+    model: { base_url: "https://model.example.invalid/v1", api_key: "model-test-key", model_id: "example-model" }, // pragma: allowlist secret
   };
   s.step = 6;
   return s;

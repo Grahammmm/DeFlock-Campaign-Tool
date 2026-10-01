@@ -1,6 +1,6 @@
 // Identity minting per docs/CONTRACTS.md. Every identifier is stable text.
 
-const ULID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"; // Crockford base32, lowercased
+const ULID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"; // pragma: allowlist secret (Crockford base32 alphabet, lowercased)
 
 /** 26-char lowercase ULID-like string: 10 chars of time, 16 chars of randomness. */
 export function ulid(now: number = Date.now()): string {
