@@ -12,10 +12,13 @@ Requires Python 3.11 or newer. No third-party Python packages are required.
 git clone https://github.com/Grahammmm/DeFlock-Campaign-Tool.git
 cd DeFlock-Campaign-Tool
 python3 -m campaign_tool init --directory ../my-campaign --county "Your County" --state CA --name "Your Campaign"
+python3 -m campaign_tool kit --directory ../my-campaign
 python3 -m campaign_tool doctor --directory ../my-campaign
 python3 -m campaign_tool build --directory ../my-campaign
 python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
 ```
+
+`kit` resolves the county (or a city given with `init --location "Morro Bay"`) against the offline California agency seed and writes `../my-campaign/kit/`: an organizer-owned `agencies.json`, one draft records request per sheriff, police and CHP entry, governing bodies, and a law-package summary. Nothing is sent and no agency is asserted to use ALPR; see [docs/AGENCY-DISCOVERY.md](docs/AGENCY-DISCOVERY.md) for what to verify before sending.
 
 Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, not a claim that any agency violated a law. Use an external campaign directory so private records do not live in the software repository.
 
@@ -31,18 +34,23 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 ## Included in this alpha
 
 - County/state configuration with safe defaults and local setup diagnostics.
-- Static, mobile-friendly website generation from an explicit public-field allowlist.
+- Offline agency discovery for all 58 California counties (`data/agencies/us-ca.json`, unverified seed) and a drafted-request kit.
+- Static, mobile-friendly website generation: a neutral starter from `campaign.json` alone, or a multi-page campaign site (findings with hashed sources, agencies, source library, meetings, Atom feed, agency cards and optional MapLibre map) from a reviewed `content/` directory with a generated Content-Security-Policy; see [docs/SITE-CONTENT.md](docs/SITE-CONTENT.md).
 - Private local document storage and SQLite receipt ledger.
 - A review-gate library binding independent review receipts to finding content.
 - Synthetic policy, search log, agreement, and agency reply fixtures.
 - Portable records-analysis and review skills.
 - Architecture, implementation roadmap, operator checklists, request templates, and contribution guidance.
 
-The initial code has not yet completed independent validation. No passing-test or capacity claim is made.
+An offline test suite (synthetic fixtures only, no network) runs in GitHub Actions on every pull request and push to `main`. Run it locally with `python3 -B -m unittest discover -v`, then `python3 -B tools/check_public_tree.py` and `node scripts/scan-secrets.mjs` before pushing. A passing suite checks structure and safeguards; it is not independent legal, privacy, or capacity validation, and no production-readiness claim is made.
+
+## Jurisdiction law packages
+
+`jurisdictions/us-ca/package.json` encodes California's Public Records Act deadlines and the SB 34 ALPR statute (Civ. Code § 1798.90.5 et seq.) as data, with a primary source and effective date on every rule. It ships with `status: draft`; `doctor` reports `reviewed_law_package: false` until an independent reviewer marks it `reviewed`. Preview a package with `python3 -m campaign_tool.law show us-ca`. See [jurisdictions/README.md](jurisdictions/README.md) and [docs/LAW-PACKAGES.md](docs/LAW-PACKAGES.md).
 
 ## Planned, not yet implemented
 
-Resumable account setup; Cloudflare deployment automation; authenticated workspace; mailbox and MuckRock connectors; sandboxed PDF/spreadsheet extraction; reviewed state-law packages; authenticated review receipts; publication/correction workflows; newsletter integration; meeting tools; monitored scheduling and cost controls.
+Resumable account setup; Cloudflare deployment automation; authenticated workspace; mailbox and MuckRock connectors; sandboxed PDF/spreadsheet extraction; independently reviewed state-law packages (California is drafted, not reviewed); authenticated review receipts; publication/correction workflows; newsletter integration; meeting tools; monitored scheduling and cost controls.
 
 See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 
@@ -79,3 +87,17 @@ complete campaign platform, automatic intake, or a live deployment is ready.
 ## Engine/campaign split
 
 The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). The first extraction is the shared site shell and CSS, with owner approval of original-code rights. See [shell contract and limitations](docs/SITE-SHELL.md) and the [fictional example](examples/fictional-campaign/README.md). Maps, signup, analytics and deployment extraction remain unfinished.
+
+## Records pipeline build and operation
+
+See [the records operating plan](docs/RECORDS-OPERATING-PLAN.md) for the implemented
+and planned stages, required runtime/access, inventory denominators, format
+recovery, review requirements, scheduling, acceptance tests and work order.
+Campaign records and configuration remain outside this public repository.
+
+## Records release identity
+
+`python3 -m campaign_tool.records version --json` reports the exact source build
+and distinguishes candidates from tagged releases. An installed wheel exposes
+`records` and verifies its embedded package manifest. See [WP0 release identity,
+strict public scanning and isolated installation](docs/RECORDS-RELEASE.md).
