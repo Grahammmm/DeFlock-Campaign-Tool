@@ -179,19 +179,41 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def build(root):
-    from .site import preview
-    cfg = read_config(root)
-    site = preview(cfg)
+def check_public_tree(public):
+    """Run the repository leak scan over public/; returns (path, line, label) hits."""
+    tools = Path(__file__).resolve().parents[1] / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from check_public_tree import violations
+    hits = []
+    for path in sorted(public.rglob("*")):
+        if path.is_symlink():
+            hits.append((str(path.relative_to(public)), 0, "symlink_not_scanned"))
+        elif path.is_file():
+            hits.extend(violations(str(path.relative_to(public)), path.read_bytes()))
+    return hits
+
+
+def build(root, check=False):
+    from .site import build_site
     public = root / "public"
-    public.mkdir(exist_ok=True)
-    (public / "index.html").write_text(site["html"], encoding="utf-8")
-    (public / "style.css").write_text(site["css"], encoding="utf-8")
-    (public / "_headers").write_text(
-        "/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n"
-        "  Content-Security-Policy: default-src 'none'; style-src 'self'; "
-        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'\n", encoding="utf-8")
-    print("Starter written to " + str(public) + ". No private documents exported.")
+    written = build_site(root)
+    content_mode = (root / "content").is_dir()
+    print(("Site" if content_mode else "Starter") + " written to " + str(public)
+          + ". No private documents exported.")
+    total = 0
+    for path in sorted(written):
+        size = path.stat().st_size
+        total += size
+        print(f"  {path.relative_to(public).as_posix():<40} {size:>9} bytes")
+    print(f"  {len(written)} files, {total} bytes")
+    if check:
+        hits = check_public_tree(public)
+        for path, line, label in hits:
+            print(f"public/{path}:{line}: {label}", file=sys.stderr)
+        if hits:
+            raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
+        print("Public tree check passed (pattern scan only; human review still required).")
 
 
 def main():
@@ -210,6 +232,9 @@ def main():
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
+        if name == "build":
+            cmd.add_argument("--check", action="store_true",
+                             help="Scan the generated public/ tree for private paths and credential patterns")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -226,8 +251,10 @@ def main():
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
+        elif args.command == "build":
+            build(root, check=args.check)
         else:
-            {"doctor": doctor, "status": status, "build": build}[args.command](root)
+            {"doctor": doctor, "status": status}[args.command](root)
     except (OSError, ValueError, sqlite3.Error) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         sys.exit(1)

@@ -35,7 +35,7 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 
 - County/state configuration with safe defaults and local setup diagnostics.
 - Offline agency discovery for all 58 California counties (`data/agencies/us-ca.json`, unverified seed) and a drafted-request kit.
-- Static, mobile-friendly website generation from an explicit public-field allowlist.
+- Static, mobile-friendly website generation: a neutral starter from `campaign.json` alone, or a multi-page campaign site (findings with hashed sources, agencies, source library, meetings, Atom feed, agency cards and optional MapLibre map) from a reviewed `content/` directory with a generated Content-Security-Policy; see [docs/SITE-CONTENT.md](docs/SITE-CONTENT.md).
 - Private local document storage and SQLite receipt ledger.
 - A review-gate library binding independent review receipts to finding content.
 - Synthetic policy, search log, agreement, and agency reply fixtures.
