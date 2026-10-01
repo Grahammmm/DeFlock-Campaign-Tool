@@ -222,10 +222,15 @@ def verify(path):
         manifest = _read_manifest(tar)
         expected = manifest["files"]
         seen = set()
+        bad = set()
         for member in tar.getmembers():
             problem = _check_member(member, expected)
             if problem:
                 problems.append({"member": member.name, "problem": problem})
+                if problem == "size_mismatch":
+                    # the member is present, just wrong: report once, not also as missing
+                    seen.add(member.name)
+                    bad.add(member.name)
                 continue
             if not member.isfile() or member.name == MANIFEST:
                 continue
@@ -236,10 +241,10 @@ def verify(path):
                 digest.update(chunk)
             if digest.hexdigest() != expected[member.name]["sha256"]:
                 problems.append({"member": member.name, "problem": "hash_mismatch"})
+                bad.add(member.name)
         for name in sorted(set(expected) - seen):
             problems.append({"member": name, "problem": "missing_member"})
-    report = {"path": str(path), "ok": not problems, "files": len(expected), "verified": len(seen) - sum(
-        1 for p in problems if p["problem"] == "hash_mismatch"), "problems": problems,
+    report = {"path": str(path), "ok": not problems, "files": len(expected), "verified": len(seen - bad), "problems": problems,
         "engine_version": manifest.get("engine_version"), "created_at": manifest.get("created_at"),
         "counts": manifest.get("counts", {})}
     if problems:

@@ -112,9 +112,15 @@ class BackupTests(unittest.TestCase):
     def test_tamper_detection(self):
         out = self.base / "backup.tar"
         backup.export(self.root, out)
-        flipped = self._tamper(out, lambda n, d: d.replace(b"Synthetic policy", b"Altered policy") if n.startswith("private/objects/") else d)
+        # same-length replacement: size still matches, only the hash can catch it
+        flipped = self._tamper(out, lambda n, d: d.replace(b"Synthetic policy", b"Synthetic p0licy") if n.startswith("private/objects/") else d)
         with self.assertRaisesRegex(backup.BackupError, "hash_mismatch"):
             backup.verify(flipped)
+        # different-length replacement: reported once as size_mismatch, never as missing
+        resized = self._tamper(out, lambda n, d: d.replace(b"Synthetic policy", b"Altered policy") if n.startswith("private/objects/") else d)
+        with self.assertRaisesRegex(backup.BackupError, "size_mismatch") as ctx:
+            backup.verify(resized)
+        self.assertNotIn("missing_member", str(ctx.exception))
         target = self.base / "never"
         with self.assertRaises(backup.BackupError):
             backup.restore(flipped, target)
