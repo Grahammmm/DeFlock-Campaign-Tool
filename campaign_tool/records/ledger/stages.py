@@ -425,6 +425,12 @@ def claim(runner, subject, stage, *, ttl_seconds=300, supersedes=None):
     runner = _runner(runner)
     owner, run_id, database = runner.owner, runner.run_id, runner.database
     _require(type(ttl_seconds) is int and 1 <= ttl_seconds <= 3600, "invalid_lease_duration")
+    _require(stage in STAGES, "invalid_stage")
+    # Refuse before any mutation: a runner that cannot validate this stage must
+    # never reopen an accepted receipt (or invalidate its dependents) via
+    # supersession. Fresh claims stay allowed: queue leasing relies on them, and
+    # promote records "blocked" only when the stage has no accepted receipt.
+    _require(supersedes is None or stage in runner.validators, "domain_adapter_unavailable")
     with _transaction(database) as (c, writer):
         runner._check(c)
         _, states = _subject(c, subject, stage, run_id)
@@ -667,7 +673,9 @@ def promote(runner, subject, stage, receipt_bytes, *, claim_id=None):
             connection.execute("ROLLBACK TO stage_promotion")
             connection.execute("RELEASE stage_promotion")
             error = str(exc)
-            if error == "domain_adapter_unavailable":
+            if (error == "domain_adapter_unavailable"
+                    and _states(connection, subject)[stage]["receipt_sha256"] is None):
+                # Never replace an accepted receipt with a receipt-less block.
                 _change(connection, writer, subject, stage, "blocked", None, runner.owner, run_id, error)
                 connection.execute("DELETE FROM work_leases WHERE item_key=?", ("stage:" + subject + ":" + stage,))
         writer.insert("stage_attempts", (

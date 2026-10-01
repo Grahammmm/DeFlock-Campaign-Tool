@@ -60,8 +60,15 @@ class ReconciliationTests(unittest.TestCase):
         row={'identity':{'portal_host':'example.invalid','request_id':'R1','item_id':'1'},'sha256':self.sha,'receipt_sha256':self.receipt,'error':'invalid response'}
         row['binding_evidence']=dict(row)
         self.assertEqual(reconcile('portal',[row],[],[self.sha])['classifications'],{'parser_error':1})
+    def test_duplicate_source_receipts_match_index_row_once(self):
+        second=dict(self.row,receipt_sha256=hashlib.sha256(b'second receipt').hexdigest())
+        r=self.run_mail([self.row,second],[self.row])
+        self.assertEqual(r['classifications'],{'duplicate_source_receipt':1,'matched':1})
+        self.assertEqual([row['classification'] for row in r['rows']],['matched','duplicate_source_receipt'])
+        self.assertEqual(sum(map(len,r['index_match_groups'].values())),1)
     def test_duplicate_match_groups_have_linear_output(self):
         result=self.run_mail([self.row]*128,[self.row]*128)
         self.assertEqual(len(result['index_match_groups']),1)
         self.assertEqual(sum(map(len,result['index_match_groups'].values())),128)
         self.assertEqual(len(result['rows']),128)
+        self.assertEqual(result['classifications'],{'duplicate_index_rows':1,'duplicate_source_receipt':127})

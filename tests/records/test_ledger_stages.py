@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import unittest
+from types import MappingProxyType
 from unittest import mock
 
 from campaign_tool.records.ledger import store, stages
@@ -417,7 +418,48 @@ class StageTests(unittest.TestCase):
             runner.promote(self.subject,"preserve",json.dumps(self.packet("preserve")).encode(),claim_id=claim["claim_id"])
         result=stages.counts(self.database)
         self.assertEqual(result["stages"]["preserve"]["blocked"],1)
+        self.assertEqual(result["stages"]["preserve"]["done"],0)
         self.assertEqual(result["verified_seven_stage_complete"],0)
+
+    def test_adapter_lost_after_claim_blocks_only_receiptless_stage(self):
+        self.prepare("preserve")
+        claim=self.runner.claim(self.subject,"preserve")
+        self.runner.validators=MappingProxyType({})
+        with self.assertRaisesRegex(stages.StageError,"domain_adapter_unavailable"):
+            self.runner.promote(self.subject,"preserve",json.dumps(self.packet("preserve")).encode(),
+                                claim_id=claim["claim_id"])
+        self.assertEqual(self.state("preserve")["status"],"blocked")
+        self.assertIsNone(self.state("preserve")["receipt_sha256"])
+
+    def current_states(self):
+        return {r["stage"]:r for r in self.rows("stage_state") if r["original_sha256"]==self.subject}
+
+    def state(self, stage):
+        return self.current_states()[stage]
+
+    def test_runner_without_validator_cannot_supersede_done_receipt(self):
+        self.advance("review")
+        before=self.current_states()
+        old=before["extract"]["receipt_sha256"]
+        self.assertEqual(before["extract"]["status"],"done")
+        run=self.new_run("partial-adapter-run")
+        partial=stages.testing_runner(self.database,run_id=run,owner="runner",
+            engine_version="synthetic-engine-v1",config_sha256=self.config_hash,
+            validators={"preserve":lambda context:True},version="partial-v1")
+        with self.assertRaisesRegex(stages.StageError,"domain_adapter_unavailable"):
+            partial.claim(self.subject,"extract",supersedes=old)
+        self.assertEqual(self.current_states(),before)
+        self.assertFalse([row for row in self.rows("stage_claims") if row["run_id"]==run])
+        # Defense in depth: even if a claim exists and the adapter disappears,
+        # promotion must never replace an accepted receipt with a receipt-less block.
+        claim=self.runner.claim(self.subject,"extract",supersedes=old)["claim_id"]
+        self.runner.validators=MappingProxyType(
+            {k:v for k,v in self.runner.validators.items() if k!="extract"})
+        with self.assertRaisesRegex(stages.StageError,"domain_adapter_unavailable"):
+            self.runner.promote(self.subject,"extract",
+                json.dumps(self.packet("extract",rationale="second pass",supersedes=old)).encode(),claim_id=claim)
+        self.assertEqual(self.state("extract")["receipt_sha256"],old)
+        self.assertNotEqual(self.state("extract")["status"],"blocked")
 
     def test_always_true_test_validators_never_verify_production(self):
         run=self.new_run("always-true-test-run")

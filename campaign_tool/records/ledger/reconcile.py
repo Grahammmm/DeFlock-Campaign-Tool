@@ -81,7 +81,10 @@ def reconcile(kind, sources, indexed, objects):
             matches = by_key.get(key,{}) if key is not None else {}
             exact = matches.get(sha,[]) if _hash(sha) else []
             group_id = hashlib.sha256((key+'\0'+sha).encode()).hexdigest() if exact else None
-            if group_id is not None and group_id not in seen_groups:
+            # A (identity, sha256) pair may bind to its index rows only once; later
+            # source receipts for the same pair are duplicates, never extra matches.
+            repeat = group_id is not None and group_id in seen_groups
+            if group_id is not None and not repeat:
                 seen_groups.add(group_id)
                 used.update(exact)
                 match_groups[group_id] = exact
@@ -107,6 +110,8 @@ def reconcile(kind, sources, indexed, objects):
                 classification = 'identity_hash_conflict'
             elif not exact:
                 classification = 'stale_index'
+            elif repeat:
+                classification = 'duplicate_source_receipt'
             elif len(exact)>1:
                 classification = 'duplicate_index_rows'
             else:
