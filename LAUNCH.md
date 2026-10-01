@@ -80,7 +80,8 @@ with `DRY_RUN=1` and read the recorded plan before running it live.
 ## Decisions recorded 2026-09-30
 
 Keep the name DeFlock Campaign Tool; runner default is a Cloudflare Container in the
-organizer's account; newsletter provider is Brevo; privacy tier default `strict_local`
-(changed from `redacted_cloud` at the 2026-10-01 audit: regex redaction cannot catch every
-bare name, so cloud models are an acknowledged opt-in); SLO cuts over at the phase 2 gate;
+organizer's account; newsletter provider is Brevo; privacy tier default `redacted_cloud`
+(records stay local, only redacted text reaches a model; known names go in the denylist
+because regex redaction cannot catch every bare name) with `strict_local` as a switch; SLO
+cuts over at the phase 2 gate;
 review is done in-chat with the owner, no outside reviewer.

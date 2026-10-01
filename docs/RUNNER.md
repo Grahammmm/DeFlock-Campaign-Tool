@@ -34,8 +34,7 @@ SIGTERM/SIGINT, which finishes the current job before exiting.
 | --- | --- | --- |
 | `WORKSPACE_URL` | required | Workspace Worker origin; `/api/runner` is appended |
 | `RUNNER_TOKEN` | required | Bearer token from the workspace Settings screen (shown once) |
-| `PRIVACY_TIER` | `strict_local` | `strict_local` or `redacted_cloud`; the stricter of this and the job's own tier (from the campaign row) applies per job |
-| `REDACTED_CLOUD_ACKNOWLEDGED` | unset | Must be `names-may-remain` to start with `PRIVACY_TIER=redacted_cloud` (see "Privacy tiers") |
+| `PRIVACY_TIER` | `redacted_cloud` | `redacted_cloud` or `strict_local`; the stricter of this and the job's own tier (from the campaign row) applies per job |
 | `MODEL_BASE_URL` | empty | OpenAI-compatible chat endpoint; empty means detector-only digests and rule-only classification |
 | `MODEL_API_KEY`, `MODEL_ID` | empty, `local` | Sent only to `MODEL_BASE_URL` |
 | `CAMPAIGN_JURISDICTION` | empty | Fallback law package id (`us-ca`) when a job carries none |
@@ -50,17 +49,16 @@ classification job before a request is made.
 
 ## Privacy tiers
 
-`strict_local` (default): text never leaves the box; a model, if any, is local or on the
-tailnet. `redacted_cloud`: `campaign_tool/digest/redact.py` replaces plates, e-mail
+`redacted_cloud` (default): records stay on the box; `campaign_tool/digest/redact.py` replaces plates, e-mail
 addresses, phone numbers, street addresses, SSN-like numbers, dates of birth after a label,
 names after a rank title or a name-like label (`Name:`, `Requester:`, `Sincerely,` ...) and
 every `REDACTION_DENYLIST` phrase with stable placeholders before any text reaches the
 model; attachment member names and sheet titles are never sent (the model sees unit numbers
 and page numbers only). **A bare personal name in running text is not recognised by any
-regex.** That is why `redacted_cloud` requires `REDACTED_CLOUD_ACKNOWLEDGED=names-may-remain`
-and why every name the organizers know of (requesters, clerks, officers named in earlier
+regex**, so every name the organizers know of (requesters, clerks, officers named in earlier
 records) belongs in `REDACTION_DENYLIST`. Over-redaction is harmless; the digest records
-counts, never the mapping.
+counts, never the mapping. `strict_local`: text never leaves the box; a model, if any, must
+be loopback or on the tailnet, and the runner refuses to start otherwise.
 
 ## Loop semantics (`runner/loop.py`)
 

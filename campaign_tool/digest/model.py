@@ -54,7 +54,7 @@ class ModelConfig:
         if not base:
             return None
         return cls(base_url=base, api_key=env.get("MODEL_API_KEY", ""), model_id=env.get("MODEL_ID", "local"),
-                   privacy_tier=env.get("PRIVACY_TIER", "strict_local"),
+                   privacy_tier=env.get("PRIVACY_TIER", "redacted_cloud"),
                    timeout=int(env.get("MODEL_TIMEOUT", DEFAULT_TIMEOUT)))
 
 

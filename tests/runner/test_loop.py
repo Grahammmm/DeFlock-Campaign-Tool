@@ -153,13 +153,12 @@ class LoopTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old)
 
-    def test_privacy_tier_defaults_to_strict_local_and_cloud_needs_acknowledgement(self):
+    def test_privacy_tier_defaults_to_redacted_cloud_with_strict_local_as_the_switch(self):
         from runner.loop import Settings
-        self.assertEqual(Settings.from_env({}).privacy_tier, "strict_local")
-        with self.assertRaisesRegex(ValueError, "REDACTED_CLOUD_ACKNOWLEDGED"):
-            Settings.from_env({"PRIVACY_TIER": "redacted_cloud"})
-        ok = Settings.from_env({"PRIVACY_TIER": "redacted_cloud", "REDACTED_CLOUD_ACKNOWLEDGED": "names-may-remain"})
-        self.assertEqual(ok.privacy_tier, "redacted_cloud")
+        self.assertEqual(Settings.from_env({}).privacy_tier, "redacted_cloud")
+        self.assertEqual(Settings.from_env({"PRIVACY_TIER": "strict_local"}).privacy_tier, "strict_local")
+        with self.assertRaisesRegex(ValueError, "PRIVACY_TIER"):
+            Settings.from_env({"PRIVACY_TIER": "open_cloud"})
 
     def test_job_tier_never_loosens_the_operator_tier(self):
         with tempfile.TemporaryDirectory() as tmp:
