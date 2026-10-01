@@ -23,5 +23,5 @@ jobs:
           fi
       - run: python3 -m unittest discover -s tests -v
       - run: node --test tests/*.test.mjs
-      - run: python3 -m campaign_tool build --directory examples/fictional-campaign
+      - run: python3 -m campaign_tool build --directory examples/fictional-campaign --check
       - run: node scripts/scan-secrets.mjs
