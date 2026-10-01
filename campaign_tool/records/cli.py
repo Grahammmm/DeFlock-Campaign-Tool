@@ -11,6 +11,8 @@ COMMANDS = {
     "batch-report": "gates.batch_report",
     "version": "release_manifest",
     "scan-public": "public_scan",
+    "run": ("run", "main"),
+    "status": ("run", "status_main"),
 }
 
 
@@ -20,6 +22,8 @@ def main():
     parser.add_argument("command", choices=COMMANDS)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    module = importlib.import_module("." + COMMANDS[args.command], __package__)
+    target = COMMANDS[args.command]
+    module_name, function = target if isinstance(target, tuple) else (target, "main")
+    module = importlib.import_module("." + module_name, __package__)
     sys.argv = [sys.argv[0] + " " + args.command, *args.arguments]
-    return module.main()
+    return getattr(module, function)()

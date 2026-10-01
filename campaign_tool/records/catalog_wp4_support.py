@@ -32,10 +32,6 @@ def verified_text_line(adapter, con, row, proof):
         from . import extraction_ledger as enrollment
     except ImportError as error:
         raise CatalogStageError("wp4_installed_dependency_unavailable") from error
-    binding = adapter.stages._INSTALLED_VALIDATORS.get(validation.ADAPTER_ID)
-    require(type(binding) is validation._InstalledExtractionValidator
-            and binding.database == adapter.database
-            and binding.evidence_root.is_relative_to(adapter.root), "wp4_installed_binding_required")
     subject = row["original_sha256"]
     state = con.execute("SELECT * FROM stage_state WHERE original_sha256=? AND stage='extract'", (subject,)).fetchone()
     require(state is not None and state["status"] == "done" and state["receipt_sha256"],
@@ -44,12 +40,17 @@ def verified_text_line(adapter, con, row, proof):
     transition = con.execute("SELECT * FROM stage_transitions WHERE receipt_sha256=?", (state["receipt_sha256"],)).fetchone()
     authority = con.execute("SELECT * FROM stage_validation_authority WHERE receipt_sha256=?", (state["receipt_sha256"],)).fetchone()
     require(head is not None and transition is not None and authority is not None
-            and authority["test_only"] == 0 and authority["validator_id"] == validation.ADAPTER_ID,
-            "wp4_production_authority_required")
+            and authority["test_only"] == 0 and type(authority["validator_id"]) is str
+            and authority["validator_id"].startswith(validation.ADAPTER_ID), "wp4_production_authority_required")
+    binding = adapter.stages._INSTALLED_VALIDATORS.get(authority["validator_id"])
+    require(type(binding) is validation._InstalledExtractionValidator
+            and binding.adapter_id == authority["validator_id"]
+            and binding.database == adapter.database
+            and binding.evidence_root.is_relative_to(adapter.root), "wp4_installed_binding_required")
     require(transition["subject_sha256"] == subject and transition["stage"] == "extract"
             and transition["status"] == "done" and transition["revision"] == head["revision"]
             and transition["run_id"] == authority["run_id"]
-            and transition["validator_id"] == validation.ADAPTER_ID, "wp4_current_acceptance_binding")
+            and transition["validator_id"] == authority["validator_id"], "wp4_current_acceptance_binding")
     claim = con.execute("SELECT * FROM stage_claims WHERE claim_id=?", (authority["claim_id"],)).fetchone()
     run = con.execute("SELECT * FROM stage_runner_bindings WHERE run_id=?", (authority["run_id"],)).fetchone()
     require(claim is not None and run is not None and run["test_only"] == 0
@@ -98,10 +99,11 @@ def verified_text_line(adapter, con, row, proof):
     require(type(ordinal) is int and 1 <= ordinal <= len(members) and members[ordinal - 1] == row["id"]
             and provenance.get("extraction_import_id") == import_id
             and provenance.get("ordinal") == ordinal, "wp4_import_membership_mismatch")
-    require(row["status"] == "candidate_extracted" and row["unit_type"] == "text_line"
+    accepted_forms = validation.TEXT_FORMS | validation.REPARSE_FORMS | {"pdf"}
+    require(row["status"] == "candidate_extracted" and type(row["unit_type"]) is str and row["unit_type"]
             and row["parser"] == content.get("parser") == manifest.get("parser")
             and row["parser_version"] == content.get("parser_version") == manifest.get("parser_version")
-            and row["parser"] in {"legacy-intake:" + form for form in validation.TEXT_FORMS}, "wp4_parser_mismatch")
+            and row["parser"] in {"legacy-intake:" + form for form in accepted_forms}, "wp4_parser_mismatch")
     _locator(row["locator"])
     require(proof["source_sha256"] == subject and proof["locator"] == row["locator"], "wp4_line_binding_mismatch")
     digest = provenance.get("payload_sha256")
@@ -112,9 +114,10 @@ def verified_text_line(adapter, con, row, proof):
     require(_sha(enrollment.canonical([import_id, ordinal, digest]).encode()) == row["id"], "wp4_unit_identity_mismatch")
     line = _decode(raw)
     require(type(line) is dict and set(line) == {"kind", "locator", "text", "data"}
-            and line["kind"] == "text_line" and line["locator"] == {"line": ordinal}
+            and line["kind"] == row["unit_type"]
+            and (line["locator"] == {"line": ordinal} if line["kind"] == "text_line" else True)
             and row["locator"] == enrollment.canonical(line["locator"])
-            and type(line["text"]) is str and line["data"] == {}, "wp4_line_binding_mismatch")
+            and type(line["text"]) is str and type(line["data"]) is dict, "wp4_line_binding_mismatch")
     require(_sha(line["text"].encode()) == row["text_sha256"]
             and proof["quote"] in line["text"], "wp4_line_hash_mismatch")
     original = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
