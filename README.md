@@ -64,7 +64,10 @@ An offline test suite (synthetic fixtures only, no network) runs in GitHub Actio
 (with an independent challenge pass), compare and privacy in one ledger. `records status --root`
 prints the counts, blocked items and proposals awaiting the owner. Model calls are optional
 (`MODEL_BASE_URL`, `CHALLENGE_MODEL_BASE_URL`) and only ever receive locally redacted text.
-Nothing is published or sent by this command.
+Nothing is published or sent by this command. `records approve --root R --proposal ID --owner YOU`
+binds your decision to the exact public bytes; `records publish --root R --proposal ID --staging DIR`
+copies only approved bytes to a staging directory with versioned releases, and `--rollback`
+restores the previous release. There is no live target in the engine.
 
 ## Planned, not yet implemented
 
