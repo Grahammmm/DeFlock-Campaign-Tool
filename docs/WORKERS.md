@@ -85,7 +85,13 @@ Runner API, exactly per CONTRACTS.md: `GET /api/runner/jobs?lease=300` (single
 `max_attempts`), `POST /api/runner/jobs/:id/result`, `GET|PUT /api/runner/originals/:sha256`
 (PUT verifies the hash before storing), `POST /api/runner/proposals` (idempotent on
 `idempotency_key`), `POST /api/runner/correspondence` (deduped on `provider_message_id`),
-`POST /api/runner/receipts` (`receipt_id = sha256([source_id, sha256])`).
+`POST /api/runner/receipts` (`receipt_id = sha256([source_id, sha256])`),
+`PUT /api/runner/site/:version/*path` (stages one public-site file at `sites/<version>/<path>`
+in the public bucket after path, extension, size and `x-object-sha256` checks; nothing is
+served until a `deploy_site` card flips `site_version`). A `done` result may carry
+`outputs.followups`, which the Worker enqueues idempotently (known kinds only, never
+`send_request`); a `classify_mail` result's `outputs.correspondence_update` patches only the
+classification fields of its correspondence row.
 
 `scheduled()` writes a `run_receipt` and enqueues `intake`, `digest` and, for requests whose
 determination date has passed without a production or denial, `draft_followup`, with
@@ -116,6 +122,7 @@ The review parity fixture `tests/fixtures/review-cases.json` is checked by both
 
 ## Not done here
 
-Runner container, mailbox/MuckRock/Brevo executors, site build job, queue consumers,
-Access group management beyond the organizer policy, and any production deployment. See
-[ROADMAP.md](ROADMAP.md).
+Mailbox/MuckRock/Brevo executors in the Worker (the engine-side outbox journal exists, see
+[OUTBOX.md](OUTBOX.md)), queue consumers beyond the runner's poll loop, Access group
+management beyond the organizer policy, and any production deployment. The runner container
+and the site build job live in `runner/` ([RUNNER.md](RUNNER.md)). See [ROADMAP.md](ROADMAP.md).

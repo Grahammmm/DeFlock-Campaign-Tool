@@ -102,8 +102,15 @@ job, external_action, incident, setting. Every row carries `campaign_id`, `creat
 Runner API (workspace Worker, bearer token bound to one campaign):
 `GET /api/runner/jobs?lease=300` → next job or 204; `POST /api/runner/jobs/{job_id}/result` with
 `{"status": "done|failed|blocked", "outputs": {}, "receipt": {...}}`; `GET /api/runner/originals/{sha256}` → bytes;
-`PUT /api/runner/originals/{sha256}` → store. Runner never receives credentials for mail, MuckRock or Brevo;
-sends are performed by the workspace outbox after an organizer approval.
+`PUT /api/runner/originals/{sha256}` → store; `PUT /api/runner/site/{version}/{path}` → stage a public-site file
+(`version` matches `[a-z0-9._-]{1,64}`; `path` is relative with plain segments, an allowlisted extension or
+`_headers`/`_redirects`, at most 16 MiB; the `x-object-sha256` header must equal the body's hash). Runner never
+receives credentials for mail, MuckRock or Brevo; sends are performed by the workspace outbox after an organizer approval.
+
+Result `outputs` may include `followups: [{"kind", "idempotency_key"?, "inputs"}]`; the Worker enqueues each with
+the given 64-hex key or `sha256(kind + JSON(inputs))`, skips unknown kinds and `send_request`, and ignores followups
+on `failed`/`blocked` results. A `classify_mail` result may include `correspondence_update: {classification,
+classification_confidence, summary}`; no other correspondence field is writable from a result.
 
 ## Approval card
 

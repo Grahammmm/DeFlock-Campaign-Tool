@@ -1,0 +1,38 @@
+name: Runner checks
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/*runner*']
+permissions:
+  contents: read
+jobs:
+  runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r requirements-runner.txt -r requirements-records-test.txt
+      - name: Runner, digest and outbox tests (synthetic fixtures, no network)
+        run: python3 -B -m unittest discover -s tests/runner -t . -v && python3 -B -m unittest tests.test_outbox tests.test_redact -v
+      - name: Fake workspace smoke (exit 3 = idle)
+        run: python3 -B -m runner --once --fake; test "$?" -eq 3
+      - run: node scripts/scan-secrets.mjs
+      - run: python3 -B tools/check_public_tree.py
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the runner image (includes its own --once --fake smoke test)
+        run: docker build -f runner/Dockerfile -t deflock-runner:ci .
+      - name: Image runs as non-root and refuses to start without a workspace
+        run: |
+          test "$(docker run --rm --entrypoint id deflock-runner:ci -u)" = "10001"
+          if docker run --rm deflock-runner:ci --once; then echo "expected usage error"; exit 1; fi
+          docker run --rm -e PRIVACY_TIER=strict_local -e MODEL_BASE_URL=https://api.example.invalid/v1 deflock-runner:ci --once --fake && exit 1 || true
+      - name: Image contains no test fixtures or private paths
+        run: |
+          docker run --rm --entrypoint sh deflock-runner:ci -c 'test ! -e /app/tests && test ! -e /app/examples && test ! -e /app/.git && test ! -e /app/private'

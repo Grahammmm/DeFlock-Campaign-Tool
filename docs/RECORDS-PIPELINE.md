@@ -69,10 +69,10 @@ is different from the full records gate; do not convert approvals implicitly.
 | --- | --- |
 | M0b | Port intake v3.2, its repair/quarantine helpers and tests; replace host paths, agency regexes and exclusions with private config; retain bounded subprocess parsing. |
 | M1 | Import the existing ledger and accepted snapshot without discarding later receipts; one catalog card per exact hash, prior-review provenance, private board and reconciled counts. |
-| M2 | Owner-approved local OCR tools; page-level OCR/fidelity receipts and explicit blocked pages. |
-| M3 | Deterministic, versioned detectors with exact locators, synthetic cases and private policy overlays. Hits are not findings. |
-| M4 | Three independently checked, privacy-scanned factual drafts awaiting owner and tier approval; no publication. |
-| M5 | One lock-protected job absorbs the exporter; exact existing-to-proposed schedule diff and owner approval before activation. |
+| M2 | Owner-approved local OCR tools; page-level OCR/fidelity receipts and explicit blocked pages. **Status: not started.** The runner's `extract` handler reports pages without text as `ocr_needed` and the `digest` handler finishes `done` with `skipped: OCR or visual review needed`; no OCR tool is installed or approved. |
+| M3 | Deterministic, versioned detectors with exact locators, synthetic cases and private policy overlays. Hits are not findings. **Status: partly done.** `campaign_tool/digest/detectors.py` (`DETECTOR_VERSION`) runs rule-bound regex detectors over redacted units with page/line/cell locators, tested on the synthetic county policy; hits feed digests whose conclusions are `needs_attorney_review` without a model. Private policy overlays and the catalog-side detector ledger are not built. |
+| M4 | Three independently checked, privacy-scanned factual drafts awaiting owner and tier approval; no publication. **Status: not started.** Digests exist per original (see [RUNNER.md](RUNNER.md)); no draft, no independent check and no publication path has been produced from them. |
+| M5 | One lock-protected job absorbs the exporter; exact existing-to-proposed schedule diff and owner approval before activation. **Status: not started for the pilot.** The engine side now has the pieces a schedule would call: the workspace Worker's cron enqueues `intake`/`digest`/`draft_followup` jobs offline, the runner executes them, and the outbox ([OUTBOX.md](OUTBOX.md)) journals sends. The pilot's existing exporter, its unit and checkpoint state have not been inventoried, no schedule diff exists and nothing has been activated. |
 
 The intended schedule is 07:00, 13:00 and 20:30 America/Los_Angeles, not every
 15 minutes. With that cadence, measure arrival-to-next-run separately from
