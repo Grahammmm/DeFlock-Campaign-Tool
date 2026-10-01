@@ -34,9 +34,12 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
     """Persist ``raw`` and its attachable parts; return the receipt path.
 
     Layout under ``mail_root``: ``<sha>/message.eml``, ``<sha>/<part>-<name>``
-    and ``<sha>/receipt.json``. Re-exporting identical bytes is a no-op that
-    returns the same receipt; different bytes never collide because the
-    directory is the content hash.
+    and ``<sha>/receipt.json``. Re-exporting identical bytes under the same
+    occurrence identity is a no-op that returns the same receipt. The same
+    bytes seen under another identity (a second folder, or a new UID after a
+    UIDVALIDITY reset) share the stored bytes and get their own
+    ``receipt-<identity>.json``: one original, several occurrences.
+    Different bytes never collide because the directory is the content hash.
     """
     if not isinstance(raw, (bytes, bytearray)) or not raw:
         raise mail_delta.Rejected("empty_message")
@@ -48,12 +51,19 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     sha = hashlib.sha256(raw).hexdigest()
     base = root / sha
+    wanted = (account, mailbox, str(uidvalidity), str(uid))
     receipt_path = base / "receipt.json"
     if receipt_path.exists():
         existing, identity, _ = mail_delta.load_receipt(receipt_path)
-        if identity != (account, mailbox, str(uidvalidity), str(uid)):
-            raise mail_delta.Rejected("export_identity_conflict")
-        return receipt_path
+        if identity == wanted:
+            return receipt_path
+        tag = hashlib.sha256("\0".join(wanted).encode()).hexdigest()[:16]
+        receipt_path = base / ("receipt-" + tag + ".json")
+        if receipt_path.exists():
+            existing, identity, _ = mail_delta.load_receipt(receipt_path)
+            if identity != wanted:
+                raise mail_delta.Rejected("export_identity_conflict")
+            return receipt_path
     eml_path = base / "message.eml"
     if not eml_path.exists():
         _write_private(eml_path, bytes(raw))

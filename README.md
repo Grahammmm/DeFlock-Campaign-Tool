@@ -69,6 +69,16 @@ binds your decision to the exact public bytes; `records publish --root R --propo
 copies only approved bytes to a staging directory with versioned releases, and `--rollback`
 restores the previous release. There is no live target in the engine.
 
+`records run --root R --mail-config /path/mail.json` fetches new messages over IMAP before
+advancing stages. `mail.json` is an owner-only (0600) file naming `host`, `username`,
+`account_id`, optional `folders` and either `password_file` (0600) or `password_env`; the
+password never appears in reports, run rows or checkpoints. Messages are fetched with
+`BODY.PEEK[]`, so read flags are never touched or used as state. A per-folder
+`(uidvalidity, highest_uid)` checkpoint in the ledger advances only past fully preserved
+messages; a UIDVALIDITY change re-enumerates the folder and byte identity keeps the replay
+free of duplicate originals. Folders the account exposes but the config omits, and configured
+folders the server lacks, raise keyed alerts visible in `records status`.
+
 ## Planned, not yet implemented
 
 Wiring the engine outbox (`campaign_tool/outbox.py`) into the Worker's `send_request`/`send_followup` executors (today they fail `sender_not_configured` until a `MailSender` is bound); runner handlers for `newsletter_draft` and `backup` (enqueued, answered `blocked`); social posting; OCR for image-only pages; independently reviewed state-law packages (California is drafted, not reviewed); Brevo webhooks and list counts; automatic Legistar polling from the Worker (the CLI import exists); backup encryption, scheduling and hosted restore; monitored scheduling and cost controls; any production deployment of the Workers or the runner.
