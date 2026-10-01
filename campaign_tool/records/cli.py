@@ -13,6 +13,8 @@ COMMANDS = {
     "scan-public": "public_scan",
     "run": ("run", "main"),
     "status": ("run", "status_main"),
+    "approve": ("publish", "approve_main"),
+    "publish": ("publish", "publish_main"),
 }
 
 
