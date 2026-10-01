@@ -80,9 +80,16 @@ class ExtractionValidationTests(unittest.TestCase):
     def install(self):
         adapter_id = validation.install_extraction_validator(database=self.database,
             evidence_root=self.adapter.evidence_root, original_root=self.root)
-        self.assertEqual(adapter_id, validation.ADAPTER_ID)
+        self.assertEqual(adapter_id, self.expected_id())
+        self.adapter_id = adapter_id
         self.validator = self.stages._INSTALLED_VALIDATORS[adapter_id]
         return self.validator
+
+    def expected_id(self):
+        binding = validation._InstalledExtractionValidator(enrollment.checked_path(self.database),
+            enrollment.private_dir(self.adapter.evidence_root), enrollment.private_dir(self.root))
+        self.assertTrue(binding.adapter_id.startswith(validation.ADAPTER_ID + ':'))
+        return binding.adapter_id
 
     def run_row(self, name='synthetic-run'):
         with self.store.ledger(self.database) as con:
@@ -166,15 +173,15 @@ class ExtractionValidationTests(unittest.TestCase):
         self.actual()
         self.assertEqual(self.enrolled['stage_promotions'], 0)
         self.assertEqual(self.store.counts(self.database)['stages']['extract']['pending'], 1)
-        self.assertNotIn(validation.ADAPTER_ID, self.stages._INSTALLED_VALIDATORS)
+        self.assertFalse(any(key.startswith(validation.ADAPTER_ID) for key in self.stages._INSTALLED_VALIDATORS))
 
     def test_installed_profile_has_fixed_binding_and_explicit_identity(self):
         self.actual(); self.install(); self.run_row()
         self.stages.configure_installed_profile('fixture-profile', engine_version='synthetic-v1',
-            config_sha256=self.config, validators={'extract': validation.ADAPTER_ID})
+            config_sha256=self.config, validators={'extract': self.adapter_id})
         adapter = validation.ExtractionStageAdapter(database=self.database, evidence_root=self.adapter.evidence_root,
             original_root=self.root, run_id='synthetic-run', owner='fixture', profile_id='fixture-profile')
-        self.assertEqual(adapter.runner.validators['extract'][0], validation.ADAPTER_ID)
+        self.assertEqual(adapter.runner.validators['extract'][0], self.adapter_id)
         self.assertEqual(adapter.runner.run_id, 'synthetic-run')
         self.assertEqual(adapter.runner.owner, 'fixture')
         with self.assertRaises(self.stages.StageError):
@@ -187,7 +194,7 @@ class ExtractionValidationTests(unittest.TestCase):
         self.actual(); self.install(); self.runner()
         self.run_row('installed-contract-run')
         self.stages.configure_installed_profile('installed-contract', engine_version='synthetic-v1',
-            config_sha256=self.config, validators={'extract': validation.ADAPTER_ID})
+            config_sha256=self.config, validators={'extract': self.adapter_id})
         adapter = validation.ExtractionStageAdapter(database=self.database, evidence_root=self.adapter.evidence_root,
             original_root=self.root, run_id='installed-contract-run', owner='fixture', profile_id='installed-contract')
         with self.assertRaisesRegex(self.stages.StageError, 'synthetic'):
@@ -199,16 +206,21 @@ class ExtractionValidationTests(unittest.TestCase):
             ).fetchone()[0], 0)
 
     def test_registration_cannot_replace_other_installed_callback(self):
-        self.stages._INSTALLED_VALIDATORS[validation.ADAPTER_ID] = lambda context: True
+        self.stages._INSTALLED_VALIDATORS[self.expected_id()] = lambda context: True
         with self.assertRaisesRegex(enrollment.ExtractionBindingError, 'binding_conflict'):
             self.install()
 
-    def test_registration_reuse_but_root_change_rejected(self):
+    def test_registration_reuse_and_root_change_gets_distinct_identity(self):
         first = self.install(); self.assertEqual(first, self.install())
         other = self.root / 'other'; other.mkdir(mode=0o700)
+        # A different root is a different installed binding, never a silent replacement.
+        second = validation.install_extraction_validator(database=self.database,
+            evidence_root=other, original_root=self.root)
+        self.assertNotEqual(second, self.adapter_id)
+        self.assertEqual(self.stages._INSTALLED_VALIDATORS[self.adapter_id], first)
         with self.assertRaisesRegex(enrollment.ExtractionBindingError, 'binding_conflict'):
-            validation.install_extraction_validator(database=self.database,
-                evidence_root=other, original_root=self.root)
+            self.stages._INSTALLED_VALIDATORS[second] = lambda context: True
+            validation.install_extraction_validator(database=self.database, evidence_root=other, original_root=self.root)
 
     def test_caller_paths_and_callbacks_not_in_api(self):
         with self.assertRaises(TypeError):
@@ -374,7 +386,7 @@ class ExtractionValidationTests(unittest.TestCase):
         self.prepared()
         self.run_row("competing-installed-run")
         self.stages.configure_installed_profile("competing-installed", engine_version="synthetic-v1",
-            config_sha256=self.config, validators={"extract": validation.ADAPTER_ID})
+            config_sha256=self.config, validators={"extract": self.adapter_id})
         adapter = validation.ExtractionStageAdapter(database=self.database, evidence_root=self.adapter.evidence_root,
             original_root=self.root, run_id="competing-installed-run", owner="different-owner", profile_id="competing-installed")
         with self.store.ledger(self.database, readonly=True) as con:
@@ -389,7 +401,7 @@ class ExtractionValidationTests(unittest.TestCase):
     def test_same_owner_foreign_run_rejected_before_mutation(self):
         self.prepared(); self.run_row("foreign-run")
         self.stages.configure_installed_profile("foreign-profile", engine_version="synthetic-v1",
-            config_sha256=self.config, validators={"extract": validation.ADAPTER_ID})
+            config_sha256=self.config, validators={"extract": self.adapter_id})
         adapter = validation.ExtractionStageAdapter(database=self.database, evidence_root=self.adapter.evidence_root,
             original_root=self.root, run_id="foreign-run", owner="fixture", profile_id="foreign-profile")
         with self.store.ledger(self.database, readonly=True) as con:
@@ -402,7 +414,7 @@ class ExtractionValidationTests(unittest.TestCase):
     def test_guarded_registration_without_preserve_does_not_mutate(self):
         self.actual(); self.install(); self.run_row("unpreserved-run")
         self.stages.configure_installed_profile("unpreserved-profile", engine_version="synthetic-v1",
-            config_sha256=self.config, validators={"extract": validation.ADAPTER_ID})
+            config_sha256=self.config, validators={"extract": self.adapter_id})
         adapter = validation.ExtractionStageAdapter(database=self.database, evidence_root=self.adapter.evidence_root,
             original_root=self.root, run_id="unpreserved-run", owner="fixture", profile_id="unpreserved-profile")
         with self.assertRaisesRegex(enrollment.ExtractionBindingError, "preservation_acceptance_required"):

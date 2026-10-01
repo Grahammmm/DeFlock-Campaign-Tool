@@ -6,6 +6,7 @@ receipt-selected filesystem reference, or profile override is supported here.
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import tempfile
 import hashlib
 import importlib
@@ -25,6 +26,7 @@ MAX_ACCEPT_SOURCE = 8 * 1024 * 1024
 MAX_ACCEPT_EVIDENCE = 64 * 1024 * 1024
 MAX_ACCEPT_PAGES = 256
 TEXT_FORMS = frozenset(("txt", "md", "log", "rst"))
+REPARSE_FORMS = frozenset(("eml",))
 
 
 def require(ok, reason):
@@ -154,6 +156,12 @@ class _InstalledExtractionValidator:
     evidence_root: Path
     original_root: Path
 
+    @property
+    def adapter_id(self):
+        """Per-binding registry id: one process may serve several private roots."""
+        binding = enrollment.canonical([str(self.database), str(self.evidence_root), str(self.original_root)])
+        return ADAPTER_ID + ":" + enrollment.sha(binding.encode())[:24]
+
     def cas(self, digest, size=None, limit=MAX_ACCEPT_EVIDENCE):
         enrollment.checked_sha(digest)
         if size is not None:
@@ -205,8 +213,15 @@ class _InstalledExtractionValidator:
             require(len(raw_original) == original["bytes"] and enrollment.sha(raw_original) == subject,
                     "canonical_original_bytes_mismatch")
             artifact_refs = manifest.get("artifacts")
-            require(isinstance(artifact_refs, dict) and set(artifact_refs) ==
-                    {"source_receipt", "parser_metadata", "derived_units"}, "unsupported_artifact_set")
+            # Container formats (EML, archives) carry their members as ``child:<sha>`` blobs.
+            # They are accepted only when every member is itself a preserved original, so the
+            # member has its own lifecycle and nothing is reviewed through the container alone.
+            require(isinstance(artifact_refs, dict) and
+                    {"source_receipt", "parser_metadata", "derived_units"} <= set(artifact_refs) and
+                    all(name in ("source_receipt", "parser_metadata", "derived_units") or
+                        (name.startswith("child:") and re.fullmatch(r"[0-9a-f]{64}", name[6:]))
+                        for name in artifact_refs), "unsupported_artifact_set")
+            child_hashes = sorted(name[6:] for name in artifact_refs if name.startswith("child:"))
             artifacts = {}
             budget = MAX_ACCEPT_EVIDENCE
             for name, ref in artifact_refs.items():
@@ -226,8 +241,15 @@ class _InstalledExtractionValidator:
             require(receipt.get("status") == metadata.get("stage") == manifest.get("source_status") == "complete",
                     "extraction_incomplete")
             require(receipt.get("issues") == metadata.get("issues") == manifest.get("issues") == [] and
-                    not receipt.get("children") and not metadata.get("children") and
                     not ocr_evidence_present(receipt), "unresolved_extraction_evidence")
+            declared = sorted({child.get("sha") for child in (receipt.get("children") or [])})
+            require(declared == child_hashes and
+                    sorted({child.get("sha") for child in (metadata.get("children") or [])}) == child_hashes,
+                    "child_evidence_mismatch")
+            for child_sha in child_hashes:
+                preserved = con.execute("SELECT status FROM stage_state WHERE original_sha256=? AND stage='preserve'",
+                                        (child_sha,)).fetchone()
+                require(preserved is not None and preserved["status"] == "done", "child_member_not_preserved")
             parser, version = receipt.get("parser"), receipt.get("parser_version")
             require(isinstance(parser, str) and isinstance(version, str) and version not in
                     ("", "unknown", "unavailable", "unverified"), "unknown_parser")
@@ -299,7 +321,8 @@ class _InstalledExtractionValidator:
                     "canonical_page_state_binding")
         # Independently establish denominator/content from canonical original bytes.
         form = parser.removeprefix("legacy-intake:")
-        require(parser == "legacy-intake:" + form and form in TEXT_FORMS | {"pdf"}, "unsupported_complete_parser")
+        require(parser == "legacy-intake:" + form and form in TEXT_FORMS | {"pdf"} | REPARSE_FORMS,
+                "unsupported_complete_parser")
         require(receipt.get("route") == routes.route(form), "parser_route_binding")
         components, runtime_hash = installed_parser_identity(form)
         require(receipt.get("parser_components") == metadata.get("parser_components") == components,
@@ -319,6 +342,20 @@ class _InstalledExtractionValidator:
             require(units == expected_units and pages == [] and not counts.get("pages_expected"),
                     "source_text_denominator_or_content")
             denominator = {"kind": "items", "total": len(expected_units)}
+        elif form in REPARSE_FORMS:
+            # Container/structured formats: independently re-run the installed parser on the
+            # canonical bytes and require identical units and member set. Members are accepted
+            # earlier only when each is a preserved original in its own right.
+            with tempfile.TemporaryDirectory(prefix="extract-validate-", dir=self.evidence_root) as scratch:
+                checked = routes.extract(original_path, subject, Path(scratch), form=form, timeout=60)
+            require(checked.get("status") == "complete" and checked.get("issues") == [] and
+                    checked.get("parser") == parser and checked.get("parser_version") == version and
+                    checked.get("parser_components", {}) == receipt.get("parser_components", {}),
+                    "installed_reparse_incomplete")
+            require(checked.get("units") == units and checked.get("pages") == pages == [], "reparse_content_mismatch")
+            require(sorted({c.get("sha") for c in checked.get("children", [])}) == child_hashes, "reparse_children_mismatch")
+            require(0 < len(units) <= enrollment.MAX_UNITS, "reparse_denominator")
+            denominator = {"kind": "items", "total": len(units)}
         else:
             require(type(counts.get("pages_expected")) is int and
                     0 < counts["pages_expected"] <= MAX_ACCEPT_PAGES, "pdf_denominator_unavailable")
@@ -372,11 +409,11 @@ def install_extraction_validator(*, database, evidence_root, original_root):
     from .ledger import stages
     binding = _InstalledExtractionValidator(enrollment.checked_path(database),
         enrollment.private_dir(evidence_root), enrollment.private_dir(original_root))
-    prior = stages._INSTALLED_VALIDATORS.get(ADAPTER_ID)
+    prior = stages._INSTALLED_VALIDATORS.get(binding.adapter_id)
     require(prior is None or type(prior) is _InstalledExtractionValidator and prior == binding,
             "installed_extraction_binding_conflict")
-    stages._INSTALLED_VALIDATORS[ADAPTER_ID] = binding
-    return ADAPTER_ID
+    stages._INSTALLED_VALIDATORS[binding.adapter_id] = binding
+    return binding.adapter_id
 
 
 class ExtractionStageAdapter:
@@ -390,7 +427,7 @@ class ExtractionStageAdapter:
         self.validator = _InstalledExtractionValidator(enrollment.checked_path(database),
             enrollment.private_dir(evidence_root), enrollment.private_dir(original_root))
         self.runner = stages.installed_runner(database, run_id=run_id, owner=owner, profile_id=profile_id)
-        require(self.runner.validators.get("extract") == (ADAPTER_ID, self.validator),
+        require(self.runner.validators.get("extract") == (self.validator.adapter_id, self.validator),
                 "installed_profile_extract_binding")
 
     def accept(self, import_id):

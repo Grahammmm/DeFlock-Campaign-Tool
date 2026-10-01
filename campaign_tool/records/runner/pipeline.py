@@ -74,7 +74,7 @@ class PipelineConnection:
         validator = self.extraction.validator
         if type(runner) is not stages.StageRunner or type(validator) is not _InstalledExtractionValidator:
             raise IntegrationGap('installed_extraction_authority_required')
-        if runner.test_only or runner.validators.get('extract') != (ADAPTER_ID, validator):
+        if runner.test_only or runner.validators.get('extract') != (validator.adapter_id, validator):
             raise IntegrationGap('installed_extract_binding_required')
         paths = (self.backend.database, self.enrollment.database, runner.database, validator.database)
         if any(Path(path).resolve() != self.database for path in paths):

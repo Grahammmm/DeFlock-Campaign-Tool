@@ -55,7 +55,7 @@ def _locator(value):
     """A bounded typed position, not equality between two empty values."""
     require(type(value) is str and 0 < len(value) <= 500 and value == value.strip(),
             "invalid_exact_locator")
-    kinds = {"page", "line", "item", "part", "paragraph", "row", "column", "sheet", "cell"}
+    kinds = {"page", "line", "item", "part", "paragraph", "row", "column", "sheet", "cell", "mime"}
     if value.startswith("{"):
         item = _decode(value)
         require(type(item) is dict and item and not set(item) - kinds,
@@ -118,7 +118,7 @@ class CatalogAdapter:
         _locator(row["locator"])
         require(row["original_sha256"] == proof["source_sha256"] and row["locator"] == proof["locator"],
                 "support_locator_binding")
-        if row["unit_type"] == "text_line" and row["status"] == "candidate_extracted":
+        if row["status"] == "candidate_extracted":
             from .catalog_wp4_support import verified_text_line
             return verified_text_line(self, con, row, proof)
         require(row["status"] == "ok" and row["parser"] and row["parser_version"] and
