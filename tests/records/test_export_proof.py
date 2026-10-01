@@ -111,6 +111,14 @@ class ExportProofTests(unittest.TestCase):
         with patch.object(export_proof.os,'rename',side_effect=RuntimeError('fixture interruption')):
             with self.assertRaises(ValueError):self.invoke()
         self.assertEqual(self.fixture.query('SELECT count(*) FROM runner_messages'),[(0,)])
+    def test_failed_capture_leaves_no_partial_directory(self):
+        exports=self.control/'exports'
+        with patch.object(export_proof.os,'rename',side_effect=RuntimeError('fixture interruption')):
+            with self.assertRaisesRegex(RuntimeError,'fixture interruption'):self.prepare()
+        self.assertEqual(sorted(p.name for p in exports.iterdir()),[])
+        value,proof=self.prepare()
+        with self.assertRaisesRegex(export_proof.ExportBlocked,'proof_identity_collision'):self.prepare()
+        self.assertEqual(sorted(p.name for p in exports.iterdir()),[proof['proof_sha256']])
     def test_frozen_receipt_tampering_detected(self):
         value,proof=self.prepare();path=Path(value.receipt(value.folders()[0],64));path.write_bytes(b'changed')
         with self.assertRaisesRegex(export_proof.ExportBlocked,'frozen_receipt'):value.receipt(value.folders()[0],64)

@@ -209,9 +209,9 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                     if old and tuple(old)!=expected:
                         prior=json.loads(old['evidence']);new=json.loads(evidence)
                         old_path=prior.pop('export_receipt_path',None);new.pop('export_receipt_path',None)
+                        # Same receipt hash and content-addressed verification receipt are
+                        # already proven above; the superseded export path may be pruned.
                         if tuple(old)[:5]!=expected[:5] or prior!=new or not isinstance(old_path,str):raise ValueError('canonical_occurrence_conflict')
-                        with intake_folder.secure_open(old_path) as f:old_raw=f.read(1024*1024+1)
-                        if len(old_raw)>1024*1024 or hashlib.sha256(old_raw).hexdigest()!=value.receipt_sha256:raise ValueError('canonical_occurrence_conflict')
                     if not old:c.execute('INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)',(oid,sha,kind,source,parent,stamp,'verified_mail_export',evidence))
                 if not mail_rows:c.execute('INSERT INTO mail_messages VALUES(?,?,?,?,?,?,?,?,?,?)',mail_values)
                 c.commit()

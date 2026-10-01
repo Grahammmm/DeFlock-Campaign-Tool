@@ -1,15 +1,27 @@
 """Optional explicit trusted WP1 source overlay, never copied into the WP2 tree."""
+import json
 import os
 from pathlib import Path
 import unittest
 import campaign_tool.records
 from tests.records import test_runner as fixtures
 
-@unittest.skipUnless(os.environ.get('WP1_OVERLAY'),'WP1 overlay not supplied; integration unavailable')
+def _wp1_available():
+    """WP1 is in-tree after the records merge; an explicit overlay remains supported."""
+    if os.environ.get('WP1_OVERLAY'):
+        return True
+    import importlib.util
+    try:
+        return importlib.util.find_spec('campaign_tool.records.ledger.store') is not None
+    except ModuleNotFoundError:
+        return False
+
+@unittest.skipUnless(_wp1_available(),'WP1 not in tree and no overlay supplied; integration unavailable')
 class WP1OverlayTests(unittest.TestCase):
     def setUp(self):
-        overlay=Path(os.environ['WP1_OVERLAY'])/'campaign_tool'/'records'
-        if str(overlay) not in campaign_tool.records.__path__:campaign_tool.records.__path__.append(str(overlay))
+        if os.environ.get('WP1_OVERLAY'):
+            overlay=Path(os.environ['WP1_OVERLAY'])/'campaign_tool'/'records'
+            if str(overlay) not in campaign_tool.records.__path__:campaign_tool.records.__path__.append(str(overlay))
         from campaign_tool.records.ledger import store,stages
         from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
         self.fixture=fixtures.RunnerTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
@@ -45,6 +57,16 @@ class WP1OverlayTests(unittest.TestCase):
         self.backend.preserve(str(moved),'synthetic-account',scope,64)
         with self.store.ledger(self.db,readonly=True) as c:
             self.assertEqual(c.execute('SELECT count(*) FROM occurrences').fetchone()[0],2)
+    def test_replay_does_not_require_pruned_prior_export_receipt(self):
+        self.fixture.invoke(backend=self.backend)
+        import shutil
+        scope=self.fixture.scopes[0];first=Path(self.fixture.receipt(scope,64))
+        moved=self.fixture.delta.base/'replayed-receipt.json';shutil.copyfile(first,moved);moved.chmod(0o600)
+        first.unlink()  # The superseded export path may be pruned after verification.
+        self.backend.preserve(str(moved),'synthetic-account',scope,64)
+        with self.store.ledger(self.db,readonly=True) as c:
+            paths={json.loads(r[0])['export_receipt_path'] for r in c.execute('SELECT evidence FROM occurrences')}
+        self.assertEqual(paths,{str(first.absolute())})
     def test_controlled_export_proof_to_canonical_preservation_and_catalog_gap(self):
         from tests.records.test_export_proof import ExportProofTests
         from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend

@@ -122,12 +122,23 @@ class FairnessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'reliability_schema_mismatch'):core.journal(f.root)
 
 
-@unittest.skipUnless(os.environ.get('WP1_OVERLAY'),'explicit WP1 dependency required')
+def _wp1_available():
+    """WP1 is in-tree after the records merge; an explicit overlay remains supported."""
+    if os.environ.get('WP1_OVERLAY'):
+        return True
+    import importlib.util
+    try:
+        return importlib.util.find_spec('campaign_tool.records.ledger.store') is not None
+    except ModuleNotFoundError:
+        return False
+
+@unittest.skipUnless(_wp1_available(),'WP1 not in tree and no overlay supplied')
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         import campaign_tool.records
-        overlay=str(Path(os.environ['WP1_OVERLAY'])/'campaign_tool/records')
-        if overlay not in campaign_tool.records.__path__:campaign_tool.records.__path__.append(overlay)
+        if os.environ.get('WP1_OVERLAY'):
+            overlay=str(Path(os.environ['WP1_OVERLAY'])/'campaign_tool/records')
+            if overlay not in campaign_tool.records.__path__:campaign_tool.records.__path__.append(overlay)
         from campaign_tool.records.ledger import store
         from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
         self.store=store;self.backend_type=CanonicalMailBackend

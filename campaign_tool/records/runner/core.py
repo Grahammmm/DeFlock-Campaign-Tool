@@ -268,22 +268,33 @@ def run(control_root,profile_path,exporter,backend,hooks,*,runtime_provider,cloc
             # Dependency eligibility is part of SQL selection, BEFORE the bound.
             # Untried eligible work precedes retries; skipped descendants spend no
             # budget and cannot hide unrelated originals behind an exhausted parent.
-            eligible=[];bindings=[]
+            # A missing stage hook is an integration gap, not an item failure: such
+            # work is never leased, spends no attempt or budget, keeps its prior
+            # error code and can never become retry_exhausted because of the gap.
+            eligible={True:[],False:[]};bindings={True:[],False:[]}
             for position,stage in enumerate(profile['stages']):
-                clause='w.stage=?';bindings.append(stage)
+                hooked=stage in hooks
+                clause='w.stage=?';bindings[hooked].append(stage)
                 for earlier in profile['stages'][:position]:
                     clause+=" AND EXISTS(SELECT 1 FROM runner_work p WHERE p.subject_sha=w.subject_sha AND p.stage=? AND p.state='done')"
-                    bindings.append(earlier)
-                eligible.append('('+clause+')')
+                    bindings[hooked].append(earlier)
+                eligible[hooked].append('('+clause+')')
             stage_order='CASE w.stage '+ ' '.join("WHEN '"+stage+"' THEN "+str(n) for n,stage in enumerate(STAGES))+' END'
-            tasks=con.execute("SELECT w.* FROM runner_work w WHERE w.state IN ('pending','blocked') AND w.attempts<? AND w.next_eligible<=? AND ("+' OR '.join(eligible)+") ORDER BY w.attempts,w.subject_sha,"+stage_order+" LIMIT ?",(profile['retry_limit'],clock(),*bindings,profile['max_work'])).fetchall()
+            def select(hooked):
+                if not eligible[hooked]:return []
+                return con.execute("SELECT w.* FROM runner_work w WHERE w.state IN ('pending','blocked') AND w.attempts<? AND w.next_eligible<=? AND ("+' OR '.join(eligible[hooked])+") ORDER BY w.attempts,w.subject_sha,"+stage_order+" LIMIT ?",(profile['retry_limit'],clock(),*bindings[hooked],profile['max_work'])).fetchall()
+            gaps=select(False)
+            if gaps:
+                with con:
+                    for item in gaps:event(con,rid,'stage_gap',hid([item['subject_sha'],item['stage']]),'stage_hook_unavailable')
+                summary['stage_failures']+=len(gaps)
+            tasks=select(True)
             for item in tasks:
                 sha,stage=item['subject_sha'],item['stage'];earlier=profile['stages'][:profile['stages'].index(stage)]
                 if any(not con.execute("SELECT 1 FROM runner_work WHERE subject_sha=? AND stage=? AND state='done'",(sha,s)).fetchone() for s in earlier):continue
                 with con:
                     con.execute("UPDATE runner_work SET state='running',attempts=attempts+1,lease_until=?,run_id=? WHERE subject_sha=? AND stage=?",(clock()+profile['lease_seconds'],rid,sha,stage))
                 try:
-                    if stage not in hooks:raise IntegrationGap('stage_hook_unavailable')
                     receipt=hooks[stage](sha,identity)
                     if not isinstance(receipt,StageReceipt) or receipt.subject_sha256!=sha or receipt.stage!=stage:raise ValueError('stage_receipt_identity')
                     receipt.validate();backend.validate_and_promote(receipt,identity)
@@ -292,6 +303,13 @@ def run(control_root,profile_path,exporter,backend,hooks,*,runtime_provider,cloc
                         event(con,rid,'stage_result',hid([sha,stage]),'backend_promotion_acknowledged')
                     summary['stage_promotions']+=1
                 except Exception as error:
+                    if isinstance(error,IntegrationGap) and str(error)=='stage_hook_unavailable':
+                        # Hook reported itself unavailable: undo the lease, refund the
+                        # attempt and keep the prior state and error code.
+                        with con:
+                            con.execute("UPDATE runner_work SET state=?,attempts=attempts-1,lease_until=NULL WHERE subject_sha=? AND stage=?",(item['state'],sha,stage))
+                            event(con,rid,'stage_gap',hid([sha,stage]),'stage_hook_unavailable')
+                        summary['stage_failures']+=1;continue
                     with con:
                         con.execute("UPDATE runner_work SET state='blocked',lease_until=NULL,next_eligible=?,error_code=? WHERE subject_sha=? AND stage=?",(clock()+profile['retry_delay'],safe_code(error),sha,stage))
                         event(con,rid,'stage_failure',hid([sha,stage]),safe_code(error))

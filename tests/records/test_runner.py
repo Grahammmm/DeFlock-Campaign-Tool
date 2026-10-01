@@ -162,6 +162,27 @@ class RunnerTests(unittest.TestCase):
         self.invoke();self.assertEqual(self.invoke()['messages_preserved'],0)
     def test_missing_hook_reports_integration_gap(self):
         r=self.invoke(hooks={});self.assertEqual(r['stage_promotions'],0);self.assertEqual(r['stage_failures'],2)
+    def test_missing_hook_never_exhausts_retries(self):
+        self.profile.update(retry_limit=2);self.write_profile()
+        for _ in range(5):
+            r=self.invoke(hooks={});self.time+=2
+            self.assertEqual(r['stage_failures'],2);self.assertEqual(r['status'],'completed_with_gaps')
+        self.assertEqual(self.query("SELECT state,attempts,error_code FROM runner_work"),[('pending',0,None)]*2)
+        self.assertEqual(self.query("SELECT count(*) FROM runner_events WHERE kind='stage_gap' AND code='stage_hook_unavailable'"),[(10,)])
+        r=self.invoke();self.assertEqual(r['stage_promotions'],2)
+        self.assertEqual(self.query("SELECT DISTINCT state,attempts FROM runner_work"),[('done',1)])
+    def test_hook_reported_gap_keeps_attempts_and_original_error(self):
+        self.profile.update(retry_limit=2);self.write_profile()
+        def failing(sha,identity):raise ValueError('synthetic blocked item')
+        def unavailable(sha,identity):raise IntegrationGap('stage_hook_unavailable')
+        self.invoke(hooks={'catalog':failing});self.time+=2
+        before=self.query("SELECT subject_sha,state,attempts,error_code FROM runner_work ORDER BY subject_sha")
+        self.assertEqual(len(before),2)
+        self.assertTrue(all(row[1:3]==('blocked',1) and row[3] and row[3]!='stage_hook_unavailable' for row in before))
+        for _ in range(4):
+            r=self.invoke(hooks={'catalog':unavailable});self.time+=2;self.assertEqual(r['stage_failures'],2)
+        self.assertEqual(self.query("SELECT subject_sha,state,attempts,error_code FROM runner_work ORDER BY subject_sha"),before)
+        self.assertEqual(self.invoke()['stage_promotions'],2)
 
     def test_crash_after_preservation_before_control_checkpoint(self):
         class CrashBackend(SyntheticPromotingBackend):

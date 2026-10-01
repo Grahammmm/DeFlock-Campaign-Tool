@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import stat
 import subprocess
@@ -223,26 +224,36 @@ class ExporterWrapper:
                 observed=(current.st_dev,current.st_ino,current.st_size,current.st_mtime_ns,current.st_ctime_ns)
                 if observed!=expected:raise ExportBlocked('export_input_changed')
             parent=self.control/'exports';parent.mkdir(mode=0o700,exist_ok=True);private_path(parent,True)
-            temporary=Path(tempfile.mkdtemp(prefix='.capture-',dir=parent));(temporary/'receipts').mkdir(mode=0o700)
-            entries={}
-            for name,raw in captures.items():
-                path=temporary/name
-                fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
-                with os.fdopen(fd,'wb') as out:out.write(raw);out.flush();os.fsync(out.fileno())
-                entries[name]={'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw)}
-            manifest={'schema':'runner-export-proof-v1','run_id':run_identity['run_id'],'config_sha256':run_identity['config_sha256'],
-                      'export_spec_sha256':run_identity['export_spec_sha256'],
-                      'cutoff':status['time_utc'],'last_success':state['last_success'],'entries':entries,
-                      'message_count':len(messages),'attachment_count':len(attachments),'excluded_historical_receipts':excluded,
-                      'coverage_verified':True,'indexes':{k:{'sha256':v['sha256'],'bytes':v['bytes']} for k,v in index_meta.items()}}
-            body=js(manifest).encode();proof_sha=hashlib.sha256(body).hexdigest()
-            with (temporary/'manifest.json').open('xb') as out:out.write(body);out.flush();os.fsync(out.fileno())
-            (temporary/'manifest.json').chmod(0o600)
-            for directory in (temporary/'receipts',temporary):
-                fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY);os.fsync(fd);os.close(fd)
-            destination=parent/proof_sha
-            if destination.exists():raise ExportBlocked('proof_identity_collision')
-            os.rename(temporary,destination)
+            temporary=Path(tempfile.mkdtemp(prefix='.capture-',dir=parent))
+            try:
+                (temporary/'receipts').mkdir(mode=0o700)
+                entries={}
+                for name,raw in captures.items():
+                    path=temporary/name
+                    fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+                    with os.fdopen(fd,'wb') as out:out.write(raw);out.flush();os.fsync(out.fileno())
+                    entries[name]={'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw)}
+                manifest={'schema':'runner-export-proof-v1','run_id':run_identity['run_id'],'config_sha256':run_identity['config_sha256'],
+                          'export_spec_sha256':run_identity['export_spec_sha256'],
+                          'cutoff':status['time_utc'],'last_success':state['last_success'],'entries':entries,
+                          'message_count':len(messages),'attachment_count':len(attachments),'excluded_historical_receipts':excluded,
+                          'coverage_verified':True,'indexes':{k:{'sha256':v['sha256'],'bytes':v['bytes']} for k,v in index_meta.items()}}
+                body=js(manifest).encode();proof_sha=hashlib.sha256(body).hexdigest()
+                with (temporary/'manifest.json').open('xb') as out:out.write(body);out.flush();os.fsync(out.fileno())
+                (temporary/'manifest.json').chmod(0o600)
+                for directory in (temporary/'receipts',temporary):
+                    fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY);os.fsync(fd);os.close(fd)
+                destination=parent/proof_sha
+                if destination.exists():raise ExportBlocked('proof_identity_collision')
+                os.rename(temporary,destination)
+            except BaseException:
+                # Never leave a partial .capture-* directory behind. rmtree removes
+                # symlinks as links and does not follow them out of the capture.
+                try:
+                    if not os.path.islink(temporary):shutil.rmtree(temporary)
+                    else:os.unlink(temporary)
+                except OSError:pass
+                raise
             fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY);os.fsync(fd);os.close(fd)
             # Validate every published byte once, then pin immutable file metadata
             # for bounded pre-checkpoint change detection. No recursive traversal.
