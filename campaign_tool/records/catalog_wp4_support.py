@@ -5,6 +5,7 @@ roots. Cards select a canonical unit ID, never code, callbacks or root paths.
 """
 from pathlib import Path
 
+from . import ledger_catalog as catalog
 from .catalog_stage import CatalogStageError, require, _sha, _decode, _locator, MAX_UNIT_BYTES
 
 
@@ -117,8 +118,7 @@ def verified_text_line(adapter, con, row, proof):
     require(_sha(line["text"].encode()) == row["text_sha256"]
             and proof["quote"] in line["text"], "wp4_line_hash_mismatch")
     original = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
-    require(original is not None and original["scope"] not in {"excluded", "out_of_scope"}
-            and original["role"] != "excluded_unrelated_personal", "support_original_missing")
+    require(original is not None and not catalog.scope_excluded(original), "support_original_missing")
     # Fixed code rechecks original bytes, complete source denominator, every
     # exact JSONL line and parser identity. Submitted paths are never followed.
     try:

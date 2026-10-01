@@ -124,8 +124,8 @@ class CatalogAdapter:
         require(row["status"] == "ok" and row["parser"] and row["parser_version"] and
                 type(row["text_sha256"]) is str and catalog.HASH.fullmatch(row["text_sha256"]),
                 "support_unit_unverified")
-        require(con.execute("SELECT 1 FROM originals WHERE sha256=? AND scope!='out_of_scope' AND role!='excluded_unrelated_personal'",
-                            (proof["source_sha256"],)).fetchone() is not None, "support_original_missing")
+        source = con.execute("SELECT * FROM originals WHERE sha256=?", (proof["source_sha256"],)).fetchone()
+        require(source is not None and not catalog.scope_excluded(source), "support_original_missing")
         raw = self._read(row["derived_path"], MAX_UNIT_BYTES)
         require(_sha(raw) == proof["artifact_sha256"], "support_artifact_hash_mismatch")
         try:
@@ -161,8 +161,8 @@ class CatalogAdapter:
         require(type(supports) is list and 1 <= len(supports) <= MAX_SUPPORTS, "actual_evidence_required")
         with self.store.ledger(self.database, readonly=True) as con:
             original = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
-            require(original is not None and original["scope"] != "out_of_scope" and
-                    original["role"] != "excluded_unrelated_personal", "canonical_original_unavailable")
+            require(original is not None and not catalog.scope_excluded(original),
+                    "canonical_original_unavailable")
             referenced = {subject}
             for proof in supports:
                 require(type(proof) is dict and type(proof.get("source_sha256")) is str,

@@ -197,7 +197,7 @@ class SnapshotAcceptanceTests(unittest.TestCase):
         shutil.copytree(Path(catalog.__file__).parents[1], package,
                         ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(Path(store.__file__).parent, package / "records" / "ledger",
-                        ignore=shutil.ignore_patterns("__pycache__"))
+                        ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
         shutil.copy2(catalog_links.__file__, package / "records" / "catalog_links.py")
         probe = "import sys,json;sys.path.insert(0," + repr(str(composed)) + ");from campaign_tool.records.ledger_catalog import dependency_contract;from campaign_tool.records.ledger_catalog_acceptance import accept_snapshot;print(json.dumps(dependency_contract()))"
         result = subprocess.run([sys.executable, "-I", "-c", probe], cwd=self.root,

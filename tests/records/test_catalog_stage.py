@@ -222,6 +222,31 @@ class CatalogStageTests(unittest.TestCase):
         prepared = self.prepare()
         self.assertEqual(prepared["locators"], [self.subject + ":page:1"])
 
+    def test_out_of_scope_original_rejected_as_subject_and_support(self):
+        # Originals are immutable, so each excluded scope label gets its own original.
+        for label in sorted(module.catalog.EXCLUDED_SCOPES):
+            with self.subTest(scope=label):
+                content = ("Synthetic out of scope " + label).encode()
+                subject = sha(content)
+                self.write(label + ".txt", content)
+                with store.ledger(self.database) as con:
+                    con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                (subject, len(content), "text/plain", store.now(), "record", label,
+                                 None, "captured", "text", "{}"))
+                    con.execute("INSERT INTO units VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                ("unit-" + label, subject, "synthetic-text-parser", "1", "page:1", "text",
+                                 sha(content), str(self.artifacts / (label + ".txt")), "ok", None, "{}"))
+                    con.commit()
+                support = {"unit_id": "unit-" + label, "source_sha256": subject, "locator": "page:1",
+                           "artifact_sha256": sha(content), "quote": "Synthetic out of scope"}
+                self.card["subject_sha256"] = subject
+                self.card["supports"] = [support]
+                with self.assertRaisesRegex(module.CatalogStageError, "canonical_original_unavailable"):
+                    self.prepare()
+                with store.ledger(self.database, readonly=True) as con:
+                    with self.assertRaisesRegex(module.CatalogStageError, "support_original_missing"):
+                        self.adapter._unit(con, support)
+
     def test_primary_quote_must_exist(self):
         self.card["supports"][0]["quote"] = "invented phrase"
         self.assertEqual(self.process()["reason"], "quote_not_in_source")

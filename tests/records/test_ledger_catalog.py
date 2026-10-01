@@ -114,6 +114,39 @@ class CanonicalCatalogTests(unittest.TestCase):
         self.assertEqual(card["agency_ids"], [])
         self.assertEqual(card["joins"][0]["status"], "hinted")
 
+    def test_out_of_scope_original_never_typed_or_shown_to_agency(self):
+        # Originals are immutable, so each excluded scope label gets its own original.
+        excluded = {label: hashlib.sha256(("synthetic " + label).encode()).hexdigest()
+                    for label in sorted(module.EXCLUDED_SCOPES)}
+        with sqlite3.connect(self.db) as con:
+            for index, (label, sha) in enumerate(excluded.items()):
+                con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)", (sha, 12, "text/plain", "2026-01-02T00:00:00+00:00", "record", label, None, "captured", "text", "{}"))
+                for stage in module.STAGES:
+                    con.execute("INSERT INTO stage_state VALUES(?,?,?,?,?,?,?,?)", (sha, stage, "pending", None, "unassigned", "2026-01-02T00:00:00+00:00", "synthetic", None))
+                con.execute("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)", ("occ-x" + str(index), sha, "local", "synthetic", None, "2026-01-02T00:00:00+00:00", "test", "{}"))
+        seen = {}
+        real = catalog_links._registry
+
+        def spy(raw, binding, catalog_sha, cards):
+            seen.update(cards)
+            return real(raw, binding, catalog_sha, cards)
+
+        with mock.patch.object(catalog_links, "_registry", spy):
+            cards = {c["sha256"]: c for c in self.build()["cards"]}
+        self.assertEqual(seen[H1]["agency_status"], "unknown")
+        for label, sha in excluded.items():
+            with self.subTest(scope=label):
+                self.assertEqual(seen[sha]["agency_status"], "scope_excluded")
+                self.assertEqual(cards[sha]["agency_ids"], [])
+                self.assertNotEqual(cards[sha]["agency_status"], "typed")
+                ev = json.dumps({"source_sha256": sha, "locator": "page:1"})
+                with sqlite3.connect(self.db) as con:
+                    con.execute("INSERT INTO joins VALUES(?,?,?,?,?,?,?,?)", ("typed-" + label, sha, "agency:north", "request:north", "agreement_party", ev, "typed", None))
+                with self.assertRaisesRegex(module.CatalogError, "source_scope_excluded"):
+                    self.build()
+                with sqlite3.connect(self.db) as con:
+                    con.execute("DELETE FROM joins WHERE id=?", ("typed-" + label,))
+
     def test_request_agency_mismatch_rejected(self):
         self.join("mismatch", request="request:south")
         with self.assertRaisesRegex(catalog_links.LinkError, "request_agency_mismatch"):

@@ -31,6 +31,14 @@ TYPES = {"policy", "search-log", "detection-log", "audit", "sharing-list",
          "retention-setting", "training-roster", "contract", "invoice",
          "correspondence", "denial-or-extension", "transmittal", "other"}
 HASH = re.compile(r"[a-f0-9]{64}\Z")
+# WP1 writes "out_of_scope"; "excluded" is the legacy label. Both must exclude.
+EXCLUDED_SCOPES = frozenset({"excluded", "out_of_scope"})
+EXCLUDED_ROLE = "excluded_unrelated_personal"
+
+
+def scope_excluded(row):
+    """True when an original must never be shown or used as agency evidence."""
+    return row["role"] == EXCLUDED_ROLE or row["scope"] in EXCLUDED_SCOPES
 
 
 class CatalogError(ValueError):
@@ -178,7 +186,7 @@ def project(con, counts, *, overlays=None, since=None, run_id=None, link_validat
     by_join, by_occurrence, by_prior = ({sha: [] for sha in hashes} for _ in range(3))
     registry_links = []
     registry_keys = set()
-    excluded = {r["sha256"] for r in originals if r["role"] == "excluded_unrelated_personal" or r["scope"] == "excluded"}
+    excluded = {r["sha256"] for r in originals if scope_excluded(r)}
     for row in joins:
         sha = row["original_sha256"]
         _require(sha in hashes, "dangling_join")
@@ -202,7 +210,7 @@ def project(con, counts, *, overlays=None, since=None, run_id=None, link_validat
         by_join[sha].append(item)
     original_map = {r["sha256"]: r for r in originals}
     link_cards = {sha: {"role": original_map[sha]["role"], "agency_status":
-                        "scope_excluded" if original_map[sha]["role"] == "excluded_unrelated_personal" else "unknown"}
+                        "scope_excluded" if sha in excluded else "unknown"}
                   for sha in hashes}
     binding = digest(encoded(sorted(hashes)))
     registry = {"schema_version": 1, "snapshot_id": binding, "catalog_sha256": binding,
