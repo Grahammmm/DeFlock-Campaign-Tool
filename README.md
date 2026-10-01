@@ -48,9 +48,13 @@ An offline test suite (synthetic fixtures only, no network) runs in GitHub Actio
 
 `jurisdictions/us-ca/package.json` encodes California's Public Records Act deadlines and the SB 34 ALPR statute (Civ. Code § 1798.90.5 et seq.) as data, with a primary source and effective date on every rule. It ships with `status: draft`; `doctor` reports `reviewed_law_package: false` until an independent reviewer marks it `reviewed`. Preview a package with `python3 -m campaign_tool.law show us-ca`. See [jurisdictions/README.md](jurisdictions/README.md) and [docs/LAW-PACKAGES.md](docs/LAW-PACKAGES.md).
 
+## Cloudflare Workers (tested offline, not deployed)
+
+`workers/` contains the setup wizard, the Access-protected organizer workspace and the public-site Worker described in [docs/WORKERS.md](docs/WORKERS.md): resumable setup with an encrypted one-hour session, a provisioning plan with per-resource receipts and a rollback list (`DRY_RUN=1` records calls without performing them), Access JWT validation, the runner API from [docs/CONTRACTS.md](docs/CONTRACTS.md), approval cards, cron run receipts and inbound-mail preservation. Run `cd workers && npm ci && npm run check`. No campaign has been deployed with it; sending executors are interfaces only.
+
 ## Planned, not yet implemented
 
-Resumable account setup; Cloudflare deployment automation; authenticated workspace; mailbox and MuckRock connectors; sandboxed PDF/spreadsheet extraction; independently reviewed state-law packages (California is drafted, not reviewed); authenticated review receipts; publication/correction workflows; newsletter integration; meeting tools; monitored scheduling and cost controls.
+Runner container and job execution; mailbox (send), MuckRock and Brevo executors behind approval cards; site build job and queue consumers; sandboxed PDF/spreadsheet extraction in the runner; independently reviewed state-law packages (California is drafted, not reviewed); publication/correction workflows beyond the review gate; meeting agenda import; monitored scheduling and cost controls; any production deployment of the Workers.
 
 See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 

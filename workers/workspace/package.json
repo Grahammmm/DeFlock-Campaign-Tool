@@ -1,0 +1,16 @@
+{
+  "name": "@deflock/workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Access-protected organizer workspace: UI + API over D1/R2, runner API, inbox handler, cron.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@deflock/shared": "*",
+    "hono": "^4.13.0"
+  }
+}
