@@ -13,6 +13,7 @@ import tempfile
 from datetime import datetime,timezone
 from pathlib import Path
 from . import extraction_routes as routes
+from .extract import ocr as page_ocr
 
 VERSION="extraction-ledger-v1"
 MAX_RECEIPT=16*1024*1024
@@ -166,6 +167,57 @@ def ensure_schema(con):
         if len(rows)!=1 or tuple(rows[0])!=(1,digest):raise ExtractionBindingError("adapter_schema_mismatch")
 
 
+def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
+    """Bind per-page OCR receipts: verified receipt bytes, sidecar text == unit text,
+    native units of every other page untouched, unchanged page denominator."""
+    entries=receipt.get("ocr_receipts")
+    if receipt.get("route",{}).get("route")!="extract:pdf" or not isinstance(entries,list) or not entries or len(entries)>MAX_UNITS:
+        raise ExtractionBindingError("ocr_receipts_shape")
+    if metadata.get("ocr_receipts")!=entries:raise ExtractionBindingError("ocr_receipts_metadata_mismatch")
+    initial_raw=read_file(run/"derived"/"digest.json",MAX_RECEIPT);initial=decode(initial_raw)
+    if not isinstance(initial,dict) or canonical(initial)!=canonical({k:v for k,v in metadata.items() if k!="ocr_receipts"}):
+        raise ExtractionBindingError("ocr_pre_ocr_metadata_mismatch")
+    native_raw=read_file(run/"derived"/"units.jsonl",MAX_DERIVED)
+    native=[decode(line) for line in native_raw.splitlines()]
+    if len(native)>MAX_UNITS or any(not isinstance(u,dict) for u in native):raise ExtractionBindingError("ocr_native_units_shape")
+    artifacts.update(pre_ocr_metadata=initial_raw,native_units=native_raw)
+    root=receipt.get("ocr_output_root")
+    if not isinstance(root,str) or not os.path.isabs(root):raise ExtractionBindingError("ocr_output_root_unbound")
+    private_dir(root)
+    mapping={};texts={};sidecars={};unverified=False
+    for entry in entries:
+        if not isinstance(entry,dict) or set(entry)!={"page","receipt_id","receipt_sha256","status"}:raise ExtractionBindingError("ocr_receipt_entry_shape")
+        page=entry["page"]
+        if type(page) is not int or page<1 or page in mapping:raise ExtractionBindingError("ocr_receipt_entry_shape")
+        try:loaded=page_ocr.load_page_receipt(root,subject,page,checked_sha(entry["receipt_id"]))
+        except (ValueError,OSError):raise ExtractionBindingError("ocr_receipt_unverified") from None
+        summary=routes.ocr_summary(loaded)
+        if loaded["receipt_sha256"]!=entry["receipt_sha256"] or summary["status"]!=entry["status"]:
+            raise ExtractionBindingError("ocr_receipt_hash_mismatch")
+        versions=loaded["receipt"].get("tool_versions")
+        if not isinstance(versions,dict) or not versions.get("tesseract"):unverified=True
+        artifacts["ocr_receipt:"+entry["receipt_id"]]=loaded["receipt_bytes"]
+        mapping[page]=summary
+        if summary["status"] in routes.OCR_TEXT_STATES:
+            sidecar=loaded["sidecar"]
+            if sidecar is None:raise ExtractionBindingError("ocr_sidecar_missing")
+            try:text=sidecar.decode("utf-8")
+            except UnicodeError:raise ExtractionBindingError("ocr_sidecar_encoding") from None
+            sidecars[page]=sidecar
+            texts[page]=routes.ocr_unit(page,summary["receipt_id"],summary["receipt_sha256"],text)
+    if canonical(routes.merge_ocr_units(native,texts))!=canonical(units):raise ExtractionBindingError("ocr_unit_merge_mismatch")
+    for unit in units:
+        data=unit.get("data") if isinstance(unit.get("data"),dict) else {}
+        if "ocr_receipt_id" in data:
+            page=unit["locator"].get("page")
+            # The stored unit text bytes must be exactly the receipt's sidecar.txt bytes.
+            if page not in sidecars or sha(unit["text"].encode("utf-8"))!=sha(sidecars[page]) or data["ocr_receipt_id"]!=mapping[page]["receipt_id"]:
+                raise ExtractionBindingError("ocr_sidecar_hash_mismatch")
+    gaps.append("ocr_visual_review_required")
+    if unverified:gaps.append("ocr_runtime_version_unverified")
+    return mapping
+
+
 def validate_bundle(receipt_path,expected_receipt_sha,original_path,original):
     checked_sha(expected_receipt_sha)
     receipt_path=checked_path(receipt_path);run=private_dir(receipt_path.parent)
@@ -187,7 +239,9 @@ def validate_bundle(receipt_path,expected_receipt_sha,original_path,original):
     if not isinstance(units,list) or len(units)>MAX_UNITS or not isinstance(pages,list) or len(pages)>MAX_UNITS or not isinstance(issues,list):
         raise ExtractionBindingError("invalid_units_or_pages")
     artifacts={"source_receipt":raw_receipt};unit_rows=[]
-    ocr=receipt.get("ocr_derivative_sha256")
+    if "ocr_derivative_sha256" in receipt or "ocr_derivative_path" in receipt:
+        raise ExtractionBindingError("whole_document_ocr_unsupported")
+    ocr="ocr_receipts" in receipt
     selected=run/("ocr-derived" if ocr else "derived")
     metadata_path=selected/"digest.json";units_path=selected/"units.jsonl"
     parser=receipt.get("parser");version=receipt.get("parser_version")
@@ -212,20 +266,11 @@ def validate_bundle(receipt_path,expected_receipt_sha,original_path,original):
         expected=metadata.get("counts",{}).get("pages_expected")
         route=receipt.get("route",{}).get("route")
         if route=="extract:pdf" and type(expected) is not int:raise ExtractionBindingError("pdf_page_denominator_missing")
-        computed=routes.page_manifest(units,expected,parser,version,ocr=bool(ocr))
         if ocr:
-            checked_sha(ocr)
-            if Path(receipt.get("ocr_derivative_path",""))!=run/"ocr.pdf":raise ExtractionBindingError("ocr_path_unbound")
-            raw_ocr=read_file(run/"ocr.pdf",MAX_DERIVED)
-            if sha(raw_ocr)!=ocr or not raw_ocr.startswith(b"%PDF-"):raise ExtractionBindingError("ocr_hash_mismatch")
-            artifacts["ocr_derivative"]=raw_ocr
-            initial_raw=read_file(run/"derived"/"digest.json",MAX_RECEIPT)
-            initial=decode(initial_raw)
-            if initial.get("counts",{}).get("pages_expected")!=expected:raise ExtractionBindingError("ocr_page_denominator_changed")
-            artifacts["pre_ocr_metadata"]=initial_raw
-            for page in computed:page["source_derivative_sha256"]=ocr
-            gaps.append("ocr_visual_review_required")
-            if receipt.get("ocr_tool_version") in (None,"unknown","unverified"):gaps.append("ocr_runtime_version_unverified")
+            mapping=_bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps)
+            computed=routes.page_manifest(units,expected,parser,version,ocr_receipts=mapping)
+        else:
+            computed=routes.page_manifest(units,expected,parser,version)
         if canonical(computed)!=canonical(pages):raise ExtractionBindingError("page_provenance_mismatch")
         if receipt["status"]=="complete" and any(p["status"]!="ok" for p in computed):raise ExtractionBindingError("false_complete_pages")
         for page in computed:
@@ -281,7 +326,7 @@ class ExtractionLedgerAdapter:
         for row in rows:
             digest,path=store_blob(self.evidence_root,row["raw"])
             unit=row["unit"];ordinal=row["ordinal"]
-            provenance=canonical({"extraction_import_id":import_id,"receipt_sha256":receipt_sha256,"payload_sha256":digest,"ordinal":ordinal,"source_units_sha256":stored["derived_units"]["sha256"],"parser_provenance":"bound_to_derivative_metadata","parser_components":receipt.get("parser_components",{}),"ocr_derivative_sha256":receipt.get("ocr_derivative_sha256"),"review_status":"not_reviewed"})
+            provenance=canonical({"extraction_import_id":import_id,"receipt_sha256":receipt_sha256,"payload_sha256":digest,"ordinal":ordinal,"source_units_sha256":stored["derived_units"]["sha256"],"parser_provenance":"bound_to_derivative_metadata","parser_components":receipt.get("parser_components",{}),"ocr_receipt_ids":[entry["receipt_id"] for entry in receipt.get("ocr_receipts",[])],"review_status":"not_reviewed"})
             planned.append((sha(canonical([import_id,ordinal,digest]).encode()),subject,parser,version,canonical(unit["locator"]),unit["kind"],row["text_sha256"],path,"candidate_extracted",ordinal,provenance))
         manifest={"adapter":VERSION,"adapter_code_sha256":sha(Path(__file__).read_bytes()),"original_sha256":subject,"original_bytes":original["bytes"],"receipt_sha256":receipt_sha256,"artifacts":stored,"unit_ids":[r[0] for r in planned],"pages":receipt["pages"],"parser":parser,"parser_version":version,"source_status":receipt["status"],"issues":receipt["issues"],"gaps":gaps,"stage_promotions":0}
         manifest_json=canonical(manifest);manifest_sha=sha(manifest_json.encode())

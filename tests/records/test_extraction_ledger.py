@@ -9,6 +9,7 @@ from unittest.mock import patch
 from pathlib import Path
 from campaign_tool.records import extraction_routes as routes
 from campaign_tool.records.extraction_ledger import ExtractionLedgerAdapter,ExtractionBindingError,canonical,sha,MAX_UNITS
+from tests.records import ocr_fixtures
 
 
 class ExtractionLedgerTests(unittest.TestCase):
@@ -44,25 +45,20 @@ class ExtractionLedgerTests(unittest.TestCase):
         path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
         path.write_bytes(raw);path.chmod(0o600)
 
-    def bundle(self,*,text='one',parser_version='1',pdf=False,blocked=False,ocr=False):
+    def bundle(self,*,text='one',parser_version='1',pdf=False,blocked=False):
         self.number+=1;run=self.root/('run-'+str(self.number));run.mkdir(mode=0o700)
         self.write(run/'input',self.source.read_bytes())
         unit={'kind':'pdf_page' if pdf else 'text_line','locator':{'page':1} if pdf else {'line':1},'text':text,'data':{}}
         units=[] if blocked else [unit]
         parser='fixture-parser'
         metadata={'stage':'complete','parser':parser,'parser_version':parser_version,'counts':{'pages_expected':2} if pdf else {'units':len(units)},'children':[]}
-        selected=run/('ocr-derived' if ocr else 'derived')
+        selected=run/'derived'
         if not blocked:
             self.write(selected/'digest.json',json.dumps(metadata,sort_keys=True).encode())
             self.write(selected/'units.jsonl',b''.join((json.dumps(u,sort_keys=True)+'\n').encode() for u in units))
-        pages=routes.page_manifest(units,2 if pdf else None,parser,parser_version,ocr=ocr) if not blocked else []
+        pages=routes.page_manifest(units,2 if pdf else None,parser,parser_version) if not blocked else []
         result={'schema':'format-extraction-v1','original_sha256':self.subject,'route':routes.route('pdf' if pdf else 'txt'),'parser_adapter':routes.VERSION,'status':'blocked' if blocked else 'partial' if pdf else 'complete','units':units,'pages':pages,'issues':[{'code':'fixture_decoder_blocked'}] if blocked else [],'review_status':'not_reviewed','original_changed':False,'run_path':str(run)}
         if not blocked:result.update(parser=parser,parser_version=parser_version,parser_components={},children=[])
-        if ocr:
-            raw=b'%PDF-1.4 synthetic derivative';self.write(run/'ocr.pdf',raw)
-            self.write(run/'derived'/'digest.json',json.dumps(metadata).encode())
-            result.update(ocr_derivative_sha256=sha(raw),ocr_derivative_path=str(run/'ocr.pdf'),ocr_tool_version='unverified')
-            for page in pages:page['source_derivative_sha256']=sha(raw)
         self.write(run/'extraction.json',(json.dumps(result,sort_keys=True)+'\n').encode())
         return run/'extraction.json'
 
@@ -128,13 +124,85 @@ class ExtractionLedgerTests(unittest.TestCase):
         receipt=self.bundle(pdf=True);self.rewrite(receipt,lambda d:d.update(status='complete'))
         with self.assertRaisesRegex(ExtractionBindingError,'false_complete_pages'):self.enroll(receipt)
 
-    def test_ocr_derivative_hash_and_visual_hold(self):
-        receipt=self.bundle(pdf=True,ocr=True)
-        result=self.enroll(receipt)
-        self.assertIn('ocr_runtime_version_unverified',result['gaps'])
-        self.assertEqual(result['stage_promotions'],0)
-        self.write(receipt.parent/'ocr.pdf',b'%PDF-changed')
-        with self.assertRaisesRegex(ExtractionBindingError,'ocr_hash_mismatch'):self.enroll(receipt)
+    def ocr_bundle(self):
+        """Real WP4 extract() of a mixed synthetic PDF with injected per-page OCR."""
+        try:raw=ocr_fixtures.mixed_pdf()
+        except ImportError:self.skipTest('pypdf optional parser unavailable')
+        source=self.root/'original.pdf';source.write_bytes(raw);source.chmod(0o400)
+        subject=sha(raw)
+        with self.store.ledger(self.database) as con:
+            con.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',(subject,len(raw),None,None,'original','unresolved',str(source),'receipt_validation_pending',None,'{}'))
+            con.execute('INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)',('pdf-source',subject,'local','synthetic',None,None,'fixture','{}'))
+            for stage in self.store.STAGES:
+                con.execute('INSERT INTO stage_state VALUES(?,?,?,?,?,?,?,?)',(subject,stage,'pending',None,'fixture','2030-01-01T00:00:00+00:00','intake',None))
+            con.commit()
+        out=self.root/'pdf-derived';out.mkdir(mode=0o700)
+        ocr_root=self.root/'page-ocr';ocr_root.mkdir(mode=0o700)
+        result=routes.extract(source,subject,out,'pdf',timeout=30,ocr_output_root=str(ocr_root),ocr_tools=ocr_fixtures.TOOLS,tool_signature='stub-v1',ocr_runner=ocr_fixtures.FakeOCRRunner())
+        self.assertEqual([x['page'] for x in result['ocr_receipts']],[2])
+        return source,Path(result['run_path'])/'extraction.json',result,ocr_root
+
+    def test_ocr_receipt_binding_and_visual_hold(self):
+        source,receipt,result,ocr_root=self.ocr_bundle()
+        enrolled=self.adapter.enroll(original_path=source,receipt_path=receipt,receipt_sha256=sha(receipt.read_bytes()))
+        self.assertIn('ocr_visual_review_required',enrolled['gaps'])
+        self.assertIn('visual_review_pending',enrolled['gaps'])
+        self.assertNotIn('ocr_runtime_version_unverified',enrolled['gaps'])
+        self.assertEqual(enrolled['stage_promotions'],0);self.assertEqual(enrolled['pages'],2)
+        entry=result['ocr_receipts'][0]
+        with self.store.ledger(self.database,readonly=True) as con:
+            rows=con.execute('SELECT page_no,method,status,reason,needs_visual_review FROM page_state WHERE original_sha256=? ORDER BY page_no',(sha(source.read_bytes()),)).fetchall()
+            provenance=[json.loads(r[0]) for r in con.execute('SELECT provenance_json FROM units WHERE original_sha256=? ORDER BY legacy_ordinal',(sha(source.read_bytes()),))]
+        self.assertEqual(tuple(rows[0])[2],'ok')
+        self.assertEqual(tuple(rows[1]),(2,'local-ocr-3','partial','ocr_visual_review_required',1))
+        self.assertTrue(all(p['ocr_receipt_ids']==[entry['receipt_id']] and 'ocr_derivative_sha256' not in p for p in provenance))
+        sidecar=ocr_root/result['original_sha256']/'page-000002'/entry['receipt_id']/'sidecar.txt'
+        sidecar.write_text('tampered OCR text')
+        with self.assertRaisesRegex(ExtractionBindingError,'ocr_receipt_unverified'):
+            self.adapter.enroll(original_path=source,receipt_path=receipt,receipt_sha256=sha(receipt.read_bytes()))
+
+    def test_ocr_unit_text_must_equal_receipt_sidecar(self):
+        source,receipt,result,_=self.ocr_bundle()
+        run=receipt.parent
+        def change(units):
+            units[1]['text']='substituted text'
+            return units
+        units=change(json.loads(json.dumps(result['units'])))
+        self.write(run/'ocr-derived'/'units.jsonl',b''.join((json.dumps(u,ensure_ascii=True,sort_keys=True)+'\n').encode() for u in units))
+        def mutate(data):
+            data['units']=units
+            data['pages'][1]['derivative_sha256']=sha(b'substituted text')
+        self.rewrite(receipt,mutate)
+        with self.assertRaisesRegex(ExtractionBindingError,'ocr_unit_merge_mismatch'):
+            self.adapter.enroll(original_path=source,receipt_path=receipt,receipt_sha256=sha(receipt.read_bytes()))
+
+    def test_ocr_receipt_hash_tamper_rejected(self):
+        source,receipt,result,_=self.ocr_bundle()
+        def mutate(data):
+            data['ocr_receipts'][0]['receipt_sha256']='0'*64
+        self.rewrite(receipt,mutate)
+        with self.assertRaisesRegex(ExtractionBindingError,'ocr_receipts_metadata_mismatch'):
+            self.adapter.enroll(original_path=source,receipt_path=receipt,receipt_sha256=sha(receipt.read_bytes()))
+        path=receipt.parent/'ocr-derived'/'digest.json'
+        self.rewrite(path,mutate)
+        with self.assertRaisesRegex(ExtractionBindingError,'ocr_receipt_hash_mismatch'):
+            self.adapter.enroll(original_path=source,receipt_path=receipt,receipt_sha256=sha(receipt.read_bytes()))
+
+    def test_native_page_unit_cannot_be_replaced(self):
+        source,receipt,result,_=self.ocr_bundle()
+        units=json.loads(json.dumps(result['units']));units[0]['text']='rewritten native text'
+        self.write(receipt.parent/'ocr-derived'/'units.jsonl',b''.join((json.dumps(u,ensure_ascii=True,sort_keys=True)+'\n').encode() for u in units))
+        def mutate(data):
+            data['units']=units
+            data['pages'][0]['derivative_sha256']=sha(b'rewritten native text')
+        self.rewrite(receipt,mutate)
+        with self.assertRaisesRegex(ExtractionBindingError,'ocr_unit_merge_mismatch'):
+            self.adapter.enroll(original_path=source,receipt_path=receipt,receipt_sha256=sha(receipt.read_bytes()))
+
+    def test_whole_document_ocr_receipt_rejected(self):
+        receipt=self.bundle(pdf=True)
+        self.rewrite(receipt,lambda d:d.update(ocr_derivative_sha256=sha(b'legacy'),ocr_derivative_path=str(receipt.parent/'ocr.pdf')))
+        with self.assertRaisesRegex(ExtractionBindingError,'whole_document_ocr_unsupported'):self.enroll(receipt)
 
     def test_duplicate_replay_does_not_duplicate(self):
         receipt=self.bundle();first=self.enroll(receipt)

@@ -73,7 +73,9 @@ stage receipt. Missing registry support fails closed.
   a validated hash. Receipt `run_path` and other submitted paths are never opened.
 - Source receipt bytes, parser metadata and units JSONL hashes and sizes. The
   source receipt, metadata and manifest must all describe complete extraction,
-  without issues, children or OCR ambiguity.
+  without issues, children or OCR ambiguity. Any OCR evidence (`ocr_receipts`,
+  a page `ocr_receipt_id`, or a legacy `ocr_derivative_sha256`) refuses
+  acceptance and keeps the visual-review hold.
 - Every unit's exact line payload hash, ordinal, text hash, parser/version,
   canonical locator, provenance, source units hash and canonical unit row.
 - Exact parser-reported unit count, source-derived denominator, parser provenance,

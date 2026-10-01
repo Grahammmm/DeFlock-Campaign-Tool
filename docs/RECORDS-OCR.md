@@ -1,5 +1,14 @@
 # M2 local OCR slice
 
+Per-page OCR in this module is the **only OCR path** in the engine. WP4's
+`extraction_routes.extract()` no longer runs whole-document OCRmyPDF or writes
+an `ocr.pdf` derivative; for PDF pages that are not natively `ok` it calls
+`extract_image_only_pages` and binds each page row to that page's immutable
+receipt. Page-level receipts keep exact 1-based page locators, per-page
+confidence and per-page failures, so native-text pages are never replaced by
+OCR output and every OCR result stays traceable to one page of the preserved
+original. See `docs/RECORDS-EXTRACTION.md` for how WP4 records the receipts.
+
 `campaign_tool.records.extract.ocr` is an offline, page-scoped helper for
 already preserved PDF blobs. It does not activate scheduled intake, alter the
 intake ledger, run the private corpus, or certify a page reviewed. The caller
@@ -12,13 +21,13 @@ Read-only readiness check (no installation or evidence processing):
 
     PYTHONPATH="$PINNED_PARSER_BUNDLE:$PWD" python3 -m campaign_tool.records.extract.ocr --doctor
 
-The doctor imports `pypdf`, finds `ocrmypdf`, `tesseract`, `pdftoppm` and
-Ghostscript `gs`, and reads `ocrmypdf --version`, `tesseract --version`,
-`pdftoppm -v` and `gs --version` labels only when present. It reports exact
-missing and version-unverified names and absolute executable paths. Extraction
-invokes those doctor-resolved absolute paths (placing their directories first
-on the OCRmyPDF child's `PATH`) and records the probed version labels in every
-page receipt's `tool_versions`.
+The doctor imports `pypdf`, finds `tesseract` and `pdftoppm`, and reads
+`tesseract --version` and `pdftoppm -v` labels only when present. OCRmyPDF and
+Ghostscript are no longer required: nothing consumed the searchable PDF they
+produced. The doctor reports exact missing and version-unverified names and
+absolute executable paths. Extraction invokes those doctor-resolved absolute
+paths (placing their directories first on the child `PATH`) and records the
+probed version labels in every page receipt's `tool_versions`.
 The operator-provided `--tool-signature` is a declared pin, not independent
 binary attestation. A passing doctor check is dependency readiness, not
 full-pipeline, corpus, fidelity, or review acceptance. Propagate the private
@@ -37,10 +46,14 @@ cannot be rerun under the same ID. Use `--attempt-id retry-1` for a retry:
 
 The helper reads the original by SHA-256 and never rewrites it. For an
 image-only page it makes a single-page PDF derivative, renders it locally with
-`pdftoppm`, creates a searchable derivative and sidecar via OCRmyPDF, and
-independently probes Tesseract word TSV confidence. Sidecar text and TSV
-confidence come from separate OCR passes; confidence is a triage estimate,
-not a calibrated probability or word-by-word attestation. Page receipts bind
+`pdftoppm`, and runs Tesseract **once** per page
+(`tesseract page.png <base> -l <lang> txt tsv`). `sidecar.txt` is that run's
+text output and `confidence.tsv` is the same run's word TSV, so the recorded
+confidence describes exactly the recorded text. Confidence is a triage
+estimate, not a calibrated probability or word-by-word attestation. Receipts
+use schema `local-ocr-3`; receipts of any other version (including
+`local-ocr-2`, whose text and confidence came from separate passes) are
+rejected rather than reused. Page receipts bind
 source SHA, 1-based page locator, method/tool/attempt identity, confidence,
 derivative hashes, and explicit extraction, fidelity and review states.
 
@@ -86,6 +99,11 @@ owner-authorized release path. A blank produced field is not proof of a blank
 native field. Do not publish derived PDFs or text directly. Owner-controlled
 private storage, approved local tools, a bounded real-corpus run, and
 downstream ledger/board wiring remain separate host work.
+
+`load_page_receipt(output_root, source_sha256, page, receipt_id)` is the
+read-only verified loader used by WP4 extraction and enrollment: it re-checks
+the receipt, manifest and every artifact hash and returns the exact
+`sidecar.txt` bytes.
 
 Synthetic injected tests in `tests/records/test_ocr.py` never call real OCR
 executables. They cover retry history, index reconciliation, concurrent

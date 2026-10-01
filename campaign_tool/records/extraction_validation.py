@@ -36,6 +36,13 @@ def encoded(value):
     return enrollment.canonical(value).encode("utf-8")
 
 
+def ocr_evidence_present(receipt):
+    """Any OCR evidence keeps the visual-review hold: acceptance is refused."""
+    pages = receipt.get("pages") if isinstance(receipt.get("pages"), list) else []
+    return bool(receipt.get("ocr_receipts") or "ocr_derivative_sha256" in receipt or
+                any(isinstance(page, dict) and page.get("ocr_receipt_id") for page in pages))
+
+
 def code_identity():
     return {name: enrollment.sha(Path(module.__file__).read_bytes())
             for name, module in (("enrollment", enrollment), ("routes", routes),
@@ -220,7 +227,7 @@ class _InstalledExtractionValidator:
                     "extraction_incomplete")
             require(receipt.get("issues") == metadata.get("issues") == manifest.get("issues") == [] and
                     not receipt.get("children") and not metadata.get("children") and
-                    not receipt.get("ocr_derivative_sha256"), "unresolved_extraction_evidence")
+                    not ocr_evidence_present(receipt), "unresolved_extraction_evidence")
             parser, version = receipt.get("parser"), receipt.get("parser_version")
             require(isinstance(parser, str) and isinstance(version, str) and version not in
                     ("", "unknown", "unavailable", "unverified"), "unknown_parser")
@@ -273,7 +280,7 @@ class _InstalledExtractionValidator:
                     "source_units_sha256": artifact_refs["derived_units"]["sha256"],
                     "parser_provenance": "bound_to_derivative_metadata",
                     "parser_components": receipt.get("parser_components", {}),
-                    "ocr_derivative_sha256": None, "review_status": "not_reviewed"}
+                    "ocr_receipt_ids": [], "review_status": "not_reviewed"}
                 expected = {"original_sha256": subject, "parser": parser, "parser_version": version,
                     "locator": enrollment.canonical(unit.get("locator")), "unit_type": unit.get("kind"),
                     "text_sha256": enrollment.sha(unit["text"].encode()),

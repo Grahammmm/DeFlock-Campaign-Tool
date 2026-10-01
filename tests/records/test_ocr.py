@@ -36,11 +36,11 @@ class FakeRunner:
                 image.symlink_to("/etc/passwd")
             else:
                 image.write_bytes(b"synthetic raster")
-        elif name == "ocrmypdf":
-            Path(command[command.index("--sidecar") + 1]).write_text(self.sidecar)
-            Path(command[-1]).write_bytes(b"synthetic derived pdf")
         elif name == "tesseract":
-            return subprocess.CompletedProcess(command, 0, "text\tconf\nword\t" + self.confidence + "\n", "")
+            # One invocation: `tesseract page.png <base> -l <lang> txt tsv` writes both files.
+            self.tesseract_commands = getattr(self, "tesseract_commands", []) + [command]
+            Path(command[2] + ".txt").write_text(self.sidecar)
+            Path(command[2] + ".tsv").write_text("text\tconf\nword\t" + self.confidence + "\n")
         return subprocess.CompletedProcess(command, 0, "", "")
 
 
@@ -76,13 +76,14 @@ class OCRTests(unittest.TestCase):
         self.assertEqual(receipt["locator"], {"page": 2})
         self.assertEqual(receipt["confidence"], 42.0)
         self.assertEqual(receipt["review_status"], "not_reviewed")
-        self.assertEqual(len(receipt["artifact_sha256"]), 5)
+        self.assertEqual(set(receipt["artifact_sha256"]), set(ocr.ARTIFACTS))
+        self.assertEqual(len(receipt["artifact_sha256"]), 4)
         index = self.output / "indexes" / "visual-check" / (receipt["receipt_id"] + ".json")
         entry = json.loads(index.read_text())
         self.assertEqual(entry["receipt_sha256"], hashlib.sha256((self.final(receipt) / "receipt.json").read_bytes()).hexdigest())
         self.assertEqual(entry["manifest_sha256"], hashlib.sha256((self.final(receipt) / "manifest.json").read_bytes()).hexdigest())
         self.assertEqual(self.call(fake, pages=(2,)), [receipt])
-        self.assertEqual(fake.calls, ["pdftoppm", "ocrmypdf", "tesseract"])
+        self.assertEqual(fake.calls, ["pdftoppm", "tesseract"])
         self.assertEqual((self.root / "blobs" / self.sha).read_bytes(), self.raw)
 
     def test_new_attempt_retries_transient_failure_without_rewriting_history(self):
@@ -108,7 +109,7 @@ class OCRTests(unittest.TestCase):
         self.assertTrue((self.output / "indexes" / "visual-check" /
                          (retried["receipt_id"] + ".json")).is_file())
         self.assertEqual(self.call(fake, pages=(1,), attempt_id="retry-1"), [retried])
-        self.assertEqual(fake.calls, ["pdftoppm", "ocrmypdf", "tesseract"])
+        self.assertEqual(fake.calls, ["pdftoppm", "tesseract"])
         current = json.loads((self.output / self.sha / "page-000001" / "current.json").read_text())
         self.assertEqual(current["receipt_id"], retried["receipt_id"])
         self.assertIn(blocked["receipt_id"], current["supersedes_receipt_ids"])
@@ -347,20 +348,19 @@ class OCRTests(unittest.TestCase):
         self.assertTrue(status["ready"])
         self.assertEqual(status["tools"]["pypdf"]["version"], "6.10.0")
         self.assertEqual(status["tools"]["pdftoppm"]["version"], "version 1")
-        self.assertEqual(status["tools"]["gs"], {"available": True, "path": "/fake/gs",
-                                                 "version": "version 1"})
-        self.assertEqual(commands, [["/fake/ocrmypdf", "--version"],
-                                    ["/fake/tesseract", "--version"],
-                                    ["/fake/pdftoppm", "-v"],
-                                    ["/fake/gs", "--version"]])
+        self.assertNotIn("gs", status["tools"])
+        self.assertNotIn("ocrmypdf", status["tools"])
+        self.assertEqual(commands, [["/fake/tesseract", "--version"],
+                                    ["/fake/pdftoppm", "-v"]])
         absent = ocr.dependency_status(which=lambda name: None, probe=probe,
                                         module_probe=lambda: "6.10.0")
         self.assertFalse(absent["ready"])
-        self.assertEqual(absent["missing"], ["ocrmypdf", "tesseract", "pdftoppm", "gs"])
-        no_gs = ocr.dependency_status(which=lambda name: None if name == "gs" else "/fake/" + name,
-                                      probe=probe, module_probe=lambda: "6.10.0")
-        self.assertFalse(no_gs["ready"])
-        self.assertEqual(no_gs["missing"], ["gs"])
+        self.assertEqual(absent["missing"], ["tesseract", "pdftoppm"])
+        no_tesseract = ocr.dependency_status(
+            which=lambda name: None if name == "tesseract" else "/fake/" + name,
+            probe=probe, module_probe=lambda: "6.10.0")
+        self.assertFalse(no_tesseract["ready"])
+        self.assertEqual(no_tesseract["missing"], ["tesseract"])
         relative = ocr.dependency_status(which=lambda name: "bin/" + name, probe=probe,
                                          module_probe=lambda: "6.10.0")
         self.assertTrue(all(Path(relative["tools"][n]["path"]).is_absolute() for n in ocr.OCR_TOOLS))
@@ -368,8 +368,7 @@ class OCRTests(unittest.TestCase):
     def test_extraction_uses_doctor_paths_and_records_versions(self):
         fake = FakeRunner()
         receipt = self.call(fake, pages=(1,))[0]
-        self.assertEqual(fake.paths, ["/synthetic/bin/pdftoppm", "/synthetic/bin/ocrmypdf",
-                                      "/synthetic/bin/tesseract"])
+        self.assertEqual(fake.paths, ["/synthetic/bin/pdftoppm", "/synthetic/bin/tesseract"])
         self.assertEqual(receipt["tool_versions"],
                          {name: TOOLS[name]["version"] for name in (*ocr.OCR_TOOLS, "pypdf")})
         self.assertEqual(json.loads((self.final(receipt) / "receipt.json").read_text())["tool_versions"],
@@ -377,11 +376,52 @@ class OCRTests(unittest.TestCase):
         for kwargs in fake.kwargs:
             self.assertIs(kwargs["preexec_fn"], ocr._limit_child)
             self.assertTrue(kwargs["env"]["PATH"].startswith("/synthetic/bin" + ocr.os.pathsep))
-        for bad in (None, {**TOOLS, "gs": {"path": None, "version": "x"}},
+        for bad in (None, {**TOOLS, "pdftoppm": {"path": None, "version": "x"}},
                     {**TOOLS, "tesseract": {"path": "tesseract", "version": "x"}},
                     {**TOOLS, "pdftoppm": {"path": "/synthetic/bin/pdftoppm", "version": None}}):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "tools"):
                 self.call(FakeRunner(), pages=(2,), tools=bad)
+
+    def test_text_and_confidence_come_from_one_tesseract_run(self):
+        fake = FakeRunner("97", sidecar="single run text\n")
+        receipt = self.call(fake, pages=(1,))[0]
+        self.assertEqual(ocr.VERSION, "local-ocr-3")
+        self.assertEqual(receipt["identity"]["version"], "local-ocr-3")
+        self.assertEqual(fake.calls.count("tesseract"), 1)
+        command = fake.tesseract_commands[0]
+        self.assertEqual(command[1], str(Path(command[2]).parent / "page.png"))
+        self.assertEqual(command[3:], ["-l", "eng", "txt", "tsv"])
+        final = self.final(receipt)
+        self.assertEqual((final / "sidecar.txt").read_text(), "single run text\n")
+        self.assertEqual((final / "confidence.tsv").read_text(), "text\tconf\nword\t97\n")
+        self.assertEqual(receipt["confidence"], 97.0)
+        self.assertFalse((final / "searchable.pdf").exists())
+        self.assertFalse((final / "tesseract.txt").exists())
+        loaded = ocr.load_page_receipt(self.output, self.sha, 1, receipt["receipt_id"])
+        self.assertEqual(loaded["sidecar"], b"single run text\n")
+        self.assertEqual(loaded["receipt"], receipt)
+        self.assertEqual(loaded["receipt_sha256"],
+                         hashlib.sha256((final / "receipt.json").read_bytes()).hexdigest())
+
+    def test_load_page_receipt_rejects_tamper_and_other_versions(self):
+        receipt = self.call(FakeRunner("97"), pages=(1,))[0]
+        final = self.final(receipt)
+        (final / "sidecar.txt").write_text("tampered")
+        with self.assertRaisesRegex(ValueError, "existing_ocr_artifact_mismatch"):
+            ocr.load_page_receipt(self.output, self.sha, 1, receipt["receipt_id"])
+        (final / "sidecar.txt").write_text("synthetic text\n")
+        with self.assertRaisesRegex(ValueError, "ocr_receipt_missing"):
+            ocr.load_page_receipt(self.output, self.sha, 2, receipt["receipt_id"])
+        moved = self.output / self.sha / "page-000002" / receipt["receipt_id"]
+        moved.parent.mkdir(mode=0o700)
+        ocr.shutil.copytree(final, moved)
+        with self.assertRaisesRegex(ValueError, "ocr_receipt_identity_mismatch"):
+            ocr.load_page_receipt(self.output, self.sha, 2, receipt["receipt_id"])
+        with patch.object(ocr, "VERSION", "local-ocr-2"):
+            with self.assertRaisesRegex(ValueError, "ocr_receipt_schema_mismatch"):
+                ocr.load_page_receipt(self.output, self.sha, 1, receipt["receipt_id"])
+        with self.assertRaisesRegex(ValueError, "ocr_receipt_missing"):
+            ocr.load_page_receipt(self.output, self.sha, 1, "0" * 64)
 
     def test_child_limits_apply_address_space_and_file_size(self):
         code = ("import resource;print(resource.getrlimit(resource.RLIMIT_AS)[0],"
@@ -406,7 +446,7 @@ class OCRTests(unittest.TestCase):
         self.assertEqual(receipts[0]["artifact_sha256"], {})
         self.assertTrue((self.output / "indexes" / "blocked" / (receipts[0]["receipt_id"] + ".json")).is_file())
         self.assertEqual(receipts[1]["status"], "visual_check_queued")
-        self.assertEqual(fake.calls, ["pdftoppm", "ocrmypdf", "tesseract"])
+        self.assertEqual(fake.calls, ["pdftoppm", "tesseract"])
 
     def test_raster_bound_threshold(self):
         reader = PdfReader(io.BytesIO(self.raw), strict=False)
