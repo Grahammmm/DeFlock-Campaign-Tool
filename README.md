@@ -61,7 +61,7 @@ An offline test suite (synthetic fixtures only, no network) runs in GitHub Actio
 
 Wiring the engine outbox (`campaign_tool/outbox.py`) into the Worker's `send_request`/`send_followup` executors (today they fail `sender_not_configured` until a `MailSender` is bound); runner handlers for `newsletter_draft` and `backup` (enqueued, answered `blocked`); social posting; OCR for image-only pages; independently reviewed state-law packages (California is drafted, not reviewed); Brevo webhooks and list counts; automatic Legistar polling from the Worker (the CLI import exists); backup encryption, scheduling and hosted restore; monitored scheduling and cost controls; any production deployment of the Workers or the runner.
 
-See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
+See [LAUNCH.md](LAUNCH.md) for the end-to-end picture and the launch gates, plus [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 
 ## Evidence before conclusions
 
