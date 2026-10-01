@@ -4,6 +4,7 @@ Installed Authority objects and their authenticator/key are trusted startup stat
 Untrusted proposal/review JSON cannot choose its author, reviewer or owner.
 """
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import hmac
@@ -85,8 +86,17 @@ def _root(path):
 
 def _read(path, maximum=MAX_JSON):
     path = _private(path)
-    require(path.stat().st_size <= maximum, "file_byte_bound")
-    with path.open("rb") as stream:
+    # O_NOFOLLOW closes the check-then-open window: a final-component symlink
+    # swapped in after _private fails here, and fstat binds checks to the fd.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as error:
+        require(error.errno != errno.ELOOP, "symlink_path")
+        raise
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode), "path_type")
+        require(info.st_size <= maximum, "file_byte_bound")
         raw = stream.read(maximum + 1)
     require(len(raw) <= maximum, "file_byte_bound")
     return raw
@@ -326,6 +336,13 @@ def _load(root, bundle_id, authority):
 
 
 def _finding(directory, body, public):
+    """Portable-gate finding for the proposed public state.
+
+    privacy_status is hardcoded to "cleared" only so a privacy receipt can bind
+    the exact proposed state digest. It is NOT a clearance: no privacy review has
+    happened here, and an independent privacy-role review receipt is still
+    required before this finding may be treated as cleared or published.
+    """
     p = body["proposal"]
     return {"finding_id": p["proposal_id"], "agency": p["agency"], "classification": p["classification"],
             "claim": _public(public)["claim"], "author_agent": body["author"]["identity"],
@@ -340,7 +357,8 @@ def _finding(directory, body, public):
 
 
 def review_target(root, bundle_id, *, authority):
-    """Private review target; 'cleared' is the proposed gate state, not approval."""
+    """Private review target. Its privacy_status="cleared" is a proposed gate state
+    for receipts to bind, not actual clearance; a privacy-role review is still required."""
     with _locked(root) as root:
         directory, body, public = _load(root, bundle_id, authority)
         finding = _finding(directory, body, public)

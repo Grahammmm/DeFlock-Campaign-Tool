@@ -394,6 +394,26 @@ class ReviewBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(bundle.BundleError, "inside_repository"):
             self.create()
 
+    def test_read_rejects_symlink_swapped_after_check(self):
+        real = self.root / "real.json"
+        real.write_bytes(b"{}")
+        real.chmod(0o600)
+        target = self.root / "swapped.json"
+        target.write_bytes(b"{}")
+        target.chmod(0o600)
+        checked = bundle._private
+
+        def check_then_swap(path, directory=False):
+            result = checked(path, directory)
+            target.unlink()
+            target.symlink_to(real)
+            return result
+
+        with mock.patch.object(bundle, "_private", check_then_swap):
+            with self.assertRaisesRegex(bundle.BundleError, "symlink_path"):
+                bundle._read(target)
+        self.assertEqual(bundle._read(real), b"{}")
+
     def test_world_readable_root_rejected(self):
         self.output.chmod(0o755)
         with self.assertRaisesRegex(bundle.BundleError, "owner_only"):
