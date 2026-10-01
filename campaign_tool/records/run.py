@@ -164,6 +164,31 @@ class Pipeline:
             raise
         return {"messages": len(files), "preserved": preserved, "failures": failures}
 
+    def ingest_mailbox(self, mail_config, *, client_factory=None):
+        """Fetch new messages over IMAP (owner-only config file) and preserve them.
+
+        Checkpoints live in the ledger per (account, folder) and advance only past
+        messages that were fully preserved. Credentials never enter the report.
+        """
+        from .intake import imap_intake
+        config = imap_intake.load_config(mail_config)
+        backend = CanonicalMailBackend(self.root.sub("mail"), self.root.intake, self.root.ledger)
+        identity = self._identity()
+        identity["run_id"] = "imap-" + self.run_id
+        identity["mail_config_sha256"] = imap_intake.fingerprint(config)
+        backend.start_run(identity)
+        intake = imap_intake.IMAPIntake(config, ledger=self.root.ledger, mail_root=self.root.sub("mail"),
+                                        backend=backend, alert=self._alert, client_factory=client_factory)
+        try:
+            report = intake.run()
+        except BaseException:
+            backend.finish_run(identity, "failed", {"messages": 0, "preserved": 0})
+            raise
+        status = "slice_completed" if not report["failures"] else "completed_with_gaps"
+        backend.finish_run(identity, status, {"messages": sum(f["new"] for f in report["folders"]),
+                                             "preserved": report["preserved"], "failures": report["failures"]})
+        return report
+
     # ----- stage runner ------------------------------------------------------------------
     def _open_stage_run(self):
         if self._stage is not None:
@@ -562,14 +587,15 @@ class Pipeline:
         return proposal_id
 
     # ----- whole run -------------------------------------------------------------------
-    def run(self, inbox=None):
+    def run(self, inbox=None, mail_config=None, *, client_factory=None):
         started = now()
         intake = self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "failures": []}
+        mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
         summary = stages.counts(self.root.ledger)
         report = {"schema": "records-run-report-v1", "run_id": self.run_id, "started_at": started, "ended_at": now(),
                   "engine": ENGINE, "version": __version__, "config_sha256": self.config_sha256,
-                  "intake": intake, "subjects": progress, "counts": summary["stages"],
+                  "intake": intake, "mailbox": mailbox, "subjects": progress, "counts": summary["stages"],
                   "originals": summary["originals"], "end_to_end_complete": summary["candidate_seven_stage_complete"],
                   "proposals_awaiting_owner": len(self._query("SELECT id FROM proposals WHERE owner_approval='none'")),
                   "model_id": self.model.model_id if self.model else None,
@@ -653,6 +679,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="records run", description=__doc__)
     parser.add_argument("--root", required=True, help="private records root (created if missing)")
     parser.add_argument("--inbox", help="directory of .eml files to preserve before advancing stages")
+    parser.add_argument("--mail-config", dest="mail_config",
+                        help="owner-only JSON (0600) naming the IMAP host/account; new messages are fetched and preserved")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date", dest="event_date", help="YYYY-MM-DD override for rule applicability")
@@ -661,12 +689,16 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     pipeline = build_pipeline(args)
-    report = pipeline.run(args.inbox)
+    report = pipeline.run(args.inbox, args.mail_config)
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
         print(f"run {report['run_id']}: {report['originals']} originals; intake {report['intake']['messages']} messages, "
               f"{len(report['intake']['preserved'])} preserved, {len(report['intake']['failures'])} failed")
+        if report.get("mailbox"):
+            m = report["mailbox"]
+            print(f"  mailbox {m['account']}: {len(m['folders'])} folders, {m['preserved']} preserved, "
+                  f"{m['failures']} failed, {len(m['unconfigured_folders'])} unconfigured")
         for name, counts in report["counts"].items():
             print(f"  {name:9} done={counts['done']} pending={counts['pending']} blocked={counts['blocked']} "
                   f"inapplicable={counts['inapplicable']}")
