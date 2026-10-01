@@ -38,11 +38,15 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 - Portable records-analysis and review skills.
 - Architecture, implementation roadmap, operator checklists, request templates, and contribution guidance.
 
-The initial code has not yet completed independent validation. No passing-test or capacity claim is made.
+An offline test suite (synthetic fixtures only, no network) runs in GitHub Actions on every pull request and push to `main`. Run it locally with `python3 -B -m unittest discover -v`, then `python3 -B tools/check_public_tree.py` and `node scripts/scan-secrets.mjs` before pushing. A passing suite checks structure and safeguards; it is not independent legal, privacy, or capacity validation, and no production-readiness claim is made.
+
+## Jurisdiction law packages
+
+`jurisdictions/us-ca/package.json` encodes California's Public Records Act deadlines and the SB 34 ALPR statute (Civ. Code § 1798.90.5 et seq.) as data, with a primary source and effective date on every rule. It ships with `status: draft`; `doctor` reports `reviewed_law_package: false` until an independent reviewer marks it `reviewed`. Preview a package with `python3 -m campaign_tool.law show us-ca`. See [jurisdictions/README.md](jurisdictions/README.md) and [docs/LAW-PACKAGES.md](docs/LAW-PACKAGES.md).
 
 ## Planned, not yet implemented
 
-Resumable account setup; Cloudflare deployment automation; authenticated workspace; mailbox and MuckRock connectors; sandboxed PDF/spreadsheet extraction; reviewed state-law packages; authenticated review receipts; publication/correction workflows; newsletter integration; meeting tools; monitored scheduling and cost controls.
+Resumable account setup; Cloudflare deployment automation; authenticated workspace; mailbox and MuckRock connectors; sandboxed PDF/spreadsheet extraction; independently reviewed state-law packages (California is drafted, not reviewed); authenticated review receipts; publication/correction workflows; newsletter integration; meeting tools; monitored scheduling and cost controls.
 
 See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 
