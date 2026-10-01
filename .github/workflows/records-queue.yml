@@ -26,6 +26,7 @@ jobs:
       - run: python -m pip install -r requirements-records-test.txt
       - name: Required synthetic integration against pinned ledger
         env:
+          TMPDIR: /var/tmp
           RECORDS_WP1_SOURCE_ROOT: ${{ github.workspace }}/.wp1-dependency
         run: |
           python -B - <<'PY'
@@ -35,7 +36,7 @@ jobs:
           campaign_tool.records.__path__.append(str(root/'campaign_tool'/'records'))
           tests.records.__path__.append(str(root/'tests'/'records'))
           from campaign_tool.records.ledger import stages
-          suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_queue', 'tests.records.test_queue_scope', 'tests.records.test_queue_integration'])
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_queue_runtime', 'tests.records.test_queue', 'tests.records.test_queue_scope', 'tests.records.test_queue_integration'])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():
               raise SystemExit(1)
