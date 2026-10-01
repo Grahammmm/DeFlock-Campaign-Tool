@@ -24,17 +24,34 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r requirements-records-test.txt
-      - name: Required synthetic integration against pinned ledger
+      - name: Select in-tree or pinned WP1 ledger
+        shell: bash
+        run: |
+          # Explicit file-based detection: an in-tree ledger is used from this checkout.
+          if [[ -f campaign_tool/records/ledger/store.py ]]; then
+            printf '%s\n' 'WP1 in tree; using this checkout.'
+            printf 'RECORDS_WP1_SOURCE_ROOT=%s\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          else
+            printf 'RECORDS_WP1_SOURCE_ROOT=%s\n' "$GITHUB_WORKSPACE/.wp1-dependency" >> "$GITHUB_ENV"
+          fi
+      - name: Required synthetic integration against in-tree or pinned ledger
         env:
-          RECORDS_WP1_SOURCE_ROOT: ${{ github.workspace }}/.wp1-dependency
         run: |
           python -B - <<'PY'
           import os, pathlib, unittest
           import campaign_tool.records, tests.records
-          root = pathlib.Path(os.environ['RECORDS_WP1_SOURCE_ROOT'])
-          campaign_tool.records.__path__.append(str(root/'campaign_tool'/'records'))
-          tests.records.__path__.append(str(root/'tests'/'records'))
+          engine = pathlib.Path.cwd().resolve()
+          root = pathlib.Path(os.environ['RECORDS_WP1_SOURCE_ROOT']).resolve(strict=True)
+          in_tree = (engine/'campaign_tool/records/ledger/store.py').is_file()
+          if in_tree != (root == engine):
+              raise SystemExit('WP1 source mismatch: in-tree ledger requires the engine root')
+          if not in_tree:
+              campaign_tool.records.__path__.append(str(root/'campaign_tool'/'records'))
+              tests.records.__path__.append(str(root/'tests'/'records'))
           from campaign_tool.records.ledger import stages
+          if not pathlib.Path(stages.__file__).resolve().is_relative_to(root/'campaign_tool'/'records'/'ledger'):
+              raise SystemExit('WP1 ledger loaded from an unexpected source')
+          print('WP1 source:', 'in-tree' if in_tree else 'pinned overlay', root, flush=True)
           suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_detectors', 'tests.records.test_detector_persistence'])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():
