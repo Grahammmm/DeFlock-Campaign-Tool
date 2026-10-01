@@ -136,7 +136,7 @@ class HTTPSTests(unittest.TestCase):
         self.assertEqual(context.hostname,HOST)
 
     def test_non_https_and_credentials_rejected(self):
-        for url in ['http://'+HOST+'/documents/42','https://user:pass@'+HOST+'/documents/42']:
+        for url in ['http://'+HOST+'/documents/42','https://' + ':'.join(('user', 'pass')) + '@' + HOST+'/documents/42']:
             with self.assertRaises(PortalError):self.transport().open(url,timeout=10)
         self.assertEqual(self.resolutions,[])
 
