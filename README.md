@@ -69,6 +69,13 @@ binds your decision to the exact public bytes; `records publish --root R --propo
 copies only approved bytes to a staging directory with versioned releases, and `--rollback`
 restores the previous release. There is no live target in the engine.
 
+`records run` holds an exclusive lock on the root (`run.lock`), so a second run on the same
+root fails at once with `root_locked` instead of racing for stage leases. Under that lock it
+first finalises any run a dead process left open (`interrupted`) and frees that process's
+abandoned stage leases, so a crash between a lease and its promotion is recovered on the next
+run rather than after a 300-second TTL; both are recorded as keyed alerts. The intake report
+separates `preserved` (new occurrences) from `replayed` (bytes and occurrence already held).
+
 `records run --root R --mail-config /path/mail.json` fetches new messages over IMAP before
 advancing stages. `mail.json` is an owner-only (0600) file naming `host`, `username`,
 `account_id`, optional `folders` and either `password_file` (0600) or `password_env`; the
