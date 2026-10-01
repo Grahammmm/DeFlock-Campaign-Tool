@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Queue job",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "campaign_id",
+    "kind",
+    "idempotency_key",
+    "inputs",
+    "attempt",
+    "max_attempts",
+    "enqueued_at",
+    "privacy_tier"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^job_[0-9a-f]{16}$"
+    },
+    "campaign_id": {
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "intake",
+        "extract",
+        "digest",
+        "classify_mail",
+        "send_request",
+        "draft_followup",
+        "build_site",
+        "newsletter_draft",
+        "backup"
+      ]
+    },
+    "idempotency_key": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "enqueued_at": {
+      "type": "string"
+    },
+    "privacy_tier": {
+      "type": "string",
+      "enum": [
+        "redacted_cloud",
+        "strict_local"
+      ]
+    }
+  }
+}

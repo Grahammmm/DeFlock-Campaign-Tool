@@ -35,10 +35,16 @@ Tests use synthetic square polygons and mocked map/DOM objects, never external
 tiles or email delivery. No SLO records, coordinates, profiles, provider keys,
 MapLibre binary, font or photo is included.
 
-The default CLI starter still has no live map until a reviewed campaign supplies
-its data, markup, map library and provider configuration. No hosted example or
-provider capacity claim is made here. Future work will remove the compatibility
-globals and complete the campaign configuration/build adapters.
+**Status (Phase 0c):** `campaign_tool build` wires this controller when
+`content/map/map-config.json` exists: it emits `site-data.js` with the
+compatibility globals, `agency-cards.js`, and `app.js` (controller plus page
+bootstrap), copies `cameras.geojson` and the city boundary file into
+`public/data/`, and extends the CSP to the declared style and tile hosts. See
+[SITE-CONTENT.md](SITE-CONTENT.md). MapLibre is included only when the campaign
+places it in `content/vendor/`; otherwise the static fallback renders. The
+neutral starter without `content/` still has no map. No hosted example or
+provider capacity claim is made here; a later slice will retire the
+compatibility globals.
 
 ## Validation
 
