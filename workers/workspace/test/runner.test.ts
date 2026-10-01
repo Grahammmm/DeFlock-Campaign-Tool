@@ -114,3 +114,78 @@ describe("runner API", () => {
     expect(((await c1.json()) as { correspondence_id: string }).correspondence_id).toBe(((await c2.json()) as { correspondence_id: string }).correspondence_id);
   });
 });
+
+describe("runner API: followups, classification patch, site staging", () => {
+  it("done results enqueue follow-up jobs idempotently and never a send_request", async () => {
+    const repo = await seedCampaign();
+    const { row } = await repo.enqueueJob("classify_mail", "kf", { correspondence_id: "cor_missing", raw_sha256: "a".repeat(64) });
+    await call(new Request(BASE + "/jobs", { headers: runnerHeaders() }));
+    const key = "b".repeat(64);
+    const body = JSON.stringify({
+      status: "done",
+      outputs: {
+        followups: [
+          { kind: "extract", idempotency_key: key, inputs: { sha256: "c".repeat(64) } },
+          { kind: "extract", idempotency_key: key, inputs: { sha256: "c".repeat(64) } },
+          { kind: "send_request", inputs: { request_id: "req_x" } },
+          { kind: "launch_missiles" },
+          { kind: "digest", inputs: { sha256: "d".repeat(64) } },
+        ],
+      },
+    });
+    const res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body }));
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { state: string; followups: string[] };
+    expect(json.state).toBe("done");
+    expect(json.followups.length).toBe(3); // duplicate key returns the same job id twice
+    expect(new Set(json.followups).size).toBe(2);
+    const jobs = await repo.jobs();
+    expect(jobs.filter((j) => j.kind === "extract").length).toBe(1);
+    expect(jobs.filter((j) => j.kind === "digest").length).toBe(1);
+    expect(jobs.filter((j) => j.kind === "send_request").length).toBe(0);
+    expect(jobs.find((j) => j.kind === "extract")?.idempotency_key).toBe(key);
+  });
+
+  it("classify_mail results patch the correspondence row's classification only", async () => {
+    const repo = await seedCampaign();
+    const { row: corr } = await repo.createCorrespondence({
+      request_id: null, direction: "inbound", channel: "email", provider_message_id: "cls-1@example.invalid", from_addr: "a@example.invalid", to_addr: "b@example.invalid",
+      subject: "Ack", received_at: "2026-09-30T10:00:00Z", raw_sha256: null, classification: "unclassified", classification_confidence: null, summary: null,
+    });
+    const { row } = await repo.enqueueJob("classify_mail", "kc", { correspondence_id: corr.correspondence_id, raw_sha256: "a".repeat(64) });
+    await call(new Request(BASE + "/jobs", { headers: runnerHeaders() }));
+    const body = JSON.stringify({ status: "done", outputs: { correspondence_update: { classification: "extension", classification_confidence: "high", summary: "Inbound email classified as extension", subject: "must not change" } } });
+    await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body }));
+    const updated = await repo.correspondence(corr.correspondence_id);
+    expect(updated?.classification).toBe("extension");
+    expect(updated?.classification_confidence).toBe("high");
+    expect(updated?.summary).toBe("Inbound email classified as extension");
+    expect(updated?.subject).toBe("Ack");
+    // an unknown label falls back to unclassified instead of violating the CHECK constraint
+    const { row: row2 } = await repo.enqueueJob("classify_mail", "kc2", { correspondence_id: corr.correspondence_id, raw_sha256: "e".repeat(64) });
+    await call(new Request(BASE + "/jobs", { headers: runnerHeaders() }));
+    await call(new Request(`${BASE}/jobs/${row2.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status: "done", outputs: { correspondence_update: { classification: "weird" } } }) }));
+    expect((await repo.correspondence(corr.correspondence_id))?.classification).toBe("unclassified");
+  });
+
+  it("site staging writes to the public bucket under sites/<version>/ with path and size checks", async () => {
+    await seedCampaign();
+    const html = new TextEncoder().encode("<!doctype html><title>synthetic</title>");
+    let res = await call(new Request(`${BASE}/site/v1.0/findings/index.html`, { method: "PUT", headers: runnerHeaders({ "content-type": "text/html; charset=utf-8" }), body: html }));
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as { key: string; sha256: string; bytes: number };
+    expect(json.key).toBe("sites/v1.0/findings/index.html");
+    expect(json.sha256).toBe(await sha256Hex(html));
+    const stored = await env.PUBLIC_BUCKET.get("sites/v1.0/findings/index.html");
+    expect(await stored?.text()).toBe("<!doctype html><title>synthetic</title>");
+    expect(stored?.httpMetadata?.contentType).toBe("text/html; charset=utf-8");
+    res = await call(new Request(`${BASE}/site/v1.0/_headers`, { method: "PUT", headers: runnerHeaders({ "content-type": "text/plain" }), body: "/*\n  X-Test: 1\n" }));
+    expect(res.status).toBe(201);
+    expect((await call(new Request(`${BASE}/site/Bad%20Version/index.html`, { method: "PUT", headers: runnerHeaders(), body: html }))).status).toBe(400);
+    expect((await call(new Request(`${BASE}/site/v1.0/..%2Fescape.html`, { method: "PUT", headers: runnerHeaders(), body: html }))).status).toBe(400);
+    expect((await call(new Request(`${BASE}/site/v1.0/.hidden`, { method: "PUT", headers: runnerHeaders(), body: html }))).status).toBe(400);
+    expect((await call(new Request(`${BASE}/site/v1.0/index.html`, { method: "PUT", headers: runnerHeaders({ "content-length": String(17 * 1024 * 1024) }), body: html }))).status).toBe(413);
+    expect((await call(new Request(`${BASE}/site/v1.0/index.html`, { method: "PUT", body: html }))).status).toBe(401);
+    expect(await env.PUBLIC_BUCKET.head("sites/v1.0/index.html")).toBeNull();
+  });
+});
