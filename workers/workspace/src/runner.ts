@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { HEX64, nowIso, sha256Hex } from "@deflock/shared/ids";
 import { requireRunner } from "./auth.ts";
-import { ACTION_KINDS, Repo, type ActionKind } from "./db.ts";
+import { ACTION_KINDS, JOB_KINDS, Repo, type ActionKind, type JobKind } from "./db.ts";
 import type { Env } from "./env.ts";
 
 type Vars = { repo: Repo };
@@ -46,12 +46,105 @@ runnerApi.post("/jobs/:id/result", async (c) => {
   const job = await c.var.repo.job(c.req.param("id"));
   if (!job) return c.json({ error: "unknown job" }, 404);
   if (job.state !== "leased") return c.json({ error: `job is ${job.state}, not leased` }, 409);
-  const outputs = { ...((body.outputs as object) ?? {}), receipt: body.receipt ?? null };
+  const outputs = { ...((body.outputs as object) ?? {}), receipt: body.receipt ?? null } as Record<string, unknown>;
   const updated = await c.var.repo.finishJob(job.job_id, body.status as "done" | "failed" | "blocked", outputs, body.error ?? null);
   if (body.status === "failed" && updated?.state === "failed") {
     await c.var.repo.raiseIncident("job:" + job.kind + ":" + job.idempotency_key, "warning", `job ${job.job_id} (${job.kind}) failed after ${job.attempt} attempts: ${body.error ?? ""}`);
   }
-  return c.json({ job_id: job.job_id, state: updated?.state });
+  const followups: string[] = [];
+  if (body.status === "done") {
+    // outputs.followups: [{kind, idempotency_key?, inputs?}] -> queued jobs (idempotent); other keys are ignored.
+    for (const item of parseFollowups(outputs.followups)) {
+      const key = item.idempotency_key ?? (await sha256Hex(item.kind + JSON.stringify(item.inputs)));
+      const { row } = await c.var.repo.enqueueJob(item.kind, key, item.inputs);
+      followups.push(row.job_id);
+    }
+    // classify_mail: outputs.correspondence_update patches the classified row (never the raw MIME).
+    const patch = outputs.correspondence_update as Record<string, unknown> | undefined;
+    const target = (JSON.parse(job.inputs_json) as { correspondence_id?: string }).correspondence_id;
+    if (job.kind === "classify_mail" && patch && typeof patch === "object" && target && (await c.var.repo.correspondence(target))) {
+      const classification = String(patch.classification ?? "unclassified");
+      await c.var.repo.updateCorrespondence(target, {
+        classification: CLASSIFICATIONS.includes(classification) ? classification : "unclassified",
+        classification_confidence: typeof patch.classification_confidence === "string" ? patch.classification_confidence.slice(0, 32) : null,
+        summary: typeof patch.summary === "string" ? patch.summary.slice(0, 300) : null,
+      });
+    }
+  }
+  return c.json({ job_id: job.job_id, state: updated?.state, followups });
+});
+
+const CLASSIFICATIONS = ["acknowledgement", "extension", "fee_estimate", "partial_production", "production", "denial", "clarification", "unrelated", "unclassified"];
+const MAX_FOLLOWUPS = 200;
+
+function parseFollowups(value: unknown): { kind: JobKind; idempotency_key: string | null; inputs: Record<string, unknown> }[] {
+  if (!Array.isArray(value)) return [];
+  const out: { kind: JobKind; idempotency_key: string | null; inputs: Record<string, unknown> }[] = [];
+  for (const item of value.slice(0, MAX_FOLLOWUPS)) {
+    if (!item || typeof item !== "object") continue;
+    const kind = (item as { kind?: unknown }).kind;
+    if (!JOB_KINDS.includes(kind as JobKind) || kind === "send_request") continue; // sends are never queued from runner output
+    const key = (item as { idempotency_key?: unknown }).idempotency_key;
+    const inputs = (item as { inputs?: unknown }).inputs;
+    out.push({
+      kind: kind as JobKind,
+      idempotency_key: typeof key === "string" && HEX64.test(key) ? key : null,
+      inputs: inputs && typeof inputs === "object" && !Array.isArray(inputs) ? (inputs as Record<string, unknown>) : {},
+    });
+  }
+  return out;
+}
+
+// Public site staging (build_site job): PUT /api/runner/site/:version/<path> -> public bucket
+// sites/<version>/<path>. Nothing is served until a deploy_site card flips site_version.
+// Path safety: relative, plain segments (no "", ".", "..", leading dot or slash), an
+// allowlisted extension (or one of the Pages-style control files), <= 16 MiB, and the
+// caller's x-object-sha256 must match the bytes before anything is written.
+export const SITE_VERSION = /^[a-z0-9._-]{1,64}$/;
+const SITE_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,120}$/;
+export const SITE_FILE_MAX_BYTES = 16 * 1024 * 1024;
+export const SITE_EXTENSIONS: ReadonlySet<string> = new Set([
+  "html", "css", "js", "mjs", "map", "json", "geojson", "xml", "txt", "webmanifest",
+  "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf",
+]);
+export const SITE_CONTROL_FILES: ReadonlySet<string> = new Set(["_headers", "_redirects"]);
+
+export function safeSitePath(path: string): string | null {
+  if (!path || path.length > 1024 || path.includes("\\") || path.includes("\0")) return null;
+  const parts = path.split("/");
+  if (parts.length > 16 || parts.some((p) => !SITE_SEGMENT.test(p) || p === "." || p === "..")) return null;
+  const name = parts[parts.length - 1]!;
+  if (!SITE_CONTROL_FILES.has(name)) {
+    const dot = name.lastIndexOf(".");
+    if (dot <= 0 || !SITE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())) return null;
+  }
+  return parts.join("/");
+}
+
+runnerApi.put("/site/:version/*", async (c) => {
+  const version = c.req.param("version");
+  if (!SITE_VERSION.test(version)) return c.json({ error: "version must match [a-z0-9._-]{1,64}" }, 400);
+  const raw = c.req.path.replace(/^\/api\/runner\/site\/[^/]+\/?/, "");
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return c.json({ error: "path is not valid percent-encoding" }, 400);
+  }
+  const path = safeSitePath(decoded);
+  if (!path) return c.json({ error: "path must be relative with plain segments and an allowlisted extension" }, 400);
+  const expected = (c.req.header("x-object-sha256") ?? "").toLowerCase();
+  if (!HEX64.test(expected)) return c.json({ error: "x-object-sha256 header (64 lowercase hex) required" }, 400);
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (declared > SITE_FILE_MAX_BYTES) return c.json({ error: "file exceeds 16 MiB" }, 413);
+  const bytes = new Uint8Array(await c.req.arrayBuffer());
+  if (bytes.byteLength > SITE_FILE_MAX_BYTES) return c.json({ error: "file exceeds 16 MiB" }, 413);
+  const actual = await sha256Hex(bytes);
+  if (actual !== expected) return c.json({ error: "hash mismatch", expected, actual }, 400);
+  const key = `sites/${version}/${path}`;
+  const mediaType = c.req.header("content-type") ?? "application/octet-stream";
+  await c.env.PUBLIC_BUCKET.put(key, bytes, { httpMetadata: { contentType: mediaType }, customMetadata: { sha256: actual } });
+  return c.json({ key, sha256: actual, bytes: bytes.byteLength }, 201);
 });
 
 // GET /api/runner/originals/:sha256 -> bytes

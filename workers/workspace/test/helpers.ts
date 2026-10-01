@@ -53,6 +53,17 @@ export async function call(request: Request, overrides: Partial<Env> = {}): Prom
   return res;
 }
 
+/**
+ * Lease one specific job for a test. The pool shares D1 state across tests in a file, so
+ * `GET /jobs` may hand out an older queued job; this marks exactly `jobId` as leased.
+ */
+export async function leaseExactly(jobId: string): Promise<void> {
+  const until = new Date(Date.now() + 300_000).toISOString();
+  await env.DB.prepare("UPDATE job SET state = 'leased', leased_until = ?, attempt = attempt + 1, updated_at = ? WHERE job_id = ?")
+    .bind(until, new Date().toISOString(), jobId)
+    .run();
+}
+
 export function runnerHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return { authorization: "Bearer " + env.RUNNER_TOKEN, "content-type": "application/json", ...extra };
 }

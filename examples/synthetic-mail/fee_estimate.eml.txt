@@ -1,0 +1,11 @@
+From: records@example.invalid
+To: requests@campaign.example.invalid
+Subject: Re: Request #2026-0042 cost estimate
+Date: Wed, 30 Sep 2026 10:00:00 +0000
+Message-ID: <fee-0042@example.invalid>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+FICTIONAL TRAINING MATERIAL. The estimated cost of duplication is $42.50 at t=
+he direct cost of duplication. Please confirm.

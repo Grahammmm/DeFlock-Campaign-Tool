@@ -1,0 +1,11 @@
+From: records@example.invalid
+To: requests@campaign.example.invalid
+Subject: Public Records Request #2026-0042 received
+Date: Wed, 30 Sep 2026 10:00:00 +0000
+Message-ID: <ack-0042@example.invalid>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+FICTIONAL TRAINING MATERIAL. We have received your request. Your reference nu=
+mber is 2026-0042. We are processing it.
