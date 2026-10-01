@@ -445,6 +445,11 @@ class Pipeline:
                 continue
             evidence = [{"sha256": subject, "locator": loc} for loc in duty["locators"][:10]]
             source = (rule.get("sources") or [{}])[0]
+            # Automated passes never upgrade a legal conclusion: the attorney label is fixed here.
+            # What the first model concluded about this rule travels with the row as observations.
+            observations = [{"text": c["text"], "confidence": c["confidence"], "model_id": digest.get("model_id")}
+                            for c in digest.get("conclusions", [])
+                            if any(src.get("rule_id") == rule["rule_id"] for src in c.get("sources", []))]
             confidence = "needs_attorney_review"
             classification = "LEGAL_REVIEW_REQUIRED"
             rows.append({"rule_id": rule["rule_id"], "citation": rule["citation"], "duty": rule["duty"],
@@ -455,6 +460,7 @@ class Pipeline:
                          "rule_review_label": rule.get("review", "needs_attorney_review"),
                          "classification": classification, "confidence": confidence,
                          "observation": "Record text references the subject matter of this rule (see evidence).",
+                         "model_observations": observations,
                          "evidence": evidence, "counterevidence": [],
                          "next_action": "Attorney review of applicability and compliance on the event date."})
         if not rows:

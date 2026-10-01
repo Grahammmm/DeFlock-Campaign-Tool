@@ -214,6 +214,13 @@ class RunSliceTests(unittest.TestCase):
         self.assertEqual(reviewers, {"challenge:model:local-challenger"})
         rows = self.ledger("SELECT a.payload FROM stage_content c JOIN stage_artifacts a ON a.sha256=c.content_sha256 WHERE c.stage='review'")
         self.assertTrue(all(json.loads(bytes(r[0]))["digest"]["model_id"] == "local-primary" for r in rows))
+        # Legal rows keep the attorney label and carry the model's own conclusion as an observation.
+        compares = [json.loads(bytes(r[0])) for r in self.ledger(
+            "SELECT a.payload FROM stage_content c JOIN stage_artifacts a ON a.sha256=c.content_sha256 WHERE c.stage='compare'")]
+        rows_with_rules = [row for content in compares for row in content.get("comparisons", [])]
+        self.assertTrue(rows_with_rules)
+        self.assertTrue(all(row["confidence"] == "needs_attorney_review" for row in rows_with_rules))
+        self.assertTrue(all("model_observations" in row for row in rows_with_rules))
 
     def test_same_model_challenge_requires_fresh_context_declaration(self):
         config = ModelConfig(base_url="http://127.0.0.1:1/v1", model_id="same")

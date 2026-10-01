@@ -60,7 +60,7 @@ with `DRY_RUN=1` and read the recorded plan before running it live.
 | Kit demo for three CA counties | Passed offline (SLO, Monterey, Santa Barbara resolve and draft) | — |
 | Fresh account live in under one hour | Not run | Deploy the wizard, run apply against a throwaway Cloudflare account and domain, record timing and cost in this file |
 | SLO cut over to the engine | Not started | Export the pilot's originals and ledger; write the import into D1 and R2 (`backup restore` extracts to a local directory and `export_hosted` only exports from a hosted workspace — a hosted restore is not written, see docs/BACKUP.md "Not done"); point the records mailbox at the workspace; retire the old exporter after one clean week |
-| Second organizer live, owner's in-chat review passed | Not started | Recruit from the DeFlock victories list or Rural Privacy Coalition; the review is the owner's in-chat review with Claude per the owner's decision, not an independent security or privacy review (ROADMAP item 15 still lists that as open) |
+| Second organizer live, owner's in-chat review passed | Not started | Recruit from the DeFlock victories list or Rural Privacy Coalition; product review is the owner's in-chat review, not an independent security review (ROADMAP item 15 still open). Records items get the automated challenge pass described in docs/CONTRACTS.md |
 | Law package `reviewed` | `draft` | A second reader checks each rule against the cited primary text and signs `reviewed_by` |
 
 ## Known gaps (also listed in README "Planned")
@@ -68,7 +68,8 @@ with `DRY_RUN=1` and read the recorded plan before running it live.
 - Worker executors for `send_request` and `send_followup` fail `sender_not_configured` until
   the engine outbox is bound to the `MailSender` port; the outbox works as a CLI today.
 - Runner answers `newsletter_draft` and `backup` jobs with `blocked` (no handler yet).
-- No OCR; image-only pages are reported `ocr_needed`.
+- OCR: `records run --ocr` uses local tesseract/pdftoppm per page and records a visual-review
+  hold; without the tools an image-only page is held with an alert, never faked.
 - The CLI kit selects all discovered agencies by default while the wizard unticks CHP and the
   district attorney; pick one default.
 - `locate --online` (Census geocoder) and `tools/refresh_agency_seed_online.py` have not been
@@ -84,4 +85,7 @@ organizer's account; newsletter provider is Brevo; privacy tier default `redacte
 (records stay local, only redacted text reaches a model; known names go in the denylist
 because regex redaction cannot catch every bare name) with `strict_local` as a switch; SLO
 cuts over at the phase 2 gate;
-review is done in-chat with the owner, no outside reviewer.
+independent review of records items is the automated challenge pass in `records run`
+(deterministic source check plus a second model or declared fresh-context run) recorded on
+the stage receipt; the owner's `records approve` is the final gate (decision 2026-10-01,
+see docs/CONTRACTS.md "Independent review"). No outside human reviewer is required.

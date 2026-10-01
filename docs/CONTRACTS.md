@@ -126,6 +126,24 @@ No code path sends without an approved row. Kinds: `send_request`, `send_followu
 emails and officer identifiers with `campaign_tool.digest.redact` before any external model call, and logs the
 redaction count. `strict_local`: no external model call; `MODEL_BASE_URL` must be a loopback or Tailscale address.
 
+## Independent review (records pipeline)
+
+Decision 2026-10-01: the independent review the records contract requires is satisfied by an
+automated **challenge pass** inside `records run`, recorded on the stage receipt as a
+`reviews[]` entry whose `reviewer_id` is never the author. The pass is
+`campaign_tool.records.challenge`: a deterministic source check (every locator resolves, every
+quoted statement is in the redacted sources, every legal conclusion cites a known `rule_id` and is
+`needs_attorney_review`, no identifier survives redaction) plus an optional second model
+(`CHALLENGE_MODEL_BASE_URL`) that must be a different model or an explicitly declared
+fresh-context run (`CHALLENGE_FRESH_CONTEXT=1`). The challenger receives the redacted sources
+*before* the digest and may only dispute. A dispute promotes the stage as `blocked` with the
+disputes recorded; it never passes silently. The same pass covers the `compare` (legal role) and
+`privacy` (factual + privacy roles) stages.
+
+The owner's approval (`records approve`) remains the final gate before anything leaves the
+pipeline, and it binds to the exact public bytes. No outside human reviewer is required for a
+tier A documentary item; one may still be recorded as an additional `reviews[]` entry.
+
 ## Confidence labels
 
 Every digest conclusion carries `confidence: verified | likely | needs_attorney_review` and at least one
