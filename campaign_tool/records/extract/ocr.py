@@ -11,6 +11,7 @@ import hashlib
 import importlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -27,10 +28,16 @@ ARTIFACTS = ("page.pdf", "page.png", "sidecar.txt", "searchable.pdf", "confidenc
 RECEIPT_KEYS = {"receipt_id", "identity", "source", "locator", "page_count", "status",
                 "blocked_reason", "confidence", "confidence_basis", "visual_check_required",
                 "visual_check_status", "fidelity_status", "review_status", "artifact_sha256",
-                "published_at_ns"}
+                "published_at_ns", "tool_versions"}
 STATES = {"blocked", "skipped_machine_text", "ocr_text_unreviewed", "visual_check_queued"}
 O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+OCR_TOOLS = ("ocrmypdf", "tesseract", "pdftoppm", "gs")
+RASTER_DPI = 300
+MAX_RASTER_PIXELS = 40_000_000
+# Mirrors the intake worker's child bounds (folder.LIMITS memory_bytes/source_bytes).
+CHILD_MEMORY_BYTES = 3 * 1024 ** 3
+CHILD_FILE_BYTES = 512 * 1024 ** 2
 
 
 def _json(value: object) -> bytes:
@@ -183,8 +190,52 @@ def _confidence(tsv: str) -> float | None:
     return round(sum(values) / len(values), 2) if values else None
 
 
-def _run(runner, command: list[str], timeout: int):
-    result = runner(command, capture_output=True, text=True, timeout=timeout, check=False)
+def _limit_child() -> None:
+    """preexec_fn for OCR children: bound address space and written file size."""
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (CHILD_MEMORY_BYTES, CHILD_MEMORY_BYTES))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (CHILD_FILE_BYTES, CHILD_FILE_BYTES))
+    os.umask(0o077)
+
+
+def _raster_pixels(page) -> float:
+    """Pixels pdftoppm would allocate for the page MediaBox at RASTER_DPI."""
+    try:
+        box = page.mediabox
+        width, height = abs(float(box.width)), abs(float(box.height))
+        unit = float(getattr(page, "user_unit", 1) or 1)
+    except Exception as error:
+        raise PageFailure("page_geometry_unavailable") from error
+    if not all(math.isfinite(v) and v > 0 for v in (width, height, unit)):
+        raise PageFailure("page_geometry_unavailable")
+    scale = RASTER_DPI / 72 * unit
+    return width * height * scale * scale
+
+
+def _resolved_tools(tools: dict | None) -> tuple[dict, dict]:
+    """Doctor-resolved absolute executables and probed versions; never PATH lookups."""
+    if not isinstance(tools, dict):
+        raise ValueError("tools must be the doctor-resolved tool map")
+    paths, versions = {}, {}
+    for name in OCR_TOOLS:
+        entry = tools.get(name)
+        path = entry.get("path") if isinstance(entry, dict) else None
+        version = entry.get("version") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise ValueError("tools must give an absolute path for " + name)
+        if not isinstance(version, str) or not version:
+            raise ValueError("tools must give a probed version for " + name)
+        paths[name] = path
+        versions[name] = version
+    pypdf = tools.get("pypdf")
+    if isinstance(pypdf, dict) and isinstance(pypdf.get("version"), str) and pypdf["version"]:
+        versions["pypdf"] = pypdf["version"]
+    return paths, versions
+
+
+def _run(runner, command: list[str], timeout: int, env: dict | None = None):
+    result = runner(command, capture_output=True, text=True, timeout=timeout, check=False,
+                    preexec_fn=_limit_child, env=env)
     if result.returncode:
         raise RuntimeError("ocr_command_failed")
     return result
@@ -232,6 +283,10 @@ def _validate_receipt(receipt: dict, identity: dict, directory: Path) -> tuple[s
     confidence = receipt["confidence"]
     if confidence is not None and (type(confidence) not in {int, float} or not 0 <= confidence <= 100):
         raise ValueError("ocr_receipt_confidence_mismatch")
+    versions = receipt["tool_versions"]
+    if (not isinstance(versions, dict) or not set(OCR_TOOLS) <= set(versions)
+            or any(not isinstance(k, str) or not isinstance(v, str) or not v for k, v in versions.items())):
+        raise ValueError("ocr_receipt_tool_versions_mismatch")
     if not blocked and receipt["status"] != "skipped_machine_text" and confidence is None:
         raise ValueError("ocr_receipt_confidence_missing")
     hashes = receipt["artifact_sha256"]
@@ -381,6 +436,10 @@ def reconcile_pages(output_root: str | Path, source_sha256: str) -> dict:
             "published_receipts": receipts, "status": "reconciled"}
 
 
+class PageFailure(Exception):
+    """A bounded page-local extraction failure."""
+
+
 def _publish_blocked_disposition(page_dir: Path, output: Path, base: dict,
                                  reason: str, source_sha256: str, page: int) -> dict:
     """Record an operational failure independently of an earlier page receipt."""
@@ -414,10 +473,6 @@ def _publish_blocked_disposition(page_dir: Path, output: Path, base: dict,
 
 
 
-class PageFailure(Exception):
-    """A bounded page-local extraction failure."""
-
-
 def _prune_unrecorded(directory: Path, artifacts: dict) -> str | None:
     reason = None
     for entry in directory.iterdir():
@@ -438,11 +493,16 @@ def _prune_unrecorded(directory: Path, artifacts: dict) -> str | None:
 
 def extract_image_only_pages(
     intake_root: str | Path, source_sha256: str, output_root: str | Path, *,
-    tool_signature: str, attempt_id: str = "initial", pages: tuple[int, ...] | None = None,
+    tool_signature: str, tools: dict | None = None, attempt_id: str = "initial",
+    pages: tuple[int, ...] | None = None,
     fidelity_holds: tuple[int, ...] = (), language: str = "eng",
     low_confidence: float = 80.0, timeout: int = 180, runner=subprocess.run,
 ) -> list[dict]:
-    """Persist page receipts for a preserved PDF, including failures and holds."""
+    """Persist page receipts for a preserved PDF, including failures and holds.
+
+    ``tools`` is the ``dependency_status()["tools"]`` map: children are invoked by
+    those absolute paths and the probed versions are recorded in every receipt.
+    """
     if not SHA256.fullmatch(source_sha256):
         raise ValueError("source_sha256 must be a lowercase SHA-256")
     if not isinstance(tool_signature, str) or not re.fullmatch(r"[\w .+/-]{1,120}", tool_signature):
@@ -453,6 +513,14 @@ def extract_image_only_pages(
         raise ValueError("invalid OCR language")
     if type(low_confidence) not in {int, float} or not 0 <= low_confidence <= 100 or type(timeout) is not int or timeout <= 0:
         raise ValueError("invalid OCR threshold or timeout")
+    tool_paths, tool_versions = _resolved_tools(tools)
+    search = []
+    for name in OCR_TOOLS:
+        directory = os.path.dirname(tool_paths[name])
+        if directory not in search:
+            search.append(directory)
+    # ocrmypdf locates tesseract and gs itself; put the doctor-resolved copies first.
+    child_env = {**os.environ, "PATH": os.pathsep.join(search + [os.environ.get("PATH", "")])}
     raw = _read(Path(intake_root) / "blobs" / source_sha256)
     if _hash(raw) != source_sha256:
         raise ValueError("preserved_blob_hash_mismatch")
@@ -502,7 +570,7 @@ def extract_image_only_pages(
                    "confidence_basis": "tesseract_word_tsv_mean", "visual_check_required": False,
                    "visual_check_status": "not_done", "fidelity_status": "not_checked",
                    "review_status": "not_reviewed", "artifact_sha256": artifacts,
-                   "published_at_ns": 0}
+                   "published_at_ns": 0, "tool_versions": dict(tool_versions)}
         try:
             if held:
                 receipt["blocked_reason"] = "fidelity_hold_requires_visual_comparison"
@@ -515,6 +583,8 @@ def extract_image_only_pages(
                     if machine_text.strip():
                         receipt["status"] = "skipped_machine_text"
                     else:
+                        if _raster_pixels(reader.pages[number - 1]) > MAX_RASTER_PIXELS:
+                            raise PageFailure("page_raster_bound")
                         page_pdf = temporary / "page.pdf"
                         try:
                             writer = PdfWriter()
@@ -525,18 +595,20 @@ def extract_image_only_pages(
                             raise PageFailure("page_writer_failed") from error
                         _write_new(page_pdf, buffer.getvalue())
                         artifacts["page.pdf"] = _hash(_read(page_pdf))
-                        _run(runner, ["pdftoppm", "-f", "1", "-l", "1", "-singlefile", "-r", "300",
-                                      "-png", str(page_pdf), str(temporary / "page")], timeout)
+                        _run(runner, [tool_paths["pdftoppm"], "-f", "1", "-l", "1", "-singlefile",
+                                      "-r", str(RASTER_DPI), "-png", str(page_pdf),
+                                      str(temporary / "page")], timeout, child_env)
                         image = temporary / "page.png"
                         artifacts["page.png"] = _hash(_read(image, 128 * 1024 * 1024))
-                        _run(runner, ["ocrmypdf", "--jobs", "1", "--output-type", "pdf", "-l", language,
-                                      "--sidecar", str(temporary / "sidecar.txt"),
-                                      str(page_pdf), str(temporary / "searchable.pdf")], timeout)
+                        _run(runner, [tool_paths["ocrmypdf"], "--jobs", "1", "--output-type", "pdf",
+                                      "-l", language, "--sidecar", str(temporary / "sidecar.txt"),
+                                      str(page_pdf), str(temporary / "searchable.pdf")], timeout, child_env)
                         sidecar = _read(temporary / "sidecar.txt", 128 * 1024 * 1024)
                         searchable = _read(temporary / "searchable.pdf", 128 * 1024 * 1024)
                         artifacts["sidecar.txt"] = _hash(sidecar)
                         artifacts["searchable.pdf"] = _hash(searchable)
-                        probe = _run(runner, ["tesseract", str(image), "stdout", "-l", language, "tsv"], timeout)
+                        probe = _run(runner, [tool_paths["tesseract"], str(image), "stdout", "-l",
+                                              language, "tsv"], timeout, child_env)
                         _write_new(temporary / "confidence.tsv", probe.stdout.encode("utf-8"))
                         artifacts["confidence.tsv"] = _hash(_read(temporary / "confidence.tsv"))
                         receipt["confidence"] = _confidence(probe.stdout)
@@ -562,7 +634,7 @@ def extract_image_only_pages(
         if receipt["status"] == "blocked" and receipt["blocked_reason"] is None:
             receipt["blocked_reason"] = "page_ocr_unresolved"
         outcome = None
-        publication_failed = False
+        publication_failed = None
         cleanup_failed = False
         try:
             with _page_lock(page_dir):
@@ -599,7 +671,9 @@ def extract_image_only_pages(
                     outcome = receipt
                 _reconcile_page(page_dir, source_sha256, number, output)
         except OSError:
-            publication_failed = True
+            publication_failed = "page_publication_failed"
+        except ValueError:
+            publication_failed = "page_publication_rejected"
         finally:
             if temporary.exists():
                 try:
@@ -610,7 +684,7 @@ def extract_image_only_pages(
             with _page_lock(page_dir):
                 outcome = _publish_blocked_disposition(
                     page_dir, output, receipt,
-                    "attempt_cleanup_failed" if cleanup_failed else "page_publication_failed",
+                    "attempt_cleanup_failed" if cleanup_failed else publication_failed,
                     source_sha256, number)
         receipts.append(outcome)
     return receipts
@@ -638,8 +712,10 @@ def dependency_status(which=shutil.which, probe=subprocess.run,
     except (ImportError, ValueError):
         tools["pypdf"] = {"available": False, "version": None}
         missing.append("pypdf")
-    for name in ("ocrmypdf", "tesseract", "pdftoppm"):
+    for name in OCR_TOOLS:
         path = which(name)
+        if path is not None:
+            path = os.path.abspath(path)
         if path is None:
             tools[name] = {"available": False, "path": None, "version": None}
             missing.append(name)
@@ -696,7 +772,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         receipts = extract_image_only_pages(args.intake_root, args.sha, args.output_root,
-                                            tool_signature=args.tool_signature, attempt_id=args.attempt_id,
+                                            tool_signature=args.tool_signature,
+                                            tools=readiness["tools"], attempt_id=args.attempt_id,
                                             pages=tuple(args.page) if args.page else None,
                                             fidelity_holds=tuple(args.hold_page),
                                             language=args.language, low_confidence=args.low_confidence)

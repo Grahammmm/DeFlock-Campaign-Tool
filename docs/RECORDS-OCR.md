@@ -12,9 +12,13 @@ Read-only readiness check (no installation or evidence processing):
 
     PYTHONPATH="$PINNED_PARSER_BUNDLE:$PWD" python3 -m campaign_tool.records.extract.ocr --doctor
 
-The doctor imports `pypdf`, finds `ocrmypdf`, `tesseract`, and `pdftoppm`,
-and reads `ocrmypdf --version`, `tesseract --version`, and `pdftoppm -v`
-labels only when present. It reports exact missing and version-unverified names.
+The doctor imports `pypdf`, finds `ocrmypdf`, `tesseract`, `pdftoppm` and
+Ghostscript `gs`, and reads `ocrmypdf --version`, `tesseract --version`,
+`pdftoppm -v` and `gs --version` labels only when present. It reports exact
+missing and version-unverified names and absolute executable paths. Extraction
+invokes those doctor-resolved absolute paths (placing their directories first
+on the OCRmyPDF child's `PATH`) and records the probed version labels in every
+page receipt's `tool_versions`.
 The operator-provided `--tool-signature` is a declared pin, not independent
 binary attestation. A passing doctor check is dependency readiness, not
 full-pipeline, corpus, fidelity, or review acceptance. Propagate the private
@@ -40,10 +44,14 @@ not a calibrated probability or word-by-word attestation. Page receipts bind
 source SHA, 1-based page locator, method/tool/attempt identity, confidence,
 derivative hashes, and explicit extraction, fidelity and review states.
 
+Before rendering, a page whose MediaBox would exceed 40,000,000 pixels at
+300 dpi is blocked as `page_raster_bound`. OCR children run with `RLIMIT_AS`
+and `RLIMIT_FSIZE` bounds matching the intake worker.
+
 A confidence below threshold is `visual_check_queued`; a higher score remains
 `ocr_text_unreviewed`. Empty text, absent confidence, local tool failures,
-page text-probe errors, writer errors, and cleanup errors have blocked
-dispositions. The CLI reports page counts, statuses, receipt IDs and readiness,
+page text-probe errors, writer errors, page-local publication rejections and
+cleanup errors have blocked dispositions; later pages still receive receipts. The CLI reports page counts, statuses, receipt IDs and readiness,
 never raw text. Symlinks in the source or any managed derivative path are
 rejected. Existing output root, source, page and index directories must be
 owned by the process and inaccessible to group and others; intake ancestors

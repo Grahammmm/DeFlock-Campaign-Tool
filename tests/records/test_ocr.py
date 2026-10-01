@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import tempfile
 import unittest
@@ -11,6 +12,10 @@ from unittest.mock import patch
 
 from pypdf import PdfReader, PdfWriter
 from campaign_tool.records.extract import ocr
+
+TOOLS = {name: {"available": True, "path": "/synthetic/bin/" + name, "version": name + " 0.0-test"}
+         for name in ocr.OCR_TOOLS}
+TOOLS["pypdf"] = {"available": True, "version": "0.0-test"}
 
 
 class FakeRunner:
@@ -21,17 +26,20 @@ class FakeRunner:
         self.symlink = symlink
 
     def __call__(self, command, **kwargs):
-        self.calls.append(command[0])
-        if command[0] == "pdftoppm":
+        name = Path(command[0]).name
+        self.calls.append(name)
+        self.paths = getattr(self, "paths", []) + [command[0]]
+        self.kwargs = getattr(self, "kwargs", []) + [kwargs]
+        if name == "pdftoppm":
             image = Path(command[-1] + ".png")
             if self.symlink:
                 image.symlink_to("/etc/passwd")
             else:
                 image.write_bytes(b"synthetic raster")
-        elif command[0] == "ocrmypdf":
+        elif name == "ocrmypdf":
             Path(command[command.index("--sidecar") + 1]).write_text(self.sidecar)
             Path(command[-1]).write_bytes(b"synthetic derived pdf")
-        elif command[0] == "tesseract":
+        elif name == "tesseract":
             return subprocess.CompletedProcess(command, 0, "text\tconf\nword\t" + self.confidence + "\n", "")
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -54,7 +62,8 @@ class OCRTests(unittest.TestCase):
 
     def call(self, runner, **kwargs):
         return ocr.extract_image_only_pages(self.root, self.sha, self.output,
-                                            tool_signature="stub-v1", runner=runner, **kwargs)
+                                            tool_signature="stub-v1", runner=runner,
+                                            tools=kwargs.pop("tools", TOOLS), **kwargs)
 
     def final(self, receipt):
         return self.output / self.sha / f"page-{receipt['locator']['page']:06d}" / receipt["receipt_id"]
@@ -247,7 +256,7 @@ class OCRTests(unittest.TestCase):
         errors = []
         class Paused(FakeRunner):
             def __call__(self, command, **kwargs):
-                if command[0] == "pdftoppm":
+                if Path(command[0]).name == "pdftoppm":
                     started.set()
                     if not release.wait(3):
                         raise RuntimeError("synthetic pause timed out")
@@ -338,13 +347,93 @@ class OCRTests(unittest.TestCase):
         self.assertTrue(status["ready"])
         self.assertEqual(status["tools"]["pypdf"]["version"], "6.10.0")
         self.assertEqual(status["tools"]["pdftoppm"]["version"], "version 1")
+        self.assertEqual(status["tools"]["gs"], {"available": True, "path": "/fake/gs",
+                                                 "version": "version 1"})
         self.assertEqual(commands, [["/fake/ocrmypdf", "--version"],
                                     ["/fake/tesseract", "--version"],
-                                    ["/fake/pdftoppm", "-v"]])
+                                    ["/fake/pdftoppm", "-v"],
+                                    ["/fake/gs", "--version"]])
         absent = ocr.dependency_status(which=lambda name: None, probe=probe,
                                         module_probe=lambda: "6.10.0")
         self.assertFalse(absent["ready"])
-        self.assertEqual(absent["missing"], ["ocrmypdf", "tesseract", "pdftoppm"])
+        self.assertEqual(absent["missing"], ["ocrmypdf", "tesseract", "pdftoppm", "gs"])
+        no_gs = ocr.dependency_status(which=lambda name: None if name == "gs" else "/fake/" + name,
+                                      probe=probe, module_probe=lambda: "6.10.0")
+        self.assertFalse(no_gs["ready"])
+        self.assertEqual(no_gs["missing"], ["gs"])
+        relative = ocr.dependency_status(which=lambda name: "bin/" + name, probe=probe,
+                                         module_probe=lambda: "6.10.0")
+        self.assertTrue(all(Path(relative["tools"][n]["path"]).is_absolute() for n in ocr.OCR_TOOLS))
+
+    def test_extraction_uses_doctor_paths_and_records_versions(self):
+        fake = FakeRunner()
+        receipt = self.call(fake, pages=(1,))[0]
+        self.assertEqual(fake.paths, ["/synthetic/bin/pdftoppm", "/synthetic/bin/ocrmypdf",
+                                      "/synthetic/bin/tesseract"])
+        self.assertEqual(receipt["tool_versions"],
+                         {name: TOOLS[name]["version"] for name in (*ocr.OCR_TOOLS, "pypdf")})
+        self.assertEqual(json.loads((self.final(receipt) / "receipt.json").read_text())["tool_versions"],
+                         receipt["tool_versions"])
+        for kwargs in fake.kwargs:
+            self.assertIs(kwargs["preexec_fn"], ocr._limit_child)
+            self.assertTrue(kwargs["env"]["PATH"].startswith("/synthetic/bin" + ocr.os.pathsep))
+        for bad in (None, {**TOOLS, "gs": {"path": None, "version": "x"}},
+                    {**TOOLS, "tesseract": {"path": "tesseract", "version": "x"}},
+                    {**TOOLS, "pdftoppm": {"path": "/synthetic/bin/pdftoppm", "version": None}}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "tools"):
+                self.call(FakeRunner(), pages=(2,), tools=bad)
+
+    def test_child_limits_apply_address_space_and_file_size(self):
+        code = ("import resource;print(resource.getrlimit(resource.RLIMIT_AS)[0],"
+                "resource.getrlimit(resource.RLIMIT_FSIZE)[0])")
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                check=True, preexec_fn=ocr._limit_child)
+        self.assertEqual(result.stdout.split(), [str(ocr.CHILD_MEMORY_BYTES), str(ocr.CHILD_FILE_BYTES)])
+
+    def test_raster_bound_blocks_oversized_page_and_next_page_continues(self):
+        writer = PdfWriter()
+        writer.add_blank_page(width=72 * 50, height=72 * 50)  # 15000 x 15000 px at 300 dpi
+        writer.add_blank_page(width=72, height=72)
+        stream = io.BytesIO()
+        writer.write(stream)
+        self.raw = stream.getvalue()
+        self.sha = hashlib.sha256(self.raw).hexdigest()
+        (self.root / "blobs" / self.sha).write_bytes(self.raw)
+        fake = FakeRunner()
+        receipts = self.call(fake, pages=(1, 2))
+        self.assertEqual(receipts[0]["status"], "blocked")
+        self.assertEqual(receipts[0]["blocked_reason"], "page_raster_bound")
+        self.assertEqual(receipts[0]["artifact_sha256"], {})
+        self.assertTrue((self.output / "indexes" / "blocked" / (receipts[0]["receipt_id"] + ".json")).is_file())
+        self.assertEqual(receipts[1]["status"], "visual_check_queued")
+        self.assertEqual(fake.calls, ["pdftoppm", "ocrmypdf", "tesseract"])
+
+    def test_raster_bound_threshold(self):
+        reader = PdfReader(io.BytesIO(self.raw), strict=False)
+        self.assertAlmostEqual(ocr._raster_pixels(reader.pages[0]), 90000.0)
+        class Box:
+            width, height = float("nan"), 72
+        class Page:
+            mediabox = Box()
+        with self.assertRaisesRegex(ocr.PageFailure, "page_geometry_unavailable"):
+            ocr._raster_pixels(Page())
+
+    def test_page_local_value_error_in_publication_yields_receipts_for_next_page(self):
+        real_validate = ocr._validate_receipt
+        calls = []
+        def validate(*args):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ValueError("synthetic page-local publication rejection")
+            return real_validate(*args)
+        with patch.object(ocr, "_validate_receipt", side_effect=validate):
+            receipts = self.call(FakeRunner(), pages=(1, 2))
+        self.assertEqual(receipts[0]["status"], "blocked")
+        self.assertEqual(receipts[0]["blocked_reason"], "page_publication_rejected")
+        self.assertEqual(receipts[1]["status"], "visual_check_queued")
+        current = json.loads((self.output / self.sha / "page-000001" / "current.json").read_text())
+        self.assertEqual(current["blocked_reason"], "page_publication_rejected")
+        self.assertTrue((self.final(receipts[1]) / "receipt.json").is_file())
 
 
     def test_repeated_recovery_reuse_leaves_no_temporary_directories(self):
@@ -376,7 +465,7 @@ class OCRTests(unittest.TestCase):
         def runner(command, **kwargs):
             nonlocal added
             result = fake(command, **kwargs)
-            if command[0] == "pdftoppm" and not added:
+            if Path(command[0]).name == "pdftoppm" and not added:
                 extra = Path(command[-1]).parent / "unexpected"
                 extra.mkdir()
                 (extra / "generated.txt").write_text("synthetic unexpected output")
