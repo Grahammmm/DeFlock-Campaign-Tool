@@ -1,4 +1,4 @@
-"""Actual composed-fixture challenges; invoked by test_pipeline_composition.
+"""Adversarial catalog-adapter probes; invoked by test_run_tamper (root built by `records run`)
 
 No standalone mock acceptance. Every probe calls the WP5 adapter; its installed
 WP4 validator is the real one. Temporary malformed rows are rolled back and
