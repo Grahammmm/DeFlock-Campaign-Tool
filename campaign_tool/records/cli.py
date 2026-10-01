@@ -15,6 +15,7 @@ COMMANDS = {
     "status": ("run", "status_main"),
     "approve": ("publish", "approve_main"),
     "publish": ("publish", "publish_main"),
+    "reopen": ("publish", "reopen_main"),
     "health": ("schedule", "health_main"),
     "schedule": ("schedule", "schedule_main"),
 }

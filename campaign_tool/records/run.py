@@ -671,8 +671,10 @@ def status(root):
             "SELECT original_sha256,stage,reason FROM stage_state WHERE status='blocked' ORDER BY original_sha256,stage")]
         runs = [dict(row) for row in con.execute("SELECT run_id,kind,started_at,ended_at,status FROM runs ORDER BY started_at DESC LIMIT 10")]
         alerts = [dict(row) for row in con.execute("SELECT key,first_seen,last_seen,count,owner,state FROM alerts WHERE state='open' ORDER BY last_seen DESC")]
+    from .publish import drifted_proposals
     return {"root": str(root.path), "ledger": True, "originals": summary["originals"], "stages": summary["stages"],
             "end_to_end_complete": summary["candidate_seven_stage_complete"], "proposals": proposals,
+            "drifted_proposals": drifted_proposals(root.path),
             "blocked": blocked, "alerts": alerts, "recent_runs": runs}
 
 

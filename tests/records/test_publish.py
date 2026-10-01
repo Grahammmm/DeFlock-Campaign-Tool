@@ -123,6 +123,57 @@ class PublishTests(unittest.TestCase):
         self.assertNotIn(self.policy, current["proposals"])
         self.assertIn(self.policy, current["withdrawn"])
 
+    def test_reopen_is_the_owner_correction_path_through_the_cli(self):
+        publish.approve(self.root, self.policy, owner_id="owner")
+        first = publish.publish(self.root, self.policy, staging=self.staging)
+        before = self.ledger("SELECT owner_approval,public_content_sha256 FROM proposals WHERE id=?", (self.policy,))[0]
+        self.assertEqual(before[0], "approved")
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "reopen", "--root", str(self.root),
+                                 "--proposal", self.policy, "--reason", "agency sent a corrected page"],
+                                cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["stage"], "review")
+        self.assertTrue(receipt["invalidated"])
+        # Approval cleared at once; review and everything after it reopened; staged release untouched.
+        row = self.ledger("SELECT owner_approval,approved_content_sha256 FROM proposals WHERE id=?", (self.policy,))[0]
+        self.assertEqual(tuple(row), ("none", None))
+        subject = receipt["original_sha256"]
+        states = dict(self.ledger("SELECT stage,status FROM stage_state WHERE original_sha256=?", (subject,)))
+        self.assertEqual(states["catalog"], "done")
+        self.assertNotEqual(states["review"], "done")
+        self.assertNotEqual(states["privacy"], "done")
+        self.assertTrue((self.staging / "content" / (self.policy + ".md")).exists())
+        with self.assertRaisesRegex(publish.PublishError, "owner_approval_required"):
+            publish.publish(self.root, self.policy, staging=self.staging)
+        receipts = list((self.root / "proposals/private").glob(self.policy + ".reopen.*.json"))
+        self.assertEqual(len(receipts), 1)
+        # The next run regenerates the content with a fresh privacy receipt; re-approve; publish records a correction.
+        Pipeline(self.root, redaction_denylist=["purged"]).run(self.inbox)
+        after = self.ledger("SELECT owner_approval,public_content_sha256,privacy_receipt_sha256 FROM proposals WHERE id=?",
+                            (self.policy,))[0]
+        self.assertEqual(after[0], "none")
+        self.assertNotEqual(after[1], before[1])
+        publish.approve(self.root, self.policy, owner_id="owner")
+        second = publish.publish(self.root, self.policy, staging=self.staging)
+        self.assertEqual((second["action"], second["previous_version"]), ("correct", first["version"]))
+        with self.assertRaisesRegex(publish.PublishError, "reopen_reason_required"):
+            publish.reopen(self.root, self.policy, reason="  ")
+        with self.assertRaisesRegex(publish.PublishError, "proposal_missing"):
+            publish.reopen(self.root, "prop_nope", reason="x")
+
+    def test_hand_edited_public_file_is_reported_as_drifted_and_never_published(self):
+        self.assertEqual(status(self.root)["drifted_proposals"], [])
+        publish.approve(self.root, self.policy, owner_id="owner")
+        path = self.root / "proposals/public" / (self.policy + ".md")
+        path.write_bytes(path.read_bytes() + b"\nhand edit\n")
+        drifted = status(self.root)["drifted_proposals"]
+        self.assertEqual([(d["id"], d["problem"]) for d in drifted], [(self.policy, "public_file_drifted")])
+        with self.assertRaisesRegex(publish.PublishError, "approved_hash_mismatch|public_bytes_changed|hash"):
+            publish.publish(self.root, self.policy, staging=self.staging)
+        path.unlink()
+        self.assertEqual(status(self.root)["drifted_proposals"][0]["problem"], "public_file_missing")
+
     def test_cli_commands(self):
         env = {**os.environ, "PYTHONPATH": str(REPO)}
         run = lambda *args: subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", *args], cwd=REPO,
