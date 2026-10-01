@@ -1,4 +1,11 @@
-"""File-based WP9/WP8 synthetic composition launcher; no installs or live effects."""
+"""File-based WP9/WP8 synthetic composition launcher; no installs or live effects.
+
+In-tree mode: when this checkout contains WP8_MARKER, --wp8-root must be this
+checkout itself; no overlay path is inserted and the separate-checkout guard is
+skipped for WP8 only. Without the marker a separate pinned WP8 checkout is
+still required. The exact count, zero skips and source-origin checks apply in
+both modes.
+"""
 import argparse
 import importlib
 import os
@@ -7,6 +14,7 @@ import sys
 import unittest
 
 EXPECTED_TESTS = 61
+WP8_MARKER = "campaign_tool/records/review_bundle.py"
 
 
 def require_origin(module_name, expected_file):
@@ -25,16 +33,22 @@ def main(argv=None):
     args = parser.parse_args(argv)
     candidate = Path(__file__).resolve().parents[2]
     dependency = args.wp8_root.resolve(strict=True)
-    if dependency == candidate:
+    in_tree = (candidate / WP8_MARKER).is_file()
+    if in_tree and dependency != candidate:
+        raise RuntimeError("WP8 is in tree; pass this checkout as --wp8-root")
+    if not in_tree and dependency == candidate:
         raise RuntimeError("A separate explicitly pinned WP8 checkout is required")
+    print("WP8 source: " + ("in-tree" if in_tree else "pinned checkout") + f" {dependency}",
+          flush=True)
     os.environ["REQUIRE_WP8_INTEGRATION"] = "1"
     sys.path.insert(0, str(candidate))
 
     records = require_origin("campaign_tool.records",
                              candidate / "campaign_tool/records/__init__.py")
     tests = require_origin("tests.records", candidate / "tests/records/__init__.py")
-    records.__path__.insert(0, str(dependency / "campaign_tool/records"))
-    tests.__path__.insert(0, str(dependency / "tests/records"))
+    if not in_tree:
+        records.__path__.insert(0, str(dependency / "campaign_tool/records"))
+        tests.__path__.insert(0, str(dependency / "tests/records"))
 
     for name, relative in (
         ("campaign_tool.records.review_bundle",
@@ -69,7 +83,7 @@ def main(argv=None):
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     passed = (result.wasSuccessful() and not result.skipped
               and result.testsRun == EXPECTED_TESTS)
-    print(f"WP9 composition: tests={result.testsRun}, "
+    print(f"WP9 composition ({'in-tree' if in_tree else 'pinned'} WP8): tests={result.testsRun}, "
           f"failures={len(result.failures)}, errors={len(result.errors)}, "
           f"skips={len(result.skipped)}")
     return 0 if passed else 1

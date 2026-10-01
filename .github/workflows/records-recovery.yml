@@ -28,8 +28,18 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '${{ matrix.python }}'
+      - name: Select in-tree or pinned WP8
+        shell: bash
+        run: |
+          # Explicit file-based detection: in-tree WP8 is used from this checkout.
+          if [[ -f campaign_tool/records/review_bundle.py ]]; then
+            printf '%s\n' 'WP8 in tree; using this checkout.'
+            printf 'WP8_ROOT=%s\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          else
+            printf 'WP8_ROOT=%s\n' "$GITHUB_WORKSPACE/.ci-dependencies/wp8" >> "$GITHUB_ENV"
+          fi
       - name: Require exactly 61 synthetic tests with actual WP8 and no skips
         env:
           TMPDIR: '${{ runner.temp }}'
           REQUIRE_WP8_INTEGRATION: '1'
-        run: python -B tests/records/run_recovery_composition.py --wp8-root .ci-dependencies/wp8
+        run: python -B tests/records/run_recovery_composition.py --wp8-root "$WP8_ROOT"
