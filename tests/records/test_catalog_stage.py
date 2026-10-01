@@ -23,6 +23,9 @@ sha = lambda value: hashlib.sha256(value).hexdigest()
 @unittest.skipUnless(store is not None, "WP1 dependency required")
 class CatalogStageTests(unittest.TestCase):
     def setUp(self):
+        # Shared by non-inheriting drift tests: class decorators do not transfer.
+        if store is None or stages is None:
+            self.skipTest("WP1 dependency required")
         self.temp = tempfile.TemporaryDirectory(prefix="catalog-stage-synthetic-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

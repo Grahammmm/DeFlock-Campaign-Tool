@@ -8,7 +8,7 @@ permissions:
 env:
   # Reviewed public source commit identities only, not credential exceptions.
   WP1_REVISION: '4a356f8dd7e4a2ea64fa271ab07e1e48cce6ebe3' # pragma: allowlist secret
-  WP2_REVISION: '11f25023304b1f30ab62f4e58531e68aa28cf567' # pragma: allowlist secret
+  WP2_REVISION: '3d7ce8b9932061e25bf0099cbad99d6dc29269b9' # pragma: allowlist secret
   PR19_REVISION: '543c5eaee5022409e66df7a9f7c81fd9d9bfbf57' # pragma: allowlist secret
   # Reviewed WP4 public commit from PR21; no moving-reference fallback.
   WP4_REVISION: '853ba723af29492b2c836e2f9c8f86f53577eb7a' # pragma: allowlist secret
