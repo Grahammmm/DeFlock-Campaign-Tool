@@ -1,7 +1,8 @@
 """Optional WP1 overlay tests. Point RECORDS_WP1_SOURCE_ROOT at trusted source.
 
-No WP1 code or schema is copied into this branch. Default main lacks that
-separately developed dependency, so this module reports an explicit skip there.
+No WP1 code or schema is copied into this branch. When the ledger is in tree
+(campaign_tool/records/ledger/store.py exists) it is used directly; otherwise
+an explicit overlay is required and its absence is an explicit skip.
 """
 import importlib
 import json
@@ -22,7 +23,12 @@ class WP1PortalTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         source=os.environ.get('RECORDS_WP1_SOURCE_ROOT')
-        if source:
+        engine=Path(__file__).resolve().parents[1]
+        in_tree=(engine/'campaign_tool'/'records'/'ledger'/'store.py').is_file()
+        if source and in_tree:
+            # In-tree mode: the checkout's ledger wins; an external overlay would be shadowed.
+            if Path(source).resolve()!=engine:raise RuntimeError('WP1 is in tree; unset RECORDS_WP1_SOURCE_ROOT')
+        elif source:
             import campaign_tool.records
             overlay=Path(source)/'campaign_tool'/'records'
             if not (overlay/'ledger'/'store.py').is_file():raise RuntimeError('invalid explicit WP1 overlay')
