@@ -1,0 +1,30 @@
+FICTIONAL TRAINING MATERIAL - NOT A REAL AGENCY POLICY
+Example County Sheriff's Office
+Automated License Plate Reader Usage and Privacy Policy, version demo-2
+Effective in this fictional exercise: March 1, 2025.
+
+1. Purpose. ALPR data may be used only for authorized purposes: locating stolen
+vehicles, wanted persons and vehicles connected to an active investigation.
+
+2. Authorized users. Access is limited to sworn personnel who have completed
+training on this policy. Each user has a unique login.
+
+3. Retention. ALPR detections that are not connected to an investigation are
+retained for 90 days and then purged automatically.
+
+4. Sharing. Detections may be shared with other law enforcement agencies in
+California. Out-of-state agencies and federal agencies may request a search
+through the vendor's nationwide network; the requesting agency records the reason.
+
+5. Audit. The system keeps an audit log of each query, including the user,
+date, time and stated purpose. Supervisors review the audit log quarterly.
+
+6. Security. Reasonable security procedures protect the data from unauthorized
+access, destruction, use, modification or disclosure.
+
+7. Accuracy. Users must confirm a hit against the state database before acting.
+
+8. Public posting. This policy is posted on the agency website.
+
+Contact: Sgt. Pat Example, 500 Example Way, 805-555-0199, alpr@example.invalid.
+Sample detections: 7ABC123, 8XYZ987.

@@ -1,0 +1,5 @@
+# Runtime dependencies of the runner image (runner/Dockerfile). Everything else is stdlib.
+# Keep these pinned in step with requirements-records-test.txt.
+pypdf==6.10.0
+openpyxl==3.1.5
+et_xmlfile==2.0.0

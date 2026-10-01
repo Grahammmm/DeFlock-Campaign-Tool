@@ -1,0 +1,51 @@
+# Example Compose file for one runner on an organizer-controlled host (VPS, home server,
+# or a laptop under Tailscale). Copy next to a private `.env` that is never committed:
+#
+#   WORKSPACE_URL=https://workspace.<campaign-domain>
+#   RUNNER_TOKEN=<value shown once on the workspace Settings screen>
+#   PRIVACY_TIER=redacted_cloud            # or strict_local
+#   MODEL_BASE_URL=                        # optional; strict_local requires loopback/Tailscale
+#   MODEL_API_KEY=
+#   MODEL_ID=local
+#   CAMPAIGN_JURISDICTION=us-ca
+#
+# The runner never receives mail, MuckRock or Brevo credentials. See docs/RUNNER.md.
+services:
+  runner:
+    build:
+      context: ..
+      dockerfile: runner/Dockerfile
+    image: deflock-runner:local
+    env_file: .env
+    environment:
+      POLL_INTERVAL: "15"
+      LEASE_SECONDS: "300"
+      RUNNER_WORKDIR: /work
+    read_only: true
+    tmpfs:
+      # Private job scratch space; wiped with the container. Size it for the largest original.
+      - /work:mode=0700,uid=10001,gid=10001,size=2g
+      - /tmp:mode=1777,size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: "2.0"
+    restart: unless-stopped
+    stop_grace_period: 330s   # SIGTERM finishes the current job (lease is 300s) before exit
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # Optional local model for strict_local. Uncomment, pick an OpenAI-compatible server image you
+  # trust, and set MODEL_BASE_URL=http://model:8080/v1 in .env. Not exposed outside the compose
+  # network; the runner's locality check accepts loopback, *.ts.net and Tailscale CGNAT ranges,
+  # so for a sidecar on the compose network use network_mode: "service:model" on the runner or
+  # publish it on the host's Tailscale address instead.
+  # model:
+  #   image: <openai-compatible-local-server>
+  #   volumes: [models:/models:ro]
+  #   expose: ["8080"]
+
+# volumes:
+#   models: {}
