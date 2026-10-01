@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "jurisdiction": "us-ca",
+  "status": "draft",
+  "reviewed_by": [],
+  "reviewed_at": null,
+  "records_law": {
+    "name": "California Public Records Act",
+    "citation": "Gov. Code § 7920.000 et seq. (recodified by AB 473, Stats. 2021, ch. 614; operative 2023-01-01)",
+    "determination_days": 10,
+    "determination_extension_days": 14,
+    "day_type": "calendar",
+    "fee_basis": "Fees covering the direct costs of duplication, or a statutory fee if applicable (Gov. Code § 7922.530(a)). Inspection on premises with the requester's own non-contact equipment is free (§ 7922.530(b)).",
+    "appeal": "No administrative appeal. Any person may institute a proceeding for injunctive or declaratory relief or a writ of mandate in a court of competent jurisdiction (Gov. Code § 7923.000 et seq.). The 10-day determination period runs from receipt of the request (§ 7922.535(a)); one written extension of no more than 14 days is allowed only for enumerated unusual circumstances (§ 7922.535(b)-(c)). The determination deadline is not a production deadline.",
+    "sources": [
+      {
+        "title": "Gov. Code § 7920.000 (short title; AB 473 operative 2023-01-01)",
+        "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7920.000.",
+        "accessed": "2026-09-30"
+      },
+      {
+        "title": "Gov. Code § 7922.535 (10-day determination; 14-day extension for unusual circumstances)",
+        "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.535.",
+        "accessed": "2026-09-30"
+      },
+      {
+        "title": "Gov. Code § 7922.530 (direct costs of duplication)",
+        "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.530.",
+        "accessed": "2026-09-30"
+      },
+      {
+        "title": "Gov. Code § 7923.000 (enforcement proceeding)",
+        "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7923.000.",
+        "accessed": "2026-09-30"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "ca-civ-1798.90.5-definitions",
+      "citation": "Civ. Code § 1798.90.5",
+      "actor": "Any person, including a public agency",
+      "activity": "operate or access an ALPR system",
+      "duty": "Definitional scope for Title 1.81.23: an 'ALPR system' is a searchable computerized database resulting from one or more mobile or fixed cameras combined with algorithms that convert plate images to computer-readable data; an 'ALPR operator' operates such a system; an 'ALPR end-user' accesses or uses one; 'ALPR information' is data collected through an ALPR system; 'public agency' means the state or any city, county, or agency or political subdivision of the state, including a law enforcement agency. Out-of-state and federal agencies are not 'public agencies' under subdivision (f).",
+      "exceptions": [
+        "Transportation agencies subject to Sts. & Hy. Code § 31490 are not ALPR operators or end-users.",
+        "End-user excludes persons subject to 15 U.S.C. §§ 6801-6809 under regulatory oversight, and non-law-enforcement persons receiving information as a permissible use under 18 U.S.C. § 2721."
+      ],
+      "remedy": "Definitions only; remedies attach through Civ. Code § 1798.90.54.",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.5 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-civ-1798.90.51-security-procedures",
+      "citation": "Civ. Code § 1798.90.51(a)",
+      "actor": "ALPR operator",
+      "activity": "operate an ALPR system",
+      "duty": "Maintain reasonable security procedures and practices, including operational, administrative, technical, and physical safeguards, to protect ALPR information from unauthorized access, destruction, use, modification, or disclosure.",
+      "exceptions": [],
+      "remedy": "Civil action by a harmed individual against a person who knowingly caused the harm (Civ. Code § 1798.90.54).",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.51 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.51.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-civ-1798.90.51-usage-and-privacy-policy",
+      "citation": "Civ. Code § 1798.90.51(b)",
+      "actor": "ALPR operator",
+      "activity": "operate an ALPR system",
+      "duty": "Implement a usage and privacy policy ensuring that collection, use, maintenance, sharing, and dissemination of ALPR information is consistent with respect for individuals' privacy and civil liberties. The policy shall be available to the public in writing and, if the operator has an internet website, posted conspicuously on that website. At a minimum it shall include: (A) authorized purposes for using the system and collecting information; (B) job titles or designations of employees and independent contractors authorized to use or access the system, and their training requirements; (C) how the system will be monitored for security and privacy-law compliance; (D) the purposes of, process for, and restrictions on sale, sharing, or transfer of ALPR information; (E) the title of the official custodian or owner responsible for implementing the section; (F) reasonable measures to ensure accuracy and correct errors; (G) the retention period and the process for deciding when to destroy retained information.",
+      "exceptions": [],
+      "remedy": "Civil action by a harmed individual against a person who knowingly caused the harm (Civ. Code § 1798.90.54).",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.51 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.51.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-civ-1798.90.52-access-records",
+      "citation": "Civ. Code § 1798.90.52",
+      "actor": "ALPR operator",
+      "activity": "access or provide access to ALPR information",
+      "duty": "If an ALPR operator accesses or provides access to ALPR information, it shall (a) maintain a record of that access including, at a minimum, the date and time of access, the license plate number or other data elements used to query the system, the username of the person accessing the information and, as applicable, the organization or entity with whom that person is affiliated, and the purpose for accessing the information; and (b) require that ALPR information only be used for the authorized purposes described in the usage and privacy policy required by § 1798.90.51(b).",
+      "exceptions": [],
+      "remedy": "Civil action by a harmed individual against a person who knowingly caused the harm (Civ. Code § 1798.90.54).",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.52 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.52.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-civ-1798.90.53-end-user-usage-and-privacy-policy",
+      "citation": "Civ. Code § 1798.90.53",
+      "actor": "ALPR end-user",
+      "activity": "access or use an ALPR system",
+      "duty": "Maintain reasonable security procedures and practices (operational, administrative, technical, and physical safeguards) to protect ALPR information from unauthorized access, destruction, use, modification, or disclosure; and implement a usage and privacy policy, available to the public in writing and posted conspicuously on the end-user's website if it has one, covering at minimum: (A) authorized purposes for accessing and using ALPR information; (B) job titles or designations of authorized employees and independent contractors and their training requirements; (C) how the system will be monitored for security and privacy-law compliance, and a process for periodic system audits; (D) purposes of, process for, and restrictions on sale, sharing, or transfer; (E) the title of the official custodian or owner of the ALPR information; (F) accuracy and error-correction measures; (G) retention period and destruction process.",
+      "exceptions": [
+        "Persons excluded from the end-user definition by Civ. Code § 1798.90.5(a)."
+      ],
+      "remedy": "Civil action by a harmed individual against a person who knowingly caused the harm (Civ. Code § 1798.90.54).",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.53 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.53.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-civ-1798.90.54-civil-action",
+      "citation": "Civ. Code § 1798.90.54",
+      "actor": "Any person who knowingly causes harm through a violation of Title 1.81.23",
+      "activity": "violate Title 1.81.23, including unauthorized access or use of ALPR information or a breach of security of an ALPR system",
+      "duty": "An individual harmed by a violation of the title may bring a civil action in any court of competent jurisdiction against a person who knowingly caused the harm, in addition to any other sanctions, penalties, or remedies provided by law.",
+      "exceptions": [
+        "Liability requires that the defendant knowingly caused the harm."
+      ],
+      "remedy": "Actual damages of not less than liquidated damages of $2,500; punitive damages on proof of willful or reckless disregard of the law; reasonable attorney's fees and litigation costs; other preliminary and equitable relief the court finds appropriate.",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.54 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.54.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-civ-1798.90.55-public-comment-before-implementation",
+      "citation": "Civ. Code § 1798.90.55(a)",
+      "actor": "Public agency that operates or intends to operate an ALPR system",
+      "activity": "implement an ALPR program",
+      "duty": "Notwithstanding any other law or regulation, provide an opportunity for public comment at a regularly scheduled public meeting of the governing body of the public agency before implementing the program.",
+      "exceptions": [],
+      "remedy": "Civil action by a harmed individual against a person who knowingly caused the harm (Civ. Code § 1798.90.54).",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.55 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.55.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-civ-1798.90.55-sharing-limits",
+      "citation": "Civ. Code § 1798.90.55(b)",
+      "actor": "Public agency",
+      "activity": "sell, share, or transfer ALPR information",
+      "duty": "Notwithstanding any other law or regulation, a public agency shall not sell, share, or transfer ALPR information, except to another public agency, and only as otherwise permitted by law.",
+      "exceptions": [
+        "The provision of data hosting or towing services is not considered the sale, sharing, or transferring of ALPR information.",
+        "Sharing with another 'public agency' as defined in Civ. Code § 1798.90.5(f), and only as otherwise permitted by law."
+      ],
+      "remedy": "Civil action by a harmed individual against a person who knowingly caused the harm (Civ. Code § 1798.90.54).",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Civ. Code § 1798.90.55 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.55.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-veh-2413-chp-lpr-retention-and-sharing",
+      "citation": "Veh. Code § 2413(b)-(e)",
+      "actor": "Department of the California Highway Patrol",
+      "activity": "retain, share, and use license plate reader data",
+      "duty": "CHP may retain LPR data for no more than 60 days except when the data is being used as evidence or for felonies being investigated; shall not sell LPR data for any purpose and shall not make it available to a non-law-enforcement agency or individual; LPR data may be used by a law enforcement agency only to locate vehicles or persons reasonably suspected of involvement in a public offense; CHP shall monitor internal use to prevent unauthorized use and shall report LPR practices and usage, including the number of disclosures, the agencies receiving data and the purpose, and privacy-affecting policy changes, in its annual automobile theft report under § 10901(b).",
+      "exceptions": [
+        "Retention beyond 60 days when data is being used as evidence or for felonies being investigated, including auto theft, homicides, kidnaping, burglaries, elder and juvenile abductions, Amber Alerts, and Blue Alerts.",
+        "Applies to the California Highway Patrol only; local agencies are governed by Civ. Code § 1798.90.5 et seq."
+      ],
+      "remedy": "No section-specific remedy stated; legislative reporting requirement.",
+      "effective_from": "2011-06-30",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Veh. Code § 2413 (Amended by Stats. 2011, ch. 38, § 6 (AB 115), effective 2011-06-30)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=VEH&sectionNum=2413.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "verified"
+    },
+    {
+      "rule_id": "ca-gov-7284.6-values-act-immigration-enforcement-limits",
+      "citation": "Gov. Code § 7284.2 et seq. (California Values Act, SB 54); § 7284.6",
+      "actor": "California law enforcement agency",
+      "activity": "share information or resources with immigration authorities",
+      "duty": "Shall not use agency money or personnel to investigate, interrogate, detain, detect, or arrest persons for immigration enforcement purposes, including providing personal information (as defined in Civ. Code § 1798.3) about an individual, such as home or work address, unless that information is available to the public (§ 7284.6(a)(1)(D)). Whether database access or ALPR data sharing falls within this prohibition is contested and has not been settled by a published appellate decision known to this package; treat any ALPR application as an argument, not an established duty.",
+      "exceptions": [
+        "Activities permitted by § 7284.6(b), including responding to requests about a specific person's criminal history and conduct permitted under § 7282.5.",
+        "Information already available to the public."
+      ],
+      "remedy": "No private right of action stated in the chapter; compliance is overseen through the Attorney General guidance and reporting provisions (§ 7284.8) and general public-law remedies.",
+      "effective_from": "2018-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7284.2 (Added by Stats. 2017, ch. 495, § 3 (SB 54), effective 2018-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7284.2.",
+          "accessed": "2026-09-30"
+        },
+        {
+          "title": "Gov. Code § 7284.6 (as amended by Stats. 2021, ch. 615, § 147 (AB 474), operative 2023-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7284.6.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "likely"
+    },
+    {
+      "rule_id": "ca-oag-2023-dle-06-out-of-state-sharing-guidance",
+      "citation": "Cal. Dept. of Justice Information Bulletin 2023-DLE-06 (Oct. 27, 2023), interpreting Civ. Code § 1798.90.55(b)",
+      "actor": "California state and local law enforcement agencies",
+      "activity": "share ALPR information with private entities or out-of-state or federal agencies, including through shared vendor databases",
+      "duty": "Attorney General guidance: because 'public agency' under Civ. Code § 1798.90.5(f) is limited to state and local agencies, SB 34 does not permit California law enforcement agencies to share ALPR information with private entities or out-of-state or federal agencies, including out-of-state and federal law enforcement agencies; the prohibition applies to ALPR databases accessed through private or public vendors, and agencies are encouraged to review data user agreements accordingly. This is an interpretive bulletin, not a statute or regulation; the binding rule is § 1798.90.55(b).",
+      "exceptions": [
+        "Data hosting and towing services (Civ. Code § 1798.90.55(b)).",
+        "Sharing with another California public agency as otherwise permitted by law."
+      ],
+      "remedy": "None in the bulletin itself; the underlying statute is enforceable through Civ. Code § 1798.90.54.",
+      "effective_from": "2023-10-27",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "California DOJ Division of Law Enforcement Information Bulletin 2023-DLE-06, California Automated License Plate Reader Data Guidance",
+          "url": "https://oag.ca.gov/system/files/media/2023-dle-06.pdf",
+          "accessed": "2026-09-30"
+        },
+        {
+          "title": "Civ. Code § 1798.90.55",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.55.",
+          "accessed": "2026-09-30"
+        }
+      ],
+      "review": "likely"
+    }
+  ],
+  "request_scopes": [
+    {
+      "scope_id": "agreements",
+      "title": "ALPR vendor agreements and funding",
+      "items": [
+        "Executed agreements, contracts, purchase orders, statements of work, amendments, renewals, and exhibits with any ALPR vendor or data-hosting provider.",
+        "Terms of service, data-use agreements, and end-user license agreements governing the ALPR system.",
+        "Grant applications, funding records, invoices, and budget requests relating to ALPR acquisition or subscription.",
+        "Records identifying the number and location of fixed or mobile ALPR cameras deployed under each agreement."
+      ],
+      "rule_ids": [
+        "ca-civ-1798.90.5-definitions",
+        "ca-civ-1798.90.55-sharing-limits"
+      ]
+    },
+    {
+      "scope_id": "policies",
+      "title": "Usage and privacy policies, retention, and training",
+      "items": [
+        "The current ALPR usage and privacy policy required by Civ. Code § 1798.90.51(b) or § 1798.90.53(b), and each prior version with adoption dates.",
+        "Records showing where and when the usage and privacy policy was made available to the public and posted on the agency website.",
+        "Retention schedules and destruction procedures for ALPR information.",
+        "Access-control procedures identifying job titles or designations authorized to use or access the ALPR system.",
+        "Training materials and training requirements for authorized users."
+      ],
+      "rule_ids": [
+        "ca-civ-1798.90.51-security-procedures",
+        "ca-civ-1798.90.51-usage-and-privacy-policy",
+        "ca-civ-1798.90.53-end-user-usage-and-privacy-policy"
+      ]
+    },
+    {
+      "scope_id": "sharing",
+      "title": "Data-sharing authorizations and recipients",
+      "items": [
+        "Records identifying every agency or entity with which ALPR information is shared or to which access is granted, including through vendor network or national lookup features.",
+        "Data-sharing authorizations, memoranda of understanding, and configuration or settings history for sharing features, including dates of each change.",
+        "Records of any sharing with, or access by, out-of-state or federal agencies or private entities, and any review conducted in response to Information Bulletin 2023-DLE-06.",
+        "Records of requests for ALPR information received from other agencies and the agency's responses."
+      ],
+      "rule_ids": [
+        "ca-civ-1798.90.55-sharing-limits",
+        "ca-oag-2023-dle-06-out-of-state-sharing-guidance",
+        "ca-gov-7284.6-values-act-immigration-enforcement-limits"
+      ]
+    },
+    {
+      "scope_id": "audit-logs",
+      "title": "Access and search logs",
+      "items": [
+        "Access records maintained under Civ. Code § 1798.90.52(a) for the stated date range, including date and time of access, the query data elements used, the username and affiliated organization, and the stated purpose, in native electronic format.",
+        "Field definitions, export documentation, or data dictionaries for the access and search logs.",
+        "Aggregate counts of searches and hotlist alerts for the stated date range where such reports already exist."
+      ],
+      "rule_ids": [
+        "ca-civ-1798.90.52-access-records"
+      ]
+    },
+    {
+      "scope_id": "compliance",
+      "title": "Audits and corrective actions",
+      "items": [
+        "Completed internal or external audits of ALPR system use, security, or privacy compliance, including periodic system audits described in the usage and privacy policy.",
+        "Documented corrective actions, disciplinary referrals, or misuse findings relating to ALPR information.",
+        "Records of security incidents or unauthorized access involving ALPR information.",
+        "Records of data-accuracy reviews and error corrections."
+      ],
+      "rule_ids": [
+        "ca-civ-1798.90.51-security-procedures",
+        "ca-civ-1798.90.52-access-records",
+        "ca-civ-1798.90.53-end-user-usage-and-privacy-policy"
+      ]
+    },
+    {
+      "scope_id": "hearing-records",
+      "title": "Public-meeting records before implementation",
+      "items": [
+        "Agendas, staff reports, minutes, and recordings of the regularly scheduled public meeting of the governing body at which the ALPR program was considered before implementation, as required by Civ. Code § 1798.90.55(a).",
+        "Public comments received regarding the ALPR program and any written responses.",
+        "Records identifying the date the ALPR program was first implemented or expanded."
+      ],
+      "rule_ids": [
+        "ca-civ-1798.90.55-public-comment-before-implementation"
+      ]
+    }
+  ]
+}

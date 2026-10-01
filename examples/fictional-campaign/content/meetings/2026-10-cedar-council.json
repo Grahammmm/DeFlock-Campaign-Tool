@@ -1,0 +1,10 @@
+{
+  "id": "cedar-council-2026-10",
+  "body": "Cedar City Council (fictional)",
+  "starts_at": "2026-10-14T18:00:00-07:00",
+  "agenda_url": "https://example.invalid/cedar-council/agenda",
+  "agenda_item": "Item 7: consent calendar, technology renewals",
+  "location": "Cedar Civic Center (fictional)",
+  "comment_kit_md": "Two minutes, one ask.\n\n- Ask whether any data-sharing agreement exists for the fictional camera program.\n- Cite the published policy finding by its hash prefix.\n\nStay factual; this is not legal advice.",
+  "agency_id": "ca-cedar-city-council"
+}
