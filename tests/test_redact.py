@@ -10,7 +10,7 @@ from campaign_tool.digest.build import redact_units
 
 def synthetic_plates(n=50, seed=7):
     rng = random.Random(seed)
-    letters = "ABCDEFGHJKLMNPRSTUVWXYZ"
+    letters = "ABCDEFGHJKLMNPRSTUVWXYZ"  # pragma: allowlist secret (plate alphabet, synthetic)
     plates = set()
     while len(plates) < n:
         style = rng.choice(("ca", "abc1234", "mixed"))

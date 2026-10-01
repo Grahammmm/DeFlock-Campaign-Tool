@@ -5,7 +5,12 @@ import { canonicalJson, contentHash, reviewBlockers, type JsonObject } from "../
 describe("review_blockers parity with campaign_tool/review.py", () => {
   for (const c of cases.cases) {
     it(c.name, async () => {
-      const blockers = await reviewBlockers(c.finding as unknown as JsonObject, c.receipts as unknown as JsonObject[]);
+      // Receipts carry "@finding_digest" in place of the literal hash (see tests/test_review_fixture.py).
+      const digest = await contentHash(c.finding as unknown as JsonObject);
+      const receipts = (c.receipts as unknown as JsonObject[]).map((r) =>
+        r.content_sha256 === "@finding_digest" ? { ...r, content_sha256: digest } : r,
+      );
+      const blockers = await reviewBlockers(c.finding as unknown as JsonObject, receipts);
       expect(blockers).toEqual(c.expected_blockers);
     });
   }
