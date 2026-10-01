@@ -32,6 +32,9 @@ def main(argv=None, *, transport=None, egress=None, ledger=None):
             if not isinstance(rows,list) or len(rows)>1000:
                 raise PortalError("inventory_invalid")
             for row in rows:
+                if not isinstance(row,dict) or set(row)!={"host","request_id","item_id","url","source_sha256"}:
+                    raise PortalError("inventory_invalid")
+                # Untrusted notice payloads cannot opt themselves into refresh.
                 queue.inventory(**row)
             result=queue.status()
         elif args.command=="status":

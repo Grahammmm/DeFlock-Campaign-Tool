@@ -134,7 +134,7 @@ class WP1PortalTests(unittest.TestCase):
 
     def test_changed_bytes_versions_and_old_replay(self):
         self.fetch();old,path=self.receipt()
-        self.queue.inventory(HOST,'26-001','42',URL+'-refresh',SOURCE)
+        self.queue.inventory(HOST,'26-001','42',URL+'-refresh',SOURCE,refresh=True,expected_generation=1)
         fetch_queue(self.queue,apply=True,approval_loader=approval,egress=lambda u:True,
             transport=FakeTransport(response(PDF+b' changed')),ledger=self.adapter,wall=lambda:NOW.timestamp()+1)
         self.assertEqual(self.count('originals'),2)
@@ -161,7 +161,7 @@ class WP1PortalTests(unittest.TestCase):
 
     def test_old_replay_detects_corrupt_current_portal_pointer(self):
         self.fetch();old,path=self.receipt()
-        self.queue.inventory(HOST,'26-001','42',URL+'-refresh',SOURCE)
+        self.queue.inventory(HOST,'26-001','42',URL+'-refresh',SOURCE,refresh=True,expected_generation=1)
         fetch_queue(self.queue,apply=True,approval_loader=approval,egress=lambda u:True,
             transport=FakeTransport(response(PDF+b' changed')),ledger=self.adapter,wall=lambda:NOW.timestamp()+1)
         with self.store.ledger(self.database) as con:

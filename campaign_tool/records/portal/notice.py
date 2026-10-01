@@ -6,6 +6,7 @@ Parsing a notice grants no download permission.
 import re
 from html.parser import HTMLParser
 from .policy import PortalError, url_parts
+from .store import check_hash, identifier
 
 
 class Links(HTMLParser):
@@ -19,15 +20,20 @@ class Links(HTMLParser):
             if value:
                 self.urls.append(value)
 
+    def handle_data(self,data):
+        self.urls.extend(re.findall(r'https://[^\s<>"\']+',data))
+
 
 def inventory_notice(queue, *, body, request_id, source_sha256, known_hosts):
     if not isinstance(body,str) or len(body.encode("utf-8"))>2*1024*1024:
         raise PortalError("notice_oversize")
+    identifier(request_id)
+    check_hash(source_sha256)
     parser=Links()
     parser.feed(body)
-    # HTML attributes are decoded by HTMLParser; do not also ingest their raw
-    # entity-escaped form as a different refreshed signed URL.
-    urls=parser.urls if parser.urls else re.findall(r'https://[^\s<>"\']+',body)
+    # Both decoded href attributes and text nodes are examined, never raw
+    # HTML attributes (which would duplicate entity-escaped signed URLs).
+    urls=dict.fromkeys(parser.urls)
     seen=set()
     for url in urls:
         try:
@@ -35,8 +41,8 @@ def inventory_notice(queue, *, body, request_id, source_sha256, known_hosts):
             match=re.fullmatch(r"/documents/([A-Za-z0-9_-]+)(?:/download)?",p.path)
             if p.hostname not in known_hosts or not match:
                 continue
-            key=queue.inventory(p.hostname,request_id,match.group(1),url,source_sha256)
-            seen.add(key)
         except PortalError:
-            continue
+            continue  # Malformed/unrecognized URL data, not an operational failure.
+        key=queue.inventory(p.hostname,request_id,match.group(1),url,source_sha256)
+        seen.add(key)
     return {"items":len(seen)}

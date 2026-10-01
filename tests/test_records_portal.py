@@ -208,7 +208,7 @@ class PortalTests(unittest.TestCase):
 
     def test_refreshed_link_same_bytes(self):
         self.run_fetch()
-        self.queue.inventory(HOST,"26-001","42",URL+"-refreshed",SOURCE)
+        self.queue.inventory(HOST,"26-001","42",URL+"-refreshed",SOURCE,refresh=True,expected_generation=1)
         self.run_fetch()
         self.assertEqual(len(self.queue.status()["items"]),1)
         self.assertEqual(self.queue.status()["versions"],1)
@@ -216,7 +216,7 @@ class PortalTests(unittest.TestCase):
 
     def test_changed_bytes_version_link(self):
         self.run_fetch()
-        self.queue.inventory(HOST,"26-001","42",URL+"-refreshed",SOURCE)
+        self.queue.inventory(HOST,"26-001","42",URL+"-refreshed",SOURCE,refresh=True,expected_generation=1)
         self.run_fetch(FakeTransport(response(PDF+b" changed")))
         rows=self.queue.db.execute("SELECT * FROM portal_versions ORDER BY rowid").fetchall()
         self.assertEqual(len(rows),2)
@@ -375,7 +375,7 @@ class PortalTests(unittest.TestCase):
 
     def test_notice_entity_decoding_keeps_single_url_generation(self):
         url=URL+"&part=1"
-        inventory_notice(self.queue,body='<a href="'+url.replace("&","&amp;")+'">file</a>',request_id="26-001",source_sha256=SOURCE,known_hosts={HOST})
+        inventory_notice(self.queue,body='<a href="'+url.replace("&","&amp;")+'">file</a>',request_id="26-001",source_sha256=hashlib.sha256(b"entity-decoded notice fixture").hexdigest(),known_hosts={HOST})
         self.assertEqual(self.item()["last_url_private"],url)
         self.assertEqual(self.item()["generation"],2)
 

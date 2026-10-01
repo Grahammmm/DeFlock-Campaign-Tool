@@ -238,10 +238,10 @@ def fetch_queue(queue, *, apply=False, approval_loader=None, egress=None, transp
                     queue.db.execute("UPDATE portal_items SET state=?,reason=?,next_attempt=? WHERE id=?",(state,reason,wall()+limits.backoff*(2**item["tries"]),item["id"]))
                     queue.db.execute("UPDATE portal_attempts SET result=?,finished=?,evidence_json=? WHERE id=?",(reason,wall(),json.dumps(evidence),attempt))
                 outcome[state]+=1
-        pending_before=queue.status()["ledger_pending"]
-        try:
-            queue.deliver(ledger,limits.max_items)
-        except Exception:
+        delivery=queue.deliver(ledger,limits.max_items)
+        outcome["ledger_delivery"]=delivery
+        outcome["ledger_delivered"]=delivery["delivered"]
+        outcome["ledger_pending"]=queue.status()["ledger_pending"]
+        if delivery["failed"]:
             outcome["ledger_error"]="ledger_delivery_pending"
-        outcome["ledger_delivered"]=pending_before-queue.status()["ledger_pending"]
     return outcome

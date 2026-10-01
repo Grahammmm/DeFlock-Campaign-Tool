@@ -173,3 +173,41 @@ source-notice binding, WP2 scheduling/lease/runtime wiring, provider-specific
 notice discovery, exact admin policy compatibility and controlled authorized
 network acceptance. No real portal requests, host permission changes, package
 installs, schedules, commits, pushes or deployments were performed for this work.
+
+## Queue/notice review repairs
+
+Notice replay is idempotent even after a newer notice supplied another signed URL.
+An already seen source hash cannot reset the current URL, generation, retry budget
+or current document merely by being ingested again. A trusted caller can explicitly
+refresh with `queue.inventory(..., refresh=True, expected_generation=<current>)`.
+Missing/stale generations fail. Notice JSON cannot opt into this authority.
+A new source hash may activate only a previously unknown URL by default. Forwarding
+a known noncurrent URL in a new message preserves that notice and URL-hash relation
+without reactivating it. Reactivation requires explicit refresh plus the current
+generation. Unknown new URLs remain retrieval observations, not proof of agency
+event order, response date or authoritative revision age.
+`current_sha256` means most recently retrieved bytes, not newest agency-authored text.
+
+Private `portal_notice_links` retains source-to-URL-hash observations, including
+nonactivated alternatives. `portal_link_revisions` retains each activated generation,
+its source hash, old/new URL hashes and initial/new-notice/explicit-refresh reason.
+Existing candidate rows lacking this added history are not backfilled with invented
+provenance. Old receipts remain unchanged; notice hashes remain references pending
+trusted mail-source binding. Root schema remains unreleased candidate version 1;
+these additive sidecar tables do not imply production migration approval.
+
+Notice parsing combines decoded anchor attributes and visible text nodes, with
+URL deduplication. Source-hash and request validation happens before parsing.
+Malformed URL data is skipped; queue contention, storage and identity failures are
+not silently converted to an empty successful result. Callers must not checkpoint a
+notice whose inventory operation failed; safe replay preserves earlier successes.
+
+Outbox delivery returns attempted/delivered/failed counts, bounded receipt-specific
+failures and a configured flag. Each failed or successful attempt is durable in
+`portal_delivery_attempts`; generic exception text and signed URLs are never saved.
+Unattempted entries precede retries, then retries rotate oldest-first. A poison item
+cannot starve unrelated items even with a batch limit of one. Failed entries stay
+pending, and active failures appear in private status. Successful retry clears the
+active gap without deleting its history. Failure to persist sidecar evidence raises
+an operational error rather than claiming a recorded failure. Fetch and the local
+runner bridge use actual delivery counts and leave every newly enrolled stage pending.

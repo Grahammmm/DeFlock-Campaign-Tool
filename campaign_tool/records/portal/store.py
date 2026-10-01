@@ -28,6 +28,17 @@ CREATE TABLE IF NOT EXISTS portal_versions(
  id TEXT PRIMARY KEY, item TEXT REFERENCES portal_items(id), sha256 TEXT NOT NULL,
  byte_count INTEGER NOT NULL, previous_sha256 TEXT, attempt INTEGER REFERENCES portal_attempts(id),
  provenance_json TEXT NOT NULL, ledger_state TEXT NOT NULL DEFAULT 'pending', UNIQUE(item,sha256,previous_sha256,attempt));
+CREATE TABLE IF NOT EXISTS portal_notice_links(
+ item TEXT NOT NULL REFERENCES portal_items(id), source_sha256 TEXT NOT NULL,
+ url_sha256 TEXT NOT NULL, PRIMARY KEY(item,source_sha256,url_sha256));
+CREATE TABLE IF NOT EXISTS portal_link_revisions(
+ item TEXT NOT NULL REFERENCES portal_items(id), generation INTEGER NOT NULL,
+ source_sha256 TEXT NOT NULL, url_sha256 TEXT NOT NULL, previous_url_sha256 TEXT,
+ reason TEXT NOT NULL, PRIMARY KEY(item,generation));
+CREATE TABLE IF NOT EXISTS portal_delivery_attempts(
+ id INTEGER PRIMARY KEY, version TEXT NOT NULL REFERENCES portal_versions(id),
+ result TEXT NOT NULL, reason TEXT);
+CREATE INDEX IF NOT EXISTS portal_delivery_version ON portal_delivery_attempts(version,id);
 """
 
 
@@ -104,21 +115,37 @@ class Queue:
         finally:
             os.close(fd)
 
-    def inventory(self, host, request_id, item_id, url, source_sha256):
+    def inventory(self, host, request_id, item_id, url, source_sha256, *, refresh=False, expected_generation=None):
         hostname(host)
         identifier(request_id)
         identifier(item_id)
         check_hash(source_sha256)
+        if type(refresh) is not bool or (refresh and (type(expected_generation) is not int or expected_generation < 1)) or (not refresh and expected_generation is not None):
+            raise PortalError("explicit_refresh_generation_required")
         if url_parts(url).hostname != host:
             raise PortalError("initial_host_mismatch")
         key = digest_bytes(json.dumps([host, request_id, item_id], separators=(",", ":")).encode())
         with self.lock(), self.db:
             row = self.db.execute("SELECT * FROM portal_items WHERE id=?", (key,)).fetchone()
+            seen = self.db.execute("SELECT 1 FROM portal_notices WHERE item=? AND source_sha256=?", (key,source_sha256)).fetchone() is not None
+            url_hash = digest_bytes(url.encode())
+            known_url = self.db.execute("SELECT 1 FROM portal_notice_links WHERE item=? AND url_sha256=?", (key,url_hash)).fetchone() is not None
+            if refresh and (row is None or row["generation"] != expected_generation):
+                raise PortalError("refresh_generation_conflict")
+            revision = None
             if row is None:
                 self.db.execute("INSERT INTO portal_items(id,host,request_id,item_id,last_url_private) VALUES(?,?,?,?,?)", (key,host,request_id,item_id,url))
-            elif row["last_url_private"] != url:
+                revision = (1,None,"initial_notice")
+            elif row["last_url_private"] != url and (refresh or (not seen and not known_url)):
                 self.db.execute("UPDATE portal_items SET last_url_private=?,generation=generation+1,state='pending',reason=NULL,tries=0,next_attempt=0 WHERE id=?", (url,key))
+                revision = (row["generation"]+1,digest_bytes(row["last_url_private"].encode()),
+                            "explicit_refresh" if refresh else "new_notice_observation")
             self.db.execute("INSERT OR IGNORE INTO portal_notices VALUES(?,?)", (key,source_sha256))
+            self.db.execute("INSERT OR IGNORE INTO portal_notice_links VALUES(?,?,?)", (key,source_sha256,url_hash))
+            if revision:
+                generation,previous,reason = revision
+                self.db.execute("INSERT INTO portal_link_revisions VALUES(?,?,?,?,?,?)",
+                                (key,generation,source_sha256,url_hash,previous,reason))
         return key
 
     def status(self):
@@ -126,7 +153,11 @@ class Queue:
             "SELECT id,host,request_id,item_id,generation,state,reason,tries,current_sha256 FROM portal_items ORDER BY id")],
             "attempts": self.db.execute("SELECT count(*) FROM portal_attempts").fetchone()[0],
             "versions": self.db.execute("SELECT count(*) FROM portal_versions").fetchone()[0],
-            "ledger_pending": self.db.execute("SELECT count(*) FROM portal_versions WHERE ledger_state='pending'").fetchone()[0]}
+            "ledger_pending": self.db.execute("SELECT count(*) FROM portal_versions WHERE ledger_state='pending'").fetchone()[0],
+            "ledger_failures": [dict(row) for row in self.db.execute(
+                "SELECT a.version,a.reason,a.id AS attempt_id FROM portal_delivery_attempts a "
+                "JOIN portal_versions v ON v.id=a.version WHERE v.ledger_state='pending' AND a.result='failed' "
+                "AND a.id=(SELECT max(b.id) FROM portal_delivery_attempts b WHERE b.version=a.version) ORDER BY a.id LIMIT 1000")]}
 
     def verify_object(self, digest, size):
         check_hash(digest)
@@ -155,17 +186,39 @@ class Queue:
         self.verify_object(digest, size)
 
     def deliver(self, ledger, limit=100):
-        """At-least-once outbox; ledger must upsert by receipt id atomically."""
+        """Bounded fair outbox drain, called under queue.lock; WP1 owns enrollment."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise PortalError("invalid_delivery_limit")
+        outcome = {"attempted":0,"delivered":0,"failed":0,"failures":[],"configured":ledger is not None}
         if ledger is None:
-            return 0
-        count = 0
-        for row in self.db.execute("SELECT * FROM portal_versions WHERE ledger_state='pending' ORDER BY rowid LIMIT ?", (limit,)).fetchall():
-            self.verify_object(row["sha256"], row["byte_count"])
-            receipt = dict(row)
-            receipt.pop("ledger_state")
-            receipt["provenance"]=json.loads(receipt.pop("provenance_json"))
-            ledger.record_original(receipt, self.objects / row["sha256"])
+            return outcome
+        # New/unattempted entries precede retries. Oldest retry goes first, so a
+        # poison entry cannot starve other items even when limit is one.
+        rows = self.db.execute(
+            "SELECT v.* FROM portal_versions v WHERE ledger_state='pending' "
+            "ORDER BY COALESCE((SELECT max(a.id) FROM portal_delivery_attempts a WHERE a.version=v.id),0),v.rowid LIMIT ?",
+            (limit,)).fetchall()
+        for row in rows:
+            outcome["attempted"] += 1
+            try:
+                self.verify_object(row["sha256"], row["byte_count"])
+                receipt = dict(row)
+                receipt.pop("ledger_state")
+                receipt["provenance"] = json.loads(receipt.pop("provenance_json"))
+                ledger.record_original(receipt, self.objects / row["sha256"])
+            except Exception as exc:
+                reason = str(exc) if isinstance(exc,PortalError) else "ledger_delivery_failed"
+                if not re.fullmatch(r"[a-z_]{1,80}",reason):
+                    reason = "ledger_delivery_failed"
+                # If the sidecar itself cannot persist the failure, propagate the
+                # storage error. Never report a silently dropped operational error.
+                with self.db:
+                    self.db.execute("INSERT INTO portal_delivery_attempts(version,result,reason) VALUES(?,'failed',?)",(row["id"],reason))
+                outcome["failed"] += 1
+                outcome["failures"].append({"version":row["id"],"reason":reason})
+                continue
             with self.db:
                 self.db.execute("UPDATE portal_versions SET ledger_state='delivered' WHERE id=?", (row["id"],))
-            count += 1
-        return count
+                self.db.execute("INSERT INTO portal_delivery_attempts(version,result,reason) VALUES(?,'delivered',NULL)",(row["id"],))
+            outcome["delivered"] += 1
+        return outcome

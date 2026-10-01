@@ -22,13 +22,12 @@ class PortalRunnerBridge:
         outcome={"mode":"local_outbox","ledger_delivered":0}
         if apply:
             with self.queue.lock():
-                pending_before=self.queue.status()["ledger_pending"]
-                try:
-                    self.queue.deliver(self.ledger,limit)
-                except Exception:
-                    outcome["ledger_error"]="ledger_delivery_pending"
+                delivery=self.queue.deliver(self.ledger,limit)
+                outcome["ledger_delivery"]=delivery
                 outcome["ledger_pending"]=self.queue.status()["ledger_pending"]
-                outcome["ledger_delivered"]=pending_before-outcome["ledger_pending"]
+                outcome["ledger_delivered"]=delivery["delivered"]
+                if delivery["failed"]:
+                    outcome["ledger_error"]="ledger_delivery_pending"
         else:
             outcome["ledger_pending"]=self.queue.status()["ledger_pending"]
         return self._result(outcome,apply)
