@@ -6,7 +6,7 @@ import type { AccessIdentity } from "../src/auth.ts";
 import { BrevoError, FakeBrevo } from "../src/brevo.ts";
 import type { Repo } from "../src/db.ts";
 import type { Env } from "../src/env.ts";
-import { buildExecutors } from "../src/executors/index.ts";
+import { buildExecutors, type MailSender, type OutboundMessage } from "../src/executors/index.ts";
 import { findingSlug } from "../src/manifest.ts";
 import { issueCorrection, proposePublication, submitReview, withdrawFinding, WorkflowError } from "../src/publication.ts";
 import { seedCampaign } from "./helpers.ts";
@@ -273,5 +273,59 @@ describe("stub executors", () => {
     expect(done.error).toMatch(/^manual_only: Pay the fee manually/);
     expect(done.error).toContain("exceeds the request fee cap");
     expect((await repo.incidents()).some((i) => i.fingerprint === "action:" + p.action_id)).toBe(true);
+  });
+});
+
+describe("mail sender port", () => {
+  it("send_request hands the approved draft to the registered sender, marks the request sent and logs correspondence", async () => {
+    const repo = await seedCampaign();
+    const request = await repo.createRequest({
+      agency_id: "ca-example-police",
+      scope_id: "agreements",
+      scope_version: 1,
+      subject: "Records request: ALPR agreements",
+      body_md: "Please provide...",
+      channel: "email",
+      fee_cap_cents: 5000,
+      state: "draft",
+      sent_at: null,
+      determination_due: null,
+      extension_claimed_until: null,
+      last_activity_at: null,
+      next_action: null,
+      external_ref: null,
+    });
+    const sent: OutboundMessage[] = [];
+    const fake: MailSender = {
+      name: "fake",
+      async send(message) {
+        sent.push(message);
+        return { provider_message_id: "msg-" + sent.length, sent_at: "2026-09-30T12:00:00.000Z", provider: "fake" };
+      },
+    };
+    const executors = buildExecutors({ mailSender: fake });
+    const proposal = { channel: "email", to: "records@example.invalid", subject: request.subject, body_md: request.body_md };
+    const { row } = await repo.propose("send_request", request.request_id, proposal, "sr-fake-1", ORG.email);
+    await approveAction(repo, row.action_id, ORG);
+    const done = await executeAction(repo, env as Env, row.action_id, ORG, executors);
+    expect(done.state).toBe("executed");
+    expect(JSON.parse(done.provider_receipt!)).toMatchObject({ provider_message_id: "msg-1", sender: "fake" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "send_request", request_id: request.request_id, to: "records@example.invalid", idempotency_key: "sr-fake-1" });
+    const after = (await repo.request(request.request_id))!;
+    expect(after.state).toBe("sent");
+    expect(after.external_ref).toBe("msg-1");
+    const log = await repo.correspondenceFor(request.request_id);
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ direction: "outbound", provider_message_id: "msg-1", to_addr: "records@example.invalid" });
+    // re-execution returns the receipt without a second send
+    const again = await executeAction(repo, env as Env, row.action_id, ORG, executors);
+    expect(again.provider_receipt).toBe(done.provider_receipt);
+    expect(sent).toHaveLength(1);
+    // an invalid channel never reaches the sender
+    const { row: bad } = await repo.propose("send_followup", request.request_id, { channel: "fax", subject: "x", body_md: "y" }, "sf-bad", ORG.email);
+    await approveAction(repo, bad.action_id, ORG);
+    expect((await executeAction(repo, env as Env, bad.action_id, ORG, executors)).error).toMatch(/^invalid_proposal: /);
+    expect(sent).toHaveLength(1);
   });
 });
