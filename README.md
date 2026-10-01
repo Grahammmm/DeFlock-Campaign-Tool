@@ -39,6 +39,7 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 - Private local document storage and SQLite receipt ledger.
 - A review-gate library binding independent review receipts to finding content.
 - Synthetic policy, search log, agreement, and agency reply fixtures.
+- Offline newsletter drafts (`python3 -m campaign_tool.newsletter`), Legistar meeting import with an ALPR keyword filter (`campaign_tool meetings`, fixture-driven without `--online`), and verified `backup` / `verify` / `restore` of a campaign directory.
 - Portable records-analysis and review skills.
 - Architecture, implementation roadmap, operator checklists, request templates, and contribution guidance.
 
@@ -50,11 +51,11 @@ An offline test suite (synthetic fixtures only, no network) runs in GitHub Actio
 
 ## Cloudflare Workers (tested offline, not deployed)
 
-`workers/` contains the setup wizard, the Access-protected organizer workspace and the public-site Worker described in [docs/WORKERS.md](docs/WORKERS.md): resumable setup with an encrypted one-hour session, a provisioning plan with per-resource receipts and a rollback list (`DRY_RUN=1` records calls without performing them), Access JWT validation, the runner API from [docs/CONTRACTS.md](docs/CONTRACTS.md), approval cards, cron run receipts and inbound-mail preservation. Run `cd workers && npm ci && npm run check`. No campaign has been deployed with it; sending executors are interfaces only.
+`workers/` contains the setup wizard, the Access-protected organizer workspace and the public-site Worker described in [docs/WORKERS.md](docs/WORKERS.md): resumable setup with an encrypted one-hour session, a provisioning plan with per-resource receipts and a rollback list (`DRY_RUN=1` records calls without performing them), Access JWT validation, the runner API from [docs/CONTRACTS.md](docs/CONTRACTS.md), approval cards, cron run receipts, inbound-mail preservation, the review and publication workflow ([docs/PUBLICATION.md](docs/PUBLICATION.md)), Brevo newsletter drafts and sends behind approval cards ([docs/NEWSLETTER.md](docs/NEWSLETTER.md)), manual meetings with comment kits ([docs/MEETINGS.md](docs/MEETINGS.md)) and the D1 export and backup job ([docs/BACKUP.md](docs/BACKUP.md)). Run `cd workers && npm ci && npm run check`. No campaign has been deployed with it; `send_request`, `send_followup`, `post_social` and `pay_fee` executors refuse with stable codes until an outbox or a person completes them.
 
 ## Planned, not yet implemented
 
-Runner container and job execution; mailbox (send), MuckRock and Brevo executors behind approval cards; site build job and queue consumers; sandboxed PDF/spreadsheet extraction in the runner; independently reviewed state-law packages (California is drafted, not reviewed); publication/correction workflows beyond the review gate; meeting agenda import; monitored scheduling and cost controls; any production deployment of the Workers.
+Runner container and job execution (build_site, newsletter_draft and backup jobs are enqueued but nothing consumes them); mailbox (send) and MuckRock senders behind the `MailSender` port; social posting; sandboxed PDF/spreadsheet extraction in the runner; independently reviewed state-law packages (California is drafted, not reviewed); Brevo webhooks and list counts; automatic Legistar polling from the Worker (the CLI import exists); backup encryption, scheduling and hosted restore; monitored scheduling and cost controls; any production deployment of the Workers.
 
 See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 

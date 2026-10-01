@@ -9,7 +9,7 @@ This is a staged product build, not a completed automation service.
 | M2 Cloudflare launch wizard | In progress (offline, DRY_RUN only) | New account launches public site and protected workspace; signup and restore verified |
 | M3 Reliable intake | Planned | Mail/MuckRock originals, retries, checkpoints, archive failures and duplicate sends covered |
 | M4 Evidence and law review | Structural gate authored; California law package drafted as data (`status: draft`, not independently reviewed) | Reviewed California package, original-level digestion, authenticated independent review and privacy gate |
-| M5 Public action | Planned | Source-linked content, correction propagation, verified meeting participation, branded signup |
+| M5 Public action | Workflow authored offline: review receipts to `ready`, `publish_finding` with manifest-hashed builds, corrections and withdrawal, Brevo send behind a card, Legistar import and comment kits, verified backup ([PUBLICATION.md](PUBLICATION.md), [NEWSLETTER.md](NEWSLETTER.md), [MEETINGS.md](MEETINGS.md), [BACKUP.md](BACKUP.md)); no runner, no live send, no pilot | Source-linked content, correction propagation, verified meeting participation, branded signup |
 | M6 Supported pilots | Planned | SLO plus second CA locality; second state only after its own reviewed package |
 
 ## Prioritized work
@@ -18,14 +18,14 @@ This is a staged product build, not a completed automation service.
 2. Add schema contracts and a complete synthetic review journey with challenged findings.
 3. Build a resumable wizard, county/state disambiguation and official agency discovery. *Partly done:* offline county/city resolution and a California agency seed (all 58 counties, unverified contacts) drive `campaign_tool kit`; see [AGENCY-DISCOVERY.md](AGENCY-DISCOVERY.md). Verified custodian contacts remain open; the wizard screens exist in `workers/wizard` (see [WORKERS.md](WORKERS.md)).
 4. Build Cloudflare account/zone/resource planning, explicit apply, and deployment receipts. *Partly done:* plan/apply with per-resource receipts and a rollback list is implemented and tested with `DRY_RUN=1`; no live apply has been run.
-5. Integrate hosted newsletter forms; verify CAPTCHA origins, CSP, consent and suppression.
-6. Build immutable export/restore and source manifests.
+5. Integrate hosted newsletter forms; verify CAPTCHA origins, CSP, consent and suppression. *Partly done:* non-secret Brevo settings, hosted-form URL validation, the test-signup checklist and the `send_newsletter` executor exist; no live signup has been verified.
+6. Build immutable export/restore and source manifests. *Partly done:* `backup`/`verify`/`restore` with a hashed manifest, `GET /api/export.json` and `export_hosted`; encryption, scheduling and hosted restore remain.
 7. Add mailbox and MuckRock adapters; preserve raw originals and attachment relationships.
 8. Isolate PDF, spreadsheet, mail and archive parsers; account for every page and sheet.
 9. Implement request tracking, fee limits and transactional outbox; reconcile ambiguous sends.
 10. Create reviewed California rule versions and local-policy overlays; maintain support matrix.
 11. Authenticate reviewers and bind receipts to exact evidence and public artifacts.
-12. Add publication/corrections, branded public materials and official meeting actions.
+12. Add publication/corrections, branded public materials and official meeting actions. *Partly done:* publication, correction and withdrawal flows with manifest-hashed rebuilds, manual meetings and comment kits; branded materials and verified participation remain.
 13. Add one scheduler, job budgets, stale-data reports and deduplicated incident reporting.
 14. Measure mobile experience and first-party load; never load-test external providers.
 15. Run independent security/privacy review and a new-organizer pilot before a stable release.
