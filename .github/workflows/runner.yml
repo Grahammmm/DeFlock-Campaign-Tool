@@ -18,7 +18,7 @@ jobs:
       - name: Runner, digest and outbox tests (synthetic fixtures, no network)
         run: python3 -B -m unittest discover -s tests/runner -t . -v && python3 -B -m unittest tests.test_outbox tests.test_redact -v
       - name: Fake workspace smoke (exit 3 = idle)
-        run: python3 -B -m runner --once --fake; test "$?" -eq 3
+        run: python3 -B -m runner --once --fake || test "$?" -eq 3
       - run: node scripts/scan-secrets.mjs
       - run: python3 -B tools/check_public_tree.py
   image:

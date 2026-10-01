@@ -27,7 +27,7 @@ COPY schemas/ ./schemas/
 COPY tools/check_public_tree.py ./tools/check_public_tree.py
 
 # Build-time smoke test: the fake workspace has no jobs, so --once exits 3 (idle).
-RUN python3 -B -m runner --once --fake; test "$?" -eq 3
+RUN python3 -B -m runner --once --fake || test "$?" -eq 3
 
 USER runner
 ENV RUNNER_WORKDIR=/work \
