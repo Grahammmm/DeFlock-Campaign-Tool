@@ -28,15 +28,4 @@ jobs:
         env:
           WP1_OVERLAY: ${{ github.workspace }}/.wp1-dependency
         run: |
-          python -B - <<'PY'
-          import os, pathlib, unittest
-          import campaign_tool.records, tests.records
-          root = pathlib.Path(os.environ['WP1_OVERLAY'])
-          campaign_tool.records.__path__.append(str(root/'campaign_tool'/'records'))
-          tests.records.__path__.append(str(root/'tests'/'records'))
-          from campaign_tool.records.ledger import stages
-          suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_mail_delta', 'tests.records.test_runner', 'tests.records.test_export_proof', 'tests.records.test_runner_wp1_overlay', 'tests.records.test_runner_reliability'])
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if result.skipped or not result.wasSuccessful():
-              raise SystemExit(1)
-          PY
+          python -B tests/records/run_runner_composition.py
