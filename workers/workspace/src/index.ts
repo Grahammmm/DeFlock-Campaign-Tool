@@ -40,6 +40,9 @@ app.onError((err, c) => {
 
 // Runner API: bearer token, no Access identity.
 // The D1 export is also served to the runner so a `backup` job can pull it without Access.
+// That makes RUNNER_TOKEN a whole-database credential (review receipts with reviewer
+// emails, correspondence, proposals, settings), not only a job-queue one: SECURITY.md and
+// docs/WORKERS.md say so, and rotating it from Settings is the response to any leak.
 app.get("/api/runner/export.json", (c) => {
   requireRunner(c.req.raw, c.env);
   return exportResponse(new Repo(c.env.DB, c.env.CAMPAIGN_ID), c.env.CAMPAIGN_ID);
@@ -67,6 +70,20 @@ app.get("/dl/:sha256", async (c) => {
 });
 
 app.get("/healthz", (c) => c.json({ ok: true, campaign: Boolean(c.env.CAMPAIGN_ID) }));
+
+// Cross-site request forgery: Access authenticates with an ambient cookie, so a
+// state-changing request must come from this origin. Browsers always send Origin (and
+// Sec-Fetch-Site) on cross-site POSTs; a request that carries neither header is not a
+// browser cross-site request and passes to the identity check.
+app.use("*", async (c, next) => {
+  if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+    const site = c.req.header("sec-fetch-site");
+    if (site && site !== "same-origin" && site !== "none") throw new AuthError("cross-site request refused", 403);
+    const origin = c.req.header("origin");
+    if (origin && origin !== new URL(c.req.url).origin) throw new AuthError("cross-site request refused", 403);
+  }
+  await next();
+});
 
 // Everything else requires a verified Access JWT.
 app.use("*", async (c, next) => {
@@ -167,7 +184,9 @@ app.post("/api/findings", async (c) => {
   const finding = (await c.req.json().catch(() => null)) as JsonObject | null;
   if (!finding || typeof finding !== "object") return c.json({ error: "finding object required" }, 400);
   const id = typeof finding.id === "string" ? finding.id : newFindingId();
-  const full: JsonObject = { ...finding, id, author: typeof finding.author === "string" ? finding.author : c.var.identity.email };
+  // The author is always the verified Access identity: reviewBlockers counts reviews from
+  // anyone but the author as independent, so a client-supplied author could review its own work.
+  const full: JsonObject = { ...finding, id, author: c.var.identity.email };
   const hash = await contentHash(full);
   const row = await c.var.repo.createFinding({
     finding_id: id,
@@ -403,7 +422,9 @@ app.post("/settings/brevo", async (c) => {
   }
   const senderEmail = String(form.sender_email ?? "").trim() || null;
   if (senderEmail && !/^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/.test(senderEmail)) return c.text("sender_email invalid", 400);
-  const value: BrevoSettings = { list_id: listId, form_url: formUrl, sender_name: String(form.sender_name ?? "").trim() || null, sender_email: senderEmail, updated_by: c.var.identity.email, updated_at: nowIso() };
+  const consentFooter = String(form.consent_footer ?? "").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 600) || null;
+  if (consentFooter && !consentFooter.includes("Unsubscribe at any time.")) return c.text("consent_footer must keep the sentence 'Unsubscribe at any time.' (the provider unsubscribe link is inserted there)", 400);
+  const value: BrevoSettings = { list_id: listId, form_url: formUrl, sender_name: String(form.sender_name ?? "").trim() || null, sender_email: senderEmail, consent_footer: consentFooter, updated_by: c.var.identity.email, updated_at: nowIso() };
   await c.var.repo.putSetting("brevo", value);
   if (wantsJson(c)) return c.json(value);
   return c.redirect("/settings?notice=" + encodeURIComponent("Brevo settings saved (no contacts were read or written)"));

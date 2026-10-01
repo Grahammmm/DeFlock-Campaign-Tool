@@ -42,7 +42,7 @@ export const publishFindingExecutor: ActionExecutor = {
       deploy_receipt: null,
     });
     await ctx.repo.updateFinding(finding.finding_id, { state: "published" });
-    const rebuild = await proposeRebuild(ctx.repo, action.action_id, "publish_finding " + finding.finding_id);
+    const rebuild = await proposeRebuild(ctx.repo, ctx.identity.email, "publish_finding " + finding.finding_id);
     const draft = await ctx.repo.enqueueJob("newsletter_draft", await sha256Hex("newsletter_draft:pub:" + publication.publication_id), {
       trigger: "publication",
       publication_id: publication.publication_id,

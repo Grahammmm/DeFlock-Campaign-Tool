@@ -153,6 +153,84 @@ class OutboxTests(unittest.TestCase):
             self.box.send(row["idempotency_key"], lambda d: self.fail("must not send"))
         self.assertEqual(ctx.exception.reason, "fee_cap_exceeded")
 
+    def test_default_fee_cap_blocks_any_fee_and_none_lifts_it(self):
+        box = ob.Outbox(Path(self.tmp.name) / "default" / "outbox.sqlite", clock=self.clock)
+        try:
+            row = box.propose(draft(fee=1))
+            box.approve(row["idempotency_key"], "o@example.invalid")
+            with self.assertRaises(ob.Blocked) as ctx:
+                box.send(row["idempotency_key"], lambda d: self.fail("must not send"))
+            self.assertEqual(ctx.exception.reason, "fee_cap_exceeded")
+        finally:
+            box.close()
+        box = ob.Outbox(Path(self.tmp.name) / "unlimited" / "outbox.sqlite", campaign_fee_cap_cents=None, clock=self.clock)
+        try:
+            row = box.propose(draft(fee=999999))
+            box.approve(row["idempotency_key"], "o@example.invalid")
+            sent = box.send(row["idempotency_key"], lambda d: ob.ProviderReceipt("email", "id-1"))
+            self.assertEqual(sent["state"], "sent")
+        finally:
+            box.close()
+
+    def test_concurrent_send_claims_the_row_once(self):
+        # Two callers see the row 'approved' at the same time; the conditional claim lets
+        # only one transport run and the other is told to reconcile instead of resending.
+        row = self.box.propose(draft())
+        key = row["idempotency_key"]
+        self.box.approve(key, "o@example.invalid")
+        second = ob.Outbox(self.box.path, campaign_fee_cap_cents=5000, clock=self.clock)
+        calls = []
+
+        def transport(d):
+            calls.append(d.subject)
+            with self.assertRaises(ob.Blocked) as ctx:
+                second.send(key, lambda dd: calls.append("second " + dd.subject))
+            self.assertEqual(ctx.exception.reason, "ambiguous_send_unresolved")
+            return ob.ProviderReceipt("email", "id-1")
+
+        try:
+            self.assertEqual(self.box.send(key, transport)["state"], "sent")
+        finally:
+            second.close()
+        self.assertEqual(calls, ["Synthetic records request"])
+
+    def test_smtp_connection_failure_before_data_is_a_plain_failure(self):
+        row = self.box.propose(draft())
+        key = row["idempotency_key"]
+        self.box.approve(key, "o@example.invalid")
+        settings = ob.SmtpSettings(host="127.0.0.1", port=1, username="", password="", starttls=False, timeout=1)
+        with self.assertRaises(ob.OutboxError) as ctx:
+            self.box.send(key, lambda d: ob.send_email(d, settings))
+        self.assertNotIsInstance(ctx.exception, ob.AmbiguousFailure)
+        self.assertEqual(self.box.row(key)["state"], "failed")
+
+    def test_starttls_uses_a_verifying_context(self):
+        seen = {}
+
+        class Smtp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def ehlo(self):
+                pass
+
+            def starttls(self, context=None):
+                seen["context"] = context
+
+            def login(self, u, p):
+                pass
+
+            def send_message(self, m):
+                return {}
+
+        settings = ob.SmtpSettings(host="smtp.example.invalid", port=587, username="", password="", starttls=True, timeout=1)
+        ob.send_email(draft(), settings, smtp_factory=Smtp)
+        self.assertIsNotNone(seen["context"])
+        self.assertTrue(seen["context"].check_hostname)
+
     def test_muckrock_402_blocked_and_success(self):
         def opener_402(request, timeout=0):
             raise urllib.error.HTTPError(request.full_url, 402, "Payment Required", {}, io.BytesIO(b"{}"))

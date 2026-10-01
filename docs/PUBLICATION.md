@@ -19,7 +19,7 @@ refuses to publish without it.
 | `withdrawn` | Removed from the content manifest; the site is rebuilt without it. |
 
 `published`, `corrected` and `withdrawn` are terminal for the recompute: review receipts
-posted after publication are rejected with 409. Editing a finding changes its content hash,
+posted after publication are rejected with 409. Editing a finding (no edit route exists yet; today a finding is replaced by a new one through a correction) would change its content hash,
 which unbinds every earlier receipt and returns it to `draft`.
 
 ## Review receipts

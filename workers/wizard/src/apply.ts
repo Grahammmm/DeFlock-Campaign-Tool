@@ -35,9 +35,9 @@ export async function applyPlan(plan: PlanStep[], opts: ApplyOptions): Promise<D
 
   for (const step of plan) {
     const path = resolvePlaceholders(step.path, outputs);
-    const body = resolvePlaceholders(step.body, outputs);
-    const recordBody = resolvePlaceholders(redactStep(step).body, outputs);
-    const missing = unresolved([path, body]);
+    const body = step.literal_body ? step.body : resolvePlaceholders(step.body, outputs);
+    const recordBody = step.literal_body ? redactStep(step).body : resolvePlaceholders(redactStep(step).body, outputs);
+    const missing = unresolved(step.literal_body ? [path] : [path, body]);
     let result;
     if (missing.length) {
       result = { status: 0, ok: false, data: null, error: "unresolved placeholders: " + missing.join(", ") };

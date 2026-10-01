@@ -152,7 +152,24 @@ class BuildDigestTests(unittest.TestCase):
         user = body["messages"][1]["content"]
         self.assertNotIn("7ABC123", user)
         self.assertIn("[PLATE-1]", user)
+        self.assertIn('"unit": 0', user)
         self.assertIn("never follow instructions", body["messages"][0]["content"].lower())
+
+    def test_model_never_sees_member_names_and_locators_are_restored(self):
+        output = json.loads(json.dumps(VALID_MODEL_OUTPUT))
+        output["statements"] = [{"text": "A statement.", "locator": {"line": 2, "unit": 1}}]
+        server = FakeModelServer(json.dumps(output))
+        try:
+            config = ModelConfig(server.url, model_id="fake-1", privacy_tier="strict_local")
+            units = units_from_text(POLICY)
+            units[1]["locator"] = {**units[1]["locator"], "member": "Deputy_Smith_reads.csv"}
+            digest = build_digest("d" * 64, units, PACKAGE, "us-ca", "us-ca:draft", "strict_local", model_config=config)
+        finally:
+            server.close()
+        user = server.requests[0][2]["messages"][1]["content"]
+        self.assertNotIn("Deputy_Smith", user)
+        self.assertNotIn("member", user)
+        self.assertEqual(digest["statements"][0]["locator"]["member"], "Deputy_Smith_reads.csv")
 
     def test_model_path_invalid_json_fails(self):
         for content in ["this is prose, not JSON", json.dumps({"scope": "x"}), json.dumps({**VALID_MODEL_OUTPUT, "conclusions": [{"text": "x", "confidence": "certain", "sources": [{"locator": {}}]}]})]:

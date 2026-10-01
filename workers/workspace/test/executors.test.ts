@@ -188,7 +188,11 @@ describe("corrections and withdrawal", () => {
     const manifest = (JSON.parse(build!.inputs_json) as { manifest: { findings: JsonObject[] } }).manifest;
     const doc = manifest.findings.find((x) => x.id === f.finding_id)!;
     expect(doc.state).toBe("published");
-    expect(doc.corrections).toEqual([{ date: out.correction.corrected_at.slice(0, 10), note: "Page 3 cites the 2024 policy, not 2025." }]);
+    // The organizer's reason stays in the workspace (it never passed the two-reviewer gate);
+    // the public note records only that a correction happened.
+    expect(doc.corrections).toEqual([{ date: out.correction.corrected_at.slice(0, 10), note: "Corrected." }]);
+    expect(JSON.stringify(manifest)).not.toContain("2024 policy");
+    expect((await repo.correctionsFor(out.correction.publication_id))[0].reason).toBe("Page 3 cites the 2024 policy, not 2025.");
     const deploy = await repo.action(out.deploy_action_id);
     expect(deploy?.state).toBe("proposed");
     expect((await repo.jobsByKind("build_site")).length).toBe(buildsBefore + 1); // the correction changes the manifest, so a new build

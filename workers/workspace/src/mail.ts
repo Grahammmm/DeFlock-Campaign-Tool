@@ -60,17 +60,28 @@ export async function handleInboundMail(mail: InboundMail, env: Env): Promise<In
   return { correspondence_id: row.correspondence_id, raw_sha256: sha, deduplicated: !inserted, job_id: jobId };
 }
 
+/** Largest inbound message the Worker will store; larger ones are rejected before any write. */
+export const MAX_INBOUND_BYTES = 25 * 1024 * 1024;
+
 async function readAll(stream: ReadableStream<Uint8Array>, size?: number): Promise<Uint8Array> {
+  // `size` (the message's advertised rawSize) is a hint only: the buffer is sized from the
+  // bytes actually read, so a wrong hint can neither zero-pad the stored MIME (which would
+  // break the provenance hash) nor overflow the copy. Reading stops at MAX_INBOUND_BYTES.
+  if (size !== undefined && size > MAX_INBOUND_BYTES) throw new Error(`inbound message exceeds ${MAX_INBOUND_BYTES} bytes`);
   const chunks: Uint8Array[] = [];
   const reader = stream.getReader();
   let total = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value);
     total += value.byteLength;
+    if (total > MAX_INBOUND_BYTES) {
+      await reader.cancel();
+      throw new Error(`inbound message exceeds ${MAX_INBOUND_BYTES} bytes`);
+    }
+    chunks.push(value);
   }
-  const out = new Uint8Array(size ?? total);
+  const out = new Uint8Array(total);
   let off = 0;
   for (const c of chunks) {
     out.set(c, off);

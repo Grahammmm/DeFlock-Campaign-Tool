@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import smtplib
+import ssl
 import sqlite3
 import urllib.error
 import urllib.request
@@ -166,14 +167,18 @@ def send_email(draft, settings, smtp_factory=None):
     message.set_content(draft.body)
     factory = smtp_factory or (lambda: smtplib.SMTP(settings.host, settings.port, timeout=settings.timeout))
     accepted = False
+    in_data = False  # set just before DATA: an error before it cannot have delivered
     try:
         with factory() as smtp:
             smtp.ehlo()
             if settings.starttls:
-                smtp.starttls()
+                # Verified TLS with hostname check: the password and the request body
+                # never go to a server presenting an arbitrary certificate.
+                smtp.starttls(context=ssl.create_default_context())
                 smtp.ehlo()
             if settings.username:
                 smtp.login(settings.username, settings.password)
+            in_data = True
             refused = smtp.send_message(message)
             accepted = True
             if refused:
@@ -183,6 +188,8 @@ def send_email(draft, settings, smtp_factory=None):
     except (smtplib.SMTPException, OSError) as exc:
         if accepted:
             raise AmbiguousFailure("smtp error after DATA: " + str(exc)) from None
+        if not in_data:
+            raise OutboxError("smtp connection failed before DATA: " + str(exc)) from None
         raise AmbiguousFailure("smtp error during DATA; delivery unknown: " + str(exc)) from None
     return ProviderReceipt("email", message_id.strip("<>"), raw={"to": draft.to, "subject": draft.subject})
 
@@ -236,7 +243,7 @@ class Outbox:
         self.db.executescript(SCHEMA)
         if not existed or (os.stat(self.path).st_mode & 0o777) != 0o600:
             os.chmod(self.path, 0o600)
-        self.campaign_fee_cap_cents = int(campaign_fee_cap_cents)
+        self.campaign_fee_cap_cents = None if campaign_fee_cap_cents is None else int(campaign_fee_cap_cents)
         self.daily_agency_cap = int(daily_agency_cap)
         self.clock = clock or now_iso
 
@@ -303,7 +310,9 @@ class Outbox:
             (row["request_id"], row["idempotency_key"])).fetchone()[0]
         if unresolved:
             raise Blocked("ambiguous_send_unresolved", "another send for this request is unresolved")
-        if self.campaign_fee_cap_cents and row["fee_cap_cents"] > self.campaign_fee_cap_cents:
+        # A cap of 0 (the default) blocks any draft that offers a fee; only an explicit
+        # None lifts the gate, so forgetting --fee-cap-cents can never allow a fee.
+        if self.campaign_fee_cap_cents is not None and row["fee_cap_cents"] > self.campaign_fee_cap_cents:
             raise Blocked("fee_cap_exceeded", f"{row['fee_cap_cents']} > campaign cap {self.campaign_fee_cap_cents}")
         today = self.clock()[:10]
         sent_today = self.db.execute(
@@ -327,7 +336,14 @@ class Outbox:
         if self._check(row) == "already_sent":
             return row
         draft = RequestDraft.from_json(row["draft_json"])
-        self._set(key, state="sending", sending_at=self.clock(), error=None)
+        # Claim the row with one conditional UPDATE: two concurrent sends (a retried job
+        # and a CLI call) cannot both move approved -> sending, so the transport runs once.
+        stamp = self.clock()
+        claimed = self.db.execute(
+            "UPDATE outbox SET state='sending', sending_at=?, error=NULL, updated_at=? WHERE idempotency_key=? AND state='approved'",
+            (stamp, stamp, key)).rowcount
+        if claimed != 1:
+            raise Blocked("ambiguous_send_unresolved", "another send claimed this row first; run reconcile if it did not finish")
         try:
             receipt = transport(draft)
         except Blocked as exc:
@@ -372,7 +388,7 @@ class Outbox:
 def main(argv=None):
     p = argparse.ArgumentParser(description="Local outbox journal for records requests; never sends without an approved row.")
     p.add_argument("--journal", required=True, help="path to outbox.sqlite (private directory)")
-    p.add_argument("--fee-cap-cents", type=int, default=0)
+    p.add_argument("--fee-cap-cents", type=int, default=0, help="largest fee a draft may offer; 0 (default) blocks any fee")
     sub = p.add_subparsers(dest="command", required=True)
     pr = sub.add_parser("propose"); pr.add_argument("draft_json", help="file with RequestDraft fields")
     ap = sub.add_parser("approve"); ap.add_argument("key"); ap.add_argument("--by", required=True)

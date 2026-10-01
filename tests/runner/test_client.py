@@ -56,6 +56,11 @@ class ClientTests(unittest.TestCase):
             Workspace("ftp://x", "tok")
         with self.assertRaises(ValueError):
             Workspace("https://x", "")
+        # plaintext http only to the local machine: the bearer token rides on every request
+        with self.assertRaisesRegex(ValueError, "localhost"):
+            Workspace("http://workspace.example.invalid", "tok")
+        Workspace("http://localhost:8787", "tok")
+        Workspace("http://127.0.0.1:8787", "tok")
 
     def test_bearer_header_and_204_idle(self):
         opener = Opener([FakeResponse(204)])

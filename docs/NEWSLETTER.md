@@ -76,3 +76,12 @@ the suite.
 Brevo webhook ingestion for bounces and list counts (the Subscribers screen shows
 `list_count` events if something writes them), A/B or segment sends, and any transactional
 mail. Those stay behind the same approval-card rule when added.
+
+## Consent footer
+
+The draft's closing lines are the campaign's own reviewed wording, set in Settings > Brevo
+(`consent_footer`: why the reader receives this, who sends it and from where; it must keep
+the sentence "Unsubscribe at any time." so the provider link lands there). Without it the
+engine appends a clearly marked template footer and the `send_newsletter` executor refuses
+the draft (`template_consent_footer`): the engine's wording is never sent as a campaign's
+consent statement by accident.

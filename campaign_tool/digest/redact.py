@@ -11,11 +11,20 @@ The function returns the redacted text and counts per category only. The
 mapping from token to original value is never returned or logged. Over-
 redaction is acceptable; under-redaction is the failure this module guards
 against, so patterns are deliberately broad.
+
+Limits (also stated in docs/RUNNER.md): names are matched only after a rank
+title or a name-like label (Name:, Requester:, Sincerely, ...) and from the
+caller's denylist. A bare personal name in running text is not recognised by
+any regex, so the ``redacted_cloud`` tier is an explicit opt-in and the
+denylist should carry every name the organizers know of; ``strict_local``
+is the default.
 """
 import re
 from dataclasses import dataclass, field
 
-TITLES = r"(?:Officer|Deputy|Sheriff|Sgt\.?|Sergeant|Det\.?|Detective|Lt\.?|Lieutenant|Capt\.?|Captain|Chief|Cpl\.?|Corporal|Trooper|Agent|Investigator)"
+TITLES = r"(?:Officer|Deputy|Sheriff|Sgt\.?|Sergeant|Det\.?|Detective|Lt\.?|Lieutenant|Capt\.?|Captain|Chief|Cpl\.?|Corporal|Trooper|Agent|Investigator|Mr\.?|Mrs\.?|Ms\.?|Dr\.?)"
+# Labels that introduce a person's name in correspondence and forms.
+NAME_LABELS = r"(?:Name|Requester|Requestor|Applicant|Complainant|Witness|Driver|Registered owner|Owner|Signed|Signature|Attn\.?|Attention|Dear|Sincerely|Regards|Best regards|Respectfully|Contact|Prepared by|Submitted by|Reviewed by|Approved by|Custodian|From|cc|CC|Cc)"
 STREET_SUFFIX = r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Highway|Hwy|Parkway|Pkwy|Circle|Cir|Terrace|Ter|Trail|Trl)"
 
 # Order matters only for overlap resolution (earlier category wins on ties).
@@ -26,11 +35,12 @@ PATTERNS = [
     ("PHONE", re.compile(r"(?<![\w.-])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?![\w-])|(?<![\w.-])\d{10}(?![\w.-])")),
     ("ADDRESS", re.compile(r"\b\d{1,6}\s+(?:[A-Z][A-Za-z']+\s+){1,4}" + STREET_SUFFIX + r"\b\.?(?:,?\s+(?:Apt|Suite|Ste|Unit|#)\s*\w+)?")),
     ("NAME", re.compile(r"\b" + TITLES + r"\s+([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?)")),
+    ("NAME", re.compile(r"\b" + NAME_LABELS + r"\s*[:,]\s*([A-Z][a-z'\-]+(?:\s+(?:[A-Z]\.|[A-Z][a-z'\-]+)){1,3})")),
     # California 1ABC234 style, ABC1234 style, and any 7-char run mixing letters and digits.
     ("PLATE", re.compile(r"(?<![A-Za-z0-9-])(?:\d[A-Za-z]{3}\d{3}|[A-Za-z]{3}[- ]?\d{4}|(?=[A-Za-z0-9]{7}(?![A-Za-z0-9]))(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{7})(?![A-Za-z0-9-])")),
 ]
-CATEGORIES = [name for name, _ in PATTERNS] + ["DENYLIST"]
-PLACEHOLDER = re.compile(r"\[(?:" + "|".join(CATEGORIES) + r")-\d+\]")
+CATEGORIES = list(dict.fromkeys(name for name, _ in PATTERNS)) + ["DENYLIST"]
+PLACEHOLDER = re.compile(r"\[(" + "|".join(CATEGORIES) + r")-(\d+)\]")
 
 
 @dataclass
@@ -73,35 +83,55 @@ def _collect(text, allow, deny):
     return chosen
 
 
+class Redactor:
+    """One placeholder table shared across several texts (the units of one record).
+
+    Placeholders already present in a text are reserved first, so a literal
+    ``[PLATE-1]`` in the input (or a re-run over redacted text) can never
+    collide with a freshly minted token for a different value.
+    """
+
+    def __init__(self, allowlist=(), denylist=()):
+        self.allow = {str(a).lower() for a in allowlist if a}
+        self.deny = [str(d) for d in denylist if d]
+        self.tokens = {}
+        self.counters = {name: 0 for name in CATEGORIES}
+
+    def reserve(self, text):
+        for match in PLACEHOLDER.finditer(text):
+            category, number = match.group(1), int(match.group(2))
+            self.counters[category] = max(self.counters[category], number)
+
+    def redact(self, text):
+        if not isinstance(text, str):
+            raise TypeError("redact expects str")
+        self.reserve(text)
+        counts = {name: 0 for name in CATEGORIES}
+        out = []
+        cursor = 0
+        for start, end, category, value in _collect(text, self.allow, self.deny):
+            key = (category, value.strip().upper() if category != "DENYLIST" else value.lower())
+            if key not in self.tokens:
+                self.counters[category] += 1
+                self.tokens[key] = f"[{category}-{self.counters[category]}]"
+            counts[category] += 1
+            out.append(text[cursor:start])
+            out.append(self.tokens[key])
+            cursor = end
+        out.append(text[cursor:])
+        return Redaction("".join(out), {k: v for k, v in counts.items() if v})
+
+
 def redact(text, allowlist=(), denylist=()):
     """Return a :class:`Redaction` with placeholder tokens and per-category counts.
 
     ``allowlist`` holds values that must survive (agency names, vendor names,
     campaign mailboxes); ``denylist`` holds literal phrases that must always be
     replaced even when no pattern matches them (known personal names).
-    Placeholders already present in the input are left untouched so the
-    function is idempotent.
+    Placeholders already present in the input are reserved, never re-used,
+    so the function is idempotent and collision-free.
     """
-    if not isinstance(text, str):
-        raise TypeError("redact expects str")
-    allow = {str(a).lower() for a in allowlist if a}
-    deny = [str(d) for d in denylist if d]
-    tokens = {}
-    counters = {name: 0 for name in CATEGORIES}
-    counts = {name: 0 for name in CATEGORIES}
-    out = []
-    cursor = 0
-    for start, end, category, value in _collect(text, allow, deny):
-        key = (category, value.strip().upper() if category != "DENYLIST" else value.lower())
-        if key not in tokens:
-            counters[category] += 1
-            tokens[key] = f"[{category}-{counters[category]}]"
-        counts[category] += 1
-        out.append(text[cursor:start])
-        out.append(tokens[key])
-        cursor = end
-    out.append(text[cursor:])
-    return Redaction("".join(out), {k: v for k, v in counts.items() if v})
+    return Redactor(allowlist=allowlist, denylist=denylist).redact(text)
 
 
 def contains_placeholder(text):

@@ -13,6 +13,8 @@ export interface PlanStep {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string; // may contain {{output.key}} placeholders
   body: unknown; // JSON body (placeholders allowed in string values); secrets are marked with {{secret.NAME}}
+  /** True when the body embeds organizer-typed text: it is sent verbatim, never placeholder-resolved. */
+  literal_body?: boolean;
   /** Names of outputs captured from the response: { key: "result.id" } */
   captures: Record<string, string>;
   rollback: { method: "DELETE" | "POST" | "PUT"; path: string; body?: unknown } | null;
@@ -165,7 +167,9 @@ export function buildPlan(state: WizardState): PlanStep[] {
     },
   }, rollback: { method: "DELETE", path: `${acct}/workers/scripts/${n.workspaceScript}` } }));
   steps.push(api({ id: "d1.migrate", title: "Run D1 migrations", resource: "d1", kind: "d1_query", method: "POST", path: `${acct}/d1/database/{{d1_id}}/query`, body: { sql: "{{migrations}}" }, rollback: null }));
-  steps.push(api({ id: "d1.seed", title: "Seed campaign, agencies and request drafts", resource: "d1", kind: "d1_query", method: "POST", path: `${acct}/d1/database/{{d1_id}}/query`, body: { sql: seedSql(state) }, rollback: null }));
+  // The seed SQL carries organizer-typed text (names, request drafts), so it is literal: a
+  // draft containing "{{generated.runner_token}}" must never be replaced with the real token.
+  steps.push(api({ id: "d1.seed", title: "Seed campaign, agencies and request drafts", resource: "d1", kind: "d1_query", method: "POST", path: `${acct}/d1/database/{{d1_id}}/query`, body: { sql: seedSql(state) }, literal_body: true, rollback: null }));
   steps.push(api({ id: "dns.public", title: `DNS ${n.publicHostname} -> Workers (AAAA 100::, proxied)`, resource: "dns", method: "POST", path: `${zone}/dns_records`, body: { type: "AAAA", name: n.publicHostname, content: "100::", proxied: true, comment: "deflock public site" }, captures: { dns_public_id: "result.id" }, rollback: { method: "DELETE", path: `${zone}/dns_records/{{dns_public_id}}` } }));
   steps.push(api({ id: "dns.workspace", title: `DNS ${n.workspaceHostname} -> Workers (AAAA 100::, proxied)`, resource: "dns", method: "POST", path: `${zone}/dns_records`, body: { type: "AAAA", name: n.workspaceHostname, content: "100::", proxied: true, comment: "deflock workspace" }, captures: { dns_workspace_id: "result.id" }, rollback: { method: "DELETE", path: `${zone}/dns_records/{{dns_workspace_id}}` } }));
   steps.push(api({ id: "route.public", title: `Route ${n.publicHostname}/* -> ${n.publicScript}`, resource: "route", method: "POST", path: `${zone}/workers/routes`, body: { pattern: `${n.publicHostname}/*`, script: n.publicScript }, captures: { route_public_id: "result.id" }, rollback: { method: "DELETE", path: `${zone}/workers/routes/{{route_public_id}}` } }));

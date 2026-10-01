@@ -8,6 +8,8 @@ import type { BrevoSettings } from "../manifest.ts";
 import { ExecutorFailure, type ActionExecutor } from "./types.ts";
 
 export const UNSUBSCRIBE_PLACEHOLDER = "{{ unsubscribe }}";
+/** campaign_tool.newsletter.draft appends this when the campaign has no reviewed consent footer. */
+export const CONSENT_FOOTER_TEMPLATE_MARKER = "[TEMPLATE CONSENT FOOTER";
 
 export interface NewsletterDraft {
   subject: string;
@@ -23,6 +25,7 @@ export function draftFromProposal(proposal: Record<string, unknown>): Newsletter
   if (!html.trim()) throw new ExecutorFailure("invalid_proposal", "proposal.html required");
   if (/<script\b/i.test(html)) throw new ExecutorFailure("invalid_proposal", "proposal.html must not contain scripts");
   if (!html.includes(UNSUBSCRIBE_PLACEHOLDER)) throw new ExecutorFailure("missing_unsubscribe", "proposal.html must include the Brevo " + UNSUBSCRIBE_PLACEHOLDER + " placeholder");
+  if (html.includes(CONSENT_FOOTER_TEMPLATE_MARKER) || text.includes(CONSENT_FOOTER_TEMPLATE_MARKER)) throw new ExecutorFailure("template_consent_footer", "the draft carries the engine's template consent footer; set the campaign's reviewed consent footer in Settings and draft again");
   return { subject, html, text };
 }
 
@@ -31,7 +34,9 @@ export function newsletterExecutor(client: BrevoClient | null): ActionExecutor {
     kind: "send_newsletter",
     async execute(action, proposal, ctx) {
       const settings = await ctx.repo.setting<BrevoSettings>("brevo");
-      const listId = typeof proposal.list_id === "number" ? proposal.list_id : settings?.list_id ?? null;
+      // The list comes from Settings at execute time, never from the card: an older draft
+      // must not carry a test list into a send after Settings moved to the real one.
+      const listId = settings?.list_id ?? null;
       if (!client) throw new ExecutorFailure("brevo_not_configured", "BREVO_API_KEY secret is not set on the Worker");
       if (!settings?.sender_email || !settings.sender_name) throw new ExecutorFailure("brevo_not_configured", "Brevo sender name and address are not set in Settings");
       if (!Number.isInteger(listId) || (listId as number) <= 0) throw new ExecutorFailure("brevo_not_configured", "Brevo list id is not set in Settings");
@@ -48,10 +53,25 @@ export function newsletterExecutor(client: BrevoClient | null): ActionExecutor {
           listIds: [listId as number],
           tag: action.idempotency_key.slice(0, 50),
         });
-        await client.sendCampaignNow(created.id);
       } catch (e) {
         if (e instanceof BrevoError) throw new ExecutorFailure("brevo_error", e.message);
         throw e;
+      }
+      // From here the campaign exists at Brevo. A failed or timed-out send is ambiguous
+      // (Brevo may have queued it), so the card fails with the campaign id in the error and
+      // an event records it: an organizer checks that campaign at Brevo before proposing a
+      // new draft, instead of the workspace creating a second campaign for the same key.
+      try {
+        await client.sendCampaignNow(created.id);
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        await ctx.repo.createSubscriberEvent({
+          provider: "brevo",
+          kind: "campaign_send_ambiguous",
+          payload_json: JSON.stringify({ brevo_campaign_id: created.id, subject: draft.subject, action_id: action.action_id, list_id: listId, error: detail }),
+          occurred_at: nowIso(),
+        });
+        throw new ExecutorFailure("brevo_send_ambiguous", `Brevo campaign ${created.id} was created but the send call failed (${detail}); check that campaign at Brevo before proposing a new draft`);
       }
       const sentAt = nowIso();
       await ctx.repo.createSubscriberEvent({

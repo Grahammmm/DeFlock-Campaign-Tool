@@ -220,9 +220,12 @@ def backup_cmd(args, root):
     from .backup import export
     manifest = export(root, args.out)
     print(json.dumps({"out": str(args.out), "files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"],
-                      "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"]},
+                      "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"],
+                      "manifest_sha256": manifest["manifest_sha256"]},
                      indent=2))
     print("Archive is unencrypted; encrypt it before storing it anywhere shared.", file=sys.stdout)
+    print("Record manifest_sha256 somewhere other than with the archive and pass it to "
+          "`verify --expect-manifest-sha256`: without it verify checks integrity, not tampering.", file=sys.stdout)
 
 
 def restore_cmd(args, root):
@@ -234,7 +237,9 @@ def restore_cmd(args, root):
 
 def verify_cmd(args):
     from .backup import verify
-    report = verify(args.file)
+    report = verify(args.file, expected_manifest_sha256=args.expect_manifest_sha256)
+    if not args.expect_manifest_sha256:
+        report["note"] = "integrity check only; pass --expect-manifest-sha256 <digest from backup> to detect a rewritten archive"
     print(json.dumps(report, indent=2))
 
 
@@ -290,6 +295,7 @@ def main():
     restore_p.add_argument("--directory", required=True)
     verify_p = commands.add_parser("verify", help="Re-hash every member of a backup against its manifest")
     verify_p.add_argument("--file", required=True)
+    verify_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`, kept apart from the archive")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")

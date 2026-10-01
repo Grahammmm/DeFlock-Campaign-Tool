@@ -12,6 +12,7 @@ import json
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -60,6 +61,11 @@ class Workspace:
     def __init__(self, base_url, token, timeout=60, max_retries=4, sleep=time.sleep, opener=None, backoff_base=1.0):
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("WORKSPACE_URL must be http(s)")
+        # The bearer token rides on every request: plaintext http is allowed only to the
+        # local machine (wrangler dev), never to a remote workspace.
+        host = urllib.parse.urlsplit(base_url).hostname or ""
+        if base_url.startswith("http://") and host not in ("localhost", "127.0.0.1", "::1"):
+            raise ValueError("WORKSPACE_URL over plain http is allowed only for localhost; use https")
         if not token:
             raise ValueError("RUNNER_TOKEN is required")
         self.base = base_url.rstrip("/") + "/api/runner"

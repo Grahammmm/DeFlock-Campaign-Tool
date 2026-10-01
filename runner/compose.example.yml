@@ -3,7 +3,7 @@
 #
 #   WORKSPACE_URL=https://workspace.<campaign-domain>
 #   RUNNER_TOKEN=<value shown once on the workspace Settings screen>
-#   PRIVACY_TIER=redacted_cloud            # or strict_local
+#   PRIVACY_TIER=strict_local              # default; redacted_cloud also needs REDACTED_CLOUD_ACKNOWLEDGED=names-may-remain
 #   MODEL_BASE_URL=                        # optional; strict_local requires loopback/Tailscale
 #   MODEL_API_KEY=
 #   MODEL_ID=local

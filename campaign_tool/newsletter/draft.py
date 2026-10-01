@@ -74,8 +74,21 @@ def _period_label(since, now):
     return now.strftime("%B %Y")
 
 
+# Appended when the campaign has not supplied its own reviewed consent footer. The send
+# executor refuses a draft that still carries it, so the engine's wording is never sent as
+# a campaign's consent statement by accident.
+CONSENT_FOOTER_TEMPLATE_MARKER = "[TEMPLATE CONSENT FOOTER: replace with the campaign's reviewed wording in Settings before sending]"
+DEFAULT_CONSENT_FOOTER = "You receive this because you signed up for {name} updates. Unsubscribe at any time."
+
+
 def build_draft(manifest, now=None):
-    """Return ``{"subject", "html", "text", "counts"}`` for the manifest."""
+    """Return ``{"subject", "html", "text", "counts"}`` for the manifest.
+
+    ``campaign.consent_footer`` is the campaign's reviewed consent and sender
+    wording (it must keep the sentence ``Unsubscribe at any time.`` for the
+    provider placeholder). Without it the engine's template footer is used and
+    marked, and the send executor refuses the draft.
+    """
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise DraftError("manifest.schema_version must be 1")
     campaign = manifest.get("campaign") or {}
@@ -134,7 +147,16 @@ def build_draft(manifest, now=None):
         lines.append(f"Read everything, with source hashes, at [{base_url}]({base_url}).")
     lines.append("Findings describe records and published rules as of the event date. This is not legal advice.")
     lines.append("")
-    lines.append(f"You receive this because you signed up for {name} updates. Unsubscribe at any time.")
+    footer = campaign.get("consent_footer")
+    if isinstance(footer, str) and footer.strip():
+        footer = _clean(footer, "campaign.consent_footer", 600)
+        if "Unsubscribe at any time." not in footer:
+            raise DraftError("campaign.consent_footer must contain the sentence 'Unsubscribe at any time.'")
+        lines.append(footer)
+    else:
+        lines.append(DEFAULT_CONSENT_FOOTER.format(name=name))
+        lines.append("")
+        lines.append(CONSENT_FOOTER_TEMPLATE_MARKER)
     markdown = "\n".join(lines) + "\n"
 
     subject = f"{name}: {len(findings)} new finding{'s' if len(findings) != 1 else ''}" if findings else f"{name}: {_period_label(since, now)} update"
@@ -153,7 +175,8 @@ def build_draft(manifest, now=None):
         if UNSUBSCRIBE_PLACEHOLDER not in blob:
             raise DraftError(f"{label}: unsubscribe placeholder missing")
     return {"subject": subject[:200], "html": html, "text": text,
-            "counts": {"findings": len(findings), "meetings": len(meetings)}}
+            "counts": {"findings": len(findings), "meetings": len(meetings)},
+            "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
 
 
 def _wrap(name, body):

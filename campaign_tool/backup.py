@@ -6,7 +6,13 @@ organizer) containing ``campaign.json``, ``content/``, ``kit/``,
 ``private/ledger.sqlite``, ``private/objects/**`` and a ``manifest.json`` with
 the SHA-256 and size of every member, counts and the engine version.
 
-``verify(path)`` re-hashes every member against the manifest and reports.
+``verify(path, expected_manifest_sha256=None)`` re-hashes every member against
+the manifest and reports. The manifest is inside the archive, so on its own
+this is an integrity (corruption and consistency) check, not tamper
+detection: whoever can rewrite a member can rewrite ``manifest.json`` too.
+``export`` therefore returns ``manifest_sha256`` (the digest of the manifest
+bytes as written); record it somewhere the archive is not, and pass it to
+``verify`` to detect a rewritten archive.
 ``restore(path, root)`` refuses a non-empty root, rejects unsafe member names,
 extracts with private modes (0700 directories, 0600 files) and re-verifies the
 files on disk.
@@ -151,10 +157,12 @@ def export(root, out_path):
             staged.append((name, path))
         ledger = next((p for n, p in staged if n == "private/ledger.sqlite"), None)
         manifest = _manifest(files, _ledger_counts(ledger), {"kind": "local", "root_name": root.name})
+        manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        manifest["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
         fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             with os.fdopen(fd, "wb") as handle, tarfile.open(fileobj=handle, mode="w", format=tarfile.PAX_FORMAT) as tar:
-                _add_bytes(tar, MANIFEST, json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n")
+                _add_bytes(tar, MANIFEST, manifest_bytes)
                 for name, path in staged:
                     info = tar.gettarinfo(str(path), arcname=name)
                     info.mode = 0o600
@@ -186,13 +194,15 @@ def _read_manifest(tar):
         raise BackupError("manifest.json missing from archive") from None
     if not member.isfile() or member.size > 64 * 1024 * 1024:
         raise BackupError("manifest.json is not a regular file of sane size")
+    raw = tar.extractfile(member).read()
     try:
-        manifest = json.loads(tar.extractfile(member).read().decode("utf-8"))
+        manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise BackupError(f"manifest.json unreadable: {exc}") from None
     if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION \
             or not isinstance(manifest.get("files"), dict):
         raise BackupError("manifest.json has an unsupported shape")
+    manifest["manifest_sha256"] = hashlib.sha256(raw).hexdigest()
     return manifest
 
 
@@ -214,12 +224,18 @@ def _check_member(member, expected):
     return None
 
 
-def verify(path):
-    """Re-hash every member against the manifest. Returns a report; raises on any problem."""
+def verify(path, expected_manifest_sha256=None):
+    """Re-hash every member against the manifest. Returns a report; raises on any problem.
+
+    With ``expected_manifest_sha256`` (recorded out of band at export time) a
+    rewritten manifest is detected too; without it this is an integrity check.
+    """
     path = Path(path)
     problems = []
     with tarfile.open(path, mode="r:") as tar:
         manifest = _read_manifest(tar)
+        if expected_manifest_sha256 and manifest["manifest_sha256"] != expected_manifest_sha256.strip().lower():
+            problems.append({"member": MANIFEST, "problem": "manifest_digest_mismatch"})
         expected = manifest["files"]
         seen = set()
         bad = set()
@@ -245,6 +261,7 @@ def verify(path):
         for name in sorted(set(expected) - seen):
             problems.append({"member": name, "problem": "missing_member"})
     report = {"path": str(path), "ok": not problems, "files": len(expected), "verified": len(seen - bad), "problems": problems,
+        "manifest_sha256": manifest["manifest_sha256"],
         "engine_version": manifest.get("engine_version"), "created_at": manifest.get("created_at"),
         "counts": manifest.get("counts", {})}
     if problems:

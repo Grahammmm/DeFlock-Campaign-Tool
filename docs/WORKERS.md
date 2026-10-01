@@ -70,7 +70,15 @@ Worker verifies RS256 with WebCrypto against `https://<team>.cloudflareaccess.co
 (cached one hour, one refresh on an unknown `kid`), checks `iss`, `aud`, `exp` and `nbf`, and
 takes the identity from the token's `email` claim. The `Cf-Access-Authenticated-User-Email`
 header alone is never trusted. Runner endpoints use `Authorization: Bearer <RUNNER_TOKEN>`
-with a constant-time comparison.
+with a constant-time comparison. The runner token reads jobs, originals by hash and the full
+D1 export (`/api/runner/export.json`, for the backup job), so it is a whole-database
+credential: keep it only in the runner's environment and rotate it from Settings if the
+container or its configuration is exposed.
+
+State-changing requests must come from the workspace origin: a POST that carries a
+cross-site `Sec-Fetch-Site` or a foreign `Origin` header is refused with 403 before the
+identity check, so an attacker page cannot drive an organizer's Access cookie through the
+approval routes. Finding authors are always the verified identity of the submitter.
 
 Screens: Dashboard, Requests (+ detail with the correspondence timeline and a "Draft
 follow-up" button that enqueues a `draft_followup` job), Inbox, Records (signed ten-minute
