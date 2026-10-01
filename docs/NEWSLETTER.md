@@ -10,7 +10,7 @@ contacts; consent, suppression and unsubscribe stay inside the provider. Code:
 
 Settings > Newsletter stores one `brevo` setting row: `list_id` (positive integer), hosted
 signup `form_url` (`https://*.sibforms.com/...` only), `sender_name` and `sender_email`
-(must be a verified Brevo sender). The API key is the Worker secret `BREVO_API_KEY`; the
+(must be a verified Brevo sender). The Brevo API key lives only in the Worker environment; the
 Settings page shows presence only. Saving these settings reads and writes no contacts.
 The form URL sets `signup.mode = brevo_hosted` on the public site; the CSP and CAPTCHA
 origin checks are in [CLOUDFLARE.md](CLOUDFLARE.md) step 8.
