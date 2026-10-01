@@ -35,4 +35,4 @@ jobs:
           cd "$RUNNER_TEMP"
           PYTHONPATH= "$RUNNER_TEMP/records-runtime/bin/records" version --json > records-installed-version.json
           PYTHONPATH= "$RUNNER_TEMP/records-runtime/bin/records" validate-findings --help
-          python -c 'import json,os; p=json.load(open("records-installed-version.json")); assert p["commit"]==os.environ["GITHUB_SHA"]; assert p["installation_kind"]=="installed_wheel"; assert p["source_dirty"] is False; assert p["ledger_schema_version"]==0'
+          python -c 'import json,os; p=json.load(open("records-installed-version.json")); assert p["commit"]==os.environ["GITHUB_SHA"]; assert p["installation_kind"]=="installed_wheel"; assert p["source_dirty"] is False; assert p["ledger_schema_version"]==1'
