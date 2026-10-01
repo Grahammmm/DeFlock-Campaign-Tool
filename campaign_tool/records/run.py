@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import uuid
@@ -203,6 +204,15 @@ class Pipeline:
     def _states(self, subject):
         return stage_adapters.current_states(self.root.ledger, subject)
 
+    def _alert(self, key, *, owner):
+        """Keyed, deduplicated alert in the ledger: one row per key, counted on repeat."""
+        stamp = now()
+        with store.ledger(self.root.ledger) as con:
+            con.execute("INSERT INTO alerts(id,key,first_seen,last_seen,count,owner,state) VALUES(?,?,?,?,1,?,'open') "
+                        "ON CONFLICT(key) DO UPDATE SET last_seen=excluded.last_seen,count=alerts.count+1,state='open'",
+                        (sha(key.encode())[:32], key, stamp, stamp, owner))
+            con.commit()
+
     def subjects(self):
         return [row["sha256"] for row in self._query("SELECT sha256 FROM originals WHERE scope!='out_of_scope' ORDER BY first_seen_at,sha256")]
 
@@ -227,6 +237,8 @@ class Pipeline:
                     outcome["stages"][name] = "error:" + type(error).__name__ + ":" + str(error)[:160]
                     break
                 outcome["stages"][name] = result.get("status", "pending")
+                if result.get("reason"):
+                    outcome["stages"][name] += ":" + str(result["reason"])[:160]
                 if result.get("status") not in ("done", "inapplicable"):
                     break
         return report
@@ -264,9 +276,10 @@ class Pipeline:
             text = item.get("text") if isinstance(item, dict) else None
             if not isinstance(text, str):
                 continue
+            data = item.get("data") if isinstance(item.get("data"), dict) else {}
             units.append({"unit_id": row["id"], "locator": json.loads(row["locator"]), "locator_text": row["locator"],
                           "text": text, "artifact_sha256": sha(raw), "status": row["status"],
-                          "unit_type": row["unit_type"]})
+                          "unit_type": row["unit_type"], "ocr": "ocr_receipt_id" in data})
         return units
 
     def _headers(self, subject):
@@ -301,9 +314,13 @@ class Pipeline:
                                            timeout=self.extraction_timeout, ocr_output_root=ocr_root,
                                            ocr_tools=self.ocr_tools, tool_signature=self.ocr_tool_signature)
         receipt = Path(result["run_path"]) / "extraction.json"
-        if result["status"] not in ("complete", "partial"):
-            return {"status": "blocked", "reason": "extraction_" + result["status"] + ":" +
-                    ",".join(i.get("code", "?") for i in result.get("issues", []))}
+        codes = [i.get("code", "?") for i in result.get("issues", [])]
+        if result["status"] == "blocked" or (result["status"] == "partial" and not result.get("ocr_receipts")):
+            # Not acceptable yet (no decoder, timeout, or image-only pages with no OCR runtime).
+            # Record a keyed alert so the gap is visible in `records status`; nothing is faked.
+            reason = "extraction_" + result["status"] + ":" + ",".join(codes)
+            self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
+            return {"status": "blocked", "reason": reason}
         enrolled = stage["enrollment"].enroll(original_path=Path(original["storage_path"]), receipt_path=receipt,
                                               receipt_sha256=result["receipt_sha256"])
         accepted = stage["extraction"].accept(enrolled["import_id"])
@@ -400,6 +417,11 @@ class Pipeline:
                               str(self.package.get("schema_version")), tier, model_config=self.model,
                               allowlist=self.allowlist, denylist=self.denylist,
                               event_date=self._event_date(subject), opener=self.opener)
+        ocr_pages = sorted({u["locator"].get("page") for u in units if u["ocr"]} - {None})
+        if ocr_pages:
+            digest["limitations"].append(
+                "Page(s) " + ", ".join(str(p) for p in ocr_pages) +
+                " were read by local OCR and have not been visually reviewed; verify quotes against the page image.")
         redacted, _ = redact_units(text_units, allowlist=self.allowlist, denylist=self.denylist)
         record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener)
         content = {"schema": stage_adapters.SCHEMAS["review"], "subject_sha256": subject,
@@ -570,9 +592,22 @@ def status(root):
         blocked = [dict(row) for row in con.execute(
             "SELECT original_sha256,stage,reason FROM stage_state WHERE status='blocked' ORDER BY original_sha256,stage")]
         runs = [dict(row) for row in con.execute("SELECT run_id,kind,started_at,ended_at,status FROM runs ORDER BY started_at DESC LIMIT 10")]
+        alerts = [dict(row) for row in con.execute("SELECT key,first_seen,last_seen,count,owner,state FROM alerts WHERE state='open' ORDER BY last_seen DESC")]
     return {"root": str(root.path), "ledger": True, "originals": summary["originals"], "stages": summary["stages"],
             "end_to_end_complete": summary["candidate_seven_stage_complete"], "proposals": proposals,
-            "blocked": blocked, "recent_runs": runs}
+            "blocked": blocked, "alerts": alerts, "recent_runs": runs}
+
+
+def local_ocr_tools():
+    """Doctor-resolved local OCR tools and a version signature, or (None, None)."""
+    from .extract import ocr as page_ocr
+    status_ = page_ocr.dependency_status()
+    if not status_.get("ready"):
+        return None, None
+    tools = status_["tools"]
+    signature = re.sub(r"[^\w .+/-]", "", "/".join(
+        str(tools[name].get("version") or name) for name in ("tesseract", "pdftoppm")))[:120]
+    return tools, signature or "local-ocr"
 
 
 def _model_from_env(prefix, env):
@@ -593,18 +628,18 @@ def build_pipeline(args, env=None):
     if second is not None:
         challenge = challenge_mod.ChallengeConfig(second, primary_model_id=model.model_id if model else None,
                                                   fresh_context=env.get("CHALLENGE_FRESH_CONTEXT", "") == "1")
-    ocr_tools = None
+    ocr_tools, ocr_signature = None, None
     if args.ocr:
-        from .extract import ocr as page_ocr
-        status_ = page_ocr.dependency_status()
-        if status_.get("available"):
-            ocr_tools = status_["tools"]
+        ocr_tools, ocr_signature = local_ocr_tools()
+        if ocr_tools is None:
+            print("records run: --ocr requested but tesseract/pdftoppm/pypdf are not all installed; "
+                  "image-only pages will be held", file=sys.stderr)
     event = date.fromisoformat(args.event_date) if getattr(args, "event_date", None) else None
     return Pipeline(args.root, jurisdiction=args.jurisdiction, account=args.account, model=model, challenge=challenge,
                     redaction_allowlist=[x for x in env.get("REDACTION_ALLOWLIST", "").split(",") if x.strip()],
                     redaction_denylist=[x for x in env.get("REDACTION_DENYLIST", "").split(",") if x.strip()],
                     event_date=event, ocr_tools=ocr_tools,
-                    ocr_tool_signature=env.get("OCR_TOOL_SIGNATURE") if ocr_tools else None,
+                    ocr_tool_signature=(env.get("OCR_TOOL_SIGNATURE") or ocr_signature) if ocr_tools else None,
                     extraction_timeout=args.timeout)
 
 
