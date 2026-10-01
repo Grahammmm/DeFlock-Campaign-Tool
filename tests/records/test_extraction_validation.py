@@ -18,6 +18,7 @@ class ExtractionValidationTests(unittest.TestCase):
     bundle = fixture_module.ExtractionLedgerTests.bundle
     enroll = fixture_module.ExtractionLedgerTests.enroll
     rewrite = fixture_module.ExtractionLedgerTests.rewrite
+    ocr_bundle = fixture_module.ExtractionLedgerTests.ocr_bundle
 
     def setUp(self):
         fixture_module.ExtractionLedgerTests.setUp(self)
@@ -267,6 +268,28 @@ class ExtractionValidationTests(unittest.TestCase):
             import_id = con.execute('SELECT id FROM extraction_adapter_imports').fetchone()[0]
         with self.assertRaisesRegex(enrollment.ExtractionBindingError, 'extraction_incomplete'):
             self.validator.evidence(import_id)
+
+    def test_per_page_ocr_import_is_never_accepted(self):
+        source, receipt, result, _ = self.ocr_bundle()
+        enrolled = self.adapter.enroll(original_path=source, receipt_path=receipt,
+                                       receipt_sha256=enrollment.sha(receipt.read_bytes()))
+        self.assertIn('ocr_visual_review_required', enrolled['gaps'])
+        self.install()
+        with self.assertRaises(enrollment.ExtractionBindingError):
+            self.validator.evidence(enrolled['import_id'])
+        with self.store.ledger(self.database, readonly=True) as con:
+            row = con.execute("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'",
+                              (result['original_sha256'],)).fetchone()
+        self.assertEqual(row[0], 'pending')
+
+    def test_ocr_receipt_page_marker_refuses_acceptance_hold(self):
+        self.prepared()
+        receipt = json.loads(self.path.read_text())
+        self.assertFalse(validation.ocr_evidence_present(receipt))
+        page_marked = json.loads(json.dumps(receipt)); page_marked['pages'] = [{'page_no': 1, 'ocr_receipt_id': 'a' * 64}]
+        self.assertTrue(validation.ocr_evidence_present(page_marked))
+        self.assertTrue(validation.ocr_evidence_present(dict(receipt, ocr_receipts=[{'page': 1}])))
+        self.assertTrue(validation.ocr_evidence_present(dict(receipt, ocr_derivative_sha256='b' * 64)))
 
     def test_unknown_complete_parser_fails_closed(self):
         result = self.enroll(self.bundle()); self.install()

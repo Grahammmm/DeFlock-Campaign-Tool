@@ -22,9 +22,9 @@ import tempfile
 import time
 import uuid
 
-VERSION = "local-ocr-2"
+VERSION = "local-ocr-3"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-ARTIFACTS = ("page.pdf", "page.png", "sidecar.txt", "searchable.pdf", "confidence.tsv")
+ARTIFACTS = ("page.pdf", "page.png", "sidecar.txt", "confidence.tsv")
 RECEIPT_KEYS = {"receipt_id", "identity", "source", "locator", "page_count", "status",
                 "blocked_reason", "confidence", "confidence_basis", "visual_check_required",
                 "visual_check_status", "fidelity_status", "review_status", "artifact_sha256",
@@ -32,7 +32,7 @@ RECEIPT_KEYS = {"receipt_id", "identity", "source", "locator", "page_count", "st
 STATES = {"blocked", "skipped_machine_text", "ocr_text_unreviewed", "visual_check_queued"}
 O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-OCR_TOOLS = ("ocrmypdf", "tesseract", "pdftoppm", "gs")
+OCR_TOOLS = ("tesseract", "pdftoppm")
 RASTER_DPI = 300
 MAX_RASTER_PIXELS = 40_000_000
 # Mirrors the intake worker's child bounds (folder.LIMITS memory_bytes/source_bytes).
@@ -336,6 +336,46 @@ def _load_receipt(directory: Path, identity: dict) -> tuple[dict, str, str] | No
     return receipt, receipt_sha, _hash(manifest_bytes)
 
 
+def load_page_receipt(output_root: str | Path, source_sha256: str, page: int,
+                      receipt_id: str) -> dict:
+    """Read-only, verified load of one published page receipt and its OCR text.
+
+    Every artifact hash, the manifest and the receipt bytes are re-verified; receipts of
+    another schema VERSION are rejected. ``sidecar`` is the exact text bytes of the single
+    tesseract run (None when the receipt carries no text).
+    """
+    if (not isinstance(source_sha256, str) or not SHA256.fullmatch(source_sha256)
+            or not isinstance(receipt_id, str) or not SHA256.fullmatch(receipt_id)
+            or type(page) is not int or page < 1):
+        raise ValueError("ocr_receipt_reference_invalid")
+    output = Path(os.path.abspath(output_root))
+    os.close(_managed_directory(output))
+    directory = output / source_sha256 / f"page-{page:06d}" / receipt_id
+    try:
+        raw = json.loads(_read(directory / "receipt.json", 16 * 1024 * 1024))
+    except FileNotFoundError:
+        raise ValueError("ocr_receipt_missing") from None
+    identity = raw.get("identity") if isinstance(raw, dict) else None
+    if (not isinstance(identity, dict) or identity.get("source_sha256") != source_sha256
+            or identity.get("page") != page):
+        raise ValueError("ocr_receipt_identity_mismatch")
+    if identity.get("version") != VERSION:
+        raise ValueError("ocr_receipt_schema_mismatch")
+    loaded = _load_receipt(directory, identity)
+    if loaded is None:
+        raise ValueError("ocr_receipt_missing")
+    receipt, receipt_sha, manifest_sha = loaded
+    if receipt["receipt_id"] != receipt_id:
+        raise ValueError("ocr_receipt_identity_mismatch")
+    sidecar = None
+    if "sidecar.txt" in receipt["artifact_sha256"]:
+        sidecar = _read(directory / "sidecar.txt", 128 * 1024 * 1024)
+        if _hash(sidecar) != receipt["artifact_sha256"]["sidecar.txt"]:
+            raise ValueError("existing_ocr_artifact_mismatch")
+    return {"receipt": receipt, "receipt_sha256": receipt_sha, "manifest_sha256": manifest_sha,
+            "receipt_bytes": _json(receipt), "sidecar": sidecar}
+
+
 def _index(output: Path, receipt: dict, receipt_sha: str, manifest_sha: str) -> None:
     state = receipt["status"]
     if state not in {"blocked", "visual_check_queued"}:
@@ -519,7 +559,7 @@ def extract_image_only_pages(
         directory = os.path.dirname(tool_paths[name])
         if directory not in search:
             search.append(directory)
-    # ocrmypdf locates tesseract and gs itself; put the doctor-resolved copies first.
+    # Children are invoked by absolute path; also put the doctor-resolved directories first.
     child_env = {**os.environ, "PATH": os.pathsep.join(search + [os.environ.get("PATH", "")])}
     raw = _read(Path(intake_root) / "blobs" / source_sha256)
     if _hash(raw) != source_sha256:
@@ -600,18 +640,19 @@ def extract_image_only_pages(
                                       str(temporary / "page")], timeout, child_env)
                         image = temporary / "page.png"
                         artifacts["page.png"] = _hash(_read(image, 128 * 1024 * 1024))
-                        _run(runner, [tool_paths["ocrmypdf"], "--jobs", "1", "--output-type", "pdf",
-                                      "-l", language, "--sidecar", str(temporary / "sidecar.txt"),
-                                      str(page_pdf), str(temporary / "searchable.pdf")], timeout, child_env)
-                        sidecar = _read(temporary / "sidecar.txt", 128 * 1024 * 1024)
-                        searchable = _read(temporary / "searchable.pdf", 128 * 1024 * 1024)
-                        artifacts["sidecar.txt"] = _hash(sidecar)
-                        artifacts["searchable.pdf"] = _hash(searchable)
-                        probe = _run(runner, [tool_paths["tesseract"], str(image), "stdout", "-l",
-                                              language, "tsv"], timeout, child_env)
-                        _write_new(temporary / "confidence.tsv", probe.stdout.encode("utf-8"))
-                        artifacts["confidence.tsv"] = _hash(_read(temporary / "confidence.tsv"))
-                        receipt["confidence"] = _confidence(probe.stdout)
+                        # One tesseract run yields both the text and its word confidences,
+                        # so the receipt's confidence describes exactly the recorded text.
+                        _run(runner, [tool_paths["tesseract"], str(image), str(temporary / "tesseract"),
+                                      "-l", language, "txt", "tsv"], timeout, child_env)
+                        sidecar = _read(temporary / "tesseract.txt", 128 * 1024 * 1024)
+                        tsv = _read(temporary / "tesseract.tsv", 128 * 1024 * 1024)
+                        _write_new(temporary / "sidecar.txt", sidecar)
+                        _write_new(temporary / "confidence.tsv", tsv)
+                        artifacts["sidecar.txt"] = _hash(_read(temporary / "sidecar.txt", 128 * 1024 * 1024))
+                        artifacts["confidence.tsv"] = _hash(_read(temporary / "confidence.tsv", 128 * 1024 * 1024))
+                        if artifacts["sidecar.txt"] != _hash(sidecar) or artifacts["confidence.tsv"] != _hash(tsv):
+                            raise ValueError("ocr_output_copy_mismatch")
+                        receipt["confidence"] = _confidence(tsv.decode("utf-8"))
                         if not sidecar.decode("utf-8").strip():
                             receipt["blocked_reason"] = "no_text_after_ocr"
                         elif receipt["confidence"] is None:

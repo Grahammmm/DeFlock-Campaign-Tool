@@ -101,7 +101,7 @@ separately. A new snapshot must explain changes from its predecessor.
 | Requirement | Used for | Provisioning and proof |
 | --- | --- | --- |
 | Python 3.11+ and pinned parser environment | PDF/workbook/mail/archive extraction and tests | Reuse approved installed or vendored parsers; verify imports in both parent and bounded child workers |
-| OCRmyPDF, Tesseract and Poppler | Local image-only PDF OCR, page rendering and visual recovery | Organizer approves system installation; probe versions and language data, then run a known synthetic scanned page |
+| Tesseract and Poppler | Local per-page OCR of image-only PDF pages (the only OCR path), page rendering and visual recovery | Organizer approves system installation; probe versions and language data, then run a known synthetic scanned page |
 | Private local model endpoint | Semantic catalog and original-level draft digestion | Configure privately; local-only smoke test, bounded requests, schema validation and prompt-injection isolation |
 | Records-mail read access | All-folder export and stable delta intake | Reuse approved credential configuration and UID checkpoints; verify folder-level coverage without displaying credentials |
 | Authorized portal access | Retrieve items mentioned in productions | Respect host approval and egress policy; expired/denied items remain blocked with owner and reason |
@@ -113,7 +113,7 @@ separately. A new snapshot must explain changes from its predecessor.
 On a compatible Debian-based host the proposed system provisioning command is:
 
 ```sh
-apt-get update && apt-get install -y --no-install-recommends ocrmypdf tesseract-ocr poppler-utils
+apt-get update && apt-get install -y --no-install-recommends tesseract-ocr poppler-utils
 ```
 
 This is an administrator action requiring explicit organizer approval. Test
@@ -128,7 +128,7 @@ Do not install global parser packages to work around a missing worker environmen
 2. Run the existing exporter under the single approved job, retaining UIDVALIDITY/UID and every folder's cutoff.
 3. Preserve EML and attachment bytes before advancing the delivery checkpoint; failed imports retain their original receipts.
 4. Inventory permitted portal notices and drop-folder inputs. Retrieve only through authorized paths; never mark a link as acquired bytes.
-5. Detect actual file type and extract bounded units. Run local OCR only where needed; preserve selected page scope, source hash, confidence and errors.
+5. Detect actual file type and extract bounded units. Run local OCR only where needed, and only per page: WP4 extraction sends PDF pages that are not natively `ok` to the per-page OCR helper (`docs/RECORDS-OCR.md`), the single OCR path. There is no whole-document OCR derivative (`ocr.pdf`); page-level receipts keep exact page locators, per-page confidence and per-page errors, and native-text pages keep their original units. Preserve selected page scope, source hash, confidence and errors.
 6. Create/update catalog cards with deterministic validations and locally generated drafts. Reuse unchanged earlier work with provenance.
 7. Run applicable detectors on normalized records and applicable rule versions. Persist zero-hit results and skipped/blocked coverage as well as hits.
 8. Rank new productions, important records, hits and unresolved gaps. Timebox an individual document or join to about 45 minutes and assign an owner for further work.

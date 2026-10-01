@@ -41,9 +41,16 @@ parser metadata, not independent attestation of the executing runtime image.
 Page states are recomputed with the existing route's page-manifest function and
 must match all receipt page fields: method/version, text hash, denominator,
 confidence, visual hold, missing pages and partial/blocked reasons. PDF receipts
-need an explicit page denominator. OCR derivatives are hashed, bound to their
-selected units and compared to the original page denominator; unknown OCR tool
-version and visual-review holds remain explicit gaps. Child blobs are checked
+need an explicit page denominator. Whole-document OCR receipts (`ocr_derivative_*`)
+are rejected; there is no `ocr.pdf`. For per-page OCR, each `ocr_receipts` entry is
+loaded with `extract.ocr.load_page_receipt`, which re-verifies the receipt,
+manifest and artifact hashes; sha256 of its `sidecar.txt` must equal the stored
+unit text bytes. The merged units must equal the untouched native `derived/`
+units with only OCR-text pages replaced, the pre-OCR parser metadata must be
+unchanged, and the page denominator is the original one. Unit provenance lists
+the OCR receipt ids (`ocr_receipt_ids`). `ocr_visual_review_required` is always a
+gap for OCR imports; `ocr_runtime_version_unverified` is added only if a receipt
+lacks tool versions. Child blobs are checked
 against their declared hash/size. The adapter does not enroll those children as
 independent originals or guess their native source relationship.
 
