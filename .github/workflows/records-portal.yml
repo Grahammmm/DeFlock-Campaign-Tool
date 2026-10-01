@@ -29,7 +29,14 @@ jobs:
           python-version: '${{ matrix.python }}'
       - run: python -m pip install -r requirements-records-test.txt
       - name: Synthetic portal and actual ledger contract
-        run: python -B -m unittest discover -s tests -v
+        run: |
+          python -B - <<'PY'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('tests')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped or not result.wasSuccessful():
+              raise SystemExit(1)
+          PY
         env:
           TMPDIR: /var/tmp
           RECORDS_WP1_SOURCE_ROOT: ${{ github.workspace }}/.wp1-dependency

@@ -167,6 +167,21 @@ class PortalTests(unittest.TestCase):
                 self.assertEqual(self.reason(),"login_page")
                 self.assertEqual(self.queue.status()["versions"],0)
 
+    def test_pdf_with_form_markup_is_not_login_page(self):
+        body=b"%PDF-1.7\n1 0 obj <</XFA (<form><script>synthetic</script></form>)>>\n%%EOF"
+        for chunks in ([body],[b"%P",b"DF-1.7 <fo",b"rm><script>x</script>\n%%EOF"]):
+            with self.subTest(chunks=chunks):
+                self.queue.db.execute("UPDATE portal_items SET state='pending',tries=0");self.queue.db.commit()
+                result=self.run_fetch(FakeTransport(Response(200,{"Content-Type":"application/pdf"},chunks)))
+                self.assertEqual(result["received"],1)
+                self.assertNotEqual(self.item()["reason"],"login_page")
+                raw=b"".join(chunks)
+                self.assertEqual(self.item()["current_sha256"],hashlib.sha256(raw).hexdigest())
+
+    def test_non_pdf_prefix_still_sniffed(self):
+        self.run_fetch(FakeTransport(Response(200,{"Content-Type":"application/octet-stream"},[b"%PD",b"F <form>"])))
+        self.assertEqual(self.reason(),"login_page")
+
     def test_permitted_redirect_has_evidence_and_closes(self):
         t=FakeTransport(Response(302,{"Location":"https://objects.example.test/production/a?sig=fictional"}),response())
         self.run_fetch(t)

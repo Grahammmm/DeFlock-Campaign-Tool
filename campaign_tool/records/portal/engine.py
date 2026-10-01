@@ -151,10 +151,14 @@ def _download(queue, item, approval, egress, transport, limits, evidence, wall, 
                         if entry["bytes"]>limits.max_bytes:
                             raise PortalError("size_limit")
                         prefix = (prefix+chunk)[:512]
-                        sniff = (sniff_tail+chunk).lower().replace(b"\x00",b"")
-                        if re.search(br"<(?:!doctype\s+html|html\b|form\b|input\b|script\b)",sniff):
-                            raise PortalError("login_page")
-                        sniff_tail = sniff[-128:]
+                        # PDF (XFA/JavaScript) and ZIP bodies may legitimately contain
+                        # markup bytes; only sniff bodies without a binary signature.
+                        # Any regex match needs >=5 bytes, so the prefix is decided by then.
+                        if not prefix.startswith((b"%PDF-", b"PK\x03\x04")):
+                            sniff = (sniff_tail+chunk).lower().replace(b"\x00",b"")
+                            if re.search(br"<(?:!doctype\s+html|html\b|form\b|input\b|script\b)",sniff):
+                                raise PortalError("login_page")
+                            sniff_tail = sniff[-128:]
                         sha.update(chunk)
                         stream.write(chunk)
                     if mono()>deadline:
