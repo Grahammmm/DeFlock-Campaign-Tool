@@ -39,6 +39,7 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 - Private local document storage and SQLite receipt ledger.
 - A review-gate library binding independent review receipts to finding content.
 - Synthetic policy, search log, agreement, and agency reply fixtures.
+- Offline newsletter drafts (`python3 -m campaign_tool.newsletter`), Legistar meeting import with an ALPR keyword filter (`campaign_tool meetings`, fixture-driven without `--online`), and verified `backup` / `verify` / `restore` of a campaign directory.
 - Portable records-analysis and review skills.
 - Architecture, implementation roadmap, operator checklists, request templates, and contribution guidance.
 
@@ -50,7 +51,7 @@ An offline test suite (synthetic fixtures only, no network) runs in GitHub Actio
 
 ## Cloudflare Workers (tested offline, not deployed)
 
-`workers/` contains the setup wizard, the Access-protected organizer workspace and the public-site Worker described in [docs/WORKERS.md](docs/WORKERS.md): resumable setup with an encrypted one-hour session, a provisioning plan with per-resource receipts and a rollback list (`DRY_RUN=1` records calls without performing them), Access JWT validation, the runner API from [docs/CONTRACTS.md](docs/CONTRACTS.md), approval cards, cron run receipts and inbound-mail preservation. Run `cd workers && npm ci && npm run check`. No campaign has been deployed with it; sending executors are interfaces only.
+`workers/` contains the setup wizard, the Access-protected organizer workspace and the public-site Worker described in [docs/WORKERS.md](docs/WORKERS.md): resumable setup with an encrypted one-hour session, a provisioning plan with per-resource receipts and a rollback list (`DRY_RUN=1` records calls without performing them), Access JWT validation, the runner API from [docs/CONTRACTS.md](docs/CONTRACTS.md), approval cards, cron run receipts, inbound-mail preservation, the review and publication workflow ([docs/PUBLICATION.md](docs/PUBLICATION.md)), Brevo newsletter drafts and sends behind approval cards ([docs/NEWSLETTER.md](docs/NEWSLETTER.md)), manual meetings with comment kits ([docs/MEETINGS.md](docs/MEETINGS.md)) and the D1 export and backup job ([docs/BACKUP.md](docs/BACKUP.md)). Run `cd workers && npm ci && npm run check`. No campaign has been deployed with it; `send_request`, `send_followup`, `post_social` and `pay_fee` executors refuse with stable codes until an outbox or a person completes them.
 
 ## Runner, digest and outbox (tested offline, not deployed)
 
@@ -58,9 +59,9 @@ An offline test suite (synthetic fixtures only, no network) runs in GitHub Actio
 
 ## Planned, not yet implemented
 
-Workspace executors for `send_request`, `send_followup`, `pay_fee`, newsletter and social cards (the outbox journal exists; the Worker-side executors are interfaces); OCR for image-only pages; queue consumers beyond the poll loop; independently reviewed state-law packages (California is drafted, not reviewed); publication/correction workflows beyond the review gate; meeting agenda import; monitored scheduling and cost controls; any production deployment of the Workers or the runner.
+Wiring the engine outbox (`campaign_tool/outbox.py`) into the Worker's `send_request`/`send_followup` executors (today they fail `sender_not_configured` until a `MailSender` is bound); runner handlers for `newsletter_draft` and `backup` (enqueued, answered `blocked`); social posting; OCR for image-only pages; independently reviewed state-law packages (California is drafted, not reviewed); Brevo webhooks and list counts; automatic Legistar polling from the Worker (the CLI import exists); backup encryption, scheduling and hosted restore; monitored scheduling and cost controls; any production deployment of the Workers or the runner.
 
-See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
+See [LAUNCH.md](LAUNCH.md) for the end-to-end picture and the launch gates, plus [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 
 ## Evidence before conclusions
 
@@ -95,17 +96,3 @@ complete campaign platform, automatic intake, or a live deployment is ready.
 ## Engine/campaign split
 
 The next development stage separates a reusable public engine from private campaign configuration and approved public content. See [the staged split plan](docs/SPLIT-PLAN.md). The first extraction is the shared site shell and CSS, with owner approval of original-code rights. See [shell contract and limitations](docs/SITE-SHELL.md) and the [fictional example](examples/fictional-campaign/README.md). Maps, signup, analytics and deployment extraction remain unfinished.
-
-## Records pipeline build and operation
-
-See [the records operating plan](docs/RECORDS-OPERATING-PLAN.md) for the implemented
-and planned stages, required runtime/access, inventory denominators, format
-recovery, review requirements, scheduling, acceptance tests and work order.
-Campaign records and configuration remain outside this public repository.
-
-## Records release identity
-
-`python3 -m campaign_tool.records version --json` reports the exact source build
-and distinguishes candidates from tagged releases. An installed wheel exposes
-`records` and verifies its embedded package manifest. See [WP0 release identity,
-strict public scanning and isolated installation](docs/RECORDS-RELEASE.md).

@@ -77,8 +77,11 @@ follow-up" button that enqueues a `draft_followup` job), Inbox, Records (signed 
 download links served by the Worker; the bucket has no public URL), Findings (review gate
 computed by the `review_blockers` port; review receipts take the reviewer from the Access
 identity), Approvals (Approve / Edit / Reject / Execute; `approved_by` is the Access email),
-Publish (`deploy_site` cards), Subscribers (counts only), Meetings, Settings (secret presence
-only; runner-token rotation shows the new value once and stores its fingerprint).
+Publish (`deploy_site` cards, publications, manifest rebuild), Subscribers (counts, newsletter
+drafts with Approve & send, send receipts), Meetings (manual add, comment-kit generator),
+Settings (non-secret Brevo settings and the test-signup checklist, backup job button, secret
+presence only; runner-token rotation shows the new value once and stores its fingerprint).
+`GET /api/export.json` streams the D1 export ([BACKUP.md](BACKUP.md)).
 
 Runner API, exactly per CONTRACTS.md: `GET /api/runner/jobs?lease=300` (single
 `UPDATE ... RETURNING` lease, 204 when nothing is runnable; expired leases requeue until
@@ -100,10 +103,16 @@ originals bucket, inserts one `correspondence` row per Message-ID and enqueues
 `classify_mail`. `POST /api/deploy-site` executes an approved `deploy_site` card, which flips
 the `site_version` setting (D1) and the KV key the public-site Worker reads.
 
-Executors: only `deploy_site` is implemented. `send_request`, `send_followup`, `pay_fee`,
-`publish_finding`, `send_newsletter` and `post_social` are typed interfaces
-(`ActionExecutor`); approving such a card records the decision and the card stays
-`approved` until an executor exists. No code path sends without an approved row.
+Executors (`src/executors/`): every card kind resolves to a deterministic outcome.
+`publish_finding` re-checks the review gate and content hash, writes the publication,
+enqueues `build_site` with the full content manifest and proposes `deploy_site`
+([PUBLICATION.md](PUBLICATION.md)); `deploy_site` flips the served version;
+`send_newsletter` creates and sends one Brevo campaign ([NEWSLETTER.md](NEWSLETTER.md));
+`send_request` and `send_followup` hand the draft to the `MailSender` port, whose default
+`NotConfiguredSender` fails the card with `sender_not_configured`; `post_social` fails with
+`not_implemented` and `pay_fee` with `manual_only` (fees are paid by a person and recorded on
+the card). Execution is idempotent: an executed card returns its receipt, a failed one records
+`<code>: <message>` and an incident. No code path sends without an approved row.
 
 ## Tests
 
@@ -111,8 +120,11 @@ Executors: only `deploy_site` is implemented. `send_request`, `send_followup`, `
 selection, request draft parity, review parity fixture, ids); workspace (Access JWT
 valid/invalid/expired/wrong audience with a generated RSA key, no trust in the email header,
 runner token, lease atomicity and requeue, job results, proposal idempotency, originals hash
-mismatch, receipts, correspondence dedupe, approvals requiring identity, `deploy_site`
-execution, inbound mail dedupe, cron job creation); wizard (session encrypt/decrypt/tamper/
+mismatch, receipts, correspondence dedupe, approvals requiring identity, every executor with
+fakes (publish gate refusals, Brevo create+send, not-configured sender, manual-only fee,
+idempotent re-execution), the review/propose/correct/withdraw HTTP flow, newsletter draft
+proposals, meetings and comment kits, `/api/export.json` and `/api/backup`, inbound mail
+dedupe, cron job creation including the monthly newsletter draft); wizard (session encrypt/decrypt/tamper/
 expiry, location resolve, default selection, plan lists every resource, DRY_RUN receipts and
 rollback, stop on failure with rollback, multipart upload and secret wiring, full HTTP flow
 with no token persisted after handoff); public site.
@@ -122,7 +134,8 @@ The review parity fixture `tests/fixtures/review-cases.json` is checked by both
 
 ## Not done here
 
-Mailbox/MuckRock/Brevo executors in the Worker (the engine-side outbox journal exists, see
-[OUTBOX.md](OUTBOX.md)), queue consumers beyond the runner's poll loop, Access group
-management beyond the organizer policy, and any production deployment. The runner container
-and the site build job live in `runner/` ([RUNNER.md](RUNNER.md)). See [ROADMAP.md](ROADMAP.md).
+Binding the engine-side outbox ([OUTBOX.md](OUTBOX.md)) to the Worker's `MailSender` port, runner
+handlers for `newsletter_draft` and `backup` (the runner in `runner/` handles classify, extract,
+digest, follow-up drafts and site builds; see [RUNNER.md](RUNNER.md)), social posting, Brevo
+webhooks, queue consumers beyond the poll loop, Access group management beyond the organizer
+policy, and any production deployment. See [ROADMAP.md](ROADMAP.md).

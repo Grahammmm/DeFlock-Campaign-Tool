@@ -1,25 +1,18 @@
 // Approval cards (docs/CONTRACTS.md "Approval card"). Nothing executes without a row in
 // external_action with state = approved and an approved_by identity from an Access JWT.
+//
+// Execution state machine: approved -> executing -> executed | failed. The claim
+// (approved -> executing) is a single conditional UPDATE, so two concurrent executes cannot
+// both run the executor. Executing an already `executed` card is a no-op that returns the
+// existing provider receipt; a `failed` card must be proposed again.
 import { nowIso } from "@deflock/shared/ids";
 import type { AccessIdentity } from "./auth.ts";
 import type { ActionKind, ExternalActionRow, Repo } from "./db.ts";
 import type { Env } from "./env.ts";
+import { defaultExecutors, ExecutorFailure, type ActionExecutor } from "./executors/index.ts";
 
-export interface ExecutionResult {
-  provider_receipt: string;
-}
-
-/** An executor performs one approved external effect and returns a provider receipt. */
-export interface ActionExecutor {
-  readonly kind: ActionKind;
-  execute(action: ExternalActionRow, proposal: Record<string, unknown>, ctx: ExecutorContext): Promise<ExecutionResult>;
-}
-
-export interface ExecutorContext {
-  env: Env;
-  repo: Repo;
-  identity: AccessIdentity;
-}
+export { defaultExecutors, deploySiteExecutor, ExecutorFailure } from "./executors/index.ts";
+export type { ActionExecutor, ExecutionResult, ExecutorContext } from "./executors/index.ts";
 
 export class ApprovalError extends Error {
   constructor(
@@ -28,33 +21,6 @@ export class ApprovalError extends Error {
   ) {
     super(message);
   }
-}
-
-/**
- * deploy_site: flips the `site_version` setting that the public-site Worker serves. The
- * proposal carries `{ "site_version": "<version>" }`. Site files must already be in the
- * public R2 bucket under sites/<version>/ (written by an approved build_site job).
- */
-export const deploySiteExecutor: ActionExecutor = {
-  kind: "deploy_site",
-  async execute(action, proposal, ctx) {
-    const version = proposal.site_version;
-    if (typeof version !== "string" || !/^[a-z0-9._-]{1,64}$/.test(version)) throw new ApprovalError("proposal.site_version invalid", 400);
-    const previous = await ctx.repo.setting<string>("site_version");
-    await ctx.repo.putSetting("site_version", version);
-    await ctx.repo.putSetting("site_version_previous", previous ?? null);
-    await ctx.env.CACHE.put("site_version", version);
-    return { provider_receipt: JSON.stringify({ site_version: version, previous, action_id: action.action_id, at: nowIso() }) };
-  },
-};
-
-/**
- * Registry. send_request / send_followup / send_newsletter / pay_fee / publish_finding /
- * post_social are interfaces only in this phase: approving them records the approval and
- * they stay `approved` until an executor (mailbox, MuckRock, Brevo) is registered.
- */
-export function defaultExecutors(): Map<ActionKind, ActionExecutor> {
-  return new Map<ActionKind, ActionExecutor>([[deploySiteExecutor.kind, deploySiteExecutor]]);
 }
 
 export async function approveAction(repo: Repo, actionId: string, identity: AccessIdentity): Promise<ExternalActionRow> {
@@ -86,26 +52,39 @@ export async function editAction(repo: Repo, actionId: string, identity: AccessI
   return (await repo.action(actionId))!;
 }
 
+function failureText(e: unknown): string {
+  if (e instanceof ExecutorFailure) return e.code + ": " + e.message;
+  const msg = String((e as Error)?.message ?? e);
+  return "error: " + msg;
+}
+
 export async function executeAction(
   repo: Repo,
   env: Env,
   actionId: string,
   identity: AccessIdentity,
-  executors: Map<ActionKind, ActionExecutor> = defaultExecutors(),
+  executors: Map<ActionKind, ActionExecutor> = defaultExecutors(env),
 ): Promise<ExternalActionRow> {
+  if (!identity?.email) throw new ApprovalError("execution requires an authenticated identity", 401);
   const action = await repo.action(actionId);
   if (!action) throw new ApprovalError("unknown action", 404);
-  if (action.state !== "approved" || !action.approved_by) throw new ApprovalError("only approved actions execute");
+  if (action.state === "executed") return action; // idempotent: the receipt already exists
+  if (action.state !== "approved" || !action.approved_by) throw new ApprovalError(`only approved actions execute (action is ${action.state})`);
   const executor = executors.get(action.kind);
   if (!executor) throw new ApprovalError(`no executor registered for ${action.kind}; the action stays approved`, 501);
   const claimed = await repo.claimForExecution(actionId);
-  if (!claimed) throw new ApprovalError("action was claimed by another execution");
+  if (!claimed) {
+    const now = await repo.action(actionId);
+    if (now?.state === "executed") return now;
+    throw new ApprovalError("action was claimed by another execution");
+  }
   try {
     const result = await executor.execute(claimed, JSON.parse(claimed.proposal_json) as Record<string, unknown>, { env, repo, identity });
     await repo.updateAction(actionId, { state: "executed", executed_at: nowIso(), provider_receipt: result.provider_receipt, error: null });
   } catch (e) {
-    await repo.updateAction(actionId, { state: "failed", error: String((e as Error).message ?? e) });
-    await repo.raiseIncident("action:" + actionId, "warning", `execution failed for ${action.kind}: ${(e as Error).message}`);
+    const text = failureText(e);
+    await repo.updateAction(actionId, { state: "failed", error: text });
+    await repo.raiseIncident("action:" + actionId, "warning", `execution failed for ${action.kind}: ${text}`);
   }
   return (await repo.action(actionId))!;
 }
