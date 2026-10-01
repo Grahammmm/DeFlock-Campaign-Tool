@@ -421,6 +421,36 @@ def _inputs(states, stage, subject):
     return result
 
 
+def recover_abandoned_leases(database, *, owner, reason="runner_lock_recovered"):
+    """Expire every live lease held by ``owner`` and return its stages to pending.
+
+    Only a caller that has proven no other process of that owner is alive (for
+    example by holding the root's exclusive writer lock) may call this: a crash
+    between claim and promote otherwise leaves the stage ``in_progress`` until the
+    lease TTL passes and the next run fails ``lease_run_mismatch``. Nothing
+    accepted is touched; ``done``, ``inapplicable`` and ``blocked`` stages are
+    not leases. Returns the recovered ``(subject, stage)`` pairs.
+    """
+    _require(isinstance(owner, str) and owner.strip(), "owner_required")
+    recovered = []
+    with _transaction(database) as (c, writer):
+        now = datetime.now(timezone.utc)
+        rows = c.execute("SELECT item_key,stage,leased_at FROM work_leases WHERE owner=? AND expires_at>?",
+                         (owner, now.isoformat())).fetchall()
+        for lease in rows:
+            if not lease["item_key"].startswith("stage:"):
+                continue
+            subject = lease["item_key"][len("stage:"):-len(lease["stage"]) - 1]
+            c.execute("UPDATE work_leases SET expires_at=?,last_error=? WHERE item_key=?",
+                      (now.isoformat(), reason, lease["item_key"]))
+            state = c.execute("SELECT status,owner,run_id FROM stage_state WHERE original_sha256=? AND stage=?",
+                              (subject, lease["stage"])).fetchone()
+            if state is not None and state["status"] == "in_progress":
+                _change(c, writer, subject, lease["stage"], "pending", None, owner, state["run_id"], reason)
+            recovered.append((subject, lease["stage"]))
+    return recovered
+
+
 def claim(runner, subject, stage, *, ttl_seconds=300, supersedes=None):
     runner = _runner(runner)
     owner, run_id, database = runner.owner, runner.run_id, runner.database

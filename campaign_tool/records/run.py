@@ -8,7 +8,9 @@ are separate commands (``records approve`` / ``records publish``) so that the
 owner's decision stays outside the automated path.
 """
 import argparse
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -60,6 +62,25 @@ class RunError(RuntimeError):
     pass
 
 
+@contextmanager
+def root_lock(root):
+    """Exclusive, non-blocking writer lock on ``<root>/run.lock``: one intake owner per root.
+
+    A second ``records run`` on the same root fails at once with ``root_locked``
+    instead of racing the first one for stage leases.
+    """
+    path = Path(root) / "run.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RunError("root_locked") from None
+        yield
+    finally:
+        os.close(fd)
+
+
 class Root:
     """Private records root layout. Every directory is owner-only."""
 
@@ -77,18 +98,21 @@ class Root:
         os.chmod(self.path, 0o700)
         for name in self.DIRS:
             (self.path / name).mkdir(mode=0o700, exist_ok=True)
-        if not self.ledger.exists():
-            store.initialize(self.ledger)
-        if not self.intake_db.exists():
-            con = sqlite3.connect(self.intake_db)
-            try:
-                con.executescript(intake_folder.SCHEMA)
-                con.execute("INSERT INTO runs VALUES(?,?,?,?,?,?)",
-                            ("baseline", intake_folder.now(), intake_folder.now(), "inventory", "complete", "{}"))
-                con.execute("INSERT INTO meta VALUES('inventory_run','baseline')")
-                con.commit()
-            finally:
-                con.close()
+        # First-run initialisation happens under the root lock so two simultaneous
+        # first runs cannot race the ledger's atomic link-into-place.
+        with root_lock(self.path):
+            if not self.ledger.exists():
+                store.initialize(self.ledger)
+            if not self.intake_db.exists():
+                con = sqlite3.connect(self.intake_db)
+                try:
+                    con.executescript(intake_folder.SCHEMA)
+                    con.execute("INSERT INTO runs VALUES(?,?,?,?,?,?)",
+                                ("baseline", intake_folder.now(), intake_folder.now(), "inventory", "complete", "{}"))
+                    con.execute("INSERT INTO meta VALUES('inventory_run','baseline')")
+                    con.commit()
+                finally:
+                    con.close()
             os.chmod(self.intake_db, 0o600)
         return self
 
@@ -143,7 +167,7 @@ class Pipeline:
         backend = CanonicalMailBackend(self.root.sub("mail"), self.root.intake, self.root.ledger)
         identity = self._identity()
         backend.start_run(identity)
-        preserved, failures = [], []
+        preserved, replayed, failures = [], [], []
         try:
             for path in files:
                 raw = path.read_bytes()
@@ -151,18 +175,20 @@ class Pipeline:
                 try:
                     receipt = eml_export.export_message(raw, mail_root=self.root.sub("mail"), account=self.account,
                                                         mailbox="inbox", uidvalidity=1, uid=uid)
+                    seen = self._query("SELECT count(*) AS n FROM mail_messages WHERE account=? AND folder='inbox' "
+                                       "AND uidvalidity=1 AND uid=?", (self.account, uid))[0]["n"]
                     result = backend.preserve(receipt, self.account, Folder("inbox", 1), uid)
-                    preserved.append({"file": path.name, "eml_sha256": result.eml_sha256,
-                                      "documents": list(result.documents)})
+                    entry = {"file": path.name, "eml_sha256": result.eml_sha256, "documents": list(result.documents)}
+                    (replayed if seen else preserved).append(entry)
                 except Exception as error:  # one bad message never stops the run
                     failures.append({"file": path.name, "error": type(error).__name__, "detail": str(error)[:200]})
             status = "slice_completed" if not failures else "completed_with_gaps"
             backend.finish_run(identity, status, {"messages": len(files), "preserved": len(preserved),
-                                                 "failures": len(failures)})
+                                                 "replayed": len(replayed), "failures": len(failures)})
         except BaseException:
             backend.finish_run(identity, "failed", {"messages": len(files), "preserved": len(preserved)})
             raise
-        return {"messages": len(files), "preserved": preserved, "failures": failures}
+        return {"messages": len(files), "preserved": preserved, "replayed": replayed, "failures": failures}
 
     def ingest_mailbox(self, mail_config, *, client_factory=None):
         """Fetch new messages over IMAP (owner-only config file) and preserve them.
@@ -587,15 +613,35 @@ class Pipeline:
         return proposal_id
 
     # ----- whole run -------------------------------------------------------------------
+    def recover(self):
+        """Under the root lock: finalise runs a dead process left open and free their leases."""
+        stamp = now()
+        with store.ledger(self.root.ledger) as con:
+            dead = [row["run_id"] for row in con.execute(
+                "SELECT run_id FROM runs WHERE kind='stage-runner' AND status='running' AND ended_at IS NULL")]
+            for run_id in dead:
+                con.execute("UPDATE runs SET status='interrupted',ended_at=?,summary=? WHERE run_id=?",
+                            (stamp, json.dumps({"interrupted_by": self.run_id}), run_id))
+            con.commit()
+        leases = stages.recover_abandoned_leases(self.root.ledger, owner=OWNER)
+        for subject, stage in leases:
+            self._alert("run:lease_recovered:" + subject + ":" + stage, owner="runtime")
+        return {"interrupted_runs": dead, "recovered_leases": [list(pair) for pair in leases]}
+
     def run(self, inbox=None, mail_config=None, *, client_factory=None):
+        with root_lock(self.root.path):
+            return self._run_locked(inbox, mail_config, client_factory=client_factory)
+
+    def _run_locked(self, inbox, mail_config, *, client_factory=None):
         started = now()
-        intake = self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "failures": []}
+        recovery = self.recover()
+        intake = self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
         summary = stages.counts(self.root.ledger)
         report = {"schema": "records-run-report-v1", "run_id": self.run_id, "started_at": started, "ended_at": now(),
                   "engine": ENGINE, "version": __version__, "config_sha256": self.config_sha256,
-                  "intake": intake, "mailbox": mailbox, "subjects": progress, "counts": summary["stages"],
+                  "recovery": recovery, "intake": intake, "mailbox": mailbox, "subjects": progress, "counts": summary["stages"],
                   "originals": summary["originals"], "end_to_end_complete": summary["candidate_seven_stage_complete"],
                   "proposals_awaiting_owner": len(self._query("SELECT id FROM proposals WHERE owner_approval='none'")),
                   "model_id": self.model.model_id if self.model else None,
@@ -694,7 +740,11 @@ def main(argv=None):
         print(json.dumps(report, sort_keys=True))
     else:
         print(f"run {report['run_id']}: {report['originals']} originals; intake {report['intake']['messages']} messages, "
-              f"{len(report['intake']['preserved'])} preserved, {len(report['intake']['failures'])} failed")
+              f"{len(report['intake']['preserved'])} preserved, {len(report['intake'].get('replayed', []))} replayed, "
+              f"{len(report['intake']['failures'])} failed")
+        if report["recovery"]["interrupted_runs"] or report["recovery"]["recovered_leases"]:
+            print(f"  recovered: {len(report['recovery']['interrupted_runs'])} interrupted run(s), "
+                  f"{len(report['recovery']['recovered_leases'])} abandoned lease(s)")
         if report.get("mailbox"):
             m = report["mailbox"]
             print(f"  mailbox {m['account']}: {len(m['folders'])} folders, {m['preserved']} preserved, "
