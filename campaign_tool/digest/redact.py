@@ -15,9 +15,9 @@ against, so patterns are deliberately broad.
 Limits (also stated in docs/RUNNER.md): names are matched only after a rank
 title or a name-like label (Name:, Requester:, Sincerely, ...) and from the
 caller's denylist. A bare personal name in running text is not recognised by
-any regex, so the ``redacted_cloud`` tier is an explicit opt-in and the
-denylist should carry every name the organizers know of; ``strict_local``
-is the default.
+any regex, so the denylist should carry every name the organizers know of
+(requesters, clerks, officers named in earlier records); ``strict_local``
+is the switch for campaigns that want nothing to leave the box.
 """
 import re
 from dataclasses import dataclass, field
