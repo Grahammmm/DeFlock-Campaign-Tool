@@ -1,5 +1,6 @@
 """Installed campaign resources remain byte-identical to reviewed repository inputs."""
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,50 @@ class CampaignResourceTests(unittest.TestCase):
     def test_bundled_inputs_match_canonical_bytes(self):
         self.assertEqual(sync(ROOT), [])
         self.assertEqual(len(RESOURCES), 5)
+
+    def test_packaging_declares_exact_resource_paths(self):
+        config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        declared = config["tool"]["setuptools"]["package-data"]["campaign_tool"]
+        resources = [name for name in declared if name.startswith("_resources/")]
+        self.assertCountEqual(resources, ["_resources/" + name for name in RESOURCES])
+        self.assertEqual(len(resources), 5)
+
+    def make_synthetic_bundle(self, root):
+        for name in RESOURCES:
+            source = root / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"synthetic public fixture")
+        self.assertEqual(sync(root, write=True), [])
+
+    def test_unexpected_resources_block_check_and_write(self):
+        for extra in ("data/agencies/extra.json", "templates/private.md", "unexpected.bin"):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                self.make_synthetic_bundle(root)
+                bundle = root / "campaign_tool" / "_resources"
+                unknown = bundle / extra
+                unknown.parent.mkdir(parents=True, exist_ok=True)
+                unknown.write_bytes(b"synthetic unapproved fixture")
+                (root / RESOURCES[0]).write_bytes(b"changed canonical fixture")
+                self.assertIn("unexpected resource: " + extra, sync(root))
+                self.assertIn("unexpected resource: " + extra, sync(root, write=True))
+                self.assertEqual((bundle / RESOURCES[0]).read_bytes(), b"synthetic public fixture")
+                self.assertEqual(unknown.read_bytes(), b"synthetic unapproved fixture")
+
+    def test_unexpected_empty_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.make_synthetic_bundle(root)
+            (root / "campaign_tool" / "_resources" / "unapproved").mkdir()
+            self.assertIn("unexpected resource: unapproved", sync(root))
+
+    def test_unexpected_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.make_synthetic_bundle(root)
+            (root / "campaign_tool" / "_resources" / "unapproved").symlink_to(root / RESOURCES[0])
+            with self.assertRaisesRegex(ValueError, "symlink resource path"):
+                sync(root, write=True)
 
     def test_runtime_paths_are_inside_package(self):
         package = ROOT / "campaign_tool"
