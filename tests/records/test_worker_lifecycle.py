@@ -1,6 +1,7 @@
 """Bounded Linux process tests; synthetic workers only, no provider calls."""
 import json
 import os
+import select
 from pathlib import Path
 import signal
 import socket
@@ -17,6 +18,26 @@ MODULE = "campaign_tool.records.worker_lifecycle"
 READY_WORKER = "import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(30)"
 IGNORE_WORKER = ("import pathlib,sys,time,signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
                  "pathlib.Path(sys.argv[1]).touch(); time.sleep(30)")
+
+
+CHILD_PROBE = """
+import json
+
+def owned_child_probe():
+    marker = pathlib.Path(sys.argv[1])
+    fields = pathlib.Path('/proc/self/stat').read_bytes().rsplit(b')', 1)[1].split()
+    identity = {'pid': os.getpid(), 'start': int(fields[19]), 'uid': os.getuid()}
+    heartbeat = marker.with_suffix('.heartbeat')
+    heartbeat.write_text('0')
+    temporary = marker.with_suffix('.identity-pending')
+    temporary.write_text(json.dumps(identity))
+    temporary.replace(marker)
+    count = 1
+    while True:
+        heartbeat.write_text(str(count))
+        count += 1
+        time.sleep(.01)
+"""
 
 
 @unittest.skipUnless(sys.platform == "linux", "Linux ownership primitives required")
@@ -97,6 +118,61 @@ class WorkerLifecycleTests(unittest.TestCase):
         change(value)
         path.write_text(json.dumps(value))
 
+    @staticmethod
+    def child_identity(pid):
+        try:
+            fields = Path('/proc', str(pid), 'stat').read_bytes().rsplit(b')', 1)[1].split()
+            uid_line = next(line for line in Path('/proc', str(pid), 'status').read_bytes().splitlines()
+                            if line.startswith(b'Uid:'))
+            return {'pid': pid, 'start': int(fields[19]), 'uid': int(uid_line.split()[1]),
+                    'state': fields[0].decode('ascii'), 'parent': int(fields[1])}
+        except FileNotFoundError:
+            return None
+
+    def pin_child(self, process):
+        def published():
+            try:
+                value = json.loads(self.marker.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                return False
+            return (isinstance(value, dict) and set(value) == {'pid', 'start', 'uid'}
+                    and all(type(item) is int for item in value.values())
+                    and value['pid'] > 1 and value['start'] > 0 and value['uid'] == os.getuid())
+        self.wait_for(lambda: published() or process.poll() is not None)
+        self.assertIsNone(process.poll(), 'Supervisor exited before identity publication')
+        self.assertTrue(published(), 'Complete identity required, not marker existence')
+        expected = json.loads(self.marker.read_text())
+        before = self.child_identity(expected['pid'])
+        self.assertIsNotNone(before, 'Original descendant must be live when pinned')
+        self.assertEqual({key: before[key] for key in expected}, expected)
+        fd = os.pidfd_open(expected['pid'])
+        self.addCleanup(os.close, fd)
+        after_open = self.child_identity(expected['pid'])
+        self.assertIsNotNone(after_open)
+        self.assertEqual({key: after_open[key] for key in expected}, expected)
+        self.assertFalse(select.select([fd], [], [], 0)[0], 'Pin a live original, not a stale PID')
+        return {'expected': expected, 'before': before, 'pidfd': fd,
+                'heartbeat': self.marker.with_suffix('.heartbeat')}
+
+    def assert_child_quiescent(self, proof):
+        expected = proof['expected']
+        after = self.child_identity(expected['pid'])
+        first = proof['heartbeat'].read_bytes()
+        time.sleep(.1)
+        last = proof['heartbeat'].read_bytes()
+        exited = bool(select.select([proof['pidfd']], [], [], 0)[0])
+        same = after is not None and all(after[key] == expected[key] for key in expected)
+        live_original = same and after['state'] not in {'Z', 'X'}
+        evidence = {'schema': 'synthetic-descendant-quiescence-v1', 'case': self._testMethodName,
+                    'expected': expected, 'before': proof['before'], 'after': after,
+                    'pidfd_exited': exited, 'original_live': live_original,
+                    'heartbeat_unchanged': first == last}
+        # Fixed synthetic identity/liveness evidence, never command/environment text.
+        print(json.dumps(evidence, sort_keys=True), flush=True)
+        self.assertTrue(exited, 'Original descendant pidfd must acknowledge exit')
+        self.assertFalse(live_original, 'A surviving owned descendant is never ignored')
+        self.assertEqual(first, last, 'An owned descendant must stop writing after ACK')
+
     def test_success(self):
         result = self.finish(self.start("pass"), "completed")
         self.assertEqual(result["worker_exit"], 0)
@@ -156,63 +232,82 @@ class WorkerLifecycleTests(unittest.TestCase):
                 self.assertTrue(self.finish(process, "cancelled")["escalated"])
 
     def test_leader_exit_with_daemonized_descendant(self):
-        code = """
+        code = CHILD_PROBE + """
 import os,pathlib,signal,sys,time
 pid = os.fork()
 if pid:
-    while not pathlib.Path(sys.argv[1]).exists(): time.sleep(.005)
+    # Fence leader exit until the test has pinned the live daemon identity.
+    while not pathlib.Path(sys.argv[1]).with_suffix('.release').exists(): time.sleep(.005)
     os._exit(0)
 os.setsid()
 pid = os.fork()
 if pid: os._exit(0)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
-time.sleep(30)
+owned_child_probe()
 """
-        result = self.finish(self.start(code), "completed")
+        process = self.start(code, wall=5)
+        proof = self.pin_child(process)
+        self.marker.with_suffix('.release').touch()
+        result = self.finish(process, "completed")
         self.assertTrue(result["escalated"])
-        self.assertFalse(Path("/proc", self.marker.read_text()).exists())
+        self.assert_child_quiescent(proof)
 
     def test_nested_descendants_cancel(self):
-        code = """
+        code = CHILD_PROBE + """
 import os,pathlib,signal,sys,time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if os.fork() == 0:
     os.setsid()
     if os.fork() == 0:
-        pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
+        owned_child_probe()
 time.sleep(30)
 """
         process = self.start(code, wall=5)
-        self.ready(process)
-        child_pid = self.marker.read_text()
+        proof = self.pin_child(process)
         code, result = self.stop()
         self.assertEqual(code, 0)
         self.assertTrue(result["quiescent"])
         self.finish(process, "cancelled")
-        self.assertFalse(Path("/proc", child_pid).exists())
+        self.assert_child_quiescent(proof)
 
     def test_thread_fork_descendant(self):
-        code = """
+        code = CHILD_PROBE + """
 import os,pathlib,signal,sys,threading,time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 def spawn():
     if os.fork() == 0:
         os.setsid()
-        pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
-        time.sleep(30)
-        os._exit(0)
+        owned_child_probe()
 thread = threading.Thread(target=spawn)
 thread.start()
 thread.join()
 time.sleep(30)
 """
         process = self.start(code, wall=5)
-        self.ready(process)
-        child_pid = self.marker.read_text()
+        proof = self.pin_child(process)
         self.assertEqual(self.stop()[0], 0)
         self.finish(process, "cancelled")
-        self.assertFalse(Path("/proc", child_pid).exists())
+        self.assert_child_quiescent(proof)
+
+    def test_partial_identity_wait_and_live_descendant_rejected(self):
+        code = CHILD_PROBE + """
+import os,pathlib,signal,sys,time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if os.fork() == 0:
+    os.setsid()
+    # Regression for the old file-exists/PID-read readiness window.
+    pathlib.Path(sys.argv[1]).write_text('')
+    time.sleep(.15)
+    owned_child_probe()
+time.sleep(30)
+"""
+        process = self.start(code, wall=5)
+        proof = self.pin_child(process)
+        with self.assertRaises(AssertionError):
+            self.assert_child_quiescent(proof)
+        self.assertEqual(self.stop()[0], 0)
+        self.finish(process, "cancelled")
+        self.assert_child_quiescent(proof)
 
     def test_private_modes(self):
         process = self.start(READY_WORKER, wall=5)

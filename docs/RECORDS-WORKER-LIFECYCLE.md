@@ -155,3 +155,28 @@ mail, credentials, models or provider calls are needed.
 
 Independent exact-head/tree review and remote CI are separate acceptance gates.
 No merge or service activation is authorized by passing local tests.
+
+## Identity-bound synthetic acceptance update
+
+A historical hosted CI run failed the numeric `/proc/PID` absence assertion for
+thread-forked descendants. Its log did not capture the child PID/start/UID or
+liveness, so its exact cause remains unresolved; local historical passes do not
+override that failure. A controlled synthetic reproduction demonstrated that
+marker existence before PID bytes were written let an empty PID string check
+`/proc` itself, failing despite an exited original pidfd and stopped heartbeat.
+This establishes a test failure path, not a claim to have reconstructed that
+particular hosted run.
+
+The revised daemonized, nested and thread-fork tests atomically publish a full
+PID/start/UID identity, pin the live original with a pidfd and recheck identity
+around opening it, and require pidfd exit plus cessation of its synthetic writer
+heartbeat after the live ACK. Post-cancel proc identity/state/parent is recorded
+as fixed synthetic metadata. A recycled PID is not the original; an original
+live process or continuing writer still fails. An explicit negative test proves
+that the liveness guard rejects a surviving owned child and waits for complete
+identity rather than accepting an empty readiness marker. There is no change to
+the lifecycle engine or its cleanup/quiescence contract.
+
+Supervisor SIGKILL/crash containment remains a separate P1 deployment HOLD.
+Neither this stronger test nor its passing receipt makes exec-only deployment
+independently stoppable; a reviewed per-job runtime kill domain is still needed.
