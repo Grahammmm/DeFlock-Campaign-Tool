@@ -35,7 +35,6 @@ jobs:
             printf 'RECORDS_WP1_SOURCE_ROOT=%s\n' "$GITHUB_WORKSPACE/.wp1-dependency" >> "$GITHUB_ENV"
           fi
       - name: Required synthetic integration against in-tree or pinned ledger
-        env:
         run: |
           python -B - <<'PY'
           import os, pathlib, unittest
