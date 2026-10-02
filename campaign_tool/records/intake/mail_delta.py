@@ -179,6 +179,50 @@ def stage_source(item, root, out):
         raise
 
 
+def mime_content_type(part):
+    """Validate classification headers; an absent header keeps the MIME default."""
+    headers = part.get_all("Content-Type", [])
+    require(len(headers) <= 1 and not any(header.defects for header in headers),
+            "invalid_mime_content_type")
+    return part.get_content_type()
+
+
+def related_root(part, children):
+    """Resolve only immediate children; never guess around an invalid start."""
+    require(bool(children) and not part.defects, "invalid_related_container")
+    headers = part.get_all("Content-Type", [])
+    require(len(headers) == 1 and not headers[0].defects,
+            "invalid_related_container")
+    ids = {}
+    for index, child in enumerate(children, 1):
+        values = child.get_all("Content-ID", [])
+        require(len(values) <= 1, "ambiguous_related_content_id")
+        if not values:
+            continue
+        cid = str(values[0]).strip()
+        require(re.fullmatch(r"<[^<>\s]+>", cid) is not None,
+                "invalid_related_content_id")
+        require(cid not in ids, "ambiguous_related_content_id")
+        ids[cid] = index
+    start = part.get_param("start")
+    root = 1
+    if start is not None:
+        require(isinstance(start, str) and
+                re.fullmatch(r"<[^<>\s]+>", start) is not None,
+                "invalid_related_start")
+        require(start in ids, "missing_related_root")
+        root = ids[start]
+    root_type = mime_content_type(children[root - 1])
+    declared_type = part.get_param("type")
+    # Some exporters omit type. Preserve that compatibility, but never ignore
+    # an explicit declaration that contradicts the selected root.
+    require(declared_type is None or
+            (isinstance(declared_type, str) and
+             declared_type.lower() == root_type),
+            "related_root_type_mismatch")
+    return root
+
+
 def mime_candidates(eml_path):
     try:
         with folder.secure_open(eml_path) as source:
@@ -186,30 +230,54 @@ def mime_candidates(eml_path):
     except (OSError, ValueError, RecursionError):
         raise Rejected("invalid_eml") from None
     candidates = []
-    stack = [(message, "1", None, 1)]
+    stack = [(message, "1", True)]
     visited = 0
     while stack:
-        part, locator, parent_type, child_index = stack.pop()
+        part, locator, body_allowed = stack.pop()
         visited += 1
         require(visited <= MAX_MIME_PARTS, "mime_part_limit")
         walk_index = visited - 1  # Exporter enumerates every msg.walk() node from zero.
-        if part.get_content_type() == "message/rfc822":
+        content_type = mime_content_type(part)
+        if content_type == "message/rfc822":
             raise Rejected("unsupported_rfc822_part")
+        if content_type.startswith("multipart/"):
+            dispositions = part.get_all("Content-Disposition", [])
+            require(len(dispositions) <= 1 and
+                    not any(header.defects for header in dispositions),
+                    "invalid_multipart_disposition")
+            # Container bytes are not separately bound by this adapter. Do not
+            # descend past an explicitly attached/named original and lose it.
+            require(not part.get_filename() and
+                    part.get_content_disposition() != "attachment",
+                    "unsupported_attached_multipart_part")
+            require(part.is_multipart() and not part.defects,
+                    "invalid_mime_container")
         if part.is_multipart():
             children = list(part.iter_parts())
-            stack.extend((child, locator + "." + str(n), part.get_content_type(), n)
+            require(visited + len(stack) + len(children) <= MAX_MIME_PARTS,
+                    "mime_part_limit")
+            root = related_root(part, children) if content_type == "multipart/related" else 1
+            # Body permission follows the whole ancestry. A related/alternative
+            # wrapper in a non-body slot must not launder an inline text record.
+            stack.extend((child, locator + "." + str(n),
+                          body_allowed and
+                          (content_type == "multipart/alternative" or
+                           (content_type in {"multipart/mixed", "multipart/related"} and
+                            n == root)))
                          for n, child in reversed(list(enumerate(children, 1))))
             continue
+        dispositions = part.get_all("Content-Disposition", [])
+        require(len(dispositions) <= 1 and
+                not any(header.defects for header in dispositions),
+                "invalid_leaf_disposition")
         data = part.get_payload(decode=True) or b""
         require(len(data) <= MAX_ATTACHMENT, "mime_payload_size_limit")
         name = part.get_filename()
-        content_type = part.get_content_type()
         disposition = part.get_content_disposition()
         if not name and disposition != "attachment" and content_type.startswith("text/"):
             if content_type not in {"text/plain", "text/html"}:
                 raise Rejected("ambiguous_inline_text_part")
-            if (parent_type == "multipart/mixed" and child_index != 1) or (
-                    parent_type not in {None, "multipart/mixed", "multipart/alternative"}):
+            if not body_allowed:
                 raise Rejected("ambiguous_inline_body_part")
         attachable = bool(name or disposition == "attachment" or
                           not content_type.startswith("text/"))

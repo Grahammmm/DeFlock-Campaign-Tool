@@ -39,6 +39,17 @@ _INTAKE_FAILURE_CODES = frozenset({
 })
 _MAIL_DELTA_FAILURE_CODES = frozenset({
     "ambiguous_inline_body_part", "ambiguous_inline_text_part", "unsupported_rfc822_part",
+    "invalid_mime_content_type",
+    "invalid_related_container",
+    "ambiguous_related_content_id",
+    "invalid_related_content_id",
+    "invalid_related_start",
+    "missing_related_root",
+    "related_root_type_mismatch",
+    "invalid_multipart_disposition",
+    "unsupported_attached_multipart_part",
+    "invalid_mime_container",
+    "invalid_leaf_disposition",
     "empty_message", "message_size_limit", "invalid_identity_numbers",
     "export_identity_conflict", "part_payload_mismatch", "export_scope_mismatch",
     "attachment_occurrence_missing", "receipt_changed",
