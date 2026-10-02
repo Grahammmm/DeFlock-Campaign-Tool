@@ -174,7 +174,7 @@ class RenderAndActivationTests(unittest.TestCase):
                      "OnCalendar=*-*-* 20:30:00 America/Los_Angeles", "Persistent=true", "Unit=records-run.service"):
             self.assertIn(line, timer)
         service = (self.root / "ops/records-run.service").read_text()
-        self.assertIn("ExecStart=/opt/py/bin/python3 -m campaign_tool.records run --root", service)
+        self.assertIn("ExecStart=/opt/py/bin/python3 -m campaign_tool.records run --unattended --max-originals-per-run 200 --root", service)
         self.assertIn("--mail-config", service)
         self.assertIn(" --ocr --json", service)
         self.assertIn("ExecStartPost=/opt/py/bin/python3 -m campaign_tool.records health --root", service)

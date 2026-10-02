@@ -181,7 +181,7 @@ class Pipeline:
                     entry = {"file": path.name, "eml_sha256": result.eml_sha256, "documents": list(result.documents)}
                     (replayed if seen else preserved).append(entry)
                 except Exception as error:  # one bad message never stops the run
-                    failures.append({"file": path.name, "error": type(error).__name__, "detail": str(error)[:200]})
+                    failures.append({"file": path.name, "error": type(error).__name__, "detail": "fetch_or_preserve_failed"})
             status = "slice_completed" if not failures else "completed_with_gaps"
             backend.finish_run(identity, status, {"messages": len(files), "preserved": len(preserved),
                                                  "replayed": len(replayed), "failures": len(failures)})
@@ -271,7 +271,7 @@ class Pipeline:
         """Advance every subject through the stage order; never raise for one record."""
         stage = self._open_stage_run()
         report = []
-        for subject in (subjects or self.subjects()):
+        for subject in (self.subjects() if subjects is None else subjects):
             outcome = {"subject_sha256": subject, "stages": {}}
             report.append(outcome)
             for name in STAGE_ORDER:
@@ -285,7 +285,7 @@ class Pipeline:
                 try:
                     result = getattr(self, "stage_" + name)(subject, stage)
                 except Exception as error:
-                    outcome["stages"][name] = "error:" + type(error).__name__ + ":" + str(error)[:160]
+                    outcome["stages"][name] = "error:stage_failed"
                     break
                 outcome["stages"][name] = result.get("status", "pending")
                 if result.get("reason"):
@@ -632,9 +632,37 @@ class Pipeline:
         with root_lock(self.root.path):
             return self._run_locked(inbox, mail_config, client_factory=client_factory)
 
-    def _run_locked(self, inbox, mail_config, *, client_factory=None):
+    def _run_locked(self, *args, **kwargs):
+        # Recovery precedes this invocation's run row, so it cannot interrupt itself.
+        try:
+            report = self._run_locked_unchecked(*args, **kwargs)
+        except Exception:
+            with store.ledger(self.root.ledger) as con:
+                con.execute("UPDATE runs SET status='failed',ended_at=?,summary=? WHERE run_id=?",
+                            (now(), encoded({"failure_code": "run_failed"}).decode(), self.run_id))
+                con.commit()
+            raise RunError("run_failed") from None
+        outcomes = [value for item in report.get("subjects", []) for value in item.get("stages", {}).values()]
+        technical = any(value.startswith("error:") for value in outcomes)
+        gaps = technical or bool(report.get("intake", {}).get("failures")) or bool((report.get("mailbox") or {}).get("failures"))
+        gaps = gaps or any(value.startswith(("blocked", "pending")) for value in outcomes)
+        status = "failed" if technical else "completed_with_gaps" if gaps else "completed"
+        report.update(status=status, exit_code=2 if technical else 3 if gaps else 0)
+        if gaps:
+            report["end_to_end_complete"] = False
+        with store.ledger(self.root.ledger) as con:
+            con.execute("UPDATE runs SET status=?,summary=? WHERE run_id=?",
+                        (status, encoded({"status": status, "subjects": len(report.get("subjects", [])), "counts": report["counts"]}).decode(), self.run_id))
+            con.commit()
+        path = self.root.sub("runs") / (self.run_id + ".json")
+        path.write_bytes(encoded(report))
+        os.chmod(path, 0o600)
+        return report
+
+    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None):
         started = now()
         recovery = self.recover()
+        self._open_stage_run()
         intake = self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
@@ -724,6 +752,9 @@ def build_pipeline(args, env=None):
 
 
 def main(argv=None):
+    if "--unattended" in (sys.argv[1:] if argv is None else argv):
+        from .unattended import main as unattended_main
+        return unattended_main(argv)
     parser = argparse.ArgumentParser(prog="records run", description=__doc__)
     parser.add_argument("--root", required=True, help="private records root (created if missing)")
     parser.add_argument("--inbox", help="directory of .eml files to preserve before advancing stages")
@@ -756,7 +787,7 @@ def main(argv=None):
                   f"inapplicable={counts['inapplicable']}")
         print(f"  complete through privacy: {report['end_to_end_complete']}; proposals awaiting owner: "
               f"{report['proposals_awaiting_owner']}")
-    return 0
+    return report["exit_code"]
 
 
 def status_main(argv=None):
