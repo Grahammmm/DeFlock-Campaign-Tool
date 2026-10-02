@@ -91,3 +91,18 @@ All follow-up rejection regressions use generated MIME and temporary ledgers
 and assert no run promotion, ledger mutation or new canonical blobs. Earlier
 failed test/CI results and independent review evidence are retained; passing
 synthetic tests do not substitute for rechecking the frozen repaired candidate.
+
+## Approved leaf disposition follow-up
+
+Every nonmultipart leaf must also have an absent or single defect-free
+Content-Disposition header before payload/body/attachment classification.
+Duplicate headers (including identical inline values) and malformed supplied
+values reject with invalid_leaf_disposition, even when one interpretation would
+be a selected body root. Multipart checks and their existing codes are unchanged.
+Valid single inline bodies and explicit unnamed leaf attachments remain supported.
+
+The public function signatures, candidate and receipt fields, exact MIME
+locators, walk indices and identity scheme do not change. Consumers still receive
+the existing Rejected failure class, with invalid_leaf_disposition as an
+additional fixed code. Any consumer that enumerates permitted failure codes must
+include it; this change does not modify a consumer allowlist or add RFC822 support.

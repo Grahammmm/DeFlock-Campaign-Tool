@@ -266,6 +266,10 @@ def mime_candidates(eml_path):
                             n == root)))
                          for n, child in reversed(list(enumerate(children, 1))))
             continue
+        dispositions = part.get_all("Content-Disposition", [])
+        require(len(dispositions) <= 1 and
+                not any(header.defects for header in dispositions),
+                "invalid_leaf_disposition")
         data = part.get_payload(decode=True) or b""
         require(len(data) <= MAX_ATTACHMENT, "mime_payload_size_limit")
         name = part.get_filename()

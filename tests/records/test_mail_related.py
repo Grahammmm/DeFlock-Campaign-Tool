@@ -453,5 +453,73 @@ class RelatedMimeTests(unittest.TestCase):
         self.assert_rejected(related, "unsupported_attached_multipart_part")
 
 
+
+    def test_selected_leaf_inline_then_attachment_disposition_rejected(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root["Content-Disposition"] = "inline"
+        root._headers.append(("Content-Disposition",
+                              'attachment; filename="synthetic-record.html"'))
+        self.assert_rejected(related, "invalid_leaf_disposition")
+
+    def test_selected_leaf_attachment_then_inline_disposition_rejected(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root.add_header("Content-Disposition", "attachment",
+                        filename="synthetic-record.html")
+        root._headers.append(("Content-Disposition", "inline"))
+        self.assert_rejected(related, "invalid_leaf_disposition")
+
+    def test_selected_leaf_duplicate_identical_inline_disposition_rejected(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root["Content-Disposition"] = "inline"
+        root._headers.append(("Content-Disposition", "inline"))
+        self.assert_rejected(related, "invalid_leaf_disposition")
+
+    def test_nested_selected_leaf_duplicate_disposition_rejected(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root["Content-Disposition"] = "inline"
+        root._headers.append(("Content-Disposition", "attachment"))
+        self.assert_rejected(self.alternative(related), "invalid_leaf_disposition")
+
+    def test_selected_leaf_malformed_wire_disposition_rejected(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root["Content-Disposition"] = 'inline; filename="synthetic-record.html"'
+        raw = related.as_bytes()
+        valid = b'Content-Disposition: inline; filename="synthetic-record.html"'
+        self.assertEqual(raw.count(valid), 1)
+        malformed = raw.replace(valid, valid[:-1], 1)
+        with mock.patch.object(related, "as_bytes", return_value=malformed):
+            self.assert_rejected(related, "invalid_leaf_disposition")
+
+    def test_nonroot_image_duplicate_disposition_rejected(self):
+        related = self.related()
+        image = related.get_payload()[1]
+        image._headers.append(("Content-Disposition", "attachment"))
+        self.assert_rejected(related, "invalid_leaf_disposition")
+
+    def test_named_nonroot_text_duplicate_disposition_rejected(self):
+        related = self.related()
+        text = EmailMessage()
+        text.set_content("Synthetic named record")
+        text.add_header("Content-Disposition", "inline", filename="record.txt")
+        text._headers.append(("Content-Disposition", "attachment"))
+        related.attach(text)
+        self.assert_rejected(related, "invalid_leaf_disposition")
+
+    def test_selected_leaf_single_inline_disposition_keeps_body(self):
+        related = self.related()
+        related.get_payload()[0]["Content-Disposition"] = "inline"
+        self.assertEqual(self.assert_import(related), {"1.2": 2})
+
+    def test_selected_leaf_unnamed_explicit_attachment_still_binds(self):
+        related = self.related()
+        related.get_payload()[0]["Content-Disposition"] = "attachment"
+        self.assertEqual(self.assert_import(related), {"1.1": 1, "1.2": 2})
+
+
 if __name__ == "__main__":
     unittest.main()
