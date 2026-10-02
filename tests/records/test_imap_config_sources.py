@@ -51,7 +51,7 @@ class CredentialSourceTests(unittest.TestCase):
     def test_redaction_and_fingerprint_ignore_all_credential_fields(self):
         config = self.load()
         first = imap.fingerprint(config)
-        config.update(password="synthetic-rotated", password_source={"password": self.marker},
+        config.update(password="synthetic-rotated", password_source={"password": self.marker},  # pragma: allowlist secret - owner-reviewed synthetic fixture
                       password_file=self.marker, password_env=self.marker, unexpected={"secret": self.marker})
         self.assertEqual(first, imap.fingerprint(config))
         self.assertNotIn(self.marker, json.dumps(imap.redacted(config)))
@@ -145,7 +145,7 @@ class CredentialSourceTests(unittest.TestCase):
     def test_malformed_duplicate_and_non_object_json_do_not_leak(self):
         samples = [
             ('{"MAIL_PASSWORD":"' + self.marker + '",broken}').encode(),
-            ('{"MAIL_PASSWORD":"' + self.marker + '","MAIL_PASSWORD":"other"}').encode(),
+            ('{"MAIL_PASSWORD":"' + self.marker + '","MAIL_PASSWORD":"other"}').encode(),  # pragma: allowlist secret - owner-reviewed synthetic fixture
             b'{"MAIL_PASSWORD":"x","other":{"duplicate":1,"duplicate":2}}',
             b'{"MAIL_PASSWORD":"x","other":NaN}', b"\xff", b"[1,2]", b"null",
             b"[" * 1500 + b"]" * 1500,
@@ -185,15 +185,15 @@ class CredentialSourceTests(unittest.TestCase):
     def test_legacy_inline_file_env_and_precedence(self):
         del self.settings["password_source"]
         self.settings["password"] = self.marker
-        self.settings["password_file"] = "missing"
-        self.settings["password_env"] = "SYNTHETIC_IMAP_PASSWORD"
+        self.settings["password_file"] = "missing"  # pragma: allowlist secret - owner-reviewed synthetic fixture
+        self.settings["password_env"] = "SYNTHETIC_IMAP_PASSWORD"  # pragma: allowlist secret - owner-reviewed synthetic fixture
         self.assertEqual(self.load()["password"], self.marker)
         del self.settings["password"]
         plain = self.base / "plain.txt"
         plain.write_text("synthetic-file-value\n")
         plain.chmod(0o600)
-        self.settings["password_file"] = "plain.txt"
-        with patch.dict(os.environ, {"SYNTHETIC_IMAP_PASSWORD": "synthetic-env-value"}):
+        self.settings["password_file"] = "plain.txt"  # pragma: allowlist secret - owner-reviewed synthetic fixture
+        with patch.dict(os.environ, {"SYNTHETIC_IMAP_PASSWORD": "synthetic-env-value"}):  # pragma: allowlist secret - owner-reviewed synthetic fixture
             self.assertEqual(self.load()["password"], "synthetic-file-value")
             del self.settings["password_file"]
             self.assertEqual(self.load()["password"], "synthetic-env-value")
@@ -254,11 +254,11 @@ class GlobalBudgetTests(unittest.TestCase):
                   "max_messages_per_run": limit}
         if source:
             path = self.base / "source.json"
-            path.write_text(json.dumps({"MAIL_PASSWORD": "synthetic-source-marker"}))
+            path.write_text(json.dumps({"MAIL_PASSWORD": "synthetic-source-marker"}))  # pragma: allowlist secret - owner-reviewed synthetic fixture
             path.chmod(0o600)
             config["password_source"] = {"type": "json", "path": "source.json", "key": "MAIL_PASSWORD"}
         else:
-            config["password"] = "synthetic-only"
+            config["password"] = "synthetic-only"  # pragma: allowlist secret - owner-reviewed synthetic fixture
         self.write_config(config)
 
     def messages(self, *uids):

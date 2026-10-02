@@ -107,3 +107,17 @@ node scripts/scan-secrets.mjs
 The dedicated IMAP CI workflow uses standard-library tests and installs nothing.
 No real source file, mailbox or production config is needed to test this feature.
 Passing tests do not authorize a live intake or constitute independent review.
+
+## Trusted failure-code observability
+
+Fetch/preserve failures retain reviewed literal codes only from the exact
+project error classes `IntakeError` and `mail_delta.Rejected`. The fixed
+allowlist includes `ambiguous_inline_body_part`, `unsupported_rfc822_part`,
+`export_scope_mismatch` and reviewed resource/receipt integrity codes.
+Unknown codes, arbitrary exception classes, subclasses, nonstring or multiple
+arguments and arbitrary exception text remain `fetch_or_preserve_failed`.
+Exception formatters are not called. A code reports a failure classification,
+not source content or a credential. Failed attempts still consume the global
+budget and do not advance checkpoints; the existing keyed alert identity is
+unchanged. Extending this allowlist requires review, not a pattern-based trust
+rule or blanket acceptance of a project's exception messages.

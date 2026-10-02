@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import stat
 
-from . import eml_export
+from . import eml_export, mail_delta
 from ..runner.contracts import Folder
 
 VERSION = "records-imap-intake-v1"
@@ -29,6 +29,41 @@ CREATE TABLE IF NOT EXISTS mail_checkpoints(
 
 class IntakeError(RuntimeError):
     pass
+
+
+# Only reviewed literal codes are reportable, and only from exact project types.
+# Do not call str(error), trust a matching message from an arbitrary exception,
+# or allow subclasses to authorize user-controlled exception formatting.
+_INTAKE_FAILURE_CODES = frozenset({
+    "imap_fetch_failed", "imap_fetch_empty", "message_size_limit",
+})
+_MAIL_DELTA_FAILURE_CODES = frozenset({
+    "ambiguous_inline_body_part", "ambiguous_inline_text_part", "unsupported_rfc822_part",
+    "empty_message", "message_size_limit", "invalid_identity_numbers",
+    "export_identity_conflict", "part_payload_mismatch", "export_scope_mismatch",
+    "attachment_occurrence_missing", "receipt_changed",
+    "mime_part_limit", "mime_payload_size_limit", "invalid_eml",
+    "receipt_size_limit", "receipt_total_size_limit", "attachment_count_limit",
+    "invalid_receipt_file", "incomplete_receipt", "invalid_receipt_bytes", "invalid_eml_bytes",
+    "existing_blob_invalid", "new_blob_cleanup_failed", "mail_delta_io_or_ledger_error",
+    "missing_output", "unsafe_output_path", "output_not_owner_only", "unsafe_output_type",
+    "invalid_source_path", "source_path_escape", "source_is_output",
+    "invalid_sha256", "invalid_account", "invalid_folder", "invalid_uidvalidity", "invalid_uid",
+})
+
+
+def _failure_code(error):
+    if type(error) is IntakeError:
+        allowed = _INTAKE_FAILURE_CODES
+    elif type(error) is mail_delta.Rejected:
+        allowed = _MAIL_DELTA_FAILURE_CODES
+    else:
+        return "fetch_or_preserve_failed"
+    if len(error.args) == 1:
+        code = error.args[0]
+        if type(code) is str and len(code) <= 64 and code in allowed:
+            return code
+    return "fetch_or_preserve_failed"
 
 
 def now():
@@ -326,9 +361,7 @@ class IMAPIntake:
                         with store.ledger(self.ledger) as con:
                             self._save(con, folder, validity, highest, success=True)
                     except Exception as error:
-                        code = str(error) if isinstance(error, IntakeError) and str(error) in {
-                            "imap_fetch_failed", "imap_fetch_empty", "message_size_limit"
-                        } else "fetch_or_preserve_failed"
+                        code = _failure_code(error)
                         entry["failed"] = f"uid {uid}: {code}"
                         report["failures"] += 1
                         self.alert(f"mail:preserve_failed:{folder}:{uid}", owner="runtime")

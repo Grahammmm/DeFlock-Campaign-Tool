@@ -27,6 +27,7 @@ jobs:
           suite = unittest.defaultTestLoader.loadTestsFromNames([
               "tests.records.test_imap_intake",
               "tests.records.test_imap_config_sources",
+              "tests.records.test_imap_failure_codes",
           ])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():
