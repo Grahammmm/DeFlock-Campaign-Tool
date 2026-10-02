@@ -161,16 +161,16 @@ class ExporterObservabilityTests(unittest.TestCase):
     def test_backend_reviewed_mime_codes_survive_without_advancing_checkpoint(self):
         for code in REVIEWED_MIME_FAILURE_CODES:
             with self.subTest(code=code):
-                self.assertEqual(self.run_message(b"Subject: synthetic\\r\\n\\r\\nbody",
+                self.assertEqual(self.run_message(b"Subject: synthetic\r\n\r\nbody",
                                                  backend_error=mail_delta.Rejected(code)),
                                  "uid 1: " + code)
 
     def test_actual_exporter_duplicate_leaf_disposition_code_survives(self):
-        raw = (b'Content-Type: multipart/related; boundary="synthetic-related"\\r\\n'
-               b'\\r\\n--synthetic-related\\r\\nContent-Type: text/html\\r\\n'
-               b'Content-Disposition: inline\\r\\n'
-               b'Content-Disposition: attachment; filename="synthetic-record.html"\\r\\n'
-               b'\\r\\n<p>synthetic body</p>\\r\\n--synthetic-related--\\r\\n')
+        raw = (b'Content-Type: multipart/related; boundary="synthetic-related"\r\n'
+               b'\r\n--synthetic-related\r\nContent-Type: text/html\r\n'
+               b'Content-Disposition: inline\r\n'
+               b'Content-Disposition: attachment; filename="synthetic-record.html"\r\n'
+               b'\r\n<p>synthetic body</p>\r\n--synthetic-related--\r\n')
         self.assertEqual(self.run_message(raw), "uid 1: invalid_leaf_disposition")
 
     def test_actual_exporter_unsupported_rfc822_code_survives(self):
