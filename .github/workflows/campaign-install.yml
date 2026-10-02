@@ -16,7 +16,7 @@ jobs:
       - name: Public resource parity
         run: python3 -B tools/sync_campaign_resources.py
       - name: Resource and CLI regressions
-        run: python3 -B -m unittest tests.test_campaign_install_resources tests.test_cli tests.test_discovery tests.test_kit tests.test_law -v
+        run: python3 -B -m unittest tests.test_campaign_install_resources tests.test_campaign_wheel_harness tests.test_cli tests.test_discovery tests.test_kit tests.test_law -v
       - name: Build clean-source candidate wheel
         run: python3 -m pip wheel --no-deps . --wheel-dir "$RUNNER_TEMP/campaign-wheels"
       - name: Install in a separate environment

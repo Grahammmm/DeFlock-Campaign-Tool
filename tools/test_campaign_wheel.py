@@ -7,12 +7,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def selected_python(value):
+    # Resolving a venv symlink selects the base interpreter and loses the venv.
+    return str(Path(value).absolute())
+
+
+def require_virtual_environment(python, identity):
+    if selected_python(identity["executable"]) != python:
+        raise RuntimeError("Child interpreter does not match the selected executable")
+    if identity["prefix"] == identity["base_prefix"]:
+        raise RuntimeError("Wheel smoke requires a separate virtual environment")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", required=True, help="Python in a separate environment with the wheel installed")
     parser.add_argument("--expected-commit", required=True)
     args = parser.parse_args()
-    python = str(Path(args.python).resolve())
+    python = selected_python(args.python)
     results = []
     with tempfile.TemporaryDirectory(prefix="deflock-wheel-smoke-") as folder:
         root = Path(folder)
@@ -26,6 +38,10 @@ def main():
                 raise RuntimeError(label + " failed:\n" + process.stdout + process.stderr)
             return process.stdout
 
+        identity = json.loads(run("interpreter-identity", ["-c",
+            "import json,sys; print(json.dumps(dict(executable=sys.executable, "
+            "prefix=sys.prefix, base_prefix=sys.base_prefix)))"]))
+        require_virtual_environment(python, identity)
         provenance = json.loads(run("installed-provenance", ["-c",
             "import json; from campaign_tool.records.release_manifest import version_report; "
             "r=version_report(); print(json.dumps({k:r[k] for k in "
@@ -49,7 +65,7 @@ def main():
         assert not (campaign / "public" / "private").exists()
     print(json.dumps({"checked_at": datetime.now(timezone.utc).isoformat(),
                       "synthetic_only": True, "external_sends": False,
-                      "provenance": provenance, "steps": results}, indent=2))
+                      "interpreter": identity, "provenance": provenance, "steps": results}, indent=2))
 
 
 if __name__ == "__main__":

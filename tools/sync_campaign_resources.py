@@ -41,13 +41,19 @@ def sync(root, write=False):
                 failures.append("unexpected resource: " + relative)
     if failures:
         return failures
+    prepared = []
     for name in RESOURCES:
         source = root / name
         target = root / "campaign_tool" / "_resources" / name
         for candidate in (source, target):
             if candidate.is_symlink() or any(p.is_symlink() for p in candidate.parents if p != root and root in p.parents):
                 raise ValueError("symlink resource path: " + name)
+        if target.exists() and target.stat().st_nlink != 1:
+            raise ValueError("multiply-linked resource target: " + name)
         original = source.read_bytes()
+        prepared.append((name, target, original))
+    # All sources and destinations are checked before any destination is changed.
+    for name, target, original in prepared:
         if write:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(original)

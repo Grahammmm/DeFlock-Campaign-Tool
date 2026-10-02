@@ -84,6 +84,43 @@ class CampaignResourceTests(unittest.TestCase):
             (root / "private" / "example.txt").write_text("Synthetic private fixture.", encoding="utf-8")
             self.assertTrue(check_public_tree(root))
 
+    def test_hardlinked_target_blocks_all_writes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.make_synthetic_bundle(root)
+            bundle = root / "campaign_tool" / "_resources"
+            outside = root / "unrelated.txt"
+            outside.hardlink_to(bundle / RESOURCES[-1])
+            (root / RESOURCES[0]).write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "multiply-linked"):
+                sync(root, write=True)
+            self.assertEqual(outside.read_bytes(), b"synthetic public fixture")
+            self.assertEqual((bundle / RESOURCES[0]).read_bytes(), b"synthetic public fixture")
+
+    def test_missing_late_source_preserves_all_targets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.make_synthetic_bundle(root)
+            (root / RESOURCES[0]).write_bytes(b"changed")
+            (root / RESOURCES[-1]).unlink()
+            with self.assertRaises(FileNotFoundError):
+                sync(root, write=True)
+            self.assertEqual((root / "campaign_tool" / "_resources" / RESOURCES[0]).read_bytes(),
+                             b"synthetic public fixture")
+
+    def test_symlink_late_source_preserves_all_targets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.make_synthetic_bundle(root)
+            (root / RESOURCES[0]).write_bytes(b"changed")
+            source = root / RESOURCES[-1]
+            source.unlink()
+            source.symlink_to(root / RESOURCES[0])
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                sync(root, write=True)
+            self.assertEqual((root / "campaign_tool" / "_resources" / RESOURCES[0]).read_bytes(),
+                             b"synthetic public fixture")
+
 
 if __name__ == "__main__":
     unittest.main()
