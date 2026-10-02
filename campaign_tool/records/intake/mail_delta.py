@@ -179,6 +179,14 @@ def stage_source(item, root, out):
         raise
 
 
+def mime_content_type(part):
+    """Validate classification headers; an absent header keeps the MIME default."""
+    headers = part.get_all("Content-Type", [])
+    require(len(headers) <= 1 and not any(header.defects for header in headers),
+            "invalid_mime_content_type")
+    return part.get_content_type()
+
+
 def related_root(part, children):
     """Resolve only immediate children; never guess around an invalid start."""
     require(bool(children) and not part.defects, "invalid_related_container")
@@ -204,12 +212,13 @@ def related_root(part, children):
                 "invalid_related_start")
         require(start in ids, "missing_related_root")
         root = ids[start]
+    root_type = mime_content_type(children[root - 1])
     declared_type = part.get_param("type")
     # Some exporters omit type. Preserve that compatibility, but never ignore
     # an explicit declaration that contradicts the selected root.
     require(declared_type is None or
             (isinstance(declared_type, str) and
-             declared_type.lower() == children[root - 1].get_content_type()),
+             declared_type.lower() == root_type),
             "related_root_type_mismatch")
     return root
 
@@ -228,13 +237,25 @@ def mime_candidates(eml_path):
         visited += 1
         require(visited <= MAX_MIME_PARTS, "mime_part_limit")
         walk_index = visited - 1  # Exporter enumerates every msg.walk() node from zero.
-        if part.get_content_type() == "message/rfc822":
+        content_type = mime_content_type(part)
+        if content_type == "message/rfc822":
             raise Rejected("unsupported_rfc822_part")
+        if content_type.startswith("multipart/"):
+            dispositions = part.get_all("Content-Disposition", [])
+            require(len(dispositions) <= 1 and
+                    not any(header.defects for header in dispositions),
+                    "invalid_multipart_disposition")
+            # Container bytes are not separately bound by this adapter. Do not
+            # descend past an explicitly attached/named original and lose it.
+            require(not part.get_filename() and
+                    part.get_content_disposition() != "attachment",
+                    "unsupported_attached_multipart_part")
+            require(part.is_multipart() and not part.defects,
+                    "invalid_mime_container")
         if part.is_multipart():
             children = list(part.iter_parts())
             require(visited + len(stack) + len(children) <= MAX_MIME_PARTS,
                     "mime_part_limit")
-            content_type = part.get_content_type()
             root = related_root(part, children) if content_type == "multipart/related" else 1
             # Body permission follows the whole ancestry. A related/alternative
             # wrapper in a non-body slot must not launder an inline text record.
@@ -248,7 +269,6 @@ def mime_candidates(eml_path):
         data = part.get_payload(decode=True) or b""
         require(len(data) <= MAX_ATTACHMENT, "mime_payload_size_limit")
         name = part.get_filename()
-        content_type = part.get_content_type()
         disposition = part.get_content_disposition()
         if not name and disposition != "attachment" and content_type.startswith("text/"):
             if content_type not in {"text/plain", "text/html"}:

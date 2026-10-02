@@ -282,5 +282,176 @@ class RelatedMimeTests(unittest.TestCase):
         self.assert_rejected(related, "unsupported_rfc822_part")
 
 
+    def duplicate_type(self, part, value="application/pdf"):
+        # Deliberately compose invalid wire headers beyond EmailMessage's
+        # singleton-header authoring guard; BytesParser must reject the input.
+        part._headers.append(("Content-Type", value))
+
+    def test_duplicate_selected_text_type_rejected_before_exemption(self):
+        related = self.related()
+        self.duplicate_type(related.get_payload()[0])
+        self.assert_rejected(related, "invalid_mime_content_type")
+
+    def test_identical_duplicate_selected_text_type_still_ambiguous(self):
+        related = self.related()
+        self.duplicate_type(related.get_payload()[0], "text/html")
+        self.assert_rejected(related, "invalid_mime_content_type")
+
+    def test_malformed_selected_text_type_without_parent_type(self):
+        related = self.related()
+        related.del_param("type")
+        related.get_payload()[0].replace_header("Content-Type", "not-a-media-type")
+        self.assert_rejected(related, "invalid_mime_content_type")
+
+    def test_malformed_selected_text_parameter(self):
+        related = self.related()
+        related.get_payload()[0].replace_header("Content-Type",
+                                                'text/html; charset="unterminated"')
+        raw = related.as_bytes()
+        valid = b'Content-Type: text/html; charset="unterminated"'
+        self.assertEqual(raw.count(valid), 1)
+        malformed = raw.replace(valid, valid[:-1], 1)
+        with mock.patch.object(related, "as_bytes", return_value=malformed):
+            self.assert_rejected(related, "invalid_mime_content_type")
+
+    def test_duplicate_selected_alternative_type(self):
+        related = EmailMessage()
+        related.make_related()
+        root = EmailMessage()
+        root.set_content("Synthetic alternative body")
+        root.add_alternative("<p>Synthetic body</p>", subtype="html")
+        self.duplicate_type(root)
+        related.attach(root)
+        related.attach(self.image())
+        self.assert_rejected(related, "invalid_mime_content_type")
+
+    def test_duplicate_outer_alternative_type(self):
+        outer = self.alternative(self.related())
+        self.duplicate_type(outer)
+        self.assert_rejected(outer, "invalid_mime_content_type")
+
+    def test_duplicate_related_container_type(self):
+        related = self.related()
+        self.duplicate_type(related)
+        self.assert_rejected(related, "invalid_mime_content_type")
+
+    def test_duplicate_nested_body_type(self):
+        related = self.related()
+        self.duplicate_type(related.get_payload()[0])
+        self.assert_rejected(self.alternative(related), "invalid_mime_content_type")
+
+    def test_duplicate_nonroot_image_type_rejected(self):
+        related = self.related()
+        self.duplicate_type(related.get_payload()[1])
+        self.assert_rejected(related, "invalid_mime_content_type")
+
+    def test_missing_selected_type_keeps_explicit_plain_default_policy(self):
+        related = self.related(subtype="plain")
+        del related.get_payload()[0]["Content-Type"]
+        self.assert_import(related)
+
+    def test_missing_outer_leaf_type_keeps_plain_default(self):
+        body = self.body(subtype="plain")
+        del body["Content-Type"]
+        self.assert_import(body)
+
+    def test_selected_named_or_attached_alternative_root_rejected(self):
+        for metadata in ("attachment", "attachment_named", "inline_named", "type_named"):
+            with self.subTest(metadata=metadata):
+                related = EmailMessage()
+                related.make_related()
+                root = EmailMessage()
+                root.set_content("Synthetic attached record body")
+                root.add_alternative("<p>Synthetic attached record</p>", subtype="html")
+                root["Content-ID"] = "<root@synthetic.invalid>"
+                if metadata == "type_named":
+                    root.set_param("name", "synthetic-record.mime")
+                elif metadata == "attachment":
+                    root["Content-Disposition"] = "attachment"
+                else:
+                    root.add_header("Content-Disposition",
+                                    "inline" if metadata == "inline_named" else "attachment",
+                                    filename="synthetic-record.mime")
+                related.set_param("start", "<root@synthetic.invalid>")
+                related.set_param("type", "multipart/alternative")
+                related.attach(root)
+                related.attach(self.image())
+                self.assert_rejected(related, "unsupported_attached_multipart_part")
+
+    def test_nonfirst_selected_attached_multipart_root_rejected(self):
+        related = EmailMessage()
+        related.make_related()
+        related.set_param("start", "<root@synthetic.invalid>")
+        root = self.alternative(self.related())
+        root["Content-ID"] = "<root@synthetic.invalid>"
+        root["Content-Disposition"] = "attachment"
+        related.attach(self.image("outer.png"))
+        related.attach(root)
+        self.assert_rejected(related, "unsupported_attached_multipart_part")
+
+    def test_outer_attached_mixed_container_rejected(self):
+        outer = EmailMessage()
+        outer.make_mixed()
+        outer.attach(self.related())
+        outer["Content-Disposition"] = "attachment"
+        self.assert_rejected(outer, "unsupported_attached_multipart_part")
+
+    def test_outer_named_related_container_rejected(self):
+        related = self.related()
+        related.add_header("Content-Disposition", "inline", filename="bundle.mime")
+        self.assert_rejected(related, "unsupported_attached_multipart_part")
+
+    def test_nonroot_attached_multipart_container_rejected(self):
+        related = self.related()
+        attached = EmailMessage()
+        attached.make_mixed()
+        attached.attach(self.image("attached.png"))
+        attached.add_header("Content-Disposition", "attachment", filename="record.mime")
+        related.attach(attached)
+        self.assert_rejected(related, "unsupported_attached_multipart_part")
+
+    def test_duplicate_multipart_disposition_rejected(self):
+        related = self.related()
+        related["Content-Disposition"] = "inline"
+        related._headers.append(("Content-Disposition", "attachment"))
+        self.assert_rejected(related, "invalid_multipart_disposition")
+
+    def test_malformed_multipart_disposition_rejected(self):
+        related = self.related()
+        related["Content-Disposition"] = 'inline; filename="unterminated"'
+        raw = related.as_bytes()
+        valid = b'Content-Disposition: inline; filename="unterminated"'
+        self.assertEqual(raw.count(valid), 1)
+        malformed = raw.replace(valid, valid[:-1], 1)
+        with mock.patch.object(related, "as_bytes", return_value=malformed):
+            self.assert_rejected(related, "invalid_multipart_disposition")
+
+    def test_explicit_attachment_on_named_leaf_still_binds(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root.add_header("Content-Disposition", "attachment", filename="body.html")
+        self.assertEqual(len(self.assert_import(related)), 2)
+
+    def test_inline_container_without_filename_remains_body(self):
+        related = self.related()
+        related["Content-Disposition"] = "inline"
+        self.assert_import(related)
+
+    def test_invalid_multipart_body_payload_rejected(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root.replace_header("Content-Type", "multipart/alternative")
+        related.del_param("type")
+        self.assert_rejected(related, "invalid_mime_container")
+
+    def test_declared_attached_multipart_with_missing_boundary_rejected(self):
+        related = self.related()
+        root = related.get_payload()[0]
+        root.replace_header("Content-Type", "multipart/alternative")
+        root["Content-Disposition"] = "attachment"
+        related.del_param("type")
+        self.assert_rejected(related, "unsupported_attached_multipart_part")
+
+
 if __name__ == "__main__":
     unittest.main()

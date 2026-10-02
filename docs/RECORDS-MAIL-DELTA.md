@@ -61,3 +61,33 @@ does not add forwarded-message support. All new tests generate synthetic MIME
 and temporary ledgers, never read a mailbox, and never retry private intake.
 
     python3 -B -m unittest tests.records.test_mail_delta tests.records.test_mail_related -v
+
+## Approved fail-closed header and container follow-up
+
+Before any MIME node supplies media-type classification or body permission,
+its Content-Type must be absent or exactly one defect-free parsed header.
+Duplicate headers (even equal values), invalid media types and defective
+parameters reject with invalid_mime_content_type. The selected related root is
+validated before comparing an explicit related type. An absent Content-Type
+continues the existing MIME default (normally text/plain); absence is not
+treated as a malformed supplied value.
+
+A named or explicitly attached multipart entity rejects with
+unsupported_attached_multipart_part before traversal. This applies to selected
+roots, outer containers and non-root resources, including names from
+Content-Type. The importer cannot bind that container's exact original bytes
+as an attachment, so it never silently descends and loses the original's
+identity. Supporting such containers requires separately reviewed exact-byte
+binding semantics, not a body exemption.
+
+Multipart Content-Disposition must be absent or a single defect-free header
+(invalid_multipart_disposition otherwise). An unnamed inline container remains
+a valid body container. Declared multipart bodies with broken structure reject
+with invalid_mime_container. Named/attached nonmultipart leaves retain exact
+receipt binding. Ordinary related body controls, part limits and unsupported
+nested message/rfc822 behavior remain in place.
+
+All follow-up rejection regressions use generated MIME and temporary ledgers
+and assert no run promotion, ledger mutation or new canonical blobs. Earlier
+failed test/CI results and independent review evidence are retained; passing
+synthetic tests do not substitute for rechecking the frozen repaired candidate.
