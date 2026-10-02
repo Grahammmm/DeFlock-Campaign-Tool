@@ -1,6 +1,6 @@
 """Only generated synthetic messages; no corpus, ledger, network or filesystem I/O."""
 from email import policy
-from email.errors import MultipartInvariantViolationDefect
+from email.errors import MissingHeaderBodySeparatorDefect, MultipartInvariantViolationDefect
 from email.parser import BytesHeaderParser, BytesParser
 import unittest
 from unittest.mock import patch
@@ -42,12 +42,31 @@ class WireRFC822Tests(unittest.TestCase):
         self.assertRegex(str(caught.exception), r"^[a-z0-9_]+$")
 
     def test_header_only_multipart_invariant_is_expected_not_source_corruption(self):
-        header = b"Content-Type: multipart/mixed; boundary=synthetic-outer\r\n\r\n"
-        parsed = BytesHeaderParser(policy=policy.default).parsebytes(header)
-        self.assertTrue(any(isinstance(defect, MultipartInvariantViolationDefect)
-                            for defect in parsed.defects))
         payload = eml()
-        self.assertEqual(wire.capture_rfc822_payload(multi([rfc(payload)]), "1.1"), payload)
+        raw = multi([rfc(payload)])
+        self.assertEqual(wire.capture_rfc822_payload(raw, "1.1"), payload)
+
+        def parse_with_defects(header_bytes, *, corrupt=False):
+            parsed = BytesHeaderParser(policy=policy.default).parsebytes(header_bytes)
+            if parsed.get_content_maintype() == "multipart":
+                # Header-only parser diagnostics vary across Python versions.
+                # Exercise the allowed invariant explicitly, not by assumption.
+                parsed.defects.append(MultipartInvariantViolationDefect())
+                if corrupt:
+                    parsed.defects.append(MissingHeaderBodySeparatorDefect())
+            return parsed
+
+        # Mock only the helper's header-parser factory, not an inherited
+        # parsebytes method that could also affect the full-body mapper.
+        with patch.object(wire, "BytesHeaderParser") as parser:
+            parser.return_value.parsebytes.side_effect = parse_with_defects
+            self.assertEqual(wire.capture_rfc822_payload(raw, "1.1"), payload)
+
+        with patch.object(wire, "BytesHeaderParser") as parser:
+            parser.return_value.parsebytes.side_effect = (
+                lambda header_bytes: parse_with_defects(header_bytes, corrupt=True))
+            self.reject(raw, code="header_parse_defect")
+
         self.reject(b"Content-Type: multipart/mixed\r\n\r\nsynthetic",
                     code="invalid_boundary")
 
