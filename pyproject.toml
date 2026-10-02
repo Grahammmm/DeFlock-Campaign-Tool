@@ -22,6 +22,8 @@ version = {attr = "campaign_tool.__version__"}
 include = ["campaign_tool*"]
 
 [tool.setuptools.package-data]
-campaign_tool = ["assets/*.tmpl"]
+campaign_tool = ["assets/*.tmpl", "_resources/data/agencies/*.json",
+                 "_resources/schemas/*.json", "_resources/jurisdictions/*/*.json",
+                 "_resources/templates/*.md"]
 "campaign_tool.records" = ["_release_manifest.json", "_release_dependencies.txt"]
 "campaign_tool.records.runner" = ["templates/*.in"]

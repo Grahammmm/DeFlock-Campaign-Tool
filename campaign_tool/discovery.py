@@ -20,8 +20,9 @@ from pathlib import Path
 from . import law
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SEED_DIR = REPO_ROOT / "data" / "agencies"
-SEED_SCHEMA = REPO_ROOT / "schemas" / "agency-seed.schema.json"
+RESOURCE_ROOT = Path(__file__).resolve().parent / "_resources"
+SEED_DIR = RESOURCE_ROOT / "data" / "agencies"
+SEED_SCHEMA = RESOURCE_ROOT / "schemas" / "agency-seed.schema.json"
 GEOCODER = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
 COUNTY_KINDS = ("sheriff", "county_board", "district_attorney", "chp")
 CITY_KINDS = ("police", "city_council")

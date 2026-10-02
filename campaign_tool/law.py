@@ -20,9 +20,10 @@ from datetime import date, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = REPO_ROOT / "schemas" / "law-package.schema.json"
-JURISDICTIONS = REPO_ROOT / "jurisdictions"
-TEMPLATE_PATH = REPO_ROOT / "templates" / "records-request.md"
+RESOURCE_ROOT = Path(__file__).resolve().parent / "_resources"
+SCHEMA_PATH = RESOURCE_ROOT / "schemas" / "law-package.schema.json"
+JURISDICTIONS = RESOURCE_ROOT / "jurisdictions"
+TEMPLATE_PATH = RESOURCE_ROOT / "templates" / "records-request.md"
 JURISDICTION_PATTERN = re.compile(r"^[a-z]{2}-[a-z]{2}$")
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 HOLIDAY_NOTE = ("Business-day deadlines skip Saturday and Sunday only; "
