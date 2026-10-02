@@ -26,3 +26,38 @@ python3 -B -m unittest tests.records.test_mail_delta -v
 ```
 
 Before any private run: back up the canonical database and blobs, verify source/root/output permissions and free space, run the synthetic suite, have an independent review of the exact diff and receipt schema, then use one receipt at a time and reconcile active/previous counts. No timer, exporter retirement, network, host package, outbound action, or publication is included.
+
+## Bounded multipart/related body roots
+
+Related body selection follows [RFC 2387 sections 3.1-3.2](https://www.rfc-editor.org/rfc/rfc2387):
+an explicit start must match exactly one immediate child's Content-ID; with no
+start, the first child is the root. IDs are case-sensitive, angle-bracketed,
+and compared without URI decoding or descendant searches. Duplicate child IDs,
+multiple Content-ID headers, malformed IDs/start values, defective related
+containers and an unmatched start fail closed with fixed codes. This bounded
+adapter accepts simple IDs without embedded whitespace; more complex RFC822
+ID syntax needs separate review. A supplied type must match the selected
+root's media type (case-insensitively). Omitted type remains tolerated for
+compatibility with exporters, although RFC 2387 requires it.
+
+Only the selected root can inherit body permission. That permission follows
+the entire ancestry: alternatives may share it, mixed permits only its first
+child, and related permits only its selected child. Wrapping a non-body text
+part in another related/alternative container does not make it a body.
+Unnamed inline text outside that path still fails closed, as does structured
+inline text such as CSV/calendar. Named or explicitly attached text remains an
+attachment, even at the selected root; related handling is not a blanket
+Content-Disposition exemption.
+
+Inline named images and every other attachable leaf must still appear in the
+receipt and bind by exact walk index or MIME locator, decoded byte hash/size,
+original/export filename and content type. Neither traversal order nor edge
+and occurrence locator formats change. Missing attachments, wrong indices,
+and same bytes at different locators retain the existing safeguards and replay
+contract. The existing part budget also bounds pending children.
+
+Nested unnamed message/rfc822 remains unsupported_rfc822_part; this repair
+does not add forwarded-message support. All new tests generate synthetic MIME
+and temporary ledgers, never read a mailbox, and never retry private intake.
+
+    python3 -B -m unittest tests.records.test_mail_delta tests.records.test_mail_related -v
