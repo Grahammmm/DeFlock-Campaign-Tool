@@ -84,7 +84,12 @@ separates `preserved` (new occurrences) from `replayed` (bytes and occurrence al
 `records run --root R --mail-config /path/mail.json` fetches new messages over IMAP before
 advancing stages. `mail.json` is an owner-only (0600) file naming `host`, `username`,
 `account_id`, optional `folders` and either `password_file` (0600) or `password_env`; the
-password never appears in reports, run rows or checkpoints. Messages are fetched with
+password never appears in reports, run rows or checkpoints. An existing owner-only
+flat JSON credential file can instead be reused through a generic `password_source`
+mapping; see [private IMAP configuration](docs/IMAP-CONFIG.md). The global
+`max_messages_per_run` defaults to 200 and accepts integers from 1 through 200;
+failed fetches and replays consume the same budget across all folders, with
+deferred counts reported and deferred UIDs left checkpoint-safe. Messages are fetched with
 `BODY.PEEK[]`, so read flags are never touched or used as state. A per-folder
 `(uidvalidity, highest_uid)` checkpoint in the ledger advances only past fully preserved
 messages; a UIDVALIDITY change re-enumerates the folder and byte identity keeps the replay
