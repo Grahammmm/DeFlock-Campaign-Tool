@@ -27,6 +27,14 @@ States: `proposed → approved → sending → sent | failed | blocked`.
 
 ## Safeguards (`Outbox._check`, enforced on every `send`)
 
+The journal reads, safeguards and approved-to-sending claim run in one SQLite
+`BEGIN IMMEDIATE` transaction. This serializes competing keys as well as retries
+of one key: neither an agency/day budget nor an unresolved-request hold can be
+passed concurrently from stale reads. Refusals roll the transaction back. The
+transaction commits before calling SMTP or MuckRock, so network operations do
+not hold the database write lock. A database lock timeout occurs before transport
+and must not be treated as evidence that a provider delivered anything.
+
 | Check | Result |
 | --- | --- |
 | Row already `sent` | no-op, the transport is not called |
