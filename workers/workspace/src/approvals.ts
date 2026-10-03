@@ -29,8 +29,9 @@ export async function approveAction(repo: Repo, actionId: string, identity: Acce
   const action = await repo.action(actionId);
   if (!action) throw new ApprovalError("unknown action", 404);
   if (action.state !== "proposed") throw new ApprovalError(`action is ${action.state}, not proposed`);
-  await repo.updateAction(actionId, { state: "approved", approved_by: identity.email, approved_at: nowIso() });
-  return (await repo.action(actionId))!;
+  const changed = await repo.transitionAction(action, { state: "approved", approved_by: identity.email, approved_at: nowIso() });
+  if (!changed) throw new ApprovalError("action changed during approval; reload and inspect it again");
+  return changed;
 }
 
 export async function rejectAction(repo: Repo, actionId: string, identity: AccessIdentity, reason: string): Promise<ExternalActionRow> {
@@ -38,8 +39,9 @@ export async function rejectAction(repo: Repo, actionId: string, identity: Acces
   const action = await repo.action(actionId);
   if (!action) throw new ApprovalError("unknown action", 404);
   if (action.state !== "proposed" && action.state !== "approved") throw new ApprovalError(`action is ${action.state}`);
-  await repo.updateAction(actionId, { state: "rejected", error: `rejected by ${identity.email}: ${reason || "no reason given"}` });
-  return (await repo.action(actionId))!;
+  const changed = await repo.transitionAction(action, { state: "rejected", error: `rejected by ${identity.email}: ${reason || "no reason given"}` });
+  if (!changed) throw new ApprovalError("action changed during rejection; inspect its execution receipt");
+  return changed;
 }
 
 /** Edit keeps the card in `proposed`; an edited proposal must be approved again from scratch. */
@@ -49,8 +51,9 @@ export async function editAction(repo: Repo, actionId: string, identity: AccessI
   if (!action) throw new ApprovalError("unknown action", 404);
   if (action.state !== "proposed") throw new ApprovalError(`action is ${action.state}, not proposed`);
   const merged = { ...(JSON.parse(action.proposal_json) as Record<string, unknown>), ...(proposal as Record<string, unknown>), edited_by: identity.email, edited_at: nowIso() };
-  await repo.updateAction(actionId, { proposal_json: JSON.stringify(merged) });
-  return (await repo.action(actionId))!;
+  const changed = await repo.transitionAction(action, { proposal_json: JSON.stringify(merged) });
+  if (!changed) throw new ApprovalError("action changed during editing; reload before making another edit");
+  return changed;
 }
 
 function failureText(e: unknown): string {
