@@ -7,7 +7,7 @@ import type { OutboundMessage } from "../src/executors/types.ts";
 import type { Env } from "../src/env.ts";
 import { seedCampaign } from "./helpers.ts";
 
-const SECRET = "synthetic-signing-key-for-tests-only-0000";
+const SECRET = "synthetic-signing-key-for-tests-only-0000"; // pragma: allowlist secret -- public synthetic test key
 const ORG = { email: "organizer@example.invalid", sub: "o", issued_at: 0, expires_at: 0 };
 const EXEC = { ...ORG, email: "executor@example.invalid" };
 const ENDPOINT = "https://outbox.example.invalid/send";
@@ -33,8 +33,8 @@ function reply(frame: Record<string, unknown>, patch: Record<string, unknown> = 
 
 describe("signed private outbox sender", () => {
   it("matches Python canonical identity and HMAC protocol bytes", async () => {
-    expect(await canonicalOutboxKey("send_request", "request-1", 1)).toBe("66ccc109eaaa437e7a00f542b562c1b04bc1bb4c50811845cf73df7c301f48be");
-    expect(await signOutboxFrame(SECRET, '{"synthetic":"frame"}')).toBe("86f3b891797acde0d42e63b1e9108d567425ad2b75fb020b53c9c1f95ce4515d");
+    expect(await canonicalOutboxKey("send_request", "request-1", 1)).toBe("66ccc109eaaa437e7a00f542b562c1b04bc1bb4c50811845cf73df7c301f48be"); // pragma: allowlist secret -- reproducible public digest
+    expect(await signOutboxFrame(SECRET, '{"synthetic":"frame"}')).toBe("86f3b891797acde0d42e63b1e9108d567425ad2b75fb020b53c9c1f95ce4515d"); // pragma: allowlist secret -- HMAC of public synthetic frame/key
   });
 
   it("signs stored approval and authoritative request; persists receipt and replays without network", async () => {

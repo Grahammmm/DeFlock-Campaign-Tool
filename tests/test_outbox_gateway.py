@@ -17,7 +17,7 @@ class GatewayTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "private" / "outbox.sqlite"
-        self.secret = "synthetic-signing-key-for-tests-only-0000"
+        self.secret = "synthetic-signing-key-for-tests-only-0000"  # pragma: allowlist secret -- public synthetic test key
         self.calls = []
         self.transport = lambda draft: self.deliver(draft)
         self.gateway = ApprovedOutboxGateway("synthetic", self.secret, self.path,
