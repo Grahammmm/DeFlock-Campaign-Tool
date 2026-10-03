@@ -751,19 +751,53 @@ export class Repo {
   }
 
   /** Apply an operator's evidence only to the exact failed row they inspected. */
-  async reconcileDelivery(action: ExternalActionRow, delivered: boolean, receipt: string, deliveredAt: string | null = null): Promise<boolean> {
+  async reconcileDelivery(action: ExternalActionRow, delivered: boolean, receipt: string, deliveredAt: string | null = null, mailMessageId: string | null = null): Promise<boolean> {
     const clock = nowIso();
     const provider = action.kind === "send_newsletter" ? "brevo" : "mail";
+    const eventId = newEventId();
+    const repairMail = delivered && (action.kind === "send_request" || action.kind === "send_followup") && action.subject_id !== null;
+    const proposal = repairMail ? JSON.parse(action.proposal_json) as Record<string, unknown> : {};
+    if (repairMail) {
+      if (!mailMessageId || !deliveredAt || !["email", "muckrock", "portal_manual"].includes(String(proposal.channel)) ||
+          typeof proposal.subject !== "string" || !proposal.subject.trim()) throw new Error("invalid mail reconciliation evidence");
+      const request = await this.request(action.subject_id!);
+      if (!request) throw new Error("reconciled request is missing from this campaign");
+      if (action.kind === "send_request" && request.external_ref && request.external_ref !== mailMessageId) {
+        throw new Error("request already has a different provider receipt");
+      }
+    }
     const update = this.db.prepare(
-      "UPDATE external_action SET state = ?, approved_by = ?, approved_at = ?, executed_at = ?, provider_receipt = ?, error = NULL, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed' AND error IS ? AND provider_receipt IS ?",
+      "UPDATE external_action SET state = ?, approved_by = ?, approved_at = ?, executed_at = ?, provider_receipt = ?, error = NULL, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed' AND error IS ? AND provider_receipt IS ?" +
+      (repairMail ? " AND EXISTS (SELECT 1 FROM request WHERE campaign_id = ? AND request_id = ?" +
+        (action.kind === "send_request" ? " AND (external_ref IS NULL OR external_ref = ?)" : "") + ")" : ""),
     ).bind(delivered ? "executed" : "proposed", delivered ? action.approved_by : null,
       delivered ? action.approved_at : null, delivered ? deliveredAt : null, receipt, clock,
-      this.campaignId, action.action_id, action.error, action.provider_receipt);
+      this.campaignId, action.action_id, action.error, action.provider_receipt,
+      ...(repairMail ? [this.campaignId, action.subject_id, ...(action.kind === "send_request" ? [mailMessageId] : [])] : []));
     // D1 batches are transactional. The event exists only if the conditional UPDATE won.
     const event = this.db.prepare(
       "INSERT INTO subscriber_event (event_id, campaign_id, provider, kind, payload_json, occurred_at, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1",
-    ).bind(newEventId(), this.campaignId, provider, delivered ? (provider === "brevo" ? "campaign_sent" : "mail_delivery_reconciled") : "action_reconciled", receipt, delivered ? deliveredAt : clock, clock, clock);
-    const results = await this.db.batch([update, event]);
+    ).bind(eventId, this.campaignId, provider, delivered ? (provider === "brevo" ? "campaign_sent" : "mail_delivery_reconciled") : "action_reconciled", receipt, delivered ? deliveredAt : clock, clock, clock);
+    const statements = [update, event];
+    if (repairMail) {
+      // This unique transaction-local audit event exists only if our exact action won.
+      const won = "EXISTS (SELECT 1 FROM subscriber_event WHERE event_id = ? AND campaign_id = ?)";
+      const initial = action.kind === "send_request";
+      statements.push(this.db.prepare(
+        "UPDATE request SET " + (initial ? "state = CASE WHEN state IN ('draft','approved') THEN 'sent' ELSE state END, sent_at = COALESCE(sent_at, ?), external_ref = COALESCE(external_ref, ?), " : "") +
+        "last_activity_at = CASE WHEN last_activity_at IS NULL OR julianday(last_activity_at) < julianday(?) THEN ? ELSE last_activity_at END, updated_at = ? " +
+        "WHERE campaign_id = ? AND request_id = ? AND " + won,
+      ).bind(...(initial ? [deliveredAt, mailMessageId] : []), deliveredAt, deliveredAt, clock, this.campaignId, action.subject_id, eventId, this.campaignId));
+      statements.push(this.db.prepare(
+        "INSERT INTO correspondence (correspondence_id, campaign_id, request_id, direction, channel, provider_message_id, from_addr, to_addr, subject, received_at, raw_sha256, classification, classification_confidence, summary, created_at, updated_at) " +
+        "SELECT ?, ?, ?, 'outbound', ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, ?, ?, ? WHERE " + won +
+        " AND NOT EXISTS (SELECT 1 FROM correspondence WHERE campaign_id = ? AND provider_message_id = ? AND request_id = ? AND direction = 'outbound' AND channel = ? AND subject = ?)",
+      ).bind(newCorrespondenceId(), this.campaignId, action.subject_id, proposal.channel, mailMessageId,
+        typeof proposal.to === "string" ? proposal.to : null, proposal.subject, deliveredAt,
+        initial ? "records request sent" : "follow-up sent", clock, clock, eventId, this.campaignId,
+        this.campaignId, mailMessageId, action.subject_id, proposal.channel, proposal.subject));
+    }
+    const results = await this.db.batch(statements);
     return results[0].meta.changes === 1;
   }
 

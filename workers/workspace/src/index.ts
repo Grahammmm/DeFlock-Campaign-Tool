@@ -274,7 +274,7 @@ app.post("/approvals/:id/edit", async (c) => {
 
 app.post("/approvals/:id/reconcile", async (c) => {
   const body = c.req.header("content-type")?.includes("json") ? await c.req.json() : await c.req.parseBody();
-  const row = await reconcileAction(c.var.repo, c.req.param("id"), c.var.identity, body.outcome, body.reference, body.delivered_at, body.quiescence_reference, body.quiescence_confirmed);
+  const row = await reconcileAction(c.var.repo, c.req.param("id"), c.var.identity, body.outcome, body.reference, body.delivered_at, body.quiescence_reference, body.quiescence_confirmed, body.provider_message_id);
   return wantsJson(c) ? c.json(row) : c.redirect("/approvals?notice=" + encodeURIComponent(`${row.kind} ${row.action_id} reconciled as ${row.state}; no message sent`));
 });
 

@@ -132,7 +132,7 @@ export async function holdInterruptedAction(repo: Repo, actionId: string, identi
 }
 
 /** Evidence comes from an authenticated organizer's provider check, not a resend. */
-export async function reconcileAction(repo: Repo, actionId: string, identity: AccessIdentity, outcome: unknown, reference: unknown, deliveredAt?: unknown, quiescenceReference?: unknown, quiescenceConfirmed?: unknown): Promise<ExternalActionRow> {
+export async function reconcileAction(repo: Repo, actionId: string, identity: AccessIdentity, outcome: unknown, reference: unknown, deliveredAt?: unknown, quiescenceReference?: unknown, quiescenceConfirmed?: unknown, providerMessageId?: unknown): Promise<ExternalActionRow> {
   if (!identity?.email) throw new ApprovalError("reconciliation requires an authenticated identity", 401);
   if (outcome !== "delivered" && outcome !== "not_delivered") throw new ApprovalError("outcome must be delivered or not_delivered", 400);
   if (typeof reference !== "string" || !reference.trim() || reference.length > 500) throw new ApprovalError("a provider-check reference is required (max 500 characters)", 400);
@@ -144,14 +144,28 @@ export async function reconcileAction(repo: Repo, actionId: string, identity: Ac
   const action = await repo.action(actionId);
   if (!action) throw new ApprovalError("unknown action", 404);
   if (!requiresDeliveryReconciliation(action)) throw new ApprovalError("action is not awaiting delivery reconciliation");
+  let mailMessageId: string | null = null;
+  if (outcome === "delivered" && (action.kind === "send_request" || action.kind === "send_followup")) {
+    let stored: unknown;
+    try { stored = action.provider_receipt ? JSON.parse(action.provider_receipt).provider_message_id : null; } catch { stored = null; }
+    const supplied = typeof providerMessageId === "string" ? providerMessageId.trim() : null;
+    if (typeof stored === "string" && stored.trim()) {
+      if (supplied && supplied !== stored) throw new ApprovalError("provider message id conflicts with the stored receipt", 400);
+      mailMessageId = stored;
+    } else { mailMessageId = supplied; }
+    if (!mailMessageId || mailMessageId.length > 1000 || /[\r\n\x00]/.test(mailMessageId)) {
+      throw new ApprovalError("provider-confirmed message id is required for delivered mail (max 1000 characters)", 400);
+    }
+  }
   if (requiresExecutionQuiescence(action) && ((quiescenceConfirmed !== true && quiescenceConfirmed !== "confirmed") ||
       typeof quiescenceReference !== "string" || !quiescenceReference.trim() || quiescenceReference.length > 500)) {
     throw new ApprovalError("confirm the old invocation has stopped and supply its quiescence evidence reference; elapsed time or a timeout is insufficient", 400);
   }
   const evidence = { action_id: actionId, outcome, reference: reference.trim(), checked_by: identity.email, checked_at: nowIso(), previous_error: action.error, previous_receipt: action.provider_receipt, delivered_at: deliveryTime,
+    ...(mailMessageId ? { provider_message_id: mailMessageId } : {}),
     ...(requiresExecutionQuiescence(action) ? { quiescence_reference: (quiescenceReference as string).trim(), quiescence_confirmed: true } : {}) };
   // Preserve an immutable attempted-check record even if a concurrent transition wins.
   await repo.createSubscriberEvent({ provider: action.kind === "send_newsletter" ? "brevo" : "mail", kind: "action_reconciliation_attempt", payload_json: JSON.stringify(evidence), occurred_at: evidence.checked_at });
-  if (!await repo.reconcileDelivery(action, outcome === "delivered", JSON.stringify(evidence), deliveryTime)) throw new ApprovalError("action changed during reconciliation; inspect its current receipt");
+  if (!await repo.reconcileDelivery(action, outcome === "delivered", JSON.stringify(evidence), deliveryTime, mailMessageId)) throw new ApprovalError("action changed during reconciliation; inspect its current receipt");
   return (await repo.action(actionId))!;
 }
