@@ -16,7 +16,8 @@ class CaliforniaCorrectionTests(unittest.TestCase):
 
     def test_chp_recipient_scope_officer_qualification_and_cumulative_duties(self):
         rule = self.rules["ca-veh-2413-chp-lpr-retention-and-sharing"]
-        self.assertIn("recipient law enforcement agencies", rule["actor"])
+        self.assertIn("all law enforcement agencies, including CHP itself and recipient agencies", rule["actor"])
+        self.assertIn("Any law enforcement agency, including CHP itself and recipient agencies", rule["duty"])
         self.assertIn("individual who is not a law enforcement officer", rule["duty"])
         self.assertIn("reasonably suspected", rule["duty"])
         exceptions = " ".join(rule["exceptions"])
@@ -62,7 +63,9 @@ class CaliforniaCorrectionTests(unittest.TestCase):
         exceptions = " ".join(rule["exceptions"])
         for condition in ("agency-policy and local-law/policy", "activity-specific",
                           "specific-person criminal-history", "state law",
-                          "primary purpose and duties are unrelated", "TRUTH Act",
+                          "primary purpose is not immigration enforcement",
+                          "enforcement or investigative duties are primarily related to a violation of state or federal law unrelated to immigration enforcement",
+                          "agency participation does not violate applicable local law or policy", "TRUTH Act",
                           "citizenship/immigration-status", "not general ALPR dissemination"):
             self.assertIn(condition, exceptions)
         self.assertIn("7284.6(c)-(d)", rule["remedy"])
