@@ -182,7 +182,10 @@ def send_email(draft, settings, smtp_factory=None):
             refused = smtp.send_message(message)
             accepted = True
             if refused:
-                raise OutboxError("recipients refused: " + ", ".join(sorted(refused)))
+                # send_message returns normally only when at least one recipient
+                # was accepted. A nonempty refusal map therefore means partial
+                # delivery, not a safe-to-retry rejection of the whole message.
+                raise AmbiguousFailure("smtp partial recipient acceptance; reconcile before retry")
     except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPAuthenticationError, smtplib.SMTPHeloError) as exc:
         raise OutboxError("smtp refused: " + str(exc)) from None
     except (smtplib.SMTPException, OSError) as exc:

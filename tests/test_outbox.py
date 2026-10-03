@@ -15,13 +15,14 @@ from campaign_tool import outbox as ob
 class StubSmtpServer:
     """Minimal threaded SMTP stub: records DATA payloads; can drop the connection mid-DATA."""
 
-    def __init__(self, drop_after_data=False):
+    def __init__(self, drop_after_data=False, refused_recipients=()):
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(5)
         self.port = self.sock.getsockname()[1]
         self.messages = []
         self.drop_after_data = drop_after_data
+        self.refused_recipients = frozenset(refused_recipients)
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -46,7 +47,10 @@ class StubSmtpServer:
             upper = cmd.upper()
             if upper.startswith("EHLO") or upper.startswith("HELO"):
                 send("250-stub"); send("250 8BITMIME")
-            elif upper.startswith("MAIL FROM") or upper.startswith("RCPT TO"):
+            elif upper.startswith("RCPT TO"):
+                recipient = cmd.split(":", 1)[1].strip().strip("<>")
+                send("550 recipient refused" if recipient in self.refused_recipients else "250 OK")
+            elif upper.startswith("MAIL FROM"):
                 send("250 OK")
             elif upper == "DATA":
                 send("354 End data with <CR><LF>.<CR><LF>")
@@ -126,6 +130,52 @@ class OutboxTests(unittest.TestCase):
             self.assertIn(b"Subject: Synthetic records request", server.messages[0])
             # proposing the same draft again returns the sent row
             self.assertEqual(self.box.propose(draft())["state"], "sent")
+        finally:
+            server.close()
+
+    def test_partial_smtp_acceptance_stays_held_and_cannot_resend(self):
+        server = StubSmtpServer(refused_recipients=("refused@example.invalid",))
+        try:
+            settings = ob.SmtpSettings("127.0.0.1", server.port, starttls=False)
+            row = self.box.propose(draft(to="accepted@example.invalid, refused@example.invalid"))
+            key = row["idempotency_key"]
+            self.box.approve(key, "organizer@example.invalid")
+            with self.assertRaises(ob.AmbiguousFailure):
+                self.box.send(key, lambda d: ob.send_email(d, settings))
+            held = self.box.row(key)
+            self.assertEqual(held["state"], "sending")
+            self.assertIsNotNone(held["sending_at"])
+            self.assertIsNone(held["sent_at"])
+            self.assertIsNone(held["provider_receipt"])
+            self.assertIn("partial recipient acceptance", held["error"])
+            with self.assertRaises(ob.Blocked) as caught:
+                self.box.send(key, lambda d: self.fail("held send must not retry"))
+            self.assertEqual(caught.exception.reason, "ambiguous_send_unresolved")
+            self.assertEqual(len(server.messages), 1)
+            # A changed scope/key cannot escape the unresolved request-level hold.
+            changed = draft(to="accepted@example.invalid, refused@example.invalid")
+            changed.scope_version = 2
+            next_row = self.box.propose(changed)
+            self.box.approve(next_row["idempotency_key"], "organizer@example.invalid")
+            with self.assertRaises(ob.Blocked) as caught:
+                self.box.send(next_row["idempotency_key"], lambda d: self.fail("new key must not bypass hold"))
+            self.assertEqual(caught.exception.reason, "ambiguous_send_unresolved")
+        finally:
+            server.close()
+
+    def test_all_smtp_recipients_refused_is_a_definite_failure_without_data(self):
+        server = StubSmtpServer(refused_recipients=("refused@example.invalid",))
+        try:
+            settings = ob.SmtpSettings("127.0.0.1", server.port, starttls=False)
+            row = self.box.propose(draft(to="refused@example.invalid"))
+            key = row["idempotency_key"]
+            self.box.approve(key, "organizer@example.invalid")
+            with self.assertRaises(ob.OutboxError) as caught:
+                self.box.send(key, lambda d: ob.send_email(d, settings))
+            self.assertNotIsInstance(caught.exception, ob.AmbiguousFailure)
+            self.assertEqual(self.box.row(key)["state"], "failed")
+            self.assertIsNone(self.box.row(key)["sending_at"])
+            self.assertEqual(server.messages, [])
         finally:
             server.close()
 

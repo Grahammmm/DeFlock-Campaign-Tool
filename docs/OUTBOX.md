@@ -58,6 +58,13 @@ Both take credentials as arguments. The CLI reads them from `OUTBOX_SMTP_PASSWOR
 
 ## CLI
 
+A normal SMTP result with a nonempty refusal map means at least one recipient
+was accepted and others were refused ([Python SMTP documentation](https://docs.python.org/3/library/smtplib.html#smtplib.SMTP.sendmail)).
+The journal holds that attempt in `sending` for reconciliation; neither retrying
+the same key nor proposing another scope for the request may resend it. Inspect
+delivery by recipient before resolving the hold. An exception stating that all
+recipients were refused remains a definite `failed` attempt with no DATA sent.
+
 ```
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite propose draft.json
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite approve <key> --by organizer@example.org
