@@ -169,3 +169,63 @@ class RFC822CanonicalTests(unittest.TestCase):
             inbox=next(f for f in report['mailbox']['folders'] if f['folder']=='INBOX')
             self.assertEqual(inbox['failed'],'uid 1: rfc822_wire_rejected')
         finally:harness.doCleanups()
+
+
+class RFC822RecordsRunnerTests(unittest.TestCase):
+    def test_records_runner_accepts_verified_wire_locators_and_canonical_parent_edges(self):
+        from tests.records.test_runner_wp1_overlay import WP1OverlayTests
+        from tests.records.test_runner import Transcript
+        from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
+        harness=WP1OverlayTests();harness.setUp()
+        try:
+            fixture=harness.fixture
+            path=eml_export.export_message(RFC822ConsumerTests().nested(),mail_root=fixture.delta.root,
+                account='synthetic-account',mailbox='INBOX',uidvalidity=9,uid=64)
+            backend=CanonicalMailBackend(fixture.delta.root,fixture.delta.out,harness.db)
+            provider=Transcript(fixture.scopes,[64],lambda scope,uid:str(path))
+            result=fixture.invoke(provider=provider,backend=backend)
+            self.assertEqual(result['messages_preserved'],1)
+            self.assertEqual(result['mail_failures'],0)
+            self.assertEqual(fixture.query('SELECT highest_uid FROM runner_folders'),[(64,)])
+            facts=json.loads(fixture.query('SELECT evidence FROM runner_messages')[0][0])
+            self.assertEqual(len(facts['attachment_parents']),3)
+            with harness.store.ledger(harness.db,readonly=True) as con:
+                rows=con.execute('SELECT id,original_sha256,parent_occurrence_id FROM occurrences').fetchall()
+                self.assertEqual(len(rows),4)
+                parents={row['id']:row['original_sha256'] for row in rows}
+                for capture in mail_delta.wire_intake_plan(RFC822ConsumerTests().nested()).captures:
+                    self.assertTrue(any(row['original_sha256']==capture.sha256 and
+                        parents.get(row['parent_occurrence_id'])==capture.parent_sha256 for row in rows))
+                self.assertEqual(con.execute("SELECT count(*) FROM stage_state WHERE stage='preserve' AND status='done'").fetchone()[0],4)
+            self.assertEqual(fixture.invoke(provider=provider,backend=backend)['messages_preserved'],0)
+        finally:harness.doCleanups()
+
+    def test_wire_parent_shape_cannot_launder_legacy_or_forged_locators(self):
+        from dataclasses import replace
+        from campaign_tool.records.runner.contracts import Preserved
+        from campaign_tool.records.runner.core import attachment_identity_ok
+        h='a'*64
+        valid=Preserved(h,h,h,(h,),(("rfc822:1.2",h),("mime:1.2/1.2",h)),
+                         (("rfc822:1.2",None),("mime:1.2/1.2","rfc822:1.2")),("rfc822:1.2",))
+        self.assertTrue(attachment_identity_ok(valid))
+        for invalid in [replace(valid,attachment_parents=()),
+                        replace(valid,eml_parts=()),
+                        replace(valid,attachment_parents=(("rfc822:1.2",None),("mime:1.2/1.2",None))),
+                        replace(valid,attachment_parents=(("rfc822:1.2",None),("mime:1.2/1.2","rfc822:1.9"))),
+                        replace(valid,attachments=(("arbitrary:secret",h),)),
+                        replace(valid,attachment_parents=valid.attachment_parents+valid.attachment_parents)]:
+            self.assertFalse(attachment_identity_ok(invalid))
+
+    def test_runtime_fingerprint_changes_with_each_wire_dependency(self):
+        from campaign_tool.records.runner.core import observed_runtime
+        from campaign_tool.records.intake import rfc822_adapter,rfc822_inventory,wire_rfc822
+        image='sha256:'+'a'*64
+        baseline=observed_runtime(image)
+        with tempfile.TemporaryDirectory() as temporary:
+            for module in [rfc822_adapter,rfc822_inventory,wire_rfc822]:
+                path=Path(temporary)/Path(module.__file__).name
+                path.write_bytes(Path(module.__file__).read_bytes()+b'\n# synthetic source change\n')
+                with patch.object(module,'__file__',str(path)):
+                    changed=observed_runtime(image)
+                self.assertNotEqual(changed['code_sha256'],baseline['code_sha256'])
+                self.assertEqual(changed['image_verification'],'caller_declared_not_host_verified')
