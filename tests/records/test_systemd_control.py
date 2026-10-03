@@ -383,12 +383,15 @@ class SystemdControlTests(fixtures.HostFixture):
 
     def test_clean_env_no_paid_forwarding_or_untrusted_callbacks(self):
         fake = self.fake()
-        with mock.patch.dict(os.environ, {"MODEL_API_KEY": "PAID_SENTINEL",
+        # Deliberately synthetic input, not a credential or scanner exemption.
+        synthetic_value = "fixture-only-not-a-credential"
+        with mock.patch.dict(os.environ, {"MODEL_API_KEY": synthetic_value,
                                          "MODEL_BASE_URL": "https://synthetic.invalid",
                                          "CHALLENGE_MODEL_BASE_URL": "https://synthetic.invalid"}):
+            self.assertEqual(os.environ["MODEL_API_KEY"], synthetic_value)
             self.bound_run(fake)
         for argv, _ in fake.calls:
-            self.assertNotIn("PAID_SENTINEL", repr(argv))
+            self.assertNotIn(synthetic_value, repr(argv))
             if argv[1] in {"create", "exec"}:
                 self.assertIn("-i", argv)
                 self.assertIn("MODEL_BASE_URL=", argv)
