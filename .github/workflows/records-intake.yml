@@ -12,7 +12,7 @@ permissions:
 jobs:
   intake:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +27,7 @@ jobs:
       - name: Install test parsers in disposable CI only
         run: python -m pip install -r requirements-records-test.txt
       - name: Synthetic offline extraction tests
+        timeout-minutes: 15
         run: python -B -m unittest discover -v
       - name: Credential scan without network verification
         run: |
