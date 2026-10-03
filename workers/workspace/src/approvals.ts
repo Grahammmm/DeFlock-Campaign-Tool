@@ -8,7 +8,7 @@
 // provider effects require an authenticated reconciliation before any new approval.
 import { nowIso } from "@deflock/shared/ids";
 import type { AccessIdentity } from "./auth.ts";
-import { requiresDeliveryReconciliation, type ActionKind, type ExternalActionRow, type Repo } from "./db.ts";
+import { executionClaimId, requiresDeliveryReconciliation, requiresExecutionQuiescence, type ActionKind, type ExternalActionRow, type Repo } from "./db.ts";
 import type { Env } from "./env.ts";
 import { defaultExecutors, ExecutorFailure, type ActionExecutor } from "./executors/index.ts";
 
@@ -82,19 +82,57 @@ export async function executeAction(
     if (now?.state === "executed") return now;
     throw new ApprovalError("action was claimed by another execution");
   }
+  // Only the newsletter can be held while its executor is running. Its provider
+  // checkpoints and events therefore use claim-bound writes as well as completion.
+  const executorRepo = claimed.kind === "send_newsletter" ? new Proxy(repo, {
+    get(target, key) {
+      if (key === "updateAction") return async (id: string, patch: Partial<ExternalActionRow>) => {
+        if (id !== claimed.action_id) throw new ExecutorFailure("execution_claim_lost", "executor action mismatch");
+        if (!await target.updateExecutingAction(claimed, patch)) {
+          if (patch.provider_receipt) await target.createSubscriberEvent({ provider: "brevo", kind: "late_execution_receipt",
+            payload_json: JSON.stringify({ action_id: id, execution_id: executionClaimId(claimed), provider_receipt: patch.provider_receipt }), occurred_at: nowIso() });
+          throw new ExecutorFailure("execution_claim_lost", "the action is held; late provider evidence was retained without changing its state");
+        }
+      };
+      if (key === "createSubscriberEvent") return async (event: Parameters<Repo["createSubscriberEvent"]>[0]) => {
+        const saved = await target.createExecutionEvent(claimed, event);
+        if (!saved) throw new ExecutorFailure("execution_claim_lost", "the action is held; no send event was stamped");
+        return saved;
+      };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) : repo;
   try {
-    const result = await executor.execute(claimed, JSON.parse(claimed.proposal_json) as Record<string, unknown>, { env, repo, identity });
-    await repo.updateAction(actionId, { state: "executed", executed_at: nowIso(), provider_receipt: result.provider_receipt, error: null });
+    const result = await executor.execute(claimed, JSON.parse(claimed.proposal_json) as Record<string, unknown>, { env, repo: executorRepo, identity });
+    const completed = await repo.updateExecutingAction(claimed, { state: "executed", executed_at: nowIso(), provider_receipt: result.provider_receipt, error: null });
+    if (!completed && claimed.kind === "send_newsletter") await repo.createSubscriberEvent({ provider: "brevo", kind: "late_execution_receipt",
+      payload_json: JSON.stringify({ action_id: actionId, execution_id: executionClaimId(claimed), provider_receipt: result.provider_receipt, phase: "completion" }), occurred_at: nowIso() });
   } catch (e) {
     const text = failureText(e);
-    await repo.updateAction(actionId, { state: "failed", error: text });
-    await repo.raiseIncident("action:" + actionId, "warning", `execution failed for ${action.kind}: ${text}`);
+    if (await repo.updateExecutingAction(claimed, { state: "failed", error: text })) {
+      await repo.raiseIncident("action:" + actionId, "warning", `execution failed for ${action.kind}: ${text}`);
+    }
   }
   return (await repo.action(actionId))!;
 }
 
+/** Fence this exact claim. This is a hold, not cancellation of an admitted call. */
+export async function holdInterruptedAction(repo: Repo, actionId: string, identity: AccessIdentity, executionId: unknown, reference: unknown): Promise<ExternalActionRow> {
+  if (!identity?.email) throw new ApprovalError("recovery requires an authenticated identity", 401);
+  if (typeof reference !== "string" || !reference.trim() || reference.length > 500) throw new ApprovalError("an interruption reference is required (max 500 characters)", 400);
+  const action = await repo.action(actionId);
+  if (!action) throw new ApprovalError("unknown action", 404);
+  const claimId = executionClaimId(action);
+  if (action.kind !== "send_newsletter" || action.state !== "executing" || !claimId || executionId !== claimId) throw new ApprovalError("this exact newsletter execution claim is required; legacy/unbound executions stay held");
+  const evidence = JSON.stringify({ action_id: actionId, execution_id: claimId, checked_by: identity.email,
+    checked_at: nowIso(), reference: reference.trim(), previous_receipt: action.provider_receipt, outcome: "held_not_cancelled" });
+  if (!await repo.holdExecution(action, evidence)) throw new ApprovalError("execution changed during recovery; inspect its current receipt");
+  return (await repo.action(actionId))!;
+}
+
 /** Evidence comes from an authenticated organizer's provider check, not a resend. */
-export async function reconcileAction(repo: Repo, actionId: string, identity: AccessIdentity, outcome: unknown, reference: unknown, deliveredAt?: unknown): Promise<ExternalActionRow> {
+export async function reconcileAction(repo: Repo, actionId: string, identity: AccessIdentity, outcome: unknown, reference: unknown, deliveredAt?: unknown, quiescenceReference?: unknown, quiescenceConfirmed?: unknown): Promise<ExternalActionRow> {
   if (!identity?.email) throw new ApprovalError("reconciliation requires an authenticated identity", 401);
   if (outcome !== "delivered" && outcome !== "not_delivered") throw new ApprovalError("outcome must be delivered or not_delivered", 400);
   if (typeof reference !== "string" || !reference.trim() || reference.length > 500) throw new ApprovalError("a provider-check reference is required (max 500 characters)", 400);
@@ -106,7 +144,12 @@ export async function reconcileAction(repo: Repo, actionId: string, identity: Ac
   const action = await repo.action(actionId);
   if (!action) throw new ApprovalError("unknown action", 404);
   if (!requiresDeliveryReconciliation(action)) throw new ApprovalError("action is not awaiting delivery reconciliation");
-  const evidence = { action_id: actionId, outcome, reference: reference.trim(), checked_by: identity.email, checked_at: nowIso(), previous_error: action.error, previous_receipt: action.provider_receipt, delivered_at: deliveryTime };
+  if (requiresExecutionQuiescence(action) && ((quiescenceConfirmed !== true && quiescenceConfirmed !== "confirmed") ||
+      typeof quiescenceReference !== "string" || !quiescenceReference.trim() || quiescenceReference.length > 500)) {
+    throw new ApprovalError("confirm the old invocation has stopped and supply its quiescence evidence reference; elapsed time or a timeout is insufficient", 400);
+  }
+  const evidence = { action_id: actionId, outcome, reference: reference.trim(), checked_by: identity.email, checked_at: nowIso(), previous_error: action.error, previous_receipt: action.provider_receipt, delivered_at: deliveryTime,
+    ...(requiresExecutionQuiescence(action) ? { quiescence_reference: (quiescenceReference as string).trim(), quiescence_confirmed: true } : {}) };
   // Preserve an immutable attempted-check record even if a concurrent transition wins.
   await repo.createSubscriberEvent({ provider: "brevo", kind: "action_reconciliation_attempt", payload_json: JSON.stringify(evidence), occurred_at: evidence.checked_at });
   if (!await repo.reconcileDelivery(action, outcome === "delivered", JSON.stringify(evidence), deliveryTime)) throw new ApprovalError("action changed during reconciliation; inspect its current receipt");
