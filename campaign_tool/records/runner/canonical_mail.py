@@ -156,10 +156,15 @@ class CanonicalMailBackend(LegacyIntakeBackend):
             envelope=context.get('preservation_evidence')
             if context.get('content_kind')=='preservation_evidence':
                 if not isinstance(envelope,dict) or envelope.get('original_sha256')!=subject or envelope.get('byte_length')!=length or envelope.get('storage_ref')!=expected:return False
-                if set(envelope.get('occurrence_ids',[]))!={row['id'] for row in occurrences}:return False
+                bound=envelope.get('occurrence_ids')
+                if not isinstance(bound,list) or not bound or any(not isinstance(x,str) for x in bound) or len(set(bound))!=len(bound) or not set(bound)<={row['id'] for row in occurrences}:return False
             elif hashlib.sha256(context['content']).hexdigest()!=subject or len(context['content'])!=length:return False
             observed_hashes=set()
             for row in occurrences:
+                if row['kind']=='local':
+                    from ..intake.document_drop import verify_local_occurrence
+                    observed_hashes.add(verify_local_occurrence(row,self.output,subject)[0])
+                    continue
                 if row['kind'] not in ('mail','attachment'):return False
                 evidence=json.loads(row['evidence']);source=json.loads(row['source_ref'])
                 path=evidence.get('verification_receipt_path');digest=evidence.get('receipt_sha256')
@@ -182,6 +187,7 @@ class CanonicalMailBackend(LegacyIntakeBackend):
             if envelope is not None and envelope['verification_receipt_sha256'] not in observed_hashes:return False
             return True
         except (OSError,ValueError,KeyError,TypeError,RecursionError):return False
+        except Exception:return False
     def preserve(self,receipt_path,account,scope,uid):
         if self.run_identity is None:raise IntegrationGap('canonical_run_identity_missing')
         value=super().preserve(receipt_path,account,scope,uid)
