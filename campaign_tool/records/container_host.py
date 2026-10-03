@@ -615,8 +615,11 @@ class Journal:
             require(value["job_id"] == job_id)
             return value
 
-    def allocate(self):
+    def allocate(self, job_id=None):
+        require(job_id is None or isinstance(job_id, str) and JOB.fullmatch(job_id))
         with locked(self.directory, "journal.lock", wait=1):
+            from .systemd_control import admission
+            admission(self, job_id, preassigned=job_id is not None)
             try:
                 active = self.active()
             except FileNotFoundError:
@@ -625,7 +628,7 @@ class Journal:
                 prior = self.read(active["job_id"])
                 require(prior["profile_sha256"] == active["profile_sha256"]
                         and not prior["hold"] and prior["phase"] == "finished" and prior["quiescent"])
-            job_id = os.urandom(16).hex()
+            job_id = os.urandom(16).hex() if job_id is None else job_id
             value = dict(schema=1, job_id=job_id, profile_sha256=self.profile.sha256,
                          container_id=None, phase="prepared", hold=True, launch_started=False,
                          quiescent=False, ack="none", worker_status="unknown", worker_exit=None,
@@ -713,6 +716,8 @@ def _hold(journal, job_id, reason):
 
 def _launch(journal, docker, job_id, role):
     """Caller holds admission lock. Never starts without durable full CID."""
+    from .systemd_control import admission
+    admission(journal, job_id)
     current = journal.read(job_id)
     require(current["phase"] == ("preflight" if role == "worker" else "postrun"))
     require(current["reporter_id"] is None if role == "reporter" else current["container_id"] is None)
@@ -737,6 +742,7 @@ def _launch(journal, docker, job_id, role):
 
     if role == "worker":
         with locked(journal.directory, "cancel-admit.lock", wait=65):
+            admission(journal, job_id)
             require(not journal.read(job_id)["cancel_requested"])
             journal.change(job_id, phase="launching", launch_started=True)
             dispatch()
@@ -776,13 +782,13 @@ def _postrun(journal, docker, job_id):
         return _output(status,quiescent=True,healthy=healthy,cards=report["cards"])
 
 
-def run(profile_path, *, invoke=call_argv, containment=None):
+def run(profile_path, *, invoke=call_argv, containment=None, job_id=None):
     with Profile(profile_path) as profile:
         require(profile.value["owner_launch_approved"])
         journal = Journal(profile)
         try:
             with locked(journal.directory, "launch.lock"):
-                job_id = journal.allocate()
+                job_id = journal.allocate(job_id)
                 docker = Docker(profile, invoke=invoke, containment=containment)
                 try:
                     with locked(journal.directory, "admission.lock", wait=65):
@@ -813,21 +819,38 @@ def run(profile_path, *, invoke=call_argv, containment=None):
             journal.close()
 
 
-def stop(profile_path, *, invoke=call_argv, containment=None):
-    """Independent exact-CID stop-post; daemon loss never clears durable HOLD."""
+def stop(profile_path, *, invoke=call_argv, containment=None, expected_job_id=None):
+    """Independent exact-CID stop; optional immutable job guard, checked inside locks."""
+    require(expected_job_id is None or isinstance(expected_job_id, str) and JOB.fullmatch(expected_job_id))
     with Profile(profile_path) as profile:
         journal = Journal(profile)
         try:
             with locked(journal.directory, "stop.lock"):
+                if expected_job_id is not None:
+                    with locked(journal.directory, "journal.lock", wait=1):
+                        try:
+                            prior = journal.read(expected_job_id)
+                        except FileNotFoundError:
+                            raise Rejected() from None
+                        require(prior["profile_sha256"] == profile.sha256)
+                        if prior["phase"] == "finished":
+                            require(not prior["hold"] and prior["quiescent"] and prior["worker_removed"]
+                                    and (prior["reporter_id"] is None or prior["reporter_removed"]))
+                            return _output("completed" if prior["healthy"] else "postrun_failed",
+                                           quiescent=True, healthy=prior["healthy"], cards=prior["cards"])
                 active = journal.active()
                 require(active["profile_sha256"] == profile.sha256)
                 job_id = active["job_id"]
+                require(expected_job_id is None or job_id == expected_job_id)
                 current = journal.read(job_id)
                 require(current["profile_sha256"] == profile.sha256 and current["phase"] != "finished")
                 journal.change(job_id, cancel_requested=True)
                 docker = Docker(profile, invoke=invoke, containment=containment)
                 try:
                     with locked(journal.directory, "admission.lock", wait=65):
+                        active = journal.active()
+                        require(active["job_id"] == job_id and active["profile_sha256"] == profile.sha256
+                                and (expected_job_id is None or active["job_id"] == expected_job_id))
                         current = journal.read(job_id)
                         require(current["container_id"] is not None)  # Ambiguous create stays HOLD.
                         for role, field, removed in (("worker","container_id","worker_removed"),
@@ -1090,6 +1113,7 @@ def main(arguments=None):
         for action in ("run", "stop"):
             command = commands.add_parser(action, add_help=False)
             command.add_argument("--profile", required=True)
+            command.add_argument("--job-id" if action == "run" else "--expected-job-id")
         command = commands.add_parser("probe", add_help=False)
         for name in ("root", "tmp_dir", "mail_config", "worker_state_parent", "board_dir", "release_root", "parser_path"):
             command.add_argument("--" + name.replace("_", "-"), required=True)
@@ -1107,9 +1131,9 @@ def main(arguments=None):
             command.add_argument("--" + name.replace("_", "-"), required=True)
         args = parser.parse_args(arguments)
         if args.action == "run":
-            result = run(args.profile)
+            result = run(args.profile, job_id=args.job_id)
         elif args.action == "stop":
-            result = stop(args.profile)
+            result = stop(args.profile, expected_job_id=args.expected_job_id)
         elif args.action == "entry":
             result = entry(vars(args))
         elif args.action == "admit":
