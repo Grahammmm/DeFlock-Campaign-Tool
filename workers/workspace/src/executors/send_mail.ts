@@ -2,7 +2,7 @@
 // default sender is NotConfiguredSender, so without an outbox the card fails with
 // `sender_not_configured` and nothing leaves the system.
 import { nowIso } from "@deflock/shared/ids";
-import { ExecutorFailure, NotConfiguredSender, type ActionExecutor, type MailSender, type OutboundMessage } from "./types.ts";
+import { ExecutorFailure, NotConfiguredSender, type ActionExecutor, type MailSender, type OutboundMessage, type SendReceipt } from "./types.ts";
 
 function outbound(kind: "send_request" | "send_followup", actionId: string, key: string, proposal: Record<string, unknown>, requestId: string | null): OutboundMessage {
   const channel = proposal.channel;
@@ -28,7 +28,27 @@ export function mailExecutor(kind: "send_request" | "send_followup", sender: Mai
       const campaign = await ctx.repo.campaign();
       if (campaign?.external_sends !== "approval_required") throw new ExecutorFailure("external_sends_disabled", "campaign.external_sends is disabled; enable approval_required in Settings first");
       const message = outbound(kind, action.action_id, action.idempotency_key, proposal, action.subject_id);
-      const receipt = await sender.send(message, ctx);
+      let receipt: SendReceipt;
+      try {
+        receipt = await sender.send(message, ctx);
+      } catch (error) {
+        if (error instanceof ExecutorFailure) throw error;
+        throw new ExecutorFailure("mail_send_ambiguous", "sender outcome is unknown; reconcile delivery before retrying");
+      }
+      if (!receipt || typeof receipt.provider_message_id !== "string" || !receipt.provider_message_id.trim() ||
+          receipt.provider_message_id.length > 1000 || typeof receipt.provider !== "string" || !receipt.provider.trim() ||
+          receipt.provider.length > 100 || typeof receipt.sent_at !== "string" ||
+          !/^\d{4}-\d{2}-\d{2}T.*Z$/.test(receipt.sent_at) || !Number.isFinite(Date.parse(receipt.sent_at))) {
+        throw new ExecutorFailure("mail_send_ambiguous", "sender returned an invalid delivery receipt; reconcile before retrying");
+      }
+      const providerReceipt = JSON.stringify({ provider_message_id: receipt.provider_message_id,
+        provider: receipt.provider, sent_at: new Date(receipt.sent_at).toISOString(), sender: sender.name, at: nowIso() });
+      try {
+        // Preserve delivery evidence before request bookkeeping can fail.
+        await ctx.repo.updateAction(action.action_id, { provider_receipt: providerReceipt });
+      } catch {
+        throw new ExecutorFailure("mail_send_ambiguous", "delivery receipt storage failed; reconcile before retrying");
+      }
       if (message.request_id) {
         const patch = kind === "send_request" ? { state: "sent" as const, sent_at: receipt.sent_at, external_ref: receipt.provider_message_id } : {};
         await ctx.repo.updateRequest(message.request_id, { ...patch, last_activity_at: receipt.sent_at });
@@ -47,7 +67,7 @@ export function mailExecutor(kind: "send_request" | "send_followup", sender: Mai
           summary: kind === "send_request" ? "records request sent" : "follow-up sent",
         });
       }
-      return { provider_receipt: JSON.stringify({ ...receipt, sender: sender.name, at: nowIso() }) };
+      return { provider_receipt: providerReceipt };
     },
   };
 }

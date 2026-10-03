@@ -151,7 +151,7 @@ export async function reconcileAction(repo: Repo, actionId: string, identity: Ac
   const evidence = { action_id: actionId, outcome, reference: reference.trim(), checked_by: identity.email, checked_at: nowIso(), previous_error: action.error, previous_receipt: action.provider_receipt, delivered_at: deliveryTime,
     ...(requiresExecutionQuiescence(action) ? { quiescence_reference: (quiescenceReference as string).trim(), quiescence_confirmed: true } : {}) };
   // Preserve an immutable attempted-check record even if a concurrent transition wins.
-  await repo.createSubscriberEvent({ provider: "brevo", kind: "action_reconciliation_attempt", payload_json: JSON.stringify(evidence), occurred_at: evidence.checked_at });
+  await repo.createSubscriberEvent({ provider: action.kind === "send_newsletter" ? "brevo" : "mail", kind: "action_reconciliation_attempt", payload_json: JSON.stringify(evidence), occurred_at: evidence.checked_at });
   if (!await repo.reconcileDelivery(action, outcome === "delivered", JSON.stringify(evidence), deliveryTime)) throw new ApprovalError("action changed during reconciliation; inspect its current receipt");
   return (await repo.action(actionId))!;
 }

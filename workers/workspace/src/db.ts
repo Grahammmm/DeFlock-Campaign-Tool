@@ -753,6 +753,7 @@ export class Repo {
   /** Apply an operator's evidence only to the exact failed row they inspected. */
   async reconcileDelivery(action: ExternalActionRow, delivered: boolean, receipt: string, deliveredAt: string | null = null): Promise<boolean> {
     const clock = nowIso();
+    const provider = action.kind === "send_newsletter" ? "brevo" : "mail";
     const update = this.db.prepare(
       "UPDATE external_action SET state = ?, approved_by = ?, approved_at = ?, executed_at = ?, provider_receipt = ?, error = NULL, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed' AND error IS ? AND provider_receipt IS ?",
     ).bind(delivered ? "executed" : "proposed", delivered ? action.approved_by : null,
@@ -760,8 +761,8 @@ export class Repo {
       this.campaignId, action.action_id, action.error, action.provider_receipt);
     // D1 batches are transactional. The event exists only if the conditional UPDATE won.
     const event = this.db.prepare(
-      "INSERT INTO subscriber_event (event_id, campaign_id, provider, kind, payload_json, occurred_at, created_at, updated_at) SELECT ?, ?, 'brevo', ?, ?, ?, ?, ? WHERE changes() = 1",
-    ).bind(newEventId(), this.campaignId, delivered ? "campaign_sent" : "action_reconciled", receipt, delivered ? deliveredAt : clock, clock, clock);
+      "INSERT INTO subscriber_event (event_id, campaign_id, provider, kind, payload_json, occurred_at, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1",
+    ).bind(newEventId(), this.campaignId, provider, delivered ? (provider === "brevo" ? "campaign_sent" : "mail_delivery_reconciled") : "action_reconciled", receipt, delivered ? deliveredAt : clock, clock, clock);
     const results = await this.db.batch([update, event]);
     return results[0].meta.changes === 1;
   }
@@ -926,6 +927,9 @@ export class Repo {
 
 /** A provider object or ambiguous network result must not be retried as a new send. */
 export function requiresDeliveryReconciliation(action: ExternalActionRow): boolean {
+  if ((action.kind === "send_request" || action.kind === "send_followup") && action.state === "failed") {
+    return action.provider_receipt !== null || /^mail_send_ambiguous:/.test(action.error ?? "");
+  }
   return action.kind === "send_newsletter" && action.state === "failed" &&
     (action.provider_receipt !== null || /^brevo_(?:create|send)_ambiguous:/.test(action.error ?? "") || requiresExecutionQuiescence(action));
 }
