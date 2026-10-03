@@ -10,8 +10,8 @@
     "determination_days": 10,
     "determination_extension_days": 14,
     "day_type": "calendar",
-    "fee_basis": "Fees covering the direct costs of duplication, or a statutory fee if applicable (Gov. Code § 7922.530(a)). Inspection on premises with the requester's own non-contact equipment is free (§ 7922.530(b)).",
-    "appeal": "No administrative appeal. Any person may institute a proceeding for injunctive or declaratory relief or a writ of mandate in a court of competent jurisdiction (Gov. Code § 7923.000 et seq.). The 10-day determination period runs from receipt of the request (§ 7922.535(a)); one written extension of no more than 14 days is allowed only for enumerated unusual circumstances (§ 7922.535(b)-(c)). The determination deadline is not a production deadline.",
+    "fee_basis": "Fees may cover direct duplication costs or an applicable statutory fee. Free own-equipment copying on agency premises applies to disclosable records without physical contact, but not methods that damage records or permit unauthorized computer-system or secured-network access. Necessary reasonable record-safety and orderly-function limits, and necessary historic/high-value record integrity or preservation limits, remain applicable (Gov. Code § 7922.530(a)-(c)).",
+    "appeal": "No administrative appeal. Any person may institute a proceeding for injunctive or declaratory relief or a writ of mandate in a court of competent jurisdiction (Gov. Code § 7923.000 et seq.). The 10-day determination period runs from receipt of the request (§ 7922.535(a)); one written extension of no more than 14 days is allowed only for enumerated unusual circumstances (§ 7922.535(b)-(c)). The determination deadline is not a production deadline. Date outputs are provisional reminders only: establish actual copy-request receipt, applicable last-day holiday rules (Gov. Code §§ 6800, 6700 and related provisions), and a lawful, reasonably necessary written extension notice from the agency head or designee stating reasons and expected dispatch date. A send date is not proof of receipt; a reminder is not a finding of lateness.",
     "sources": [
       {
         "title": "Gov. Code § 7920.000 (short title; AB 473 operative 2023-01-01)",
@@ -19,19 +19,29 @@
         "accessed": "2026-09-30"
       },
       {
-        "title": "Gov. Code § 7922.535 (10-day determination; 14-day extension for unusual circumstances)",
+        "title": "Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01; current version)",
         "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.535.",
-        "accessed": "2026-09-30"
+        "accessed": "2026-10-02"
       },
       {
-        "title": "Gov. Code § 7922.530 (direct costs of duplication)",
+        "title": "Gov. Code § 7922.530(a)-(c) (AB 473; operative 2023-01-01; copying conditions)",
         "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.530.",
-        "accessed": "2026-09-30"
+        "accessed": "2026-10-02"
       },
       {
         "title": "Gov. Code § 7923.000 (enforcement proceeding)",
         "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7923.000.",
         "accessed": "2026-09-30"
+      },
+      {
+        "title": "Gov. Code § 6800 (first-day exclusion; last-day holiday exclusion)",
+        "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=6800.",
+        "accessed": "2026-10-02"
+      },
+      {
+        "title": "Gov. Code § 6700 (current holiday list; AB 2156 effective 2026-03-26; historical/local applicability still requires review)",
+        "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=6700.",
+        "accessed": "2026-10-02"
       }
     ]
   },
@@ -44,7 +54,7 @@
       "duty": "Definitional scope for Title 1.81.23: an 'ALPR system' is a searchable computerized database resulting from one or more mobile or fixed cameras combined with algorithms that convert plate images to computer-readable data; an 'ALPR operator' operates such a system; an 'ALPR end-user' accesses or uses one; 'ALPR information' is data collected through an ALPR system; 'public agency' means the state or any city, county, or agency or political subdivision of the state, including a law enforcement agency. Out-of-state and federal agencies are not 'public agencies' under subdivision (f).",
       "exceptions": [
         "Transportation agencies subject to Sts. & Hy. Code § 31490 are not ALPR operators or end-users.",
-        "End-user excludes persons subject to 15 U.S.C. §§ 6801-6809 under regulatory oversight, and non-law-enforcement persons receiving information as a permissible use under 18 U.S.C. § 2721."
+        "End-user excludes persons subject to 15 U.S.C. §§ 6801-6809 and implementing state or federal statutes or regulations, if subject to state or federal regulatory compliance oversight for those sections; it also excludes a person other than a law enforcement agency to whom information may be disclosed as a permissible use under 18 U.S.C. § 2721. Eligibility, not actual receipt, is the latter predicate. Federal cross-reference eligibility remains unresolved and requires qualified human legal review."
       ],
       "remedy": "Definitions only; remedies attach through Civ. Code § 1798.90.54.",
       "effective_from": "2016-01-01",
@@ -53,10 +63,10 @@
         {
           "title": "Civ. Code § 1798.90.5 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
           "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5.",
-          "accessed": "2026-09-30"
+          "accessed": "2026-10-02"
         }
       ],
-      "review": "verified"
+      "review": "needs_attorney_review"
     },
     {
       "rule_id": "ca-civ-1798.90.51-security-procedures",
@@ -82,7 +92,7 @@
       "citation": "Civ. Code § 1798.90.51(b)",
       "actor": "ALPR operator",
       "activity": "operate an ALPR system",
-      "duty": "Implement a usage and privacy policy ensuring that collection, use, maintenance, sharing, and dissemination of ALPR information is consistent with respect for individuals' privacy and civil liberties. The policy shall be available to the public in writing and, if the operator has an internet website, posted conspicuously on that website. At a minimum it shall include: (A) authorized purposes for using the system and collecting information; (B) job titles or designations of employees and independent contractors authorized to use or access the system, and their training requirements; (C) how the system will be monitored for security and privacy-law compliance; (D) the purposes of, process for, and restrictions on sale, sharing, or transfer of ALPR information; (E) the title of the official custodian or owner responsible for implementing the section; (F) reasonable measures to ensure accuracy and correct errors; (G) the retention period and the process for deciding when to destroy retained information.",
+      "duty": "An operator must implement a privacy and usage policy respecting privacy and civil liberties across collection, use, maintenance, sharing and dissemination. Make it publicly available in writing and conspicuous online if the operator has a website. Minimum contents: (A) authorized system-use and collection purposes; (B) job titles or designations of employees and independent contractors authorized to use or access the system or collect ALPR information, and training requirements; (C) security and privacy-law monitoring; (D) sale, sharing and transfer purposes, processes and restrictions; (E) title of the ALPR-system custodian or owner responsible for implementing this section; (F) reasonable accuracy and error-correction measures; (G) retention length and the process for determining if and when to destroy retained information.",
       "exceptions": [],
       "remedy": "Civil action by a harmed individual against a person who knowingly caused the harm (Civ. Code § 1798.90.54).",
       "effective_from": "2016-01-01",
@@ -91,7 +101,7 @@
         {
           "title": "Civ. Code § 1798.90.51 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
           "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.51.",
-          "accessed": "2026-09-30"
+          "accessed": "2026-10-02"
         }
       ],
       "review": "verified"
@@ -120,7 +130,7 @@
       "citation": "Civ. Code § 1798.90.53",
       "actor": "ALPR end-user",
       "activity": "access or use an ALPR system",
-      "duty": "Maintain reasonable security procedures and practices (operational, administrative, technical, and physical safeguards) to protect ALPR information from unauthorized access, destruction, use, modification, or disclosure; and implement a usage and privacy policy, available to the public in writing and posted conspicuously on the end-user's website if it has one, covering at minimum: (A) authorized purposes for accessing and using ALPR information; (B) job titles or designations of authorized employees and independent contractors and their training requirements; (C) how the system will be monitored for security and privacy-law compliance, and a process for periodic system audits; (D) purposes of, process for, and restrictions on sale, sharing, or transfer; (E) the title of the official custodian or owner of the ALPR information; (F) accuracy and error-correction measures; (G) retention period and destruction process.",
+      "duty": "An end-user must maintain reasonable operational, administrative, technical and physical security safeguards against unauthorized access, destruction, use, modification or disclosure. Implement a privacy and usage policy respecting privacy and civil liberties in access, use, sharing and dissemination; make it publicly available in writing and conspicuous online if a website exists. Minimum contents: (A) authorized access and use purposes; (B) job titles or designations of employees and independent contractors authorized to access and use ALPR information, with training requirements; (C) security and privacy-law monitoring and a periodic system-audit process; (D) sale, sharing and transfer purposes, processes and restrictions; (E) title of the information custodian or owner responsible for implementing this section; (F) reasonable accuracy and error-correction measures; (G) retention length and the process for determining if and when to destroy retained information.",
       "exceptions": [
         "Persons excluded from the end-user definition by Civ. Code § 1798.90.5(a)."
       ],
@@ -131,7 +141,7 @@
         {
           "title": "Civ. Code § 1798.90.53 (Added by Stats. 2015, ch. 532, § 3 (SB 34), effective 2016-01-01)",
           "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.53.",
-          "accessed": "2026-09-30"
+          "accessed": "2026-10-02"
         }
       ],
       "review": "verified"
@@ -201,12 +211,12 @@
     {
       "rule_id": "ca-veh-2413-chp-lpr-retention-and-sharing",
       "citation": "Veh. Code § 2413(b)-(e)",
-      "actor": "Department of the California Highway Patrol",
+      "actor": "CHP for retention, disclosure, monitoring and reporting; all law enforcement agencies, including CHP itself and recipient agencies, for use of CHP LPR data",
       "activity": "retain, share, and use license plate reader data",
-      "duty": "CHP may retain LPR data for no more than 60 days except when the data is being used as evidence or for felonies being investigated; shall not sell LPR data for any purpose and shall not make it available to a non-law-enforcement agency or individual; LPR data may be used by a law enforcement agency only to locate vehicles or persons reasonably suspected of involvement in a public offense; CHP shall monitor internal use to prevent unauthorized use and shall report LPR practices and usage, including the number of disclosures, the agencies receiving data and the purpose, and privacy-affecting policy changes, in its annual automobile theft report under § 10901(b).",
+      "duty": "CHP retention is limited to 60 days unless data is used as evidence or for felonies being investigated. CHP must not sell LPR data or disclose it to an agency that is not a law enforcement agency or an individual who is not a law enforcement officer. Any law enforcement agency, including CHP itself and recipient agencies, may use the data only to locate vehicles or persons reasonably suspected of involvement in a public offense. CHP must monitor internal use and include disclosure counts, recipient agencies, purposes and privacy-affecting policy changes in its annual automobile-theft report to the Legislature, due no later than 90 days following completion of the fiscal year under § 10901(b).",
       "exceptions": [
-        "Retention beyond 60 days when data is being used as evidence or for felonies being investigated, including auto theft, homicides, kidnaping, burglaries, elder and juvenile abductions, Amber Alerts, and Blue Alerts.",
-        "Applies to the California Highway Patrol only; local agencies are governed by Civ. Code § 1798.90.5 et seq."
+        "Evidence or investigated-felony use qualifies the 60-day retention limit; it is not general indefinite retention authority.",
+        "CHP-specific duties and recipient-use restrictions are distinct. Applicable SB 34 public-agency, operator and end-user duties also apply from 2016-01-01; the regimes are cumulative, not alternatives."
       ],
       "remedy": "No section-specific remedy stated; legislative reporting requirement.",
       "effective_from": "2011-06-30",
@@ -215,7 +225,17 @@
         {
           "title": "Veh. Code § 2413 (Amended by Stats. 2011, ch. 38, § 6 (AB 115), effective 2011-06-30)",
           "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=VEH&sectionNum=2413.",
-          "accessed": "2026-09-30"
+          "accessed": "2026-10-02"
+        },
+        {
+          "title": "Veh. Code § 10901(b) (annual report to Legislature within 90 days following fiscal-year completion)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=VEH&sectionNum=10901.",
+          "accessed": "2026-10-02"
+        },
+        {
+          "title": "Civ. Code § 1798.90.55 (SB 34; effective 2016-01-01; cumulative public-agency duties)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.55.",
+          "accessed": "2026-10-02"
         }
       ],
       "review": "verified"
@@ -223,14 +243,16 @@
     {
       "rule_id": "ca-gov-7284.6-values-act-immigration-enforcement-limits",
       "citation": "Gov. Code § 7284.2 et seq. (California Values Act, SB 54); § 7284.6",
-      "actor": "California law enforcement agency",
+      "actor": "California state or local law enforcement agencies, including school police/security departments, but excluding CDCR (Gov. Code § 7284.4(a))",
       "activity": "share information or resources with immigration authorities",
-      "duty": "Shall not use agency money or personnel to investigate, interrogate, detain, detect, or arrest persons for immigration enforcement purposes, including providing personal information (as defined in Civ. Code § 1798.3) about an individual, such as home or work address, unless that information is available to the public (§ 7284.6(a)(1)(D)). Whether database access or ALPR data sharing falls within this prohibition is contested and has not been settled by a published appellate decision known to this package; treat any ALPR application as an argument, not an established duty.",
+      "duty": "Section 7284.6(a) restricts agency money/personnel for immigration enforcement, including nonpublic personal-information disclosure under (a)(1)(D). ALPR/database application is interpretive, not an established duty; no case-law determination is made.",
       "exceptions": [
-        "Activities permitted by § 7284.6(b), including responding to requests about a specific person's criminal history and conduct permitted under § 7282.5.",
-        "Information already available to the public."
+        "Public availability qualifies (a)(1)(D), not every prohibition.",
+        "Subdivision (b) requires agency-policy and local-law/policy compliance. Its distinct pathways are: (1) 8 U.S.C. § 1326(a) conduct subject to (b)(2) enhancement, detected during unrelated enforcement, with transfers still subject to (a)(4); (2) specific-person criminal-history responses otherwise permitted by state law; (3) joint task-force enforcement or investigative duties, including confidential information sharing with other law enforcement agencies for task-force investigations, only if (A) the task force's primary purpose is not immigration enforcement, (B) the enforcement or investigative duties are primarily related to a violation of state or federal law unrelated to immigration enforcement, and (C) agency participation does not violate applicable local law or policy; (4) necessary qualifying T/U-visa or federal firearms inquiries; (5) custodial interviews meeting TRUTH Act requirements. Each activity-specific pathway requires its own conditions.",
+        "Section 7282.5 is limited to specified notification/transfer pathways, not general ALPR dissemination.",
+        "Subdivision (e) preserves specified citizenship/immigration-status exchanges, requests and maintenance under 8 U.S.C. §§ 1373 and 1644, not blanket location-data disclosure; federal applicability/enforceability needs qualified human legal review."
       ],
-      "remedy": "No private right of action stated in the chapter; compliance is overseen through the Attorney General guidance and reporting provisions (§ 7284.8) and general public-law remedies.",
+      "remedy": "Reporting: § 7284.6(c)-(d), subject to actor/activity and disclosure conditions; § 7284.8 concerns guidance/model policies. Remedies require qualified human legal review.",
       "effective_from": "2018-01-01",
       "effective_to": null,
       "sources": [
@@ -242,10 +264,25 @@
         {
           "title": "Gov. Code § 7284.6 (as amended by Stats. 2021, ch. 615, § 147 (AB 474), operative 2023-01-01)",
           "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7284.6.",
-          "accessed": "2026-09-30"
+          "accessed": "2026-10-02"
+        },
+        {
+          "title": "Gov. Code § 7284.4(a) (SB 54; effective 2018-01-01; CDCR exclusion)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7284.4.",
+          "accessed": "2026-10-02"
+        },
+        {
+          "title": "Gov. Code § 7284.8 (guidance/model policies, not reporting)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7284.8.",
+          "accessed": "2026-10-02"
+        },
+        {
+          "title": "Original chaptered SB 54, Stats. 2017, ch. 495 (reviewed core substantive start 2018-01-01; not exhaustive amendment history)",
+          "url": "https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=201720180SB54",
+          "accessed": "2026-10-02"
         }
       ],
-      "review": "likely"
+      "review": "needs_attorney_review"
     },
     {
       "rule_id": "ca-oag-2023-dle-06-out-of-state-sharing-guidance",
@@ -273,6 +310,35 @@
         }
       ],
       "review": "likely"
+    },
+    {
+      "rule_id": "ca-gov-7922.535-determination-and-extension-2026",
+      "citation": "Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01)",
+      "actor": "Agency receiving a request for copies of records",
+      "activity": "determine disclosability after receipt of a copy request; assess a claimed unusual-circumstances extension",
+      "duty": "Determine disclosability within 10 days of receipt and promptly notify the requester with reasons; for disclosable records, give estimated availability date/time. A reasonably necessary unusual-circumstances extension requires written head/designee notice with reasons and expected determination-dispatch date, adding at most 14 days. This is not a production deadline. This entry encodes only the current 2026 version; earlier CPRA versions are not supplied.",
+      "exceptions": [
+        "Enumerated circumstances include separate field collection, voluminous separate records, expedited interagency/component consultation, and data compilation/programming/report construction.",
+        "From 2026-01-01, cyberattack circumstances require inaccessible electronic systems containing believed-responsive records; unaffected locations and nonelectronic records remain subject to the normal duty, and this ground ends on restored access.",
+        "The Governor-proclaimed emergency must be in the agency jurisdiction and currently and directly affect timely response through staffing shortages or relevant facility closures; records created during and related to that emergency are excluded from this ground.",
+        "Confirm receipt, holiday rules and notice prerequisites before treating arithmetic as a legal due date; otherwise retain provisional reminders."
+      ],
+      "remedy": "No new remedy encoded; deadline/remedy application needs qualified human legal review.",
+      "effective_from": "2026-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7922.535 (AB 370 effective 2026-01-01; current text)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.535.",
+          "accessed": "2026-10-02"
+        },
+        {
+          "title": "Chaptered AB 370, approved 2025-07-14; cyberattack addition and direct emergency-effect qualification",
+          "url": "https://leginfo.legislature.ca.gov/faces/billNavClient.xhtml?bill_id=202520260AB370",
+          "accessed": "2026-10-02"
+        }
+      ],
+      "review": "needs_attorney_review"
     }
   ],
   "request_scopes": [
