@@ -297,39 +297,73 @@ def inbox_mount(value):
     return matches[0]
 
 
+def input_sources_overlap(first, second):
+    if first["kind"] != second["kind"]:
+        return False  # Realized cross-kind backing aliases are checked at runtime.
+    if first["kind"] == "bind":
+        return _overlaps(first["source"], second["source"])
+    if first["source"] != second["source"]:
+        return False
+    a, b = first.get("subpath", ""), second.get("subpath", "")
+    return not a or not b or _overlaps(a, b)
+
+
+def bind_input_anchor(path):
+    """No-follow metadata only; mapped worker access is proved in-container."""
+    value = trusted_path(path, metadata_only=True)
+    require(stat.S_ISDIR(value.st_mode) and stat.S_IMODE(value.st_mode) == 0o700)
+    return (value.st_uid, value.st_gid, value.st_mode, *_fingerprint(value))
+
+
 def check_inbox_mounts(value, runtime):
-    """Verify configured provenance and deepest realized read-only coverage."""
+    """Verify configured subpaths, deepest RO coverage and realized aliases."""
     expected = inbox_mount(value)
     actual, configured = runtime.get("mounts"), runtime.get("configured_mounts")
+    mounts = value["mounts"]
     require(isinstance(actual, list) and isinstance(configured, list)
-            and 1 <= len(actual) <= 16 and 1 <= len(configured) <= 16
+            and len(actual) == len(configured) == len(mounts)
             and all(isinstance(m, dict) for m in actual + configured))
+    realized = {}
+    for wanted in mounts:
+        matches = [m for m in actual if m.get("Destination") == wanted["target"]]
+        settings = [m for m in configured if m.get("Target") == wanted["target"]]
+        require(len(matches) == len(settings) == 1)
+        mount, setting = matches[0], settings[0]
+        require(mount.get("Type") == wanted["kind"]
+                and mount.get("RW") is (not wanted["readonly"])
+                and setting.get("Type") == wanted["kind"]
+                and setting.get("Source") == wanted["source"]
+                and setting.get("ReadOnly") is wanted["readonly"])
+        _absolute(mount.get("Source"))
+        if wanted["kind"] == "volume":
+            options = setting.get("VolumeOptions")
+            require(mount.get("Name") == wanted["source"] and isinstance(options, dict)
+                    and options.get("NoCopy") is True
+                    and options.get("Subpath", "") == wanted.get("subpath", ""))
+        else:
+            require(mount["Source"] == wanted["source"])
+        realized[wanted["target"]] = mount
     target = value["inbox"]
-    coverage = [m for m in actual if isinstance(m.get("Destination"), str)
-                and (target == m["Destination"] or target.startswith(m["Destination"] + "/"))]
-    require(coverage)
-    mount = max(coverage, key=lambda m: len(m["Destination"]))
-    require(mount["Destination"] == target and mount.get("RW") is False
-            and mount.get("Type") == expected["kind"]
-            and sum(m.get("Destination") == target for m in actual) == 1
-            and not any(isinstance(m.get("Destination"), str)
-                        and m["Destination"].startswith(target + "/") for m in actual))
-    source = mount.get("Source")
-    _absolute(source)
-    require(mount.get("Name") == expected["source"] if expected["kind"] == "volume"
-            else source == expected["source"])
-    require(not any(m is not mount and isinstance(m.get("Source"), str)
-                    and _overlaps(source, m["Source"]) for m in actual))
-    selected = [m for m in configured if m.get("Target") == target]
-    require(len(selected) == 1)
-    selected = selected[0]
-    require(selected.get("Type") == expected["kind"] and selected.get("Source") == expected["source"]
-            and selected.get("ReadOnly") is True)
-    if expected["kind"] == "volume":
-        options = selected.get("VolumeOptions")
-        require(isinstance(options, dict) and options.get("NoCopy") is True
-                and options.get("Subpath", "") == expected.get("subpath", ""))
-
+    coverage = [m for m in actual if target == m["Destination"]
+                or target.startswith(m["Destination"] + "/")]
+    require(coverage and max(coverage, key=lambda m: len(m["Destination"]))["Destination"] == target
+            and not any(m["Destination"].startswith(target + "/") for m in actual))
+    selected = realized[target]
+    for wanted in mounts:
+        if wanted is expected:
+            continue
+        other = realized[wanted["target"]]
+        require(not input_sources_overlap(expected, wanted))
+        if expected["kind"] == wanted["kind"] == "volume" and expected["source"] == wanted["source"]:
+            # Engines may expose the common volume base or resolved subpath.
+            # Never infer a subpath from Source alone: both configs are bound above.
+            if selected["Source"] != other["Source"]:
+                a, b = expected.get("subpath", ""), wanted.get("subpath", "")
+                require(a and b and selected["Source"].endswith("/" + a)
+                        and other["Source"].endswith("/" + b)
+                        and selected["Source"][:-len(a)-1] == other["Source"][:-len(b)-1])
+        else:
+            require(not _overlaps(selected["Source"], other["Source"]))
 
 class Profile:
     """Immutable private profile; paths inside the container are checked there."""
@@ -395,7 +429,10 @@ class Profile:
                     for control in (self.path, value["host_receipts"], value["seccomp_path"]):
                         require(control != mount["source"] and not control.startswith(mount["source"] + "/"))
                     require(not mount["source"].endswith("docker.sock"))
-                    trusted_path(mount["source"])
+                    if mode == "inbox" and mount["target"] == value["inbox"]:
+                        bind_input_anchor(mount["source"])
+                    else:
+                        trusted_path(mount["source"])
                 else:
                     require(isinstance(mount["source"], str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", mount["source"]))
             required_paths = ("release_root", "parser_path", "root", "tmp_dir",
@@ -411,9 +448,12 @@ class Profile:
                     require(any(value[k] == mount["target"] or value[k].startswith(mount["target"] + "/")
                                 for k in required_paths))
                     require(not mount["target"].startswith(value["inbox"] + "/"))
-                    if mount is not selected and mount["kind"] == selected["kind"]:
-                        require(mount["source"] != selected["source"] if selected["kind"] == "volume"
-                                else not _overlaps(mount["source"], selected["source"]))
+                    if mount is not selected:
+                        require(not input_sources_overlap(mount, selected))
+                        if mount["kind"] == selected["kind"] == "bind":
+                            a = trusted_path(selected["source"], metadata_only=True)
+                            b = trusted_path(mount["source"])
+                            require((a.st_dev, a.st_ino) != (b.st_dev, b.st_ino))
             self.value, self.sha256 = value, digest(self.raw)
         except BaseException:
             self.parent.close()
@@ -475,13 +515,16 @@ def call_argv(argv, timeout):
         process.stdout.close()
 
 
-def trusted_path(path):
+def trusted_path(path, *, metadata_only=False):
     """Pin traversal, not namespace UID access (the container probe checks that)."""
     parts = _absolute(path)
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for index, part in enumerate(parts):
             flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+            if metadata_only and index == len(parts) - 1:
+                require(hasattr(os, "O_PATH"))
+                flags = os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
             if index != len(parts) - 1:
                 flags |= os.O_DIRECTORY
             new = os.open(part, flags, dir_fd=fd)
@@ -554,14 +597,23 @@ class Docker:
         self.profile, self.invoke = profile, invoke
         self.containment = containment or Containment()
         self.input_snapshot = None
+        self.input_anchor = None
 
     def check_input(self):
         p = self.profile.value
         if input_selection(p)[0] == "inbox":
             mount = inbox_mount(p)
             if mount["kind"] == "bind":
-                self.input_snapshot = inbox_snapshot(
-                    mount["source"], expected=p["inbox_manifest_sha256"], prior=self.input_snapshot)
+                anchor = bind_input_anchor(mount["source"])
+                require(self.input_anchor is None or anchor == self.input_anchor)
+                self.input_anchor = anchor
+                if anchor[0] == os.getuid():
+                    self.input_snapshot = inbox_snapshot(
+                        mount["source"], expected=p["inbox_manifest_sha256"], prior=self.input_snapshot)
+                # A mapped owner0700 bind cannot be read by the host UID. Do not
+                # chmod, chown or relax PrivateDir. Exact runtime mount identity,
+                # strict worker ownership/RO bytes and the manifest are mandatory
+                # in preflight and entry before genuine intake.
 
     def call(self, args, timeout=10):
         self.profile.check()

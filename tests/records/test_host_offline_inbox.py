@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 from campaign_tool.records import container_host as host
+from campaign_tool.records.extract import ocr
 from tests.records import test_container_host as support
 
 
@@ -18,6 +19,7 @@ class OfflineDocker(support.FakeDocker):
         super().__init__(*args, **kwargs)
         self.mount_mutation = None
         self.probe_hook = None
+        self.probe_result = None
 
     def invoke(self, argv, timeout):
         code, raw = super().invoke(argv, timeout)
@@ -40,8 +42,11 @@ class OfflineDocker(support.FakeDocker):
                 if self.mount_mutation:
                     self.mount_mutation(value)
                 raw = host.encoded(value)
-        if "probe" in argv and self.probe_hook:
-            self.probe_hook()
+        if "probe" in argv:
+            if self.probe_hook:
+                self.probe_hook()
+            if self.probe_result is not None:
+                raw = host.encoded(self.probe_result)
         return code, raw
 
 
@@ -132,7 +137,13 @@ class HostOfflineInboxTests(support.HostFixture):
             self.assertNotIn("--mail-config", child)
             from campaign_tool.records import run, unattended
             output = io.StringIO()
-            with mock.patch.object(unattended.manual, "local_ocr_tools", return_value=(None, None)), \
+            with mock.patch.object(unattended.manual, "local_ocr_tools", return_value=(
+                     {**{name: {"available": True, "path": "/synthetic/bin/" + name,
+                                "version": name + " 0.0-test"} for name in ocr.OCR_TOOLS},
+                      "pypdf": {"available": True, "version": "0.0-test"}},
+                     support.sha("synthetic-ocr-discovery"))), \
+                 mock.patch.object(ocr, "extract_image_only_pages",
+                                   side_effect=AssertionError("text_fixture_must_not_run_ocr")), \
                  mock.patch("socket.create_connection", side_effect=AssertionError("offline_network")), \
                  mock.patch("socket.socket", side_effect=AssertionError("offline_network")), \
                  mock.patch("sys.stdout", output):
@@ -305,6 +316,106 @@ class HostOfflineInboxTests(support.HostFixture):
         extra = self.inbox / "not-eml.txt"
         extra.write_bytes(b"synthetic")
         extra.chmod(0o600)
+        with self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox)
+
+    def test_missing_ocr_discovery_still_refuses_before_genuine_intake(self):
+        self.offline(bind=True)
+        from campaign_tool.records import run, unattended
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"MODEL_BASE_URL": "", "CHALLENGE_MODEL_BASE_URL": ""}, clear=True), \
+             mock.patch.object(unattended.manual, "local_ocr_tools", return_value=(None, None)), \
+             mock.patch("socket.create_connection", side_effect=AssertionError("offline_network")), \
+             mock.patch("sys.stdout", output):
+            code = run.main(["--root", str(self.root / "missing-ocr-records"),
+                             "--inbox", str(self.inbox), "--unattended", "--ocr", "--json"])
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertIsNone(report["intake"])
+        self.assertEqual(report["originals"], 0)
+        self.assertEqual(report["safety"]["stop_code"], "ocr_runtime_unavailable")
+
+    def test_shared_volume_disjoint_subpaths_and_realized_source_binding(self):
+        value = self.offline()
+        for index, mount in enumerate(value["mounts"]):
+            mount.update(source="synthetic-shared-home", subpath="case/path-" + str(index))
+        self.write_profile(value)
+        self.assertEqual(self.run_host(OfflineDocker(self.profile))["status"], "completed")
+        for change in ("same", "ancestor", "whole-volume"):
+            candidate = copy.deepcopy(value)
+            selected = candidate["mounts"][-1]["subpath"]
+            candidate["mounts"][2]["subpath"] = {
+                "same": selected, "ancestor": "case", "whole-volume": None}[change]
+            if change == "whole-volume":
+                del candidate["mounts"][2]["subpath"]
+            self.write_profile(candidate)
+            with self.subTest(change=change), self.assertRaises(host.Rejected):
+                host.Profile(self.profile)
+
+    def test_runtime_shared_volume_alias_and_unbound_source_are_rejected(self):
+        value = self.offline()
+        for index, mount in enumerate(value["mounts"]):
+            mount.update(source="synthetic-shared-home", subpath="case/path-" + str(index))
+        self.write_profile(value)
+        with host.Profile(self.profile) as profile:
+            fake = OfflineDocker(self.profile)
+            docker = host.Docker(profile, invoke=fake.invoke, containment=fake)
+            cid = docker.create("a" * 32, "worker")
+            runtime = docker.inspect(cid, "a" * 32, "worker")
+            for change in ("subpath", "source", "cross-kind"):
+                bad = copy.deepcopy(runtime)
+                if change == "subpath":
+                    bad["configured_mounts"][2]["VolumeOptions"]["Subpath"] = value["mounts"][-1]["subpath"]
+                elif change == "source":
+                    bad["mounts"][2]["Source"] = "/synthetic/unbound"
+                else:
+                    bad["mounts"][2].update(Type="bind", Source=bad["mounts"][-1]["Source"])
+                with self.subTest(change=change), self.assertRaises(host.Rejected):
+                    host.check_inbox_mounts(profile.value, bad)
+
+    def test_mapped_bind_owner_is_metadata_anchored_not_permission_relaxed(self):
+        self.offline(bind=True)
+        original = host.trusted_path
+        def mapped(path, **kwargs):
+            result = original(path, **kwargs)
+            if path == str(self.inbox) and kwargs.get("metadata_only"):
+                attrs = {key: getattr(result, key) for key in
+                         ("st_uid", "st_gid", "st_mode", "st_dev", "st_ino",
+                          "st_size", "st_mtime_ns", "st_ctime_ns")}
+                attrs["st_uid"] = 100999
+                return SimpleNamespace(**attrs)
+            return result
+        with mock.patch.object(host, "trusted_path", side_effect=mapped), \
+             mock.patch.object(host, "inbox_snapshot", side_effect=AssertionError("host_cannot_read_mapped_owner")):
+            self.assertEqual(self.run_host(OfflineDocker(self.profile))["status"], "completed")
+        self.assertEqual(self.inbox.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.eml.stat().st_mode & 0o777, 0o600)
+
+    def test_mapped_bind_still_requires_exact_worker_uid_readiness(self):
+        self.offline(bind=True)
+        original = host.bind_input_anchor
+        def mapped(path):
+            anchor = original(path)
+            return (100999, *anchor[1:])
+        fake = OfflineDocker(self.profile)
+        fake.probe_result = {"schema": 1, "status": "runtime_ready", "uid": 0}
+        with mock.patch.object(host, "bind_input_anchor", side_effect=mapped):
+            self.assertEqual(self.run_host(fake)["status"], "held")
+        self.assertFalse(any("admit" in argv for argv, _ in fake.calls))
+
+    def test_bind_anchor_replacement_and_raw_pdf_inbox_fail_closed(self):
+        self.offline(bind=True)
+        with host.Profile(self.profile) as profile:
+            docker = host.Docker(profile)
+            docker.check_input()
+            previous = self.root / "old-input"
+            self.inbox.rename(previous)
+            self.inbox.mkdir(mode=0o700)
+            with self.assertRaises(host.Rejected):
+                docker.check_input()
+        raw = self.inbox / "standalone.pdf"
+        raw.write_bytes(b"synthetic raw PDF is not an EML message")
+        raw.chmod(0o600)
         with self.assertRaises(host.Rejected):
             host.inbox_snapshot(self.inbox)
 
