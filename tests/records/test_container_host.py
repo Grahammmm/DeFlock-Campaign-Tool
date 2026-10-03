@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -248,6 +249,142 @@ class ContainerHostTests(HostFixture):
                 directory.write("synthetic.json",b"third",fresh=True)
             self.assertEqual(directory.read("synthetic.json")[0],b"second")
         self.assertFalse(any(p.name.startswith(".atomic-") for p in self.receipts.iterdir()))
+
+    def test_failed_worker_not_replaced_by_healthy_cleanup_report(self):
+        fake = self.fake(launch=(10,worker("worker_failed")))
+        self.assertEqual(self.run_host(fake)["status"],"held")
+        self.assertEqual(self.current()["worker_status"],"worker_failed")
+        self.assertEqual(self.current()["worker_exit"],-15)
+        result = self.stop_host(fake)
+        self.assertEqual(result,host._output("postrun_failed",quiescent=True,cards=5))
+        current = self.current()
+        self.assertEqual((current["worker_status"],current["worker_exit"]),("worker_failed",-15))
+        self.assertEqual((current["board"],current["health"]),("ok","ok"))
+        self.assertFalse(current["healthy"] or current["hold"])
+        self.assertEqual(current["error"],"worker")
+        self.assertEqual(fake.containers,{})
+
+    def test_unproven_crash_and_false_completion_never_green_after_cleanup(self):
+        for name,launch in (("crash",(137,b"PRIVATE_STDOUT_SENTINEL")),
+                            ("false-quiescence",(0,worker("completed",False))),
+                            ("wrong-runtime",(10,worker()))):
+            receipts = self.root / name
+            receipts.mkdir(mode=0o700)
+            profile = json.loads(self.profile.read_text())
+            profile["host_receipts"] = str(receipts)
+            self.write_profile(profile)
+            fake = self.fake(launch=launch)
+            self.assertEqual(self.run_host(fake)["status"],"held")
+            result = self.stop_host(fake)
+            self.assertEqual(result["status"],"postrun_failed")
+            self.assertTrue(result["quiescent"])
+            self.assertFalse(result["healthy"])
+            self.assertEqual(self.current()["worker_status"],"unknown")
+            self.assertIsNone(self.current()["worker_exit"])
+            self.assertFalse(self.current()["hold"])
+            self.assertEqual(fake.containers,{})
+
+    def test_cleanup_recovers_fresh_terminal_failure_after_controller_loss(self):
+        fake = self.launch_hold()
+        cid = self.current()["container_id"]
+        fake.launch = (21,worker("timed_out"))
+        fake.containers[cid].update(state="exited",running=False,pid=0,exit=21)
+        result = self.stop_host(fake)
+        self.assertEqual(result["status"],"postrun_failed")
+        self.assertFalse(result["healthy"])
+        self.assertEqual((self.current()["worker_status"],self.current()["worker_exit"]),("timed_out",-15))
+        self.assertEqual(fake.containers,{})
+
+    def test_cancelled_job_cannot_inherit_an_older_healthy_slot(self):
+        fake = self.launch_hold()
+        self.assertEqual(self.stop_host(fake),host._output("postrun_failed",quiescent=True,cards=5))
+        current = self.current()
+        self.assertTrue(current["cancel_requested"])
+        self.assertEqual(current["ack"],"contained")
+        self.assertFalse(current["healthy"])
+        self.assertEqual(current["worker_status"],"unknown")
+
+    def test_healthy_receipt_requires_natural_success_of_this_job(self):
+        fake = self.fake()
+        self.run_host(fake)
+        current = self.current()
+        for changes in ({"worker_status":"unknown","worker_exit":None},
+                        {"worker_status":"worker_failed","worker_exit":-15},
+                        {"ack":"contained"},{"cancel_requested":True}):
+            with self.assertRaises(host.Rejected):
+                host._receipt(dict(current,**changes))
+
+    def test_cancel_fence_wins_before_admission_lock_acquisition(self):
+        fake = self.fake()
+        original = host.Docker.preflight
+        def preflight(docker,cid):
+            original(docker,cid)
+            with host.Profile(self.profile) as profile:
+                journal = host.Journal(profile)
+                try:
+                    journal.change(self.current()["job_id"],cancel_requested=True)
+                finally:
+                    journal.close()
+        with mock.patch.object(host.Docker,"preflight",preflight):
+            self.assertEqual(self.run_host(fake)["status"],"held")
+        self.assertFalse(any("admit" in argv for argv,_ in fake.calls))
+        self.assertFalse(self.current()["launch_started"])
+        self.assertTrue(self.current()["cancel_requested"])
+        self.assertTrue(self.stop_host(fake)["quiescent"])
+
+    def test_admission_dispatch_and_fsync_fence_share_one_lock(self):
+        fake = self.fake()
+        attempted,committed = threading.Event(),threading.Event()
+        errors,threads = [],[]
+        def fence():
+            try:
+                with host.Profile(self.profile) as profile:
+                    journal = host.Journal(profile)
+                    try:
+                        attempted.set()
+                        journal.change(self.current()["job_id"],cancel_requested=True)
+                        committed.set()
+                    finally:
+                        journal.close()
+            except BaseException as error:
+                errors.append(error)
+        def invoke(argv,timeout):
+            if argv[1] == "exec" and "admit" in argv and argv[argv.index("--role")+1] == "worker":
+                thread = threading.Thread(target=fence)
+                threads.append(thread)
+                thread.start()
+                self.assertTrue(attempted.wait(2))
+                self.assertFalse(committed.wait(.05))
+                self.assertFalse(self.current()["cancel_requested"])
+                with host.PrivateDir(self.receipts) as directory, self.assertRaises(host.Rejected):
+                    with host.locked(directory,"cancel-admit.lock"):
+                        pass
+                self.assertTrue(self.current()["launch_started"])
+            if argv[1] == "wait" and fake.containers[argv[-1]]["role"] == "worker":
+                self.assertTrue(committed.wait(2))
+            return fake.invoke(argv,timeout)
+        try:
+            result = host.run(self.profile,invoke=invoke,containment=fake.containment)
+        finally:
+            for thread in threads:
+                thread.join(3)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors,[])
+        self.assertEqual(result["status"],"held")
+        self.assertTrue(committed.is_set() and self.current()["cancel_requested"])
+        self.assertEqual(sum("admit" in argv for argv,_ in fake.calls),1)
+        self.assertTrue(self.stop_host(fake)["quiescent"])
+        self.assertFalse(self.current()["healthy"])
+
+    def test_lost_admission_response_retains_hold_and_cannot_become_healthy(self):
+        fake = self.fake()
+        fake.admit_hook = lambda: (_ for _ in ()).throw(host.TransportError())
+        self.assertEqual(self.run_host(fake)["status"],"held")
+        self.assertTrue(self.current()["launch_started"])
+        self.assertTrue(self.current()["hold"])
+        fake.admit_hook = None
+        self.assertTrue(self.stop_host(fake)["quiescent"])
+        self.assertFalse(self.current()["healthy"])
 
     def test_completed_reconciled_removed_and_private_receipts(self):
         fake = self.fake()

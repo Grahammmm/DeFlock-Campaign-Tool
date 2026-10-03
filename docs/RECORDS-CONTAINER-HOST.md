@@ -25,9 +25,16 @@ Host fsyncs a fresh 0600 HOLD receipt and active pointer before ANY Docker call.
 Random job identity/profile digest/role are bound in labels. Every inspect,
 stop/kill/remove uses full CID and validates image, labels, runtime/PID/exit.
 launch.lock serializes jobs; admission.lock serializes create/start/admit/remove.
-Stop durably fences cancellation BEFORE waiting for admission. A delayed start
-cannot admit after the fence, and exact-CID removal prevents revival by late
-start calls. No stop/restart of a shared original container is provided.
+Journal cancellation commits and worker-admit dispatch share cancel-admit.lock.
+The final cancellation check, launch reservation, network check and bounded admit
+RPC hold that lock; every Journal.change(cancel_requested=True) takes it too.
+If cancellation wins, no worker-admit dispatch follows the persisted fence. If
+admission wins, its reserved RPC precedes the cancellation commit; cancellation
+then contains that already-reserved worker. Stop commits the fence before waiting
+for the broader admission.lock used by create/start/remove. RPC uncertainty stays
+HOLD, not successful admission or quiescence; a request is not an instantaneous
+worker-stop ACK. Exact-CID removal prevents revival by late start calls. No
+stop/restart of a shared original container is provided.
 
 Terminal runtime alone is insufficient. The host binds inspect PID to its
 /proc start-time and a unified cgroup-v2 full-CID leaf, persisting path/dev/inode
@@ -55,7 +62,10 @@ Sources: [Docker create](https://docs.docker.com/reference/cli/docker/container/
 [kernel cgroup-v2](https://docs.kernel.org/admin-guide/cgroup-v2.html).
 Main has reported exact-image synthetic kernel acceptance for supervisor death
 and independent cleanup after client death. This candidate's fake-Docker suite
-is not that acceptance. Host/systemd races and independent review remain gates.
+is not that acceptance. Host/systemd races and independent review remain gates. Approved repair
+regressions cover failed/unproven worker outcomes with a healthy reporter,
+terminal failure recovery, receipt invariants, both cancel/admit lock winners
+using actual private journal flock operations, and lost admission response.
 
 ## Private profile and public API
 
@@ -135,6 +145,16 @@ python -m campaign_tool.records.worker_lifecycle supervise
 This module does not add/change run flags. Missing accepted interfaces fail
 closed. Natural completion requires fresh fixed completed/worker-exit0/
 quiescenttrue supervisor output, runtime exit0, terminal+empty proof and removal.
+Observed fixed supervisor failures are persisted before the success check; stop
+also captures fresh exact-CID terminal output before removal without replacing
+previously observed outcomes. Missing/malformed/mismatched output remains unknown.
+Cleanup success, board success and global health are not worker success. A host
+healthy/completed job requires this job's completed worker-exit0, natural ACK and
+no cancellation. Cleanup of failed, cancelled or unproven work returns exit10
+postrun_failed with quiescent=true after containment, retaining worker_status and
+worker_exit plus a fixed worker error reason. Board/health diagnostics may still
+be ok, but the host receipt stays healthy=false. Clearing containment HOLD can
+allow the next serialized writer; it never retroactively certifies job success.
 Old disk receipts or stopped Docker clients cannot clear HOLD. Reporter cleanup
 uses the same independent containment contract. The next writer is denied until
 worker AND reporter are finalized, or the owner independently reconciles HOLD.

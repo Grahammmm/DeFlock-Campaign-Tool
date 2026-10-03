@@ -536,7 +536,7 @@ class Docker:
         require(code == 0 and raw.decode("ascii").strip() == cid)
         return v
 
-    def halt(self, cid, job_id, role, proof, *, never_admitted=False):
+    def halt(self, cid, job_id, role, proof, *, never_admitted=False, observe=None):
         v = self.inspect(cid, job_id, role)
         if v["running"]:
             # A live supervisor ACK is useful, but never substitutes for containment.
@@ -557,6 +557,15 @@ class Docker:
                     break
                 require(time.monotonic() < deadline)
                 time.sleep(.05)
+        if role == "worker" and observe is not None and v["state"] != "created":
+            # Read fresh, exact-CID terminal output before removal. Malformed or
+            # unavailable output is unproven, not successful worker completion.
+            try:
+                code, raw = self.call(["logs", cid], timeout=5)
+                result = _worker_result(v["exit"], raw, observed=True) if code == 0 else None
+            except Exception:
+                result = None
+            observe(result)
         return self.remove(cid, job_id, role, proof, never_admitted=never_admitted)
 
 
@@ -571,7 +580,7 @@ def _receipt(value):
             and value["worker_status"] in set(WORKER_CODES) | {"unknown"}
             and value["board"] in {"not_run", "ok", "failed", "unknown"}
             and value["health"] in {"not_run", "ok", "degraded", "failed", "unknown"}
-            and value["error"] in {"none", "preflight", "transport", "identity", "ack", "board", "health", "state"}
+            and value["error"] in {"none", "preflight", "transport", "identity", "ack", "board", "health", "state", "worker"}
             and all(type(value[k]) is bool for k in ("hold", "launch_started", "quiescent", "healthy", "cancel_requested", "worker_removed", "reporter_removed"))
             and type(value["cards"]) is int and 0 <= value["cards"] <= MAX_CARDS
             and (value["worker_exit"] is None or type(value["worker_exit"]) is int
@@ -581,7 +590,8 @@ def _receipt(value):
         proof = value[key]
         require(proof is None or isinstance(proof, dict) and set(proof) == {"path", "device", "inode", "boot"})
     require(value["hold"] or value["worker_removed"] and (value["reporter_id"] is None or value["reporter_removed"]))
-    require(not value["healthy"] or value["quiescent"] and value["board"] == value["health"] == "ok")
+    require(not value["healthy"] or value["quiescent"] and value["board"] == value["health"] == "ok"
+            and _worker_succeeded(value))
     require(value["hold"] or value["phase"] == "finished" and value["quiescent"])
     return value
 
@@ -629,6 +639,14 @@ class Journal:
             return job_id
 
     def change(self, job_id, *, expected=None, **changes):
+        if changes.get("cancel_requested") is True:
+            # Same linearization lock as worker-admit dispatch. Never publish a
+            # fence in the middle of an already-reserved admission RPC.
+            with locked(self.directory, "cancel-admit.lock", wait=65):
+                return self._change(job_id, expected=expected, **changes)
+        return self._change(job_id, expected=expected, **changes)
+
+    def _change(self, job_id, *, expected=None, **changes):
         with locked(self.directory, "journal.lock", wait=1):
             active = self.active()
             require(active["job_id"] == job_id and active["profile_sha256"] == self.profile.sha256)
@@ -649,7 +667,23 @@ def _output(status, *, quiescent=False, healthy=False, cards=0):
     return {"schema": 1, "status": status, "quiescent": quiescent, "healthy": healthy, "cards": cards}
 
 
-def _worker_result(code, raw, *, cancelling=False):
+def _worker_succeeded(receipt):
+    """Containment and global health never stand in for this job's success."""
+    return (receipt["ack"] == "natural" and not receipt["cancel_requested"]
+            and receipt["worker_status"] == "completed" and receipt["worker_exit"] == 0)
+
+
+def _record_worker_result(journal, job_id, result):
+    if result is None:
+        return
+    current = journal.read(job_id)
+    if current["worker_status"] != "unknown":
+        require((current["worker_status"], current["worker_exit"])
+                == (result["status"], result["worker_exit"]))
+    journal.change(job_id, worker_status=result["status"], worker_exit=result["worker_exit"])
+
+
+def _worker_result(code, raw, *, cancelling=False, observed=False):
     value = decoded(raw, 8192)
     require(isinstance(value, dict) and set(value) == {"schema", "status", "quiescent", "worker_exit", "escalated"}
             and type(value["schema"]) is int and value["schema"] == 1
@@ -657,11 +691,15 @@ def _worker_result(code, raw, *, cancelling=False):
             and type(value["escalated"]) is bool
             and (value["worker_exit"] is None or type(value["worker_exit"]) is int
                  and -255 <= value["worker_exit"] <= 255))
-    require(code == 0 and value["quiescent"])
     if cancelling:
-        require(value["status"] in {"completed", "worker_failed", "cancelled", "timed_out"})
+        require(code == 0 and value["quiescent"]
+                and value["status"] in {"completed", "worker_failed", "cancelled", "timed_out"})
     else:
-        require(value["status"] == "completed" and value["worker_exit"] == 0)
+        require(type(code) is int and code == WORKER_CODES[value["status"]])
+    if value["status"] == "completed":
+        require(value["quiescent"] and value["worker_exit"] == 0)
+    if not observed and not cancelling:
+        require(code == 0 and value["quiescent"] and value["status"] == "completed")
     return value
 
 
@@ -691,13 +729,19 @@ def _launch(journal, docker, job_id, role):
     proof = docker.containment.capture(cid, v["pid"])
     journal.change(job_id, **{role + "_cgroup":proof})
     docker.preflight(cid)
-    require(role == "reporter" or not journal.read(job_id)["cancel_requested"])
+    def dispatch():
+        docker.check_network(role)
+        code, raw = docker.exec(cid, [MODULE, "admit", "--role", role, "--job-id", job_id,
+                                     "--worker-state-parent", journal.profile.value["worker_state_parent"]])
+        require(code == 0 and decoded(raw) == {"schema":1,"status":"admitted"})
+
     if role == "worker":
-        journal.change(job_id, phase="launching", launch_started=True)
-    docker.check_network(role)
-    code, raw = docker.exec(cid, [MODULE, "admit", "--role", role, "--job-id", job_id,
-                                 "--worker-state-parent", journal.profile.value["worker_state_parent"]])
-    require(code == 0 and decoded(raw) == {"schema":1,"status":"admitted"})
+        with locked(journal.directory, "cancel-admit.lock", wait=65):
+            require(not journal.read(job_id)["cancel_requested"])
+            journal.change(job_id, phase="launching", launch_started=True)
+            dispatch()
+    else:
+        dispatch()
     return cid
 
 
@@ -723,10 +767,13 @@ def _postrun(journal, docker, job_id):
             current = journal.read(job_id)
             require(not current["reporter_removed"])
             docker.remove(cid, job_id, "reporter", current["reporter_cgroup"])
+            worker_ok = _worker_succeeded(current)
+            healthy = worker_ok and report["healthy"]
+            status = report["status"] if worker_ok else "postrun_failed"
             journal.change(job_id, phase="finished", hold=False, reporter_removed=True,
-                           board=report["board"], health=report["health"], healthy=report["healthy"],
-                           cards=report["cards"], error="none" if report["healthy"] else "health")
-        return _output(report["status"],quiescent=True,healthy=report["healthy"],cards=report["cards"])
+                           board=report["board"], health=report["health"], healthy=healthy,
+                           cards=report["cards"], error="worker" if not worker_ok else "none" if healthy else "health")
+        return _output(status,quiescent=True,healthy=healthy,cards=report["cards"])
 
 
 def run(profile_path, *, invoke=call_argv, containment=None):
@@ -745,11 +792,13 @@ def run(profile_path, *, invoke=call_argv, containment=None):
                     require(code == 0)
                     exit_code = int(raw.strip())
                     code, raw = docker.call(["logs", cid], timeout=5)
-                    result = _worker_result(exit_code, raw) if code == 0 else None
-                    require(result is not None)
+                    result = _worker_result(exit_code, raw, observed=True) if code == 0 else None
                     with locked(journal.directory, "admission.lock", wait=65):
                         current = journal.read(job_id)
                         require(not current["cancel_requested"] and not current["worker_removed"])
+                        _record_worker_result(journal, job_id, result)
+                        require(result is not None and exit_code == 0 and result["quiescent"]
+                                and result["status"] == "completed" and result["worker_exit"] == 0)
                         v = docker.remove(cid, job_id, "worker", current["worker_cgroup"])
                         require(v["exit"] == exit_code)
                         journal.change(job_id, phase="quiescent", quiescent=True, worker_removed=True,
@@ -790,7 +839,8 @@ def stop(profile_path, *, invoke=call_argv, containment=None):
                                         proof = docker.containment.capture(current[field], runtime["pid"])
                                         current = journal.change(job_id, **{role + "_cgroup":proof})
                                 docker.halt(current[field], job_id, role, current[role + "_cgroup"],
-                                            never_admitted=not current["launch_started"] if role == "worker" else False)
+                                            never_admitted=not current["launch_started"] if role == "worker" else False,
+                                            observe=lambda result: _record_worker_result(journal, job_id, result))
                                 current = journal.change(job_id, **{removed:True})
                         journal.change(job_id, phase="quiescent", quiescent=True, ack="contained", healthy=False)
                     if current["reporter_id"] is not None:
