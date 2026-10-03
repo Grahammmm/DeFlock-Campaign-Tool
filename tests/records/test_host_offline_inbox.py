@@ -360,8 +360,12 @@ class HostOfflineInboxTests(support.HostFixture):
         with host.Profile(self.profile) as profile:
             fake = OfflineDocker(self.profile)
             docker = host.Docker(profile, invoke=fake.invoke, containment=fake)
-            cid = docker.create("a" * 32, "worker")
-            runtime = docker.inspect(cid, "a" * 32, "worker")
+            journal = host.Journal(profile)
+            self.addCleanup(journal.close)
+            job_id = journal.allocate()
+            journal.change(job_id, phase="preflight")
+            cid = docker.create(job_id, "worker")
+            runtime = docker.inspect(cid, job_id, "worker")
             for change in ("subpath", "source", "cross-kind"):
                 bad = copy.deepcopy(runtime)
                 if change == "subpath":
