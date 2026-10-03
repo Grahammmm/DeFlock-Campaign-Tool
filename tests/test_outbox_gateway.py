@@ -50,6 +50,26 @@ class GatewayTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertEqual(self.calls, [])
 
+    def test_distinct_followup_intents_replay_and_later_day_send(self):
+        for intent, day in [('due-first', 3), ('due-second', 4)]:
+            self.gateway.clock = lambda day=day: dt.datetime(2026, 10, day, 10, tzinfo=dt.timezone.utc)
+            frame = copy.deepcopy(self.frame)
+            frame.update(action_id=intent, issued_at=f'2026-10-0{day}T10:00:00Z', approved_at=f'2026-10-0{day}T09:59:00Z')
+            frame['draft'].update(kind='send_followup', intent_id=intent, body='Synthetic '+intent)
+            frame['canonical_key'] = idempotency_key('send_followup', 'request-1', 1, intent)
+            first = self.dispatch(frame)
+            self.assertEqual(first[0], 200)
+            self.assertEqual(self.dispatch(frame), first)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual([d.scope_version for d in self.calls], [1, 1])
+
+    def test_followup_requires_valid_signed_intent_before_journal(self):
+        for intent in [None, '', 'bad\0intent', 'x'*101]:
+            frame = copy.deepcopy(self.frame)
+            frame['draft'].update(kind='send_followup', intent_id=intent)
+            self.assertEqual(self.dispatch(frame)[0], 400)
+        self.assertFalse(self.path.exists())
+
     def test_strict_signed_schema_and_freshness_before_journal(self):
         mutations = [("campaign_id", "other"), ("v", True), ("canonical_key", "wrong"),
             ("issued_at", "2026-10-03T09:54:59Z"), ("approved_at", "2026-10-03T10:01:00Z"),

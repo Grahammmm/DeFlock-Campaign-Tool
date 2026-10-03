@@ -19,11 +19,31 @@ sending path.
 `approved_at`, `sending_at`, `sent_at`, `provider_receipt`, `error`, `resolved_by`,
 timestamps.
 
-Key: `sha256(kind \0 request_id \0 scope_version)`. The same request and scope version is one
+Requests/legacy key: `sha256(kind \0 request_id \0 scope_version)`. The same request and scope version is one
 row forever, however many times a job retries or an organizer clicks. A new scope version is
 a new row.
 
 States: `proposed → approved → sending → sent | failed | blocked`.
+
+## Follow-up intent identity
+
+Requests and legacy journal rows retain their original three-field key and JSON
+bytes. New follow-ups use a distinct approved `intent_id`, not a changed scope.
+The canonical hash appends `\0followup-intent-v1\0intent_id` to the original
+identity. Intent is 1–100 ASCII letters, digits, period, underscore, colon or
+hyphen. The signed gateway requires it for follow-ups and refuses it on requests.
+The hosted approval binds it to the stored card idempotency key, preserving the
+runner's due-date identity and reapproval/retry identity. Local JSON drafts may
+supply `intent_id` explicitly; approval is still required before transport.
+
+A new intent never clears an unresolved send for the request or the agency/day
+and fee caps. Existing legacy follow-ups with no reliable intent mapping hold
+new intent-based sends for that request/scope (`legacy_followup_intent_unresolved`).
+No automatic conversion, deletion or re-keying of legacy receipts is performed.
+Inspect provider evidence and plan an explicit reviewed migration; changing scope
+or intent to evade a hold is not a recovery procedure. A replay of the same new
+intent returns its original receipt. Changed content on that intent conflicts at
+the gateway. Distinct later reminders require separate approval cards.
 
 ## Safeguards (`Outbox._check`, enforced on every `send`)
 
