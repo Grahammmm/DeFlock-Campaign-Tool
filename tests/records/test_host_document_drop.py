@@ -92,3 +92,20 @@ class HostDocumentDropTests(unittest.TestCase):
         self.assertNotIn("--mail-config", child)
         self.assertNotIn("--inbox", child)
         snapshot.assert_called_once_with("documents", paths["documents"], expected="b" * 64, readonly=True)
+
+    def test_shared_fixture_root_passes_real_path_guard(self):
+        self.assertEqual(self.base.parent, fixtures.fixture_parent())
+        with host.PrivateDir(str(self.base)) as directory:
+            self.assertEqual(os.fstat(directory.fd).st_uid, os.getuid())
+        with host.PrivateDir(str(self.input)):
+            pass
+
+    def test_document_snapshot_rejects_unsafe_synthetic_parent(self):
+        unsafe = self.base / "deliberately-unsafe-host-parent"
+        unsafe.mkdir(mode=0o700)
+        # Deliberately unsafe new negative fixture, not a permission repair.
+        unsafe.chmod(0o777)
+        child = unsafe / "documents"
+        child.mkdir(mode=0o700)
+        with self.assertRaises(host.Rejected):
+            host.document_snapshot(str(child))

@@ -31,12 +31,21 @@ def xlsx_bytes():
     return stream.getvalue()
 
 
+def fixture_parent():
+    """Known owner home only; reject unsafe ancestors/symlinks without fallback."""
+    parent = Path.home()
+    with drop.PrivateDir(str(parent), private=False) as directory:
+        drop.require(os.fstat(directory.fd).st_uid == os.getuid())
+    return parent
+
+
 class DocumentDropTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = tempfile.TemporaryDirectory(prefix="records-document-drop-", dir=fixture_parent())
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name)
-        os.chmod(self.base, 0o700)
+        with drop.PrivateDir(str(self.base)):
+            pass
         self.input = self.base / "documents"
         self.input.mkdir(mode=0o700)
         self.root = self.base / "records"
@@ -331,3 +340,82 @@ class DocumentDropTests(unittest.TestCase):
         self.assertEqual((report["cursor_start"], report["cursor_next"]), (0, 0))
         self.assertEqual(pipeline.safety.phases["intake"]["attempted"], 1)
         self.assertEqual(pipeline.safety.phases["intake"]["failed"], 1)
+
+    def test_fixture_root_passes_real_owner_and_ancestor_guards(self):
+        self.assertEqual(self.base.parent, fixture_parent())
+        with drop.PrivateDir(str(self.base)) as directory:
+            self.assertEqual(os.fstat(directory.fd).st_uid, os.getuid())
+        with drop.PrivateDir(str(self.input)):
+            pass
+
+    def test_world_writable_synthetic_ancestor_still_rejected(self):
+        unsafe = self.base / "deliberately-unsafe-parent"
+        unsafe.mkdir(mode=0o700)
+        # Only this newly owned negative fixture is made unsafe, never CI/home ancestors.
+        unsafe.chmod(0o777)
+        child = unsafe / "documents"
+        child.mkdir(mode=0o700)
+        with self.assertRaises(Exception):
+            drop.snapshot(str(child))
+
+    def test_symlink_synthetic_ancestor_still_rejected(self):
+        alias = self.base / "parent-alias"
+        alias.symlink_to(self.base, target_is_directory=True)
+        with self.assertRaises(Exception):
+            drop.snapshot(str(alias / "documents"))
+
+    def test_nonempty_end_or_overrun_cursor_rejected_across_fresh_instances(self):
+        self.add()
+        manifest = self.manifest()
+        from campaign_tool.records.run_safety import RunSafety, RunSafetyPolicy, digest
+        key = "document-drop-progress-v1:" + digest(["local", str(self.input.absolute())])
+        for bad in (manifest["documents"], manifest["documents"] + 1):
+            with self.subTest(next=bad):
+                case_root = self.base / ("cursor-" + str(bad))
+                initial = unattended.UnattendedPipeline(str(case_root))
+                with store.ledger(initial.root.ledger) as con:
+                    con.execute("INSERT INTO ledger_meta(key,value) VALUES(?,?)", (key, json.dumps({
+                        "schema": "document-drop-progress-v1", "manifest_sha256": manifest["sha256"], "next": bad})))
+                    con.commit()
+                for repeat in range(2):
+                    pipeline = unattended.UnattendedPipeline(str(case_root))
+                    pipeline.safety = RunSafety(pipeline.root.ledger, RunSafetyPolicy(max_fetches=1))
+                    with self.readonly(), self.assertRaisesRegex(ValueError, "invalid_safety_state"):
+                        pipeline.ingest_documents(str(self.input), manifest["sha256"])
+                    self.assertEqual(pipeline.safety.state["hold"], "invalid_safety_state")
+                    self.assertEqual(pipeline.safety.phases["intake"]["attempted"], 0)
+                    with store.ledger(pipeline.root.ledger, readonly=True) as con:
+                        self.assertEqual(con.execute("SELECT count(*) FROM originals").fetchone()[0], 0)
+
+    def test_empty_matching_zero_cursor_remains_valid(self):
+        manifest = self.manifest()
+        from campaign_tool.records.run_safety import RunSafety, RunSafetyPolicy, digest
+        pipeline = unattended.UnattendedPipeline(str(self.root))
+        key = "document-drop-progress-v1:" + digest(["local", str(self.input.absolute())])
+        with store.ledger(pipeline.root.ledger) as con:
+            con.execute("INSERT INTO ledger_meta(key,value) VALUES(?,?)", (key, json.dumps({
+                "schema": "document-drop-progress-v1", "manifest_sha256": manifest["sha256"], "next": 0})))
+            con.commit()
+        pipeline.safety = RunSafety(pipeline.root.ledger, RunSafetyPolicy(max_fetches=1))
+        with self.readonly():
+            report = pipeline.ingest_documents(str(self.input), manifest["sha256"])
+        self.assertEqual((report["documents"], report["cursor_start"], report["cursor_next"]), (0, 0, 0))
+        self.assertFalse(pipeline.safety.stopped)
+        self.assertEqual(pipeline.safety.phases["intake"]["attempted"], 0)
+
+    def test_invalid_cursor_never_clears_existing_hold(self):
+        self.add()
+        manifest = self.manifest()
+        from campaign_tool.records.run_safety import RunSafety, RunSafetyPolicy, digest
+        pipeline = unattended.UnattendedPipeline(str(self.root))
+        key = "document-drop-progress-v1:" + digest(["local", str(self.input.absolute())])
+        with store.ledger(pipeline.root.ledger) as con:
+            con.execute("INSERT INTO ledger_meta(key,value) VALUES(?,?)", (key, json.dumps({
+                "schema": "document-drop-progress-v1", "manifest_sha256": manifest["sha256"], "next": manifest["documents"]})))
+            con.commit()
+        pipeline.safety = RunSafety(pipeline.root.ledger, RunSafetyPolicy())
+        pipeline.safety.stop("failure_rate_exceeded")
+        with self.readonly(), self.assertRaisesRegex(ValueError, "invalid_safety_state"):
+            pipeline.ingest_documents(str(self.input), manifest["sha256"])
+        self.assertEqual(pipeline.safety.state["hold"], "failure_rate_exceeded")
+        self.assertEqual(pipeline.safety.phases["intake"]["attempted"], 0)

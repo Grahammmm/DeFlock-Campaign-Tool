@@ -190,7 +190,8 @@ def _progress(database, account, path, manifest, safety):
                     and all(c in "0123456789abcdef" for c in value["manifest_sha256"])
                     and type(value["next"]) is int and 0 <= value["next"] <= 200)
             if value["manifest_sha256"] == manifest["sha256"]:
-                require(value["next"] <= manifest["documents"])
+                require(value["next"] == 0 if manifest["documents"] == 0
+                        else value["next"] < manifest["documents"])
                 cursor = value["next"]
         except Exception:
             safety.stop("invalid_safety_state")
