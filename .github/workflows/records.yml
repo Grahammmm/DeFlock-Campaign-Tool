@@ -2,13 +2,17 @@ name: Offline engine checks
 on:
   pull_request:
   push:
-    branches: [main, 'codex/records-*']
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
   offline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +30,7 @@ jobs:
             python -m pip install -r requirements-records-test.txt
           fi
       - name: Synthetic offline tests
+        timeout-minutes: 15
         run: python -B -m unittest discover -v
       - name: Public-tree credential and private-path scan
         run: python -B tools/check_public_tree.py

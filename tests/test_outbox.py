@@ -99,6 +99,64 @@ class OutboxTests(unittest.TestCase):
         self.box.close()
         self.tmp.cleanup()
 
+    def test_fresh_retry_preserves_failed_approval_and_still_applies_caps(self):
+        row = self.box.propose(draft(request_id="req_failed"))
+        key = row["idempotency_key"]
+        self.box.approve(key, "original@example.invalid")
+        with self.assertRaises(ob.OutboxError):
+            self.box.send(key, lambda d: (_ for _ in ()).throw(ob.OutboxError("definite refusal")))
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertFalse(self.box.db.in_transaction)
+        self.clock.stamp = "2026-09-30T10:01:00Z"
+        retried = self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(retried["state"], "approved")
+        history = self.box.db.execute("SELECT * FROM outbox_retry_approval").fetchone()
+        self.assertEqual(history["prior_approved_by"], "original@example.invalid")
+        self.assertEqual(history["prior_error"], "definite refusal")
+        self.assertEqual(history["approved_by"], "new@example.invalid")
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        # Consuming the daily cap elsewhere must still block the approved retry.
+        other = self.box.propose(draft(request_id="req_other"))
+        self.box.approve(other["idempotency_key"], "new@example.invalid")
+        self.box.send(other["idempotency_key"], lambda d: ob.ProviderReceipt("email", "synthetic-other"))
+        with self.assertRaises(ob.Blocked) as caught:
+            self.box.send(key, lambda d: self.fail("daily cap must apply to retry"))
+        self.assertEqual(caught.exception.reason, "daily_agency_cap")
+
+    def test_retry_cannot_clear_uncertainty_or_saved_provider_evidence(self):
+        row = self.box.propose(draft()); key = row["idempotency_key"]
+        self.box.approve(key, "original@example.invalid")
+        with self.assertRaises(ob.AmbiguousFailure):
+            self.box.send(key, lambda d: (_ for _ in ()).throw(ob.AmbiguousFailure("unknown")))
+        self.clock.stamp = "2026-09-30T10:01:00Z"
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(self.box.row(key)["state"], "sending")
+        self.assertEqual(self.box.db.execute("SELECT count(*) FROM outbox_retry_approval").fetchone()[0], 0)
+        self.box.reconcile(key, "not_delivered", "owner@example.invalid")
+        self.clock.stamp = "2026-09-30T10:02:00Z"
+        self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(self.box.db.execute("SELECT resolved_by FROM outbox_retry_approval").fetchone()[0], "owner@example.invalid")
+        self.box._set(key, state="failed", provider_receipt=ob.ProviderReceipt("email", "known-message").to_json())
+        self.clock.stamp = "2026-09-30T10:03:00Z"
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+
+    def test_retry_audit_and_transition_roll_back_together(self):
+        row = self.box.propose(draft()); key = row["idempotency_key"]
+        self.box.approve(key, "original@example.invalid")
+        self.box._set(key, state="failed", error="definite refusal")
+        self.clock.stamp = "2026-09-30T10:01:00Z"
+        self.box.db.execute("CREATE TRIGGER synthetic_abort_retry BEFORE UPDATE ON outbox WHEN NEW.state='approved' "
+            "BEGIN SELECT RAISE(ABORT,'synthetic transition failure'); END")
+        with self.assertRaises(Exception):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(self.box.row(key)["state"], "failed")
+        self.assertFalse(self.box.db.in_transaction)
+        self.assertEqual(self.box.db.execute("SELECT count(*) FROM outbox_retry_approval").fetchone()[0], 0)
+
     def test_journal_permissions_and_key(self):
         self.assertEqual(os.stat(self.box.path).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(self.box.path.parent).st_mode & 0o777, 0o700)
@@ -417,3 +475,91 @@ class OutboxTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConcurrentCapTests(unittest.TestCase):
+    def test_different_keys_cannot_both_pass_one_agency_daily_cap(self):
+        self._race_caps()
+
+    def test_unresolved_request_hold_is_atomic_across_scope_keys(self):
+        self._race_caps(same_request=True)
+
+    def _race_caps(self, same_request=False):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "outbox.sqlite"
+            setup = ob.Outbox(path)
+            keys = []
+            for request in ["req_race_first", "req_race_second"]:
+                item = draft(request_id="req_same" if same_request else request)
+                item.scope_version = len(keys) + 1
+                row = setup.propose(item)
+                setup.approve(row["idempotency_key"], "organizer@example.invalid")
+                keys.append(row["idempotency_key"])
+            setup.close()
+            ready = [threading.Event(), threading.Event()]
+            begin = [threading.Event(), threading.Event()]
+            first_checked = threading.Event(); release_first = threading.Event()
+            second_sent = threading.Event(); calls = []; errors = []
+            def worker(index):
+                box = ob.Outbox(path, daily_agency_cap=100 if same_request else 1)
+                original = box._check
+                if index == 0:
+                    def pause_after_check(row):
+                        result = original(row)
+                        first_checked.set()
+                        if not release_first.wait(5): raise RuntimeError("synthetic synchronization timeout")
+                        return result
+                    box._check = pause_after_check
+                ready[index].set()
+                try:
+                    if not begin[index].wait(5): raise RuntimeError("synthetic start timeout")
+                    def transport(item):
+                        calls.append(item.request_id)
+                        if index == 1: second_sent.set()
+                        if same_request and index == 0: raise ob.AmbiguousFailure("synthetic unknown delivery")
+                        return ob.ProviderReceipt("email", "receipt-" + item.request_id)
+                    box.send(keys[index], transport)
+                except Exception as exc: errors.append(exc)
+                finally: box.close()
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+            for thread in threads: thread.start()
+            try:
+                for event in ready: self.assertTrue(event.wait(5))
+                begin[0].set(); self.assertTrue(first_checked.wait(5)); begin[1].set()
+                # Old code can send the second key in this gap; atomic code waits for the first claim.
+                second_sent.wait(1)
+            finally:
+                release_first.set()
+                for event in begin: event.set()
+                for thread in threads: thread.join(6)
+            self.assertFalse(any(t.is_alive() for t in threads))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(errors), 2 if same_request else 1)
+            blocked = [e for e in errors if isinstance(e, ob.Blocked)]
+            self.assertEqual(len(blocked), 1)
+            self.assertEqual(blocked[0].reason, "ambiguous_send_unresolved" if same_request else "daily_agency_cap")
+
+
+    def test_transaction_ends_before_transport_and_guard_refusals_rollback(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "outbox.sqlite"
+            box = ob.Outbox(path)
+            key = box.propose(draft())["idempotency_key"]
+            with self.assertRaises(ob.Blocked): box.send(key, lambda _: self.fail("not approved"))
+            self.assertFalse(box.db.in_transaction)
+            box.approve(key, "organizer@example.invalid")
+            box.db.execute("CREATE TABLE synthetic_probe (value TEXT)")
+            def transport(_):
+                self.assertFalse(box.db.in_transaction)
+                writer = ob.sqlite3.connect(path, timeout=0)
+                try:
+                    writer.execute("INSERT INTO synthetic_probe VALUES ('transport-write')")
+                    writer.commit()
+                finally: writer.close()
+                return ob.ProviderReceipt("email", "synthetic-unlocked")
+            try:
+                self.assertEqual(box.send(key, transport)["state"], "sent")
+                self.assertFalse(box.db.in_transaction)
+                self.assertEqual(box.send(key, lambda _: self.fail("replayed sent row"))["state"], "sent")
+                self.assertFalse(box.db.in_transaction)
+            finally: box.close()
