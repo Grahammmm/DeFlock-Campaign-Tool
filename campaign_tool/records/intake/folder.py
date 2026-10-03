@@ -360,7 +360,7 @@ def reconcile_edges(db,sha,digest,config,source_version):
     exclusions still retire matching links. Other parents/direct originals keep
     shared child hashes active; old blobs, receipts and units are not deleted.
     """
-    from .rfc822_adapter import SCHEMA as wire_schema
+    from campaign_tool.records.intake.rfc822_adapter import SCHEMA as wire_schema
     incoming={js(child["locator"]):child for child in digest.get("children",[])}
     complete=digest.get("children_inventory_complete") is True
     stamp=now()
