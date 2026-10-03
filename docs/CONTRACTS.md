@@ -120,6 +120,18 @@ from an Access JWT are executed, and execution writes `executed_at`, `provider_r
 No code path sends without an approved row. Kinds: `send_request`, `send_followup`, `pay_fee`, `publish_finding`,
 `send_newsletter`, `post_social`, `deploy_site`.
 
+Approve, edit and reject use a conditional database transition against the card snapshot
+read by that request: state, proposal bytes, update time, approval, error and provider receipt.
+A concurrent edit cannot inherit an approval for the earlier draft; a late edit or rejection
+cannot overwrite an execution claim or its successful receipt. Conflicts return HTTP 409
+and require reloading the card. This database consistency check does not establish that a
+human semantically reviewed the content or replace Cloudflare Access authentication.
+
+Once execution has been claimed, rejection is not cancellation of an admitted provider
+effect. Never reopen an `executing` card merely because a caller timed out. The hosted
+crash-recovery/operator-pilot gate remains open until the original executor can be proven
+quiescent and its provider outcome reconciled; this transition fix does not add such recovery.
+
 ## Privacy tiers
 
 `redacted_cloud` (default): the runner redacts plate numbers, personal names, street addresses, phone numbers,

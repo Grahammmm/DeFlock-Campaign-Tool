@@ -770,6 +770,21 @@ export class Repo {
     return this.update("external_action", "action_id", actionId, patch);
   }
 
+  /** Operator transitions may change only the exact card snapshot inspected. */
+  async transitionAction(action: ExternalActionRow, patch: Partial<Pick<ExternalActionRow,
+    "state" | "proposal_json" | "approved_by" | "approved_at" | "error">>): Promise<ExternalActionRow | null> {
+    const keys = Object.keys(patch) as Array<keyof typeof patch>;
+    const allowed = new Set(["state", "proposal_json", "approved_by", "approved_at", "error"]);
+    if (!keys.length || keys.some(key => !allowed.has(key))) throw new Error("invalid action transition fields");
+    return this.db.prepare(
+      `UPDATE external_action SET ${keys.map(key => `${key} = ?`).join(", ")}, updated_at = ? ` +
+      "WHERE campaign_id = ? AND action_id = ? AND state = ? AND proposal_json = ? AND updated_at = ? " +
+      "AND approved_by IS ? AND approved_at IS ? AND error IS ? AND provider_receipt IS ? RETURNING *",
+    ).bind(...keys.map(key => patch[key] ?? null), nowIso(), this.campaignId, action.action_id,
+      action.state, action.proposal_json, action.updated_at, action.approved_by, action.approved_at,
+      action.error, action.provider_receipt).first<ExternalActionRow>();
+  }
+
   /** Approved -> executing only if still approved (guards double execution). */
   async claimForExecution(actionId: string): Promise<ExternalActionRow | null> {
     const row = await this.db
