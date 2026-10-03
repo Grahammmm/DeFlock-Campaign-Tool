@@ -22,6 +22,11 @@ version = {attr = "campaign_tool.__version__"}
 include = ["campaign_tool*"]
 
 [tool.setuptools.package-data]
-campaign_tool = ["assets/*.tmpl"]
+campaign_tool = ["assets/*.tmpl",
+                 "_resources/data/agencies/us-ca.json",
+                 "_resources/schemas/agency-seed.schema.json",
+                 "_resources/schemas/law-package.schema.json",
+                 "_resources/jurisdictions/us-ca/package.json",
+                 "_resources/templates/records-request.md"]
 "campaign_tool.records" = ["_release_manifest.json", "_release_dependencies.txt"]
 "campaign_tool.records.runner" = ["templates/*.in"]
