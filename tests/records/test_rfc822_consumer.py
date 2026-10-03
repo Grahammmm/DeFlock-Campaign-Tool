@@ -94,6 +94,22 @@ class RFC822ConsumerTests(unittest.TestCase):
             {digest(payload), digest(payload.replace(b"\r\n", b"\n"))})
         self.assertEqual(self.import_file(forwarded)["added_occurrences"], 0)
         self.assertEqual((self.out / "blobs" / digest(payload)).read_bytes(), payload)
+        self.db.row_factory = sqlite3.Row
+        folder.reconcile_edges(self.db, digest(original), {
+            "children_inventory_complete": True,
+            "children": [{"locator": json.loads(old_edge[0]), "sha": old_edge[1],
+                          "name": "synthetic.txt"}]}, {"excluded_path_fragments": []}, "synthetic-v1")
+        self.assertEqual(self.db.execute("SELECT count(*) FROM edges WHERE parent=?",
+            (digest(original),)).fetchone()[0], 2)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM edge_history").fetchone()[0], 0)
+        # Explicit exclusions still retire both policies while preserving edge history.
+        folder.reconcile_edges(self.db, digest(original), {
+            "children_inventory_complete": True, "children": []},
+            {"excluded_path_fragments": ["synthetic.txt"]}, "synthetic-v2")
+        self.assertEqual(self.db.execute("SELECT count(*) FROM edges WHERE parent=?",
+            (digest(original),)).fetchone()[0], 0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM edge_history").fetchone()[0], 2)
+        self.db.row_factory = None
 
     def test_nested_exact_bytes_immediate_parents_formats_and_replay(self):
         path=self.exported();receipt=json.loads(path.read_text())

@@ -360,17 +360,28 @@ def reconcile_edges(db,sha,digest,config,source_version):
     exclusions still retire matching links. Other parents/direct originals keep
     shared child hashes active; old blobs, receipts and units are not deleted.
     """
+    from .rfc822_adapter import SCHEMA as wire_schema
     incoming={js(child["locator"]):child for child in digest.get("children",[])}
     complete=digest.get("children_inventory_complete") is True
     stamp=now()
     for edge in list(db.execute("SELECT * FROM edges WHERE parent=?",(sha,))):
+        # A legacy extraction inventory cannot prove exact-wire acquisition absent.
+        try:
+            locator=json.loads(edge["locator"])
+        except (TypeError,ValueError):
+            locator=None
+        wire_acquisition=(isinstance(locator,dict) and set(locator)=={"mime","wire_schema"}
+                          and locator["wire_schema"]==wire_schema
+                          and isinstance(locator["mime"],str)
+                          and len(locator["mime"])<=256
+                          and re.fullmatch(r"1(?:\.[1-9][0-9]*)*",locator["mime"]) is not None)
         new=incoming.get(edge["locator"])
         reason=None
         if new and (new["sha"]!=edge["child"] or new["name"]!=edge["name"]):
             reason="observed_relationship_replaced"
         elif not new and excluded(edge["name"],excluded_path_fragments=config["excluded_path_fragments"]):
             reason="relationship_excluded_by_current_policy"
-        elif not new and complete:
+        elif not new and complete and not wire_acquisition:
             reason="absent_from_completed_child_inventory"
         if reason:
             db.execute("INSERT INTO edge_history VALUES(?,?,?,?,?,?,?)",
