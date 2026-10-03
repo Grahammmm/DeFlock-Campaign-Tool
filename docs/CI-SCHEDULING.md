@@ -6,7 +6,7 @@ Each workflow has its own concurrency group. Pull-request groups include the PR 
 
 This replaces branch-push plus PR duplicate validation. It does not skip tests, filter changed paths, shorten time budgets, or change deployment and approval permissions. A canceled obsolete run is not passing evidence; assess all required checks on the current PR head. A manually rerun workflow uses the existing run's concurrency identity.
 
-The intake workflow runs the full offline suite on Python3.11,3.12and3.13. Its job budget is20minutes, with15minutes for the full test step, leaving bounded time for installation and the credential scan. This matches the existing release-suite budget. The prior ten-minute intake job canceled the3.12matrix entry while tests were still progressing; the3.11and3.13entries passed. No tests were removed or marked expected, and fail-fast remains false.
+The intake and engine workflows run the full offline suite on Python3.11,3.12and3.13. Their job budget is20minutes, with15minutes for the full test step, leaving bounded time for installation and the credential scan. This matches the existing release-suite budget. Prior ten-minute budgets canceled intake3.12and engine3.13while tests were still progressing; the other entries passed. No tests were removed or marked expected, and fail-fast remains false.
 
 Historical runs created before this policy keep their original configuration. This change does not cancel those jobs or clear an already-existing queue. Current runner capacity and the live scheduling behavior still need to be observed after merge.
 

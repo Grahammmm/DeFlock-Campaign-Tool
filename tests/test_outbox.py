@@ -99,6 +99,64 @@ class OutboxTests(unittest.TestCase):
         self.box.close()
         self.tmp.cleanup()
 
+    def test_fresh_retry_preserves_failed_approval_and_still_applies_caps(self):
+        row = self.box.propose(draft(request_id="req_failed"))
+        key = row["idempotency_key"]
+        self.box.approve(key, "original@example.invalid")
+        with self.assertRaises(ob.OutboxError):
+            self.box.send(key, lambda d: (_ for _ in ()).throw(ob.OutboxError("definite refusal")))
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertFalse(self.box.db.in_transaction)
+        self.clock.stamp = "2026-09-30T10:01:00Z"
+        retried = self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(retried["state"], "approved")
+        history = self.box.db.execute("SELECT * FROM outbox_retry_approval").fetchone()
+        self.assertEqual(history["prior_approved_by"], "original@example.invalid")
+        self.assertEqual(history["prior_error"], "definite refusal")
+        self.assertEqual(history["approved_by"], "new@example.invalid")
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        # Consuming the daily cap elsewhere must still block the approved retry.
+        other = self.box.propose(draft(request_id="req_other"))
+        self.box.approve(other["idempotency_key"], "new@example.invalid")
+        self.box.send(other["idempotency_key"], lambda d: ob.ProviderReceipt("email", "synthetic-other"))
+        with self.assertRaises(ob.Blocked) as caught:
+            self.box.send(key, lambda d: self.fail("daily cap must apply to retry"))
+        self.assertEqual(caught.exception.reason, "daily_agency_cap")
+
+    def test_retry_cannot_clear_uncertainty_or_saved_provider_evidence(self):
+        row = self.box.propose(draft()); key = row["idempotency_key"]
+        self.box.approve(key, "original@example.invalid")
+        with self.assertRaises(ob.AmbiguousFailure):
+            self.box.send(key, lambda d: (_ for _ in ()).throw(ob.AmbiguousFailure("unknown")))
+        self.clock.stamp = "2026-09-30T10:01:00Z"
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(self.box.row(key)["state"], "sending")
+        self.assertEqual(self.box.db.execute("SELECT count(*) FROM outbox_retry_approval").fetchone()[0], 0)
+        self.box.reconcile(key, "not_delivered", "owner@example.invalid")
+        self.clock.stamp = "2026-09-30T10:02:00Z"
+        self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(self.box.db.execute("SELECT resolved_by FROM outbox_retry_approval").fetchone()[0], "owner@example.invalid")
+        self.box._set(key, state="failed", provider_receipt=ob.ProviderReceipt("email", "known-message").to_json())
+        self.clock.stamp = "2026-09-30T10:03:00Z"
+        with self.assertRaises(ob.OutboxError):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+
+    def test_retry_audit_and_transition_roll_back_together(self):
+        row = self.box.propose(draft()); key = row["idempotency_key"]
+        self.box.approve(key, "original@example.invalid")
+        self.box._set(key, state="failed", error="definite refusal")
+        self.clock.stamp = "2026-09-30T10:01:00Z"
+        self.box.db.execute("CREATE TRIGGER synthetic_abort_retry BEFORE UPDATE ON outbox WHEN NEW.state='approved' "
+            "BEGIN SELECT RAISE(ABORT,'synthetic transition failure'); END")
+        with self.assertRaises(Exception):
+            self.box.approve_retry(key, "new@example.invalid", self.clock.stamp)
+        self.assertEqual(self.box.row(key)["state"], "failed")
+        self.assertFalse(self.box.db.in_transaction)
+        self.assertEqual(self.box.db.execute("SELECT count(*) FROM outbox_retry_approval").fetchone()[0], 0)
+
     def test_journal_permissions_and_key(self):
         self.assertEqual(os.stat(self.box.path).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(self.box.path.parent).st_mode & 0o777, 0o700)

@@ -29,7 +29,15 @@ export async function approveAction(repo: Repo, actionId: string, identity: Acce
   const action = await repo.action(actionId);
   if (!action) throw new ApprovalError("unknown action", 404);
   if (action.state !== "proposed") throw new ApprovalError(`action is ${action.state}, not proposed`);
-  const changed = await repo.transitionAction(action, { state: "approved", approved_by: identity.email, approved_at: nowIso() });
+  let proposal = action.proposal_json;
+  if ((action.kind === "send_request" || action.kind === "send_followup") && action.subject_id) {
+    const request = await repo.request(action.subject_id);
+    if (request) proposal = JSON.stringify({ ...JSON.parse(proposal), outbox_binding: {
+      agency_id: request.agency_id, scope_version: request.scope_version, fee_cap_cents: request.fee_cap_cents,
+    } });
+  }
+  const changed = await repo.transitionAction(action, { state: "approved", approved_by: identity.email,
+    approved_at: nowIso(), proposal_json: proposal });
   if (!changed) throw new ApprovalError("action changed during approval; reload and inspect it again");
   return changed;
 }
