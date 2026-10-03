@@ -103,3 +103,16 @@ message and a second `send` is a no-op, per-agency daily cap (shared by follow-u
 MuckRock 402 → `blocked` and a successful filing, MuckRock 5xx and transport crashes stay
 `sending` until reconciled, 401 → `failed`, `In-Reply-To` threading, approval and reconcile
 require an identity, CLI round trip.
+
+## Explicit approval after a definite failure
+
+The trusted hosted signer can call `Outbox.approve_retry(key, approved_by, approved_at)`
+for an unchanged draft after a definite failure. Approval must be strictly later
+than the failure; merely replaying or refreshing the old envelope is refused.
+The row must be failed without a sending/sent timestamp or provider receipt.
+Approval history and failure/resolver evidence are appended to the private
+`outbox_retry_approval` table atomically with the state change. This method does
+not send, lift agency/fee caps or reconcile uncertainty. An independently verified
+not-delivered reconciliation needs a subsequent fresh approval. Do not alter the
+canonical key or request scope to escape an unresolved effect. The CLI's ordinary
+`approve` remains proposed-only; this API requires an authenticated trusted caller.

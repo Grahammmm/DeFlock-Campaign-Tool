@@ -64,6 +64,18 @@ CREATE TABLE IF NOT EXISTS outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS outbox_agency_day ON outbox(agency_id, sent_at);
+CREATE TABLE IF NOT EXISTS outbox_retry_approval (
+  event_id INTEGER PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  prior_approved_by TEXT,
+  prior_approved_at TEXT,
+  failed_at TEXT NOT NULL,
+  prior_error TEXT,
+  resolved_by TEXT,
+  approved_by TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
 """
 
 
@@ -297,6 +309,42 @@ class Outbox:
         fields["updated_at"] = self.clock()
         cols = ", ".join(f"{k}=?" for k in fields)
         self.db.execute(f"UPDATE outbox SET {cols} WHERE idempotency_key=?", (*fields.values(), key))
+
+    def approve_retry(self, key, approved_by, approved_at):
+        """Trusted caller's new approval after definite failure; never clear uncertainty.
+
+        This does not send. The usual send caps and unresolved-request check remain.
+        The caller must authenticate the approver and bind approval to this draft.
+        """
+        if not isinstance(approved_by, str) or not approved_by.strip():
+            raise OutboxError("retry approval requires an identity")
+        try:
+            if not isinstance(approved_at, str) or len(approved_at) > 40 or not approved_at.endswith("Z"):
+                raise ValueError("UTC approval required")
+            approval = dt.datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise OutboxError("invalid retry approval time") from exc
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.row(key)
+            if not row or row["state"] != "failed" or row["provider_receipt"] or row["sending_at"] or row["sent_at"]:
+                raise OutboxError("retry requires a definite failure without delivery evidence")
+            failed = dt.datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
+            if approval <= failed:
+                raise OutboxError("retry approval must follow the failure")
+            stamp = self.clock()
+            self.db.execute("INSERT INTO outbox_retry_approval (idempotency_key, prior_approved_by, prior_approved_at, "
+                "failed_at, prior_error, resolved_by, approved_by, approved_at, recorded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (key, row["approved_by"], row["approved_at"], row["updated_at"], row["error"], row["resolved_by"],
+                 approved_by, approved_at, stamp))
+            self.db.execute("UPDATE outbox SET state='approved', approved_by=?, approved_at=?, error=NULL, updated_at=? "
+                "WHERE idempotency_key=? AND state='failed'", (approved_by, approved_at, stamp, key))
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+        return self.row(key)
 
     # -- safeguards ----------------------------------------------------------
     def _check(self, row):

@@ -124,6 +124,32 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.dispatch(), (409, {"code": "fresh_outbox_approval_required"}))
         self.assertEqual(len(self.calls), 1)
 
+    def test_fresh_approval_after_conclusive_failure_can_retry_same_key(self):
+        def refused(draft):
+            self.calls.append(draft); raise OutboxError("definitive synthetic refusal")
+        self.gateway.transports["email"] = refused
+        self.assertEqual(self.dispatch()[0], 409)
+        self.gateway.transports["email"] = self.transport
+        # Merely refreshing issuance does not create a fresh approval.
+        self.gateway.clock = lambda: dt.datetime(2026, 10, 3, 10, 2, tzinfo=dt.timezone.utc)
+        fresh = copy.deepcopy(self.frame); fresh["issued_at"] = "2026-10-03T10:02:00Z"
+        self.assertEqual(self.dispatch(fresh)[1]["code"], "fresh_outbox_approval_required")
+        fresh["approved_at"] = "2026-10-03T10:01:00Z"
+        self.assertEqual(self.dispatch(fresh)[0], 200)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.dispatch(fresh)[0], 200)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_new_approval_cannot_clear_uncertain_delivery(self):
+        def uncertain(draft):
+            self.calls.append(draft); raise AmbiguousFailure("synthetic uncertain outcome")
+        self.gateway.transports["email"] = uncertain
+        self.assertEqual(self.dispatch()[0], 503)
+        self.gateway.clock = lambda: dt.datetime(2026, 10, 3, 10, 2, tzinfo=dt.timezone.utc)
+        fresh = copy.deepcopy(self.frame); fresh["issued_at"] = "2026-10-03T10:02:00Z"; fresh["approved_at"] = "2026-10-03T10:01:00Z"
+        self.assertEqual(self.dispatch(fresh)[1]["code"], "outbox_ambiguous")
+        self.assertEqual(len(self.calls), 1)
+
     def test_invalid_receipt_is_not_reported_as_success(self):
         self.gateway.transports["email"] = lambda d: ProviderReceipt("muckrock", "wrong-channel")
         self.assertEqual(self.dispatch(), (503, {"code": "outbox_ambiguous"}))

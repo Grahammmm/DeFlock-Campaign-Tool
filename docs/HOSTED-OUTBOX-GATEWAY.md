@@ -69,11 +69,16 @@ bounded static codes and never include provider exception text or draft contents
 
 An unknown delivery result or malformed provider receipt leaves the existing
 outbox row `sending` and refuses automatic resend. A deliberate provider refusal
-leaves it failed. Fresh envelopes do not reset failed rows. Use the established
-outbox reconciliation procedure with independently checked provider evidence;
-delivered reconciliation can replay the saved receipt. A not-delivered decision
-does not itself authorize another send. Retry approval remains an explicit
-unfinished workflow, not an automatic key or scope-version change.
+leaves it failed. Refreshing issuance with the old approval does not reset it.
+A trusted, newly recorded approval strictly after the failure can reapprove the
+identical canonical draft through `Outbox.approve_retry`; prior approver, approval
+time, failure, resolver and new approval are preserved in `outbox_retry_approval`
+in the same transaction as the state change. Rows with delivery evidence or an
+unresolved `sending` state cannot be reapproved. Usual send caps still apply.
+Use the established outbox reconciliation procedure with independently checked
+provider evidence; delivered reconciliation can replay the saved receipt. A
+not-delivered decision does not itself authorize another send: it must be followed
+by a fresh approval. No key or scope-version change is used to bypass a hold.
 
 The handler serializes dispatches inside one instance; the existing transactional
 outbox supplies cross-connection send claims. Cross-process simultaneous proposal

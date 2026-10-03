@@ -127,7 +127,8 @@ class ApprovedOutboxGateway:
         with self.lock:
             box = None
             try:
-                box = Outbox(self.journal, campaign_fee_cap_cents=self.fee_cap)
+                box = Outbox(self.journal, campaign_fee_cap_cents=self.fee_cap,
+                    clock=lambda: self.clock().astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z"))
                 row = box.propose(draft)
                 if row["draft_json"] != draft.to_json():
                     return 409, {"code": "draft_conflict"}
@@ -136,7 +137,10 @@ class ApprovedOutboxGateway:
                 elif row["state"] == "approved" and row["approved_by"] != frame["approved_by"]:
                     return 409, {"code": "approval_conflict"}
                 if row["state"] == "failed":
-                    return 409, {"code": "fresh_outbox_approval_required"}
+                    try:
+                        box.approve_retry(key, frame["approved_by"], frame["approved_at"])
+                    except OutboxError:
+                        return 409, {"code": "fresh_outbox_approval_required"}
                 row = box.send(key, checked_transport)
                 receipt = json.loads(row["provider_receipt"] or "null")
                 if not isinstance(receipt, dict) or receipt.get("channel") != draft.channel:
