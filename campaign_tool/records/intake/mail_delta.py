@@ -343,7 +343,8 @@ def bind_parts(items, receipt=None):
             require(item["sha"] == capture.sha256 and item["size"] == len(capture.payload),
                     "missing_or_mismatched_mime_part")
             item.update(mime=capture.mime, mime_name=capture.original_filename,
-                        parent_sha=capture.parent_sha256, mime_chain=list(capture.mime_chain))
+                        parent_sha=capture.parent_sha256, mime_chain=list(capture.mime_chain),
+                        wire_schema=adapter.SCHEMA)
         return
     candidates = mime_candidates(items[0]["tmp"])
     required = {c["locator"] for c in candidates if c["attachable"]}
@@ -443,6 +444,14 @@ def cleanup_created_blobs(out, created):
         raise Rejected("new_blob_cleanup_failed") from None
 
 
+def edge_locator(item):
+    """Keep exact-wire relationships distinct from legacy decoded derivations."""
+    locator = {"mime": item["mime"]}
+    if "wire_schema" in item:
+        locator["wire_schema"] = item["wire_schema"]
+    return folder.js(locator)
+
+
 def ledger_import(db, out, root, identity, items, created):
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("BEGIN IMMEDIATE")
@@ -479,7 +488,7 @@ def ledger_import(db, out, root, identity, items, created):
                 "preservation_size_conflict")
     for item in items[1:]:
         parent = item.get("parent_sha", items[0]["sha"])
-        loc = folder.js({"mime": item["mime"]})
+        loc = edge_locator(item)
         edge = db.execute("SELECT child FROM edges WHERE parent=? AND locator=?",
                           (parent, loc)).fetchone()
         require(edge is None or edge[0] == item["sha"], "parent_edge_conflict")
@@ -521,7 +530,7 @@ def ledger_import(db, out, root, identity, items, created):
         if item["part"] != "0":
             edge_name = item["mime_name"] or name
             cursor = db.execute("INSERT OR IGNORE INTO edges VALUES(?,?,?,?)",
-                                (item.get("parent_sha", items[0]["sha"]), folder.js({"mime": item["mime"]}),
+                                (item.get("parent_sha", items[0]["sha"]), edge_locator(item),
                                  item["sha"], edge_name))
             added_edges += cursor.rowcount
     db.execute("UPDATE meta SET value=? WHERE key='inventory_run'", (run,))

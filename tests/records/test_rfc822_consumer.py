@@ -76,6 +76,25 @@ class RFC822ConsumerTests(unittest.TestCase):
                 self.import_file(second)
                 self.assertEqual(json.loads(second.read_text())["attachments"], receipt["attachments"])
 
+    def test_legacy_original_later_forwarded_preserves_both_scalar_derivations(self):
+        payload = b"line one\r\nline two\r\n"
+        attachment = (b"Content-Type: text/plain\r\n"
+            b"Content-Disposition: attachment; filename=synthetic.txt\r\n"
+            b"Content-Transfer-Encoding: 7bit\r\n\r\n" + payload)
+        original = b"Subject: synthetic prior original\r\n" + multi([eml(), attachment], boundary=b"prior")
+        self.import_file(self.exported(original, uid=1))
+        old_edge = self.db.execute("SELECT locator,child FROM edges WHERE parent=?",
+            (digest(original),)).fetchone()
+        forwarded = self.exported(multi([eml(), rfc(original)]), uid=2)
+        self.import_file(forwarded)
+        edges = self.db.execute("SELECT locator,child FROM edges WHERE parent=?",
+            (digest(original),)).fetchall()
+        self.assertIn(old_edge, edges)
+        self.assertEqual({child for _, child in edges},
+            {digest(payload), digest(payload.replace(b"\r\n", b"\n"))})
+        self.assertEqual(self.import_file(forwarded)["added_occurrences"], 0)
+        self.assertEqual((self.out / "blobs" / digest(payload)).read_bytes(), payload)
+
     def test_nested_exact_bytes_immediate_parents_formats_and_replay(self):
         path=self.exported();receipt=json.loads(path.read_text())
         self.assertEqual(receipt['schema'],adapter.SCHEMA)
@@ -89,7 +108,7 @@ class RFC822ConsumerTests(unittest.TestCase):
             self.assertIn(capture.parent_sha256,[row[0] for row in rows])
             self.assertTrue(any(json.loads(row[1]).get('mime_chain')==list(capture.mime_chain) for row in rows))
             self.assertEqual(self.db.execute('SELECT child FROM edges WHERE parent=? AND locator=?',
-                (capture.parent_sha256,folder.js({'mime':capture.mime}))).fetchone()[0],capture.sha256)
+                (capture.parent_sha256,folder.js({'mime':capture.mime,'wire_schema':adapter.SCHEMA}))).fetchone()[0],capture.sha256)
             if capture.kind=='eml':
                 self.assertEqual(self.db.execute('SELECT format FROM docs WHERE sha=?',(capture.sha256,)).fetchone()[0],'eml')
         self.assertEqual(self.import_file(path)['status'],'replay')
