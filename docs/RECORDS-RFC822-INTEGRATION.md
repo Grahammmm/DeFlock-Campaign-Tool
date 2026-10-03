@@ -103,18 +103,15 @@ views and capture slices add bounded memory overhead. Body roles do not create
 captured payloads. Later archive/OCR/extraction work needs its own run budget;
 this adapter does not replace mailbox or worker admission limits.
 
-## Exact integration paths, reserved to the coordinating owner
+## Composed exporter, importer and canonical runner
 
-- `campaign_tool/records/intake/eml_export.py`: consume this inventory instead of recursively walking/reconstructing RFC822 nodes; write every capture after the full plan succeeds; use explicit EML kind in attachment forms.
-- `campaign_tool/records/intake/mail_delta.py`: recognize the versioned receipt namespace, securely stage/bind ALL required captures and store immediate-parent occurrence edges in one transactional promotion; retain existing scalar/body ambiguity checks.
-- `campaign_tool/records/intake/imap_intake.py`: add typed literal safe rejection-code projection for inventory/adapter errors; keep BODY.PEEK, folder/UID, replay, fetch cap and checkpoint semantics unchanged.
+The exporter selects the versioned wire receipt only when a message contains an RFC822 node. Scalar-only messages retain the legacy receipt and policy. It completes the bounded plan before writing source files, preserves every message capture as exact bytes, and classifies scalar leaves using the existing body ancestry and multipart/related-root checks separately inside each contained message.
 
-Those modules remain owned by the PR50/IMAP author until coordinated handoff.
-Safety consumers must project only exact error types and literal codes from
-`RFC822_FAILURE_CODES`, never arbitrary exception text or guessed prefixes.
-No overlapping edits are included in this branch. Final composed testing must
-cover exporter staging failures, importer rollback/replay, every nested parent
-edge, same-byte distinct occurrences, global budgets and checkpoint safety.
+The importer securely stages every listed file, verifies hashes and sizes, rederives the plan from the staged original, and binds complete receipt membership, metadata, roles and budgets before opening the ledger transaction. It stores immediate parent hashes and complete MIME occurrence chains. Capture list order is irrelevant. Nested EML captures use EML format explicitly; equal bytes still retain distinct occurrence identities. Existing replay, quarantine, owner-only paths, writer lock and rollback controls remain.
+
+The legacy-to-canonical runner bridge carries globally unique occurrence locators and their immediate parent locators. Canonical promotion and its replay validator bind those parents to the same verified receipt. IMAP reports only literal codes from exact inventory/adapter error types. A rejected message cannot advance its folder checkpoint; later configured folders remain eligible within the global attempted-fetch budget.
+
+This is synthetic composed implementation, not live mailbox or service acceptance. The helper's conservative supported-wire subset still rejects unsupported encodings, malformed boundaries and encapsulated messages without message identity headers. No production schedule, mailbox export ownership or reviewer/publication gate is changed.
 
 ## Synthetic checks
 
@@ -124,6 +121,8 @@ python3 -B -m unittest discover -v
 python3 -B tools/check_public_tree.py --patterns-only
 node scripts/scan-secrets.mjs
 ```
+
+Composed regression: `python3 -B -m unittest tests.records.test_rfc822_consumer -v`.
 
 All test messages are generated synthetic bytes. Tests exercise named/unnamed
 nested captures, original folding and line endings, no reserialization,

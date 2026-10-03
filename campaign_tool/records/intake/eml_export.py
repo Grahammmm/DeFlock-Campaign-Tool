@@ -64,10 +64,18 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
             if identity != wanted:
                 raise mail_delta.Rejected("export_identity_conflict")
             return receipt_path
+    # Plan before writing any bytes. Legacy scalar-only messages retain their receipt schema.
+    wire_plan = None
+    try:
+        candidates = mail_delta.mime_candidates(None, raw=bytes(raw))
+    except mail_delta.Rejected as error:
+        if error.args != ("unsupported_rfc822_part",):
+            raise
+        wire_plan = mail_delta.wire_intake_plan(bytes(raw))
+        candidates = []
     eml_path = base / "message.eml"
     if not eml_path.exists():
         _write_private(eml_path, bytes(raw))
-    candidates = mail_delta.mime_candidates(eml_path)
     attachments = []
     for candidate in candidates:
         if not candidate["attachable"]:
@@ -84,12 +92,26 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
             "bytes": candidate["size"], "sha256": candidate["sha"],
             "filename": name, "original_filename": candidate["name"],
             "content_type": candidate["content_type"]})
+    if wire_plan is not None:
+        from .rfc822_adapter import receipt_metadata
+        for capture in wire_plan.captures:
+            part_path = base / (hashlib.sha256(capture.part.encode()).hexdigest()[:24] + "-" +
+                                mail_delta.safe_filename(capture.original_filename))
+            if not part_path.exists():
+                _write_private(part_path, capture.payload)
+            metadata = receipt_metadata(capture)
+            metadata["path"] = str(part_path.relative_to(root))
+            attachments.append(metadata)
     receipt = {
         "complete": True, "account_id": account, "folder": mailbox,
         "uidvalidity": uidvalidity, "uid": uid, "bytes": len(raw),
         "original_eml": {"path": str(eml_path.relative_to(root)), "bytes": len(raw), "sha256": sha},
         "attachments": attachments,
     }
+    if wire_plan is not None:
+        manifest = wire_plan.as_manifest()
+        receipt.update(schema=manifest["schema"], scalar_roles=manifest["scalar_roles"],
+                       budget=manifest["budget"])
     _write_private(receipt_path, (json.dumps(receipt, sort_keys=True, indent=1) + "\n").encode())
     mail_delta.load_receipt(receipt_path)
     return receipt_path
@@ -117,5 +139,5 @@ def attachment_forms(receipt_path):
         path = root / item["path"]
         with folder.secure_open(path) as source:
             head = source.read(16384)
-        forms[item["sha"]] = folder.fmt(item["source"].get("original_filename") or item["path"], head)
+        forms[item["sha"]] = "eml" if item["kind"] == "eml" else folder.fmt(item["source"].get("original_filename") or item["path"], head)
     return forms

@@ -126,9 +126,10 @@ def classify_slot(slot, runs, now):
     started, ended, run = max(candidates, key=lambda item: item[0])
     if ended is None:
         return ("running" if now < window_end else "stalled"), run["run_id"]
-    if run["status"] in ("failed", "interrupted"):
-        return "failed", run["run_id"]
-    return "ok", run["run_id"]
+    # Fail closed: an unknown terminal status is never a completed run.
+    status = {"completed": "ok", "completed_with_gaps": "gaps", "partial": "gaps",
+              "held": "held", "failed": "failed", "interrupted": "failed"}.get(run["status"], "failed")
+    return status, run["run_id"]
 
 
 def health(root, now=None, lookback=3):
@@ -157,7 +158,7 @@ def health(root, now=None, lookback=3):
         slots.append({"slot": slot.isoformat(), "status": state, "run_id": run_id})
     report["slots"] = slots
     latest = slots[0]["status"]
-    missed = sum(1 for s in slots if s["status"] in ("missed", "failed", "stalled"))
+    missed = sum(1 for s in slots if s["status"] in ("missed", "failed", "stalled", "gaps", "held"))
     report["missed_in_lookback"] = missed
     if latest in ("ok", "running", "before_first_run"):
         status = "ok" if missed == 0 else "degraded"
@@ -179,7 +180,7 @@ def record_health(root, report):
     written = 0
     with store.ledger(database) as con:
         for slot in report.get("slots", []):
-            if slot["status"] not in ("missed", "failed", "stalled"):
+            if slot["status"] not in ("missed", "failed", "stalled", "gaps", "held"):
                 continue
             key = f"schedule:{slot['status']}:{slot['slot']}"
             con.execute("INSERT INTO alerts(id,key,first_seen,last_seen,count,owner,state) VALUES(?,?,?,?,1,'owner','open') "
@@ -220,8 +221,9 @@ WorkingDirectory={engine_root}
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
-TimeoutStartSec=3600
-{environment}ExecStart={python} -m campaign_tool.records run --root {root}{mail}{ocr} --json
+TimeoutStartSec=2760
+TimeoutStopSec=60
+{environment}ExecStart={python} -m campaign_tool.records run --unattended --max-originals-per-run 200 --root {root}{mail}{ocr} --json
 ExecStartPost={python} -m campaign_tool.records health --root {root} --record
 """
 

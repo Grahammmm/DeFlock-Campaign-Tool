@@ -181,10 +181,7 @@ def kit(args, root):
 
 def check_public_tree(public):
     """Run the repository leak scan over public/; returns (path, line, label) hits."""
-    tools = Path(__file__).resolve().parents[1] / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    from check_public_tree import violations
+    from .records.public_scan import violations
     hits = []
     for path in sorted(public.rglob("*")):
         if path.is_symlink():

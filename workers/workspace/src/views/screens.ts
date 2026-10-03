@@ -1,3 +1,4 @@
+import { executionClaimId, requiresDeliveryReconciliation, requiresExecutionQuiescence } from "../db.ts";
 // Server-rendered workspace screens. Every value is escaped by the html tag.
 import { fmtDate, html, jsonBlock, raw, type Safe } from "@deflock/shared/html";
 import { reviewBlockers, type JsonObject } from "@deflock/shared/review";
@@ -120,11 +121,19 @@ ${actions.length ? html`<h2>Approval cards</h2><table class="data"><tr><th>Card<
 export function approvals(rows: ExternalActionRow[], notice: string | null): Safe {
   const proposed = rows.filter((a) => a.state === "proposed");
   const other = rows.filter((a) => a.state !== "proposed");
-  const card = (a: ExternalActionRow) => html`<div class="card"><h3>${a.kind} ${statePill(a.state)}</h3><p class="meta">${a.action_id} - subject ${a.subject_id ?? "n/a"} - proposed by ${a.proposed_by} ${a.created_at}${a.approved_by ? html`<br>approved by ${a.approved_by} ${a.approved_at}` : ""}${a.executed_at ? html`<br>executed ${a.executed_at}` : ""}${a.error ? html`<br><span class="pill bad">${a.error}</span>` : ""}</p>
+  const card = (a: ExternalActionRow) => html`<div class="card"><h3>${a.kind} ${statePill(a.state)}</h3><p class="meta">${a.action_id} - subject ${a.subject_id ?? "n/a"} - proposed by ${a.proposed_by} ${a.created_at}${a.approved_by ? html`<br>approved by ${a.approved_by} ${a.approved_at}` : ""}${a.executed_at ? html`<br>executed ${a.executed_at}` : ""}${a.error && !executionClaimId(a) ? html`<br><span class="pill bad">${a.error}</span>` : ""}</p>
 ${jsonBlock(JSON.parse(a.proposal_json))}
 ${a.state === "proposed" ? html`<form method="post" action="/approvals/${a.action_id}/approve" style="display:inline"><button class="primary" type="submit">Approve</button></form>
 <form method="post" action="/approvals/${a.action_id}/edit" class="stack" style="margin-top:.6rem"><label class="field">Edit proposal (JSON merged over the current one)<textarea name="proposal" style="min-height:5rem">{}</textarea></label><button class="secondary" type="submit">Save edit</button></form>
 <form method="post" action="/approvals/${a.action_id}/reject" class="stack" style="margin-top:.6rem"><label class="field">Reason<input type="text" name="reason"></label><button class="danger" type="submit">Reject</button></form>` : ""}
+${a.kind === "send_newsletter" && a.state === "executing" && executionClaimId(a) ? html`<p>Execution ${executionClaimId(a)} is in progress. If the invocation was interrupted, hold this claim for investigation. Holding does not cancel a provider request, resend, or reopen approval.</p>
+<form method="post" action="/approvals/${a.action_id}/hold-execution" class="stack"><input type="hidden" name="execution_id" value="${executionClaimId(a)}"><label class="field">Interruption evidence reference<input name="reference" maxlength="500" required></label><button class="secondary" type="submit">Hold interrupted execution</button></form>` : ""}
+${requiresDeliveryReconciliation(a) ? html`<p>Delivery is unresolved. Check this action and its provider receipt before retrying. Reconciliation does not send anything.</p>
+<p><a href="/approvals/${a.action_id}/execution-evidence">Inspect this action's recovery and late provider receipts</a></p>
+${a.provider_receipt ? jsonBlock(JSON.parse(a.provider_receipt)) : ""}
+<form method="post" action="/approvals/${a.action_id}/reconcile" class="stack"><label class="field">Provider-confirmed outcome<select name="outcome" required><option value="">Choose after checking provider</option><option value="delivered">Delivered — retain as executed</option><option value="not_delivered">Not delivered — require fresh approval</option></select></label><label class="field">Provider-check reference<input name="reference" maxlength="500" required></label><label class="field">Provider delivery time (UTC ISO, delivered only)<input name="delivered_at" placeholder="2026-01-01T12:00:00Z"></label>
+${requiresExecutionQuiescence(a) ? html`<p>First prove the old invocation has stopped, then check the provider for queued or delivered work. A timeout, an old timestamp, or placing this hold is not proof. Keep the card held if either outcome is uncertain.</p><label class="field">Invocation termination evidence reference<input name="quiescence_reference" maxlength="500" required></label><label><input type="checkbox" name="quiescence_confirmed" value="confirmed" required> I verified the old invocation cannot issue another request.</label>` : ""}
+<button class="secondary" type="submit">Record delivery check</button></form>` : ""}
 ${a.state === "approved" ? html`<form method="post" action="/approvals/${a.action_id}/execute" style="display:inline"><button class="primary" type="submit">Execute now</button></form>` : ""}
 </div>`;
   return html`<h1>Approvals</h1>

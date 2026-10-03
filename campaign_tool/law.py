@@ -9,8 +9,9 @@ enough to check every rule in the law-package schema exactly.
 
 A package with ``status: draft`` can be previewed, but nothing derived from
 it is a reviewed legal conclusion. ``deadline`` models calendar days or
-business days (Saturday and Sunday skipped only); public holidays are not
-modeled, so a business-day result can be earlier than the true deadline.
+business days (Saturday and Sunday skipped only). Results are provisional
+reminders, not legal due dates: public holidays, actual receipt and lawful
+extension prerequisites are not established by this arithmetic.
 """
 import argparse
 import json
@@ -20,13 +21,16 @@ from datetime import date, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = REPO_ROOT / "schemas" / "law-package.schema.json"
-JURISDICTIONS = REPO_ROOT / "jurisdictions"
-TEMPLATE_PATH = REPO_ROOT / "templates" / "records-request.md"
+RESOURCE_ROOT = Path(__file__).resolve().parent / "_resources"
+SCHEMA_PATH = RESOURCE_ROOT / "schemas" / "law-package.schema.json"
+JURISDICTIONS = RESOURCE_ROOT / "jurisdictions"
+TEMPLATE_PATH = RESOURCE_ROOT / "templates" / "records-request.md"
 JURISDICTION_PATTERN = re.compile(r"^[a-z]{2}-[a-z]{2}$")
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-HOLIDAY_NOTE = ("Business-day deadlines skip Saturday and Sunday only; "
-                "public holidays are not modeled.")
+HOLIDAY_NOTE = ("Provisional reminders only, not legal due dates. Business-day "
+                "counts skip Saturday and Sunday only; public holidays are not modeled. "
+                "Confirm actual receipt, applicable last-day holiday exclusions and "
+                "lawful extension notice before any lateness conclusion.")
 
 _TYPES = {
     "object": dict, "array": list, "string": str, "integer": int,
@@ -213,13 +217,15 @@ def _add_days(start, days, day_type):
 
 
 def deadline(package, sent_date, extension=False):
-    """Determination deadline counted from ``sent_date``.
+    """Provisional determination reminder counted from ``sent_date``.
 
     Uses ``records_law.determination_days`` plus, when ``extension`` is true,
     ``determination_extension_days``. Calendar days count every day. Business
     days skip Saturday and Sunday only (see HOLIDAY_NOTE). The statutory
     period usually runs from the agency's receipt, which may be later than
-    the send date; this function does not model delivery delay.
+    the send date; this function does not model delivery delay, applicable
+    last-day holiday exclusions, or lawful extension-notice prerequisites.
+    Neither extension=True nor a returned date establishes legal timeliness.
     """
     if isinstance(sent_date, str):
         sent_date = parse_date(sent_date, "sent_date")

@@ -46,11 +46,36 @@ the binding statute cited alongside so a reader can see which is which.
 - `effective_to` is set, never deleted, when a rule is repealed or superseded.
   Keep the old rule so `rules_in_force` answers correctly for historic event
   dates.
-- The records-law deadline fields describe the determination period, not the
-  production date. `campaign_tool.law.deadline` counts calendar days or business
-  days (Saturday and Sunday only; holidays are not modeled) from the date given.
-  Statutes usually count from the agency's receipt, which is later than the send
-  date, so treat the result as the earliest plausible date.
+- The records-law deadline fields describe the determination period, not a
+  production deadline. `campaign_tool.law.deadline` returns **provisional reminders
+  only**, never a legal due-date or lateness determination. Its arithmetic and API
+  are unchanged: calendar days count all days; business days skip weekends only.
+  Public holidays are not modeled. A send date does not establish actual receipt.
+- For California, [Gov. Code 6800](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=6800.)
+  excludes the first day and a holiday on the last day. Establish the applicable
+  event-date/agency holiday rules, including section 6700 and relevant timing
+  cross-references/local enactments; the current holiday list is not historical
+  proof. No complete holiday calendar is supplied by this draft.
+- Establish actual receipt of a **copy request**, and, for any extension, the
+  version-correct unusual circumstance, reasonable necessity, written agency-head
+  or designee notice, reasons and expected dispatch date under
+  [Gov. Code 7922.535](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.535).
+  Selecting `extension=True` proves none of those facts. Uncertain receipt or
+  unresolved holidays/notices require provisional reminders, not allegations.
+- The new 2026 CPRA rule is selected using the request-receipt event date; AB 370
+  is effective January 1, 2026. Do not apply its cyberattack ground or new direct
+  emergency-effect condition to earlier requests. This draft does not encode a
+  complete pre-2026 CPRA version: an empty selection is a coverage gap, not proof
+  that there was no duty or extension ground. Earlier law needs primary history.
+- Select section 1798.90.55(a) using the **implementation event**, not the date of
+  a later records request. Its January 1, 2016 start does not create a retrospective
+  statutory hearing duty for a program implemented before that date. The
+  [DOJ bulletin](https://oag.ca.gov/system/files/media/2023-dle-06.pdf) encourages
+  retrospective public comment; encouragement is not a mandate. An expansion
+  request item alone does not establish a new hearing trigger.
+- CHP reporting under Vehicle Code 2413(e)/10901(b) is a distinct actor/event duty:
+  report to the Legislature no later than 90 days following fiscal-year completion.
+  Do not feed that deadline into CPRA determination arithmetic.
 - Record `accessed` dates on every source. Re-verify a package when a cited
   section shows a newer amendment date than the one in the source title.
 
@@ -72,7 +97,16 @@ the binding statute cited alongside so a reader can see which is which.
 ## Current state
 
 `us-ca` is a draft authored from leginfo.legislature.ca.gov and the California
-DOJ bulletin 2023-DLE-06, accessed 2026-09-30. Nine SB 34 and Vehicle Code rules
-are `verified`; the California Values Act rule and the DOJ bulletin rule are
-`likely` because their application to ALPR sharing is interpretive. No reviewer
-has signed off.
+DOJ bulletin 2023-DLE-06. The seven approved correction issues were drafted on
+2026-10-02; touched sources carry their actual access date. The package remains
+`status: draft`, with no reviewers or review date. Definition cross-reference
+eligibility, Values Act application, and the new current-version CPRA entry are
+`needs_attorney_review`; the DOJ interpretation remains `likely`. Other unchanged
+`verified` labels describe author-level restatements, not independent acceptance.
+No qualified human legal reviewer has signed off. Tests are software evidence only.
+
+Historical CPRA/holiday/personal-information amendment chains, federal and
+transportation eligibility, electronic-format/fee and timing cross-references,
+remedy discretion and case-law application remain unresolved. This bounded batch
+neither supplies missing history nor declares agency misconduct, full California
+compliance, production readiness or permission to publish.

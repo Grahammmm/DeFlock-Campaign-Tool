@@ -120,6 +120,42 @@ from an Access JWT are executed, and execution writes `executed_at`, `provider_r
 No code path sends without an approved row. Kinds: `send_request`, `send_followup`, `pay_fee`, `publish_finding`,
 `send_newsletter`, `post_social`, `deploy_site`.
 
+Approve, edit and reject use a conditional database transition against the card snapshot
+read by that request: state, proposal bytes, update time, approval, error and provider receipt.
+A concurrent edit cannot inherit an approval for the earlier draft; a late edit or rejection
+cannot overwrite an execution claim or its successful receipt. Conflicts return HTTP 409
+and require reloading the card. This database consistency check does not establish that a
+human semantically reviewed the content or replace Cloudflare Access authentication.
+
+Once execution has been claimed, rejection is not cancellation of an admitted provider
+effect. Never reopen an `executing` card merely because a caller timed out. A new
+claim stores a unique `execution_claim: UUID` in the existing error field while
+executing; it is a claim marker, not a failure. Completion uses this immutable
+marker so an old executor cannot overwrite a later claim. Newsletter checkpoints
+and send events are also conditional on the same claim.
+
+`POST /approvals/:id/hold-execution` accepts the exact `execution_id` and an
+interruption evidence `reference`. It atomically records the hold and audit event,
+retains provider identity/key/draft, and leaves the newsletter failed with
+`brevo_execution_interrupted`. It does not cancel a provider request or reapprove
+anything. A late provider receipt is retained separately as `late_execution_receipt`,
+without stamping a sent event or altering the held state.
+
+Reconciliation of that held execution additionally requires
+`quiescence_reference` and `quiescence_confirmed: true` (HTML form: `confirmed`).
+The organizer must prove the old invocation cannot issue another call, then inspect
+provider state, including queued work and late receipts. Unknown means stay held.
+These are authenticated operator attestations, not machine verification of the
+referenced evidence. No elapsed-time lease or client abort establishes non-delivery:
+[HTTP Workers have no hard duration limit](https://developers.cloudflare.com/workers/platform/limits/),
+and [Brevo sendNow schedules an existing campaign](https://developers.brevo.com/reference/send-email-campaign-now).
+The hold's fencing prevents further cooperative local writes; it cannot undo an
+already admitted external effect or prove remote quiescence.
+
+Legacy/unbound executing rows and other action kinds are not silently assigned
+new claims or reset. They require separate verified host/provider recovery. This
+source fix does not complete live crash-recovery/operator-pilot acceptance.
+
 ## Privacy tiers
 
 `redacted_cloud` (default): the runner redacts plate numbers, personal names, street addresses, phone numbers,

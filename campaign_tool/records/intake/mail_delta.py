@@ -139,6 +139,12 @@ def load_receipt(path):
                           part_is_walk_index=type(raw_part) is int,
                           sha=attachment["sha256"], size=size,
                           path=attachment["path"], kind="attachment", source=attachment))
+    if "schema" in receipt:
+        from .rfc822_adapter import SCHEMA
+        require(receipt["schema"] == SCHEMA, "invalid_receipt_shape")
+        for item in items[1:]:
+            require(item["source"].get("kind") in {"eml", "mime"}, "invalid_attachment_metadata")
+            item["kind"] = "eml" if item["source"]["kind"] == "eml" else "attachment"
     return receipt, (account, mailbox, uidvalidity, uid), items
 
 
@@ -179,37 +185,110 @@ def stage_source(item, root, out):
         raise
 
 
-def mime_candidates(eml_path):
+def mime_content_type(part):
+    """Validate classification headers; an absent header keeps the MIME default."""
+    headers = part.get_all("Content-Type", [])
+    require(len(headers) <= 1 and not any(header.defects for header in headers),
+            "invalid_mime_content_type")
+    return part.get_content_type()
+
+
+def related_root(part, children):
+    """Resolve only immediate children; never guess around an invalid start."""
+    require(bool(children) and not part.defects, "invalid_related_container")
+    headers = part.get_all("Content-Type", [])
+    require(len(headers) == 1 and not headers[0].defects,
+            "invalid_related_container")
+    ids = {}
+    for index, child in enumerate(children, 1):
+        values = child.get_all("Content-ID", [])
+        require(len(values) <= 1, "ambiguous_related_content_id")
+        if not values:
+            continue
+        cid = str(values[0]).strip()
+        require(re.fullmatch(r"<[^<>\s]+>", cid) is not None,
+                "invalid_related_content_id")
+        require(cid not in ids, "ambiguous_related_content_id")
+        ids[cid] = index
+    start = part.get_param("start")
+    root = 1
+    if start is not None:
+        require(isinstance(start, str) and
+                re.fullmatch(r"<[^<>\s]+>", start) is not None,
+                "invalid_related_start")
+        require(start in ids, "missing_related_root")
+        root = ids[start]
+    root_type = mime_content_type(children[root - 1])
+    declared_type = part.get_param("type")
+    # Some exporters omit type. Preserve that compatibility, but never ignore
+    # an explicit declaration that contradicts the selected root.
+    require(declared_type is None or
+            (isinstance(declared_type, str) and
+             declared_type.lower() == root_type),
+            "related_root_type_mismatch")
+    return root
+
+
+def mime_candidates(eml_path, *, raw=None, allow_rfc822=False):
     try:
-        with folder.secure_open(eml_path) as source:
-            message = BytesParser(policy=email.policy.default).parse(source)
+        if raw is not None:
+            message = BytesParser(policy=email.policy.default).parsebytes(raw)
+        else:
+            with folder.secure_open(eml_path) as source:
+                message = BytesParser(policy=email.policy.default).parse(source)
     except (OSError, ValueError, RecursionError):
         raise Rejected("invalid_eml") from None
     candidates = []
-    stack = [(message, "1", None, 1)]
+    stack = [(message, "1", True)]
     visited = 0
     while stack:
-        part, locator, parent_type, child_index = stack.pop()
+        part, locator, body_allowed = stack.pop()
         visited += 1
         require(visited <= MAX_MIME_PARTS, "mime_part_limit")
         walk_index = visited - 1  # Exporter enumerates every msg.walk() node from zero.
-        if part.get_content_type() == "message/rfc822":
+        content_type = mime_content_type(part)
+        if content_type == "message/rfc822":
+            if allow_rfc822:
+                continue  # The exact-wire inventory owns this message boundary.
             raise Rejected("unsupported_rfc822_part")
+        if content_type.startswith("multipart/"):
+            dispositions = part.get_all("Content-Disposition", [])
+            require(len(dispositions) <= 1 and
+                    not any(header.defects for header in dispositions),
+                    "invalid_multipart_disposition")
+            # Container bytes are not separately bound by this adapter. Do not
+            # descend past an explicitly attached/named original and lose it.
+            require(not part.get_filename() and
+                    part.get_content_disposition() != "attachment",
+                    "unsupported_attached_multipart_part")
+            require(part.is_multipart() and not part.defects,
+                    "invalid_mime_container")
         if part.is_multipart():
             children = list(part.iter_parts())
-            stack.extend((child, locator + "." + str(n), part.get_content_type(), n)
+            require(visited + len(stack) + len(children) <= MAX_MIME_PARTS,
+                    "mime_part_limit")
+            root = related_root(part, children) if content_type == "multipart/related" else 1
+            # Body permission follows the whole ancestry. A related/alternative
+            # wrapper in a non-body slot must not launder an inline text record.
+            stack.extend((child, locator + "." + str(n),
+                          body_allowed and
+                          (content_type == "multipart/alternative" or
+                           (content_type in {"multipart/mixed", "multipart/related"} and
+                            n == root)))
                          for n, child in reversed(list(enumerate(children, 1))))
             continue
+        dispositions = part.get_all("Content-Disposition", [])
+        require(len(dispositions) <= 1 and
+                not any(header.defects for header in dispositions),
+                "invalid_leaf_disposition")
         data = part.get_payload(decode=True) or b""
         require(len(data) <= MAX_ATTACHMENT, "mime_payload_size_limit")
         name = part.get_filename()
-        content_type = part.get_content_type()
         disposition = part.get_content_disposition()
         if not name and disposition != "attachment" and content_type.startswith("text/"):
             if content_type not in {"text/plain", "text/html"}:
                 raise Rejected("ambiguous_inline_text_part")
-            if (parent_type == "multipart/mixed" and child_index != 1) or (
-                    parent_type not in {None, "multipart/mixed", "multipart/alternative"}):
+            if not body_allowed:
                 raise Rejected("ambiguous_inline_body_part")
         attachable = bool(name or disposition == "attachment" or
                           not content_type.startswith("text/"))
@@ -220,13 +299,46 @@ def mime_candidates(eml_path):
     return candidates
 
 
+def wire_intake_plan(raw):
+    """Keep legacy body/related policy, independently for each preserved message."""
+    from . import rfc822_adapter as adapter
+    plan = adapter.prepare_rfc822_intake(raw)
+    choices = {}
+    by_source = {}
+    for source in plan.inventory.sources:
+        by_source[source.part] = {candidate["locator"]: candidate
+            for candidate in mime_candidates(None, raw=source.raw_bytes, allow_rfc822=True)}
+    for part in plan.inventory.scalar_parts:
+        candidate = by_source[part.message_part].get(part.mime)
+        require(candidate is not None, "missing_or_mismatched_mime_part")
+        choices[part.part] = "attachment" if candidate["attachable"] else "body"
+    return adapter.classify_scalar_parts(plan, choices)
+
+
 def safe_filename(original_filename):
     base = re.split(r"[/\\]", original_filename or "")[-1]
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip(".")[:100]
     return cleaned or "attachment.bin"
 
 
-def bind_parts(items):
+def bind_parts(items, receipt=None):
+    if receipt is not None and "schema" in receipt:
+        from . import rfc822_adapter as adapter
+        with folder.secure_open(items[0]["tmp"]) as source:
+            raw = source.read(MAX_EML + 1)
+        plan = wire_intake_plan(raw)
+        require(receipt.get("scalar_roles") == plan.as_manifest()["scalar_roles"] and
+                receipt.get("budget") == plan.as_manifest()["budget"], "invalid_receipt_shape")
+        captures = adapter.bind_rfc822_receipts(plan, [item["source"] for item in items[1:]])
+        by_part = {capture.part: capture for capture in captures}
+        for item in items[1:]:
+            # Binding checks membership; map by part rather than trusting list order.
+            capture = by_part[item["part"]]
+            require(item["sha"] == capture.sha256 and item["size"] == len(capture.payload),
+                    "missing_or_mismatched_mime_part")
+            item.update(mime=capture.mime, mime_name=capture.original_filename,
+                        parent_sha=capture.parent_sha256, mime_chain=list(capture.mime_chain))
+        return
     candidates = mime_candidates(items[0]["tmp"])
     required = {c["locator"] for c in candidates if c["attachable"]}
     used = set()
@@ -260,17 +372,19 @@ def occurrence(item, identity, root, parent_sha):
     oid = folder.hid(folder.js(["mail-receipt-v1", account, mailbox,
                                 uidvalidity, uid, item["part"]]))
     locator = {"mail_receipt_part": item.get("part_value", item["part"])}
-    if item["kind"] == "attachment":
+    if item["part"] != "0":
         locator["mime"] = item["mime"]
+    if "mime_chain" in item:
+        locator["mime_chain"] = item["mime_chain"]
     metadata = dict(source="mail_delta", account_id=account, folder=mailbox,
                     uidvalidity=uidvalidity, uid=uid,
                     part=item.get("part_value", item["part"]))
-    if item["kind"] == "attachment":
+    if item["part"] != "0":
         metadata.update(filename=item["source"].get("filename"),
                         original_filename=item["source"].get("original_filename"),
                         content_type=item["source"].get("content_type"))
     return dict(oid=oid, sha=item["sha"], path=item["path"], root=str(root),
-                parent=parent_sha if item["kind"] == "attachment" else None,
+                parent=item.get("parent_sha", parent_sha) if item["part"] != "0" else None,
                 locator=folder.js(locator), receipt=folder.js(metadata))
 
 
@@ -358,9 +472,10 @@ def ledger_import(db, out, root, identity, items, created):
         require(preservation is None or preservation[0] == item["size"],
                 "preservation_size_conflict")
     for item in items[1:]:
+        parent = item.get("parent_sha", items[0]["sha"])
         loc = folder.js({"mime": item["mime"]})
         edge = db.execute("SELECT child FROM edges WHERE parent=? AND locator=?",
-                          (items[0]["sha"], loc)).fetchone()
+                          (parent, loc)).fetchone()
         require(edge is None or edge[0] == item["sha"], "parent_edge_conflict")
         changed |= edge is None
     if not changed:
@@ -397,10 +512,10 @@ def ledger_import(db, out, root, identity, items, created):
         added_occurrences += cursor.rowcount
         db.execute("INSERT OR IGNORE INTO seen VALUES(?,?,?)",
                    (run, record["oid"], record["sha"]))
-        if item["kind"] == "attachment":
+        if item["part"] != "0":
             edge_name = item["mime_name"] or name
             cursor = db.execute("INSERT OR IGNORE INTO edges VALUES(?,?,?,?)",
-                                (items[0]["sha"], folder.js({"mime": item["mime"]}),
+                                (item.get("parent_sha", items[0]["sha"]), folder.js({"mime": item["mime"]}),
                                  item["sha"], edge_name))
             added_edges += cursor.rowcount
     db.execute("UPDATE meta SET value=? WHERE key='inventory_run'", (run,))
@@ -432,7 +547,7 @@ def import_receipt(receipt_path, mail_root, output):
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for item in items:
             stage_source(item, root, out)
-        bind_parts(items)
+        bind_parts(items, receipt)
         db = sqlite3.connect(out / "intake.sqlite")
         try:
             db.execute("PRAGMA busy_timeout=0")

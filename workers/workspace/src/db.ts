@@ -706,9 +706,9 @@ export class Repo {
 
   /**
    * Idempotent proposal: the same idempotency_key returns the existing row untouched,
-   * except a `failed` card, which is re-opened as `proposed` with the new proposal so a
+   * except a conclusively failed card, which is re-opened as `proposed` so a
    * transient provider failure does not retire the key for good (approvals.ts: "a failed
-   * card must be proposed again"). The prior error is kept on the row for the record.
+   * card must be proposed again"). Ambiguous delivery stays held for reconciliation.
    */
   async propose(
     kind: ActionKind,
@@ -738,29 +738,117 @@ export class Repo {
       this.campaignId,
       idempotencyKey,
     );
-    if (existing?.state === "failed") {
+    if (existing?.state === "failed" && !requiresDeliveryReconciliation(existing)) {
       const reopened = await this.db
         .prepare(
-          "UPDATE external_action SET state = 'proposed', proposal_json = ?, proposed_by = ?, approved_by = NULL, approved_at = NULL, executed_at = NULL, provider_receipt = NULL, error = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed'",
+          "UPDATE external_action SET state = 'proposed', proposal_json = ?, proposed_by = ?, approved_by = NULL, approved_at = NULL, executed_at = NULL, provider_receipt = NULL, error = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed' AND error IS ? AND provider_receipt IS ?",
         )
-        .bind(JSON.stringify(proposal ?? {}), proposedBy, "re-proposed after: " + (existing.error ?? "failure"), this.campaignId, existing.action_id)
+        .bind(JSON.stringify(proposal ?? {}), proposedBy, "re-proposed after: " + (existing.error ?? "failure"), this.campaignId, existing.action_id, existing.error, existing.provider_receipt)
         .run();
       if (reopened.meta.changes === 1) return { row: (await this.action(existing.action_id))!, inserted: false };
     }
     return { row: existing ?? res.row, inserted: false };
   }
 
+  /** Apply an operator's evidence only to the exact failed row they inspected. */
+  async reconcileDelivery(action: ExternalActionRow, delivered: boolean, receipt: string, deliveredAt: string | null = null): Promise<boolean> {
+    const clock = nowIso();
+    const update = this.db.prepare(
+      "UPDATE external_action SET state = ?, approved_by = ?, approved_at = ?, executed_at = ?, provider_receipt = ?, error = NULL, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed' AND error IS ? AND provider_receipt IS ?",
+    ).bind(delivered ? "executed" : "proposed", delivered ? action.approved_by : null,
+      delivered ? action.approved_at : null, delivered ? deliveredAt : null, receipt, clock,
+      this.campaignId, action.action_id, action.error, action.provider_receipt);
+    // D1 batches are transactional. The event exists only if the conditional UPDATE won.
+    const event = this.db.prepare(
+      "INSERT INTO subscriber_event (event_id, campaign_id, provider, kind, payload_json, occurred_at, created_at, updated_at) SELECT ?, ?, 'brevo', ?, ?, ?, ?, ? WHERE changes() = 1",
+    ).bind(newEventId(), this.campaignId, delivered ? "campaign_sent" : "action_reconciled", receipt, delivered ? deliveredAt : clock, clock, clock);
+    const results = await this.db.batch([update, event]);
+    return results[0].meta.changes === 1;
+  }
+
   updateAction(actionId: string, patch: Partial<ExternalActionRow>): Promise<void> {
     return this.update("external_action", "action_id", actionId, patch);
+  }
+
+  /** Check the immutable claim marker, not an elapsed-time lease. */
+  async assertExecuting(action: ExternalActionRow): Promise<void> {
+    const current = await this.action(action.action_id);
+    if (!executionClaimId(action) || current?.state !== "executing" || current.error !== action.error) {
+      throw new Error("execution claim is no longer active");
+    }
+  }
+
+  /** A retired executor cannot overwrite a held/reconciled card or a later claim. */
+  async updateExecutingAction(action: ExternalActionRow, patch: Partial<Pick<ExternalActionRow,
+    "state" | "executed_at" | "provider_receipt" | "error">>): Promise<boolean> {
+    const keys = Object.keys(patch) as Array<keyof typeof patch>;
+    if (!executionClaimId(action) || !keys.length || keys.some(key =>
+      !["state", "executed_at", "provider_receipt", "error"].includes(key))) throw new Error("invalid execution update");
+    const result = await this.db.prepare(
+      `UPDATE external_action SET ${keys.map(key => `${key} = ?`).join(", ")}, updated_at = ? ` +
+      "WHERE campaign_id = ? AND action_id = ? AND state = 'executing' AND error = ?",
+    ).bind(...keys.map(key => patch[key] ?? null), nowIso(), this.campaignId, action.action_id, action.error).run();
+    return result.meta.changes === 1;
+  }
+
+  async createExecutionEvent(action: ExternalActionRow, row: Omit<Insertable<SubscriberEventRow>, "campaign_id" | "event_id">): Promise<SubscriberEventRow | null> {
+    const clock = nowIso();
+    return this.db.prepare(
+      "INSERT INTO subscriber_event (event_id, campaign_id, provider, kind, payload_json, occurred_at, created_at, updated_at) " +
+      "SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM external_action " +
+      "WHERE campaign_id = ? AND action_id = ? AND state = 'executing' AND error = ?) RETURNING *",
+    ).bind(newEventId(), this.campaignId, row.provider, row.kind, row.payload_json, row.occurred_at,
+      clock, clock, this.campaignId, action.action_id, action.error).first<SubscriberEventRow>();
+  }
+
+  /** Fence an interrupted newsletter and journal its hold atomically; never retry it. */
+  async holdExecution(action: ExternalActionRow, evidence: string): Promise<boolean> {
+    const claimId = executionClaimId(action);
+    if (!claimId || action.kind !== "send_newsletter" || action.state !== "executing") return false;
+    const clock = nowIso();
+    const update = this.db.prepare(
+      "UPDATE external_action SET state = 'failed', error = ?, updated_at = ? WHERE campaign_id = ? " +
+      "AND action_id = ? AND state = 'executing' AND error = ? AND updated_at = ? AND provider_receipt IS ?",
+    ).bind("brevo_execution_interrupted: " + claimId, clock, this.campaignId, action.action_id,
+      action.error, action.updated_at, action.provider_receipt);
+    const event = this.db.prepare(
+      "INSERT INTO subscriber_event (event_id, campaign_id, provider, kind, payload_json, occurred_at, created_at, updated_at) " +
+      "SELECT ?, ?, 'brevo', 'action_execution_held', ?, ?, ?, ? WHERE changes() = 1",
+    ).bind(newEventId(), this.campaignId, evidence, clock, clock, clock);
+    const results = await this.db.batch([update, event]);
+    return results[0].meta.changes === 1;
+  }
+
+  /** Bounded, action-specific recovery evidence; private organizer access only. */
+  actionExecutionEvidence(actionId: string): Promise<SubscriberEventRow[]> {
+    return this.many<SubscriberEventRow>(
+      "SELECT * FROM subscriber_event WHERE campaign_id = ? AND kind IN ('action_execution_held', 'late_execution_receipt', 'action_reconciliation_attempt') " +
+      "AND json_extract(payload_json, '$.action_id') = ? ORDER BY occurred_at DESC, event_id DESC LIMIT 51",
+      this.campaignId, actionId);
+  }
+
+  /** Operator transitions may change only the exact card snapshot inspected. */
+  async transitionAction(action: ExternalActionRow, patch: Partial<Pick<ExternalActionRow,
+    "state" | "proposal_json" | "approved_by" | "approved_at" | "error">>): Promise<ExternalActionRow | null> {
+    const keys = Object.keys(patch) as Array<keyof typeof patch>;
+    const allowed = new Set(["state", "proposal_json", "approved_by", "approved_at", "error"]);
+    if (!keys.length || keys.some(key => !allowed.has(key))) throw new Error("invalid action transition fields");
+    return this.db.prepare(
+      `UPDATE external_action SET ${keys.map(key => `${key} = ?`).join(", ")}, updated_at = ? ` +
+      "WHERE campaign_id = ? AND action_id = ? AND state = ? AND proposal_json = ? AND updated_at = ? " +
+      "AND approved_by IS ? AND approved_at IS ? AND error IS ? AND provider_receipt IS ? RETURNING *",
+    ).bind(...keys.map(key => patch[key] ?? null), nowIso(), this.campaignId, action.action_id,
+      action.state, action.proposal_json, action.updated_at, action.approved_by, action.approved_at,
+      action.error, action.provider_receipt).first<ExternalActionRow>();
   }
 
   /** Approved -> executing only if still approved (guards double execution). */
   async claimForExecution(actionId: string): Promise<ExternalActionRow | null> {
     const row = await this.db
       .prepare(
-        "UPDATE external_action SET state = 'executing', updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'approved' RETURNING *",
+        "UPDATE external_action SET state = 'executing', error = ?, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'approved' RETURNING *",
       )
-      .bind(nowIso(), this.campaignId, actionId)
+      .bind("execution_claim: " + crypto.randomUUID(), nowIso(), this.campaignId, actionId)
       .first<ExternalActionRow>();
     return row ?? null;
   }
@@ -834,4 +922,18 @@ export class Repo {
       incidents: await q("SELECT COUNT(*) n FROM incident WHERE campaign_id = ? AND resolved_at IS NULL"),
     };
   }
+}
+
+/** A provider object or ambiguous network result must not be retried as a new send. */
+export function requiresDeliveryReconciliation(action: ExternalActionRow): boolean {
+  return action.kind === "send_newsletter" && action.state === "failed" &&
+    (action.provider_receipt !== null || /^brevo_(?:create|send)_ambiguous:/.test(action.error ?? "") || requiresExecutionQuiescence(action));
+}
+
+export function executionClaimId(action: ExternalActionRow): string | null {
+  return /^execution_claim: ([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.exec(action.error ?? "")?.[1] ?? null;
+}
+
+export function requiresExecutionQuiescence(action: ExternalActionRow): boolean {
+  return /^brevo_execution_interrupted: /.test(action.error ?? "");
 }
