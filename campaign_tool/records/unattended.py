@@ -496,6 +496,9 @@ def main(argv=None):
     parser.add_argument("--ocr", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    from .runtime import require
+    if not require(args.root):
+        return 2
     try:
         policy = RunSafetyPolicy(max_originals=args.max_originals_per_run)
         tools, signature = manual.local_ocr_tools() if args.ocr else (None, None)
