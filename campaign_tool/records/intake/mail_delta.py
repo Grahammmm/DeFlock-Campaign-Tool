@@ -139,6 +139,12 @@ def load_receipt(path):
                           part_is_walk_index=type(raw_part) is int,
                           sha=attachment["sha256"], size=size,
                           path=attachment["path"], kind="attachment", source=attachment))
+    if "schema" in receipt:
+        from .rfc822_adapter import SCHEMA
+        require(receipt["schema"] == SCHEMA, "invalid_receipt_shape")
+        for item in items[1:]:
+            require(item["source"].get("kind") in {"eml", "mime"}, "invalid_attachment_metadata")
+            item["kind"] = "eml" if item["source"]["kind"] == "eml" else "attachment"
     return receipt, (account, mailbox, uidvalidity, uid), items
 
 
@@ -223,10 +229,19 @@ def related_root(part, children):
     return root
 
 
-def mime_candidates(eml_path):
+def mime_candidates(eml_path, *, raw=None, allow_rfc822=False, legacy_scalar=False):
     try:
-        with folder.secure_open(eml_path) as source:
-            message = BytesParser(policy=email.policy.default).parse(source)
+        if raw is not None:
+            parser = BytesParser(policy=email.policy.default)
+            if legacy_scalar:
+                # Match historical scalar export/import hashes, paths and ledger edges.
+                from io import BytesIO
+                message = parser.parse(BytesIO(raw))
+            else:
+                message = parser.parsebytes(raw)
+        else:
+            with folder.secure_open(eml_path) as source:
+                message = BytesParser(policy=email.policy.default).parse(source)
     except (OSError, ValueError, RecursionError):
         raise Rejected("invalid_eml") from None
     candidates = []
@@ -239,6 +254,8 @@ def mime_candidates(eml_path):
         walk_index = visited - 1  # Exporter enumerates every msg.walk() node from zero.
         content_type = mime_content_type(part)
         if content_type == "message/rfc822":
+            if allow_rfc822:
+                continue  # The exact-wire inventory owns this message boundary.
             raise Rejected("unsupported_rfc822_part")
         if content_type.startswith("multipart/"):
             dispositions = part.get_all("Content-Disposition", [])
@@ -288,13 +305,47 @@ def mime_candidates(eml_path):
     return candidates
 
 
+def wire_intake_plan(raw):
+    """Keep legacy body/related policy, independently for each preserved message."""
+    from . import rfc822_adapter as adapter
+    plan = adapter.prepare_rfc822_intake(raw)
+    choices = {}
+    by_source = {}
+    for source in plan.inventory.sources:
+        by_source[source.part] = {candidate["locator"]: candidate
+            for candidate in mime_candidates(None, raw=source.raw_bytes, allow_rfc822=True)}
+    for part in plan.inventory.scalar_parts:
+        candidate = by_source[part.message_part].get(part.mime)
+        require(candidate is not None, "missing_or_mismatched_mime_part")
+        choices[part.part] = "attachment" if candidate["attachable"] else "body"
+    return adapter.classify_scalar_parts(plan, choices)
+
+
 def safe_filename(original_filename):
     base = re.split(r"[/\\]", original_filename or "")[-1]
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip(".")[:100]
     return cleaned or "attachment.bin"
 
 
-def bind_parts(items):
+def bind_parts(items, receipt=None):
+    if receipt is not None and "schema" in receipt:
+        from . import rfc822_adapter as adapter
+        with folder.secure_open(items[0]["tmp"]) as source:
+            raw = source.read(MAX_EML + 1)
+        plan = wire_intake_plan(raw)
+        require(receipt.get("scalar_roles") == plan.as_manifest()["scalar_roles"] and
+                receipt.get("budget") == plan.as_manifest()["budget"], "invalid_receipt_shape")
+        captures = adapter.bind_rfc822_receipts(plan, [item["source"] for item in items[1:]])
+        by_part = {capture.part: capture for capture in captures}
+        for item in items[1:]:
+            # Binding checks membership; map by part rather than trusting list order.
+            capture = by_part[item["part"]]
+            require(item["sha"] == capture.sha256 and item["size"] == len(capture.payload),
+                    "missing_or_mismatched_mime_part")
+            item.update(mime=capture.mime, mime_name=capture.original_filename,
+                        parent_sha=capture.parent_sha256, mime_chain=list(capture.mime_chain),
+                        wire_schema=adapter.SCHEMA)
+        return
     candidates = mime_candidates(items[0]["tmp"])
     required = {c["locator"] for c in candidates if c["attachable"]}
     used = set()
@@ -328,17 +379,19 @@ def occurrence(item, identity, root, parent_sha):
     oid = folder.hid(folder.js(["mail-receipt-v1", account, mailbox,
                                 uidvalidity, uid, item["part"]]))
     locator = {"mail_receipt_part": item.get("part_value", item["part"])}
-    if item["kind"] == "attachment":
+    if item["part"] != "0":
         locator["mime"] = item["mime"]
+    if "mime_chain" in item:
+        locator["mime_chain"] = item["mime_chain"]
     metadata = dict(source="mail_delta", account_id=account, folder=mailbox,
                     uidvalidity=uidvalidity, uid=uid,
                     part=item.get("part_value", item["part"]))
-    if item["kind"] == "attachment":
+    if item["part"] != "0":
         metadata.update(filename=item["source"].get("filename"),
                         original_filename=item["source"].get("original_filename"),
                         content_type=item["source"].get("content_type"))
     return dict(oid=oid, sha=item["sha"], path=item["path"], root=str(root),
-                parent=parent_sha if item["kind"] == "attachment" else None,
+                parent=item.get("parent_sha", parent_sha) if item["part"] != "0" else None,
                 locator=folder.js(locator), receipt=folder.js(metadata))
 
 
@@ -391,6 +444,14 @@ def cleanup_created_blobs(out, created):
         raise Rejected("new_blob_cleanup_failed") from None
 
 
+def edge_locator(item):
+    """Keep exact-wire relationships distinct from legacy decoded derivations."""
+    locator = {"mime": item["mime"]}
+    if "wire_schema" in item:
+        locator["wire_schema"] = item["wire_schema"]
+    return folder.js(locator)
+
+
 def ledger_import(db, out, root, identity, items, created):
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("BEGIN IMMEDIATE")
@@ -426,9 +487,10 @@ def ledger_import(db, out, root, identity, items, created):
         require(preservation is None or preservation[0] == item["size"],
                 "preservation_size_conflict")
     for item in items[1:]:
-        loc = folder.js({"mime": item["mime"]})
+        parent = item.get("parent_sha", items[0]["sha"])
+        loc = edge_locator(item)
         edge = db.execute("SELECT child FROM edges WHERE parent=? AND locator=?",
-                          (items[0]["sha"], loc)).fetchone()
+                          (parent, loc)).fetchone()
         require(edge is None or edge[0] == item["sha"], "parent_edge_conflict")
         changed |= edge is None
     if not changed:
@@ -465,10 +527,10 @@ def ledger_import(db, out, root, identity, items, created):
         added_occurrences += cursor.rowcount
         db.execute("INSERT OR IGNORE INTO seen VALUES(?,?,?)",
                    (run, record["oid"], record["sha"]))
-        if item["kind"] == "attachment":
+        if item["part"] != "0":
             edge_name = item["mime_name"] or name
             cursor = db.execute("INSERT OR IGNORE INTO edges VALUES(?,?,?,?)",
-                                (items[0]["sha"], folder.js({"mime": item["mime"]}),
+                                (item.get("parent_sha", items[0]["sha"]), edge_locator(item),
                                  item["sha"], edge_name))
             added_edges += cursor.rowcount
     db.execute("UPDATE meta SET value=? WHERE key='inventory_run'", (run,))
@@ -500,7 +562,7 @@ def import_receipt(receipt_path, mail_root, output):
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for item in items:
             stage_source(item, root, out)
-        bind_parts(items)
+        bind_parts(items, receipt)
         db = sqlite3.connect(out / "intake.sqlite")
         try:
             db.execute("PRAGMA busy_timeout=0")

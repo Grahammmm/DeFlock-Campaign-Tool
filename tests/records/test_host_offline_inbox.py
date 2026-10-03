@@ -336,12 +336,14 @@ class HostOfflineInboxTests(support.HostFixture):
     def test_worker_namespace_does_not_exempt_foreign_file_owner(self):
         self.offline(bind=True)
         inode, real_fstat = self.eml.stat().st_ino, os.fstat
+        foreign_uid = max(self.eml.stat().st_uid, os.getuid(), 1000) + 1
+        self.assertNotIn(foreign_uid, (self.eml.stat().st_uid, 1000))
         def foreign_file(fd):
             value = real_fstat(fd)
             fields = {name: getattr(value, name) for name in dir(value)
                       if name.startswith("st_")}
             if value.st_ino == inode:
-                fields["st_uid"] = 3141
+                fields["st_uid"] = foreign_uid
             return SimpleNamespace(**fields)
         with mock.patch.object(host.os, "fstat", side_effect=foreign_file), \
              self.worker_namespace(), \

@@ -175,7 +175,9 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                     if row['id']!=checked.message_id or source['mime_path'] is not None or checked.eml_sha256!=subject:return False
                 else:
                     loc=source['mime_path']
-                    if row['parent_occurrence_id']!=checked.message_id or row['id']!=hid(['attachment',checked.message_id,loc]) or (loc,subject) not in checked.attachments:return False
+                    parent_loc=dict(checked.attachment_parents).get(loc)
+                    parent=checked.message_id if parent_loc is None else hid(['attachment',checked.message_id,parent_loc])
+                    if row['parent_occurrence_id']!=parent or row['id']!=hid(['attachment',checked.message_id,loc]) or (loc,subject) not in checked.attachments:return False
                 observed_hashes.add(digest)
             if envelope is not None and envelope['verification_receipt_sha256'] not in observed_hashes:return False
             return True
@@ -186,7 +188,10 @@ class CanonicalMailBackend(LegacyIntakeBackend):
         stamp=datetime.now(timezone.utc).isoformat();rid=self.run_identity['run_id']
         verification_path=self._capture_verification(receipt_path,value.receipt_sha256)
         records=[(value.message_id,value.eml_sha256,'mail',None,'message')]
-        records.extend((hid(['attachment',value.message_id,loc]),sha,'attachment',value.message_id,loc) for loc,sha in value.attachments)
+        parents=dict(value.attachment_parents)
+        records.extend((hid(['attachment',value.message_id,loc]),sha,'attachment',
+                        hid(['attachment',value.message_id,parents[loc]]) if parents.get(loc) is not None else value.message_id,loc)
+                       for loc,sha in value.attachments)
         mail_values=self._eml_projection(value,receipt_path,account,scope,uid)
         with self.store.ledger(self.database) as c:
             c.execute('BEGIN IMMEDIATE')
@@ -200,7 +205,7 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                     original=c.execute('SELECT bytes,storage_path,scope FROM originals WHERE sha256=?',(sha,)).fetchone()
                     if original and (original['bytes']!=proof['bytes'] or original['storage_path']!=path or original['scope']!='in_scope'):raise ValueError('canonical_original_binding_conflict')
                     if not original:
-                        c.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',(sha,proof['bytes'],'message/rfc822' if kind=='mail' else None,stamp,'original','in_scope',path,'captured',None,js({'method':'verified_export_receipt','receipt_sha256':value.receipt_sha256})))
+                        c.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',(sha,proof['bytes'],'message/rfc822' if kind=='mail' or loc in value.eml_parts else None,stamp,'original','in_scope',path,'captured',None,js({'method':'verified_export_receipt','receipt_sha256':value.receipt_sha256})))
                         for stage in self.store.STAGES:c.execute("INSERT INTO stage_state VALUES(?,?,'pending',NULL,?,?,?,?)",(sha,stage,'runner',stamp,rid,'domain validation pending'))
                     source=js({'account':account,'folder':scope.name,'uidvalidity':scope.uidvalidity,'uid':uid,'mime_path':loc if kind=='attachment' else None})
                     evidence=js({'receipt_sha256':value.receipt_sha256,'cas_sha256':sha,'bytes':proof['bytes'],'export_receipt_path':str(Path(receipt_path).absolute()),'verification_receipt_path':verification_path})
