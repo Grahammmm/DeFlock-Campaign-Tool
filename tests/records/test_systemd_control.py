@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import threading
+import subprocess
+import sys
 from unittest import mock
 import unittest
 
@@ -215,7 +217,9 @@ class SystemdControlTests(fixtures.HostFixture):
         fake.launch = host.TransportError()
         self.assertEqual(self.bound_run(fake, "2" * 32)["status"], "held")
         before, calls = self.current(), len(fake.calls)
+        pending = (self.receipts / control.OPERATION).read_bytes()
         self.assertEqual(self.stop_post(fake)["status"], "completed")
+        self.assertEqual((self.receipts / control.OPERATION).read_bytes(), pending)
         self.assertEqual(self.current(), before)
         self.assertEqual(len(fake.calls), calls)
         self.assertTrue(next(iter(fake.containers.values()))["running"])
@@ -419,6 +423,159 @@ class SystemdControlTests(fixtures.HostFixture):
             host.stop(self.profile, expected_job_id="b" * 32, invoke=fake.invoke)
         self.assertEqual(len(fake.calls), calls)
         self.assertFalse(self.current()["cancel_requested"])
+
+
+    @contextmanager
+    def failed_hold_write(self):
+        original = host.PrivateDir.write
+        def write(directory, name, raw, **options):
+            if name == "systemd-hold.json":
+                raise OSError("synthetic persistence fault")
+            return original(directory, name, raw, **options)
+        with mock.patch.object(host.PrivateDir, "write", write):
+            yield
+
+    def assert_fresh_process_denied(self):
+        before = (self.receipts / "active.json").read_bytes()
+        jobs = sorted(p.name for p in self.receipts.iterdir() if p.is_dir())
+        child = """
+import json, sys
+from pathlib import Path
+from campaign_tool.records import container_host as host, systemd_control as control
+from tests.records.test_container_host import FakeDocker
+profile = Path(sys.argv[1])
+fake = FakeDocker(profile)
+try:
+    host.run(profile, invoke=fake.invoke, containment=fake.containment)
+    direct = "unexpected"
+except host.Rejected:
+    direct = "rejected"
+result = control.run(profile, "3" * 32, invoke=fake.invoke, containment=fake.containment)
+print(json.dumps({"direct": direct, "bound": result["status"], "calls": len(fake.calls)}))
+"""
+        env = {"HOME": str(Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+               "TMPDIR": str(self.root), "PYTHONDONTWRITEBYTECODE": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run([sys.executable, "-B", "-c", child, str(self.profile)],
+                                capture_output=True, timeout=10, env=env)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout),
+                         {"direct": "rejected", "bound": "held", "calls": 0})
+        self.assertEqual((self.receipts / "active.json").read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in self.receipts.iterdir() if p.is_dir()), jobs)
+
+    def test_failed_hold_persistence_denies_direct_and_fresh_managed_writer(self):
+        fake = self.fake()
+        self.assertEqual(self.bound_run(fake)["status"], "completed")
+        before, calls = self.current(), len(fake.calls)
+        with self.failed_hold_write():
+            self.assertEqual(self.stop_post(fake, "2" * 32)["status"], "held")
+        self.assertFalse((self.receipts / "systemd-hold.json").exists())
+        self.assertTrue((self.receipts / control.OPERATION).exists())
+        self.deny_new_writer(fake)
+        self.assert_fresh_process_denied()
+        self.assertEqual(self.current(), before)
+        self.assertEqual(len(fake.calls), calls)
+
+    def test_managed_unreserved_run_never_inherits_terminal_permission(self):
+        fake = self.fake()
+        self.assertEqual(self.bound_run(fake)["status"], "completed")
+        self.assertFalse((self.receipts / control.OPERATION).exists())
+        self.deny_new_writer(fake)
+        # Rejecting the bypass does not disable legitimate next invocations.
+        self.assertEqual(self.bound_run(fake, "2" * 32)["status"], "completed")
+        self.assertFalse((self.receipts / control.OPERATION).exists())
+
+    def test_corrupt_binding_and_failed_hold_remain_denied_after_restart(self):
+        fake = self.fake()
+        self.bound_run(fake)
+        (self.receipts / control.BINDING).write_bytes(b"{}")
+        with self.failed_hold_write():
+            self.assertEqual(self.stop_post(fake)["status"], "held")
+        self.assertFalse((self.receipts / "systemd-hold.json").exists())
+        self.deny_new_writer(fake)
+        self.assert_fresh_process_denied()
+
+    def test_operation_corruption_is_not_ignored_after_restart(self):
+        fake = self.fake()
+        self.bound_run(fake)
+        (self.receipts / control.OPERATION).write_bytes(b"{}")
+        with self.failed_hold_write():
+            self.assertEqual(self.stop_post(fake, "2" * 32)["status"], "held")
+        self.assertFalse((self.receipts / "systemd-hold.json").exists())
+        self.deny_new_writer(fake)
+        self.assert_fresh_process_denied()
+
+    def test_controller_loss_after_intent_before_validation_blocks_restart(self):
+        fake = self.fake()
+        self.bound_run(fake)
+        original = host.PrivateDir.write
+        def write(directory, name, raw, **options):
+            if name == "systemd-hold.json":
+                raise OSError("synthetic persistence fault")
+            result = original(directory, name, raw, **options)
+            if name == control.OPERATION:
+                raise SystemExit()
+            return result
+        with mock.patch.object(host.PrivateDir, "write", write):
+            self.assertEqual(self.stop_post(fake, "2" * 32)["status"], "held")
+        self.assertFalse((self.receipts / "systemd-hold.json").exists())
+        self.assert_fresh_process_denied()
+
+    def test_intent_initial_write_failure_has_independent_fallback(self):
+        fake = self.fake()
+        self.bound_run(fake)
+        original, attempted = host.PrivateDir.write, []
+        def write(directory, name, raw, **options):
+            if name == "systemd-hold.json":
+                raise OSError("synthetic persistence fault")
+            if name == control.OPERATION and not attempted:
+                attempted.append(True)
+                raise OSError("synthetic first write fault")
+            return original(directory, name, raw, **options)
+        with mock.patch.object(host.PrivateDir, "write", write):
+            self.assertEqual(self.stop_post(fake, "2" * 32)["status"], "held")
+        self.assertEqual(json.loads((self.receipts / control.OPERATION).read_bytes())["purpose"], "hold")
+        self.assertFalse((self.receipts / "systemd-hold.json").exists())
+        self.assert_fresh_process_denied()
+
+    def test_deleted_operation_cannot_admit_a_reserved_job(self):
+        job = self.prepare()
+        (self.receipts / control.OPERATION).unlink()
+        fake = self.fake()
+        with self.assertRaises(host.Rejected):
+            host.run(self.profile, job_id=job, invoke=fake.invoke, containment=fake.containment)
+        self.assertEqual(fake.calls, [])
+        self.assertFalse((self.receipts / job).exists())
+
+    def test_matching_cleanup_retry_resolves_only_its_operation(self):
+        fake = self.held_run()
+        fake.remove_failure = True
+        self.assertEqual(self.stop_post(fake)["status"], "held")
+        pending = json.loads((self.receipts / control.OPERATION).read_bytes())
+        self.assertEqual((pending["purpose"], pending["invocation_id"]), ("stop", self.invocation))
+        self.deny_new_writer(fake)
+        fake.remove_failure = False
+        self.assertEqual(self.stop_post(fake)["status"], "postrun_failed")
+        self.assertFalse((self.receipts / control.OPERATION).exists())
+        fake.launch = (0, fixtures.worker())
+        self.assertEqual(self.bound_run(fake, "2" * 32)["status"], "completed")
+
+
+
+    def test_no_allocation_seal_contains_only_persistent_binding_fields(self):
+        self.prepare()
+        fake = self.fake()
+        self.assertEqual(self.stop_post(fake), host._output("not_allocated"))
+        raw = (self.receipts / ("closed-" + self.invocation + ".json")).read_bytes()
+        with self.journal() as journal:
+            _, value = control._owned(journal, self.invocation)
+            self.assertEqual(raw, control._closure(value))
+        self.assertEqual(set(json.loads(raw)),
+                         {"schema", "invocation_id", "job_id", "profile_sha256", "status"})
+        self.assertEqual(fake.calls, [])
+        self.assertFalse((self.receipts / control.OPERATION).exists())
+        self.assertEqual(self.stop_post(fake), host._output("not_allocated"))
 
 
 if __name__ == "__main__":

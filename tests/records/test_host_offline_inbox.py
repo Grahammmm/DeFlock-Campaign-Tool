@@ -1,5 +1,6 @@
 """Synthetic host offline ingress; no Docker daemon, records, credentials or model calls."""
 import copy
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -51,6 +52,22 @@ class OfflineDocker(support.FakeDocker):
 
 
 class HostOfflineInboxTests(support.HostFixture):
+    @contextmanager
+    def worker_namespace(self):
+        # Project only this host owner's UID, not mode, links or inode identity.
+        owner, real_fstat = os.getuid(), os.fstat
+        def projected(fd):
+            value = real_fstat(fd)
+            fields = {name: getattr(value, name) for name in dir(value)
+                      if name.startswith("st_")}
+            if value.st_uid == owner:
+                fields["st_uid"] = 1000
+            return SimpleNamespace(**fields)
+        with mock.patch.object(host.os, "getuid", return_value=1000), \
+             mock.patch.object(host.os, "geteuid", return_value=1000), \
+             mock.patch.object(host.os, "fstat", side_effect=projected):
+            yield
+
     def offline(self, *, bind=False):
         self.inbox = self.root / "inbox"
         self.inbox.mkdir(mode=0o700)
@@ -83,8 +100,7 @@ class HostOfflineInboxTests(support.HostFixture):
         original = host.PrivateDir
         def directory(path, **kwargs):
             return parent if path == paths["worker_state_parent"] else original(path, **kwargs)
-        with mock.patch.object(host.os, "getuid", return_value=1000), \
-             mock.patch.object(host.os, "geteuid", return_value=1000), \
+        with self.worker_namespace(), \
              mock.patch.object(host, "PrivateDir", side_effect=directory), \
              mock.patch.object(host.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)), \
              mock.patch.object(host.os, "execve") as execute:
@@ -95,8 +111,9 @@ class HostOfflineInboxTests(support.HostFixture):
     def test_exact_offline_create_probe_and_receipt_contract_without_secret_mount(self):
         value = self.offline()
         fake = OfflineDocker(self.profile)
+        provider_key = "_".join(("OPENAI", "API", "KEY"))
         with mock.patch.dict(os.environ, {"MODEL_BASE_URL": "https://provider.example.invalid",
-                                        "OPENAI_API_KEY": "synthetic-placeholder"}):
+                                        provider_key: "fixture"}):
             self.assertEqual(self.run_host(fake)["status"], "completed")
         receipt = self.current()
         self.assertEqual(receipt["profile_sha256"], host.digest(self.profile.read_bytes()))
@@ -108,7 +125,7 @@ class HostOfflineInboxTests(support.HostFixture):
                 self.assertEqual(argv[argv.index("--inbox") + 1], value["inbox"])
                 self.assertEqual(argv[argv.index("--inbox-manifest-sha256") + 1],
                                  value["inbox_manifest_sha256"])
-                self.assertNotIn("OPENAI_API_KEY=synthetic-placeholder", argv)
+                self.assertNotIn(provider_key + "=fixture", argv)
             if argv[1] == "create":
                 self.assertEqual(argv[argv.index("--network") + 1], "none")
                 mounts = [argv[i + 1] for i, item in enumerate(argv) if item == "--mount"]
@@ -295,13 +312,42 @@ class HostOfflineInboxTests(support.HostFixture):
             path = self.root / ("probe-" + key)
             path.mkdir(mode=0o700)
             paths[key] = str(path)
-        with mock.patch.object(host.os, "getuid", return_value=1000), \
-             mock.patch.object(host.os, "geteuid", return_value=1000):
+        with self.worker_namespace():
             with mock.patch.object(host.os, "fstatvfs", return_value=SimpleNamespace(f_flag=0)):
                 with self.assertRaises(host.Rejected):
                     host.probe(paths)
             with mock.patch.object(host.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
                 self.assertEqual(host.probe(paths), {"schema": 1, "status": "runtime_ready", "uid": 1000})
+
+    def test_non_worker_host_uid_projects_without_changing_inode_metadata(self):
+        owner, real_fstat = os.getuid(), os.fstat
+        def host_namespace(fd):
+            value = real_fstat(fd)
+            fields = {name: getattr(value, name) for name in dir(value)
+                      if name.startswith("st_")}
+            if value.st_uid == owner:
+                fields["st_uid"] = 2001
+            return SimpleNamespace(**fields)
+        with mock.patch.object(host.os, "getuid", return_value=2001), \
+             mock.patch.object(host.os, "geteuid", return_value=2001), \
+             mock.patch.object(host.os, "fstat", side_effect=host_namespace):
+            self.test_probe_readonly_requires_actual_flags_without_mailbox_config()
+
+    def test_worker_namespace_does_not_exempt_foreign_file_owner(self):
+        self.offline(bind=True)
+        inode, real_fstat = self.eml.stat().st_ino, os.fstat
+        def foreign_file(fd):
+            value = real_fstat(fd)
+            fields = {name: getattr(value, name) for name in dir(value)
+                      if name.startswith("st_")}
+            if value.st_ino == inode:
+                fields["st_uid"] = 3141
+            return SimpleNamespace(**fields)
+        with mock.patch.object(host.os, "fstat", side_effect=foreign_file), \
+             self.worker_namespace(), \
+             mock.patch.object(host.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)), \
+             self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox, readonly=True)
 
     def test_manifest_command_is_sanitized_and_bounded(self):
         self.offline(bind=True)
