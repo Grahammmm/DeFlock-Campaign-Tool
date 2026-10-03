@@ -33,11 +33,13 @@ describe("conditional approval transitions", () => {
     const repo = await seedCampaign();
     const { row } = await repo.propose("deploy_site", null, {}, "race-reject", "fixture");
     await approveAction(repo, row.action_id, ORG);
-    const spy = afterRead(repo, () => repo.claimForExecution(row.action_id));
+    let claimMarker: string | null = null;
+    const spy = afterRead(repo, async () => { const claim = await repo.claimForExecution(row.action_id); claimMarker = claim!.error; });
     try { await expect(rejectAction(repo, row.action_id, ORG, "stop")).rejects.toThrow(/changed during rejection/); }
     finally { spy.mockRestore(); }
     expect((await repo.action(row.action_id))!.state).toBe("executing");
-    expect((await repo.action(row.action_id))!.error).toBeNull();
+    expect(claimMarker).not.toBeNull();
+    expect((await repo.action(row.action_id))!.error).toBe(claimMarker);
   });
 
   it("does not edit a proposal concurrently approved", async () => {

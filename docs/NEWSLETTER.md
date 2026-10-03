@@ -99,9 +99,35 @@ transition; the card stays held. This is an organizer attestation, not automated
 of provider state. No new permissions, contact reads, subscription changes or real sends
 are introduced by this route.
 
-Limitations: a Worker crash can leave an action executing; there is no lease-expiry recovery
-for that state in this change. The default records-request sender remains unconfigured.
-These are still hosted pilot gates, and this software fix does not activate production.
+## Interrupted execution
+
+If a new newsletter execution is interrupted while `executing`, use its exact
+claim ID and an interruption reference to **Hold interrupted execution** in
+Approvals. This records a durable held card; it does not cancel or resend. A
+late creation result cannot continue to send after the hold, and a late completion
+cannot overwrite it. Already admitted provider work may still finish. Inspect
+the card's **Inspect this action's recovery and late provider receipts** link
+(`GET /approvals/:id/execution-evidence`, Access-protected) or
+`late_execution_receipt` entries in the Subscribers event log along with the
+retained campaign ID and original action/key/tag when checking provider state.
+The action-specific view returns at most 50 records and flags `truncated` when
+more exist; use the authenticated full export for an older evidence history.
+
+Before recording either delivered or not-delivered, prove that the old invocation
+has stopped and record its termination evidence reference and explicit confirmation.
+Then check the provider, including any queued work. A timeout, old timestamp,
+fetch abort or the hold itself is insufficient. If either outcome is uncertain,
+leave the card held. A confirmed absent delivery returns the same draft/key to
+proposed with approval cleared; a confirmed delivery records the actual provider
+time and cannot be resent. No caller is trusted to have terminated merely because
+its database claim has been fenced. These are operator attestations, not automatic
+verification of the referenced platform/provider receipts.
+
+The implementation uses claim-bound database writes and atomic hold/event storage;
+it adds no schema migration or provider cancellation call. Legacy/unbound executions
+and non-newsletter recovery remain separate acceptance work. The default
+records-request sender is still unconfigured. Synthetic tests do not establish a
+live hosted pilot, and this change does not activate production.
 
 ## Not done
 

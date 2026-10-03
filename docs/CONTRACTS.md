@@ -128,9 +128,33 @@ and require reloading the card. This database consistency check does not establi
 human semantically reviewed the content or replace Cloudflare Access authentication.
 
 Once execution has been claimed, rejection is not cancellation of an admitted provider
-effect. Never reopen an `executing` card merely because a caller timed out. The hosted
-crash-recovery/operator-pilot gate remains open until the original executor can be proven
-quiescent and its provider outcome reconciled; this transition fix does not add such recovery.
+effect. Never reopen an `executing` card merely because a caller timed out. A new
+claim stores a unique `execution_claim: UUID` in the existing error field while
+executing; it is a claim marker, not a failure. Completion uses this immutable
+marker so an old executor cannot overwrite a later claim. Newsletter checkpoints
+and send events are also conditional on the same claim.
+
+`POST /approvals/:id/hold-execution` accepts the exact `execution_id` and an
+interruption evidence `reference`. It atomically records the hold and audit event,
+retains provider identity/key/draft, and leaves the newsletter failed with
+`brevo_execution_interrupted`. It does not cancel a provider request or reapprove
+anything. A late provider receipt is retained separately as `late_execution_receipt`,
+without stamping a sent event or altering the held state.
+
+Reconciliation of that held execution additionally requires
+`quiescence_reference` and `quiescence_confirmed: true` (HTML form: `confirmed`).
+The organizer must prove the old invocation cannot issue another call, then inspect
+provider state, including queued work and late receipts. Unknown means stay held.
+These are authenticated operator attestations, not machine verification of the
+referenced evidence. No elapsed-time lease or client abort establishes non-delivery:
+[HTTP Workers have no hard duration limit](https://developers.cloudflare.com/workers/platform/limits/),
+and [Brevo sendNow schedules an existing campaign](https://developers.brevo.com/reference/send-email-campaign-now).
+The hold's fencing prevents further cooperative local writes; it cannot undo an
+already admitted external effect or prove remote quiescence.
+
+Legacy/unbound executing rows and other action kinds are not silently assigned
+new claims or reset. They require separate verified host/provider recovery. This
+source fix does not complete live crash-recovery/operator-pilot acceptance.
 
 ## Privacy tiers
 

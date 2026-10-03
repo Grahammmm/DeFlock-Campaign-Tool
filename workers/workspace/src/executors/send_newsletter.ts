@@ -42,6 +42,7 @@ export function newsletterExecutor(client: BrevoClient | null): ActionExecutor {
       if (!Number.isInteger(listId) || (listId as number) <= 0) throw new ExecutorFailure("brevo_not_configured", "Brevo list id is not set in Settings");
       const draft = draftFromProposal(proposal);
       const campaign = await ctx.repo.campaign();
+      await ctx.repo.assertExecuting(action);
       let created: { id: number };
       try {
         created = await client.createEmailCampaign({
@@ -68,6 +69,7 @@ export function newsletterExecutor(client: BrevoClient | null): ActionExecutor {
       // an event records it: an organizer checks that campaign at Brevo before proposing a
       // new draft, instead of the workspace creating a second campaign for the same key.
       try {
+        await ctx.repo.assertExecuting(action);
         await client.sendCampaignNow(created.id);
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);

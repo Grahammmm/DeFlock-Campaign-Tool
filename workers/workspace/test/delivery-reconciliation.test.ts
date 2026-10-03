@@ -74,7 +74,7 @@ describe("delivery reconciliation", () => {
     await repo.putSetting("brevo", { list_id: 42, form_url: null, sender_name: "Example", sender_email: "news@example.invalid" });
     const { row } = await repo.propose("send_newsletter", null, draft, "reconcile-bookkeeping", ORG.email);
     await approveAction(repo, row.action_id, ORG);
-    const spy = vi.spyOn(repo, "createSubscriberEvent").mockRejectedValueOnce(new Error("synthetic local storage failure"));
+    const spy = vi.spyOn(repo, "createExecutionEvent").mockRejectedValueOnce(new Error("synthetic local storage failure"));
     const failed = await executeAction(repo, env as Env, row.action_id, ORG, buildExecutors({ brevo }));
     spy.mockRestore();
     expect(failed.state).toBe("failed");
@@ -96,7 +96,7 @@ describe("delivery reconciliation", () => {
     await repo.putSetting("brevo", { list_id: 42, form_url: null, sender_name: "Example", sender_email: "news@example.invalid" });
     const { row } = await repo.propose("send_newsletter", null, draft, "reconcile-receiptwrite", ORG.email);
     await approveAction(repo, row.action_id, ORG);
-    const spy = vi.spyOn(repo, "updateAction").mockRejectedValueOnce(new Error("synthetic receipt write failed"));
+    const spy = vi.spyOn(repo, "updateExecutingAction").mockRejectedValueOnce(new Error("synthetic receipt write failed"));
     const failed = await executeAction(repo, env as Env, row.action_id, ORG, buildExecutors({ brevo }));
     spy.mockRestore();
     expect(failed.error).toMatch(/^brevo_send_ambiguous: Brevo campaign 1001/);
