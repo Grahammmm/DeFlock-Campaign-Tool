@@ -4,10 +4,11 @@
 // Execution state machine: approved -> executing -> executed | failed. The claim
 // (approved -> executing) is a single conditional UPDATE, so two concurrent executes cannot
 // both run the executor. Executing an already `executed` card is a no-op that returns the
-// existing provider receipt; a `failed` card must be proposed again.
+// existing provider receipt; conclusive failures may be re-proposed, while unresolved
+// provider effects require an authenticated reconciliation before any new approval.
 import { nowIso } from "@deflock/shared/ids";
 import type { AccessIdentity } from "./auth.ts";
-import type { ActionKind, ExternalActionRow, Repo } from "./db.ts";
+import { requiresDeliveryReconciliation, type ActionKind, type ExternalActionRow, type Repo } from "./db.ts";
 import type { Env } from "./env.ts";
 import { defaultExecutors, ExecutorFailure, type ActionExecutor } from "./executors/index.ts";
 
@@ -86,5 +87,25 @@ export async function executeAction(
     await repo.updateAction(actionId, { state: "failed", error: text });
     await repo.raiseIncident("action:" + actionId, "warning", `execution failed for ${action.kind}: ${text}`);
   }
+  return (await repo.action(actionId))!;
+}
+
+/** Evidence comes from an authenticated organizer's provider check, not a resend. */
+export async function reconcileAction(repo: Repo, actionId: string, identity: AccessIdentity, outcome: unknown, reference: unknown, deliveredAt?: unknown): Promise<ExternalActionRow> {
+  if (!identity?.email) throw new ApprovalError("reconciliation requires an authenticated identity", 401);
+  if (outcome !== "delivered" && outcome !== "not_delivered") throw new ApprovalError("outcome must be delivered or not_delivered", 400);
+  if (typeof reference !== "string" || !reference.trim() || reference.length > 500) throw new ApprovalError("a provider-check reference is required (max 500 characters)", 400);
+  let deliveryTime: string | null = null;
+  if (outcome === "delivered") {
+    if (typeof deliveredAt !== "string" || !/^\d{4}-\d{2}-\d{2}T.*Z$/.test(deliveredAt) || !Number.isFinite(Date.parse(deliveredAt)) || Date.parse(deliveredAt) > Date.now()) throw new ApprovalError("provider delivery time is required as a past UTC ISO timestamp", 400);
+    deliveryTime = new Date(deliveredAt).toISOString();
+  }
+  const action = await repo.action(actionId);
+  if (!action) throw new ApprovalError("unknown action", 404);
+  if (!requiresDeliveryReconciliation(action)) throw new ApprovalError("action is not awaiting delivery reconciliation");
+  const evidence = { action_id: actionId, outcome, reference: reference.trim(), checked_by: identity.email, checked_at: nowIso(), previous_error: action.error, previous_receipt: action.provider_receipt, delivered_at: deliveryTime };
+  // Preserve an immutable attempted-check record even if a concurrent transition wins.
+  await repo.createSubscriberEvent({ provider: "brevo", kind: "action_reconciliation_attempt", payload_json: JSON.stringify(evidence), occurred_at: evidence.checked_at });
+  if (!await repo.reconcileDelivery(action, outcome === "delivered", JSON.stringify(evidence), deliveryTime)) throw new ApprovalError("action changed during reconciliation; inspect its current receipt");
   return (await repo.action(actionId))!;
 }

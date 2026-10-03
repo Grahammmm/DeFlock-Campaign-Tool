@@ -71,6 +71,38 @@ draft, and the card receipt holds the Brevo campaign id.
 Tests use `FakeBrevo` (`workers/workspace/test/executors.test.ts`); no network call is made in
 the suite.
 
+## Ambiguous delivery and recovery
+
+A returned provider campaign ID is stored before the send call. Creation timeouts and
+inconclusive server errors use `brevo_create_ambiguous`; send failures after creation use
+`brevo_send_ambiguous`. Re-proposing that same key leaves the failed card and original
+proposal untouched. A retained provider receipt also holds the card if local bookkeeping
+fails after a successful provider send. Known configuration/input rejections remain retryable.
+The provider's tag is a lookup aid, not a promise of provider-side idempotency.
+
+In **Approvals**, inspect the provider account for the action ID/tag and campaign receipt.
+Record a provider-check reference and one conclusive result:
+
+- **Delivered**: include the actual provider delivery time as a past UTC ISO timestamp.
+  The card becomes executed and future executions return its existing receipt without
+  calling the provider. The confirmed time becomes the newsletter's `since` boundary.
+- **Not delivered**: the unchanged original draft and stable key return to proposed;
+  approval identity is cleared and a fresh approval is required before sending.
+- **Unknown**: leave the card held. Do not create a new key to get around the hold.
+
+The authenticated `POST /approvals/:id/reconcile` accepts `outcome`, `reference`, and
+`delivered_at` (required for delivered). It does not call Brevo. The receipt preserves the
+previous provider identity/error and checking identity. An attempted check is journaled;
+a conditional D1 transaction then records the state transition and its event together.
+This uses [Cloudflare’s documented transactional batch semantics](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch). Stale concurrent checks cannot overwrite another result. A storage failure rolls back the
+transition; the card stays held. This is an organizer attestation, not automated verification
+of provider state. No new permissions, contact reads, subscription changes or real sends
+are introduced by this route.
+
+Limitations: a Worker crash can leave an action executing; there is no lease-expiry recovery
+for that state in this change. The default records-request sender remains unconfigured.
+These are still hosted pilot gates, and this software fix does not activate production.
+
 ## Not done
 
 Brevo webhook ingestion for bounces and list counts (the Subscribers screen shows

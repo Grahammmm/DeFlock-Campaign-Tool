@@ -706,9 +706,9 @@ export class Repo {
 
   /**
    * Idempotent proposal: the same idempotency_key returns the existing row untouched,
-   * except a `failed` card, which is re-opened as `proposed` with the new proposal so a
+   * except a conclusively failed card, which is re-opened as `proposed` so a
    * transient provider failure does not retire the key for good (approvals.ts: "a failed
-   * card must be proposed again"). The prior error is kept on the row for the record.
+   * card must be proposed again"). Ambiguous delivery stays held for reconciliation.
    */
   async propose(
     kind: ActionKind,
@@ -738,16 +738,32 @@ export class Repo {
       this.campaignId,
       idempotencyKey,
     );
-    if (existing?.state === "failed") {
+    if (existing?.state === "failed" && !requiresDeliveryReconciliation(existing)) {
       const reopened = await this.db
         .prepare(
-          "UPDATE external_action SET state = 'proposed', proposal_json = ?, proposed_by = ?, approved_by = NULL, approved_at = NULL, executed_at = NULL, provider_receipt = NULL, error = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed'",
+          "UPDATE external_action SET state = 'proposed', proposal_json = ?, proposed_by = ?, approved_by = NULL, approved_at = NULL, executed_at = NULL, provider_receipt = NULL, error = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed' AND error IS ? AND provider_receipt IS ?",
         )
-        .bind(JSON.stringify(proposal ?? {}), proposedBy, "re-proposed after: " + (existing.error ?? "failure"), this.campaignId, existing.action_id)
+        .bind(JSON.stringify(proposal ?? {}), proposedBy, "re-proposed after: " + (existing.error ?? "failure"), this.campaignId, existing.action_id, existing.error, existing.provider_receipt)
         .run();
       if (reopened.meta.changes === 1) return { row: (await this.action(existing.action_id))!, inserted: false };
     }
     return { row: existing ?? res.row, inserted: false };
+  }
+
+  /** Apply an operator's evidence only to the exact failed row they inspected. */
+  async reconcileDelivery(action: ExternalActionRow, delivered: boolean, receipt: string, deliveredAt: string | null = null): Promise<boolean> {
+    const clock = nowIso();
+    const update = this.db.prepare(
+      "UPDATE external_action SET state = ?, approved_by = ?, approved_at = ?, executed_at = ?, provider_receipt = ?, error = NULL, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'failed' AND error IS ? AND provider_receipt IS ?",
+    ).bind(delivered ? "executed" : "proposed", delivered ? action.approved_by : null,
+      delivered ? action.approved_at : null, delivered ? deliveredAt : null, receipt, clock,
+      this.campaignId, action.action_id, action.error, action.provider_receipt);
+    // D1 batches are transactional. The event exists only if the conditional UPDATE won.
+    const event = this.db.prepare(
+      "INSERT INTO subscriber_event (event_id, campaign_id, provider, kind, payload_json, occurred_at, created_at, updated_at) SELECT ?, ?, 'brevo', ?, ?, ?, ?, ? WHERE changes() = 1",
+    ).bind(newEventId(), this.campaignId, delivered ? "campaign_sent" : "action_reconciled", receipt, delivered ? deliveredAt : clock, clock, clock);
+    const results = await this.db.batch([update, event]);
+    return results[0].meta.changes === 1;
   }
 
   updateAction(actionId: string, patch: Partial<ExternalActionRow>): Promise<void> {
@@ -834,4 +850,10 @@ export class Repo {
       incidents: await q("SELECT COUNT(*) n FROM incident WHERE campaign_id = ? AND resolved_at IS NULL"),
     };
   }
+}
+
+/** A provider object or ambiguous network result must not be retried as a new send. */
+export function requiresDeliveryReconciliation(action: ExternalActionRow): boolean {
+  return action.kind === "send_newsletter" && action.state === "failed" &&
+    (action.provider_receipt !== null || /^brevo_(?:create|send)_ambiguous:/.test(action.error ?? ""));
 }

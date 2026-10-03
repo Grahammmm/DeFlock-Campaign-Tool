@@ -54,8 +54,14 @@ export function newsletterExecutor(client: BrevoClient | null): ActionExecutor {
           tag: action.idempotency_key.slice(0, 50),
         });
       } catch (e) {
-        if (e instanceof BrevoError) throw new ExecutorFailure("brevo_error", e.message);
-        throw e;
+        if (e instanceof BrevoError && [400, 401, 403, 404, 422].includes(e.status)) throw new ExecutorFailure("brevo_error", e.message);
+        throw new ExecutorFailure("brevo_create_ambiguous", "campaign creation did not return a conclusive result; check the action id and idempotency tag at Brevo before retrying");
+      }
+      // Retain the provider identity before sending or doing local bookkeeping.
+      try {
+        await ctx.repo.updateAction(action.action_id, { provider_receipt: JSON.stringify({ provider: "brevo", brevo_campaign_id: created.id, list_id: listId, delivery: "unconfirmed" }) });
+      } catch {
+        throw new ExecutorFailure("brevo_send_ambiguous", `Brevo campaign ${created.id} exists but its local receipt could not be retained; check provider status before retrying`);
       }
       // From here the campaign exists at Brevo. A failed or timed-out send is ambiguous
       // (Brevo may have queued it), so the card fails with the campaign id in the error and
@@ -74,13 +80,15 @@ export function newsletterExecutor(client: BrevoClient | null): ActionExecutor {
         throw new ExecutorFailure("brevo_send_ambiguous", `Brevo campaign ${created.id} was created but the send call failed (${detail}); check that campaign at Brevo before proposing a new draft`);
       }
       const sentAt = nowIso();
+      const receipt = JSON.stringify({ provider: "brevo", brevo_campaign_id: created.id, list_id: listId, sent_at: sentAt });
+      await ctx.repo.updateAction(action.action_id, { provider_receipt: receipt });
       await ctx.repo.createSubscriberEvent({
         provider: "brevo",
         kind: "campaign_sent",
         payload_json: JSON.stringify({ brevo_campaign_id: created.id, subject: draft.subject, action_id: action.action_id, list_id: listId }),
         occurred_at: sentAt,
       });
-      return { provider_receipt: JSON.stringify({ provider: "brevo", brevo_campaign_id: created.id, list_id: listId, sent_at: sentAt }) };
+      return { provider_receipt: receipt };
     },
   };
 }

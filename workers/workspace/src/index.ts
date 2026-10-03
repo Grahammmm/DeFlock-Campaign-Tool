@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { HEX64, newFindingId, newMeetingId, nowIso, randomHex, sha256Hex } from "@deflock/shared/ids";
 import { html } from "@deflock/shared/html";
 import { contentHash, type JsonObject } from "@deflock/shared/review";
-import { ApprovalError, approveAction, editAction, executeAction, rejectAction } from "./approvals.ts";
+import { ApprovalError, approveAction, editAction, executeAction, rejectAction, reconcileAction } from "./approvals.ts";
 import { AuthError, requireIdentity, requireRunner, type AccessIdentity } from "./auth.ts";
 import { commentKitMarkdown, kitFinding } from "./comment_kit.ts";
 import { runScheduled } from "./cron.ts";
@@ -270,6 +270,12 @@ app.post("/approvals/:id/edit", async (c) => {
   }
   const row = await editAction(c.var.repo, c.req.param("id"), c.var.identity, proposal);
   return wantsJson(c) ? c.json(row) : c.redirect("/approvals?notice=" + encodeURIComponent(`${row.kind} ${row.action_id} edited; approve again to proceed`));
+});
+
+app.post("/approvals/:id/reconcile", async (c) => {
+  const body = c.req.header("content-type")?.includes("json") ? await c.req.json() : await c.req.parseBody();
+  const row = await reconcileAction(c.var.repo, c.req.param("id"), c.var.identity, body.outcome, body.reference, body.delivered_at);
+  return wantsJson(c) ? c.json(row) : c.redirect("/approvals?notice=" + encodeURIComponent(`${row.kind} ${row.action_id} reconciled as ${row.state}; no message sent`));
 });
 
 app.post("/approvals/:id/execute", async (c) => {
