@@ -1,0 +1,313 @@
+"""Synthetic host offline ingress; no Docker daemon, records, credentials or model calls."""
+import copy
+import io
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+import sys
+import unittest
+from unittest import mock
+
+from campaign_tool.records import container_host as host
+from tests.records import test_container_host as support
+
+
+class OfflineDocker(support.FakeDocker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mount_mutation = None
+        self.probe_hook = None
+
+    def invoke(self, argv, timeout):
+        code, raw = super().invoke(argv, timeout)
+        if argv[1] == "inspect" and code == 0:
+            value = host.decoded(raw)
+            if "image" in value:
+                actual, configured = [], []
+                for mount in self.value["mounts"]:
+                    actual.append({"Type": mount["kind"], "Destination": mount["target"],
+                                   "RW": not mount["readonly"],
+                                   "Source": mount["source"] if mount["kind"] == "bind" else
+                                             "/synthetic/volumes/" + mount["source"],
+                                   "Name": mount["source"] if mount["kind"] == "volume" else ""})
+                    config = {"Type": mount["kind"], "Source": mount["source"],
+                              "Target": mount["target"], "ReadOnly": mount["readonly"]}
+                    if mount["kind"] == "volume":
+                        config["VolumeOptions"] = {"NoCopy": True, "Subpath": mount.get("subpath", "")}
+                    configured.append(config)
+                value.update(mounts=actual, configured_mounts=configured)
+                if self.mount_mutation:
+                    self.mount_mutation(value)
+                raw = host.encoded(value)
+        if "probe" in argv and self.probe_hook:
+            self.probe_hook()
+        return code, raw
+
+
+class HostOfflineInboxTests(support.HostFixture):
+    def offline(self, *, bind=False):
+        self.inbox = self.root / "inbox"
+        self.inbox.mkdir(mode=0o700)
+        self.eml = self.inbox / "fixture.eml"
+        self.eml.write_bytes(
+            b"From: records@example.invalid\r\nTo: owner@example.invalid\r\n"
+            b"Message-ID: <offline-fixture@example.invalid>\r\n"
+            b"Subject: Synthetic records\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+            b"Synthetic ALPR policy. No records are sent. --mail-config is data, not an argument.\r\n")
+        self.eml.chmod(0o600)
+        value = json.loads(self.profile.read_text())
+        del value["mail_config"]
+        value["input_mode"] = "inbox"
+        value["inbox"] = str(self.inbox) if bind else "/synthetic/inbox"
+        value["inbox_manifest_sha256"] = host.inbox_snapshot(self.inbox)["sha256"]
+        value["mounts"] = [m for m in value["mounts"] if m["target"] != "/synthetic/mail.json"]
+        value["mounts"].append({"kind": "bind" if bind else "volume",
+                                "source": str(self.inbox) if bind else "synthetic-inbox",
+                                "target": value["inbox"], "readonly": True})
+        self.write_profile(value)
+        return value
+
+    def entry_command(self, paths):
+        identity = {"schema": 1, "job_id": paths["job_id"], "role": "worker"}
+        gate, parent = mock.MagicMock(), mock.MagicMock()
+        gate.__enter__.return_value = gate
+        gate.read.return_value = (host.encoded(identity), None)
+        parent.__enter__.return_value = parent
+        parent.child.return_value = gate
+        original = host.PrivateDir
+        def directory(path, **kwargs):
+            return parent if path == paths["worker_state_parent"] else original(path, **kwargs)
+        with mock.patch.object(host.os, "getuid", return_value=1000), \
+             mock.patch.object(host.os, "geteuid", return_value=1000), \
+             mock.patch.object(host, "PrivateDir", side_effect=directory), \
+             mock.patch.object(host.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)), \
+             mock.patch.object(host.os, "execve") as execute:
+            with self.assertRaises(host.Rejected):
+                host.entry(paths)
+        return execute.call_args.args
+
+    def test_exact_offline_create_probe_and_receipt_contract_without_secret_mount(self):
+        value = self.offline()
+        fake = OfflineDocker(self.profile)
+        with mock.patch.dict(os.environ, {"MODEL_BASE_URL": "https://provider.example.invalid",
+                                        "OPENAI_API_KEY": "synthetic-placeholder"}):
+            self.assertEqual(self.run_host(fake)["status"], "completed")
+        receipt = self.current()
+        self.assertEqual(receipt["profile_sha256"], host.digest(self.profile.read_bytes()))
+        self.assertEqual(receipt["worker_status"], "completed")
+        self.assertEqual(receipt["ack"], "natural")
+        for argv, _ in fake.calls:
+            if argv[1] == "create" or "probe" in argv:
+                self.assertNotIn("--mail-config", argv)
+                self.assertEqual(argv[argv.index("--inbox") + 1], value["inbox"])
+                self.assertEqual(argv[argv.index("--inbox-manifest-sha256") + 1],
+                                 value["inbox_manifest_sha256"])
+                self.assertNotIn("OPENAI_API_KEY=synthetic-placeholder", argv)
+            if argv[1] == "create":
+                self.assertEqual(argv[argv.index("--network") + 1], "none")
+                mounts = [argv[i + 1] for i, item in enumerate(argv) if item == "--mount"]
+                self.assertTrue(any("dst=" + value["inbox"] + ",readonly" in m for m in mounts))
+                self.assertFalse(any("mail.json" in m for m in mounts))
+                self.assertIn("MODEL_BASE_URL=", argv)
+                self.assertIn("CHALLENGE_MODEL_BASE_URL=", argv)
+        self.assertTrue(receipt["worker_removed"] and receipt["reporter_removed"])
+
+    def test_real_accepted_cli_intakes_fixture_into_empty_root(self):
+        value = self.offline(bind=True)
+        records = self.root / "fresh-records"
+        records.mkdir(mode=0o700)
+        self.assertEqual(list(records.iterdir()), [])
+        paths = dict(value, root=str(records), python=sys.executable,
+                     role="worker", job_id=support.sha("offline-real-entry")[:32])
+        project = str(Path(__file__).resolve().parents[2])
+        environment_profile = SimpleNamespace(value=dict(
+            value, release_root=project, parser_path=os.environ.get("PYTHONPATH") or project))
+        env = dict(item.split("=", 1) for item in host.Docker(environment_profile).environment()[2:])
+        with mock.patch.dict(os.environ, env, clear=True):
+            _, argv, _ = self.entry_command(paths)
+            child = argv[argv.index("--") + 1:]
+            self.assertEqual(child[:5], [sys.executable, "-B", "-m", "campaign_tool.records", "run"])
+            self.assertEqual(child[child.index("--inbox") + 1], str(self.inbox))
+            self.assertNotIn("--mail-config", child)
+            from campaign_tool.records import run, unattended
+            output = io.StringIO()
+            with mock.patch.object(unattended.manual, "local_ocr_tools", return_value=(None, None)), \
+                 mock.patch("socket.create_connection", side_effect=AssertionError("offline_network")), \
+                 mock.patch("socket.socket", side_effect=AssertionError("offline_network")), \
+                 mock.patch("sys.stdout", output):
+                code = run.main(child[5:])
+        report = json.loads(output.getvalue())
+        self.assertIsInstance(code, int)
+        self.assertEqual(report["intake"]["messages"], 1)
+        self.assertEqual(report["intake"]["failures"], [])
+        self.assertGreaterEqual(report["originals"], 1)
+        self.assertFalse(report["substantive_complete"])
+        self.assertEqual(report["substantive_review_status"], "queued")
+
+    def test_legacy_and_explicit_mailbox_profiles_are_unchanged(self):
+        old = json.loads(self.profile.read_text())
+        with host.Profile(self.profile) as profile:
+            self.assertEqual(host.input_arguments(profile.value), ["--mail-config", old["mail_config"]])
+        old["input_mode"] = "mailbox"
+        self.write_profile(old)
+        with host.Profile(self.profile) as profile:
+            self.assertEqual(host.input_arguments(profile.value), ["--mail-config", old["mail_config"]])
+        self.assertEqual(self.run_host(self.fake())["status"], "completed")
+
+    def test_dual_neither_mode_and_arbitrary_arguments_fail_closed(self):
+        value = self.offline()
+        cases = [
+            dict(value, mail_config="/synthetic/forbidden.json"),
+            {k: v for k, v in value.items() if k != "inbox"},
+            {k: v for k, v in value.items() if k != "inbox_manifest_sha256"},
+            dict(value, input_mode="mailbox"),
+            dict(value, input_mode="callback"),
+            dict(value, worker_args=["--mail-config", "/synthetic/forbidden.json"]),
+            dict(value, inbox_manifest_sha256=True),
+            dict(value, inbox="/synthetic/../escape"),
+            dict(value, network={"mode": "container", "container_id": support.sha("network")}),
+        ]
+        for candidate in cases:
+            with self.subTest(keys=sorted(candidate)):
+                self.write_profile(candidate)
+                with self.assertRaises(host.Rejected):
+                    host.Profile(self.profile)
+
+    def test_exact_mount_deepest_readonly_and_no_competing_source_aliases(self):
+        value = self.offline()
+        selected = value["mounts"][-1]
+        value["inbox"] = selected["target"] = "/synthetic/records/inbox"
+        self.write_profile(value)
+        self.assertEqual(self.run_host(OfflineDocker(self.profile))["status"], "completed")
+        original = copy.deepcopy(value)
+        for change in ("rw", "ancestor-only", "alias", "descendant"):
+            value = copy.deepcopy(original)
+            if change == "rw":
+                value["mounts"][-1]["readonly"] = False
+            elif change == "ancestor-only":
+                value["mounts"].pop()
+                value["mounts"][2]["readonly"] = True
+            elif change == "alias":
+                value["mounts"][2]["source"] = value["mounts"][-1]["source"]
+            else:
+                value["mounts"].append({"kind": "volume", "source": "synthetic-overlay",
+                                       "target": value["inbox"] + "/fixture.eml", "readonly": False})
+            self.write_profile(value)
+            with self.subTest(change=change), self.assertRaises(host.Rejected):
+                host.Profile(self.profile)
+
+    def test_runtime_rw_or_missing_mount_blocks_admission(self):
+        value = self.offline()
+        fake = OfflineDocker(self.profile)
+        def changed(runtime):
+            for mount in runtime["mounts"]:
+                if mount["Destination"] == value["inbox"]:
+                    mount["RW"] = True
+        fake.mount_mutation = changed
+        self.assertEqual(self.run_host(fake)["status"], "held")
+        self.assertFalse(any("admit" in argv for argv, _ in fake.calls))
+        self.assertTrue(self.current()["hold"])
+
+    def test_runtime_volume_subpath_must_match_profile(self):
+        value = self.offline()
+        value["mounts"][-1]["subpath"] = "synthetic/eml"
+        self.write_profile(value)
+        fake = OfflineDocker(self.profile)
+        def changed(runtime):
+            for mount in runtime["configured_mounts"]:
+                if mount["Target"] == value["inbox"]:
+                    mount["VolumeOptions"]["Subpath"] = "wrong"
+        fake.mount_mutation = changed
+        self.assertEqual(self.run_host(fake)["status"], "held")
+        self.assertFalse(any("admit" in argv for argv, _ in fake.calls))
+
+    def test_bind_manifest_and_metadata_mutation_fences_admission(self):
+        self.offline(bind=True)
+        fake = OfflineDocker(self.profile)
+        fake.probe_hook = lambda: self.eml.write_bytes(b"changed synthetic bytes")
+        self.assertEqual(self.run_host(fake)["status"], "held")
+        self.assertFalse(any("admit" in argv for argv, _ in fake.calls))
+        self.assertEqual(self.current()["error"], "transport")
+
+    def test_missing_unsafe_symlink_and_changed_input_snapshots_fail(self):
+        self.offline(bind=True)
+        with self.assertRaises(OSError):
+            host.inbox_snapshot(self.root / "absent")
+        initial = host.inbox_snapshot(self.inbox)
+        self.eml.write_bytes(b"changed synthetic")
+        with self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox, expected=initial["sha256"])
+        with self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox, prior=initial)
+        self.eml.unlink()
+        self.eml.symlink_to(self.profile)
+        with self.assertRaises(OSError):
+            host.inbox_snapshot(self.inbox)
+        self.eml.unlink()
+        self.eml.write_bytes(b"synthetic")
+        self.eml.chmod(0o644)
+        with self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox)
+
+    def test_snapshot_identity_rejects_equal_bytes_replacement_and_hardlinks(self):
+        self.offline(bind=True)
+        initial = host.inbox_snapshot(self.inbox)
+        raw = self.eml.read_bytes()
+        self.eml.rename(self.root / "previous.eml")
+        self.eml.write_bytes(raw)
+        self.eml.chmod(0o600)
+        self.assertEqual(host.inbox_snapshot(self.inbox)["sha256"], initial["sha256"])
+        with self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox, prior=initial)
+        os.link(self.eml, self.root / "alias.eml")
+        with self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox)
+
+    def test_profile_change_cannot_adopt_existing_job_identity(self):
+        value = self.offline()
+        fake = OfflineDocker(self.profile, launch=host.TransportError())
+        self.assertEqual(self.run_host(fake)["status"], "held")
+        prior = self.current()
+        value["inbox_manifest_sha256"] = support.sha("different-input")
+        self.write_profile(value)
+        with self.assertRaises(host.Rejected):
+            self.stop_host(fake)
+        self.assertEqual(self.current()["profile_sha256"], prior["profile_sha256"])
+        self.assertTrue(self.current()["hold"])
+
+    def test_probe_readonly_requires_actual_flags_without_mailbox_config(self):
+        self.offline(bind=True)
+        paths = {"input_mode": "inbox", "inbox": str(self.inbox),
+                 "inbox_manifest_sha256": host.inbox_snapshot(self.inbox)["sha256"]}
+        for key in ("root", "tmp_dir", "worker_state_parent", "board_dir", "release_root", "parser_path"):
+            path = self.root / ("probe-" + key)
+            path.mkdir(mode=0o700)
+            paths[key] = str(path)
+        with mock.patch.object(host.os, "getuid", return_value=1000), \
+             mock.patch.object(host.os, "geteuid", return_value=1000):
+            with mock.patch.object(host.os, "fstatvfs", return_value=SimpleNamespace(f_flag=0)):
+                with self.assertRaises(host.Rejected):
+                    host.probe(paths)
+            with mock.patch.object(host.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+                self.assertEqual(host.probe(paths), {"schema": 1, "status": "runtime_ready", "uid": 1000})
+
+    def test_manifest_command_is_sanitized_and_bounded(self):
+        self.offline(bind=True)
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            code = host.main(["inbox-manifest", "--inbox", str(self.inbox)])
+        value = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(set(value), {"schema", "status", "sha256", "messages", "bytes"})
+        self.assertEqual(value["messages"], 1)
+        self.assertNotIn("fixture.eml", output.getvalue())
+        extra = self.inbox / "not-eml.txt"
+        extra.write_bytes(b"synthetic")
+        extra.chmod(0o600)
+        with self.assertRaises(host.Rejected):
+            host.inbox_snapshot(self.inbox)
+
+
+if __name__ == "__main__":
+    unittest.main()

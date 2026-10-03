@@ -217,6 +217,120 @@ def locked(directory, name, *, wait=0):
         os.close(fd)
 
 
+def input_selection(paths):
+    """Fixed selectors only. Legacy profiles/entrypoints remain mailbox mode."""
+    mode = paths.get("input_mode") or "mailbox"
+    mail, inbox, manifest = (paths.get(k) for k in ("mail_config", "inbox", "inbox_manifest_sha256"))
+    require(mode in {"mailbox", "inbox"})
+    if mode == "mailbox":
+        require(inbox is None and manifest is None)
+        _absolute(mail)
+        return mode, "mail_config", mail, None
+    require(mail is None and isinstance(manifest, str) and SHA.fullmatch(manifest))
+    _absolute(inbox)
+    return mode, "inbox", inbox, manifest
+
+
+def input_arguments(paths):
+    mode, key, path, manifest = input_selection(paths)
+    if mode == "mailbox":
+        return ["--mail-config", path]
+    return ["--input-mode", "inbox", "--inbox", path,
+            "--inbox-manifest-sha256", manifest]
+
+
+def inbox_snapshot(path, *, expected=None, readonly=False, prior=None):
+    """Bounded flat owner-only EML snapshot; no MIME parsing or callbacks."""
+    entries, signatures, total = [], [], 0
+    with PrivateDir(path) as directory:
+        before = _fingerprint(os.fstat(directory.fd))
+        if readonly:
+            require(bool(os.fstatvfs(directory.fd).f_flag & os.ST_RDONLY))
+        names = sorted(os.listdir(directory.fd))
+        require(len(names) <= 200)
+        for name in names:
+            require(name.endswith(".eml") and len(name) <= 255
+                    and not any(ord(c) < 32 for c in name))
+            fd = directory.open_file(name)
+            try:
+                value = os.fstat(fd)
+                require(0 < value.st_size <= 64 * 1024 * 1024)
+                total += value.st_size
+                require(total <= 256 * 1024 * 1024)
+                if readonly:
+                    require(bool(os.fstatvfs(fd).f_flag & os.ST_RDONLY))
+                signatures.append((name, _fingerprint(value)))
+                if prior is None:
+                    hasher, consumed = hashlib.sha256(), 0
+                    while True:
+                        chunk = os.read(fd, min(1024 * 1024, value.st_size - consumed + 1))
+                        if not chunk:
+                            break
+                        consumed += len(chunk)
+                        require(consumed <= value.st_size)
+                        hasher.update(chunk)
+                    require(consumed == value.st_size)
+                    entries.append({"name": name, "bytes": consumed, "sha256": hasher.hexdigest()})
+                require(_fingerprint(value) == _fingerprint(os.fstat(fd)))
+            finally:
+                os.close(fd)
+        directory.check()
+        require(before == _fingerprint(os.fstat(directory.fd)))
+    signature = (before, tuple(signatures))
+    if prior is not None:
+        require(signature == prior["signature"])
+        result = prior
+    else:
+        result = {"sha256": digest(encoded(entries)), "messages": len(entries),
+                  "bytes": total, "signature": signature}
+    require(expected is None or result["sha256"] == expected)
+    return result
+
+
+def _overlaps(first, second):
+    return first == second or first.startswith(second + "/") or second.startswith(first + "/")
+
+
+def inbox_mount(value):
+    matches = [m for m in value["mounts"] if m["target"] == value["inbox"]]
+    require(len(matches) == 1 and matches[0]["readonly"] is True)
+    return matches[0]
+
+
+def check_inbox_mounts(value, runtime):
+    """Verify configured provenance and deepest realized read-only coverage."""
+    expected = inbox_mount(value)
+    actual, configured = runtime.get("mounts"), runtime.get("configured_mounts")
+    require(isinstance(actual, list) and isinstance(configured, list)
+            and 1 <= len(actual) <= 16 and 1 <= len(configured) <= 16
+            and all(isinstance(m, dict) for m in actual + configured))
+    target = value["inbox"]
+    coverage = [m for m in actual if isinstance(m.get("Destination"), str)
+                and (target == m["Destination"] or target.startswith(m["Destination"] + "/"))]
+    require(coverage)
+    mount = max(coverage, key=lambda m: len(m["Destination"]))
+    require(mount["Destination"] == target and mount.get("RW") is False
+            and mount.get("Type") == expected["kind"]
+            and sum(m.get("Destination") == target for m in actual) == 1
+            and not any(isinstance(m.get("Destination"), str)
+                        and m["Destination"].startswith(target + "/") for m in actual))
+    source = mount.get("Source")
+    _absolute(source)
+    require(mount.get("Name") == expected["source"] if expected["kind"] == "volume"
+            else source == expected["source"])
+    require(not any(m is not mount and isinstance(m.get("Source"), str)
+                    and _overlaps(source, m["Source"]) for m in actual))
+    selected = [m for m in configured if m.get("Target") == target]
+    require(len(selected) == 1)
+    selected = selected[0]
+    require(selected.get("Type") == expected["kind"] and selected.get("Source") == expected["source"]
+            and selected.get("ReadOnly") is True)
+    if expected["kind"] == "volume":
+        options = selected.get("VolumeOptions")
+        require(isinstance(options, dict) and options.get("NoCopy") is True
+                and options.get("Subpath", "") == expected.get("subpath", ""))
+
+
 class Profile:
     """Immutable private profile; paths inside the container are checked there."""
     def __init__(self, path):
@@ -226,10 +340,16 @@ class Profile:
         try:
             self.raw, self.fingerprint = self.parent.read(Path(self.path).name, 16384)
             value = decoded(self.raw, 16384)
-            require(isinstance(value, dict) and set(value) == PROFILE_KEYS
-                    and type(value["schema"]) is int and value["schema"] == 1)
-            for key in PATH_KEYS:
-                _absolute(value[key])
+            require(isinstance(value, dict) and set(value) in (
+                PROFILE_KEYS, PROFILE_KEYS | {"input_mode"},
+                (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "inbox", "inbox_manifest_sha256"})
+                and type(value["schema"]) is int and value["schema"] == 1)
+            require("input_mode" not in value or type(value["input_mode"]) is str
+                    and value["input_mode"] in {"mailbox", "inbox"})
+            mode, input_key, _, _ = input_selection(value)
+            for key in PATH_KEYS | {"inbox"}:
+                if key in value:
+                    _absolute(value[key])
             require(isinstance(value["name_prefix"], str)
                     and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value["name_prefix"]))
             require(isinstance(value["image_id"], str)
@@ -252,6 +372,7 @@ class Profile:
                     and network["mode"] in {"none","container"})
             require(network["container_id"] is None if network["mode"] == "none" else
                     isinstance(network["container_id"],str) and SHA.fullmatch(network["container_id"]))
+            require(mode != "inbox" or network == {"mode": "none", "container_id": None})
             mounts = value["mounts"]
             require(isinstance(mounts, list) and 1 <= len(mounts) <= 16)
             targets = set()
@@ -277,11 +398,22 @@ class Profile:
                     trusted_path(mount["source"])
                 else:
                     require(isinstance(mount["source"], str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", mount["source"]))
-            for key in ("release_root", "parser_path", "root", "tmp_dir", "worker_state_parent", "board_dir", "mail_config"):
+            required_paths = ("release_root", "parser_path", "root", "tmp_dir",
+                              "worker_state_parent", "board_dir", input_key)
+            for key in required_paths:
                 covers = [m for m in mounts if value[key] == m["target"] or value[key].startswith(m["target"] + "/")]
                 require(covers)
                 cover = max(covers, key=lambda m: len(m["target"]))
-                require(cover["readonly"] == (key in {"release_root", "parser_path", "mail_config"}))
+                require(cover["readonly"] == (key in {"release_root", "parser_path", input_key}))
+            if mode == "inbox":
+                selected = inbox_mount(value)
+                for mount in mounts:
+                    require(any(value[k] == mount["target"] or value[k].startswith(mount["target"] + "/")
+                                for k in required_paths))
+                    require(not mount["target"].startswith(value["inbox"] + "/"))
+                    if mount is not selected and mount["kind"] == selected["kind"]:
+                        require(mount["source"] != selected["source"] if selected["kind"] == "volume"
+                                else not _overlaps(mount["source"], selected["source"]))
             self.value, self.sha256 = value, digest(self.raw)
         except BaseException:
             self.parent.close()
@@ -421,6 +553,15 @@ class Docker:
     def __init__(self, profile, *, invoke=call_argv, containment=None):
         self.profile, self.invoke = profile, invoke
         self.containment = containment or Containment()
+        self.input_snapshot = None
+
+    def check_input(self):
+        p = self.profile.value
+        if input_selection(p)[0] == "inbox":
+            mount = inbox_mount(p)
+            if mount["kind"] == "bind":
+                self.input_snapshot = inbox_snapshot(
+                    mount["source"], expected=p["inbox_manifest_sha256"], prior=self.input_snapshot)
 
     def call(self, args, timeout=10):
         self.profile.check()
@@ -448,6 +589,8 @@ class Docker:
 
     def create(self, job_id, role):
         p = self.profile.value
+        if role == "worker":
+            self.check_input()
         # Verify the actual local security file, never daemon defaults or an image tag.
         st = trusted_path(p["seccomp_path"])
         require(stat.S_ISREG(st.st_mode) and st.st_uid in (0, os.getuid()) and not st.st_mode & 0o022)
@@ -476,8 +619,9 @@ class Docker:
                      + (",volume-subpath=" + m["subpath"] if m.get("subpath") is not None else "")]
         args += [p["image_id"], *self.environment()[1:], p["python"], "-B", "-m", MODULE, "entry",
                  "--role", role, "--job-id", job_id, "--wall-seconds", str(p["wall_seconds"])]
-        for key in ("root", "mail_config", "worker_state_parent", "board_dir", "python"):
+        for key in ("root", "worker_state_parent", "board_dir", "python"):
             args += ["--" + key.replace("_", "-"), p[key]]
+        args += input_arguments(p)
         code, raw = self.call(args)
         cid = raw.decode("ascii").strip()
         require(code == 0 and SHA.fullmatch(cid))
@@ -486,10 +630,15 @@ class Docker:
     def inspect(self, cid, job_id, role):
         require(isinstance(cid, str) and SHA.fullmatch(cid))
         template = '{"id":{{json .Id}},"image":{{json .Image}},"state":{{json .State.Status}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},"exit":{{json .State.ExitCode}},"labels":{{json .Config.Labels}},"network":{{json .HostConfig.NetworkMode}},"pid_mode":{{json .HostConfig.PidMode}},"init":{{json .HostConfig.Init}},"restart":{{json .HostConfig.RestartPolicy.Name}}}'
+        fields = {"id", "image", "state", "running", "pid", "exit", "labels", "network", "pid_mode", "init", "restart"}
+        offline = input_selection(self.profile.value)[0] == "inbox"
+        if offline:
+            template = template[:-1] + ',"mounts":{{json .Mounts}},"configured_mounts":{{json .HostConfig.Mounts}}}'
+            fields |= {"mounts", "configured_mounts"}
         code, raw = self.call(["inspect", "--type", "container", "--format", template, cid])
         require(code == 0)
-        v = decoded(raw, 8192)
-        require(isinstance(v, dict) and set(v) == {"id", "image", "state", "running", "pid", "exit", "labels", "network", "pid_mode", "init", "restart"}
+        v = decoded(raw, MAX_REPLY if offline else 8192)
+        require(isinstance(v, dict) and set(v) == fields
                 and v["id"] == cid and v["image"] == self.profile.value["image_id"]
                 and v["network"] == self.network_mode(role) and v["pid_mode"] == ""
                 and v["init"] is True and v["restart"] == "no"
@@ -500,6 +649,8 @@ class Docker:
                     "campaign-tool.profile":self.profile.sha256,"campaign-tool.role":role}.items()))
         require((v["running"] and v["state"] == "running" and v["pid"] > 0)
                 or (not v["running"] and v["state"] in {"created", "exited", "dead"} and v["pid"] == 0))
+        if offline:
+            check_inbox_mounts(self.profile.value, v)
         return v
 
     def exec(self, cid, arguments, timeout=10):
@@ -508,6 +659,7 @@ class Docker:
                           *self.environment(), p["python"], "-B", "-m", *arguments], timeout)
 
     def preflight(self, cid):
+        self.check_input()
         code, raw = self.exec(cid, ["campaign_tool.records", "version", "--json"])
         v, p = decoded(raw), self.profile.value
         require(code == 0 and isinstance(v, dict) and v.get("source_dirty") is False
@@ -516,8 +668,9 @@ class Docker:
                 and type(v.get("ledger_schema_version")) is int and v["ledger_schema_version"] == 1
                 and v.get("installation_kind") in {"installed_wheel", "source_checkout"})
         args = [MODULE, "probe"]
-        for key in ("root", "tmp_dir", "mail_config", "worker_state_parent", "board_dir", "release_root", "parser_path"):
+        for key in ("root", "tmp_dir", "worker_state_parent", "board_dir", "release_root", "parser_path"):
             args += ["--" + key.replace("_", "-"), p[key]]
+        args += input_arguments(p)
         code, raw = self.exec(cid, args)
         require(code == 0 and decoded(raw) == {"schema":1,"status":"runtime_ready","uid":1000})
 
@@ -731,6 +884,8 @@ def _launch(journal, docker, job_id, role):
     docker.preflight(cid)
     def dispatch():
         docker.check_network(role)
+        if role == "worker":
+            docker.check_input()
         code, raw = docker.exec(cid, [MODULE, "admit", "--role", role, "--job-id", job_id,
                                      "--worker-state-parent", journal.profile.value["worker_state_parent"]])
         require(code == 0 and decoded(raw) == {"schema":1,"status":"admitted"})
@@ -878,6 +1033,7 @@ def entry(paths):
     require(paths["role"] in {"worker", "reporter"} and type(paths["wall_seconds"]) in (int,float)
             and math.isfinite(paths["wall_seconds"]) and 0 < paths["wall_seconds"] <= 2700)
     role, job_id = paths["role"], paths["job_id"]
+    mode, _, input_path, manifest = input_selection(paths)
     gate_id = digest((job_id + role).encode())[:32]
     with PrivateDir(paths["worker_state_parent"]) as parent, parent.child(gate_id, fresh=True) as gate:
         identity = {"schema":1,"job_id":job_id,"role":role}
@@ -891,10 +1047,13 @@ def entry(paths):
                 require(time.monotonic() < deadline)
                 time.sleep(.02)
     if role == "worker":
+        if mode == "inbox":
+            inbox_snapshot(input_path, expected=manifest, readonly=True)
         argv = [paths["python"], "-B", "-m", WORKER_MODULE, "supervise", "--state-dir",
                 paths["worker_state_parent"] + "/" + job_id, "--wall-seconds", str(paths["wall_seconds"]),
                 "--term-seconds", "5", "--kill-seconds", "5", "--", paths["python"], "-B", "-m",
-                "campaign_tool.records", "run", "--root", paths["root"], "--mail-config", paths["mail_config"],
+                "campaign_tool.records", "run", "--root", paths["root"],
+                "--inbox" if mode == "inbox" else "--mail-config", input_path,
                 "--unattended", "--max-originals-per-run", "200", "--ocr", "--json"]
         os.execve(paths["python"], argv, dict(os.environ))
         raise Rejected()
@@ -934,9 +1093,13 @@ def probe(paths):
     for key in ("release_root", "parser_path"):
         with PrivateDir(paths[key], private=False):
             pass
-    with PrivateDir(str(Path(paths["mail_config"]).parent), private=False) as directory:
-        fd = directory.open_file(Path(paths["mail_config"]).name)
-        os.close(fd)
+    mode, _, input_path, manifest = input_selection(paths)
+    if mode == "inbox":
+        inbox_snapshot(input_path, expected=manifest, readonly=True)
+    else:
+        with PrivateDir(str(Path(input_path).parent), private=False) as directory:
+            fd = directory.open_file(Path(input_path).name)
+            os.close(fd)
     return {"schema": 1, "status": "runtime_ready", "uid": 1000}
 
 
@@ -1078,6 +1241,14 @@ def build_board(root, output, state_dir, job_id):
     return {"schema": 1, "status": "board_ready", "cards": total, "reconciled": True, "healthy": False}
 
 
+def _input_options(command):
+    command.add_argument("--input-mode", choices=("mailbox", "inbox"))
+    selector = command.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--mail-config")
+    selector.add_argument("--inbox")
+    command.add_argument("--inbox-manifest-sha256")
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, _):
         raise Rejected()
@@ -1090,8 +1261,11 @@ def main(arguments=None):
         for action in ("run", "stop"):
             command = commands.add_parser(action, add_help=False)
             command.add_argument("--profile", required=True)
+        command = commands.add_parser("inbox-manifest", add_help=False)
+        command.add_argument("--inbox", required=True)
         command = commands.add_parser("probe", add_help=False)
-        for name in ("root", "tmp_dir", "mail_config", "worker_state_parent", "board_dir", "release_root", "parser_path"):
+        _input_options(command)
+        for name in ("root", "tmp_dir", "worker_state_parent", "board_dir", "release_root", "parser_path"):
             command.add_argument("--" + name.replace("_", "-"), required=True)
         for action in ("entry", "admit"):
             command = commands.add_parser(action, add_help=False)
@@ -1099,7 +1273,8 @@ def main(arguments=None):
             command.add_argument("--job-id", required=True)
             command.add_argument("--worker-state-parent", required=True)
             if action == "entry":
-                for name in ("root", "mail_config", "board_dir", "python"):
+                _input_options(command)
+                for name in ("root", "board_dir", "python"):
                     command.add_argument("--" + name.replace("_", "-"), required=True)
                 command.add_argument("--wall-seconds", type=float, required=True)
         command = commands.add_parser("metadata", add_help=False)
@@ -1116,12 +1291,16 @@ def main(arguments=None):
             result = admit(vars(args))
         elif args.action == "probe":
             result = probe(vars(args))
+        elif args.action == "inbox-manifest":
+            snapshot = inbox_snapshot(args.inbox)
+            result = {k: snapshot[k] for k in ("sha256", "messages", "bytes")}
+            result.update(schema=1, status="inbox_manifest")
         else:
             result = build_board(args.root, args.output, args.state_dir, args.job_id)
     except BaseException:
         result = _output("invalid_state")
     print(json.dumps(result, sort_keys=True), flush=True)
-    return {"completed": 0, "quiescent": 0, "runtime_ready": 0, "board_ready": 0,
+    return {"completed": 0, "quiescent": 0, "runtime_ready": 0, "board_ready": 0, "inbox_manifest": 0,
             "admitted": 0, "postrun_failed": 0 if getattr(locals().get("args"), "action", None) == "entry" else 10, "held": 32, "invalid_state": 30}[result["status"]]
 
 
