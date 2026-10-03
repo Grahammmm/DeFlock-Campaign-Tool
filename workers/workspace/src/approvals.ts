@@ -34,6 +34,7 @@ export async function approveAction(repo: Repo, actionId: string, identity: Acce
     const request = await repo.request(action.subject_id);
     if (request) proposal = JSON.stringify({ ...JSON.parse(proposal), outbox_binding: {
       agency_id: request.agency_id, scope_version: request.scope_version, fee_cap_cents: request.fee_cap_cents,
+      ...(action.kind === "send_followup" ? { intent_id: action.idempotency_key } : {}),
     } });
   }
   const changed = await repo.transitionAction(action, { state: "approved", approved_by: identity.email,

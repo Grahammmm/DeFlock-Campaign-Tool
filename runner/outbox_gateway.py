@@ -89,7 +89,7 @@ class ApprovedOutboxGateway:
                 raise ValueError("approval time")
             fields = frame["draft"]
             required = {"request_id", "agency_id", "scope_version", "channel", "subject", "body", "to", "fee_cap_cents", "kind"}
-            if not isinstance(fields, dict) or not required <= set(fields) or set(fields) - required - {"in_reply_to"}:
+            if not isinstance(fields, dict) or not required <= set(fields) or set(fields) - required - {"in_reply_to", "intent_id"}:
                 raise ValueError("draft")
             for key, limit in [("request_id", 100), ("agency_id", 100), ("subject", 200), ("to", 320)]:
                 _text(fields[key], limit)
@@ -100,13 +100,17 @@ class ApprovedOutboxGateway:
                 raise ValueError("fee")
             if fields["channel"] not in ("email", "muckrock") or fields["kind"] not in ("send_request", "send_followup"):
                 raise ValueError("channel")
+            if fields["kind"] == "send_followup":
+                _text(fields.get("intent_id"), 100)
+            elif "intent_id" in fields:
+                raise ValueError("request must not have follow-up intent")
             if "in_reply_to" in fields:
                 if not isinstance(fields["in_reply_to"], str):
                     raise ValueError("reply identity")
                 if fields["in_reply_to"]:
                     _text(fields["in_reply_to"], 1000)
             draft = RequestDraft(**fields, from_addr=self.from_addr)
-            key = idempotency_key(draft.kind, draft.request_id, draft.scope_version)
+            key = idempotency_key(draft.kind, draft.request_id, draft.scope_version, draft.intent_id)
             if frame["canonical_key"] != key:
                 raise ValueError("key")
         except (ValueError, TypeError, KeyError, OverflowError, RecursionError):

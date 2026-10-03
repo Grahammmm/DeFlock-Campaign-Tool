@@ -43,12 +43,16 @@ are refused. The signed root fields are:
 - `action_id`, `approved_by`: bounded nonblank strings.
 - `approved_at`, `issued_at`: UTC ISO timestamps ending `Z`. Issuance must be
   within five minutes of the gateway clock; approval cannot be after issuance.
-- `canonical_key`: existing `idempotency_key(kind, request_id, scope_version)`.
-  This is SHA-256 of the existing NUL-separated identity, not the Worker card key.
+- `canonical_key`: `idempotency_key(kind, request_id, scope_version, intent_id)`.
+  Requests keep the existing three-field key. Follow-ups require an approved
+  intent: append `\0followup-intent-v1\0intent_id` before SHA-256. The Worker
+  captures its stored card idempotency key during approval and rechecks it at
+  send time; request scope is never incremented to create a later reminder.
+  The canonical hash is separate from the raw Worker card key; for follow-ups the card key is its approved intent component.
 - `draft`: `request_id`, `agency_id`, positive integer `scope_version`, `channel`
   (`email` or `muckrock`), `subject`, `body`, `to`, nonnegative integer
   `fee_cap_cents`, `kind` (`send_request` or `send_followup`), optional string
-  `in_reply_to`. The gateway owns `from_addr`; header fields reject CR/LF/NUL.
+  `in_reply_to`, and required `intent_id` for follow-ups only. The gateway owns `from_addr`; header fields reject CR/LF/NUL.
 
 The gateway refuses unsigned, stale or invalid frames before opening the journal.
 Missing transport also refuses before opening it. It proposes the exact draft and

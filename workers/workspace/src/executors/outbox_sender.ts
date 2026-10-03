@@ -4,8 +4,10 @@ import { ExecutorFailure, type ExecutorContext, type MailSender, type OutboundMe
 const DOMAIN = "deflock-outbox-v1\n";
 const encoder = new TextEncoder();
 
-export async function canonicalOutboxKey(kind: string, requestId: string, scopeVersion: number): Promise<string> {
-  return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(`${kind}\0${requestId}\0${scopeVersion}`))));
+export async function canonicalOutboxKey(kind: string, requestId: string, scopeVersion: number, intentId = ""): Promise<string> {
+  if (intentId && (kind !== "send_followup" || !/^[A-Za-z0-9._:-]{1,100}$/.test(intentId))) throw new Error("invalid follow-up intent");
+  const identity = `${kind}\0${requestId}\0${scopeVersion}` + (intentId ? `\0followup-intent-v1\0${intentId}` : "");
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(identity))));
 }
 
 export async function signOutboxFrame(secret: string, body: string): Promise<string> {
@@ -69,12 +71,16 @@ export class SignedOutboxSender implements MailSender {
     if (!request || !binding || binding.agency_id !== request.agency_id || binding.scope_version !== request.scope_version ||
       binding.fee_cap_cents !== request.fee_cap_cents || !Number.isInteger(request.scope_version) || request.scope_version < 1 ||
       !Number.isInteger(request.fee_cap_cents) || request.fee_cap_cents < 0) refusal("outbox_request_changed");
-    const canonical = await canonicalOutboxKey(message.kind, request.request_id, request.scope_version);
+    const intent = message.kind === "send_followup" ? binding.intent_id : "";
+    if (typeof intent !== "string" || (message.kind === "send_followup" &&
+      (intent !== action.idempotency_key || !/^[A-Za-z0-9._:-]{1,100}$/.test(intent)))) refusal("outbox_approval_mismatch");
+    const canonical = await canonicalOutboxKey(message.kind, request.request_id, request.scope_version, intent);
     const frame = { v: 1, campaign_id: action.campaign_id, action_id: action.action_id,
       approved_by: action.approved_by, approved_at: action.approved_at, issued_at: this.clock(), canonical_key: canonical,
       draft: { request_id: request.request_id, agency_id: request.agency_id, scope_version: request.scope_version,
         channel: message.channel, subject: message.subject, body: message.body_md, to: message.to,
         fee_cap_cents: request.fee_cap_cents, kind: message.kind,
+        ...(intent ? { intent_id: intent } : {}),
         ...(typeof proposal.in_reply_to === "string" ? { in_reply_to: proposal.in_reply_to } : {}) } };
     const body = JSON.stringify(frame);
     if (encoder.encode(body).length > 65536) refusal("outbox_frame_too_large");

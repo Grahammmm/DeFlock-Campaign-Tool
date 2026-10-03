@@ -18,7 +18,7 @@ from campaign_tool.outbox import ProviderReceipt  # noqa: E402
 from runner.outbox_gateway import ApprovedOutboxGateway, make_handler  # noqa: E402
 
 
-def main():
+def main(kind="send_request"):
     calls = []
     def deliver(draft):
         calls.append(draft)
@@ -40,32 +40,36 @@ def main():
 import {SignedOutboxSender} from "./sender.mjs";
 const approvedAt = STAMP;
 const action = {action_id:"synthetic-action",campaign_id:"synthetic",state:"executing",
-  kind:"send_request",subject_id:"request-1",idempotency_key:"worker-card-key",
+  kind:KIND,subject_id:"request-1",idempotency_key:"worker-card-key",
   approved_by:"organizer@example.invalid",approved_at:approvedAt,
   proposal_json:JSON.stringify({channel:"email",to:"records@example.invalid",subject:"Synthetic request",body_md:"Synthetic body",
-    outbox_binding:{agency_id:"synthetic-agency",scope_version:1,fee_cap_cents:0}})};
+    outbox_binding:{agency_id:"synthetic-agency",scope_version:1,fee_cap_cents:0,
+      ...(KIND === "send_followup" ? {intent_id:"worker-card-key"} : {})}})};
 const repo = {campaignId:"synthetic",async action(){return action;},async assertExecuting(value){assert.equal(value,action);},
   async campaign(){return {external_sends:"approval_required"};},async request(){return {request_id:"request-1",agency_id:"synthetic-agency",scope_version:1,fee_cap_cents:0};}};
 let networkCalls = 0;
 const sender = new SignedOutboxSender("https://outbox.example.invalid/send","synthetic-signing-key-for-tests-only-0000",
   async (_url,init)=>{networkCalls++;return fetch(LOOPBACK,init);});
-const message={action_id:action.action_id,kind:"send_request",channel:"email",request_id:"request-1",to:"records@example.invalid",
+const message={action_id:action.action_id,kind:KIND,channel:"email",request_id:"request-1",to:"records@example.invalid",
   subject:"Synthetic request",body_md:"Synthetic body",idempotency_key:"worker-card-key"};
 const first=await sender.send(message,{repo});
 const second=await sender.send(message,{repo});
 assert.deepEqual(first,second);assert.equal(first.provider_message_id,"synthetic-cross-language-message");
 assert.equal(networkCalls,2);console.log(JSON.stringify({protocol:"v1",replays:2,receipt:first}));
-'''.replace("STAMP", json.dumps(stamp)).replace("LOOPBACK", json.dumps(f"http://127.0.0.1:{server.server_port}/send")))
+'''.replace("KIND", json.dumps(kind)).replace("STAMP", json.dumps(stamp)).replace("LOOPBACK", json.dumps(f"http://127.0.0.1:{server.server_port}/send")))
         try:
             result = subprocess.run(["node", str(script)], cwd=ROOT, check=True, timeout=30, capture_output=True, text=True)
             receipt = json.loads(result.stdout)
             assert len(calls) == 1, "identical replay called provider twice"
             assert calls[0].agency_id == "synthetic-agency"
             assert calls[0].from_addr == "sender@example.invalid"
-            print(json.dumps({"acceptance": "pass", "provider_calls": len(calls), "bridge": receipt}))
+            assert calls[0].kind == kind
+            assert calls[0].intent_id == ("worker-card-key" if kind == "send_followup" else "")
+            print(json.dumps({"acceptance": "pass", "kind": kind, "provider_calls": len(calls), "bridge": receipt}))
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=3)
 
 
 if __name__ == "__main__":
     main()
+    main("send_followup")

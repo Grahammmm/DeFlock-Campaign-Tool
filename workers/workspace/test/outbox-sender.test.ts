@@ -13,7 +13,7 @@ const EXEC = { ...ORG, email: "executor@example.invalid" };
 const ENDPOINT = "https://outbox.example.invalid/send";
 let number = 0;
 
-async function setup() {
+async function setup(kind: "send_request" | "send_followup" = "send_request") {
   const repo = await seedCampaign();
   const request = await repo.createRequest({ agency_id: "ca-example-police", scope_id: "synthetic", scope_version: 2,
     subject: "Synthetic gateway " + ++number, body_md: "Synthetic body", channel: "email", fee_cap_cents: 500,
@@ -21,7 +21,7 @@ async function setup() {
     last_activity_at: null, next_action: null, external_ref: null });
   const proposal = { subject: request.subject, body_md: request.body_md, channel: "email", to: "records@example.invalid",
     agency_id: "forged", scope_version: 99, fee_cap_cents: 9999, outbox_binding: { agency_id: "forged", scope_version: 99, fee_cap_cents: 9999 } };
-  const { row: action } = await repo.propose("send_request", request.request_id, proposal, "gateway-" + number, ORG.email);
+  const { row: action } = await repo.propose(kind, request.request_id, proposal, "gateway-" + number, ORG.email);
   return { repo, request, action };
 }
 
@@ -32,6 +32,26 @@ function reply(frame: Record<string, unknown>, patch: Record<string, unknown> = 
 }
 
 describe("signed private outbox sender", () => {
+  it("binds follow-up intent to stored card key; later same-scope cards differ and replay stays local", async () => {
+    const { repo, request, action } = await setup("send_followup");
+    const frames: any[] = [];
+    const sender = new SignedOutboxSender(ENDPOINT, SECRET, async (_url, init) => {
+      const frame = JSON.parse(String(init?.body)); frames.push(frame); return reply(frame);
+    });
+    const executors = buildExecutors({ mailSender: sender });
+    for (const row of [action, (await repo.propose("send_followup", request.request_id,
+      { subject: "Second follow-up", body_md: "Second synthetic reminder", channel: "email", to: "records@example.invalid",
+        outbox_binding: { intent_id: "forged" } }, "second-due-intent", ORG.email)).row]) {
+      const approved = await approveAction(repo, row.action_id, ORG);
+      expect(JSON.parse(approved.proposal_json).outbox_binding.intent_id).toBe(row.idempotency_key);
+      expect((await executeAction(repo, env as Env, row.action_id, EXEC, executors)).state).toBe("executed");
+      await executeAction(repo, env as Env, row.action_id, EXEC, executors);
+    }
+    expect(frames).toHaveLength(2);
+    expect(frames[0].canonical_key).not.toBe(frames[1].canonical_key);
+    expect(frames.map(f => f.draft.scope_version)).toEqual([2, 2]);
+    expect(frames[0].draft.intent_id).toBe(action.idempotency_key);
+  });
   it("matches Python canonical identity and HMAC protocol bytes", async () => {
     expect(await canonicalOutboxKey("send_request", "request-1", 1)).toBe("66ccc109eaaa437e7a00f542b562c1b04bc1bb4c50811845cf73df7c301f48be"); // pragma: allowlist secret -- reproducible public digest
     expect(await signOutboxFrame(SECRET, '{"synthetic":"frame"}')).toBe("86f3b891797acde0d42e63b1e9108d567425ad2b75fb020b53c9c1f95ce4515d"); // pragma: allowlist secret -- HMAC of public synthetic frame/key
