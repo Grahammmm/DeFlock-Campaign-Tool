@@ -413,7 +413,9 @@ class UnattendedPipeline(manual.Pipeline):
             self._save_advance_resume(path, resume)
         return report
 
-    def run(self, inbox=None, mail_config=None, client_factory=None):
+    def run(self, inbox=None, mail_config=None, client_factory=None, *, documents=None, document_manifest_sha256=None):
+        if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
+            raise manual.RunError('invalid_input_selection')
         with manual.root_lock(self.root.path):
             started = manual.now()
             self.safety = RunSafety(self.root.ledger, self.policy, **({"clock": self.clock} if self.clock else {}))
@@ -425,6 +427,8 @@ class UnattendedPipeline(manual.Pipeline):
             try:
                 if self.model is not None or self.challenge is not None:
                     self.safety.stop("model_configuration_forbidden")
+                if self.safety.check() and documents:
+                    intake = self.ingest_documents(documents, document_manifest_sha256)
                 if self.safety.check() and inbox:
                     intake = self.ingest_inbox(inbox)
                 if self.safety.check() and mail_config:
@@ -488,6 +492,8 @@ def main(argv=None):
     parser.add_argument("--root", required=True)
     parser.add_argument("--inbox")
     parser.add_argument("--mail-config")
+    parser.add_argument("--documents")
+    parser.add_argument("--document-manifest-sha256")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date")
@@ -496,6 +502,8 @@ def main(argv=None):
     parser.add_argument("--ocr", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
+        parser.error('invalid_input_selection')
     from .runtime import require
     if not require(args.root):
         return 2
@@ -512,7 +520,8 @@ def main(argv=None):
             with manual.root_lock(pipeline.root.path):
                 safety = RunSafety(pipeline.root.ledger, policy)
                 safety.stop("model_configuration_forbidden" if forbidden_model else "ocr_runtime_unavailable")
-        report = pipeline.run(args.inbox, args.mail_config)
+        report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
+                              document_manifest_sha256=args.document_manifest_sha256)
     except Exception:
         print(json.dumps({"status": "failed", "exit_code": 2, "failure_code": "unattended_setup_failed"}))
         return 2

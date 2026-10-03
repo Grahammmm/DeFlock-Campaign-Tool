@@ -301,11 +301,18 @@ class Pipeline:
             raise RunError("original_missing")
         return rows[0]
 
+    def ingest_documents(self, documents, manifest_sha256):
+        from .intake.document_drop import ingest
+        return ingest(self, documents, manifest_sha256)
+
     def _form(self, subject, original):
         if original.get("mime_detected") == "message/rfc822":
             return "eml"
         for occurrence in self._query("SELECT * FROM occurrences WHERE original_sha256=?", (subject,)):
             evidence = json.loads(occurrence["evidence"])
+            if occurrence["kind"] == "local":
+                from .intake.document_drop import verify_local_occurrence
+                return verify_local_occurrence(occurrence, self.root.intake, subject)[1]
             receipt = evidence.get("export_receipt_path")
             if receipt and Path(receipt).exists():
                 forms = eml_export.attachment_forms(Path(receipt))
@@ -628,9 +635,12 @@ class Pipeline:
             self._alert("run:lease_recovered:" + subject + ":" + stage, owner="runtime")
         return {"interrupted_runs": dead, "recovered_leases": [list(pair) for pair in leases]}
 
-    def run(self, inbox=None, mail_config=None, *, client_factory=None):
+    def run(self, inbox=None, mail_config=None, *, client_factory=None, documents=None, document_manifest_sha256=None):
+        if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
+            raise RunError('invalid_input_selection')
         with root_lock(self.root.path):
-            return self._run_locked(inbox, mail_config, client_factory=client_factory)
+            return self._run_locked(inbox, mail_config, client_factory=client_factory, documents=documents,
+                                    document_manifest_sha256=document_manifest_sha256)
 
     def _run_locked(self, *args, **kwargs):
         # Recovery precedes this invocation's run row, so it cannot interrupt itself.
@@ -659,11 +669,11 @@ class Pipeline:
         os.chmod(path, 0o600)
         return report
 
-    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None):
+    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None, documents=None, document_manifest_sha256=None):
         started = now()
         recovery = self.recover()
         self._open_stage_run()
-        intake = self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
+        intake = self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
         summary = stages.counts(self.root.ledger)
@@ -760,6 +770,8 @@ def main(argv=None):
     parser.add_argument("--inbox", help="directory of .eml files to preserve before advancing stages")
     parser.add_argument("--mail-config", dest="mail_config",
                         help="owner-only JSON (0600) naming the IMAP host/account; new messages are fetched and preserved")
+    parser.add_argument("--documents", help="read-only flat PDF/XLSX drop")
+    parser.add_argument("--document-manifest-sha256")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date", dest="event_date", help="YYYY-MM-DD override for rule applicability")
@@ -770,8 +782,11 @@ def main(argv=None):
     from .runtime import require
     if not require(args.root):
         return 2
+    if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
+        parser.error('invalid_input_selection')
     pipeline = build_pipeline(args)
-    report = pipeline.run(args.inbox, args.mail_config)
+    report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
+                          document_manifest_sha256=args.document_manifest_sha256)
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
