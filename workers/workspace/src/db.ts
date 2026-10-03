@@ -887,7 +887,17 @@ export class Repo {
         "AND prior.subject_id = external_action.subject_id AND prior.kind = 'send_request' AND prior.action_id != external_action.action_id " +
         "AND (prior.state IN ('executing','executed') OR (prior.state = 'failed' AND (prior.provider_receipt IS NOT NULL OR prior.error LIKE 'mail_send_ambiguous:%')))) " +
         "AND NOT EXISTS (SELECT 1 FROM request sent WHERE sent.campaign_id = external_action.campaign_id " +
-        "AND sent.request_id = external_action.subject_id AND sent.sent_at IS NOT NULL))) RETURNING *",
+        "AND sent.request_id = external_action.subject_id AND sent.sent_at IS NOT NULL))) " +
+        "AND (kind NOT IN ('send_request','send_followup') OR NOT EXISTS (" +
+        "SELECT 1 FROM external_action prior WHERE prior.campaign_id = external_action.campaign_id " +
+        "AND prior.kind = external_action.kind AND prior.subject_id IS external_action.subject_id " +
+        "AND prior.action_id != external_action.action_id " +
+        "AND json_extract(prior.proposal_json, '$.channel') IS json_extract(external_action.proposal_json, '$.channel') " +
+        "AND json_extract(prior.proposal_json, '$.subject') IS json_extract(external_action.proposal_json, '$.subject') " +
+        "AND json_extract(prior.proposal_json, '$.body_md') IS json_extract(external_action.proposal_json, '$.body_md') " +
+        "AND CASE WHEN json_type(prior.proposal_json, '$.to') = 'text' THEN json_extract(prior.proposal_json, '$.to') ELSE NULL END " +
+        "IS CASE WHEN json_type(external_action.proposal_json, '$.to') = 'text' THEN json_extract(external_action.proposal_json, '$.to') ELSE NULL END " +
+        "AND (prior.state IN ('executing','executed') OR (prior.state = 'failed' AND (prior.provider_receipt IS NOT NULL OR prior.error LIKE 'mail_send_ambiguous:%'))))) RETURNING *",
       )
       .bind("execution_claim: " + crypto.randomUUID(), nowIso(), this.campaignId, actionId)
       .first<ExternalActionRow>();
