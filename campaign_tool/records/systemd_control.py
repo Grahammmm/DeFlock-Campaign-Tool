@@ -9,6 +9,7 @@ SCHEMA = "records-systemd-invocation-v1"
 MODE = host.encoded({"schema": "records-systemd-managed-v1"})
 FENCE = host.encoded({"schema": "records-systemd-hold-v1", "status": "held"})
 BINDING = "invocation-active.json"
+OPERATION = "systemd-operation.json"
 
 
 def _id(value):
@@ -93,32 +94,97 @@ def _mode(journal):
     return True
 
 
-def admission(journal, requested_job_id=None, *, preassigned=False):
-    """Called under allocation/admission locks; metadata never supplies a callback."""
+def _operation(journal):
+    raw = _optional(journal.directory, OPERATION)
+    if raw is None:
+        return None
+    value = host.decoded(raw, 8192)
+    host.require(isinstance(value, dict) and set(value) ==
+                 {"schema", "purpose", "invocation_id", "profile_sha256"}
+                 and value["schema"] == "records-systemd-operation-v1"
+                 and value["purpose"] in {"run", "stop", "hold"}
+                 and value["profile_sha256"] == journal.profile.sha256)
+    _id(value["invocation_id"])
+    return value
+
+
+def _intent(journal, invocation_id, purpose):
+    return host.encoded({"schema": "records-systemd-operation-v1", "purpose": purpose,
+                         "invocation_id": invocation_id,
+                         "profile_sha256": journal.profile.sha256})
+
+
+def _begin_locked(journal, invocation_id, purpose):
+    """Deny-first durable intent, before any fallible ownership validation."""
     host.require(_optional(journal.directory, "systemd-hold.json") is None)
+    pending = _operation(journal)
+    if pending is not None:
+        host.require(purpose == "stop")
+        if pending["invocation_id"] != invocation_id:
+            # A proven older terminal invocation is a read-only no-op. It cannot
+            # replace or resolve the current invocation's admission fence.
+            _, value = _owned(journal, invocation_id)
+            host.require(_prior_done(journal, value))
+            return
+        host.require(pending["purpose"] in {"run", "stop"})
+    journal.directory.write(OPERATION, _intent(journal, invocation_id, purpose),
+                            fresh=pending is None)
+
+
+def _finish_operation(journal, invocation_id, purpose):
+    with host.locked(journal.directory, "cancel-admit.lock", wait=65):
+        with host.locked(journal.directory, "journal.lock", wait=1):
+            journal.profile.check()
+            _, value = _owned(journal, invocation_id)
+            host.require(_prior_done(journal, value))
+            pending = _operation(journal)
+            if pending is None or pending["invocation_id"] != invocation_id:
+                return
+            if purpose == "run" and pending["purpose"] == "stop":
+                return  # The independent matching stop still owns its fence.
+            host.require(pending["purpose"] == purpose)
+            os.unlink(OPERATION, dir_fd=journal.directory.fd)
+            os.fsync(journal.directory.fd)
+
+
+def admission(journal, requested_job_id=None, *, preassigned=False):
+    """Every managed allocation/launch needs its sealed current operation."""
+    host.require(_optional(journal.directory, "systemd-hold.json") is None)
+    pending = _operation(journal)
     if not _mode(journal):
+        host.require(pending is None)
         return
     raw, active = _binding(journal)
-    reservation = (None if requested_job_id is None else
-                   _optional(journal.directory, "reservation-" + requested_job_id + ".json"))
-    if reservation is not None:
-        value = _validate(reservation, journal.profile)
-        host.require(value["job_id"] == requested_job_id and reservation == raw
-                     and _owned(journal, value["invocation_id"])[0] == raw
-                     and not _closed(journal, value))
-        return
-    host.require(not preassigned and _prior_done(journal, active))
+    host.require(requested_job_id is not None and pending is not None
+                 and pending["purpose"] in {"run", "stop"})
+    reservation = _optional(journal.directory, "reservation-" + requested_job_id + ".json")
+    host.require(reservation is not None)
+    value = _validate(reservation, journal.profile)
+    host.require(value["job_id"] == requested_job_id and reservation == raw
+                 and _owned(journal, value["invocation_id"])[0] == raw
+                 and pending["invocation_id"] == value["invocation_id"]
+                 and not _closed(journal, value))
+    if pending["purpose"] == "stop":
+        receipt = journal.read(requested_job_id)
+        host.require(receipt["phase"] == "postrun" and receipt["cancel_requested"]
+                     and receipt["quiescent"] and receipt["worker_removed"])
+    # In managed mode there is NO _prior_done fallback for ordinary host.run().
+    # A stop intent can authorize only the matching contained reporter, never
+    # allocation or worker admission. Unmanaged host behavior is unchanged.
 
 
-def _fence(journal):
-    """Persist a separate admission HOLD, never modify/adopt another job receipt."""
+def _fence(journal, invocation_id):
+    """Keep deny-first intent even if the secondary HOLD write fails."""
     try:
         with host.locked(journal.directory, "cancel-admit.lock", wait=65):
             with host.locked(journal.directory, "journal.lock", wait=1):
+                if _optional(journal.directory, OPERATION) is None:
+                    journal.directory.write(OPERATION, _intent(journal, invocation_id, "hold"), fresh=True)
                 if _optional(journal.directory, "systemd-hold.json") is None:
                     journal.directory.write("systemd-hold.json", FENCE, fresh=True)
     except BaseException:
-        pass  # Unreadable/incomplete managed state also rejects admission.
+        pass  # Never clear an earlier intent/reservation on persistence failure.
+              # Completely unavailable storage cannot furnish historical proof.
     return host._output("held")
 
 
@@ -126,6 +192,7 @@ def _prepare(journal, invocation_id):
     _id(invocation_id)
     with host.locked(journal.directory, "launch.lock"):
         with host.locked(journal.directory, "journal.lock", wait=1):
+            _begin_locked(journal, invocation_id, "run")
             journal.profile.check()
             host.require(_optional(journal.directory, "systemd-hold.json") is None
                          and _optional(journal.directory, "invocation-" + invocation_id + ".json") is None)
@@ -161,9 +228,11 @@ def run(profile_path, invocation_id, *, invoke=host.call_argv, containment=None)
                 job_id = _prepare(journal, invocation_id)
                 result = host.run(profile_path, job_id=job_id, invoke=invoke, containment=containment)
                 profile.check()
+                if result["status"] in {"completed", "postrun_failed"}:
+                    _finish_operation(journal, invocation_id, "run")
                 return result
             except BaseException:
-                return _fence(journal)
+                return _fence(journal, invocation_id)
         finally:
             journal.close()
 
@@ -177,13 +246,16 @@ def stop_post(profile_path, invocation_id, *, invoke=host.call_argv, containment
             try:
                 with host.locked(journal.directory, "cancel-admit.lock", wait=65):
                     with host.locked(journal.directory, "journal.lock", wait=1):
+                        _begin_locked(journal, invocation_id, "stop")
                         profile.check()
                         host.require(_optional(journal.directory, "systemd-hold.json") is None
                                      and _mode(journal))
+                        _binding(journal)
                         raw, value = _owned(journal, invocation_id)
-                        if _closed(journal, value):
-                            return host._output("not_allocated")
-                        if not _exists(journal, value["job_id"]):
+                        no_allocation = _closed(journal, value)
+                        if no_allocation:
+                            result = host._output("not_allocated")
+                        if not no_allocation and not _exists(journal, value["job_id"]):
                             host.require(_binding(journal)[0] == raw)
                             try:
                                 active = journal.active()
@@ -198,23 +270,28 @@ def stop_post(profile_path, invocation_id, *, invoke=host.call_argv, containment
                             # Serialized with allocate. A late run cannot reopen this reservation.
                             journal.directory.write("closed-" + invocation_id + ".json",
                                                     _closure(value), fresh=True)
-                            return host._output("not_allocated")
-                        receipt = journal.read(value["job_id"])
-                        host.require(receipt["profile_sha256"] == profile.sha256)
-                        if not _terminal(receipt):
-                            host.require(_binding(journal)[0] == raw)
+                            result = host._output("not_allocated")
+                            no_allocation = True
+                        if not no_allocation:
+                            receipt = journal.read(value["job_id"])
+                            host.require(receipt["profile_sha256"] == profile.sha256)
+                            if not _terminal(receipt):
+                                host.require(_binding(journal)[0] == raw)
                 # The immutable ID guard is rechecked INSIDE serialized accepted stop,
                 # including after admission.lock acquisition, not only here.
-                result = host.stop(profile_path, expected_job_id=value["job_id"],
-                                   invoke=invoke, containment=containment)
+                if not no_allocation:
+                    result = host.stop(profile_path, expected_job_id=value["job_id"],
+                                       invoke=invoke, containment=containment)
                 if result["status"] == "held":
                     with host.locked(journal.directory, "journal.lock", wait=1):
                         active = journal.active()
                         host.require(active["job_id"] == value["job_id"]
                                      and active["profile_sha256"] == profile.sha256)
+                if result["status"] != "held":
+                    _finish_operation(journal, invocation_id, "stop")
                 return result
             except BaseException:
-                return _fence(journal)
+                return _fence(journal, invocation_id)
         finally:
             journal.close()
 

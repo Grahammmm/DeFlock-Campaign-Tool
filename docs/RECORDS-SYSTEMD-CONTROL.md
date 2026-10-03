@@ -39,12 +39,29 @@ Duplicate invocation run is HOLD, not replayed worker admission. Previous reserv
 must have a finalized quiescent job or sealed not-allocated closure before a new prepare.
 
 Accepted allocation checks this metadata under journal.lock; worker admission checks
-again under cancel-admit.lock. Unbound allocation cannot bypass a pending reservation.
-An independent durable systemd-hold.json fence is serialized with journal/cancel-admit,
-and blocks every next allocation/admission. Broken/mutated metadata also blocks admission.
+again under cancel-admit.lock. Managed journals reject ALL unreserved host.run calls,
+even after an earlier terminal success. Next launches must use a newly bound invocation.
+
+Before fallible validation, control persists systemd-operation.json with exactly schema
+records-systemd-operation-v1, purpose (run/stop/hold), invocation_id and profile_sha256.
+A run intent remains until that bound job is terminal; an unfinished matching stop can
+take over its intent. Unresolved stop/hold intents block preparation and allocation
+across new processes/restarts. A stop intent permits only the matching already-contained
+post-run reporter, not a worker or late allocation. Only a verified terminal job or
+sealed no-allocation closure resolves its matching intent with unlink plus directory
+fsync. An older terminal no-op never clears another invocation's intent.
+
+The independent systemd-hold.json is a secondary fence, not the sole durable denial.
+If its write fails, the earlier unresolved operation remains authoritative. Broken,
+missing or mutated operation/binding metadata also blocks managed admission.
 No automatic fence deletion or override is provided; an owner must independently
 reconcile corruption/uncertainty. Existing host profile trust and privileged-owner
-limits apply; another privileged operator can defeat application fencing.
+limits apply; another privileged operator can defeat application fencing. Storage must
+support durable intent writes/fsync before control proceeds. If every persistence path
+is unavailable before any intent can be recorded, no historical failure can be recovered
+from unchanged bytes after storage is restored. Preserve the nonzero controller outcome
+and require owner reconciliation; do not auto-restart writers or claim a durable HOLD
+receipt was created. The module does not claim protection against privileged rollback.
 
 ## Stop-post outcomes
 
@@ -118,4 +135,11 @@ completed invocation versus newer writer; mutated seals/profile/deleted pointer;
 two active-pointer race points; actual threaded journal flock serialization;
 cleanup failure/retry; unknown Docker; duplicate invocation; strict ID/sanitized
 output; distinct CLI codes; no-paid clean environment and no JSON callback surface.
+Additional fault regressions cover failed secondary HOLD writes with intact terminal
+metadata, unreserved fallback denial, fresh independent Python processes, corrupt
+bindings/intents, controller loss after intent persistence, initial-intent-write fallback,
+deleted intent/reservation replay, and matching cleanup retry/intent resolution. The
+accepted synthetic ambient-key test and its exact environment/clean-env assertions
+are preserved; scanner gates remain unchanged. The no-allocation seal regression
+checks exact persistent fields and repeatability, excluding transient control flags.
 Tests create no containers and cannot substitute for real host/systemd acceptance.
