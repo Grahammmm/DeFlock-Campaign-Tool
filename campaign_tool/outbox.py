@@ -333,20 +333,29 @@ class Outbox:
         no-op that returns the sent row. Blocked raises; an ambiguous failure
         leaves the row in ``sending`` and raises AmbiguousFailure.
         """
-        row = self.row(key)
-        if not row:
-            raise OutboxError("unknown outbox row")
-        if self._check(row) == "already_sent":
-            return row
-        draft = RequestDraft.from_json(row["draft_json"])
-        # Claim the row with one conditional UPDATE: two concurrent sends (a retried job
-        # and a CLI call) cannot both move approved -> sending, so the transport runs once.
-        stamp = self.clock()
-        claimed = self.db.execute(
-            "UPDATE outbox SET state='sending', sending_at=?, error=NULL, updated_at=? WHERE idempotency_key=? AND state='approved'",
-            (stamp, stamp, key)).rowcount
-        if claimed != 1:
-            raise Blocked("ambiguous_send_unresolved", "another send claimed this row first; run reconcile if it did not finish")
+        # Serialize the safeguards and claim across keys, not only the final row UPDATE.
+        # Otherwise concurrent requests can both observe an unused agency/day budget.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.row(key)
+            if not row:
+                raise OutboxError("unknown outbox row")
+            if self._check(row) == "already_sent":
+                self.db.execute("COMMIT")
+                return row
+            draft = RequestDraft.from_json(row["draft_json"])
+            stamp = self.clock()
+            claimed = self.db.execute(
+                "UPDATE outbox SET state='sending', sending_at=?, error=NULL, updated_at=? WHERE idempotency_key=? AND state='approved'",
+                (stamp, stamp, key)).rowcount
+            if claimed != 1:
+                raise Blocked("ambiguous_send_unresolved", "another send claimed this row first; run reconcile if it did not finish")
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+        # The network operation must never hold the SQLite write transaction open.
         try:
             receipt = transport(draft)
         except Blocked as exc:

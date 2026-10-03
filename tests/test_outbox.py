@@ -417,3 +417,91 @@ class OutboxTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConcurrentCapTests(unittest.TestCase):
+    def test_different_keys_cannot_both_pass_one_agency_daily_cap(self):
+        self._race_caps()
+
+    def test_unresolved_request_hold_is_atomic_across_scope_keys(self):
+        self._race_caps(same_request=True)
+
+    def _race_caps(self, same_request=False):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "outbox.sqlite"
+            setup = ob.Outbox(path)
+            keys = []
+            for request in ["req_race_first", "req_race_second"]:
+                item = draft(request_id="req_same" if same_request else request)
+                item.scope_version = len(keys) + 1
+                row = setup.propose(item)
+                setup.approve(row["idempotency_key"], "organizer@example.invalid")
+                keys.append(row["idempotency_key"])
+            setup.close()
+            ready = [threading.Event(), threading.Event()]
+            begin = [threading.Event(), threading.Event()]
+            first_checked = threading.Event(); release_first = threading.Event()
+            second_sent = threading.Event(); calls = []; errors = []
+            def worker(index):
+                box = ob.Outbox(path, daily_agency_cap=100 if same_request else 1)
+                original = box._check
+                if index == 0:
+                    def pause_after_check(row):
+                        result = original(row)
+                        first_checked.set()
+                        if not release_first.wait(5): raise RuntimeError("synthetic synchronization timeout")
+                        return result
+                    box._check = pause_after_check
+                ready[index].set()
+                try:
+                    if not begin[index].wait(5): raise RuntimeError("synthetic start timeout")
+                    def transport(item):
+                        calls.append(item.request_id)
+                        if index == 1: second_sent.set()
+                        if same_request and index == 0: raise ob.AmbiguousFailure("synthetic unknown delivery")
+                        return ob.ProviderReceipt("email", "receipt-" + item.request_id)
+                    box.send(keys[index], transport)
+                except Exception as exc: errors.append(exc)
+                finally: box.close()
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+            for thread in threads: thread.start()
+            try:
+                for event in ready: self.assertTrue(event.wait(5))
+                begin[0].set(); self.assertTrue(first_checked.wait(5)); begin[1].set()
+                # Old code can send the second key in this gap; atomic code waits for the first claim.
+                second_sent.wait(1)
+            finally:
+                release_first.set()
+                for event in begin: event.set()
+                for thread in threads: thread.join(6)
+            self.assertFalse(any(t.is_alive() for t in threads))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(errors), 2 if same_request else 1)
+            blocked = [e for e in errors if isinstance(e, ob.Blocked)]
+            self.assertEqual(len(blocked), 1)
+            self.assertEqual(blocked[0].reason, "ambiguous_send_unresolved" if same_request else "daily_agency_cap")
+
+
+    def test_transaction_ends_before_transport_and_guard_refusals_rollback(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "outbox.sqlite"
+            box = ob.Outbox(path)
+            key = box.propose(draft())["idempotency_key"]
+            with self.assertRaises(ob.Blocked): box.send(key, lambda _: self.fail("not approved"))
+            self.assertFalse(box.db.in_transaction)
+            box.approve(key, "organizer@example.invalid")
+            box.db.execute("CREATE TABLE synthetic_probe (value TEXT)")
+            def transport(_):
+                self.assertFalse(box.db.in_transaction)
+                writer = ob.sqlite3.connect(path, timeout=0)
+                try:
+                    writer.execute("INSERT INTO synthetic_probe VALUES ('transport-write')")
+                    writer.commit()
+                finally: writer.close()
+                return ob.ProviderReceipt("email", "synthetic-unlocked")
+            try:
+                self.assertEqual(box.send(key, transport)["state"], "sent")
+                self.assertFalse(box.db.in_transaction)
+                self.assertEqual(box.send(key, lambda _: self.fail("replayed sent row"))["state"], "sent")
+                self.assertFalse(box.db.in_transaction)
+            finally: box.close()
