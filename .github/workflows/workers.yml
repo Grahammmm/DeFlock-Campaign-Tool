@@ -23,6 +23,8 @@ jobs:
         working-directory: workers
       - run: npm run check
         working-directory: workers
+      - name: Signed Worker-to-outbox interoperability (synthetic loopback only)
+        run: python3 -B tools/test_hosted_outbox_bridge.py
       - run: python3 -B -m unittest tests.test_review_fixture -v
       - run: node scripts/scan-secrets.mjs
       - run: python3 -B tools/check_public_tree.py
