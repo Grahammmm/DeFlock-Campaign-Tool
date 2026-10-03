@@ -56,3 +56,27 @@ Backend preservation uses the canonical account/folder/UID binding; exporter cal
 A final report is written and synced before the run's terminal ledger update. The terminal summary binds its exact report SHA-256. A missing or partial report produces fixed-code failure and never a completed ledger row. Consumers must require the terminal ledger status and report hash to agree, plus a successful worker-exit proof; a standalone JSON file written before that commit is not acceptance evidence. Persistent run holds are never automatically cleared.
 
 MSG is eligible only when the existing extract-msg decoder imports successfully. Missing decoder readiness creates an adapter hold before checkpoint advancement, with raw/canonical preservation intact. This is not embedded RFC822 decoding. The provisioned image path likewise delegates to existing extraction/validation rather than claiming visual review or introducing a model.
+
+## Fair finite advancement sweeps and mechanical counts
+
+Default advancement walks a finite `(first_seen_at, sha256)` sweep. An owner-only,
+atomically replaced `reports/unattended-advance-resume.json` stores its cursor and
+fixed frontier. New arrivals wait for the next sweep rather than preempting its
+remaining originals. An attempt, including a retriable failure, consumes one of
+at most 200 advancement slots. No deferred original is marked complete, and no
+IMAP checkpoint is changed by the cursor. Explicit subject lists retain their
+caller-selected ordering; an empty list selects nothing.
+
+Unchanged receipt-bound ordinary review holds are acknowledged without an
+advancement attempt only after the ledger validator checks transition authority,
+revision and prerequisite bindings. Their receipts and stage statuses remain
+unchanged. Pending work and privacy holds do not receive this exemption. Each
+invocation inspects at most 400 originals, advances the sweep across acknowledged
+holds, and reports `review_holds_retained` separately from `originals_deferred`.
+Malformed resume metadata fails closed; persistent safety holds are never cleared.
+
+`end_to_end_complete` remains the integer mechanical seven-stage completion count
+from the ledger in both manual and unattended reports, including mixed batches.
+It is not a substantive model review or acceptance claim. Gap/hold/failure status,
+nonzero exit, deferred counters and health remain independent and authoritative;
+a completed email plus a held scan reports a count of one and unhealthy gaps.

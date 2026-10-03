@@ -257,16 +257,100 @@ class UnattendedPipeline(manual.Pipeline):
                                {"messages": len(report["preserved"]), "failures": len(report["failures"])})
         return report
 
+    def _advance_resume(self):
+        path = self.root.sub("reports") / "unattended-advance-resume.json"
+        empty = {"schema": "records-advance-resume-v1", "cursor": None, "frontier": None}
+        if not path.exists() and not path.is_symlink():
+            return path, empty
+        try:
+            raw = _bounded_read(path)
+            if len(raw) > 4096:
+                raise ValueError("invalid_safety_state")
+            def pairs(items):
+                value = {}
+                for key, item in items:
+                    if key in value:
+                        raise ValueError("invalid_safety_state")
+                    value[key] = item
+                return value
+            state = json.loads(raw, object_pairs_hook=pairs)
+            if type(state) is not dict or set(state) != set(empty) or state["schema"] != empty["schema"]:
+                raise ValueError("invalid_safety_state")
+            for key in ("cursor", "frontier"):
+                item = state[key]
+                if item is not None and not (
+                    type(item) is list and len(item) == 2 and
+                    type(item[0]) is str and 0 < len(item[0]) <= 128 and
+                    type(item[1]) is str and len(item[1]) == 64 and
+                    all(c in "0123456789abcdef" for c in item[1])
+                ):
+                    raise ValueError("invalid_safety_state")
+            if state["cursor"] is not None and (state["frontier"] is None or state["cursor"] > state["frontier"]):
+                raise ValueError("invalid_safety_state")
+            return path, state
+        except Exception:
+            self.safety.stop("invalid_safety_state")
+            raise manual.RunError("invalid_safety_state") from None
+
+    def _save_advance_resume(self, path, state):
+        store.checked_path(path, existing=False)
+        temporary = path.with_name(".advance-resume-" + os.urandom(16).hex())
+        try:
+            _private_bytes(temporary, json.dumps(state, sort_keys=True).encode("ascii"))
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
     def advance_all(self, subjects=None):
         stage = self._open_stage_run()
+        self.review_holds_retained = 0
+        resume = None
+        keys = {}
+        outside_sweep = 0
         if subjects is None:
-            subjects = [row["sha256"] for row in self._query(
+            rows = self._query(
                 "SELECT DISTINCT o.sha256,o.first_seen_at FROM originals o JOIN stage_state s ON s.original_sha256=o.sha256 "
                 "WHERE o.scope!='out_of_scope' AND s.stage!='preserve' AND s.status NOT IN ('done','inapplicable') "
-                "ORDER BY o.first_seen_at,o.sha256")]
-        selected = list(dict.fromkeys(subjects))
+                "ORDER BY o.first_seen_at,o.sha256")
+            if len(rows) > 10000:
+                self.safety.stop("invalid_safety_state")
+                raise manual.RunError("invalid_safety_state")
+            path, resume = self._advance_resume()
+            keys = {row["sha256"]: [row["first_seen_at"], row["sha256"]] for row in rows}
+            if resume["frontier"] is None and rows:
+                resume["frontier"] = max(keys.values())
+            selected = [row["sha256"] for row in rows if
+                        (resume["cursor"] is None or keys[row["sha256"]] > resume["cursor"]) and
+                        (resume["frontier"] is None or keys[row["sha256"]] <= resume["frontier"])]
+            outside_sweep = sum(key > resume["frontier"] for key in keys.values()) if resume["frontier"] else 0
+        else:
+            selected = list(dict.fromkeys(subjects))
+        validated_holds = False
         report = []
         for subject in selected:
+            # Metadata-only acknowledgement is bounded too, and never clears a hold.
+            if len(report) >= 400 or not self.safety.check():
+                break
+            states = self._states(subject)
+            first = next((name for name in manual.STAGE_ORDER
+                          if states[name]["status"] not in {"done", "inapplicable"}), None)
+            if first is not None and first != "privacy" and states[first]["status"] == "blocked" and states[first]["receipt_sha256"]:
+                if not validated_holds:
+                    # Validates receipt authority, transition revision and current input bindings.
+                    manual.stages.counts(self.root.ledger)
+                    validated_holds = True
+                self.review_holds_retained += 1
+                report.append({"subject_sha256": subject, "stages": {first: "held:review_required"},
+                               "outcome": "review_required", "failure_code": "review_required", "attempted": False})
+                if resume is not None:
+                    resume["cursor"] = keys[subject]
+                continue
             if not self.safety.begin("advance", subject):
                 break
             outcome = {"subject_sha256": subject, "stages": {}}
@@ -320,7 +404,13 @@ class UnattendedPipeline(manual.Pipeline):
                 outcome["failure_code"] = code
                 outcome["outcome"] = result_kind
             report.append(outcome)
-        self.originals_deferred = len(selected) - len(report)
+            if resume is not None:
+                resume["cursor"] = keys[subject]
+        self.originals_deferred = len(selected) - len(report) + outside_sweep
+        if resume is not None:
+            if len(report) == len(selected):
+                resume["cursor"] = resume["frontier"] = None
+            self._save_advance_resume(path, resume)
         return report
 
     def run(self, inbox=None, mail_config=None, client_factory=None):
@@ -330,6 +420,7 @@ class UnattendedPipeline(manual.Pipeline):
             self._open_stage_run()
             intake, mailbox, progress = None, None, []
             self.originals_deferred = 0
+            self.review_holds_retained = 0
             interrupted = None
             try:
                 if self.model is not None or self.challenge is not None:
@@ -346,7 +437,7 @@ class UnattendedPipeline(manual.Pipeline):
             except Exception:
                 self.safety.stop("unexpected_run_fault")
             held = self.safety.state["hold"] in EXPECTED_HELDS
-            gaps = any(p["failed"] or p["held"] or p["review_required"] for p in self.safety.phases.values())
+            gaps = bool(self.review_holds_retained) or any(p["failed"] or p["held"] or p["review_required"] for p in self.safety.phases.values())
             gaps = gaps or bool(mailbox and mailbox["failures"]) or bool(intake and intake["failures"])
             status = "interrupted" if interrupted else "held" if held else "failed" if self.safety.stopped else "completed_with_gaps" if gaps else "completed"
             summary = manual.stages.counts(self.root.ledger)
@@ -362,7 +453,8 @@ class UnattendedPipeline(manual.Pipeline):
                       "proposals_awaiting_owner": len(self._query("SELECT id FROM proposals WHERE owner_approval='none'")),
                       "safety": self.safety.report(), "originals_deferred": self.originals_deferred,
                       "intake_deferred": intake_deferred,
-                      "end_to_end_complete": summary["candidate_seven_stage_complete"] if not gaps and not self.safety.stopped and not self.originals_deferred and not intake_deferred else 0,
+                      "end_to_end_complete": summary["candidate_seven_stage_complete"],
+                      "review_holds_retained": self.review_holds_retained,
                       "model_id": None, "challenge_model_id": None}
             report_raw = manual.encoded(report)
             report_sha256 = None
@@ -373,7 +465,7 @@ class UnattendedPipeline(manual.Pipeline):
                 # Never leave completed ledger evidence for a missing/partial final receipt.
                 self.safety.stop("report_write_failed")
                 status = "interrupted" if interrupted else "failed"
-                report.update(status=status, exit_code=2, end_to_end_complete=0,
+                report.update(status=status, exit_code=2,
                               failure_code="report_write_failed", receipt_status="write_failed",
                               safety=self.safety.report())
             with store.ledger(self.root.ledger) as con:

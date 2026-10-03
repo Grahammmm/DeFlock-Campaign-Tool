@@ -310,7 +310,8 @@ class PipelineSafetyTests(SafetyFixture, unittest.TestCase):
         report = pipeline.run(self.inbox())
         self.assertEqual(report['safety']['phases']['advance']['attempted'], 1)
         self.assertEqual(report['originals_deferred'], 1)
-        self.assertFalse(report['end_to_end_complete'])
+        self.assertIs(type(report['end_to_end_complete']), int)
+        self.assertEqual(report['end_to_end_complete'], run.stages.counts(self.root.ledger)['candidate_seven_stage_complete'])
 
     def test_unknown_attachment_retained_and_not_advanced(self):
         pipeline = UnattendedPipeline(self.root.path)
@@ -391,8 +392,14 @@ class PipelineSafetyTests(SafetyFixture, unittest.TestCase):
 
     def test_receipt_failure_cannot_leave_completed_or_healthy_run(self):
         pipeline = UnattendedPipeline(self.root.path)
-        with patch('campaign_tool.records.unattended._private_bytes', side_effect=OSError('SYNTHETIC_RECEIPT_MARKER')):
+        write = unattended_module._private_bytes
+        def fail_final_report(path, raw):
+            if not Path(path).name.startswith('.advance-resume-'):
+                raise OSError('SYNTHETIC_RECEIPT_MARKER')
+            return write(path, raw)
+        with patch('campaign_tool.records.unattended._private_bytes', side_effect=fail_final_report) as writer:
             report = pipeline.run()
+        self.assertEqual(writer.call_count, 2)  # Resume metadata succeeds; final receipt fails.
         self.assertEqual((report['status'], report['exit_code']), ('failed', 2))
         self.assertEqual(report['failure_code'], 'report_write_failed')
         self.assertEqual(report['safety']['stop_code'], 'report_write_failed')
