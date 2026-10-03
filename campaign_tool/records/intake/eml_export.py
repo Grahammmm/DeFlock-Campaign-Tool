@@ -67,7 +67,7 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
     # Plan before writing any bytes. Legacy scalar-only messages retain their receipt schema.
     wire_plan = None
     try:
-        candidates = mail_delta.mime_candidates(None, raw=bytes(raw))
+        candidates = mail_delta.mime_candidates(None, raw=bytes(raw), legacy_scalar=True)
     except mail_delta.Rejected as error:
         if error.args != ("unsupported_rfc822_part",):
             raise
@@ -108,8 +108,6 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
         "original_eml": {"path": str(eml_path.relative_to(root)), "bytes": len(raw), "sha256": sha},
         "attachments": attachments,
     }
-    if wire_plan is None:
-        receipt["scalar_payload_policy"] = "exact-v1"
     if wire_plan is not None:
         manifest = wire_plan.as_manifest()
         receipt.update(schema=manifest["schema"], scalar_roles=manifest["scalar_roles"],
@@ -124,11 +122,7 @@ def _part_payload(eml_path, locator):
     from email import policy
     from email.parser import BytesParser
     with folder.secure_open(eml_path) as source:
-        raw = source.read(MAX_MESSAGE + 1)
-    if len(raw) > MAX_MESSAGE:
-        raise mail_delta.Rejected("message_size_limit")
-    # Match candidate hashing: file parsing normalizes CRLF scalar payloads.
-    message = BytesParser(policy=policy.default).parsebytes(raw)
+        message = BytesParser(policy=policy.default).parse(source)
     part = message
     for index in locator.split(".")[1:]:
         parts = list(part.iter_parts())

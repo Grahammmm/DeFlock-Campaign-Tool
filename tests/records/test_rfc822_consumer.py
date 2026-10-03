@@ -53,7 +53,7 @@ class RFC822ConsumerTests(unittest.TestCase):
         self.assertEqual(list((self.out/'blobs').iterdir()),[])
         self.assertEqual(self.db.execute("SELECT value FROM meta WHERE key='inventory_run'").fetchone()[0],'baseline')
 
-    def test_scalar_attachment_preserves_line_endings_through_export_and_import(self):
+    def test_scalar_line_endings_keep_legacy_export_import_and_replay_identity(self):
         for uid, eol in enumerate((b"\r\n", b"\n"), 10):
             with self.subTest(eol=eol):
                 payload = eol.join((b"line one", b"line two", b""))
@@ -64,39 +64,17 @@ class RFC822ConsumerTests(unittest.TestCase):
                 path = self.exported(raw, uid=uid)
                 receipt = json.loads(path.read_text())
                 self.assertNotIn("schema", receipt)
-                self.assertEqual(receipt["scalar_payload_policy"], "exact-v1")
+                self.assertNotIn("scalar_payload_policy", receipt)
                 item, = receipt["attachments"]
-                self.assertEqual((self.root / item["path"]).read_bytes(), payload)
-                self.assertEqual(item["sha256"], digest(payload))
+                expected = payload.replace(b"\r\n", b"\n")
+                self.assertEqual((self.root / item["path"]).read_bytes(), expected)
+                self.assertEqual(item["sha256"], digest(expected))
                 self.import_file(path)
-                self.assertEqual((self.out / "blobs" / digest(payload)).read_bytes(), payload)
-
-    def test_prior_normalized_scalar_receipt_still_imports_and_replays(self):
-        payload = b"line one\r\nline two\r\n"
-        attachment = (b"Content-Type: text/plain\r\n"
-            b"Content-Disposition: attachment; filename=synthetic.txt\r\n"
-            b"Content-Transfer-Encoding: 7bit\r\n\r\n" + payload)
-        path = self.exported(multi([eml(), attachment]))
-        receipt = json.loads(path.read_text())
-        del receipt["scalar_payload_policy"]
-        item, = receipt["attachments"]
-        normalized = payload.replace(b"\r\n", b"\n")
-        (self.root / item["path"]).write_bytes(normalized)
-        item.update(bytes=len(normalized), sha256=digest(normalized))
-        path.write_text(json.dumps(receipt))
-        self.import_file(path)
-        self.assertEqual((self.out / "blobs" / digest(normalized)).read_bytes(), normalized)
-        replay = self.import_file(path)
-        self.assertEqual(replay["added_occurrences"], 0)
-
-    def test_unknown_scalar_payload_policy_rejected(self):
-        path = self.exported(multi([eml()]))
-        receipt = json.loads(path.read_text())
-        receipt["scalar_payload_policy"] = "unknown-v2"
-        path.write_text(json.dumps(receipt))
-        with self.assertRaisesRegex(mail_delta.Rejected, "invalid_receipt_shape"):
-            self.import_file(path)
-        self.pristine()
+                self.assertEqual((self.out / "blobs" / digest(expected)).read_bytes(), expected)
+                self.assertEqual(self.import_file(path)["added_occurrences"], 0)
+                second = self.exported(raw, uid=uid + 100)
+                self.import_file(second)
+                self.assertEqual(json.loads(second.read_text())["attachments"], receipt["attachments"])
 
     def test_nested_exact_bytes_immediate_parents_formats_and_replay(self):
         path=self.exported();receipt=json.loads(path.read_text())

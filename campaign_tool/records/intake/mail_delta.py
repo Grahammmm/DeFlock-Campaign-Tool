@@ -97,9 +97,6 @@ def load_receipt(path):
         raise Rejected("invalid_receipt_file") from None
     require(isinstance(receipt, dict) and receipt.get("complete") is True,
             "incomplete_receipt")
-    if "scalar_payload_policy" in receipt:
-        require(receipt["scalar_payload_policy"] == "exact-v1" and "schema" not in receipt,
-                "invalid_receipt_shape")
     account = short_text(receipt.get("account_id"), "invalid_account")
     mailbox = short_text(receipt.get("folder"), "invalid_folder")
     uidvalidity = identity_number(receipt.get("uidvalidity"), "invalid_uidvalidity")
@@ -232,19 +229,19 @@ def related_root(part, children):
     return root
 
 
-def mime_candidates(eml_path, *, raw=None, allow_rfc822=False, exact_scalar=False):
+def mime_candidates(eml_path, *, raw=None, allow_rfc822=False, legacy_scalar=False):
     try:
         if raw is not None:
-            message = BytesParser(policy=email.policy.default).parsebytes(raw)
+            parser = BytesParser(policy=email.policy.default)
+            if legacy_scalar:
+                # Match historical scalar export/import hashes, paths and ledger edges.
+                from io import BytesIO
+                message = parser.parse(BytesIO(raw))
+            else:
+                message = parser.parsebytes(raw)
         else:
             with folder.secure_open(eml_path) as source:
-                if exact_scalar:
-                    raw = source.read(MAX_EML + 1)
-                    require(len(raw) <= MAX_EML, "message_size_limit")
-                    message = BytesParser(policy=email.policy.default).parsebytes(raw)
-                else:
-                    # Pre-exact-v1 scalar receipts used the file parser's LF normalization.
-                    message = BytesParser(policy=email.policy.default).parse(source)
+                message = BytesParser(policy=email.policy.default).parse(source)
     except (OSError, ValueError, RecursionError):
         raise Rejected("invalid_eml") from None
     candidates = []
@@ -348,8 +345,7 @@ def bind_parts(items, receipt=None):
             item.update(mime=capture.mime, mime_name=capture.original_filename,
                         parent_sha=capture.parent_sha256, mime_chain=list(capture.mime_chain))
         return
-    candidates = mime_candidates(items[0]["tmp"], exact_scalar=bool(
-        receipt is not None and receipt.get("scalar_payload_policy") == "exact-v1"))
+    candidates = mime_candidates(items[0]["tmp"])
     required = {c["locator"] for c in candidates if c["attachable"]}
     used = set()
     for item in items[1:]:
