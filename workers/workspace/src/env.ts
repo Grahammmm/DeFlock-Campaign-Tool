@@ -11,6 +11,9 @@ export interface Env {
   DOWNLOAD_SIGNING_KEY: string;
   /** Brevo v3 API key (Worker secret). Absent: send_newsletter cards fail with brevo_not_configured. */
   BREVO_API_KEY?: string;
+  /** Opt-in private TLS outbox endpoint and independent signing secret. Both required. */
+  OUTBOX_GATEWAY_URL?: string;
+  OUTBOX_SIGNING_KEY?: string;
   /** Test hook: replaces global fetch for the Access certificate download. */
   ACCESS_CERTS_JSON?: string;
 }
