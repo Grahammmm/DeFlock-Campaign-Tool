@@ -367,6 +367,55 @@ describe("mail receipt recovery", () => {
 });
 
 
+describe("request-scoped send claim", () => {
+  it("allows another key after a conclusive refusal, but holds uncertain and delivered predecessors", async () => {
+    const repo = await seedCampaign();
+    for (const [label, error, receipt, allowed] of [
+      ["refusal", "sender_not_configured: no sender", null, true],
+      ["unknown", "mail_send_ambiguous: outcome unknown", null, false],
+      ["receipt", "error: database failure", '{"provider_message_id":"synthetic"}', false],
+    ] as const) {
+      const proposal = { channel: "email", subject: "Request", body_md: "Body" };
+      const subject = "req_claim_" + label;
+      const old = (await repo.propose("send_request", subject, proposal, "old-" + label, ORG.email)).row;
+      await repo.updateAction(old.action_id, { state: "failed", error, provider_receipt: receipt });
+      const next = (await repo.propose("send_request", subject, proposal, "next-" + label, ORG.email)).row;
+      await approveAction(repo, next.action_id, ORG);
+      expect(Boolean(await repo.claimForExecution(next.action_id))).toBe(allowed);
+    }
+  });
+  it("refuses a new initial send for an already-sent request while allowing follow-ups", async () => {
+    const repo = await seedCampaign();
+    const request = await repo.createRequest({ agency_id: "ca-example-police", scope_id: "agreements", scope_version: 1,
+      subject: "Synthetic request", body_md: "Body", channel: "email", fee_cap_cents: 0, state: "sent",
+      sent_at: "2026-01-01T12:00:00Z", determination_due: null, extension_claimed_until: null,
+      last_activity_at: null, next_action: null, external_ref: "synthetic" });
+    const proposal = { channel: "email", subject: "Request", body_md: "Body" };
+    for (const kind of ["send_request", "send_followup"] as const) {
+      const card = (await repo.propose(kind, request.request_id, proposal, "sent-" + kind, ORG.email)).row;
+      await approveAction(repo, card.action_id, ORG);
+      expect(Boolean(await repo.claimForExecution(card.action_id))).toBe(kind === "send_followup");
+    }
+  });
+  it("admits one request send across concurrent different keys and holds later keys", async () => {
+    const repo = await seedCampaign(); let sends = 0;
+    const fake: MailSender = { name: "synthetic", async send() {
+      sends++; return { provider_message_id: "scoped-receipt", provider: "synthetic", sent_at: "2026-01-01T12:00:00Z" };
+    }};
+    const proposal = { channel: "email", subject: "Request", body_md: "Body" };
+    const a = (await repo.propose("send_request", "req_scoped_synthetic", proposal, "scope-a", ORG.email)).row;
+    const b = (await repo.propose("send_request", "req_scoped_synthetic", proposal, "scope-b", ORG.email)).row;
+    await approveAction(repo, a.action_id, ORG); await approveAction(repo, b.action_id, ORG);
+    const results = await Promise.allSettled([a, b].map(row => executeAction(repo, env as Env, row.action_id, ORG, buildExecutors({ mailSender: fake }))));
+    expect(sends).toBe(1);
+    expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
+    const c = (await repo.propose("send_request", "req_scoped_synthetic", proposal, "scope-c", ORG.email)).row;
+    await approveAction(repo, c.action_id, ORG);
+    await expect(executeAction(repo, env as Env, c.action_id, ORG, buildExecutors({ mailSender: fake }))).rejects.toThrow(/another|request/);
+    expect(sends).toBe(1);
+  });
+});
+
 describe("mail uncertain outcome", () => {
   it.each(["transport", "receipt-write"])("keeps %s failure held until authenticated non-delivery reconciliation", async (mode) => {
     const repo = await seedCampaign(); let sends = 0;

@@ -847,7 +847,13 @@ export class Repo {
   async claimForExecution(actionId: string): Promise<ExternalActionRow | null> {
     const row = await this.db
       .prepare(
-        "UPDATE external_action SET state = 'executing', error = ?, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'approved' RETURNING *",
+        "UPDATE external_action SET state = 'executing', error = ?, updated_at = ? WHERE campaign_id = ? AND action_id = ? AND state = 'approved' " +
+        "AND (kind != 'send_request' OR subject_id IS NULL OR (" +
+        "NOT EXISTS (SELECT 1 FROM external_action prior WHERE prior.campaign_id = external_action.campaign_id " +
+        "AND prior.subject_id = external_action.subject_id AND prior.kind = 'send_request' AND prior.action_id != external_action.action_id " +
+        "AND (prior.state IN ('executing','executed') OR (prior.state = 'failed' AND (prior.provider_receipt IS NOT NULL OR prior.error LIKE 'mail_send_ambiguous:%')))) " +
+        "AND NOT EXISTS (SELECT 1 FROM request sent WHERE sent.campaign_id = external_action.campaign_id " +
+        "AND sent.request_id = external_action.subject_id AND sent.sent_at IS NOT NULL))) RETURNING *",
       )
       .bind("execution_claim: " + crypto.randomUUID(), nowIso(), this.campaignId, actionId)
       .first<ExternalActionRow>();

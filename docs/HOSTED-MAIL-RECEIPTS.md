@@ -4,6 +4,8 @@ Approved request and follow-up cards persist a bounded, validated sender receipt
 
 Adapters may throw ExecutorFailure only for a conclusive refusal or with the mail_send_ambiguous code for an uncertain delivery. Ordinary exceptions are uncertain. NotConfiguredSender remains a conclusive refusal; no provider is enabled by this change.
 
-Reconciliation records mail-provider evidence, not a Brevo campaign event. Confirmed non-delivery returns the same card to proposed and requires new approval. A delivered reconciliation records the action outcome; request/correspondence bookkeeping repair remains an operational task, not a new send. Do not create a new key to evade a held action. The future hosted outbox must enforce cross-key request-level deduplication as well.
+Initial request sends also claim the request scope atomically across approval keys. A prior executing or executed card, an uncertain failed card, a failed card with delivery evidence, or a request with a sent timestamp blocks a new initial send before the provider is called. A conclusive refusal does not block a separately approved replacement. This guard applies within a campaign to send_request cards with a request subject ID; it does not deduplicate unbound cards or distinct follow-ups.
+
+Reconciliation records mail-provider evidence, not a Brevo campaign event. Confirmed non-delivery returns the same card to proposed and requires new approval. A delivered reconciliation records the action outcome; request/correspondence bookkeeping repair remains an operational task, not a new send. Do not create a new key to evade a held action. The future hosted outbox still needs stable content identity for unbound cards and follow-up sends.
 
 This is synthetic receipt/retry validation, not a configured hosted sender or live pilot. No mail, services or schedules were activated.
