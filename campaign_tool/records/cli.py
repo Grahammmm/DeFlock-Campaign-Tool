@@ -5,6 +5,7 @@ import os
 import sys
 
 COMMANDS = {
+    "doctor": ("runtime", "main"),
     "validate-findings": "gates.validate_findings",
     "reconcile-coverage": "gates.reconcile_coverage",
     "collect-reviews": "gates.collect_reviews",
@@ -27,6 +28,12 @@ def main():
     parser.add_argument("command", choices=COMMANDS)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.command == "run":
+        from .runtime import platform_status, require
+        # Windows cannot even import the Linux fcntl-based intake module.
+        if not platform_status()["supported"]:
+            require()
+            return 2
     target = COMMANDS[args.command]
     module_name, function = target if isinstance(target, tuple) else (target, "main")
     module = importlib.import_module("." + module_name, __package__)

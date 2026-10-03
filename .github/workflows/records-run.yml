@@ -30,7 +30,7 @@ jobs:
         run: |
           python -B - <<'PY'
           import unittest
-          names = ['tests.records.test_run_slice', 'tests.records.test_publish', 'tests.records.test_run_pdf_ocr']
+          names = ['tests.records.test_runtime', 'tests.records.test_run_slice', 'tests.records.test_publish', 'tests.records.test_run_pdf_ocr']
           suite = unittest.defaultTestLoader.loadTestsFromNames(names)
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():

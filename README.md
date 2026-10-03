@@ -6,7 +6,10 @@ Open-source tools to help local organizers investigate automated license plate r
 
 ## Start locally
 
-Requires Python 3.11 or newer. No third-party Python packages are required.
+The portable offline starter below requires Python 3.11 or newer and no third-party
+Python packages. Full records intake/extraction has a separate Linux runtime and
+parser requirements; see [Records runtime](docs/RECORDS-RUNTIME.md). Running the
+starter on macOS does not establish support for the full extraction pipeline.
 
 ```sh
 git clone https://github.com/Grahammmm/DeFlock-Campaign-Tool.git
