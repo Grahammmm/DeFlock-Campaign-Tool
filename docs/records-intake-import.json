@@ -6,7 +6,7 @@
       "source_relative_path": "scripts/intake.py",
       "source_sha256": "c37b6a831d7c0546f28c34db046b98c6d1fa56bd9bb815771c84679b7ab0244f",
       "engine_path": "campaign_tool/records/intake/folder.py",
-      "engine_sha256": "81da5be8436b5b4c51778979195d8b66b5eeb2f1353de6d9f073a2b8a1949a3c"
+      "engine_sha256": "10e467185149499e904c54230dcfd192fabda7c1bead66026cbc03916cecd0cd"
     },
     {
       "source_relative_path": "scripts/repair_intake.py",
@@ -44,7 +44,9 @@
     "Reconcile current edges while retaining edge history, shared children and prior artifacts",
     "DOCX paragraph ordinals include blank and table paragraphs; part-local locators",
     "Repair and quarantine accept explicit private config for extraction and reports",
-    "Effective parser-budget binding retries containers when nesting allowance improves; retains prior attempts"
+    "Effective parser-budget binding retries containers when nesting allowance improves; retains prior attempts",
+    "Retain verified exact-wire acquisition edges during legacy extraction; explicit exclusions preserve retired edge history",
+    "Use package-qualified wire schema import after existing direct-script path bootstrap so standalone intake remains supported"
   ],
   "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported",
   "engine_revision": "portable-intake-3"

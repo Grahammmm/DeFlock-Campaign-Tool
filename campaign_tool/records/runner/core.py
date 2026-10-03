@@ -20,6 +20,30 @@ def js(v):return json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=Fals
 def hid(v):return hashlib.sha256(js(v).encode()).hexdigest()
 def hash_ok(v):return isinstance(v,str) and re.fullmatch('[0-9a-f]{64}',v) is not None
 
+def attachment_identity_ok(preserved):
+    """Bound wire locators to their declared immediate message parents, not arbitrary strings."""
+    attachments=preserved.attachments
+    if len(attachments)>100 or any(not isinstance(loc,str) or len(loc)>256 or
+            not hash_ok(sha) or sha not in preserved.documents for loc,sha in attachments):return False
+    locs=[loc for loc,_ in attachments]
+    if len(set(locs))!=len(locs):return False
+    parents=preserved.attachment_parents
+    if not parents:
+        return not preserved.eml_parts and all(re.fullmatch(r'1(?:\.[1-9][0-9]*)+',loc) for loc in locs)
+    if len(parents)!=len(locs) or len({loc for loc,_ in parents})!=len(parents):return False
+    by_part=dict(parents)
+    if set(by_part)!=set(locs):return False
+    emls={loc for loc in locs if loc.startswith('rfc822:')}
+    if len(set(preserved.eml_parts))!=len(preserved.eml_parts) or set(preserved.eml_parts)!=emls:return False
+    for loc in locs:
+        if not re.fullmatch(r'(?:rfc822|mime):1(?:\.[1-9][0-9]*)*(?:/1(?:\.[1-9][0-9]*)*)*',loc):return False
+        chain=loc.split(':',1)[1].split('/')
+        if len(chain)>32:return False
+        expected='rfc822:'+'/'.join(chain[:-1]) if len(chain)>1 else None
+        if by_part[loc]!=expected or (expected is not None and expected not in emls):return False
+    return True
+
+
 def private_path(value,directory=False):
     p=Path(os.path.abspath(value))
     if any(q.is_symlink() for q in (p,*p.parents)):raise ValueError('unsafe_control_path')
@@ -63,12 +87,13 @@ def load_profile(path):
 def observed_runtime(image_digest):
     # Exact code inputs for this preparatory slice. WP0 host-image attestation must replace
     # the caller-declared image field before any activation; this is stated in each run.
-    from campaign_tool.records.intake import mail_delta,folder
+    from campaign_tool.records.intake import mail_delta,folder,rfc822_adapter,rfc822_inventory,wire_rfc822
     files=[Path(__file__),Path(migration.__file__),Path(__file__).with_name('contracts.py'),
            Path(__file__).with_name('adapters.py'),Path(__file__).with_name('__main__.py'),
            Path(__file__).with_name('__init__.py'),Path(__file__).with_name('wp1_bridge.py'),
            Path(__file__).with_name('canonical_mail.py'),Path(__file__).with_name('export_proof.py'),
-           Path(__file__).with_name('attestation.py'),Path(mail_delta.__file__),Path(folder.__file__)]
+           Path(__file__).with_name('attestation.py'),Path(mail_delta.__file__),Path(folder.__file__),
+           Path(rfc822_adapter.__file__),Path(rfc822_inventory.__file__),Path(wire_rfc822.__file__)]
     inventory=[]
     for p in files:
         if p.is_symlink() or p.stat().st_size>8*1024*1024:raise ValueError('runtime_source_bound')
@@ -248,8 +273,11 @@ def run(control_root,profile_path,exporter,backend,hooks,*,runtime_provider,cloc
                             if callable(check_proof) and check_proof(preserved,scope,uid) is not True:raise ValueError('preserved_export_proof_mismatch')
                             expected_id=hid(['mail',profile['account_id'],scope.name,scope.uidvalidity,uid])
                             if preserved.message_id!=expected_id or not hash_ok(preserved.eml_sha256) or not hash_ok(preserved.receipt_sha256) or not 1<=len(preserved.documents)<=101 or any(not hash_ok(s) for s in preserved.documents) or preserved.eml_sha256 not in preserved.documents:raise ValueError('preservation_identity_invalid')
-                            if len(preserved.attachments)>100 or any(not re.fullmatch('1(?:\\.[1-9][0-9]*)+',loc) or not hash_ok(sha) or sha not in preserved.documents for loc,sha in preserved.attachments) or len({loc for loc,sha in preserved.attachments})!=len(preserved.attachments):raise ValueError('mime_identity_invalid')
-                            evidence=js({'documents':preserved.documents,'attachments':preserved.attachments})
+                            if not attachment_identity_ok(preserved):raise ValueError('mime_identity_invalid')
+                            facts={'documents':preserved.documents,'attachments':preserved.attachments}
+                            if preserved.attachment_parents:
+                                facts.update(attachment_parents=preserved.attachment_parents,eml_parts=preserved.eml_parts)
+                            evidence=js(facts)
                             with con:
                                 row=con.execute('SELECT eml_sha,receipt_sha,evidence FROM runner_messages WHERE id=?',(expected_id,)).fetchone()
                                 if row and tuple(row)!=(preserved.eml_sha256,preserved.receipt_sha256,evidence):raise ValueError('message_identity_conflict')

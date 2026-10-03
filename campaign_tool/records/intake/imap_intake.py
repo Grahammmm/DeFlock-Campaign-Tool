@@ -13,6 +13,8 @@ import re
 import stat
 
 from . import eml_export, mail_delta
+from .rfc822_adapter import RFC822AdapterError, RFC822_FAILURE_CODES
+from .rfc822_inventory import RFC822InventoryError
 from ..runner.contracts import Folder
 
 VERSION = "records-imap-intake-v1"
@@ -68,6 +70,8 @@ def _failure_code(error):
         allowed = _INTAKE_FAILURE_CODES
     elif type(error) is mail_delta.Rejected:
         allowed = _MAIL_DELTA_FAILURE_CODES
+    elif type(error) in {RFC822AdapterError, RFC822InventoryError}:
+        allowed = RFC822_FAILURE_CODES
     else:
         return "fetch_or_preserve_failed"
     if len(error.args) == 1:

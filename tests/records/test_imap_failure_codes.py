@@ -125,6 +125,22 @@ class ExporterObservabilityTests(unittest.TestCase):
             return report
         return report["folders"][0]["failed"]
 
+    def test_scalar_crlf_attachment_keeps_legacy_bytes_and_advances_checkpoint(self):
+        import hashlib
+        import json
+        from tests.records.test_rfc822_integration import eml, multi
+
+        payload = b"line one\r\nline two\r\n"
+        attachment = (b"Content-Type: text/plain\r\n"
+            b"Content-Disposition: attachment; filename=synthetic.txt\r\n"
+            b"Content-Transfer-Encoding: 7bit\r\n\r\n" + payload)
+        raw = multi([eml(), attachment])
+        self.run_message(raw, expected_success=True)
+        root = self.base / "mail"
+        receipt = json.loads((root / hashlib.sha256(raw).hexdigest() / "receipt.json").read_text())
+        item, = receipt["attachments"]
+        self.assertEqual((root / item["path"]).read_bytes(), payload.replace(b"\r\n", b"\n"))
+
     def test_actual_exporter_ambiguous_inline_body_code_survives(self):
         message = EmailMessage()
         message.set_content("<p>synthetic body</p>", subtype="html")
@@ -173,13 +189,13 @@ class ExporterObservabilityTests(unittest.TestCase):
                b'\r\n<p>synthetic body</p>\r\n--synthetic-related--\r\n')
         self.assertEqual(self.run_message(raw), "uid 1: invalid_leaf_disposition")
 
-    def test_actual_exporter_unsupported_rfc822_code_survives(self):
+    def test_actual_exporter_invalid_encapsulated_headers_code_survives(self):
         message = EmailMessage()
         message.set_content("synthetic outer")
         nested = EmailMessage()
         nested.set_content("synthetic nested")
         message.add_attachment(nested)
-        self.assertEqual(self.run_message(message.as_bytes()), "uid 1: unsupported_rfc822_part")
+        self.assertEqual(self.run_message(message.as_bytes()), "uid 1: rfc822_wire_rejected")
 
     def test_backend_scope_rejection_code_survives(self):
         self.assertEqual(self.run_message(b"Subject: synthetic\r\n\r\nbody",
