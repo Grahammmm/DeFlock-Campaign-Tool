@@ -80,3 +80,20 @@ from the ledger in both manual and unattended reports, including mixed batches.
 It is not a substantive model review or acceptance claim. Gap/hold/failure status,
 nonzero exit, deferred counters and health remain independent and authoritative;
 a completed email plus a held scan reports a count of one and unhealthy gaps.
+
+## No-paid operational progress and substantive gaps
+
+The default operational path needs no model/provider configuration or paid
+service. Intake, extraction, catalog/detector work and mechanical receipts may
+progress with models off. Both nominal and unattended reports conservatively
+expose `substantive_complete: false` and `substantive_review_status: queued` for
+nonempty corpora (`not_applicable` for an empty corpus). Operational completion,
+mechanical integer counts, technical gap/hold status and substantive review are
+separate contracts; `completed` does not certify source-level substantive review.
+
+The label is not a newly implemented assignment queue or independent review.
+Manual/independent source review remains queued through the existing private
+workflow, with no automatic hold clearing. Later reviewed composition must retain
+nested `analysis` metadata, including detector-only mode and its own
+`substantive_complete: false`, as well as review-content/receipt provenance. This
+safety branch does not configure a provider or edit the analysis implementation.

@@ -133,10 +133,42 @@ class MechanicalCountTests(fixtures.SafetyFixture, unittest.TestCase):
         report = pipeline.run(inbox)
         self.assertIs(type(report["end_to_end_complete"]), int)
         self.assertEqual(report["end_to_end_complete"], 1)
+        self.assertIs(report["substantive_complete"], False)
+        self.assertEqual(report["substantive_review_status"], "queued")
         self.assertEqual(report["status"], "completed_with_gaps")
         self.assertEqual(report["exit_code"], 3)
         self.assertEqual(report["safety"]["phases"]["advance"]["review_required"], 1)
         self.assertEqual(run.stages.counts(self.root.ledger)["candidate_seven_stage_complete"], 1)
+
+    def test_empty_free_run_is_operationally_complete_not_substantively_certified(self):
+        report = unattended.UnattendedPipeline(self.root.path).run()
+        self.assertEqual((report["status"], report["exit_code"]), ("completed", 0))
+        self.assertIs(type(report["end_to_end_complete"]), int)
+        self.assertEqual(report["end_to_end_complete"], 0)
+        self.assertIs(report["substantive_complete"], False)
+        self.assertEqual(report["substantive_review_status"], "not_applicable")
+
+    def test_free_nominal_progress_preserves_nested_analysis_without_provider_access(self):
+        inbox = fixtures.PipelineSafetyTests.inbox(self)
+        def no_provider(*args, **kwargs):
+            raise AssertionError("provider access forbidden in free operational mode")
+        pipeline = run.Pipeline(self.root.path, opener=no_provider)
+        unchecked = pipeline._run_locked_unchecked
+        analysis = {"mode": "detector_only", "substantive_complete": False}
+        def with_analysis(*args, **kwargs):
+            report = unchecked(*args, **kwargs)
+            report["analysis"] = analysis
+            return report
+        with patch.object(pipeline, "_run_locked_unchecked", side_effect=with_analysis):
+            report = pipeline.run(inbox)
+        self.assertEqual((report["status"], report["exit_code"]), ("completed", 0))
+        self.assertIs(type(report["end_to_end_complete"]), int)
+        self.assertEqual(report["end_to_end_complete"], 2)
+        self.assertIs(report["substantive_complete"], False)
+        self.assertEqual(report["substantive_review_status"], "queued")
+        self.assertIs(report["analysis"], analysis)
+        self.assertIsNone(report["model_id"])
+        self.assertIsNone(report["challenge_model_id"])
 
 
 if __name__ == "__main__":

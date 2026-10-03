@@ -455,6 +455,8 @@ class UnattendedPipeline(manual.Pipeline):
                       "intake_deferred": intake_deferred,
                       "end_to_end_complete": summary["candidate_seven_stage_complete"],
                       "review_holds_retained": self.review_holds_retained,
+                      "substantive_complete": False,
+                      "substantive_review_status": "queued" if summary["originals"] else "not_applicable",
                       "model_id": None, "challenge_model_id": None}
             report_raw = manual.encoded(report)
             report_sha256 = None

@@ -648,6 +648,8 @@ class Pipeline:
         gaps = gaps or any(value.startswith(("blocked", "pending")) for value in outcomes)
         status = "failed" if technical else "completed_with_gaps" if gaps else "completed"
         report.update(status=status, exit_code=2 if technical else 3 if gaps else 0)
+        report.setdefault("substantive_complete", False)
+        report.setdefault("substantive_review_status", "queued" if report["originals"] else "not_applicable")
         with store.ledger(self.root.ledger) as con:
             con.execute("UPDATE runs SET status=?,summary=? WHERE run_id=?",
                         (status, encoded({"status": status, "subjects": len(report.get("subjects", [])), "counts": report["counts"]}).decode(), self.run_id))
