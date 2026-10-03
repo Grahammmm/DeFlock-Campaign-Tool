@@ -125,6 +125,22 @@ class ExporterObservabilityTests(unittest.TestCase):
             return report
         return report["folders"][0]["failed"]
 
+    def test_scalar_crlf_attachment_preserves_bytes_and_advances_checkpoint(self):
+        import hashlib
+        import json
+        from tests.records.test_rfc822_integration import eml, multi
+
+        payload = b"line one\r\nline two\r\n"
+        attachment = (b"Content-Type: text/plain\r\n"
+            b"Content-Disposition: attachment; filename=synthetic.txt\r\n"
+            b"Content-Transfer-Encoding: 7bit\r\n\r\n" + payload)
+        raw = multi([eml(), attachment])
+        self.run_message(raw, expected_success=True)
+        root = self.base / "mail"
+        receipt = json.loads((root / hashlib.sha256(raw).hexdigest() / "receipt.json").read_text())
+        item, = receipt["attachments"]
+        self.assertEqual((root / item["path"]).read_bytes(), payload)
+
     def test_actual_exporter_ambiguous_inline_body_code_survives(self):
         message = EmailMessage()
         message.set_content("<p>synthetic body</p>", subtype="html")

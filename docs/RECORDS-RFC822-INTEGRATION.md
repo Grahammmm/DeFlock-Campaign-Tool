@@ -105,7 +105,7 @@ this adapter does not replace mailbox or worker admission limits.
 
 ## Composed exporter, importer and canonical runner
 
-The exporter selects the versioned wire receipt only when a message contains an RFC822 node. Scalar-only messages retain the legacy receipt and policy. It completes the bounded plan before writing source files, preserves every message capture as exact bytes, and classifies scalar leaves using the existing body ancestry and multipart/related-root checks separately inside each contained message.
+The exporter selects the versioned wire receipt only when a message contains an RFC822 node. Scalar-only messages retain the legacy receipt shape and body/attachment selection. New scalar exports add `scalar_payload_policy: exact-v1` so CRLF and LF attachment bytes are hashed, stored and rebound consistently. Unmarked historical scalar receipts retain their original file-parser normalization for import and replay; unknown policy markers are rejected. It completes the bounded plan before writing source files, preserves every message capture as exact bytes, and classifies scalar leaves using the existing body ancestry and multipart/related-root checks separately inside each contained message.
 
 The importer securely stages every listed file, verifies hashes and sizes, rederives the plan from the staged original, and binds complete receipt membership, metadata, roles and budgets before opening the ledger transaction. It stores immediate parent hashes and complete MIME occurrence chains. Capture list order is irrelevant. Nested EML captures use EML format explicitly; equal bytes still retain distinct occurrence identities. Existing replay, quarantine, owner-only paths, writer lock and rollback controls remain.
 
