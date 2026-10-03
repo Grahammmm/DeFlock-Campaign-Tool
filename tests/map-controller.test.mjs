@@ -9,7 +9,7 @@ if(run.status!==0)throw Error(run.stderr);
 const code=JSON.parse(run.stdout).javascript;
 const square=[[0,0],[10,0],[10,10],[0,10],[0,0]];
 const hole=[[3,3],[7,3],[7,7],[3,7],[3,3]];
-function setup(){
+function setup(js=code){
   const nodes={count:{textContent:''},fallback:{innerHTML:''}};
   const context={
     URL,console,CAMERA_DATA_URL:'fictional-cameras.geojson',BOUNDARY_DATA_URL:'fictional-boundary.geojson',
@@ -22,7 +22,7 @@ function setup(){
       getElementById(id){return id==='map-selection-count'?nodes.count:{};}
     }
   };
-  vm.createContext(context);vm.runInContext(code,context);
+  vm.createContext(context);vm.runInContext(js,context);
   return {context,nodes};
 }
 test('ring membership distinguishes inside from outside',()=>{
@@ -63,4 +63,26 @@ test('selection labels candidates as uncertain and resets to all points',()=>{
 test('missing map library leaves a source-map fallback',()=>{
   const {context:c,nodes}=setup();c.initMap();
   assert.match(nodes.fallback.innerHTML,/could not load/);assert.ok(nodes.fallback.innerHTML.includes(config.source_map_url));
+});
+
+test('authored context renders on a clicked point and escapes source-controlled text',async()=>{
+  const hook='function(p){return "<br>Source review: "+mapText(p.reviewLabel||"Not checked");}';
+  const rendered=spawnSync('python3',['campaign_tool/map_controller.py'],{input:JSON.stringify({config,profile_renderer:'function setCityText(){}',point_context_renderer:hook}),encoding:'utf8'});
+  assert.equal(rendered.status,0,rendered.stderr);
+  const {context:c}=setup(JSON.parse(rendered.stdout).javascript);
+  const events={};let html='';
+  class MapStub {
+    on(name,...args){events[name]=args.at(-1);}
+    addControl(){} addSource(){} addLayer(){} getLayer(){return true;}
+    setFilter(){} fitBounds(){} resize(){}
+  }
+  class PopupStub {setLngLat(){return this;}setHTML(value){html=value;return this;}addTo(){return this;}}
+  c.window.maplibregl=c.maplibregl={Map:MapStub,Popup:PopupStub,NavigationControl:class{},AttributionControl:class{}};
+  c.ResizeObserver=class{observe(){}};
+  c.document.querySelector=()=>null;
+  c.fetch=async()=>({json:async()=>({features:[]})});
+  c.initMap();events.load();await new Promise(resolve=>setImmediate(resolve));
+  events.click({lngLat:[1,1],features:[{properties:{reviewLabel:'<img src=x onerror=bad>',url:'https://www.openstreetmap.org/node/1'}}]});
+  assert.match(html,/Source review: &lt;img src=x onerror=bad&gt;/);
+  assert.ok(html.includes('View source record'));assert.equal(html.includes('<img'),false);
 });
