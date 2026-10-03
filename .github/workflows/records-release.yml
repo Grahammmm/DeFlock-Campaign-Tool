@@ -2,13 +2,18 @@ name: Records release package
 on:
   pull_request:
   push:
-    branches: [main, 'codex/records-*']
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
   package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Full synthetic suite plus dependency install and source-bound packaging.
+    timeout-minutes: 20
     strategy:
       matrix:
         python: ['3.11', '3.12', '3.13']
@@ -23,6 +28,7 @@ jobs:
       - name: Install build and test dependencies in disposable CI
         run: python -m pip install -r requirements-build.txt -r requirements-records-test.txt
       - name: Synthetic tests and public patterns (not private export clearance)
+        timeout-minutes: 15
         run: |
           python -B -m unittest discover -v
           python -B -m campaign_tool.records scan-public --patterns-only

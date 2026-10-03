@@ -767,6 +767,9 @@ def main(argv=None):
     parser.add_argument("--ocr", action="store_true", help="use local tesseract/pdftoppm for image-only PDF pages when installed")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    from .runtime import require
+    if not require(args.root):
+        return 2
     pipeline = build_pipeline(args)
     report = pipeline.run(args.inbox, args.mail_config)
     if args.json:
