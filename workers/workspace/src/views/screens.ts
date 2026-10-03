@@ -1,3 +1,4 @@
+import { requiresDeliveryReconciliation } from "../db.ts";
 // Server-rendered workspace screens. Every value is escaped by the html tag.
 import { fmtDate, html, jsonBlock, raw, type Safe } from "@deflock/shared/html";
 import { reviewBlockers, type JsonObject } from "@deflock/shared/review";
@@ -125,6 +126,9 @@ ${jsonBlock(JSON.parse(a.proposal_json))}
 ${a.state === "proposed" ? html`<form method="post" action="/approvals/${a.action_id}/approve" style="display:inline"><button class="primary" type="submit">Approve</button></form>
 <form method="post" action="/approvals/${a.action_id}/edit" class="stack" style="margin-top:.6rem"><label class="field">Edit proposal (JSON merged over the current one)<textarea name="proposal" style="min-height:5rem">{}</textarea></label><button class="secondary" type="submit">Save edit</button></form>
 <form method="post" action="/approvals/${a.action_id}/reject" class="stack" style="margin-top:.6rem"><label class="field">Reason<input type="text" name="reason"></label><button class="danger" type="submit">Reject</button></form>` : ""}
+${requiresDeliveryReconciliation(a) ? html`<p>Delivery is unresolved. Check this action and its provider receipt before retrying. Reconciliation does not send anything.</p>
+${a.provider_receipt ? jsonBlock(JSON.parse(a.provider_receipt)) : ""}
+<form method="post" action="/approvals/${a.action_id}/reconcile" class="stack"><label class="field">Provider-confirmed outcome<select name="outcome" required><option value="">Choose after checking provider</option><option value="delivered">Delivered — retain as executed</option><option value="not_delivered">Not delivered — require fresh approval</option></select></label><label class="field">Provider-check reference<input name="reference" maxlength="500" required></label><label class="field">Provider delivery time (UTC ISO, delivered only)<input name="delivered_at" placeholder="2026-01-01T12:00:00Z"></label><button class="secondary" type="submit">Record delivery check</button></form>` : ""}
 ${a.state === "approved" ? html`<form method="post" action="/approvals/${a.action_id}/execute" style="display:inline"><button class="primary" type="submit">Execute now</button></form>` : ""}
 </div>`;
   return html`<h1>Approvals</h1>
