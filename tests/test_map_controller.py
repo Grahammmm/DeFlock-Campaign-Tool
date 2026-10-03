@@ -15,7 +15,7 @@ class MapContractTests(unittest.TestCase):
 
     def test_optional_context_default_preserves_accepted_bytes(self):
         import hashlib
-        self.assertEqual(hashlib.sha256(render(CONFIG, "").encode()).hexdigest(), "598492ad72765421b09e77094b0772d97285073fd522fb0ace533441ae8aada2")
+        self.assertEqual(hashlib.sha256(render(CONFIG, "").encode()).hexdigest(), "598492ad72765421b09e77094b0772d97285073fd522fb0ace533441ae8aada2")  # pragma: allowlist secret -- SHA-256 of public generated controller, not a credential
         self.assertEqual(render(CONFIG, ""), render(CONFIG, "", ""))
 
     def test_context_is_a_bounded_trusted_single_pass_hook(self):
