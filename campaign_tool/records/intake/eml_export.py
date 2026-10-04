@@ -28,9 +28,31 @@ def _write_private(path, data):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "wb") as stream:
         stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
-def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
+def _ensure_private(path, data):
+    """Durable immutable writer; verify existing bytes instead of trusting existence."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    mail_delta.private_path(path.parent, directory=True)
+    if not path.exists():
+        try:
+            _write_private(path, data)
+        except FileExistsError:
+            pass
+    with folder.secure_open(path) as stream:
+        stored = stream.read(len(data) + 1)
+    mail_delta.require(stored == data, "export_identity_conflict")
+
+
+def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, original_format="eml"):
     """Persist ``raw`` and its attachable parts; return the receipt path.
 
     Layout under ``mail_root``: ``<sha>/message.eml``, ``<sha>/<part>-<name>``
@@ -47,6 +69,12 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
         raise mail_delta.Rejected("message_size_limit")
     if type(uidvalidity) is not int or type(uid) is not int or uidvalidity <= 0 or uid <= 0:
         raise mail_delta.Rejected("invalid_identity_numbers")
+    from . import mail_wire
+    if mail_wire.needs_extended(bytes(raw), original_format):
+        from .native_receipt import export
+        return export(raw, mail_root=mail_root, account=account, mailbox=mailbox,
+                      uidvalidity=uidvalidity, uid=uid, original_format=original_format)
+    mail_delta.require(original_format == "eml", "mail_wire_invalid_format")
     root = Path(mail_root)
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     sha = hashlib.sha256(raw).hexdigest()
@@ -134,6 +162,10 @@ def attachment_forms(receipt_path):
     """Map attachment sha256 -> detected format name, from the export receipt."""
     receipt, _, items = mail_delta.load_receipt(receipt_path)
     root = receipt_path.parent.parent
+    if receipt.get("schema") == "mail-wire-receipt-v2":
+        return {item["sha"]: item["source"].get("format") or folder.fmt(
+                    item["source"].get("original_filename") or item["path"],
+                    (root / item["path"]).read_bytes()[:16384]) for item in items}
     forms = {}
     for item in items[1:]:
         path = root / item["path"]

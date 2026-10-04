@@ -230,26 +230,21 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
                     emit("pdf_page",loc,text,dict(ocr_needed=needed,visual_review="not_done"))
                 except Exception as e: issue("page_error",loc,e); emit("pdf_page",loc,"",dict(error=str(e),ocr_needed=True))
         elif form=="eml":
+            from campaign_tool.records.intake import mail_wire
+            plan=mail_wire.prepare(raw,"eml",max_total_bytes=min(limits["expanded_bytes"],512*1024**2),
+                                   max_parts=min(1000,limits["members"]),max_captures=min(100,limits["members"]),
+                                   max_depth=min(32,limits["depth"]-depth+1))
+            mail_wire.store_native(plan,out)
             msg=BytesParser(policy=email.policy.default).parsebytes(raw)
             emit("email_headers",{"mime":"0"},data=dict(headers=list(msg.raw_items()),defects=[str(x) for x in msg.defects]))
-            def mime(part,loc):
-                if part.defects: issue("mime_defect",loc,[str(x) for x in part.defects])
-                if part.get_content_type()=="message/rfc822":
-                    for n,m in enumerate(part.get_payload() if isinstance(part.get_payload(),list) else []):
-                        child(part.get_filename() or "attached.eml",m.as_bytes(),dict(mime=loc,message=n),"reserialized_rfc822")
-                    issue("rfc822_reserialized",loc,"child hash is serialized parsed message, not asserted original attachment octets"); return
-                if part.is_multipart():
-                    for n,p in enumerate(part.iter_parts(),1): mime(p,loc+"."+str(n))
-                    return
-                data=part.get_payload(decode=True) or b""; name=part.get_filename(); typ=part.get_content_type()
-                emit("mime_part",{"mime":loc},data=dict(content_type=typ,filename=name,disposition=part.get_content_disposition(),headers=list(part.raw_items())))
-                if name or part.get_content_disposition()=="attachment" or not typ.startswith("text/"): child(name or ("part-"+loc),data,{"mime":loc},"decoded_mime_payload")
-                else:
-                    charset=part.get_content_charset() or "utf-8"
-                    try: body=data.decode(charset)
-                    except (UnicodeError,LookupError): body=data.decode("utf-8",errors="replace"); issue("body_decode_replacement",loc,charset)
-                    emit("email_body",{"mime":loc},body,dict(content_type=typ,charset=charset))
-            mime(msg,"1")
+            for unit in mail_wire.project_units(plan):
+                emit(unit["kind"],unit["locator"],unit["text"],unit["data"])
+            for capture in plan.captures:
+                child(capture.metadata.get("original_filename") or "attachment.bin",capture.payload,
+                      {"part":capture.part,"wire_schema":mail_wire.SCHEMA},capture.metadata["relation"])
+                if children and children[-1]["sha"]==mail_wire.digest(capture.payload):
+                    children[-1].update(parent_sha=capture.parent_sha256,
+                                        format=capture.metadata.get("format") or children[-1]["format"])
         elif form in {"csv","tsv"}:
             try: text=raw.decode("utf-8-sig"); encoding="utf-8-sig"
             except UnicodeError:
@@ -361,7 +356,8 @@ def reconcile_edges(db,sha,digest,config,source_version):
     shared child hashes active; old blobs, receipts and units are not deleted.
     """
     from campaign_tool.records.intake.rfc822_adapter import SCHEMA as wire_schema
-    incoming={js(child["locator"]):child for child in digest.get("children",[])}
+    incoming={js(child["locator"]):child for child in digest.get("children",[])
+              if child.get("parent_sha",sha)==sha}
     complete=digest.get("children_inventory_complete") is True
     stamp=now()
     for edge in list(db.execute("SELECT * FROM edges WHERE parent=?",(sha,))):
@@ -375,6 +371,9 @@ def reconcile_edges(db,sha,digest,config,source_version):
                           and isinstance(locator["mime"],str)
                           and len(locator["mime"])<=256
                           and re.fullmatch(r"1(?:\.[1-9][0-9]*)*",locator["mime"]) is not None)
+        if isinstance(locator,dict) and locator.get("wire_schema")=="mail-wire-receipt-v2":
+            wire_acquisition=(set(locator)=={"mime","part","wire_schema"} and
+                              isinstance(locator["part"],str) and 0<len(locator["part"])<=256)
         new=incoming.get(edge["locator"])
         reason=None
         if new and (new["sha"]!=edge["child"] or new["name"]!=edge["name"]):
@@ -452,9 +451,10 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
                     db.execute("INSERT INTO units VALUES(?,?,?,?,?,?)",(sha,n,u["kind"],js(u["locator"]),u["text"],js(u["data"])))
         reconcile_edges(db,sha,digest,config,doc["version"])
         for c in digest.get("children",[]):
-            loc=js(c["locator"]); register(db,c["sha"],c["bytes"],c["format"],c["name"],"container",sha,c["locator"],dict(relation=c["relation"],parent_sha256=sha))
+            parent=c.get("parent_sha",sha)
+            loc=js(c["locator"]); register(db,c["sha"],c["bytes"],c["format"],c["name"],"container",parent,c["locator"],dict(relation=c["relation"],parent_sha256=parent))
             db.execute("INSERT OR IGNORE INTO preservations VALUES(?,?,?,?)",(c["sha"],str(out/"blobs"/c["sha"]),now(),c["bytes"]))
-            db.execute("INSERT OR REPLACE INTO edges VALUES(?,?,?,?)",(sha,loc,c["sha"],c["name"]))
+            db.execute("INSERT OR REPLACE INTO edges VALUES(?,?,?,?)",(parent,loc,c["sha"],c["name"]))
         levels,_=active(db)
         if selection is None:
             for child in sorted(levels,key=lambda x:(levels[x],x)):

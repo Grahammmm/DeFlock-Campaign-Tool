@@ -85,6 +85,19 @@ class CanonicalMailBackend(LegacyIntakeBackend):
         """Called only under the control writer lock for a prior interrupted run."""
         return self._finalize(identity,'interrupted',{'reason':'control_writer_recovered','pipeline_complete':False})
     def _eml_projection(self,value,receipt_path,account,scope,uid):
+        if value.original_format == "msg":
+            from campaign_tool.records.intake.mail_wire import prepare
+            with intake_folder.secure_open(self.output / "blobs" / value.eml_sha256) as stream:
+                raw = stream.read(64*1024**2 + 1)
+            if hashlib.sha256(raw).hexdigest() != value.eml_sha256:
+                raise ValueError("mail_headers_changed")
+            plan = prepare(raw, "msg")
+            headers = next(unit["data"] for unit in plan.units
+                           if unit["kind"] == "msg_headers" and unit["locator"]["source_part"] == "0")
+            projection = js({"schema":"verified-msg-properties-v1","properties":headers,
+                             "source_original_sha256":value.eml_sha256,"provider_attested":False})
+            return (value.message_id,account,scope.name,scope.uidvalidity,uid,None,
+                    value.eml_sha256,projection,None,"configured_namespace_unattested")
         path=self.output/'blobs'/value.eml_sha256;raw=bytearray();ended=False
         with intake_folder.secure_open(path) as f:
             before=os.fstat(f.fileno())
@@ -181,13 +194,17 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                 else:
                     loc=source['mime_path']
                     parent_loc=dict(checked.attachment_parents).get(loc)
-                    parent=checked.message_id if parent_loc is None else hid(['attachment',checked.message_id,parent_loc])
-                    if row['parent_occurrence_id']!=parent or row['id']!=hid(['attachment',checked.message_id,loc]) or (loc,subject) not in checked.attachments:return False
+                    native={item["part"]:item for item in checked.native_items}
+                    parent=checked.message_id if parent_loc is None else hid(["native-msg-item" if parent_loc in native else "attachment",checked.message_id,parent_loc])
+                    expected_id=hid(["native-msg-item" if loc in native else "attachment",checked.message_id,loc])
+                    if row["parent_occurrence_id"]!=parent or row["id"]!=expected_id:return False
+                    if loc in native:
+                        if native[loc]["source_original_sha256"]!=subject or evidence.get("native_item")!=native[loc]:return False
+                    elif (loc,subject) not in checked.attachments or "native_item" in evidence:return False
                 observed_hashes.add(digest)
             if envelope is not None and envelope['verification_receipt_sha256'] not in observed_hashes:return False
             return True
         except (OSError,ValueError,KeyError,TypeError,RecursionError):return False
-        except Exception:return False
     def preserve(self,receipt_path,account,scope,uid):
         if self.run_identity is None:raise IntegrationGap('canonical_run_identity_missing')
         value=super().preserve(receipt_path,account,scope,uid)
@@ -195,9 +212,21 @@ class CanonicalMailBackend(LegacyIntakeBackend):
         verification_path=self._capture_verification(receipt_path,value.receipt_sha256)
         records=[(value.message_id,value.eml_sha256,'mail',None,'message')]
         parents=dict(value.attachment_parents)
-        records.extend((hid(['attachment',value.message_id,loc]),sha,'attachment',
-                        hid(['attachment',value.message_id,parents[loc]]) if parents.get(loc) is not None else value.message_id,loc)
+        native={item["part"]:item for item in value.native_items}
+        def parent_id(loc):
+            parent=parents.get(loc)
+            return value.message_id if parent is None else hid(["native-msg-item" if parent in native else "attachment",value.message_id,parent])
+        records.extend((hid(["attachment",value.message_id,loc]),sha,"attachment",parent_id(loc),loc)
                        for loc,sha in value.attachments)
+        records.extend((hid(["native-msg-item",value.message_id,loc]),item["source_original_sha256"],
+                        "attachment",parent_id(loc),loc) for loc,item in native.items())
+        ordered=[];seen=set()
+        while records:
+            ready=[row for row in records if row[3] is None or row[3] in seen]
+            if not ready:raise ValueError("canonical_occurrence_conflict")
+            for row in ready:
+                ordered.append(row);seen.add(row[0]);records.remove(row)
+        records=ordered
         mail_values=self._eml_projection(value,receipt_path,account,scope,uid)
         with self.store.ledger(self.database) as c:
             c.execute('BEGIN IMMEDIATE')
@@ -211,10 +240,12 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                     original=c.execute('SELECT bytes,storage_path,scope FROM originals WHERE sha256=?',(sha,)).fetchone()
                     if original and (original['bytes']!=proof['bytes'] or original['storage_path']!=path or original['scope']!='in_scope'):raise ValueError('canonical_original_binding_conflict')
                     if not original:
-                        c.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',(sha,proof['bytes'],'message/rfc822' if kind=='mail' or loc in value.eml_parts else None,stamp,'original','in_scope',path,'captured',None,js({'method':'verified_export_receipt','receipt_sha256':value.receipt_sha256})))
+                        c.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',(sha,proof['bytes'],("application/vnd.ms-outlook" if kind=="mail" and value.original_format=="msg" else "message/rfc822" if kind=="mail" or loc in value.eml_parts else None),stamp,'original','in_scope',path,'captured',None,js({'method':'verified_export_receipt','receipt_sha256':value.receipt_sha256})))
                         for stage in self.store.STAGES:c.execute("INSERT INTO stage_state VALUES(?,?,'pending',NULL,?,?,?,?)",(sha,stage,'runner',stamp,rid,'domain validation pending'))
                     source=js({'account':account,'folder':scope.name,'uidvalidity':scope.uidvalidity,'uid':uid,'mime_path':loc if kind=='attachment' else None})
-                    evidence=js({'receipt_sha256':value.receipt_sha256,'cas_sha256':sha,'bytes':proof['bytes'],'export_receipt_path':str(Path(receipt_path).absolute()),'verification_receipt_path':verification_path})
+                    evidence_obj={'receipt_sha256':value.receipt_sha256,'cas_sha256':sha,'bytes':proof['bytes'],'export_receipt_path':str(Path(receipt_path).absolute()),'verification_receipt_path':verification_path}
+                    if loc in native:evidence_obj["native_item"]=native[loc]
+                    evidence=js(evidence_obj)
                     old=c.execute('SELECT original_sha256,kind,source_ref,parent_occurrence_id,acquisition_method,evidence FROM occurrences WHERE id=?',(oid,)).fetchone()
                     expected=(sha,kind,source,parent,'verified_mail_export',evidence)
                     if old and tuple(old)!=expected:

@@ -81,30 +81,19 @@ def _image(source,raw):
     return units, 'pillow', _version('Pillow')
 
 def _msg(source,raw,root):
-    import extract_msg
-    units=[];children=[];expanded=0
-    with extract_msg.openMsg(str(source)) as message:
-        if not hasattr(message,'body'):raise ValueError('unsupported_msg_type')
-        headers={k:str(getattr(message,k,None) or '') for k in ('subject','sender','to','cc','date')}
-        units.append({'kind':'msg_headers','locator':{'property':'headers'},'text':'','data':headers})
-        units.append({'kind':'msg_body','locator':{'property':'body'},'text':message.body or '', 'data':{'representation':'decoded_body'}})
-        attachments=list(getattr(message,'attachments',[]))
-        if len(attachments)>10000:raise ValueError('msg_attachment_bound')
-        for i,attachment in enumerate(attachments,1):
-            name=str(getattr(attachment,'longFilename',None) or getattr(attachment,'shortFilename',None) or '')
-            data=getattr(attachment,'data',None)
-            preserved=isinstance(data,bytes) and len(data)<=folder.LIMITS['member_bytes'] and expanded+len(data)<=folder.LIMITS['expanded_bytes']
-            item={'filename':name,'bytes_preserved':preserved,'needs_attachment_decoder':not preserved}
-            if preserved:
-                child_sha=hashlib.sha256(data).hexdigest();target=root/'blobs'/child_sha
-                if not target.exists():
-                    fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
-                    with os.fdopen(fd,'wb') as stream:stream.write(data)
-                elif hashlib.sha256(target.read_bytes()).hexdigest()!=child_sha:raise ValueError('child_hash_conflict')
-                expanded+=len(data);item['sha256']=child_sha
-                children.append({'sha':child_sha,'bytes':len(data),'name':name,'locator':{'attachment':i},'relation':'decoded_msg_attachment','format':folder.fmt(name,data[:16384],data)})
-            units.append({'kind':'msg_attachment','locator':{'attachment':i},'text':'','data':item})
-    return units,'extract-msg',_version('extract-msg'),children
+    from .intake import mail_wire
+    plan=mail_wire.prepare(raw,"msg",max_total_bytes=min(folder.LIMITS["expanded_bytes"],512*1024**2),
+                           max_parts=min(1000,folder.LIMITS["members"]),
+                           max_captures=min(100,folder.LIMITS["members"]),max_depth=min(32,folder.LIMITS["depth"]))
+    mail_wire.store(plan,root)
+    mail_wire.store_native(plan,root)
+    children=[{"sha":hashlib.sha256(c.payload).hexdigest(),"bytes":len(c.payload),
+               "name":c.metadata.get("original_filename") or "attachment.bin",
+               "locator":{"part":c.part,"wire_schema":mail_wire.SCHEMA},
+               "relation":c.metadata["relation"],"parent_sha":c.parent_sha256,
+               "format":c.metadata.get("format") or folder.fmt(c.metadata.get("original_filename") or "",c.payload[:16384],c.payload)}
+              for c in plan.captures]
+    return list(mail_wire.project_units(plan)),"extract-msg",_version("extract-msg"),children
 
 def page_manifest(units, expected_pages=None, parser='unknown', parser_version='unknown', ocr_receipts=None):
     """Page rows for coverage accounting.
@@ -185,7 +174,14 @@ def _child(source,sha,form,dest,root):
         with (dest/'units.jsonl').open('x') as stream:
             for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
         issues=[{'code':'msg_attachment_bytes_not_preserved'}] if any(u['kind']=='msg_attachment' and not u['data']['bytes_preserved'] for u in units) else []
-        _write(dest/'digest.json',{'stage':'partial' if issues else 'complete','counts':{'units':len(units)},'issues':issues,'children':children, 'parser':parser,'parser_version':version})
+        metadata={'stage':'partial' if issues else 'complete','counts':{'units':len(units)},
+                  'issues':issues,'children':children,'parser':parser,'parser_version':version}
+        if form=='msg':
+            metadata.update(parser='legacy-intake:msg',
+                parser_components={'intake':folder.VERSION+'/'+folder.ENGINE_REVISION,
+                                   'extract-msg':version,'olefile':_version('olefile')},
+                artifacts={'units.jsonl':hashlib.sha256((dest/'units.jsonl').read_bytes()).hexdigest()})
+        _write(dest/'digest.json',metadata)
     else:
         folder.worker(Path(source),sha,form,dest,root,dict(folder.LIMITS),0)
         metadata=json.loads((dest/'digest.json').read_text())

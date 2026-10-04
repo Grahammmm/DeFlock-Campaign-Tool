@@ -370,11 +370,11 @@ class IMAPIntake:
                         receipt = eml_export.export_message(raw, mail_root=self.mail_root, account=self.config["account_id"],
                                                             mailbox=folder, uidvalidity=validity, uid=uid)
                         self.backend.preserve(receipt, self.config["account_id"], Folder(folder, validity), uid)
+                        with store.ledger(self.ledger) as con:
+                            self._save(con, folder, validity, uid, success=True)
+                        highest = uid
                         entry["preserved"] += 1
                         report["preserved"] += 1
-                        highest = uid
-                        with store.ledger(self.ledger) as con:
-                            self._save(con, folder, validity, highest, success=True)
                     except Exception as error:
                         code = _failure_code(error)
                         entry["failed"] = f"uid {uid}: {code}"

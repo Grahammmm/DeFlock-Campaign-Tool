@@ -95,6 +95,9 @@ def load_receipt(path):
         receipt = json.loads(raw)
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise Rejected("invalid_receipt_file") from None
+    if isinstance(receipt, dict) and receipt.get("schema") == "mail-wire-receipt-v2":
+        from .native_receipt import parse
+        return parse(receipt)
     require(isinstance(receipt, dict) and receipt.get("complete") is True,
             "incomplete_receipt")
     account = short_text(receipt.get("account_id"), "invalid_account")
@@ -327,7 +330,20 @@ def safe_filename(original_filename):
     return cleaned or "attachment.bin"
 
 
+def prepare_mail(raw, form="eml", **limits):
+    from .mail_wire import prepare
+    return prepare(raw, form, **limits)
+
+
+def _native_artifact(root, out, literal, expected, destination):
+    from .native_receipt import artifact
+    return artifact(root, out, literal, expected, destination)
+
+
 def bind_parts(items, receipt=None):
+    if receipt is not None and receipt.get("schema") == "mail-wire-receipt-v2":
+        from .native_receipt import bind
+        return bind(items, receipt, items[0]["native_root"], items[0]["native_output"])
     if receipt is not None and "schema" in receipt:
         from . import rfc822_adapter as adapter
         with folder.secure_open(items[0]["tmp"]) as source:
@@ -447,6 +463,8 @@ def cleanup_created_blobs(out, created):
 def edge_locator(item):
     """Keep exact-wire relationships distinct from legacy decoded derivations."""
     locator = {"mime": item["mime"]}
+    if item.get("wire_schema") == "mail-wire-receipt-v2":
+        locator["part"] = item["part"]
     if "wire_schema" in item:
         locator["wire_schema"] = item["wire_schema"]
     return folder.js(locator)
@@ -515,7 +533,7 @@ def ledger_import(db, out, root, identity, items, created):
     added_edges = 0
     for item, record in zip(items, records):
         name = (item["mime_name"] or ("part-" + item["mime"])) if item["kind"] == "attachment" else item["path"]
-        form = "eml" if item["kind"] == "eml" else folder.fmt(name, item["head"], out / "blobs" / item["sha"])
+        form = item.get("verified_format") or ("eml" if item["kind"] == "eml" else folder.fmt(name, item["head"], out / "blobs" / item["sha"]))
         db.execute("INSERT OR IGNORE INTO docs(sha,bytes,format,first_seen) VALUES(?,?,?,?)",
                    (item["sha"], item["size"], form, stamp))
         db.execute("INSERT OR IGNORE INTO preservations VALUES(?,?,?,?)",
@@ -562,6 +580,7 @@ def import_receipt(receipt_path, mail_root, output):
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for item in items:
             stage_source(item, root, out)
+        items[0].update(native_root=root, native_output=out)
         bind_parts(items, receipt)
         db = sqlite3.connect(out / "intake.sqlite")
         try:

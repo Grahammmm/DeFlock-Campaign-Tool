@@ -26,7 +26,7 @@ MAX_ACCEPT_SOURCE = 8 * 1024 * 1024
 MAX_ACCEPT_EVIDENCE = 64 * 1024 * 1024
 MAX_ACCEPT_PAGES = 256
 TEXT_FORMS = frozenset(("txt", "md", "log", "rst"))
-REPARSE_FORMS = frozenset(("eml",))
+REPARSE_FORMS = frozenset(("eml", "msg"))
 
 
 def require(ok, reason):
@@ -83,9 +83,12 @@ def ocr_evidence_present(receipt):
 
 
 def code_identity():
+    from .intake import mail_wire, native_msg, native_receipt, rfc822_inventory, wire_rfc822
     return {name: enrollment.sha(Path(module.__file__).read_bytes())
             for name, module in (("enrollment", enrollment), ("routes", routes),
-                                 ("intake", folder))} | {
+                                 ("intake", folder), ("mail_wire", mail_wire), ("native_msg", native_msg),
+                                 ("native_receipt", native_receipt), ("rfc822_inventory", rfc822_inventory),
+                                 ("wire_rfc822", wire_rfc822))} | {
         "validator": enrollment.sha(Path(__file__).read_bytes())}
 
 
@@ -136,6 +139,31 @@ def installed_parser_identity(form):
         components["pypdf"] = distribution.version
         runtime.update(pdf_distribution_metadata_sha256=enrollment.sha(metadata.encode()),
                        pdf_module_files=files)
+    if form == "msg":
+        # Installed distribution paths only. Receipt-selected code is never loaded.
+        for name, package in (("extract-msg", "extract_msg"), ("olefile", "olefile")):
+            try:
+                distribution = importlib.metadata.distribution(name)
+            except importlib.metadata.PackageNotFoundError:
+                raise enrollment.ExtractionBindingError("installed_msg_metadata_unavailable") from None
+            metadata = distribution.read_text("METADATA")
+            require(metadata and distribution.metadata.get("Name", "").lower() == name and
+                    distribution.version not in ("", "unknown", "unavailable", "unverified"),
+                    "installed_msg_metadata_unavailable")
+            module = importlib.import_module(package)
+            package_files = sorted(str(item) for item in (distribution.files or ())
+                                   if str(item).startswith(package + "/") and str(item).endswith(".py"))
+            entry = package + "/__init__.py"
+            require(0 < len(package_files) <= 1024 and entry in package_files,
+                    "installed_msg_files_unavailable")
+            require(Path(module.__file__).resolve() == Path(distribution.locate_file(entry)).resolve(),
+                    "installed_msg_distribution_mismatch")
+            files = {}
+            for path in package_files:
+                files[path], size = _runtime_file_hash(distribution.locate_file(path), MAX_ACCEPT_EVIDENCE - used)
+                used += size
+            components[name] = distribution.version
+            runtime[name] = {"metadata_sha256": enrollment.sha(metadata.encode()), "module_files": files}
     return components, enrollment.sha(encoded(runtime))
 
 
