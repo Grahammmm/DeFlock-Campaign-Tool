@@ -163,18 +163,20 @@ class Pipeline:
     def ingest_inbox(self, inbox):
         """Export every ``*.eml`` under ``inbox`` and preserve it through the canonical mail backend."""
         inbox = Path(inbox)
-        files = sorted(p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() == ".eml") if inbox.is_dir() else []
+        files = sorted(p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in {".eml", ".msg"}) if inbox.is_dir() else []
         backend = CanonicalMailBackend(self.root.sub("mail"), self.root.intake, self.root.ledger)
         identity = self._identity()
         backend.start_run(identity)
         preserved, replayed, failures = [], [], []
         try:
             for path in files:
-                raw = path.read_bytes()
+                with intake_folder.secure_open(path) as stream:
+                    raw = stream.read(64*1024**2 + 1)
                 uid = eml_export.local_uid(sha(raw))
                 try:
                     receipt = eml_export.export_message(raw, mail_root=self.root.sub("mail"), account=self.account,
-                                                        mailbox="inbox", uidvalidity=1, uid=uid)
+                                                        mailbox="inbox", uidvalidity=1, uid=uid,
+                                                        original_format=path.suffix.lower()[1:])
                     seen = self._query("SELECT count(*) AS n FROM mail_messages WHERE account=? AND folder='inbox' "
                                        "AND uidvalidity=1 AND uid=?", (self.account, uid))[0]["n"]
                     result = backend.preserve(receipt, self.account, Folder("inbox", 1), uid)
@@ -306,6 +308,8 @@ class Pipeline:
         return ingest(self, documents, manifest_sha256)
 
     def _form(self, subject, original):
+        if original.get("mime_detected") == "application/vnd.ms-outlook":
+            return "msg"
         if original.get("mime_detected") == "message/rfc822":
             return "eml"
         for occurrence in self._query("SELECT * FROM occurrences WHERE original_sha256=?", (subject,)):

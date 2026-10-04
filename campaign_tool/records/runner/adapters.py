@@ -17,7 +17,10 @@ class LegacyIntakeBackend:
         # Verifies exact EML/attachment bytes and MIME locators, preserving existing catalog.
         mail_delta.import_receipt(receipt_path,self.mail_root,self.output)
         mid=hashlib.sha256(json.dumps(['mail',account,scope.name,scope.uidvalidity,uid],separators=(',',':')).encode()).hexdigest()
-        attached=[];parents=[];eml_parts=[]
+        attached=[];parents=[];eml_parts=[];relationships=[]
+        extended = receipt.get("schema") == "mail-wire-receipt-v2"
+        native_items = tuple({key:value for key,value in item.items() if key not in {"manifest_path","streams"}}
+                             for item in receipt.get("native_items", [])) if extended else ()
         with sqlite3.connect(self.output/'intake.sqlite') as con:
             for item in items[1:]:
                 oid=intake_folder.hid(intake_folder.js(['mail-receipt-v1',*identity,item['part']]))
@@ -29,13 +32,18 @@ class LegacyIntakeBackend:
                     parent=item['source']['parent_part']
                     parents.append((loc,None if parent=='0' else parent))
                     if item['kind']=='eml':eml_parts.append(loc)
+                    if extended:relationships.append((loc,parent,item["source"]["parent_sha256"]))
+            for item in native_items:
+                parents.append((item["part"],None if item["parent_part"]=="0" else item["parent_part"]))
         # Bind receipt bytes to the verified parsed receipt; reject changes during bridge work.
         verified,verified_identity,_=mail_delta.load_receipt(receipt_path)
         if verified!=receipt or verified_identity!=identity:raise mail_delta.Rejected('receipt_changed')
         with intake_folder.secure_open(receipt_path) as f:raw=f.read(mail_delta.MAX_RECEIPT+1)
         if len(raw)>mail_delta.MAX_RECEIPT or json.loads(raw)!=receipt:raise mail_delta.Rejected('receipt_changed')
         return Preserved(mid,items[0]['sha'],hashlib.sha256(raw).hexdigest(),
-                         tuple(sorted({i['sha'] for i in items})),tuple(attached),tuple(parents),tuple(eml_parts))
+                         tuple(sorted({i['sha'] for i in items})),tuple(attached),tuple(parents),tuple(eml_parts),
+                         tuple(relationships),native_items,receipt["original_eml"].get("format","eml"),
+                         receipt.get("schema") if extended else None)
     def validate_and_promote(self,receipt,run_identity):
         raise IntegrationGap('wp1_promotion_adapter_unavailable')
 
