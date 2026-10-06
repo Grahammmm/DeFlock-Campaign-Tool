@@ -1,0 +1,212 @@
+{
+  "schema": "public-audit-baseline-v1",
+  "observed_date_pacific": "2026-10-01",
+  "repository": "Grahammmm/DeFlock-Campaign-Tool",
+  "integration_pr": 36,
+  "scope": "GitHub metadata snapshot only; no deployment, legal, corpus or current-host attestation",
+  "pull_requests": [
+    {
+      "number": 38,
+      "title": "Make per-page OCR the only OCR path",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/38",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T06:35:35Z",
+      "base": "main",
+      "head": "codex/ocr-unify",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/e78196b59fa3b6a4a6054a142cea670fad5db96f"
+    },
+    {
+      "number": 37,
+      "title": "Phase 0a: California law package, campaign_tool.law, doctor status, doc corrections",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/37",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T03:06:28Z",
+      "base": "main",
+      "head": "codex/law-package-ca",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/19d6607e848070b94e167b1bce20292ffde49d39"
+    },
+    {
+      "number": 36,
+      "title": "Integration: Phase 2 + Phase 3 merged, LAUNCH.md",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/36",
+      "state": "open",
+      "merged_at_utc": null,
+      "base": "codex/inbox-runner-outbox-digest",
+      "head": "codex/integration",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/e3dcf11304205e7d70b4838b832a57128404c563"
+    },
+    {
+      "number": 35,
+      "title": "Phase 3: executors, review workflow, Brevo newsletter, meetings, backup/restore",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/35",
+      "state": "open",
+      "merged_at_utc": null,
+      "base": "codex/workers-wizard-workspace",
+      "head": "codex/approvals-publish-brevo-backup",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/2196a89151570ee089b3cd9bd0beb69f9bbfd4d5"
+    },
+    {
+      "number": 34,
+      "title": "Phase 2: runner container, digest library, transactional outbox",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/34",
+      "state": "open",
+      "merged_at_utc": null,
+      "base": "codex/workers-wizard-workspace",
+      "head": "codex/inbox-runner-outbox-digest",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/71459958f55c9fe123ec9e3b12fc66f175049276"
+    },
+    {
+      "number": 33,
+      "title": "Phase 1: wizard, workspace and public-site Workers",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/33",
+      "state": "open",
+      "merged_at_utc": null,
+      "base": "main",
+      "head": "codex/workers-wizard-workspace",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/820f401238b44173f79d29c8d3a1b6958cabd986"
+    },
+    {
+      "number": 32,
+      "title": "Phase 0c: site content model; agency cards and map wired into build",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/32",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T03:06:41Z",
+      "base": "main",
+      "head": "codex/site-content-model",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/f01ea8f0f03c10d3030bc8e0ac58a2cc5b7d0cbd"
+    },
+    {
+      "number": 31,
+      "title": "Phase 0b: agency discovery seed and kit command",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/31",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T03:06:35Z",
+      "base": "main",
+      "head": "codex/agency-discovery-kit",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/bde05ea77530d8bef0c3e4f1fd4a6d0bb8e312f2"
+    },
+    {
+      "number": 30,
+      "title": "Shared contracts: D1 schema, law-package, agency-seed and job schemas",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/30",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T03:06:21Z",
+      "base": "main",
+      "head": "codex/contracts",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/d204a5305ca0e58525fe9978af3eba78efa88f78"
+    },
+    {
+      "number": 29,
+      "title": "WP5: canonical catalog and private board with pinned intake/extraction integration",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/29",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T05:39:53Z",
+      "base": "main",
+      "head": "codex/records-wp5-catalog",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/3917dc959e679443f55cfd849d1910865ab755f9"
+    },
+    {
+      "number": 28,
+      "title": "WP9: bounded recovery and exact-review publication/withdrawal safeguards",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/28",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T06:03:37Z",
+      "base": "main",
+      "head": "codex/records-wp9-recovery",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/e80c46f304d0bf38acc494b761be620875a7b74d"
+    },
+    {
+      "number": 27,
+      "title": "WP2: bounded mail runner, exact preservation and durable lifecycle recovery",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/27",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T05:39:55Z",
+      "base": "main",
+      "head": "codex/records-wp2-runner",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/437bc5299d0e6591b2cace41cd4999339d46b563"
+    },
+    {
+      "number": 26,
+      "title": "WP6: seven bounded ALPR detectors and exact-hash evaluation persistence",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/26",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T05:50:13Z",
+      "base": "main",
+      "head": "codex/records-wp6-detectors",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/6b300c0bc190eb8247ca6c6a140cd07e07cf7f20"
+    },
+    {
+      "number": 25,
+      "title": "WP8: immutable review bundles, trusted reviewer identity and owner approval",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/25",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T05:59:05Z",
+      "base": "main",
+      "head": "codex/records-wp8-review",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/3fc4230d6be4982d5235397cbacc4900c6fc7244"
+    },
+    {
+      "number": 24,
+      "title": "WP7: bounded triage queue and trusted ledger lease handoff",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/24",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T05:54:33Z",
+      "base": "main",
+      "head": "codex/records-wp7-queue",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/cd97920770c0b22f00be66a888ead05e0d9c20b2"
+    },
+    {
+      "number": 23,
+      "title": "WP3: bounded portal queue, permission gates, and canonical recovery",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/23",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T05:45:50Z",
+      "base": "main",
+      "head": "codex/records-wp3-portal",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/bb1d1e56e4e80ebf7b5ab95dc9eaffc971d18cea"
+    },
+    {
+      "number": 22,
+      "title": "WP1: canonical ledger, provenance reconciliation, and trusted stage authority",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/22",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T04:33:16Z",
+      "base": "main",
+      "head": "codex/records-wp1-ledger",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/19635515d16cd186a1dbe7cc79c86f04b2674aef"
+    },
+    {
+      "number": 21,
+      "title": "WP4: bounded extraction, item coverage, and OCR derivative review holds",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/21",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T04:44:45Z",
+      "base": "main",
+      "head": "codex/records-wp4-extraction",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/c910f0241cc973895d335ca69b21a1592e048fb4"
+    },
+    {
+      "number": 20,
+      "title": "WP0: reproducible records release, installed CLI and exact-export gates",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/20",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T04:28:28Z",
+      "base": "main",
+      "head": "codex/records-wp0-release",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/ecf7b58d0b7018b1b2ab848950ed29f54477212c"
+    },
+    {
+      "number": 19,
+      "title": "M1: receipt-bound catalog agency and request link candidates",
+      "url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/pull/19",
+      "state": "closed",
+      "merged_at_utc": "2026-10-01T04:39:07Z",
+      "base": "main",
+      "head": "codex/records-catalog-links",
+      "head_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/5a5bd026c6a854dfab26b0bb836cce4574857b63"
+    }
+  ],
+  "excluded": "Private originals, raw mail, source hashes, local paths, account identifiers, signed URLs, credentials and full private receipts",
+  "main_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/936ea52118a8c07a5a320904891b8eb7c97fea9f",
+  "integration_commit_url": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/commit/e3dcf11304205e7d70b4838b832a57128404c563"
+}
