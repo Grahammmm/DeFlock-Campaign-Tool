@@ -31,6 +31,21 @@ class CanonicalOriginalReconciler(CanonicalMailBackend):
         local_capture.require(row is not None and row["status"] == "running" and row["ended_at"] is None,
                               "canonical_enrollment_run_not_live")
 
+    def recover_run(self, identity):
+        """Finalize interrupted work and release that run's preservation claims.
+
+        Use the same root lock as enrollment/acceptance, in addition to the
+        caller's control-writer lock. A retry after finalization is safe if the
+        process died before lease recovery completed.
+        """
+        from ..run import root_lock
+        with root_lock(Path(self.database).parent):
+            outcome = super().recover_run(identity)
+            if outcome != "absent":
+                self.stages.recover_abandoned_leases(self.database, owner="runner-preserver",
+                    run_id=identity["run_id"], reason="reconciliation_run_recovered")
+            return outcome
+
     def enroll_local_capture(self, source_path, *, original_sha256):
         """Append capture/resolution only; stage and receipt history stays untouched."""
         from ..run import root_lock

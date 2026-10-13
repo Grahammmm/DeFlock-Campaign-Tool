@@ -186,10 +186,20 @@ def presence(v):
 def safe_member(name):
     p=pathlib.PurePosixPath(name.replace("\\","/"))
     return bool(name) and not p.is_absolute() and ".." not in p.parts and not re.match(r"^[A-Za-z]:",name) and "\x00" not in name
+def inherited_limit(kind, requested):
+    """Keep a stricter launch budget; a child must never raise its ceiling."""
+    import resource
+    current = resource.getrlimit(kind)
+    return min([requested, *(value for value in current if value != resource.RLIM_INFINITY)])
+def apply_resource_limit(kind, requested):
+    import resource
+    effective = inherited_limit(kind, requested)
+    resource.setrlimit(kind, (effective, effective))
+    return effective
 def worker(src, sha, form, dest, out, limits, depth, config=None):
     config = config if config is not None else load_config()
     import resource
-    resource.setrlimit(resource.RLIMIT_AS,(limits["memory_bytes"],limits["memory_bytes"]))
+    limits = dict(limits, memory_bytes=apply_resource_limit(resource.RLIMIT_AS, limits["memory_bytes"]))
     dest.mkdir(parents=True,exist_ok=True); stats=collections.Counter(); issues=[]; children=[]; stage="complete"
     blocked=json.loads((out/"scope-excluded-hashes.json").read_text()) if (out/"scope-excluded-hashes.json").exists() else []
     uf=(dest/"units.jsonl").open("w",buffering=1); tf=(dest/"text.txt").open("w"); started=time.monotonic()
@@ -387,6 +397,8 @@ def reconcile_edges(db,sha,digest,config,source_version):
                        (sha,edge["locator"],edge["child"],edge["name"],stamp,reason,source_version))
             db.execute("DELETE FROM edges WHERE parent=? AND locator=?",(sha,edge["locator"]))
 def extract(db,out,limits,retry=False,selection=None,config=None):
+    import resource
+    limits = dict(limits, memory_bytes=inherited_limit(resource.RLIMIT_AS, limits["memory_bytes"]))
     config = config if config is not None else load_config(output=str(out))
     levels,inv=active(db)
     if selection is not None and (not re.fullmatch(r"[a-f0-9]{64}",selection) or selection not in levels): raise ValueError("--sha must be a known active lowercase SHA-256; invalid/inactive selector rejected")

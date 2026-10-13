@@ -71,6 +71,19 @@ class ExtractionLedgerTests(unittest.TestCase):
     def rewrite(self,path,mutator):
         data=json.loads(path.read_text());mutator(data);self.write(path,(json.dumps(data,sort_keys=True)+'\n').encode())
 
+    def test_adapter_revision_holds_old_receipt_and_retains_immutable_history(self):
+        from campaign_tool.records import extraction_ledger as enrollment
+        receipt=self.bundle()
+        with patch.object(enrollment,'VERSION','extraction-ledger-v1'):
+            old=self.enroll(receipt)
+        with self.assertRaisesRegex(ExtractionBindingError,'adapter_revision_requires_fresh_extraction_receipt'):
+            self.enroll(receipt)
+        with self.store.ledger(self.database,readonly=True) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM extraction_adapter_imports').fetchone()[0],1)
+            self.assertEqual(con.execute('SELECT import_id FROM extraction_adapter_current').fetchone()[0],old['import_id'])
+        fresh=self.enroll(self.bundle())
+        self.assertNotEqual(fresh['import_id'],old['import_id'])
+
     def test_actual_text_route_enrolls_units_pending(self):
         out=self.root/'actual-derived';out.mkdir(mode=0o700)
         result=routes.extract(self.source,self.subject,out,'txt',timeout=20)

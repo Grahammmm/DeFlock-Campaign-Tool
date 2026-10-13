@@ -136,7 +136,7 @@ class Root:
 class Pipeline:
     def __init__(self, root, *, jurisdiction="us-ca", account="local", model=None, challenge=None,
                  redaction_allowlist=(), redaction_denylist=(), event_date=None, opener=None,
-                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180):
+                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180, native_workbook_policy=None):
         self.root = Root(root).prepare()
         self.jurisdiction, self.account = jurisdiction, account
         self.model, self.challenge, self.opener = model, challenge, opener
@@ -144,12 +144,18 @@ class Pipeline:
         self.event_date = event_date
         self.ocr_tools, self.ocr_tool_signature = ocr_tools, ocr_tool_signature
         self.extraction_timeout = extraction_timeout
+        self.native_workbook_policy = native_workbook_policy
         self.package = load_package(jurisdiction)
         self.config = {"engine": ENGINE, "version": __version__, "jurisdiction": jurisdiction,
                        "law_sources": sorted(r["rule_id"] for r in self.package["rules"]),
                        "model_id": model.model_id if model else None,
                        "challenge_model_id": challenge.model.model_id if challenge else None,
                        "ocr": bool(ocr_tools)}
+        if native_workbook_policy is not None:
+            from .workbook_policy import NativeWorkbookPolicy
+            if type(native_workbook_policy) is not NativeWorkbookPolicy:
+                raise ValueError("trusted_workbook_policy_required")
+            self.config["native_workbook_policy"] = native_workbook_policy.binding
         self.config_sha256 = sha(encoded(self.config))
         self.run_id = "run-" + uuid.uuid4().hex
         self._stage = None
@@ -231,14 +237,14 @@ class Pipeline:
             con.commit()
         artifacts = self.root.sub("artifacts")
         evidence, blobs = artifacts / "evidence", self.root.intake / "blobs"
-        validators = {"extract": install_extraction_validator(database=database, evidence_root=evidence, original_root=blobs)}
+        validators = {"extract": install_extraction_validator(database=database, evidence_root=evidence, original_root=blobs, native_workbook_policy=self.native_workbook_policy)}
         validators.update(stage_adapters.install_validators(database))
         profile = "records-run:" + sha(encoded({"db": str(database), "config": self.config_sha256}))[:32]
         catalog = catalog_run_factory(database, artifacts, run_id=self.run_id, owner=OWNER, profile_id=profile,
                                       engine_version=ENGINE, config_sha256=self.config_sha256,
                                       additional_adapters=validators)
         extraction = ExtractionStageAdapter(database=database, evidence_root=evidence, original_root=blobs,
-                                            run_id=self.run_id, owner=OWNER, profile_id=profile)
+                                            run_id=self.run_id, owner=OWNER, profile_id=profile, native_workbook_policy=self.native_workbook_policy)
         enrollment = ExtractionLedgerAdapter(database=database, evidence_root=evidence)
         self._stage = {"catalog": catalog, "runner": catalog.runner, "extraction": extraction,
                        "enrollment": enrollment, "profile": profile}

@@ -18,8 +18,10 @@ import sys
 from . import extraction_ledger as enrollment
 from . import extraction_routes as routes
 from .intake import folder
+from . import ocr_closure, workbook_policy
+from .extract import ocr as page_ocr
 
-ADAPTER_ID = "records-extract-complete-v1"
+ADAPTER_ID = "records-extract-complete-v2"
 ENVELOPE_SCHEMA = "canonical-extraction-content-v1"
 MAX_CONTENT = 4 * 1024 * 1024
 MAX_ACCEPT_SOURCE = 8 * 1024 * 1024
@@ -38,7 +40,7 @@ def encoded(value):
     return enrollment.canonical(value).encode("utf-8")
 
 
-def _accepted_ocr_pages(receipt, ocr_ids):
+def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root):
     """page -> {receipt_id, receipt_sha256, text} for OCR pages whose receipts are bound and readable.
 
     Only ``ocr_text_unreviewed``/``visual_check_queued`` receipts with recorded tool versions are
@@ -55,8 +57,8 @@ def _accepted_ocr_pages(receipt, ocr_ids):
                 type(entry["page"]) is int and entry["page"] > 0, "ocr_receipt_entry_shape")
         require(entry["status"] in routes.OCR_TEXT_STATES, "ocr_page_not_accepted:" + str(entry["status"]))
         try:
-            loaded = routes.page_ocr.load_page_receipt(root, receipt["original_sha256"], entry["page"],
-                                                       enrollment.checked_sha(entry["receipt_id"]))
+            loaded = ocr_closure.load_cas_page(artifacts, receipt["original_sha256"], entry["page"],
+                                               enrollment.checked_sha(entry["receipt_id"]), scratch_root=scratch_root)
         except (ValueError, OSError):
             raise enrollment.ExtractionBindingError("ocr_receipt_unverified") from None
         summary = routes.ocr_summary(loaded)
@@ -86,6 +88,8 @@ def code_identity():
     from .intake import mail_wire, native_msg, native_receipt, rfc822_inventory, wire_rfc822
     return {name: enrollment.sha(Path(module.__file__).read_bytes())
             for name, module in (("enrollment", enrollment), ("routes", routes),
+                                 ("ocr_verifier", page_ocr), ("ocr_closure", ocr_closure),
+                                 ("workbook_policy", workbook_policy),
                                  ("intake", folder), ("mail_wire", mail_wire), ("native_msg", native_msg),
                                  ("native_receipt", native_receipt), ("rfc822_inventory", rfc822_inventory),
                                  ("wire_rfc822", wire_rfc822))} | {
@@ -111,7 +115,7 @@ def _runtime_file_hash(path, budget):
     return digest.hexdigest(), total
 
 
-def installed_parser_identity(form):
+def installed_parser_identity(form, native_workbook_policy=None):
     components = {"intake": folder.VERSION + "/" + folder.ENGINE_REVISION}
     runtime = {"python_version": sys.version, "engine_code": code_identity()}
     runtime["python_executable_sha256"], used = _runtime_file_hash(sys.executable, MAX_ACCEPT_EVIDENCE)
@@ -139,6 +143,32 @@ def installed_parser_identity(form):
         components["pypdf"] = distribution.version
         runtime.update(pdf_distribution_metadata_sha256=enrollment.sha(metadata.encode()),
                        pdf_module_files=files)
+    if native_workbook_policy is not None:
+        runtime["native_workbook_policy"] = native_workbook_policy.binding
+    if form == "xlsx":
+        require(type(native_workbook_policy) is workbook_policy.NativeWorkbookPolicy, "workbook_policy_unconfigured")
+        for name, package in (("openpyxl", "openpyxl"), ("et-xmlfile", "et_xmlfile")):
+            try:
+                distribution = importlib.metadata.distribution(name)
+            except importlib.metadata.PackageNotFoundError:
+                raise enrollment.ExtractionBindingError("installed_workbook_metadata_unavailable") from None
+            metadata = distribution.read_text("METADATA")
+            require(metadata and distribution.metadata.get("Name", "").lower().replace('_','-') == name,
+                    "installed_workbook_metadata_unavailable")
+            module = importlib.import_module(package)
+            files = sorted(str(item) for item in (distribution.files or ())
+                           if str(item).startswith(package + "/") and str(item).endswith(".py"))
+            entry = package + "/__init__.py"
+            require(0 < len(files) <= 1024 and entry in files
+                    and Path(module.__file__).resolve() == Path(distribution.locate_file(entry)).resolve(),
+                    "installed_workbook_distribution_mismatch")
+            hashes = {}
+            for path in files:
+                hashes[path], size = _runtime_file_hash(distribution.locate_file(path), MAX_ACCEPT_EVIDENCE-used)
+                used += size
+            if name == "openpyxl":
+                components[name] = distribution.version
+            runtime[name] = {"metadata_sha256": enrollment.sha(metadata.encode()), "module_files": hashes}
     if form == "msg":
         # Installed distribution paths only. Receipt-selected code is never loaded.
         for name, package in (("extract-msg", "extract_msg"), ("olefile", "olefile")):
@@ -220,11 +250,19 @@ class _InstalledExtractionValidator:
     database: Path
     evidence_root: Path
     original_root: Path
+    native_workbook_policy: object = None
+
+    def __post_init__(self):
+        require(self.native_workbook_policy is None or type(self.native_workbook_policy) is workbook_policy.NativeWorkbookPolicy,
+                "trusted_workbook_policy_required")
 
     @property
     def adapter_id(self):
         """Per-binding registry id: one process may serve several private roots."""
-        binding = enrollment.canonical([str(self.database), str(self.evidence_root), str(self.original_root)])
+        fields = [str(self.database), str(self.evidence_root), str(self.original_root)]
+        if self.native_workbook_policy is not None:
+            fields.append(self.native_workbook_policy.binding)
+        binding = enrollment.canonical(fields)
         return ADAPTER_ID + ":" + enrollment.sha(binding.encode())[:24]
 
     def cas(self, digest, size=None, limit=MAX_ACCEPT_EVIDENCE):
@@ -288,7 +326,8 @@ class _InstalledExtractionValidator:
                     all(name in ("source_receipt", "parser_metadata", "derived_units",
                                  "pre_ocr_metadata", "native_units") or
                         (name.startswith("child:") and re.fullmatch(r"[0-9a-f]{64}", name[6:])) or
-                        (name.startswith("ocr_receipt:") and re.fullmatch(r"[0-9a-f]{64}", name[12:]))
+                        (name.startswith("ocr_receipt:") and re.fullmatch(r"[0-9a-f]{64}", name[12:])) or
+                        ocr_closure.artifact_name(name)
                         for name in artifact_refs), "unsupported_artifact_set")
             child_hashes = sorted(name[6:] for name in artifact_refs if name.startswith("child:"))
             ocr_ids = sorted(name[12:] for name in artifact_refs if name.startswith("ocr_receipt:"))
@@ -310,7 +349,17 @@ class _InstalledExtractionValidator:
                     receipt.get("original_sha256") == subject and receipt.get("original_changed") is False and
                     receipt.get("review_status") == "not_reviewed" and
                     receipt.get("parser_adapter") == routes.VERSION, "source_receipt_binding")
-            ocr_pages = _accepted_ocr_pages(receipt, ocr_ids) if ocr_ids else {}
+            if ocr_ids:
+                require(manifest.get("ocr_closure_version") == ocr_closure.VERSION, "ocr_closure_version_unbound")
+                expected = {"ocr_asset:" + rid + ":" + name for rid in ocr_ids for name in ocr_closure.NAMES}
+                require({name for name in artifacts if name.startswith("ocr_asset:")} == expected,
+                        "ocr_closure_asset_set_mismatch")
+            else:
+                require("ocr_closure_version" not in manifest and not any(name.startswith("ocr_asset:") for name in artifacts),
+                        "unexpected_ocr_closure")
+            native_workbook = (receipt.get("parser") == "legacy-intake:xlsx" and self.native_workbook_policy is not None)
+            workbook = None
+            ocr_pages = _accepted_ocr_pages(receipt, ocr_ids, artifacts=artifacts, scratch_root=self.evidence_root) if ocr_ids else {}
             if ocr_pages:
                 # Per-page OCR: the source stays "partial" by construction (pages were not native
                 # text). Acceptance records the visual-review hold per page; it never clears it.
@@ -321,6 +370,12 @@ class _InstalledExtractionValidator:
                         all(isinstance(i, dict) and i.get("code") in allowed for i in receipt["issues"]) and
                         all(isinstance(i, dict) and i.get("code") in allowed for i in metadata.get("issues", [])),
                         "unresolved_extraction_evidence")
+            elif native_workbook:
+                require(not ocr_ids and receipt.get("status") == metadata.get("stage") == manifest.get("source_status") == "partial"
+                        and receipt.get("issues") == metadata.get("issues") == manifest.get("issues")
+                        and len(receipt["issues"]) == 1
+                        and receipt["issues"][0].get("code") == "workbook_cached_values_and_objects_not_reviewed",
+                        "workbook_reader_hold_mismatch")
             else:
                 require(receipt.get("status") == metadata.get("stage") == manifest.get("source_status") == "complete",
                         "extraction_incomplete")
@@ -409,10 +464,10 @@ class _InstalledExtractionValidator:
                     "canonical_page_state_binding")
         # Independently establish denominator/content from canonical original bytes.
         form = parser.removeprefix("legacy-intake:")
-        require(parser == "legacy-intake:" + form and form in TEXT_FORMS | {"pdf"} | REPARSE_FORMS,
+        require(parser == "legacy-intake:" + form and form in TEXT_FORMS | {"pdf"} | REPARSE_FORMS | ({"xlsx"} if native_workbook else set()),
                 "unsupported_complete_parser")
         require(receipt.get("route") == routes.route(form), "parser_route_binding")
-        components, runtime_hash = installed_parser_identity(form)
+        components, runtime_hash = installed_parser_identity(form, self.native_workbook_policy)
         require(receipt.get("parser_components") == metadata.get("parser_components") == components,
                 "installed_parser_components_mismatch")
         # Legacy route receipts do not declare a runtime hash. The canonical content
@@ -430,6 +485,18 @@ class _InstalledExtractionValidator:
             require(units == expected_units and pages == [] and not counts.get("pages_expected"),
                     "source_text_denominator_or_content")
             denominator = {"kind": "items", "total": len(expected_units)}
+        elif form == "xlsx":
+            require(parser == "legacy-intake:xlsx" and version == components["openpyxl"],
+                    "installed_workbook_parser_mismatch")
+            workbook = self.native_workbook_policy.qualify(raw_original, units)
+            with tempfile.TemporaryDirectory(prefix="extract-validate-", dir=self.evidence_root) as scratch:
+                checked = routes.extract(original_path, subject, Path(scratch), form="xlsx", timeout=60)
+            require(checked.get("status") == "partial" and checked.get("parser") == parser
+                    and checked.get("parser_version") == version and checked.get("parser_components", {}) == receipt.get("parser_components", {})
+                    and checked.get("issues") == receipt.get("issues") and checked.get("units") == units
+                    and checked.get("pages") == pages == [] and not child_hashes,
+                    "installed_workbook_reparse_mismatch")
+            denominator = {"kind": "rows", "total": workbook["native_accounting"]["denominator"]["serialized_rows"]}
         elif form in REPARSE_FORMS:
             # Container/structured formats: independently re-run the installed parser on the
             # canonical bytes and require identical units and member set. Members are accepted
@@ -480,12 +547,14 @@ class _InstalledExtractionValidator:
                 require(all(p["status"] == "ok" and p["page_no"] == i for i, p in enumerate(pages, 1)),
                         "pdf_missing_or_partial_pages")
             denominator = {"kind": "pages", "total": len(pages)}
-        coverage = {"denominator": denominator, "covered": denominator["total"], "scope": "full_text"}
+        coverage = {"denominator": denominator, "covered": denominator["total"], "scope": "all_rows" if workbook is not None else "full_text"}
         envelope = {"schema": ENVELOPE_SCHEMA, "original_sha256": subject, "import_id": import_id,
                     "source_receipt_sha256": item["receipt_sha256"], "manifest_sha256": item["manifest_sha256"],
                     "parser": parser, "parser_version": version, "unit_count": len(units),
                     "coverage": coverage, "installed_code": code_identity(),
                     "parser_components": components, "parser_runtime_sha256": runtime_hash}
+        if workbook is not None:
+            envelope["workbook"] = workbook
         if original.get("resolution_sha256"):
             envelope["original_resolution_sha256"] = original["resolution_sha256"]
         if ocr_ids:
@@ -512,7 +581,7 @@ class _InstalledExtractionValidator:
         return True
 
 
-def install_extraction_validator(*, database, evidence_root, original_root):
+def install_extraction_validator(*, database, evidence_root, original_root, native_workbook_policy=None):
     """Trusted startup only. Install this fixed implementation, not a caller callback.
 
     WP1 currently exposes its registry to installed application modules. Fail on
@@ -521,7 +590,7 @@ def install_extraction_validator(*, database, evidence_root, original_root):
     """
     from .ledger import stages
     binding = _InstalledExtractionValidator(enrollment.checked_path(database),
-        enrollment.private_dir(evidence_root), enrollment.private_dir(original_root))
+        enrollment.private_dir(evidence_root), enrollment.private_dir(original_root), native_workbook_policy)
     prior = stages._INSTALLED_VALIDATORS.get(binding.adapter_id)
     require(prior is None or type(prior) is _InstalledExtractionValidator and prior == binding,
             "installed_extraction_binding_conflict")
@@ -535,10 +604,10 @@ class ExtractionStageAdapter:
     Enrollment is separate and remains pending. Run/owner/profile must come from
     authenticated trusted startup, with a previously configured installed profile.
     """
-    def __init__(self, *, database, evidence_root, original_root, run_id, owner, profile_id):
+    def __init__(self, *, database, evidence_root, original_root, run_id, owner, profile_id, native_workbook_policy=None):
         from .ledger import stages
         self.validator = _InstalledExtractionValidator(enrollment.checked_path(database),
-            enrollment.private_dir(evidence_root), enrollment.private_dir(original_root))
+            enrollment.private_dir(evidence_root), enrollment.private_dir(original_root), native_workbook_policy)
         self.runner = stages.installed_runner(database, run_id=run_id, owner=owner, profile_id=profile_id)
         require(self.runner.validators.get("extract") == (self.validator.adapter_id, self.validator),
                 "installed_profile_extract_binding")

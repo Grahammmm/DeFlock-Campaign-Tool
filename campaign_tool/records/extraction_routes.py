@@ -333,8 +333,8 @@ def _run_page_ocr(result,run,raw,expected_sha,metadata,config,attempt_id,timeout
 def main():
     if len(sys.argv)>1 and sys.argv[1]=='_worker':
         import resource
-        resource.setrlimit(resource.RLIMIT_AS,(folder.LIMITS['memory_bytes'],folder.LIMITS['memory_bytes']))
-        resource.setrlimit(resource.RLIMIT_FSIZE,(MAX_UNIT_BYTES,MAX_UNIT_BYTES))
+        folder.apply_resource_limit(resource.RLIMIT_AS, folder.LIMITS['memory_bytes'])
+        folder.apply_resource_limit(resource.RLIMIT_FSIZE, MAX_UNIT_BYTES)
         os.umask(0o077)
         _child(sys.argv[2],sys.argv[3],sys.argv[4],Path(sys.argv[5]),Path(sys.argv[6]));return
     p=argparse.ArgumentParser(description=__doc__)
