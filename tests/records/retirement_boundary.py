@@ -66,10 +66,13 @@ class BoundaryTests(unittest.TestCase):
                 self.assertFalse(review_retirement.pending(con))
             with self.assertRaisesRegex(publish.PublishError, "owner_approval_required"):
                 publish.publish(root, proposal, staging=target)
-            self.assertEqual(stages.counts(pipeline.root.ledger)["verified_seven_stage_complete"], 0)
+            # Existing aggregate/orchestration cap is separate from retirement.
+            with self.assertRaisesRegex(stages.StageError, "counts_metadata_bound_exceeded"):
+                stages.counts(pipeline.root.ledger)
             print(json.dumps({"real_sqlite_rows": 10001, "initial_batch": 400, "remaining_after_initial_batch": 9601,
                               "resume_batches": 25, "history_review_receipts_retained": 10001,
                               "test_only": True, "population_mocked": False,
+                              "full_root_counting": "blocked_counts_metadata_bound_exceeded",
                               "elapsed_seconds": round(time.monotonic() - started, 3)}), flush=True)
 
 

@@ -419,6 +419,7 @@ class UnattendedPipeline(manual.Pipeline):
         if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
             raise manual.RunError('invalid_input_selection')
         with manual.root_lock(self.root.path):
+            self._start_review_retirement()
             started = manual.now()
             self.safety = RunSafety(self.root.ledger, self.policy, **({"clock": self.clock} if self.clock else {}))
             self._open_stage_run()

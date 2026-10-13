@@ -36,6 +36,17 @@ def _write(con, value):
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (KEY, value))
 
 
+def start(con):
+    """First action under the run lock, before startup can fail or cancel.
+
+    Do not depend on controller setup or a successful eligible-queue query.
+    A pending hold is harmless on a new empty root; finish verifies clearance.
+    """
+    pending(con)
+    _write(con, PENDING)
+    con.commit()
+
+
 def arm(con):
     """Commit a hold before selection limits, cancellation, intake or row work.
 

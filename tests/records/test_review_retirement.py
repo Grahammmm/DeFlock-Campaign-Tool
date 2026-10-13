@@ -49,6 +49,35 @@ class RetirementTests(unittest.TestCase):
         self.assertFalse(status(self.root)["review_retirement_pending"])
         self.assertEqual(self.rows("SELECT owner_approval FROM proposals"), [("none",)])
 
+    def test_hold_precedes_manual_recovery_and_runner_startup(self):
+        for method in ("recover", "_open_stage_run"):
+            pipeline = Pipeline(self.root)
+            with self.subTest(method=method), patch.object(pipeline, method, side_effect=RuntimeError("synthetic startup failure")):
+                with self.assertRaises(RunError):
+                    pipeline.run()
+                self.blocked()
+
+    def test_hold_precedes_unattended_safety_and_runner_startup(self):
+        with patch.object(unattended, "RunSafety", side_effect=RuntimeError("synthetic safety startup failure")):
+            with self.assertRaises(RuntimeError):
+                unattended.UnattendedPipeline(self.root).run()
+        self.blocked()
+        pipeline = unattended.UnattendedPipeline(self.root)
+        with patch.object(pipeline, "_open_stage_run", side_effect=RuntimeError("synthetic runner startup failure")):
+            with self.assertRaises(RuntimeError):
+                pipeline.run()
+        self.blocked()
+
+    def test_retirement_and_other_advancement_share_original_budget(self):
+        pending = preaccepted_publication.seed(Pipeline(self.root), b"synthetic-different-pending-original", "", until="detect")
+        before = self.rows("SELECT * FROM stage_state WHERE original_sha256=?", (pending,))
+        report = unattended.UnattendedPipeline(self.root, policy=RunSafetyPolicy(max_originals=1)).run()
+        self.assertEqual(report["review_retirement"], {"state": "complete", "processed": 1})
+        self.assertEqual(report["safety"]["phases"]["advance"]["attempted"], 1)
+        self.assertEqual(report["subjects"], [])
+        self.assertEqual(self.rows("SELECT * FROM stage_state WHERE original_sha256=?", (pending,)), before)
+        self.assertGreater(report["originals_deferred"], 0)
+
     def test_failure_holds_later_approval_and_fresh_retry(self):
         self.other()
         with patch.object(stages.StageRunner, "invalidate", side_effect=RuntimeError("synthetic failure")):

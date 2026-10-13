@@ -313,7 +313,8 @@ class Pipeline:
         rows = self._query("SELECT s.original_sha256,s.receipt_sha256 " + review_retirement.ELIGIBLE +
                            " ORDER BY s.original_sha256 LIMIT ?", (limit,))
         for row in rows:
-            if safety and not safety.check():
+            if safety and not safety.begin("advance", sha(encoded([
+                    "review-retirement", row["original_sha256"], row["receipt_sha256"]]))):
                 break
             # Revoke first and durably. An interrupted reconciliation can only
             # leave authority more restrictive; it cannot restore old approval.
@@ -326,8 +327,12 @@ class Pipeline:
                                            reason="independent_factual_review_required:cached_automated_or_test_review")
             except Exception:
                 self.review_retirement.update(state="pending", failure_code="review_authority_retirement_failed")
+                if safety:
+                    safety.finish("held", "review_authority_retirement_failed", (row["original_sha256"],))
                 raise RunError("review_authority_retirement_failed") from None
             self.review_retirement["processed"] += 1
+            if safety:
+                safety.finish()
         with store.ledger(self.root.ledger) as con:
             complete = review_retirement.finish(con)
         self.review_retirement["state"] = "complete" if complete else "pending"
@@ -337,6 +342,11 @@ class Pipeline:
         with store.ledger(self.root.ledger) as con:
             held = review_retirement.arm(con)
         self.review_retirement["state"] = "pending" if held else "complete"
+
+    def _start_review_retirement(self):
+        with store.ledger(self.root.ledger) as con:
+            review_retirement.start(con)
+        self.review_retirement["state"] = "pending"
 
     # ----- helpers ---------------------------------------------------------------------
     def _original(self, subject):
@@ -769,6 +779,7 @@ class Pipeline:
     def _run_locked(self, *args, **kwargs):
         # Recovery precedes this invocation's run row, so it cannot interrupt itself.
         try:
+            self._start_review_retirement()
             report = self._run_locked_unchecked(*args, **kwargs)
         except Exception as error:
             code = error.args[0] if isinstance(error, RunError) and error.args == ("review_authority_retirement_failed",) else "run_failed"
