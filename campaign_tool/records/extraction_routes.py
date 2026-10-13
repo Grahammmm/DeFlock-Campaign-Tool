@@ -175,12 +175,12 @@ def _child(source,sha,form,dest,root):
             for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
         issues=[{'code':'msg_attachment_bytes_not_preserved'}] if any(u['kind']=='msg_attachment' and not u['data']['bytes_preserved'] for u in units) else []
         metadata={'stage':'partial' if issues else 'complete','counts':{'units':len(units)},
-                  'issues':issues,'children':children,'parser':parser,'parser_version':version}
+                  'issues':issues,'children':children,'parser':parser,'parser_version':version,
+                  'artifacts':{'units.jsonl':hashlib.sha256((dest/'units.jsonl').read_bytes()).hexdigest()}}
         if form=='msg':
             metadata.update(parser='legacy-intake:msg',
                 parser_components={'intake':folder.VERSION+'/'+folder.ENGINE_REVISION,
-                                   'extract-msg':version,'olefile':_version('olefile')},
-                artifacts={'units.jsonl':hashlib.sha256((dest/'units.jsonl').read_bytes()).hexdigest()})
+                                   'extract-msg':version,'olefile':_version('olefile')})
         _write(dest/'digest.json',metadata)
     else:
         folder.worker(Path(source),sha,form,dest,root,dict(folder.LIMITS),0)
