@@ -52,13 +52,13 @@ class FakeModelServer:
 VALID_MODEL_OUTPUT = {
     "scope": "Fictional ALPR policy",
     "actors": ["Example County Sheriff's Office"],
-    "dates": [{"date": "2025-03-01", "locator": {"line": 4}, "note": "effective date"}],
-    "statements": [{"text": "Detections retained for 90 days.", "locator": {"line": 13}}],
+    "dates": [{"date": "2025-03-01", "locator": {"unit": 3}, "note": "effective date"}],
+    "statements": [{"text": "Detections retained for 90 days.", "locator": {"unit": 12}}],
     "omissions": [{"text": "No public hearing mentioned.", "locator": {"scope": "document"}}],
     "counterevidence": [],
     "conclusions": [
-        {"text": "The policy states a 90-day retention period.", "confidence": "verified", "sources": [{"locator": {"line": 13}, "rule_id": None}]},
-        {"text": "Retention exceeds the CHP 60-day period.", "confidence": "likely", "sources": [{"locator": {"line": 13}, "rule_id": "ca-veh-2413-chp-lpr-retention-and-sharing"}]},
+        {"text": "The policy states a 90-day retention period.", "confidence": "verified", "sources": [{"locator": {"unit": 12}, "rule_id": None}]},
+        {"text": "Retention exceeds the CHP 60-day period.", "confidence": "likely", "sources": [{"locator": {"unit": 12}, "rule_id": "ca-veh-2413-chp-lpr-retention-and-sharing"}]},
     ],
 }
 
@@ -157,7 +157,7 @@ class BuildDigestTests(unittest.TestCase):
 
     def test_model_never_sees_member_names_and_locators_are_restored(self):
         output = json.loads(json.dumps(VALID_MODEL_OUTPUT))
-        output["statements"] = [{"text": "A statement.", "locator": {"line": 2, "unit": 1}}]
+        output["statements"] = [{"text": "A statement.", "locator": {"unit": 1}}]
         server = FakeModelServer(json.dumps(output))
         try:
             config = ModelConfig(server.url, model_id="fake-1", privacy_tier="strict_local")
@@ -182,7 +182,7 @@ class BuildDigestTests(unittest.TestCase):
                 server.close()
 
     def test_model_unknown_rule_id_fails(self):
-        bad = {**VALID_MODEL_OUTPUT, "conclusions": [{"text": "x", "confidence": "likely", "sources": [{"locator": {"line": 1}, "rule_id": "made-up"}]}]}
+        bad = {**VALID_MODEL_OUTPUT, "conclusions": [{"text": "x", "confidence": "likely", "sources": [{"locator": {"unit": 0}, "rule_id": "made-up"}]}]}
         server = FakeModelServer(json.dumps(bad))
         try:
             with self.assertRaises(ModelError):

@@ -11,6 +11,8 @@ import unittest
 from campaign_tool.records import publish
 from campaign_tool.records.run import Pipeline, status
 from tests.records.test_run_slice import synthetic_email, REPO
+from tests.records import preaccepted_publication as accepted_fixture
+from campaign_tool.records.ledger import stages
 
 
 class PublishTests(unittest.TestCase):
@@ -25,9 +27,14 @@ class PublishTests(unittest.TestCase):
         (self.inbox / "response.eml").write_bytes(synthetic_email())
         self.root = self.base / "root"
         self.staging = self.base / "staging"
-        Pipeline(self.root).run(self.inbox)
+        pipeline = Pipeline(self.root)
+        accepted_fixture.policy(pipeline)
+        accepted_fixture.seed(pipeline, b"synthetic-transmittal-original", "# Synthetic transmittal\n")
         self.proposals = [p["id"] for p in status(self.root)["proposals"]]
         self.assertEqual(len(self.proposals), 2)
+        counts = stages.counts(self.root / "ledger.sqlite")
+        self.assertEqual(counts["verified_seven_stage_complete"], 0)
+        self.assertFalse(counts["publication_ready"], "test-only fixture is not production acceptance")
         self.policy = next(p for p in self.proposals if "retained for 90 days" in self.public(p))
 
     def public(self, proposal_id):
@@ -94,9 +101,13 @@ class PublishTests(unittest.TestCase):
         # A corrected record arrives: new bytes for the same original invalidate downstream stages,
         # the pipeline re-runs privacy, the proposal's approval resets, the owner re-approves.
         subject = json.loads((self.root / "proposals/private" / (self.policy + ".manifest.json")).read_bytes())["original_sha256"]
-        pipeline = Pipeline(self.root, redaction_denylist=["purged"])  # changes the public statements
-        pipeline._open_stage_run()["runner"].invalidate(subject, "review", reason="synthetic_correction")
-        pipeline.advance_all()
+        pipeline = Pipeline(self.root)
+        stage = pipeline._open_stage_run()
+        try:
+            stage["runner"].invalidate(subject, "review", reason="synthetic_correction")
+        finally:
+            pipeline._close_stage_run({"synthetic_correction": True})
+        accepted_fixture.policy(pipeline, revision=2)
         row = self.ledger("SELECT owner_approval,public_content_sha256 FROM proposals WHERE id=?", (self.policy,))[0]
         self.assertEqual(row[0], "none")
         self.assertNotEqual(row[1], first["content_sha256"])
@@ -148,8 +159,9 @@ class PublishTests(unittest.TestCase):
             publish.publish(self.root, self.policy, staging=self.staging)
         receipts = list((self.root / "proposals/private").glob(self.policy + ".reopen.*.json"))
         self.assertEqual(len(receipts), 1)
-        # The next run regenerates the content with a fresh privacy receipt; re-approve; publish records a correction.
-        Pipeline(self.root, redaction_denylist=["purged"]).run(self.inbox)
+        # Supply a new explicit preaccepted snapshot for this publisher unit test.
+        # Automatic review stays held in the separate real-pipeline tests.
+        accepted_fixture.policy(Pipeline(self.root), revision=2)
         after = self.ledger("SELECT owner_approval,public_content_sha256,privacy_receipt_sha256 FROM proposals WHERE id=?",
                             (self.policy,))[0]
         self.assertEqual(after[0], "none")

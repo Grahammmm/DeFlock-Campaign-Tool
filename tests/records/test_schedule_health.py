@@ -114,19 +114,19 @@ class HealthTests(unittest.TestCase):
         con.close()
         self.assertEqual(rows, [("schedule:missed:2026-10-01T13:00:00-07:00", 2, "open")])
 
-    def test_health_after_a_real_pipeline_run_is_ok_and_cli_exit_codes_agree(self):
+    def test_health_after_automated_review_reports_gaps_and_cli_exit_codes_agree(self):
         inbox = Path(self.tmp.name) / "inbox"
         inbox.mkdir(mode=0o700)
         (inbox / "m.eml").write_bytes(synthetic_email())
         Pipeline(self.root).run(inbox)
         now = datetime.now(ZoneInfo("UTC"))
         report = schedule.health(self.root, now=now)
-        self.assertEqual(report["slots"][0]["status"], "ok", report)
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["slots"][0]["status"], "gaps", report)
+        self.assertEqual(report["status"], "gaps")
         result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "health", "--root", str(self.root),
                                  "--now", now.isoformat(), "--json"], cwd=REPO, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["status"], "ok")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["status"], "gaps")
         # The same ledger a day later with no further runs is missed.
         later = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "health", "--root", str(self.root),
                                 "--now", (now + timedelta(days=1)).isoformat()], cwd=REPO, capture_output=True, text=True)

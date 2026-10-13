@@ -13,7 +13,9 @@ class ResumeTests(fixtures.SafetyFixture, unittest.TestCase):
         pipeline = unattended.UnattendedPipeline(self.root.path, policy=RunSafetyPolicy(max_originals=limit))
         pipeline.safety = self.guard(policy=pipeline.policy)
         pipeline.ocr_tools = {"synthetic": True}  # No decoder runs in these selection-only probes.
-        pipeline._query = lambda sql: rows
+        pipeline._open_stage_run()  # Install/check the real authority schema before selection stubs.
+        # Selection-only probes have no accepted review authority to reconcile.
+        pipeline._query = lambda sql, values=(): [] if sql.startswith("SELECT s.original_sha256,s.receipt_sha256") else rows
         pipeline._open_stage_run = lambda: {}
         def states(subject):
             return {name: {"status": "blocked" if name == "extract" and subject in held else
@@ -132,13 +134,13 @@ class MechanicalCountTests(fixtures.SafetyFixture, unittest.TestCase):
         pipeline = unattended.UnattendedPipeline(self.root.path)
         report = pipeline.run(inbox)
         self.assertIs(type(report["end_to_end_complete"]), int)
-        self.assertEqual(report["end_to_end_complete"], 1)
+        self.assertEqual(report["end_to_end_complete"], 0)
         self.assertIs(report["substantive_complete"], False)
         self.assertEqual(report["substantive_review_status"], "queued")
         self.assertEqual(report["status"], "completed_with_gaps")
         self.assertEqual(report["exit_code"], 3)
-        self.assertEqual(report["safety"]["phases"]["advance"]["review_required"], 1)
-        self.assertEqual(run.stages.counts(self.root.ledger)["candidate_seven_stage_complete"], 1)
+        self.assertGreaterEqual(report["safety"]["phases"]["advance"]["review_required"], 1)
+        self.assertEqual(run.stages.counts(self.root.ledger)["candidate_seven_stage_complete"], 0)
 
     def test_empty_free_run_is_operationally_complete_not_substantively_certified(self):
         report = unattended.UnattendedPipeline(self.root.path).run()
@@ -161,9 +163,9 @@ class MechanicalCountTests(fixtures.SafetyFixture, unittest.TestCase):
             return report
         with patch.object(pipeline, "_run_locked_unchecked", side_effect=with_analysis):
             report = pipeline.run(inbox)
-        self.assertEqual((report["status"], report["exit_code"]), ("completed", 0))
+        self.assertEqual((report["status"], report["exit_code"]), ("completed_with_gaps", 3))
         self.assertIs(type(report["end_to_end_complete"]), int)
-        self.assertEqual(report["end_to_end_complete"], 2)
+        self.assertEqual(report["end_to_end_complete"], 0)
         self.assertIs(report["substantive_complete"], False)
         self.assertEqual(report["substantive_review_status"], "queued")
         self.assertIs(report["analysis"], analysis)

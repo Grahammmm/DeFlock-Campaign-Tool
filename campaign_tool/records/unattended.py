@@ -309,6 +309,8 @@ class UnattendedPipeline(manual.Pipeline):
 
     def advance_all(self, subjects=None):
         stage = self._open_stage_run()
+        if not self._reconcile_review_authority(stage):
+            return []
         self.review_holds_retained = 0
         resume = None
         keys = {}
@@ -417,6 +419,7 @@ class UnattendedPipeline(manual.Pipeline):
         if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
             raise manual.RunError('invalid_input_selection')
         with manual.root_lock(self.root.path):
+            self._start_review_retirement()
             started = manual.now()
             self.safety = RunSafety(self.root.ledger, self.policy, **({"clock": self.clock} if self.clock else {}))
             self._open_stage_run()
@@ -425,6 +428,7 @@ class UnattendedPipeline(manual.Pipeline):
             self.review_holds_retained = 0
             interrupted = None
             try:
+                self._arm_review_retirement()
                 if self.model is not None or self.challenge is not None:
                     self.safety.stop("model_configuration_forbidden")
                 if self.safety.check() and documents:
@@ -438,11 +442,13 @@ class UnattendedPipeline(manual.Pipeline):
             except (KeyboardInterrupt, SystemExit) as error:
                 self.safety.stop("interrupted_attempt")
                 interrupted = error
-            except Exception:
-                self.safety.stop("unexpected_run_fault")
+            except Exception as error:
+                code = "review_authority_retirement_failed" if isinstance(error, manual.RunError) and error.args == ("review_authority_retirement_failed",) else "unexpected_run_fault"
+                self.safety.stop(code)
             held = self.safety.state["hold"] in EXPECTED_HELDS
             gaps = bool(self.review_holds_retained) or any(p["failed"] or p["held"] or p["review_required"] for p in self.safety.phases.values())
             gaps = gaps or bool(mailbox and mailbox["failures"]) or bool(intake and intake["failures"])
+            gaps = gaps or self.review_retirement["state"] == "pending"
             status = "interrupted" if interrupted else "held" if held else "failed" if self.safety.stopped else "completed_with_gaps" if gaps else "completed"
             summary = manual.stages.counts(self.root.ledger)
             counts = summary["stages"]
@@ -462,6 +468,7 @@ class UnattendedPipeline(manual.Pipeline):
                       "substantive_complete": False,
                       "substantive_review_status": "queued" if summary["originals"] else "not_applicable",
                       "model_id": None, "challenge_model_id": None}
+            report["review_retirement"] = dict(self.review_retirement)
             report_raw = manual.encoded(report)
             report_sha256 = None
             try:

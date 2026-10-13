@@ -149,10 +149,11 @@ class NativeCallerBudgetTests(unittest.TestCase):
             report=Pipeline(base/"records").run(inbox)
             self.assertEqual(report["intake"]["failures"],[])
             self.assertEqual(report["originals"],1)
-            self.assertEqual(report["end_to_end_complete"],1)
+            self.assertEqual(report["end_to_end_complete"],0)
+            self.assertEqual(report["counts"]["review"]["blocked"],1)
             again=Pipeline(base/"records").run(inbox)
             self.assertEqual(again["originals"],1)
-            self.assertEqual(again["end_to_end_complete"],1)
+            self.assertEqual(again["end_to_end_complete"],0)
 
 class NativeAcceptanceEvidenceTests(unittest.TestCase):
     @unittest.skipUnless(native.available(),"optional native MSG parser unavailable")

@@ -29,6 +29,7 @@ from campaign_tool.law import load_package, rules_in_force
 from . import challenge as challenge_mod
 from . import extraction_routes
 from . import stage_adapters
+from . import review_retirement
 from .catalog_stage import catalog_run_factory
 from .extraction_ledger import ExtractionLedgerAdapter
 from .extraction_validation import ExtractionStageAdapter, install_extraction_validator
@@ -152,6 +153,7 @@ class Pipeline:
         self.config_sha256 = sha(encoded(self.config))
         self.run_id = "run-" + uuid.uuid4().hex
         self._stage = None
+        self.review_retirement = {"state": "complete", "processed": 0}
 
     # ----- intake -------------------------------------------------------------------------
     def _identity(self):
@@ -272,6 +274,8 @@ class Pipeline:
     def advance_all(self, subjects=None):
         """Advance every subject through the stage order; never raise for one record."""
         stage = self._open_stage_run()
+        if not self._reconcile_review_authority(stage):
+            return []
         report = []
         for subject in (self.subjects() if subjects is None else subjects):
             outcome = {"subject_sha256": subject, "stages": {}}
@@ -295,6 +299,54 @@ class Pipeline:
                 if result.get("status") not in ("done", "inapplicable"):
                     break
         return report
+
+    def _reconcile_review_authority(self, stage):
+        """Retire cached automated/test-only review before completed-stage reuse.
+
+        No source text is needed: the protected receipt issuer and validation
+        authority identify prior automated passes. Root lock belongs to run().
+        Genuine independent receipt submission remains a separate review seam.
+        """
+        self._arm_review_retirement()
+        safety = getattr(self, "safety", None)
+        limit = min(review_retirement.LIMIT, safety.policy.max_originals) if safety else review_retirement.LIMIT
+        rows = self._query("SELECT s.original_sha256,s.receipt_sha256 " + review_retirement.ELIGIBLE +
+                           " ORDER BY s.original_sha256 LIMIT ?", (limit,))
+        for row in rows:
+            if safety and not safety.begin("advance", sha(encoded([
+                    "review-retirement", row["original_sha256"], row["receipt_sha256"]]))):
+                break
+            # Revoke first and durably. An interrupted reconciliation can only
+            # leave authority more restrictive; it cannot restore old approval.
+            with store.ledger(self.root.ledger) as con:
+                con.execute("UPDATE proposals SET owner_approval='none',approved_content_sha256=NULL "
+                            "WHERE independent_receipt_sha256=?", (row["receipt_sha256"],))
+                con.commit()
+            try:
+                stage["runner"].invalidate(row["original_sha256"], "review",
+                                           reason="independent_factual_review_required:cached_automated_or_test_review")
+            except Exception:
+                self.review_retirement.update(state="pending", failure_code="review_authority_retirement_failed")
+                if safety:
+                    safety.finish("held", "review_authority_retirement_failed", (row["original_sha256"],))
+                raise RunError("review_authority_retirement_failed") from None
+            self.review_retirement["processed"] += 1
+            if safety:
+                safety.finish()
+        with store.ledger(self.root.ledger) as con:
+            complete = review_retirement.finish(con)
+        self.review_retirement["state"] = "complete" if complete else "pending"
+        return complete
+
+    def _arm_review_retirement(self):
+        with store.ledger(self.root.ledger) as con:
+            held = review_retirement.arm(con)
+        self.review_retirement["state"] = "pending" if held else "complete"
+
+    def _start_review_retirement(self):
+        with store.ledger(self.root.ledger) as con:
+            review_retirement.start(con)
+        self.review_retirement["state"] = "pending"
 
     # ----- helpers ---------------------------------------------------------------------
     def _original(self, subject):
@@ -485,7 +537,8 @@ class Pipeline:
                 "Page(s) " + ", ".join(str(p) for p in ocr_pages) +
                 " were read by local OCR and have not been visually reviewed; verify quotes against the page image.")
         redacted, _ = redact_units(text_units, allowlist=self.allowlist, denylist=self.denylist)
-        record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener)
+        record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener,
+                                                allowlist=self.allowlist, denylist=self.denylist)
         content = {"schema": stage_adapters.SCHEMAS["review"], "subject_sha256": subject,
                    "digest": digest, "challenge": record}
         coverage = {"denominator": {"kind": "items", "total": len(units)}, "covered": len(units), "scope": "full_text"}
@@ -597,30 +650,107 @@ class Pipeline:
             return {}
 
     def _record_proposal(self, subject, content, states):
+        """Persist a proposal under the caller's root lock; provenance can change without text."""
+        import stat
+
         proposal_id = "prop_" + subject[:16]
-        public = self.root.sub("proposals/public") / (proposal_id + ".md")
-        private = self.root.sub("proposals/private") / (proposal_id + ".manifest.json")
-        for path, data in ((public, content["public_markdown"].encode()), (private, encoded(content["manifest"]))):
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_bytes(data)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
+        public, manifest = content["public_markdown"].encode(), encoded(content["manifest"])
+        if sha(public) != content["public_content_sha256"] or sha(manifest) != content["manifest_sha256"]:
+            raise RunError("proposal_content_hash_mismatch")
         privacy_receipt = self._states(subject)["privacy"]["receipt_sha256"]
-        with store.ledger(self.root.ledger) as con:
-            existing = con.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
-            if existing is None:
-                con.execute("INSERT INTO proposals(id,tier,agency_id,public_content_sha256,manifest_sha256,"
-                            "privacy_receipt_sha256,independent_receipt_sha256,owner_approval,approved_content_sha256,supersedes) "
-                            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                            (proposal_id, "A", None, content["public_content_sha256"], content["manifest_sha256"],
-                             privacy_receipt, states["review"]["receipt_sha256"], "none", None, None))
-            elif existing["public_content_sha256"] != content["public_content_sha256"]:
-                # Content changed after approval state was recorded: reset approval, keep history by supersession.
-                con.execute("UPDATE proposals SET public_content_sha256=?,manifest_sha256=?,privacy_receipt_sha256=?,"
-                            "independent_receipt_sha256=?,owner_approval='none',approved_content_sha256=NULL WHERE id=?",
-                            (content["public_content_sha256"], content["manifest_sha256"], privacy_receipt,
-                             states["review"]["receipt_sha256"], proposal_id))
-            con.commit()
+        bindings = (content["public_content_sha256"], content["manifest_sha256"], privacy_receipt,
+                    states["review"]["receipt_sha256"])
+        fields = ("public_content_sha256", "manifest_sha256", "privacy_receipt_sha256", "independent_receipt_sha256")
+        revision_id = sha(encoded({"proposal_id": proposal_id, "bindings": bindings}))
+        directories = []
+        try:
+            # Pin destination directories without following symlinks. Unique exclusive
+            # temporary files cannot follow a planted, predictable .tmp symlink either.
+            if any(path.is_symlink() for path in (self.root.path, *self.root.path.parents)):
+                raise RunError("symlink_root")
+            directories.append(os.open(self.root.path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+            for part in self.root.path.parts[1:]:
+                following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directories[0])
+                os.close(directories[0])
+                directories[0] = following
+            directories.append(os.open("proposals", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=directories[0]))
+            for name in ("public", "private"):
+                directories.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                           dir_fd=directories[1]))
+            outputs = ((directories[2], proposal_id + ".md", public),
+                       (directories[3], proposal_id + ".manifest.json", manifest))
+            for directory, name, data in outputs:
+                try:
+                    mode = os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(mode):
+                    raise RunError("proposal_file_not_regular")
+            with store.ledger(self.root.ledger) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute("CREATE TABLE IF NOT EXISTS proposal_revisions("
+                            "revision_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL REFERENCES proposals(id),"
+                            "public_content_sha256 TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,"
+                            "privacy_receipt_sha256 TEXT, independent_receipt_sha256 TEXT,"
+                            "public_content BLOB NOT NULL, manifest_content BLOB NOT NULL,"
+                            "state TEXT NOT NULL CHECK(state IN ('pending','complete','superseded')))")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_immutable BEFORE UPDATE OF "
+                            "revision_id,proposal_id,public_content_sha256,manifest_sha256,privacy_receipt_sha256,"
+                            "independent_receipt_sha256,public_content,manifest_content ON proposal_revisions "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_no_delete BEFORE DELETE ON proposal_revisions "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_no_replace BEFORE INSERT ON proposal_revisions "
+                            "WHEN EXISTS(SELECT 1 FROM proposal_revisions WHERE revision_id=NEW.revision_id) "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                existing = con.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
+                if existing is None:
+                    con.execute("INSERT INTO proposals(id,tier,agency_id,public_content_sha256,manifest_sha256,"
+                                "privacy_receipt_sha256,independent_receipt_sha256,owner_approval,approved_content_sha256,supersedes) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?)", (proposal_id, "A", None, *bindings, "none", None, None))
+                elif tuple(existing[field] for field in fields) != bindings:
+                    con.execute("UPDATE proposals SET public_content_sha256=?,manifest_sha256=?,privacy_receipt_sha256=?,"
+                                "independent_receipt_sha256=?,owner_approval='none',approved_content_sha256=NULL WHERE id=?",
+                                (*bindings, proposal_id))
+                revision = con.execute("SELECT * FROM proposal_revisions WHERE revision_id=?", (revision_id,)).fetchone()
+                if revision is not None and (tuple(revision[field] for field in fields) != bindings or
+                                             revision["proposal_id"] != proposal_id or
+                                             bytes(revision["public_content"]) != public or
+                                             bytes(revision["manifest_content"]) != manifest):
+                    raise RunError("proposal_revision_changed")
+                if revision is None:
+                    con.execute("INSERT INTO proposal_revisions VALUES(?,?,?,?,?,?,?,?,?)",
+                                (revision_id, proposal_id, *bindings, public, manifest, "pending"))
+                else:
+                    con.execute("UPDATE proposal_revisions SET state='pending' WHERE revision_id=?", (revision_id,))
+                con.execute("UPDATE proposal_revisions SET state='superseded' "
+                            "WHERE proposal_id=? AND revision_id!=? AND state='pending'", (proposal_id, revision_id))
+                # Commit intent and revoked authority before replacing either file.
+                # Publication/reopen can recover an interrupted write from this journal.
+                con.commit()
+            for directory, name, data in outputs:
+                temporary = "." + name + "." + uuid.uuid4().hex + ".tmp"
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                    os.fsync(directory)
+                finally:
+                    try:
+                        os.unlink(temporary, dir_fd=directory)
+                    except FileNotFoundError:
+                        pass
+            with store.ledger(self.root.ledger) as con:
+                con.execute("UPDATE proposal_revisions SET state='complete' WHERE revision_id=?", (revision_id,))
+                con.commit()
+        finally:
+            for directory in reversed(directories):
+                os.close(directory)
         return proposal_id
 
     # ----- whole run -------------------------------------------------------------------
@@ -649,17 +779,20 @@ class Pipeline:
     def _run_locked(self, *args, **kwargs):
         # Recovery precedes this invocation's run row, so it cannot interrupt itself.
         try:
+            self._start_review_retirement()
             report = self._run_locked_unchecked(*args, **kwargs)
-        except Exception:
+        except Exception as error:
+            code = error.args[0] if isinstance(error, RunError) and error.args == ("review_authority_retirement_failed",) else "run_failed"
             with store.ledger(self.root.ledger) as con:
                 con.execute("UPDATE runs SET status='failed',ended_at=?,summary=? WHERE run_id=?",
-                            (now(), encoded({"failure_code": "run_failed"}).decode(), self.run_id))
+                            (now(), encoded({"failure_code": code}).decode(), self.run_id))
                 con.commit()
-            raise RunError("run_failed") from None
+            raise RunError(code) from None
         outcomes = [value for item in report.get("subjects", []) for value in item.get("stages", {}).values()]
         technical = any(value.startswith("error:") for value in outcomes)
         gaps = technical or bool(report.get("intake", {}).get("failures")) or bool((report.get("mailbox") or {}).get("failures"))
         gaps = gaps or any(value.startswith(("blocked", "pending")) for value in outcomes)
+        gaps = gaps or report["review_retirement"]["state"] == "pending"
         status = "failed" if technical else "completed_with_gaps" if gaps else "completed"
         report.update(status=status, exit_code=2 if technical else 3 if gaps else 0)
         report.setdefault("substantive_complete", False)
@@ -677,6 +810,7 @@ class Pipeline:
         started = now()
         recovery = self.recover()
         self._open_stage_run()
+        self._arm_review_retirement()
         intake = self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
@@ -688,6 +822,7 @@ class Pipeline:
                   "proposals_awaiting_owner": len(self._query("SELECT id FROM proposals WHERE owner_approval='none'")),
                   "model_id": self.model.model_id if self.model else None,
                   "challenge_model_id": self.challenge.model.model_id if self.challenge else None}
+        report["review_retirement"] = dict(self.review_retirement)
         self._close_stage_run({"subjects": len(progress), "counts": summary["stages"]})
         path = self.root.sub("runs") / (self.run_id + ".json")
         path.write_bytes(json.dumps(report, sort_keys=True, indent=1).encode())
@@ -713,10 +848,12 @@ def status(root):
             "SELECT original_sha256,stage,reason FROM stage_state WHERE status='blocked' ORDER BY original_sha256,stage")]
         runs = [dict(row) for row in con.execute("SELECT run_id,kind,started_at,ended_at,status FROM runs ORDER BY started_at DESC LIMIT 10")]
         alerts = [dict(row) for row in con.execute("SELECT key,first_seen,last_seen,count,owner,state FROM alerts WHERE state='open' ORDER BY last_seen DESC")]
+        retirement_pending = review_retirement.pending(con)
     from .publish import drifted_proposals
     return {"root": str(root.path), "ledger": True, "originals": summary["originals"], "stages": summary["stages"],
             "end_to_end_complete": summary["candidate_seven_stage_complete"], "proposals": proposals,
             "drifted_proposals": drifted_proposals(root.path),
+            "review_retirement_pending": retirement_pending,
             "blocked": blocked, "alerts": alerts, "recent_runs": runs}
 
 
