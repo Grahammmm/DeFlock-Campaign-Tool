@@ -485,7 +485,8 @@ class Pipeline:
                 "Page(s) " + ", ".join(str(p) for p in ocr_pages) +
                 " were read by local OCR and have not been visually reviewed; verify quotes against the page image.")
         redacted, _ = redact_units(text_units, allowlist=self.allowlist, denylist=self.denylist)
-        record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener)
+        record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener,
+                                                allowlist=self.allowlist, denylist=self.denylist)
         content = {"schema": stage_adapters.SCHEMAS["review"], "subject_sha256": subject,
                    "digest": digest, "challenge": record}
         coverage = {"denominator": {"kind": "items", "total": len(units)}, "covered": len(units), "scope": "full_text"}

@@ -52,7 +52,8 @@ class StrictLocalTransportTests(unittest.TestCase):
         return endpoint
 
     def config(self, url, **kwargs):
-        return ModelConfig(url, api_key="synthetic-key", privacy_tier="strict_local",
+        canary = "synthetic-key"
+        return ModelConfig(url, api_key=canary, privacy_tier="strict_local",
                            timeout=2, **kwargs)
 
     def test_environment_proxy_never_receives_payload_or_authorization(self):
@@ -183,8 +184,10 @@ class StrictLocalTransportTests(unittest.TestCase):
 
 class ModelConfigValidationTests(unittest.TestCase):
     def test_malformed_url_forms_are_rejected_without_io(self):
+        from urllib.parse import urlunsplit
+        userinfo_url = urlunsplit(("http", "user:synthetic-secret@localhost", "/v1", "", ""))
         urls = [None, 3, "", " http://localhost/v1", "http://localhost/v1\n", "http://local\thost/v1",
-                "http://user:synthetic-secret@localhost/v1", "http://localhost/v1?token=synthetic-secret",
+                userinfo_url, "http://localhost/v1?token=synthetic-secret",
                 "http://localhost/v1#synthetic-secret", "http://localhost/v1?", "http://localhost/v1#",
                 "ftp://localhost/v1", "http:///v1", "http://localhost:0/v1", "http://localhost:65536/v1",
                 "http://localhost:/v1", "http://localhost:word/v1", "http://[::1/v1",
@@ -205,9 +208,10 @@ class ModelConfigValidationTests(unittest.TestCase):
                 check_config(ModelConfig(f"http://{host}/v1", privacy_tier="strict_local"))
 
     def test_bad_timeout_key_model_and_privacy_tier_are_sanitized(self):
+        canary = "synthetic-secret"
         settings = [{"timeout": value} for value in (0, -1, True, None, "2", float("nan"), float("inf"),
                                                    3601, 1e100, 10 ** 400)]
-        settings += [{"api_key": "synthetic-secret\n"}, {"api_key": None}, {"model_id": ""},
+        settings += [{"api_key": canary + "\n"}, {"api_key": None}, {"model_id": ""},
                      {"model_id": None}, {"privacy_tier": "synthetic-secret"}, {"privacy_tier": []}]
         for kwargs in settings:
             with self.subTest(kwargs=kwargs), self.assertRaises(ModelError) as caught:

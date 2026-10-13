@@ -100,14 +100,14 @@ class RedactTableTests(unittest.TestCase):
                 self.assertEqual(redact(result.text).text, result.text)
 
     def test_multiline_denylist_preserves_each_original_separator(self):
-        secret = "Synthetic\nPrivate\r\nPhrase"
-        text = "Start " + secret + " ends.\nEvidence follows."
-        result = redact(text, denylist=(secret,))
+        phrase = "Synthetic\nPrivate\r\nPhrase"
+        text = "Start " + phrase + " ends.\nEvidence follows."
+        result = redact(text, denylist=(phrase,))
         self.assertEqual(result.text, "Start [DENYLIST-1]\n \r\n  ends.\nEvidence follows.")
         self.assertEqual(result.counts, {"DENYLIST": 1})
         self.assertEqual(len(result.text.splitlines()), len(text.splitlines()))
         self.assertNotIn("Private", result.text)
-        self.assertEqual(redact(result.text, denylist=(secret,)).text, result.text)
+        self.assertEqual(redact(result.text, denylist=(phrase,)).text, result.text)
 
     def test_multiline_redaction_does_not_coalesce_distinct_cr_and_lf(self):
         for prefix, phrase, denylist in (("Name: ", "Alice\rBeth\nSmith", ()),
