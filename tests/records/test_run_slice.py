@@ -234,6 +234,25 @@ class RunSliceTests(unittest.TestCase):
         self.assertEqual(report["counts"]["review"]["blocked"], 2)
         self.assertEqual(report["proposals_awaiting_owner"], 0)
 
+    def test_cached_test_review_is_reopened_and_owner_approval_revoked_before_reuse(self):
+        from campaign_tool.records import publish
+        from campaign_tool.records.unattended import UnattendedPipeline
+        from tests.records import preaccepted_publication
+        for implementation in (Pipeline, UnattendedPipeline):
+            with self.subTest(implementation=implementation.__name__):
+                self.root = self.base / ("cached-" + implementation.__name__)
+                proposal = preaccepted_publication.policy(Pipeline(self.root))
+                publish.approve(self.root, proposal, owner_id="synthetic-owner")
+                report = implementation(self.root).run(None)
+                self.assertEqual(report["end_to_end_complete"], 0)
+                self.assertEqual(report["counts"]["review"]["done"], 0)
+                self.assertEqual(self.ledger("SELECT owner_approval,approved_content_sha256 FROM proposals"), [("none", None)])
+                with self.assertRaisesRegex(publish.PublishError, "owner_approval_required"):
+                    publish.publish(self.root, proposal, staging=self.base / "synthetic-staging")
+                reasons = self.ledger("SELECT reason FROM stage_events WHERE stage='review' "
+                                      "AND reason LIKE '%cached_automated_or_test_review%'")
+                self.assertTrue(reasons)
+
     def test_disputed_review_blocks_the_stage_instead_of_passing(self):
         Pipeline(self.root).run(self.inbox)
         subject = self.ledger("SELECT original_sha256 FROM stage_state WHERE stage='review' AND status='blocked'")[0][0]

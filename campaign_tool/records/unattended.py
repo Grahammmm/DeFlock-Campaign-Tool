@@ -309,6 +309,7 @@ class UnattendedPipeline(manual.Pipeline):
 
     def advance_all(self, subjects=None):
         stage = self._open_stage_run()
+        self._reconcile_review_authority(stage)
         self.review_holds_retained = 0
         resume = None
         keys = {}

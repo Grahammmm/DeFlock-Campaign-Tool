@@ -272,6 +272,7 @@ class Pipeline:
     def advance_all(self, subjects=None):
         """Advance every subject through the stage order; never raise for one record."""
         stage = self._open_stage_run()
+        self._reconcile_review_authority(stage)
         report = []
         for subject in (self.subjects() if subjects is None else subjects):
             outcome = {"subject_sha256": subject, "stages": {}}
@@ -295,6 +296,31 @@ class Pipeline:
                 if result.get("status") not in ("done", "inapplicable"):
                     break
         return report
+
+    def _reconcile_review_authority(self, stage):
+        """Retire cached automated/test-only review before completed-stage reuse.
+
+        No source text is needed: the protected receipt issuer and validation
+        authority identify prior automated passes. Root lock belongs to run().
+        Genuine independent receipt submission remains a separate review seam.
+        """
+        rows = self._query(
+            "SELECT s.original_sha256,s.receipt_sha256 FROM stage_state s "
+            "LEFT JOIN receipts r ON r.sha256=s.receipt_sha256 "
+            "LEFT JOIN stage_validation_authority v ON v.receipt_sha256=s.receipt_sha256 "
+            "WHERE s.stage='review' AND s.status='done' "
+            "AND (r.reviewer_id LIKE 'challenge:%' OR v.test_only=1) LIMIT 10001")
+        if len(rows) > 10000:
+            raise RunError("review_authority_reconciliation_bound")
+        for row in rows:
+            # Revoke first and durably. An interrupted reconciliation can only
+            # leave authority more restrictive; it cannot restore old approval.
+            with store.ledger(self.root.ledger) as con:
+                con.execute("UPDATE proposals SET owner_approval='none',approved_content_sha256=NULL "
+                            "WHERE independent_receipt_sha256=?", (row["receipt_sha256"],))
+                con.commit()
+            stage["runner"].invalidate(row["original_sha256"], "review",
+                                       reason="independent_factual_review_required:cached_automated_or_test_review")
 
     # ----- helpers ---------------------------------------------------------------------
     def _original(self, subject):

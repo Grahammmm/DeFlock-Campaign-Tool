@@ -68,6 +68,18 @@ class ChallengeBoundaryTests(unittest.TestCase):
         self.assertEqual(record["evidence_basis"], "redacted_extracted_text")
         self.assert_requires_factual_review(record)
 
+    def test_same_model_fresh_context_assent_keeps_independent_review_hold(self):
+        config = challenge.ChallengeConfig(
+            ModelConfig("https://synthetic.example.invalid/v1", model_id="synthetic-primary"),
+            primary_model_id="synthetic-primary", fresh_context=True)
+        with patch.object(challenge, "chat_json", return_value={"disputes": [], "notes": "Quoted text agrees."}):
+            record = self.check(config=config)
+        self.assertEqual(record["structural_verdict"], "pass")
+        self.assertEqual(record["model_check_verdict"], "pass")
+        self.assert_requires_factual_review(record)
+        with self.assertRaisesRegex(ValueError, "challenge_not_passed"):
+            challenge.review_entry(record, "factual", "a" * 64, "b" * 64, [])
+
     def test_legacy_automated_pass_cannot_become_factual_receipt(self):
         record = {"verdict": "pass", "blind_first_pass": True, "independent_review": True}
         with self.assertRaisesRegex(ValueError, "independent_factual_review_required"):

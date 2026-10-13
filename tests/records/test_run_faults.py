@@ -105,7 +105,9 @@ class FaultTests(unittest.TestCase):
         return fired[0]
 
     def test_crash_after_every_stage_then_resume_matches_a_clean_run(self):
-        for name in STAGE_ORDER:
+        # Automated review is the final reachable stage without an independent
+        # factual receipt. Do not fake approval merely to reach later stages.
+        for name in STAGE_ORDER[:STAGE_ORDER.index("review") + 1]:
             with self.subTest(stage=name):
                 if self.root.exists():
                     shutil.rmtree(self.root)
@@ -126,7 +128,7 @@ class FaultTests(unittest.TestCase):
                 self.assertEqual(report["intake"]["messages"], 2)
                 self.assertEqual(len(report["intake"]["preserved"]), 0, "replayed inbox must preserve nothing new")
                 runs = self.query("SELECT status,ended_at IS NOT NULL FROM runs WHERE kind='stage-runner' ORDER BY started_at")
-                self.assertEqual([tuple(r) for r in runs], [("interrupted", 1), ("completed", 1)])
+                self.assertEqual([tuple(r) for r in runs], [("interrupted", 1), ("completed_with_gaps", 1)])
                 self.assertEqual(report["recovery"]["interrupted_runs"], [crashed[0][0]])
 
     def test_crash_inside_a_stage_after_lease_before_promotion_resumes_without_a_second_identity(self):
@@ -157,7 +159,7 @@ class FaultTests(unittest.TestCase):
                          [(1,)])
         self.assert_matches_clean_run(after)
 
-    def test_health_reports_the_crashed_run_as_stalled_then_ok_after_resume(self):
+    def test_health_reports_the_crashed_run_as_stalled_then_review_gaps_after_resume(self):
         self.crash_after("extract")
         started = self.query("SELECT started_at FROM runs WHERE kind='stage-runner'")[0][0]
         later = datetime.fromisoformat(started).astimezone(ZoneInfo("UTC")) + timedelta(hours=1)
@@ -171,12 +173,21 @@ class FaultTests(unittest.TestCase):
         self.assertEqual(report["status"], "stalled")
         Pipeline(self.root).run(self.inbox)
         con = sqlite3.connect(self.root / "ledger.sqlite")
-        con.execute("UPDATE runs SET started_at=?,ended_at=? WHERE status='completed' AND kind='stage-runner'",
+        con.execute("UPDATE runs SET started_at=?,ended_at=? WHERE status='completed_with_gaps' AND kind='stage-runner'",
                     ((slot_time + timedelta(minutes=2)).isoformat(), (slot_time + timedelta(minutes=5)).isoformat()))
         con.commit()
         con.close()
         report = schedule.health(self.root, now=slot_time + timedelta(hours=1))
-        self.assertEqual(report["slots"][0]["status"], "ok")
+        self.assertEqual(report["slots"][0]["status"], "gaps")
+
+    def test_review_hold_prevents_downstream_stages_from_running(self):
+        with patch.object(Pipeline, "stage_compare", side_effect=AssertionError("compare bypassed review")), \
+                patch.object(Pipeline, "stage_privacy", side_effect=AssertionError("privacy bypassed review")):
+            report = Pipeline(self.root).run(self.inbox)
+        self.assertGreater(report["counts"]["review"]["blocked"], 0)
+        self.assertEqual(report["counts"]["compare"]["done"], 0)
+        self.assertEqual(report["counts"]["privacy"]["done"], 0)
+        self.assertEqual(report["proposals_awaiting_owner"], 0)
 
     def test_second_concurrent_runner_on_one_root_is_refused_and_state_stays_single(self):
         from campaign_tool.records.run import RunError
