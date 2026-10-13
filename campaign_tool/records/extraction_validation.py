@@ -192,8 +192,7 @@ def installed_parser_identity(form, native_workbook_policy=None):
             for path in package_files:
                 files[path], size = _runtime_file_hash(distribution.locate_file(path), MAX_ACCEPT_EVIDENCE - used)
                 used += size
-            if name == "openpyxl":
-                components[name] = distribution.version
+            components[name] = distribution.version
             runtime[name] = {"metadata_sha256": enrollment.sha(metadata.encode()), "module_files": files}
     return components, enrollment.sha(encoded(runtime))
 
