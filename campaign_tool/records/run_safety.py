@@ -37,6 +37,7 @@ LOCAL_CODES = frozenset({
     "unexpected_run_fault", "mail_connection_failed", "retention_integrity_failed", "retention_identity_conflict",
     "folder_visibility_failed", "configured_folder_missing", "review_required", "ocr_runtime_unavailable",
     "report_write_failed",
+    "review_authority_retirement_failed",
 })
 ALL_CODES = MAIL_CODES | INTAKE_CODES | EXTRACTION_FAULTS | LOCAL_CODES
 STATE_KEY = "unattended-safety-v1"

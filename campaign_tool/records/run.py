@@ -29,6 +29,7 @@ from campaign_tool.law import load_package, rules_in_force
 from . import challenge as challenge_mod
 from . import extraction_routes
 from . import stage_adapters
+from . import review_retirement
 from .catalog_stage import catalog_run_factory
 from .extraction_ledger import ExtractionLedgerAdapter
 from .extraction_validation import ExtractionStageAdapter, install_extraction_validator
@@ -152,6 +153,7 @@ class Pipeline:
         self.config_sha256 = sha(encoded(self.config))
         self.run_id = "run-" + uuid.uuid4().hex
         self._stage = None
+        self.review_retirement = {"state": "complete", "processed": 0}
 
     # ----- intake -------------------------------------------------------------------------
     def _identity(self):
@@ -272,7 +274,8 @@ class Pipeline:
     def advance_all(self, subjects=None):
         """Advance every subject through the stage order; never raise for one record."""
         stage = self._open_stage_run()
-        self._reconcile_review_authority(stage)
+        if not self._reconcile_review_authority(stage):
+            return []
         report = []
         for subject in (self.subjects() if subjects is None else subjects):
             outcome = {"subject_sha256": subject, "stages": {}}
@@ -304,23 +307,36 @@ class Pipeline:
         authority identify prior automated passes. Root lock belongs to run().
         Genuine independent receipt submission remains a separate review seam.
         """
-        rows = self._query(
-            "SELECT s.original_sha256,s.receipt_sha256 FROM stage_state s "
-            "LEFT JOIN receipts r ON r.sha256=s.receipt_sha256 "
-            "LEFT JOIN stage_validation_authority v ON v.receipt_sha256=s.receipt_sha256 "
-            "WHERE s.stage='review' AND s.status='done' "
-            "AND (r.reviewer_id LIKE 'challenge:%' OR v.test_only=1) LIMIT 10001")
-        if len(rows) > 10000:
-            raise RunError("review_authority_reconciliation_bound")
+        self._arm_review_retirement()
+        safety = getattr(self, "safety", None)
+        limit = min(review_retirement.LIMIT, safety.policy.max_originals) if safety else review_retirement.LIMIT
+        rows = self._query("SELECT s.original_sha256,s.receipt_sha256 " + review_retirement.ELIGIBLE +
+                           " ORDER BY s.original_sha256 LIMIT ?", (limit,))
         for row in rows:
+            if safety and not safety.check():
+                break
             # Revoke first and durably. An interrupted reconciliation can only
             # leave authority more restrictive; it cannot restore old approval.
             with store.ledger(self.root.ledger) as con:
                 con.execute("UPDATE proposals SET owner_approval='none',approved_content_sha256=NULL "
                             "WHERE independent_receipt_sha256=?", (row["receipt_sha256"],))
                 con.commit()
-            stage["runner"].invalidate(row["original_sha256"], "review",
-                                       reason="independent_factual_review_required:cached_automated_or_test_review")
+            try:
+                stage["runner"].invalidate(row["original_sha256"], "review",
+                                           reason="independent_factual_review_required:cached_automated_or_test_review")
+            except Exception:
+                self.review_retirement.update(state="pending", failure_code="review_authority_retirement_failed")
+                raise RunError("review_authority_retirement_failed") from None
+            self.review_retirement["processed"] += 1
+        with store.ledger(self.root.ledger) as con:
+            complete = review_retirement.finish(con)
+        self.review_retirement["state"] = "complete" if complete else "pending"
+        return complete
+
+    def _arm_review_retirement(self):
+        with store.ledger(self.root.ledger) as con:
+            held = review_retirement.arm(con)
+        self.review_retirement["state"] = "pending" if held else "complete"
 
     # ----- helpers ---------------------------------------------------------------------
     def _original(self, subject):
@@ -754,16 +770,18 @@ class Pipeline:
         # Recovery precedes this invocation's run row, so it cannot interrupt itself.
         try:
             report = self._run_locked_unchecked(*args, **kwargs)
-        except Exception:
+        except Exception as error:
+            code = error.args[0] if isinstance(error, RunError) and error.args == ("review_authority_retirement_failed",) else "run_failed"
             with store.ledger(self.root.ledger) as con:
                 con.execute("UPDATE runs SET status='failed',ended_at=?,summary=? WHERE run_id=?",
-                            (now(), encoded({"failure_code": "run_failed"}).decode(), self.run_id))
+                            (now(), encoded({"failure_code": code}).decode(), self.run_id))
                 con.commit()
-            raise RunError("run_failed") from None
+            raise RunError(code) from None
         outcomes = [value for item in report.get("subjects", []) for value in item.get("stages", {}).values()]
         technical = any(value.startswith("error:") for value in outcomes)
         gaps = technical or bool(report.get("intake", {}).get("failures")) or bool((report.get("mailbox") or {}).get("failures"))
         gaps = gaps or any(value.startswith(("blocked", "pending")) for value in outcomes)
+        gaps = gaps or report["review_retirement"]["state"] == "pending"
         status = "failed" if technical else "completed_with_gaps" if gaps else "completed"
         report.update(status=status, exit_code=2 if technical else 3 if gaps else 0)
         report.setdefault("substantive_complete", False)
@@ -781,6 +799,7 @@ class Pipeline:
         started = now()
         recovery = self.recover()
         self._open_stage_run()
+        self._arm_review_retirement()
         intake = self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
@@ -792,6 +811,7 @@ class Pipeline:
                   "proposals_awaiting_owner": len(self._query("SELECT id FROM proposals WHERE owner_approval='none'")),
                   "model_id": self.model.model_id if self.model else None,
                   "challenge_model_id": self.challenge.model.model_id if self.challenge else None}
+        report["review_retirement"] = dict(self.review_retirement)
         self._close_stage_run({"subjects": len(progress), "counts": summary["stages"]})
         path = self.root.sub("runs") / (self.run_id + ".json")
         path.write_bytes(json.dumps(report, sort_keys=True, indent=1).encode())
@@ -817,10 +837,12 @@ def status(root):
             "SELECT original_sha256,stage,reason FROM stage_state WHERE status='blocked' ORDER BY original_sha256,stage")]
         runs = [dict(row) for row in con.execute("SELECT run_id,kind,started_at,ended_at,status FROM runs ORDER BY started_at DESC LIMIT 10")]
         alerts = [dict(row) for row in con.execute("SELECT key,first_seen,last_seen,count,owner,state FROM alerts WHERE state='open' ORDER BY last_seen DESC")]
+        retirement_pending = review_retirement.pending(con)
     from .publish import drifted_proposals
     return {"root": str(root.path), "ledger": True, "originals": summary["originals"], "stages": summary["stages"],
             "end_to_end_complete": summary["candidate_seven_stage_complete"], "proposals": proposals,
             "drifted_proposals": drifted_proposals(root.path),
+            "review_retirement_pending": retirement_pending,
             "blocked": blocked, "alerts": alerts, "recent_runs": runs}
 
 

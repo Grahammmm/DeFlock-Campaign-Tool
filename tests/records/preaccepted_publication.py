@@ -9,7 +9,9 @@ from campaign_tool.records.ledger import store, stages
 from campaign_tool.records.run import encoded, root_lock, sha
 
 
-def seed(pipeline, original, public_text, *, revision=1):
+def seed(pipeline, original, public_text, *, revision=1, until="privacy"):
+    if until not in store.STAGES:
+        raise ValueError("invalid synthetic fixture stage")
     root, subject = pipeline.root, sha(original)
     stamp, run_id = store.now(), "publisher-fixture-" + uuid.uuid4().hex
     config = sha(b"synthetic publisher fixture configuration")
@@ -60,6 +62,10 @@ def seed(pipeline, original, public_text, *, revision=1):
             promoted = runner.promote(subject, stage, encoded(packet), claim_id=claim["claim_id"])
             if promoted["test_only"] is not True:
                 raise AssertionError("publisher fixture must not acquire production authority")
+            if stage == until:
+                break
+        if until != "privacy":
+            return subject
         states = pipeline._states(subject)
         manifest = {"schema": "records-proposal-manifest-v1", "original_sha256": subject, "tier": "A",
                     "review_receipt_sha256": states["review"]["receipt_sha256"],

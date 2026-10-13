@@ -14,7 +14,7 @@ class ResumeTests(fixtures.SafetyFixture, unittest.TestCase):
         pipeline.safety = self.guard(policy=pipeline.policy)
         pipeline.ocr_tools = {"synthetic": True}  # No decoder runs in these selection-only probes.
         # Selection-only probes have no accepted review authority to reconcile.
-        pipeline._query = lambda sql: [] if sql.startswith("SELECT s.original_sha256,s.receipt_sha256") else rows
+        pipeline._query = lambda sql, values=(): [] if sql.startswith("SELECT s.original_sha256,s.receipt_sha256") else rows
         pipeline._open_stage_run = lambda: {}
         def states(subject):
             return {name: {"status": "blocked" if name == "extract" and subject in held else

@@ -22,6 +22,7 @@ import stat
 import uuid
 
 from .ledger import store
+from . import review_retirement
 from .run import Root, root_lock
 
 VERSION = "records-publish-v2"
@@ -94,6 +95,13 @@ def _privacy_current(con, root, proposal):
     return subject
 
 
+def _retirement_clear(con):
+    try:
+        require(not review_retirement.pending(con), "review_authority_retirement_pending")
+    except review_retirement.RetirementError:
+        raise PublishError("review_authority_retirement_state_invalid") from None
+
+
 def approve(root, proposal_id, *, owner_id, reject=False, reason=None):
     with _authority(root) as root_:
         return _approve_locked(root_, proposal_id, owner_id=owner_id, reject=reject, reason=reason)
@@ -109,6 +117,8 @@ def _approve_locked(root, proposal_id, *, owner_id, reject=False, reason=None):
         con.execute("BEGIN IMMEDIATE")
         try:
             proposal = _proposal(con, proposal_id)
+            if not reject:
+                _retirement_clear(con)
             require(proposal["public_content_sha256"] == digest, "public_bytes_changed_since_privacy_review")
             _privacy_current(con, root, proposal)
             decision = "rejected" if reject else "approved"
@@ -343,6 +353,7 @@ def _live(con, target, proposal_id, current):
 
 
 def _approved(con, root, proposal_id, content):
+    _retirement_clear(con)
     proposal = _proposal(con, proposal_id)
     require(proposal["owner_approval"] == "approved", "owner_approval_required")
     require(proposal["approved_content_sha256"] == sha(content) == proposal["public_content_sha256"],
@@ -439,6 +450,7 @@ def rollback(root, proposal_id, *, staging, reason=None):
         with root_lock(target), store.ledger(root.ledger) as con:
             con.execute("BEGIN IMMEDIATE")
             _proposal(con, proposal_id)
+            _retirement_clear(con)
             before, current = _current(con, target)
             live, before_content = _live(con, target, proposal_id, current)
             require(live is not None, "nothing_published_for_proposal")
@@ -447,6 +459,7 @@ def rollback(root, proposal_id, *, staging, reason=None):
             manifest = _prepare(con, target, proposal_id, content, live["version"], "rollback", before,
                                 before_content, current, restored=previous, reason=reason)
             con.execute("BEGIN IMMEDIATE")
+            _retirement_clear(con)
             _apply(con, target, manifest)
             con.execute("UPDATE publications SET rollback_ref=? WHERE proposal_id=? AND deployed_version=?",
                         (manifest["version"], proposal_id, live["version"]))
