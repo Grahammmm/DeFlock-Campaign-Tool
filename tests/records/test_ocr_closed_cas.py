@@ -55,6 +55,15 @@ class ClosedOCRTests(unittest.TestCase):
         self.assertTrue(self.h.test_runner.promote(self.h.subject,'extract',packet)['reused'])
         self.assertEqual(self.h.stages.counts(self.h.database)['verified_seven_stage_complete'],0)
 
+    def test_version_mismatch_is_held_without_rewriting_history(self):
+        # A metadata revision cannot silently reuse an older import identity.
+        with self.h.store.ledger(self.h.database, readonly=True) as con:
+            prior = list(con.execute("SELECT id FROM extraction_adapter_imports"))
+        with patch.object(enrollment, 'VERSION', 'extraction-ledger-v1'):
+            with self.assertRaisesRegex(ValueError, 'manifest_binding'):
+                self.h.validator.evidence(self.h.enrolled['import_id'])
+        self.assertEqual(len(prior), 1)
+
     def test_each_missing_or_changed_asset_refuses(self):
         keys = [name for name in self.artifacts if name.startswith(('ocr_receipt:','ocr_asset:'))]
         self.assertEqual(len(keys),6)
