@@ -14,8 +14,10 @@ asset names and missing/changed bytes fail closed. Per-file and per-page closure
 bounds are 16 MiB and 64 MiB; aggregate enrollment/acceptance limits remain.
 
 Enrollment/validator versions advance to extraction-ledger-v2 and
-records-extract-complete-v2. New immutable import identities prevent collision
-with v1 imports of the same source receipt. Old history is retained and rejected
+records-extract-complete-v2. New immutable import identities distinguish adapter revisions. The existing
+source/receipt uniqueness also remains: replaying a v1 receipt under v2 is held
+with adapter_revision_requires_fresh_extraction_receipt. A controlled fresh reader
+attempt must issue a new receipt; old receipts are never patched. Old history is retained and rejected
 by the current validator; it is not rewritten or relabeled. Before deployment
 reuses a completed v1 extraction, trusted startup must perform controlled
 extract/dependent invalidation and publication authority revocation, then enroll

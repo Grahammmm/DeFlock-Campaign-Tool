@@ -361,6 +361,10 @@ class ExtractionLedgerAdapter:
                     if canonical(pages)!=canonical(receipt["pages"]):raise ExtractionBindingError("canonical_page_history_changed")
                     reused=True
                 else:
+                    # Historical receipt bindings remain immutable across adapter versions.
+                    if con.execute("SELECT 1 FROM extraction_adapter_imports WHERE original_sha256=? AND receipt_sha256=?",
+                                   (subject,receipt_sha256)).fetchone():
+                        raise ExtractionBindingError("adapter_revision_requires_fresh_extraction_receipt")
                     con.execute("INSERT INTO runs(run_id,kind,started_at,ended_at,engine_version,image_digest,config_sha256,coverage_cutoff,status,summary) VALUES(?,?,?,?,?,?,?,?,?,?)",(run_id,"extraction_enrollment",stamp,stamp,VERSION,None,None,None,"pending_stage_validation",manifest_json))
                     con.execute("INSERT INTO extraction_adapter_imports VALUES(?,?,?,?,?,?,?)",(import_id,subject,receipt_sha256,manifest_sha,manifest_json,run_id,stamp))
                     con.executemany("INSERT INTO units(id,original_sha256,parser,parser_version,locator,unit_type,text_sha256,derived_path,status,legacy_ordinal,provenance_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",planned)
