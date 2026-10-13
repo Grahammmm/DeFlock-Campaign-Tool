@@ -361,6 +361,9 @@ class Pipeline:
         return ingest(self, documents, manifest_sha256)
 
     def _form(self, subject, original):
+        from .ledger.occurrence_classification import validate_declarations
+        with store.ledger(self.root.ledger, readonly=True) as con:
+            validate_declarations(con, subject)
         if original.get("mime_detected") == "application/vnd.ms-outlook":
             return "msg"
         if original.get("mime_detected") == "message/rfc822":
@@ -368,8 +371,20 @@ class Pipeline:
         for occurrence in self._query("SELECT * FROM occurrences WHERE original_sha256=?", (subject,)):
             evidence = json.loads(occurrence["evidence"])
             if occurrence["kind"] == "local":
-                from .intake.document_drop import verify_local_occurrence
-                return verify_local_occurrence(occurrence, self.root.intake, subject)[1]
+                method = occurrence["acquisition_method"]
+                if method.startswith("captured_legacy_"):
+                    continue  # A captured declaration is not a document-drop receipt.
+                if method == "verified_local_document_drop":
+                    from .intake.document_drop import verify_local_occurrence
+                    return verify_local_occurrence(occurrence, self.root.intake, subject)[1]
+                if method == "verified_local_capture":
+                    from .intake.local_capture import verify_occurrence
+                    verify_occurrence(occurrence, self.root.intake, subject)
+                    name = json.loads(occurrence["source_ref"])["path"]
+                    with intake_folder.secure_open(original["storage_path"]) as source:
+                        head = source.read(16384)
+                    return intake_folder.fmt(name, head, original["storage_path"])
+                raise RunError("local_acquisition_method_unsupported")
             receipt = evidence.get("export_receipt_path")
             if receipt and Path(receipt).exists():
                 forms = eml_export.attachment_forms(Path(receipt))

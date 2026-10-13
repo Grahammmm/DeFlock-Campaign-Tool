@@ -252,6 +252,21 @@ class OriginalReconciliationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "preservation_replay_profile_failed"):
                 self.backend.accept(self.sha)
 
+    def test_format_routing_distinguishes_declaration_and_current_capture(self):
+        self.enroll()
+        self.backend.accept(self.sha)
+        self.assertEqual(self.pipeline._form(self.sha, self.pipeline._original(self.sha)), "txt")
+
+    def test_format_routing_refuses_relabelled_projection(self):
+        self.enroll()
+        self.backend.accept(self.sha)
+        with store.ledger(self.database) as con:
+            con.execute("UPDATE occurrences SET acquisition_method='verified_local_document_drop' "
+                        "WHERE acquisition_method LIKE 'captured_legacy_%'")
+            con.commit()
+        with self.assertRaises(ValueError):
+            self.pipeline._form(self.sha, self.pipeline._original(self.sha))
+
     def test_shared_root_lock_rejects_concurrent_enrollment(self):
         with root_lock(self.base), self.readonly(), self.assertRaisesRegex(Exception, "root_locked"):
             self.backend.enroll_local_capture(self.source, original_sha256=self.sha)
@@ -314,7 +329,7 @@ class OriginalReconciliationTests(unittest.TestCase):
         self.backend.accept(self.sha)
         self.backend.finish_run(self.identity, "slice_completed", {"functional_preservation": 1})
         report = self.pipeline.run()
-        self.assertEqual(self.rows("SELECT status FROM stage_state WHERE stage='extract'"), [("done",)])
+        self.assertEqual(self.rows("SELECT status FROM stage_state WHERE stage='extract'"), [("done",)], report)
         with store.ledger(self.database, readonly=True) as con:
             manifest = json.loads(con.execute("SELECT manifest_json FROM extraction_adapter_imports").fetchone()[0])
         self.assertEqual(manifest["original_resolution_sha256"], enrolled["resolution_sha256"])
