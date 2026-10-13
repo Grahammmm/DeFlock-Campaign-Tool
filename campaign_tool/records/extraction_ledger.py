@@ -14,8 +14,9 @@ from datetime import datetime,timezone
 from pathlib import Path
 from . import extraction_routes as routes
 from .extract import ocr as page_ocr
+from . import ocr_closure
 
-VERSION="extraction-ledger-v1"
+VERSION="extraction-ledger-v2"
 MAX_RECEIPT=16*1024*1024
 MAX_DERIVED=64*1024*1024
 MAX_UNIT=1024*1024
@@ -189,14 +190,16 @@ def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
         if not isinstance(entry,dict) or set(entry)!={"page","receipt_id","receipt_sha256","status"}:raise ExtractionBindingError("ocr_receipt_entry_shape")
         page=entry["page"]
         if type(page) is not int or page<1 or page in mapping:raise ExtractionBindingError("ocr_receipt_entry_shape")
-        try:loaded=page_ocr.load_page_receipt(root,subject,page,checked_sha(entry["receipt_id"]))
+        try:
+            closure=ocr_closure.closure_artifacts(root, subject, page, checked_sha(entry["receipt_id"]))
+            loaded=ocr_closure.load_cas_page(closure, subject, page, entry["receipt_id"])
         except (ValueError,OSError):raise ExtractionBindingError("ocr_receipt_unverified") from None
         summary=routes.ocr_summary(loaded)
         if loaded["receipt_sha256"]!=entry["receipt_sha256"] or summary["status"]!=entry["status"]:
             raise ExtractionBindingError("ocr_receipt_hash_mismatch")
         versions=loaded["receipt"].get("tool_versions")
         if not isinstance(versions,dict) or not versions.get("tesseract"):unverified=True
-        artifacts["ocr_receipt:"+entry["receipt_id"]]=loaded["receipt_bytes"]
+        artifacts.update(closure)
         mapping[page]=summary
         if summary["status"] in routes.OCR_TEXT_STATES:
             sidecar=loaded["sidecar"]
@@ -329,6 +332,8 @@ class ExtractionLedgerAdapter:
             provenance=canonical({"extraction_import_id":import_id,"receipt_sha256":receipt_sha256,"payload_sha256":digest,"ordinal":ordinal,"source_units_sha256":stored["derived_units"]["sha256"],"parser_provenance":"bound_to_derivative_metadata","parser_components":receipt.get("parser_components",{}),"ocr_receipt_ids":[entry["receipt_id"] for entry in receipt.get("ocr_receipts",[])],"review_status":"not_reviewed"})
             planned.append((sha(canonical([import_id,ordinal,digest]).encode()),subject,parser,version,canonical(unit["locator"]),unit["kind"],row["text_sha256"],path,"candidate_extracted",ordinal,provenance))
         manifest={"adapter":VERSION,"adapter_code_sha256":sha(Path(__file__).read_bytes()),"original_sha256":subject,"original_bytes":original["bytes"],"receipt_sha256":receipt_sha256,"artifacts":stored,"unit_ids":[r[0] for r in planned],"pages":receipt["pages"],"parser":parser,"parser_version":version,"source_status":receipt["status"],"issues":receipt["issues"],"gaps":gaps,"stage_promotions":0}
+        if receipt.get("ocr_receipts"):
+            manifest["ocr_closure_version"] = ocr_closure.VERSION
         if original.get("resolution_sha256"):
             manifest["original_resolution_sha256"]=original["resolution_sha256"]
         manifest_json=canonical(manifest);manifest_sha=sha(manifest_json.encode())

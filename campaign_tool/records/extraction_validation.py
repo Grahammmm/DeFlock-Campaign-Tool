@@ -18,8 +18,10 @@ import sys
 from . import extraction_ledger as enrollment
 from . import extraction_routes as routes
 from .intake import folder
+from . import ocr_closure
+from .extract import ocr as page_ocr
 
-ADAPTER_ID = "records-extract-complete-v1"
+ADAPTER_ID = "records-extract-complete-v2"
 ENVELOPE_SCHEMA = "canonical-extraction-content-v1"
 MAX_CONTENT = 4 * 1024 * 1024
 MAX_ACCEPT_SOURCE = 8 * 1024 * 1024
@@ -38,7 +40,7 @@ def encoded(value):
     return enrollment.canonical(value).encode("utf-8")
 
 
-def _accepted_ocr_pages(receipt, ocr_ids):
+def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root):
     """page -> {receipt_id, receipt_sha256, text} for OCR pages whose receipts are bound and readable.
 
     Only ``ocr_text_unreviewed``/``visual_check_queued`` receipts with recorded tool versions are
@@ -55,8 +57,8 @@ def _accepted_ocr_pages(receipt, ocr_ids):
                 type(entry["page"]) is int and entry["page"] > 0, "ocr_receipt_entry_shape")
         require(entry["status"] in routes.OCR_TEXT_STATES, "ocr_page_not_accepted:" + str(entry["status"]))
         try:
-            loaded = routes.page_ocr.load_page_receipt(root, receipt["original_sha256"], entry["page"],
-                                                       enrollment.checked_sha(entry["receipt_id"]))
+            loaded = ocr_closure.load_cas_page(artifacts, receipt["original_sha256"], entry["page"],
+                                               enrollment.checked_sha(entry["receipt_id"]), scratch_root=scratch_root)
         except (ValueError, OSError):
             raise enrollment.ExtractionBindingError("ocr_receipt_unverified") from None
         summary = routes.ocr_summary(loaded)
@@ -86,6 +88,7 @@ def code_identity():
     from .intake import mail_wire, native_msg, native_receipt, rfc822_inventory, wire_rfc822
     return {name: enrollment.sha(Path(module.__file__).read_bytes())
             for name, module in (("enrollment", enrollment), ("routes", routes),
+                                 ("ocr_verifier", page_ocr), ("ocr_closure", ocr_closure),
                                  ("intake", folder), ("mail_wire", mail_wire), ("native_msg", native_msg),
                                  ("native_receipt", native_receipt), ("rfc822_inventory", rfc822_inventory),
                                  ("wire_rfc822", wire_rfc822))} | {
@@ -288,7 +291,8 @@ class _InstalledExtractionValidator:
                     all(name in ("source_receipt", "parser_metadata", "derived_units",
                                  "pre_ocr_metadata", "native_units") or
                         (name.startswith("child:") and re.fullmatch(r"[0-9a-f]{64}", name[6:])) or
-                        (name.startswith("ocr_receipt:") and re.fullmatch(r"[0-9a-f]{64}", name[12:]))
+                        (name.startswith("ocr_receipt:") and re.fullmatch(r"[0-9a-f]{64}", name[12:])) or
+                        ocr_closure.artifact_name(name)
                         for name in artifact_refs), "unsupported_artifact_set")
             child_hashes = sorted(name[6:] for name in artifact_refs if name.startswith("child:"))
             ocr_ids = sorted(name[12:] for name in artifact_refs if name.startswith("ocr_receipt:"))
@@ -310,7 +314,15 @@ class _InstalledExtractionValidator:
                     receipt.get("original_sha256") == subject and receipt.get("original_changed") is False and
                     receipt.get("review_status") == "not_reviewed" and
                     receipt.get("parser_adapter") == routes.VERSION, "source_receipt_binding")
-            ocr_pages = _accepted_ocr_pages(receipt, ocr_ids) if ocr_ids else {}
+            if ocr_ids:
+                require(manifest.get("ocr_closure_version") == ocr_closure.VERSION, "ocr_closure_version_unbound")
+                expected = {"ocr_asset:" + rid + ":" + name for rid in ocr_ids for name in ocr_closure.NAMES}
+                require({name for name in artifacts if name.startswith("ocr_asset:")} == expected,
+                        "ocr_closure_asset_set_mismatch")
+            else:
+                require("ocr_closure_version" not in manifest and not any(name.startswith("ocr_asset:") for name in artifacts),
+                        "unexpected_ocr_closure")
+            ocr_pages = _accepted_ocr_pages(receipt, ocr_ids, artifacts=artifacts, scratch_root=self.evidence_root) if ocr_ids else {}
             if ocr_pages:
                 # Per-page OCR: the source stays "partial" by construction (pages were not native
                 # text). Acceptance records the visual-review hold per page; it never clears it.
