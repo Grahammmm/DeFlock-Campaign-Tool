@@ -39,3 +39,7 @@ reviewed installed authority. The private modules remain AgentOrange-only.
 
 Synthetic closure tests use an injected OCR runner and explicit testing_runner;
 these are test-only evidence, never genuine campaign or independent acceptance.
+
+The separate optional native workbook policy is described in
+NATIVE-WORKBOOK-COMPOSITION.md. It requires explicit trusted startup composition;
+the default policy and Pillow/fallback holds are unchanged.
