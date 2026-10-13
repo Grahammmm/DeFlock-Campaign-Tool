@@ -16,7 +16,7 @@ from . import extraction_ledger as enrollment
 from .intake import folder
 
 POLICY = "plain-native-workbook-accounted-v1"
-COMPONENT_SHA256 = "93b4b72dbd2868f9b6533ab20a5ae15b9eb801c2ea62db2ab2f5e9968b999723"
+COMPONENT_SHA256 = "93b4b72dbd2868f9b6533ab20a5ae15b9eb801c2ea62db2ab2f5e9968b999723"  # pragma: allowlist secret - verified source-only component digest
 MAX_PART = 16 * 1024 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
 MAX_SHEETS = 1024
