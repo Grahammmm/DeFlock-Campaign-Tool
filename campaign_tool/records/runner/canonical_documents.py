@@ -27,7 +27,7 @@ class CanonicalDocumentsBackend(CanonicalMailBackend):
                 run = con.execute("SELECT status,ended_at FROM runs WHERE run_id=?", (rid,)).fetchone()
                 if not run or run["status"] != "running" or run["ended_at"] is not None:
                     raise ValueError("canonical_enrollment_run_not_live")
-                original = con.execute("SELECT bytes,storage_path,scope FROM originals WHERE sha256=?", (subject,)).fetchone()
+                original = self.store.effective_original(con, subject)
                 if original and (original["bytes"], original["storage_path"], original["scope"]) != (size, storage, "in_scope"):
                     raise ValueError("canonical_original_binding_conflict")
                 if not original:
@@ -55,16 +55,21 @@ class CanonicalDocumentsBackend(CanonicalMailBackend):
         with self.store.ledger(self.database, readonly=True) as con:
             original = con.execute("SELECT first_seen_at FROM originals WHERE sha256=?", (subject,)).fetchone()
             state = con.execute("SELECT status FROM stage_state WHERE original_sha256=? AND stage='preserve'", (subject,)).fetchone()
-            ids = [row[0] for row in con.execute("SELECT id FROM occurrences WHERE original_sha256=? ORDER BY id LIMIT 1025", (subject,))]
+            ids = [row[0] for row in con.execute("SELECT id FROM occurrences WHERE original_sha256=? "
+                "AND acquisition_method IN ('verified_mail_export','verified_local_document_drop','verified_local_capture') "
+                "ORDER BY id LIMIT 1025", (subject,))]
+            effective = self.store.effective_original(con, subject)
         if len(ids) > 1024:
             raise IntegrationGap("preservation_occurrence_bound")
         envelope = {"schema": "preservation-evidence-v1", "original_sha256": subject,
                     "byte_length": proof["bytes"], "storage_ref": storage,
                     "verification_receipt_sha256": receipt_sha, "occurrence_ids": ids}
+        if effective.get("resolution_sha256"):
+            envelope["resolution_sha256"] = effective["resolution_sha256"]
         context = {"receipt": {"subject_sha256": subject, "stage": "preserve"},
                    "content_kind": "preservation_evidence", "preservation_evidence": envelope}
         if state["status"] == "done":
-            if not self._validator(context):
+            if not self._validator(self._existing_preservation_context(subject)):
                 raise ValueError("preservation_replay_domain_failed")
             return bool(prior)
         registered = self.stage_runner.set_preservation_evidence(subject, envelope, author_id="runner-preserver", tier="A")

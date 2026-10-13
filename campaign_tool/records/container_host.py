@@ -1275,6 +1275,7 @@ def build_board(root, output, state_dir, job_id):
                 for row in rows:
                     identity = row["sha256"]
                     require(isinstance(identity, str) and SHA.fullmatch(identity))
+                    row = store.effective_original_fields(con,row)
                     states = {stage: "unknown" for stage in STAGES}
                     for state in con.execute("SELECT stage,status FROM stage_state WHERE original_sha256=?", (identity,)):
                         require(state["stage"] in STAGES and state["status"] in STATES[:-1])

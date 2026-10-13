@@ -246,7 +246,7 @@ class _InstalledExtractionValidator:
             require(item is not None, "canonical_import_missing")
             item = dict(item)
             subject = item["original_sha256"]
-            original = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
+            original = store.effective_original(con, subject)
             require(original is not None, "canonical_original_missing")
             original = dict(original)
             pointer = con.execute("SELECT import_id FROM extraction_adapter_current WHERE original_sha256=?",
@@ -267,6 +267,8 @@ class _InstalledExtractionValidator:
                     manifest.get("original_sha256") == subject and
                     manifest.get("original_bytes") == original["bytes"] and
                     manifest.get("receipt_sha256") == item["receipt_sha256"], "manifest_binding")
+            require(manifest.get("original_resolution_sha256") == original.get("resolution_sha256"),
+                    "manifest_original_resolution_binding")
             require(import_id == enrollment.sha(encoded([enrollment.VERSION, subject, item["receipt_sha256"]])),
                     "import_identity_mismatch")
             require(item["run_id"] == "extraction-enroll:" + import_id, "import_run_identity")
@@ -484,6 +486,8 @@ class _InstalledExtractionValidator:
                     "parser": parser, "parser_version": version, "unit_count": len(units),
                     "coverage": coverage, "installed_code": code_identity(),
                     "parser_components": components, "parser_runtime_sha256": runtime_hash}
+        if original.get("resolution_sha256"):
+            envelope["original_resolution_sha256"] = original["resolution_sha256"]
         if ocr_ids:
             envelope["ocr"] = {"method": receipt.get("ocr_method"), "pages": sorted(ocr_pages),
                                "receipt_ids": ocr_ids, "visual_review_pending": True}

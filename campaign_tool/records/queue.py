@@ -159,12 +159,13 @@ def plan(originals, stage_rows, leases, *, now, facts=None, config_version=VERSI
 
 def from_ledger(database, *, now, facts=None, config_version=VERSION, limit=20):
     """Read one consistent canonical snapshot, capped without partial success."""
+    from .ledger import store
     uri = Path(database).absolute().as_uri() + "?mode=ro"
     with sqlite3.connect(uri, uri=True, timeout=5) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")
-        originals = [dict(row) for row in connection.execute(
+        originals = [store.effective_original_fields(connection,row) for row in connection.execute(
             "SELECT sha256,scope FROM originals ORDER BY sha256 LIMIT ?", (MAX_ORIGINALS + 1,))]
         states = [dict(row) for row in connection.execute(
             "SELECT * FROM stage_state LIMIT ?", (7 * MAX_ORIGINALS + 1,))]

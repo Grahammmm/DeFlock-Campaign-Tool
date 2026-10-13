@@ -232,8 +232,9 @@ class QueueRuntime:
             con.close()
 
     def _candidates(self, facts):
+        from .ledger import store
         with self._ledger() as con:
-            originals = [dict(row) for row in con.execute(
+            originals = [store.effective_original_fields(con,row) for row in con.execute(
                 "SELECT sha256,scope FROM originals ORDER BY sha256 LIMIT ?", (queue.MAX_ORIGINALS + 1,))]
             states = [dict(row) for row in con.execute(
                 "SELECT * FROM stage_state LIMIT ?", (queue.MAX_ORIGINALS * 7 + 1,))]
