@@ -53,7 +53,7 @@ class BuildSiteTests(unittest.TestCase):
         self.assertEqual(action["proposal"]["site_version"], "v2026-09-30.1")
         self.assertEqual(action["proposal"]["manifest_sha256"], result.outputs["manifest_sha256"])
         # the temp campaign directory is private; the loop removes it after the job
-        work = Path(self.tmp.name) / "work" / "job_0000000000000001"
+        work = ctx.dir
         self.assertEqual(work.stat().st_mode & 0o777, 0o700)
         self.assertEqual((work / "campaign" / "campaign.json").stat().st_mode & 0o777, 0o600)
         ctx.cleanup()

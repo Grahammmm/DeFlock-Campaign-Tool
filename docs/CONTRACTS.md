@@ -88,7 +88,7 @@ Python: `campaign_tool.discovery.locate(query) -> Location` (county_fips, county
 
 campaign, agency, request, correspondence, original, receipt_occurrence, extraction,
 digest, finding, review_receipt, publication, correction, subscriber_event, meeting,
-job, external_action, incident, setting. Every row carries `campaign_id`, `created_at`,
+job, job_claim, external_action, incident, setting, run_receipt. Every row carries `campaign_id`, `created_at`,
 `updated_at`. Foreign keys on. Findings and review receipts mirror `review.py` fields exactly.
 
 ## Queue job (`schemas/job.schema.json`)
@@ -96,21 +96,81 @@ job, external_action, incident, setting. Every row carries `campaign_id`, `creat
 ```json
 {"job_id": "job_...", "campaign_id": "...", "kind": "intake | extract | digest | classify_mail | send_request | draft_followup | build_site | newsletter_draft | backup",
  "idempotency_key": "sha256 of kind+inputs", "inputs": {}, "attempt": 1, "max_attempts": 3,
+ "claim_token": "random UUID for this attempt", "leased_until": "2026-10-13T12:05:00.000Z",
  "enqueued_at": "...", "privacy_tier": "redacted_cloud | strict_local"}
 ```
 
 Runner API (workspace Worker, bearer token bound to one campaign):
-`GET /api/runner/jobs?lease=300` → next job or 204; `POST /api/runner/jobs/{job_id}/result` with
-`{"status": "done|failed|blocked", "outputs": {}, "receipt": {...}}`; `GET /api/runner/originals/{sha256}` → bytes;
-`PUT /api/runner/originals/{sha256}` → store; `PUT /api/runner/site/{version}/{path}` → stage a public-site file
-(`version` matches `[a-z0-9._-]{1,64}`; `path` is relative with plain segments, an allowlisted extension or
-`_headers`/`_redirects`, at most 16 MiB; the `x-object-sha256` header must equal the body's hash). Runner never
-receives credentials for mail, MuckRock or Brevo; sends are performed by the workspace outbox after an organizer approval.
 
-Result `outputs` may include `followups: [{"kind", "idempotency_key"?, "inputs"}]`; the Worker enqueues each with
-the given 64-hex key or `sha256(kind + JSON(inputs))`, skips unknown kinds and `send_request`, and ignores followups
-on `failed`/`blocked` results. A `classify_mail` result may include `correspondence_update: {classification,
-classification_confidence, summary}`; no other correspondence field is writable from a result.
+- `GET /api/runner/jobs?lease=300` returns the next atomic lease or 204. Each lease increments
+  `attempt`, mints an immutable random `claim_token`, and records an independent `job_claim` row.
+  The requested duration is clamped to 30–3600 seconds. A lease is live only while
+  `state = leased` and `leased_until > now`; equality is expired.
+- `POST /api/runner/jobs/{job_id}/renew` requires `{"claim_token":"...","lease_seconds":300}`.
+  `lease_seconds` must be an integer from 30 through 3600. Only the matching, unexpired claim
+  can renew. The deadline becomes the later of its existing deadline and `now + lease_seconds`;
+  renewal never increases `attempt`. The response is `{job_id, claim_token, attempt, leased_until}`.
+- `POST /api/runner/jobs/{job_id}/result` requires
+  `{"claim_token":"...","status":"done|failed|blocked","outputs":{},"receipt":{},"error":null}`.
+  `outputs`, `receipt`, and `error` are optional; outputs must be an object and error a string or null.
+  Success returns `{job_id, state, followups}`. `failed` returns the job to `queued` while attempts
+  remain; exhausted failure, `done`, and `blocked` are terminal.
+
+Missing/invalid tokens or result fields return 400. Unknown job IDs return 404. Renewals and new
+results against an expired or retired claim return 409 with `{"error":"claim_conflict"}`. Result
+acceptance tests campaign, job, token, leased state and deadline inside the database transaction;
+reading the job before the write does not confer authority to finish it.
+
+A result's canonical JSON includes status, outputs, receipt and error (missing optional values
+normalize to `{}`, null, null). Object-key order is ignored; arrays retain order and every output
+field participates. The Worker stores its SHA-256, canonical envelope, and response per claim.
+An exact accepted replay returns the original 200 response even after expiration, a new attempt,
+or a later terminal result. It does not mutate the current job or repeat downstream actions.
+A changed envelope on an already accepted claim returns 409 with `{"error":"result_conflict"}`.
+Thus a retried failure from attempt 1 still acknowledges its original `queued` transition while
+attempt 2 is live or already complete. Clients need not calculate the digest themselves.
+
+Result `outputs` may include `followups: [{"kind", "idempotency_key"?, "inputs"}]`. The Worker
+considers at most 200 entries, skips unknown kinds and `send_request`, and uses the supplied
+64-hex key or `sha256(kind + JSON(inputs))`. Duplicate keys return the existing job ID. Followups
+on `failed`/`blocked` are ignored. A `classify_mail` result may include
+`correspondence_update: {classification, classification_confidence, summary}`; only these fields
+are patched on the correspondence identified by the job's inputs. Unknown classifications become
+`unclassified`; confidence and summary are limited to 32 and 300 characters.
+
+The accepted claim, parent transition, every followup, classification patch, exhausted-failure
+incident, and replay response commit in one D1 `batch` transaction. Each statement is gated by
+that transaction's fresh completion marker. Any failing statement rolls back the entire batch;
+a retry after a lost response acknowledges the stored transition. No successful terminal parent
+can commit without its intended result-derived D1 effects. Attempt evidence is exported in
+`job_claim` along with `job`.
+
+Before leasing work, a bounded sweep handles up to 100 expired final attempts. It atomically
+sets `failed`, `error = lease_attempts_exhausted`, `finished_at`, and a deduplicated warning incident
+keyed by job kind and idempotency key. Repeated sweeps do not increment the incident count or
+change prior accepted result evidence. Expired attempts below the cap remain reclaimable with
+a new token; terminal failures are excluded from the queued/leased backlog count.
+
+`workers/workspace/migrations/0001_init.sql` is the immutable baseline. Existing databases apply
+`0002_job_claims.sql` additively; no table is dropped or reinitialized. The migration preserves
+all existing job columns and records current pre-upgrade evidence as a labeled `legacy_snapshot`
+in `job_claim` for every attempted job. Those snapshots are not replayable accepted results.
+Old attempts receive unissued legacy tokens: tokenless old runners cannot complete them, and
+live leases expire normally before reclaim or final-attempt failure. Upgrade the Worker, migration
+and runner together. Fresh workspace databases apply the full migration chain; fresh wizard
+installations use the current `workers/schema/d1.sql` snapshot. `npm run sync` regenerates that
+snapshot's shared constant without rewriting applied migrations. The local D1 migration test
+checks upgrade evidence and schema/index equivalence with the fresh snapshot.
+
+Other runner endpoints remain independently authenticated operations:
+`GET /api/runner/originals/{sha256}` returns bytes; `PUT /api/runner/originals/{sha256}` stores them;
+`PUT /api/runner/site/{version}/{path}` stages a public-site file (`version` matches
+`[a-z0-9._-]{1,64}`; `path` has plain relative segments, an allowlisted extension or
+`_headers`/`_redirects`, at most 16 MiB, and `x-object-sha256` must match its bytes). Original,
+receipt, correspondence, proposal, and site mutations made while a handler runs are outside the
+result transaction. The runner guards subsequent operations after claim loss; operations already
+in flight are not canceled or made transactional by this contract. Runner never receives mail,
+MuckRock or Brevo credentials; sends require the workspace outbox's organizer approval.
 
 ## Approval card
 
