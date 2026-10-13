@@ -154,7 +154,7 @@ class ControllerKernelFaultTests(fixtures.HostFixture):
                   "import sys; _child(*sys.argv[1:])")
         child = subprocess.Popen([sys.executable, "-B", "-c", driver, str(self.profile),
                                   action, invocation, job_id], env=env, stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         # Register BEFORE any handshake, proc observation, wait, or assertion.
         self.addCleanup(self.cleanup_child, child)
         return child
@@ -167,7 +167,15 @@ class ControllerKernelFaultTests(fixtures.HostFixture):
             self.assertEqual(stderr, b"")
             return None
         self.assertEqual(stderr, b"")
-        result = json.loads(stdout)
+        lines = stdout.splitlines()
+        self.assertTrue(lines, "child omitted its result")
+        # A second process can win cancel-admit.lock after the durable-stop
+        # handshake. The stopper then emits its one contention notice before
+        # its JSON result. Keep that exact protocol notice, reject other output.
+        self.assertLessEqual(len(lines), 2, "unexpected child output")
+        self.assertTrue(all(line == b"lock-blocked" for line in lines[:-1]),
+                        "unexpected child output before result")
+        result = json.loads(lines[-1])
         self.assertFalse(result["model_environment"])
         self.assertEqual(result["calls"], 0)
         return result
@@ -176,6 +184,23 @@ class ControllerKernelFaultTests(fixtures.HostFixture):
         ready, _, _ = select.select([child.stdout], [], [], 5)
         self.assertTrue(ready, "bounded child handshake timed out")
         self.assertEqual(child.stdout.readline(), expected.encode() + b"\n")
+
+    def protocol_child(self, notice):
+        result = {"result": {"status": "not_allocated"}, "calls": 0,
+                  "faults": [], "model_environment": False}
+        driver = "import sys; print(sys.argv[1], flush=True); print(sys.argv[2], flush=True)"
+        child = subprocess.Popen([sys.executable, "-B", "-c", driver, notice, json.dumps(result)],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(self.cleanup_child, child)
+        return child
+
+    def test_result_after_declared_contention_notice_is_parsed(self):
+        result = self.finish(self.protocol_child("lock-blocked"))
+        self.assertEqual(result["result"]["status"], "not_allocated")
+
+    def test_unexpected_notice_before_result_is_rejected(self):
+        with self.assertRaisesRegex(AssertionError, "unexpected child output"):
+            self.finish(self.protocol_child("unexpected-notice"))
 
     def unchanged(self, before):
         self.assertEqual((self.receipts / "active.json").read_bytes(), before[0])

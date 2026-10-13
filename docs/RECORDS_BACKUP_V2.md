@@ -1,8 +1,9 @@
 # Bounded records-backup-v2 candidate
 
 Separate programmatic library only: campaign_tool.records.recovery.backup_v2.
-No CLI changes. Both existing campaign_tool/backup.py and records/recovery/backup.py
-remain byte-identical to the supplied generic baseline wheel. V1 selected-file
+No CLI changes. The original candidate reused the supplied generic baseline wheel.
+Subsequent backup integrity repairs validate campaign ledger references and close
+the shared recovery helper's SQLite connections deterministically. V1 selected-file
 scope, categories, one-ledger rule and limits are unchanged.
 
 ## Provenance
@@ -54,6 +55,12 @@ WAL/SHM/journal sidecars, a read-only immutable SQLite connection performs the b
 without creating source sidecars. This relies on the independently established caller
 boundary; existing sidecars always select the WAL-aware path. Strict metadata scope
 comparison remains in place, with no blanket sidecar exemption or source cleanup.
+The WAL-aware path normalizes only the copied database to a standalone rollback
+journal format. Snapshot connections close before hashing, changing permissions or
+publishing the manifest, so immediate verification and isolated restore do not
+depend on Python garbage collection. Source sidecars are never deleted by the helper.
+Both snapshot paths refuse any destination sidecar left after close, before hashing
+or publishing a completion manifest; they do not manually remove those files.
 Independent integrity, foreign-key, exact schema
 and reference-closure checks run on each snapshot and again during verify/restore.
 Source metadata inventory is compared before/after. This catches some changes but is
