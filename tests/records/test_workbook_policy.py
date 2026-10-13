@@ -101,6 +101,26 @@ class WorkbookPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'loader_required'):policy.NativeWorkbookPolicy(object(),self.root,None)
 
 
+class InstalledParserIdentityTests(unittest.TestCase):
+    def test_msg_component_versions_survive_workbook_policy_composition(self):
+        # Synthetic installed-metadata seams only; no mail acceptance claim.
+        import types
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root)
+            distributions={};modules={}
+            for name,package,version in [('extract-msg','extract_msg','synthetic-msg'),('olefile','olefile','synthetic-ole')]:
+                path=root/package/'__init__.py';path.parent.mkdir();path.write_text('# fictional dependency\n')
+                distributions[name]=types.SimpleNamespace(version=version,metadata={'Name':name},
+                    files=[package+'/__init__.py'],read_text=lambda field:'Synthetic metadata',
+                    locate_file=lambda item,root=root:root/item)
+                modules[package]=types.SimpleNamespace(__file__=str(path))
+            with patch.object(validation.importlib.metadata,'distribution',side_effect=distributions.__getitem__), \
+                 patch.object(validation.importlib,'import_module',side_effect=modules.__getitem__):
+                components,_=validation.installed_parser_identity('msg')
+            self.assertEqual(components,{'intake':folder.VERSION+'/'+folder.ENGINE_REVISION,
+                'extract-msg':'synthetic-msg','olefile':'synthetic-ole'})
+
+
 @unittest.skipUnless(sys.platform.startswith('linux'),'native parser isolation requires Linux')
 class WorkbookCompositionTests(unittest.TestCase):
     def test_actual_parser_enrollment_and_test_only_acceptance_require_opt_in(self):
