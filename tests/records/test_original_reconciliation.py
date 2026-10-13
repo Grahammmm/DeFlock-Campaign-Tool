@@ -267,6 +267,19 @@ class OriginalReconciliationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pipeline._form(self.sha, self.pipeline._original(self.sha))
 
+    def test_effective_original_supports_plain_sqlite_without_mutating_row_factory(self):
+        with sqlite3.connect(self.database) as con:
+            self.assertIsNone(con.row_factory)
+            self.assertEqual(store.effective_original(con, self.sha)["role"], "unresolved")
+            self.assertIsNone(con.row_factory)
+        result = self.enroll()
+        with sqlite3.connect(self.database) as con:
+            resolved = store.effective_original(con, self.sha)
+            self.assertEqual(resolved["resolution_sha256"], result["resolution_sha256"])
+            self.assertEqual(resolved["role"], "original")
+            self.assertIsNone(con.row_factory)
+            self.assertIsInstance(con.execute("SELECT sha256 FROM originals").fetchone(), tuple)
+
     def test_shared_root_lock_rejects_concurrent_enrollment(self):
         with root_lock(self.base), self.readonly(), self.assertRaisesRegex(Exception, "root_locked"):
             self.backend.enroll_local_capture(self.source, original_sha256=self.sha)

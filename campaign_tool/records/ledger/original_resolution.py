@@ -54,14 +54,25 @@ def ensure_schema(con):
     con.execute("INSERT INTO ledger_meta VALUES(?,?)", (KEY, SCHEMA_HASH))
 
 
+def _named_row(con, sql, parameters):
+    # Detector adapters accept caller-owned plain sqlite connections. Keep the
+    # connection's row factory unchanged and name only this cursor's columns.
+    cursor = con.cursor()
+    try:
+        cursor.row_factory = sqlite3.Row
+        return cursor.execute(sql, parameters).fetchone()
+    finally:
+        cursor.close()
+
+
 def effective_original(con, subject):
-    declaration = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
+    declaration = _named_row(con, "SELECT * FROM originals WHERE sha256=?", (subject,))
     if declaration is None:
         return None
     original = dict(declaration)
     if not installed(con):
         return original
-    row = con.execute("SELECT * FROM original_resolutions WHERE original_sha256=?", (subject,)).fetchone()
+    row = _named_row(con, "SELECT * FROM original_resolutions WHERE original_sha256=?", (subject,))
     if row is None:
         return original
     payload = json.loads(row["payload_json"])
@@ -78,8 +89,8 @@ def effective_original(con, subject):
     require(all(payload[key] == row[key] for key in
                 ("policy_sha256", "capture_receipt_sha256", "capture_occurrence_id")),
             "original_resolution_evidence_mismatch")
-    occurrence = con.execute("SELECT * FROM occurrences WHERE id=?",
-                             (payload["capture_occurrence_id"],)).fetchone()
+    occurrence = _named_row(con, "SELECT * FROM occurrences WHERE id=?",
+                            (payload["capture_occurrence_id"],))
     require(occurrence is not None and occurrence["original_sha256"] == subject
             and occurrence["acquisition_method"] == "verified_local_capture",
             "original_resolution_capture_unbound")
