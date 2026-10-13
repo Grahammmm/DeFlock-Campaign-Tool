@@ -13,7 +13,7 @@ import time
 from campaign_tool import __version__
 from .backup import (RecoveryError, canonical, sha, require, parent_fd,
                      source_fd, new_directory, write_new, copy_exact,
-                     snapshot_ledger, fingerprint, MAX_FILE, MAX_TOTAL,
+                     snapshot_ledger, require_standalone_snapshot, fingerprint, MAX_FILE, MAX_TOTAL,
                      MAX_ENTRIES, MAX_MANIFEST)
 
 SCHEMA = "records-backup-v2"
@@ -299,6 +299,7 @@ def _snapshot_quiescent(source, destination, deadline):
                 target.close()
         finally:
             live.close()
+        require_standalone_snapshot(parent, name)
         _deadline(deadline)
         with parent_fd(source) as (src_parent, src_name):
             after = os.stat(src_name, dir_fd=src_parent, follow_symlinks=False)
