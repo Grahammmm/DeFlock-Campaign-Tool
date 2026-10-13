@@ -13,6 +13,7 @@ class ResumeTests(fixtures.SafetyFixture, unittest.TestCase):
         pipeline = unattended.UnattendedPipeline(self.root.path, policy=RunSafetyPolicy(max_originals=limit))
         pipeline.safety = self.guard(policy=pipeline.policy)
         pipeline.ocr_tools = {"synthetic": True}  # No decoder runs in these selection-only probes.
+        pipeline._open_stage_run()  # Install/check the real authority schema before selection stubs.
         # Selection-only probes have no accepted review authority to reconcile.
         pipeline._query = lambda sql, values=(): [] if sql.startswith("SELECT s.original_sha256,s.receipt_sha256") else rows
         pipeline._open_stage_run = lambda: {}
