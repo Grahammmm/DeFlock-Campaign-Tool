@@ -624,30 +624,107 @@ class Pipeline:
             return {}
 
     def _record_proposal(self, subject, content, states):
+        """Persist a proposal under the caller's root lock; provenance can change without text."""
+        import stat
+
         proposal_id = "prop_" + subject[:16]
-        public = self.root.sub("proposals/public") / (proposal_id + ".md")
-        private = self.root.sub("proposals/private") / (proposal_id + ".manifest.json")
-        for path, data in ((public, content["public_markdown"].encode()), (private, encoded(content["manifest"]))):
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_bytes(data)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
+        public, manifest = content["public_markdown"].encode(), encoded(content["manifest"])
+        if sha(public) != content["public_content_sha256"] or sha(manifest) != content["manifest_sha256"]:
+            raise RunError("proposal_content_hash_mismatch")
         privacy_receipt = self._states(subject)["privacy"]["receipt_sha256"]
-        with store.ledger(self.root.ledger) as con:
-            existing = con.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
-            if existing is None:
-                con.execute("INSERT INTO proposals(id,tier,agency_id,public_content_sha256,manifest_sha256,"
-                            "privacy_receipt_sha256,independent_receipt_sha256,owner_approval,approved_content_sha256,supersedes) "
-                            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                            (proposal_id, "A", None, content["public_content_sha256"], content["manifest_sha256"],
-                             privacy_receipt, states["review"]["receipt_sha256"], "none", None, None))
-            elif existing["public_content_sha256"] != content["public_content_sha256"]:
-                # Content changed after approval state was recorded: reset approval, keep history by supersession.
-                con.execute("UPDATE proposals SET public_content_sha256=?,manifest_sha256=?,privacy_receipt_sha256=?,"
-                            "independent_receipt_sha256=?,owner_approval='none',approved_content_sha256=NULL WHERE id=?",
-                            (content["public_content_sha256"], content["manifest_sha256"], privacy_receipt,
-                             states["review"]["receipt_sha256"], proposal_id))
-            con.commit()
+        bindings = (content["public_content_sha256"], content["manifest_sha256"], privacy_receipt,
+                    states["review"]["receipt_sha256"])
+        fields = ("public_content_sha256", "manifest_sha256", "privacy_receipt_sha256", "independent_receipt_sha256")
+        revision_id = sha(encoded({"proposal_id": proposal_id, "bindings": bindings}))
+        directories = []
+        try:
+            # Pin destination directories without following symlinks. Unique exclusive
+            # temporary files cannot follow a planted, predictable .tmp symlink either.
+            if any(path.is_symlink() for path in (self.root.path, *self.root.path.parents)):
+                raise RunError("symlink_root")
+            directories.append(os.open(self.root.path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+            for part in self.root.path.parts[1:]:
+                following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directories[0])
+                os.close(directories[0])
+                directories[0] = following
+            directories.append(os.open("proposals", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=directories[0]))
+            for name in ("public", "private"):
+                directories.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                           dir_fd=directories[1]))
+            outputs = ((directories[2], proposal_id + ".md", public),
+                       (directories[3], proposal_id + ".manifest.json", manifest))
+            for directory, name, data in outputs:
+                try:
+                    mode = os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(mode):
+                    raise RunError("proposal_file_not_regular")
+            with store.ledger(self.root.ledger) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute("CREATE TABLE IF NOT EXISTS proposal_revisions("
+                            "revision_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL REFERENCES proposals(id),"
+                            "public_content_sha256 TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,"
+                            "privacy_receipt_sha256 TEXT, independent_receipt_sha256 TEXT,"
+                            "public_content BLOB NOT NULL, manifest_content BLOB NOT NULL,"
+                            "state TEXT NOT NULL CHECK(state IN ('pending','complete','superseded')))")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_immutable BEFORE UPDATE OF "
+                            "revision_id,proposal_id,public_content_sha256,manifest_sha256,privacy_receipt_sha256,"
+                            "independent_receipt_sha256,public_content,manifest_content ON proposal_revisions "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_no_delete BEFORE DELETE ON proposal_revisions "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_no_replace BEFORE INSERT ON proposal_revisions "
+                            "WHEN EXISTS(SELECT 1 FROM proposal_revisions WHERE revision_id=NEW.revision_id) "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                existing = con.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
+                if existing is None:
+                    con.execute("INSERT INTO proposals(id,tier,agency_id,public_content_sha256,manifest_sha256,"
+                                "privacy_receipt_sha256,independent_receipt_sha256,owner_approval,approved_content_sha256,supersedes) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?)", (proposal_id, "A", None, *bindings, "none", None, None))
+                elif tuple(existing[field] for field in fields) != bindings:
+                    con.execute("UPDATE proposals SET public_content_sha256=?,manifest_sha256=?,privacy_receipt_sha256=?,"
+                                "independent_receipt_sha256=?,owner_approval='none',approved_content_sha256=NULL WHERE id=?",
+                                (*bindings, proposal_id))
+                revision = con.execute("SELECT * FROM proposal_revisions WHERE revision_id=?", (revision_id,)).fetchone()
+                if revision is not None and (tuple(revision[field] for field in fields) != bindings or
+                                             revision["proposal_id"] != proposal_id or
+                                             bytes(revision["public_content"]) != public or
+                                             bytes(revision["manifest_content"]) != manifest):
+                    raise RunError("proposal_revision_changed")
+                if revision is None:
+                    con.execute("INSERT INTO proposal_revisions VALUES(?,?,?,?,?,?,?,?,?)",
+                                (revision_id, proposal_id, *bindings, public, manifest, "pending"))
+                else:
+                    con.execute("UPDATE proposal_revisions SET state='pending' WHERE revision_id=?", (revision_id,))
+                con.execute("UPDATE proposal_revisions SET state='superseded' "
+                            "WHERE proposal_id=? AND revision_id!=? AND state='pending'", (proposal_id, revision_id))
+                # Commit intent and revoked authority before replacing either file.
+                # Publication/reopen can recover an interrupted write from this journal.
+                con.commit()
+            for directory, name, data in outputs:
+                temporary = "." + name + "." + uuid.uuid4().hex + ".tmp"
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                    os.fsync(directory)
+                finally:
+                    try:
+                        os.unlink(temporary, dir_fd=directory)
+                    except FileNotFoundError:
+                        pass
+            with store.ledger(self.root.ledger) as con:
+                con.execute("UPDATE proposal_revisions SET state='complete' WHERE revision_id=?", (revision_id,))
+                con.commit()
+        finally:
+            for directory in reversed(directories):
+                os.close(directory)
         return proposal_id
 
     # ----- whole run -------------------------------------------------------------------
