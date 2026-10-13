@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from .canonical_mail import CanonicalMailBackend
-from .wp1_bridge import installed_preservation_runner
+from .wp1_bridge import installed_preservation_runner, preservation_profile
 from ..intake import local_capture
 from ..ledger import original_resolution
 
@@ -103,6 +103,80 @@ class CanonicalOriginalReconciler(CanonicalMailBackend):
         except (OSError, ValueError, KeyError, TypeError, RecursionError, sqlite3.Error):
             return False
 
+    def _binding_context(self):
+        from ..ledger import occurrence_classification
+        from . import wp1_bridge
+        modules = (local_capture, original_resolution, original_resolution.migration,
+                   occurrence_classification, wp1_bridge)
+        return ["local-capture-reconciliation-v1", self.policy.sha256,
+                local_capture.digest(Path(__file__).read_bytes()),
+                *[local_capture.digest(Path(module.__file__).read_bytes()) for module in modules]]
+
+    def _accepted_replay(self, con, subject):
+        """Require the protected, functional acceptance of the exact current head."""
+        require = local_capture.require
+        state = self.stages._states(con, subject)["preserve"]
+        head = self.stages._head(con, subject, "preserve")
+        transition = con.execute("SELECT * FROM stage_transitions WHERE receipt_sha256=?",
+                                 (state["receipt_sha256"],)).fetchone()
+        authority = con.execute("SELECT * FROM stage_validation_authority WHERE receipt_sha256=?",
+                                (state["receipt_sha256"],)).fetchone()
+        require(authority is not None and authority["test_only"] == 0,
+                "functional_preservation_authority_required")
+        require(head is not None and transition is not None and state["status"] == "done"
+                and transition["subject_sha256"] == subject and transition["stage"] == "preserve"
+                and transition["revision"] == head["revision"] and transition["status"] == "done"
+                and transition["run_id"] == state["run_id"] == authority["run_id"]
+                and transition["validator_id"] == authority["validator_id"]
+                and state["owner"] == authority["owner"] == "runner-preserver",
+                "preservation_replay_binding_failed")
+        event = con.execute("SELECT * FROM stage_events WHERE sequence=?",
+                            (transition["event_sequence"],)).fetchone()
+        require(event is not None and all(event[key] == state[key] for key in state.keys()),
+                "preservation_replay_event_failed")
+        claim = con.execute("SELECT * FROM stage_claims WHERE claim_id=?", (authority["claim_id"],)).fetchone()
+        binding = con.execute("SELECT * FROM stage_runner_bindings WHERE run_id=?", (authority["run_id"],)).fetchone()
+        adapter_id, profile_id = preservation_profile(self.database, self.output, self.run_identity,
+                                                       binding_context=self._binding_context())
+        descriptor = {"profile_id": profile_id, "engine_version": self.run_identity["runtime"]["version"],
+                      "config_sha256": self.run_identity["config_sha256"], "test_only": False,
+                      "validators": {"preserve": adapter_id}}
+        profile_hash = local_capture.digest(self.store.canonical(descriptor).encode())
+        require(binding is not None and binding["test_only"] == 0 and binding["profile_id"] == profile_id
+                and binding["profile_sha256"] == authority["profile_sha256"] == profile_hash
+                and binding["engine_version"] == descriptor["engine_version"]
+                and binding["config_sha256"] == descriptor["config_sha256"]
+                and authority["validator_id"] == adapter_id, "preservation_replay_profile_failed")
+        require(claim is not None and claim["subject_sha256"] == subject and claim["stage"] == "preserve"
+                and claim["revision"] == head["revision"] and claim["content_sha256"] == head["content_sha256"]
+                and claim["run_id"] == authority["run_id"] and claim["owner"] == authority["owner"]
+                and claim["profile_sha256"] == profile_hash
+                and local_capture.decode(claim["input_receipts"]) == local_capture.decode(transition["input_receipts"])
+                    == {"original": subject}, "preservation_replay_claim_failed")
+        content = con.execute("SELECT payload FROM stage_artifacts WHERE sha256=?", (head["content_sha256"],)).fetchone()
+        packet = con.execute("SELECT payload FROM stage_artifacts WHERE sha256=?", (state["receipt_sha256"],)).fetchone()
+        receipt = con.execute("SELECT * FROM receipts WHERE sha256=?", (state["receipt_sha256"],)).fetchone()
+        require(content is not None and packet is not None and receipt is not None
+                and local_capture.digest(bytes(content[0])) == head["content_sha256"]
+                and local_capture.digest(bytes(packet[0])) == state["receipt_sha256"], "preservation_replay_artifact_failed")
+        body = local_capture.decode(bytes(packet[0]))
+        require(body.get("schema") == "ledger-stage-receipt-v1" and body.get("subject_sha256") == subject
+                and body.get("stage") == "preserve" and body.get("verdict") == "pass"
+                and body.get("content_sha256") == head["content_sha256"]
+                and body.get("author_id") == head["author_id"] and body.get("tier") == head["tier"]
+                and body.get("reviewer_id") == "runner-preserver" and body.get("role") == "preserver"
+                and body.get("input_hashes") == {"original": subject}, "preservation_replay_receipt_failed")
+        values = (state["receipt_sha256"], "preserve", subject, body["reviewer_id"], body["role"], body["verdict"],
+                  self.store.canonical(body["coverage"]), self.store.canonical(body["locators"]), body["rationale"],
+                  body["model_or_tool"], self.store.canonical(body["input_hashes"]), body["created_at_tz"],
+                  body.get("supersedes"), "ledger-stage-artifact:" + state["receipt_sha256"])
+        require(tuple(receipt) == values, "preservation_replay_receipt_row_failed")
+        require(self._validator({"receipt": body, "content_kind": "preservation_evidence",
+                                 "preservation_evidence": local_capture.decode(bytes(content[0]))}),
+                "preservation_replay_domain_failed")
+        return {"receipt_sha256": state["receipt_sha256"], "status": "done", "reused": True,
+                "test_only": False, "semantic_acceptance": False}
+
     def accept(self, original_sha256):
         """Explicit canonical-ID callback using installed functional preserver only."""
         from ..run import root_lock
@@ -125,14 +199,7 @@ class CanonicalOriginalReconciler(CanonicalMailBackend):
                 local_capture.require(rows, "original_resolution_capture_unbound")
                 receipt_hash = local_capture.verify_occurrence(rows[0], self.output, subject, expected_policy=self.policy.sha256)
                 if state["status"] == "done":
-                    head = con.execute("SELECT a.payload FROM stage_content h JOIN stage_artifacts a "
-                        "ON a.sha256=h.content_sha256 WHERE h.subject_sha256=? AND h.stage='preserve' "
-                        "ORDER BY h.revision DESC LIMIT 1", (subject,)).fetchone()
-                    local_capture.require(head is not None, "preservation_history_missing")
-                    envelope = local_capture.decode(bytes(head[0]))
-                    local_capture.require(self._validator({"receipt": {"subject_sha256": subject, "stage": "preserve"},
-                        "content_kind": "preservation_evidence", "preservation_evidence": envelope}), "preservation_replay_domain_failed")
-                    return {"receipt_sha256": state["receipt_sha256"], "reused": True, "semantic_acceptance": False}
+                    return self._accepted_replay(con, subject)
             envelope = {"schema": "preservation-evidence-v1", "original_sha256": subject,
                 "byte_length": original["bytes"], "storage_ref": original["storage_path"],
                 "verification_receipt_sha256": receipt_hash, "occurrence_ids": [row["id"] for row in rows]}
@@ -142,11 +209,8 @@ class CanonicalOriginalReconciler(CanonicalMailBackend):
                 "content_kind": "preservation_evidence", "preservation_evidence": envelope}),
                 "local_capture_domain_validation_failed")
             if self.stage_runner is None:
-                binding = ["local-capture-reconciliation-v1", self.policy.sha256,
-                    local_capture.digest(Path(local_capture.__file__).read_bytes()),
-                    local_capture.digest(Path(original_resolution.__file__).read_bytes())]
                 self.stage_runner = installed_preservation_runner(self.stages, self.database,
-                    self.run_identity, self._validator, binding_context=binding)
+                    self.run_identity, self._validator, binding_context=self._binding_context())
             registered = self.stage_runner.set_preservation_evidence(subject, envelope, author_id="runner-preserver", tier="A")
             claim = self.stage_runner.claim(subject, "preserve", ttl_seconds=300)
             packet = {"schema": "ledger-stage-receipt-v1", "subject_sha256": subject, "stage": "preserve",

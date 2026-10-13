@@ -188,6 +188,70 @@ class OriginalReconciliationTests(unittest.TestCase):
             self.backend.accept(self.sha)
         self.assertEqual(self.rows("SELECT status FROM stage_state WHERE stage='preserve'"), [("pending",)])
 
+    def test_relabeling_projected_declaration_cannot_evade_validation(self):
+        self.enroll()
+        with store.ledger(self.database) as con:
+            con.execute("UPDATE occurrences SET acquisition_method='fictional-unclassified',source_ref='{}' "
+                        "WHERE acquisition_method LIKE 'captured_legacy_%'")
+            con.commit()
+        with self.assertRaisesRegex(ValueError, "local_capture_domain_validation_failed"):
+            self.backend.accept(self.sha)
+        self.assertEqual(self.rows("SELECT count(*) FROM receipts"), [(0,)])
+        self.assertEqual(self.rows("SELECT name FROM sqlite_master WHERE name='stage_claims'"), [])
+        self.assertEqual(self.rows("SELECT status FROM stage_state WHERE stage='preserve'"), [("pending",)])
+
+    def test_changed_subject_cannot_hide_owned_projection(self):
+        self.enroll()
+        other, _, _ = self.secondary(b"fictional alternate subject")
+        with store.ledger(self.database) as con:
+            con.execute("UPDATE occurrences SET original_sha256=?,acquisition_method='fictional-unclassified' "
+                        "WHERE acquisition_method LIKE 'captured_legacy_%'", (other,))
+            con.commit()
+        with self.assertRaisesRegex(ValueError, "local_capture_domain_validation_failed"):
+            self.backend.accept(self.sha)
+        self.assertEqual(self.rows("SELECT count(*) FROM receipts"), [(0,)])
+        self.assertEqual(self.rows("SELECT name FROM sqlite_master WHERE name='stage_claims'"), [])
+
+    def test_synthetic_done_receipt_cannot_return_functional_replay(self):
+        enrolled = self.enroll()
+        runner = stages.testing_runner(self.database, run_id=self.identity["run_id"], owner="fictional-holder",
+            validators={"preserve": self.backend._validator}, version="reconciliation-synthetic-replay",
+            engine_version=self.identity["runtime"]["version"], config_sha256=self.identity["config_sha256"])
+        evidence = {"schema": "preservation-evidence-v1", "original_sha256": self.sha,
+            "byte_length": self.source.stat().st_size, "storage_ref": str(self.backend.output / "blobs" / self.sha),
+            "verification_receipt_sha256": enrolled["capture_receipt_sha256"],
+            "occurrence_ids": [enrolled["occurrence_id"]], "resolution_sha256": enrolled["resolution_sha256"]}
+        head = runner.set_preservation_evidence(self.sha, evidence, author_id="fictional-holder", tier="A")
+        claim = runner.claim(self.sha, "preserve", ttl_seconds=300)
+        packet = {"schema": "ledger-stage-receipt-v1", "subject_sha256": self.sha, "stage": "preserve",
+            "content_sha256": head["content_sha256"], "author_id": "fictional-holder", "tier": "A",
+            "reviewer_id": "fictional-holder", "role": "preserver", "verdict": "pass",
+            "coverage": {"denominator": {"kind": "bytes", "total": self.source.stat().st_size},
+                "covered": self.source.stat().st_size, "scope": "selected"},
+            "locators": ["cas:" + self.sha], "rationale": "Explicit synthetic authority regression.",
+            "model_or_tool": "fictional-test-only", "created_at_tz": "2026-10-12T00:00:00+00:00",
+            "input_hashes": {"original": self.sha}}
+        synthetic = runner.promote(self.sha, "preserve", json.dumps(packet).encode(), claim_id=claim["claim_id"])
+        self.assertTrue(synthetic["test_only"])
+        before = self.rows("SELECT * FROM stage_state")
+        with self.assertRaisesRegex(ValueError, "functional_preservation_authority_required"):
+            self.backend.accept(self.sha)
+        self.assertEqual(self.rows("SELECT * FROM stage_state"), before)
+
+    def test_functional_replay_keeps_test_only_false(self):
+        self.enroll()
+        first = self.backend.accept(self.sha)
+        second = self.backend.accept(self.sha)
+        self.assertFalse(second["test_only"])
+        self.assertEqual(first["receipt_sha256"], second["receipt_sha256"])
+
+    def test_cached_functional_receipt_requires_current_code_binding(self):
+        self.enroll()
+        self.backend.accept(self.sha)
+        with patch.object(self.backend, "_binding_context", return_value=["fictional-different-code"]):
+            with self.assertRaisesRegex(ValueError, "preservation_replay_profile_failed"):
+                self.backend.accept(self.sha)
+
     def test_shared_root_lock_rejects_concurrent_enrollment(self):
         with root_lock(self.base), self.readonly(), self.assertRaisesRegex(Exception, "root_locked"):
             self.backend.enroll_local_capture(self.source, original_sha256=self.sha)

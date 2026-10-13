@@ -49,9 +49,23 @@ def verify_captured_declaration(con, row, *, depth=0):
 
 
 def validate_declarations(con, subject):
-    rows = list(con.execute("SELECT * FROM occurrences WHERE original_sha256=? "
-                            "AND acquisition_method LIKE 'captured_legacy_%' LIMIT 1025", (subject,)))
-    if len(rows) > 1024:
+    # Projection ownership comes from immutable source bindings, never mutable
+    # occurrence labels. Include current claims too, so relabeling or changing
+    # the subject cannot hide a corrupted projected declaration.
+    exists = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                         "AND name='occurrence_projection_rows'").fetchone()
+    claimed = list(con.execute("SELECT id FROM occurrences WHERE original_sha256=? "
+                              "AND acquisition_method LIKE 'captured_legacy_%' LIMIT 1025", (subject,)))
+    owned = [] if not exists else list(con.execute(
+        "SELECT DISTINCT r.occurrence_id FROM occurrence_projection_rows r "
+        "LEFT JOIN occurrences o ON o.id=r.occurrence_id WHERE r.disposition='projected' "
+        "AND (json_extract(r.payload_json,'$.sha')=? OR o.original_sha256=?) LIMIT 1025",
+        (subject, subject)))
+    ids = {row[0] for row in owned + claimed}
+    if len(ids) > 1024:
         raise ValueError("preservation_occurrence_bound")
-    for row in rows:
+    for oid in sorted(ids):
+        row = con.execute("SELECT * FROM occurrences WHERE id=?", (oid,)).fetchone()
+        if row is None:
+            raise ValueError("captured_declaration_occurrence_missing")
         verify_captured_declaration(con, row)
