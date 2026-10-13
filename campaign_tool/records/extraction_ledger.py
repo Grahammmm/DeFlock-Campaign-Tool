@@ -314,7 +314,7 @@ class ExtractionLedgerAdapter:
         if not isinstance(decoded,dict):raise ExtractionBindingError("receipt_shape")
         subject=checked_sha(decoded.get("original_sha256"))
         with self.store.ledger(self.database,readonly=True) as con:
-            row=con.execute("SELECT * FROM originals WHERE sha256=?",(subject,)).fetchone()
+            row=self.store.effective_original(con,subject)
             if row is None or not row["storage_path"]:raise ExtractionBindingError("canonical_original_unavailable")
             original=dict(row)
             if not con.execute("SELECT 1 FROM occurrences WHERE original_sha256=?",(subject,)).fetchone():raise ExtractionBindingError("canonical_occurrence_missing")
@@ -329,6 +329,8 @@ class ExtractionLedgerAdapter:
             provenance=canonical({"extraction_import_id":import_id,"receipt_sha256":receipt_sha256,"payload_sha256":digest,"ordinal":ordinal,"source_units_sha256":stored["derived_units"]["sha256"],"parser_provenance":"bound_to_derivative_metadata","parser_components":receipt.get("parser_components",{}),"ocr_receipt_ids":[entry["receipt_id"] for entry in receipt.get("ocr_receipts",[])],"review_status":"not_reviewed"})
             planned.append((sha(canonical([import_id,ordinal,digest]).encode()),subject,parser,version,canonical(unit["locator"]),unit["kind"],row["text_sha256"],path,"candidate_extracted",ordinal,provenance))
         manifest={"adapter":VERSION,"adapter_code_sha256":sha(Path(__file__).read_bytes()),"original_sha256":subject,"original_bytes":original["bytes"],"receipt_sha256":receipt_sha256,"artifacts":stored,"unit_ids":[r[0] for r in planned],"pages":receipt["pages"],"parser":parser,"parser_version":version,"source_status":receipt["status"],"issues":receipt["issues"],"gaps":gaps,"stage_promotions":0}
+        if original.get("resolution_sha256"):
+            manifest["original_resolution_sha256"]=original["resolution_sha256"]
         manifest_json=canonical(manifest);manifest_sha=sha(manifest_json.encode())
         store_blob(self.evidence_root,manifest_json.encode())
         if self.fault:self.fault("after_evidence_bytes")
@@ -338,7 +340,7 @@ class ExtractionLedgerAdapter:
             ensure_schema(con)
             con.execute("BEGIN IMMEDIATE")
             try:
-                current_original=con.execute("SELECT * FROM originals WHERE sha256=?",(subject,)).fetchone()
+                current_original=self.store.effective_original(con,subject)
                 if dict(current_original)!=original:raise ExtractionBindingError("canonical_original_changed")
                 stages=con.execute("SELECT * FROM stage_state WHERE original_sha256=?",(subject,)).fetchall()
                 if {r["stage"] for r in stages}!=set(self.store.STAGES):raise ExtractionBindingError("stage_slots_missing")

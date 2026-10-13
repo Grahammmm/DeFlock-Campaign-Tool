@@ -350,10 +350,11 @@ class Pipeline:
 
     # ----- helpers ---------------------------------------------------------------------
     def _original(self, subject):
-        rows = self._query("SELECT * FROM originals WHERE sha256=?", (subject,))
-        if not rows:
+        with store.ledger(self.root.ledger,readonly=True) as con:
+            original = store.effective_original(con,subject)
+        if original is None:
             raise RunError("original_missing")
-        return rows[0]
+        return original
 
     def ingest_documents(self, documents, manifest_sha256):
         from .intake.document_drop import ingest

@@ -131,6 +131,20 @@ def ledger(path, *, readonly=False):
         con.close()
 
 
+def effective_original(connection, subject):
+    """Canonical readers use the additive binding; original declarations stay immutable."""
+    from .original_resolution import effective_original as resolved
+    return resolved(connection, subject)
+
+
+def effective_original_fields(connection, row):
+    """Resolve only the requested columns; never expand a board/queue export."""
+    original = effective_original(connection, row["sha256"])
+    if original is None:
+        raise ValueError("canonical_original_missing")
+    return {key: original[key] for key in row.keys()}
+
+
 def counts(path):
     with ledger(path, readonly=True) as con:
         total = con.execute("SELECT COUNT(*) FROM originals").fetchone()[0]

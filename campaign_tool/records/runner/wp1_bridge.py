@@ -3,7 +3,7 @@ from .contracts import IntegrationGap
 from .core import hid
 
 
-def installed_preservation_runner(stages,database,identity,validator):
+def installed_preservation_runner(stages,database,identity,validator,*,binding_context=None):
     """Installed code only. Domain validator is the mail backend's real verifier.
 
     WP1 has no public callable-registration submission API. Its installed registry
@@ -12,7 +12,7 @@ def installed_preservation_runner(stages,database,identity,validator):
     """
     registry=getattr(stages,'_INSTALLED_VALIDATORS',None)
     if not isinstance(registry,dict):raise IntegrationGap('wp1_installed_registry_unavailable')
-    binding=hid([str(database),str(validator.__self__.output)])
+    binding=hid([str(database),str(validator.__self__.output)] + ([] if binding_context is None else [binding_context]))
     adapter_id='wp2-mail-cas-preserver-v3:'+binding
     previous=registry.get(adapter_id)
     if previous is not None:

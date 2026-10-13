@@ -148,7 +148,7 @@ class WP1LedgerAdapter:
                 old_run=con.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
                 if old_run and (old_run["summary"]!=summary or old_run["kind"]!="portal_enrollment" or old_run["status"]!="pending_stage_validation"):
                     raise PortalError("canonical_run_changed")
-                original=con.execute("SELECT * FROM originals WHERE sha256=?",(sha,)).fetchone()
+                original=self.store.effective_original(con,sha)
                 if original and (original["bytes"]!=size or original["storage_path"]!=str(path)):
                     raise PortalError("canonical_original_binding_conflict")
                 occurrence=con.execute("SELECT * FROM occurrences WHERE id=?",(occurrence_id,)).fetchone()
@@ -210,8 +210,11 @@ class WP1LedgerAdapter:
         if type(limit) is not int or not 1<=limit<=1000:
             raise ValueError("invalid_limit")
         with self.store.ledger(self.database,readonly=True) as con:
-            return [dict(row) for row in con.execute(
-                "SELECT o.sha256,o.bytes,o.storage_path,s.status FROM originals o JOIN stage_state s ON s.original_sha256=o.sha256 WHERE s.stage='catalog' AND s.status='pending' AND EXISTS(SELECT 1 FROM occurrences x WHERE x.original_sha256=o.sha256 AND x.kind='portal') ORDER BY o.sha256 LIMIT ?",(limit,))]
+            rows=list(con.execute(
+                "SELECT o.sha256,s.status FROM originals o JOIN stage_state s ON s.original_sha256=o.sha256 WHERE s.stage='catalog' AND s.status='pending' AND EXISTS(SELECT 1 FROM occurrences x WHERE x.original_sha256=o.sha256 AND x.kind='portal') ORDER BY o.sha256 LIMIT ?",(limit,)))
+            return [dict(sha256=row['sha256'],status=row['status'],
+                         **{key:self.store.effective_original(con,row['sha256'])[key]
+                            for key in ('bytes','storage_path')}) for row in rows]
 
     def validate_and_promote(self,*args,**kwargs):
         raise PortalError("trusted_portal_stage_adapter_unconfigured")

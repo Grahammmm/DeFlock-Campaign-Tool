@@ -6,6 +6,7 @@ import sqlite3
 
 from .core import MAX_INPUT_BYTES, MAX_UNITS, VERSION, canonical, digest, evaluate, moment, sha
 from .migrations import persistence_v001 as migration
+from ..ledger import store
 
 ADAPTER_VERSION = migration.VERSION
 MAX_RESULT_BYTES = 16 * 1024 * 1024
@@ -126,7 +127,7 @@ def persist_evaluation(connection, *, run_id, detector, units, joins, rules, con
         subjects = sorted({unit.get("original_sha256") for unit in supplied["units"]
                            if sha(unit.get("original_sha256"))})
         for subject in subjects:
-            original = one(connection, "SELECT * FROM originals WHERE sha256=?", (subject,))
+            original = store.effective_original(connection, subject)
             require(original is not None, "canonical_original_missing")
             source_bindings.append({"run_id": run_id, "original_sha256": subject,
                                     "metadata_sha256": digest(original)})
