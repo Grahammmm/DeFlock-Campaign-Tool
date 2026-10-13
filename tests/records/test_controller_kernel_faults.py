@@ -27,11 +27,13 @@ def _child(profile_path, action, invocation, job_id):
     fake = fixtures.FakeDocker(profile_path)
     original_write, original_sync = host.PrivateDir.write, os.fsync
     original_flock = host.fcntl.flock
+    original_finish = control._finish_operation
     context = [None]
     faults = []
     blocked = []
     crash = action in {"crash-run", "crash-stop"}
-    barrier = action == "stop-barrier"
+    barrier = action in {"stop-barrier", "stop-late-barrier"}
+    progress_fd = int(os.environ["KERNEL_TEST_PROGRESS_FD"]) if "KERNEL_TEST_PROGRESS_FD" in os.environ else None
 
     def write(directory, name, raw, **options):
         context[0] = name
@@ -69,8 +71,22 @@ def _child(profile_path, action, invocation, job_id):
         except BlockingIOError:
             if not blocked:
                 blocked.append(True)
-                print("lock-blocked", flush=True)
+                # Only the two actions whose callers consume this handshake may
+                # write it to stdout. Late stopper contention must not corrupt JSON.
+                if action in {"stop", "allocate"}:
+                    print("lock-blocked", flush=True)
+                if progress_fd is not None:
+                    os.write(progress_fd, b"lock-blocked\n")
             raise
+
+    def finish_operation(*args, **options):
+        if action == "stop-late-barrier":
+            # stop_post has released its initial journal/admission locks here.
+            # Gate only the test driver before the real finalization reacquires.
+            print("journal-released", flush=True)
+            if sys.stdin.readline() != "finish\n":
+                os._exit(74)
+        return original_finish(*args, **options)
 
     def denied():
         try:
@@ -84,7 +100,8 @@ def _child(profile_path, action, invocation, job_id):
         return {"direct": direct, "bound": result["status"]}
 
     with mock.patch.object(host.PrivateDir, "write", write), mock.patch.object(os, "fsync", sync), \
-            mock.patch.object(host.fcntl, "flock", flock):
+            mock.patch.object(host.fcntl, "flock", flock), \
+            mock.patch.object(control, "_finish_operation", finish_operation):
         if action == "deny":
             result = denied()
         elif action == "allocate":
@@ -146,15 +163,26 @@ class ControllerKernelFaultTests(fixtures.HostFixture):
             if stream is not None:
                 stream.close()
 
-    def spawn(self, action, invocation=NEXT, job_id=""):
+    def spawn(self, action, invocation=NEXT, job_id="", *, progress=False):
         env = {"HOME": str(Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                "TMPDIR": str(self.root), "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
                "PYTHONDONTWRITEBYTECODE": "1"}
         driver = ("from tests.records.test_controller_kernel_faults import _child; "
                   "import sys; _child(*sys.argv[1:])")
-        child = subprocess.Popen([sys.executable, "-B", "-c", driver, str(self.profile),
-                                  action, invocation, job_id], env=env, stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        progress_read = progress_write = None
+        if progress:
+            progress_read, progress_write = os.pipe()
+            self.addCleanup(os.close, progress_read)
+            env["KERNEL_TEST_PROGRESS_FD"] = str(progress_write)
+        try:
+            child = subprocess.Popen([sys.executable, "-B", "-c", driver, str(self.profile),
+                                      action, invocation, job_id], env=env, stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     pass_fds=(progress_write,) if progress else ())
+        finally:
+            if progress_write is not None:
+                os.close(progress_write)
+        child.progress_fd = progress_read
         # Register BEFORE any handshake, proc observation, wait, or assertion.
         self.addCleanup(self.cleanup_child, child)
         return child
@@ -287,6 +315,28 @@ class ControllerKernelFaultTests(fixtures.HostFixture):
         self.assertFalse((self.receipts / job_id).exists())
         proof = self.finish(self.spawn("allocate", INVOCATION, job_id))
         self.assertEqual(proof["result"]["status"], "rejected")
+
+    def test_forced_late_stopper_contention_keeps_result_stdout_json_only(self):
+        job_id = self.prepare()
+        stopper = self.spawn("stop-late-barrier", INVOCATION, progress=True)
+        self.line(stopper, "intent-durable")
+        stopper.stdin.write(b"release\n")
+        stopper.stdin.flush()
+        self.line(stopper, "journal-released")
+        with self.journal() as journal:
+            with host.locked(journal.directory, "journal.lock"):
+                stopper.stdin.write(b"finish\n")
+                stopper.stdin.flush()
+                ready, _, _ = select.select([stopper.progress_fd], [], [], 5)
+                self.assertTrue(ready, "bounded late-contention handshake timed out")
+                self.assertEqual(os.read(stopper.progress_fd, 64), b"lock-blocked\n")
+                self.assertIsNone(stopper.poll())
+                self.assertFalse((self.receipts / job_id).exists())
+        self.assertEqual(self.finish(stopper)["result"]["status"], "not_allocated")
+        with self.journal() as journal:
+            _, value = control._owned(journal, INVOCATION)
+            self.assertTrue(control._closed(journal, value))
+        self.assertEqual(self.finish(self.spawn("allocate", INVOCATION, job_id))["result"]["status"], "rejected")
 
     def test_corrupt_binding_after_actual_crash_remains_denied(self):
         before = self.completed()
