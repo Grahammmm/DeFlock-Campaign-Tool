@@ -41,6 +41,10 @@ PATTERNS = [
 ]
 CATEGORIES = list(dict.fromkeys(name for name, _ in PATTERNS)) + ["DENYLIST"]
 PLACEHOLDER = re.compile(r"\[(" + "|".join(CATEGORIES) + r")-(\d+)\]")
+# Match exactly the separator vocabulary used by str.splitlines(), retaining
+# CRLF as one sequence. Replacing a name or denylist phrase across lines must
+# not move later evidence to a different original line number.
+LINE_SEPARATOR = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 
 
 @dataclass
@@ -116,7 +120,20 @@ class Redactor:
                 self.tokens[key] = f"[{category}-{self.counters[category]}]"
             counts[category] += 1
             out.append(text[cursor:start])
-            out.append(self.tokens[key])
+            segment_start = start
+            replacement = self.tokens[key]
+            for separator in LINE_SEPARATOR.finditer(text, start, end):
+                if segment_start < separator.start():
+                    out.append(replacement)
+                    replacement = " "
+                out.append(separator.group())
+                segment_start = separator.end()
+            if segment_start < end:
+                # Retain a neutral stand-in for each removed continuation:
+                # distinct CR/LF cannot coalesce and final lines cannot vanish.
+                # Leading separators also remain before the placeholder, so a
+                # denylist span starting within a CRLF cannot split that pair.
+                out.append(replacement)
             cursor = end
         out.append(text[cursor:])
         return Redaction("".join(out), {k: v for k, v in counts.items() if v})

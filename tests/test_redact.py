@@ -81,12 +81,75 @@ class RedactTableTests(unittest.TestCase):
         redacted, counts = redact_units(units)
         self.assertEqual([u["text"] for u in redacted], ["meet at 123", "Main Street tomorrow"])
         self.assertEqual([u["locator"] for u in redacted], [{"page": 1}, {"page": 2, "member": "Deputy_Smith_7ABC123.csv", "scope": "attachment"}])
-        self.assertEqual([u["model_locator"] for u in redacted], [{"page": 1, "unit": 0}, {"page": 2, "scope": "attachment", "unit": 1}])
+        self.assertEqual([u["model_locator"] for u in redacted], [{"unit": 0}, {"unit": 1}])
 
     def test_no_mapping_is_exposed(self):
         result = redact("plate 7ABC123")
         self.assertEqual(set(vars(result)), {"text", "counts"})
         self.assertNotIn("7ABC123", repr(result))
+
+    def test_multiline_names_preserve_physical_line_numbers(self):
+        separators = ("\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+        for separator in separators:
+            text = "Deputy Alice" + separator + "Smith arrived." + separator + "Data retained for 30 days."
+            with self.subTest(separator=repr(separator)):
+                result = redact(text)
+                self.assertEqual(result.text, "Deputy [NAME-1]" + separator + "  arrived." + separator + "Data retained for 30 days.")
+                self.assertEqual(result.counts, {"NAME": 1})
+                self.assertEqual(result.text.splitlines()[2], "Data retained for 30 days.")
+                self.assertEqual(redact(result.text).text, result.text)
+
+    def test_multiline_denylist_preserves_each_original_separator(self):
+        secret = "Synthetic\nPrivate\r\nPhrase"
+        text = "Start " + secret + " ends.\nEvidence follows."
+        result = redact(text, denylist=(secret,))
+        self.assertEqual(result.text, "Start [DENYLIST-1]\n \r\n  ends.\nEvidence follows.")
+        self.assertEqual(result.counts, {"DENYLIST": 1})
+        self.assertEqual(len(result.text.splitlines()), len(text.splitlines()))
+        self.assertNotIn("Private", result.text)
+        self.assertEqual(redact(result.text, denylist=(secret,)).text, result.text)
+
+    def test_multiline_redaction_does_not_coalesce_distinct_cr_and_lf(self):
+        for prefix, phrase, denylist in (("Name: ", "Alice\rBeth\nSmith", ()),
+                                        ("", "Synthetic\rPrivate\nPhrase", ("Synthetic\rPrivate\nPhrase",))):
+            text = prefix + phrase + " left.\nEvidence follows."
+            with self.subTest(prefix=prefix):
+                result = redact(text, denylist=denylist)
+                self.assertEqual(len(result.text.splitlines()), 4)
+                self.assertEqual(result.text.splitlines()[3], "Evidence follows.")
+                self.assertIn("\r \n ", result.text)
+                self.assertEqual(redact(result.text, denylist=denylist).text, result.text)
+                self.assertEqual(result.total, 1)
+
+    def test_final_redacted_continuation_line_remains_present(self):
+        result = redact("Deputy Alice\nSmith")
+        self.assertEqual(result.text, "Deputy [NAME-1]\n ")
+        self.assertEqual(len(result.text.splitlines()), 2)
+        self.assertEqual(redact(result.text).text, result.text)
+        # A separator that originally ended the span needs no extra line.
+        result = redact("Synthetic\n", denylist=("Synthetic\n",))
+        self.assertEqual(result.text, "[DENYLIST-1]\n")
+        self.assertEqual(len(result.text.splitlines()), 1)
+
+    def test_denylist_span_cannot_split_crlf_at_its_boundary(self):
+        for text, phrase in (("Prefix\r\nSynthetic", "\nSynthetic"),
+                             ("Synthetic\r\nSuffix", "Synthetic\r")):
+            with self.subTest(text=text):
+                result = redact(text, denylist=(phrase,))
+                self.assertIn("\r\n", result.text)
+                self.assertEqual(len(result.text.splitlines()), len(text.splitlines()))
+                self.assertNotIn("Synthetic", result.text)
+                self.assertEqual(redact(result.text, denylist=(phrase,)).text, result.text)
+
+    def test_all_mixed_separator_pairs_preserve_following_evidence_line(self):
+        separators = ("\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+        for first, second in itertools.product(separators, repeat=2):
+            phrase = "Synthetic" + first + "Private" + second + "Phrase"
+            text = phrase + " ends.\nEvidence follows."
+            with self.subTest(first=repr(first), second=repr(second)):
+                result = redact(text, denylist=(phrase,))
+                self.assertEqual(len(result.text.splitlines()), len(text.splitlines()))
+                self.assertEqual(result.text.splitlines()[3], "Evidence follows.")
 
 
 if __name__ == "__main__":

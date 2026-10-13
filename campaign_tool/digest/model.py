@@ -1,26 +1,34 @@
 """Optional model narrative over redacted text and detector hits.
 
 The call is an OpenAI-compatible ``POST {MODEL_BASE_URL}/chat/completions``
-made with ``urllib`` only. The system prompt treats every record as data;
+made with the standard library. The system prompt treats every record as data;
 the response must be a single JSON object matching
 :data:`campaign_tool.digest.schema.MODEL_OUTPUT_SCHEMA` or the caller
 fails the job with the reason. Under the ``strict_local`` tier the base URL
-must point at a loopback or Tailscale address; anything else is refused
-before any bytes leave the process.
+must resolve only to loopback or Tailscale addresses. Its direct connection is
+pinned to a verified numeric address, bypasses proxies and global openers, and
+never follows redirects. Tailscale address ranges are an allowlist, not proof
+that the configured machine belongs to a particular tailnet.
 """
+import http.client
 import ipaddress
 import json
+import math
 import re
+import socket
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from .model_input import ModelInputError, ModelSources
 from .schema import validate_model_output
 
 TAILSCALE_V4 = ipaddress.ip_network("100.64.0.0/10")
 TAILSCALE_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 DEFAULT_TIMEOUT = 120
+MAX_TIMEOUT = 3600
 
 SYSTEM_PROMPT = """You are a records analyst assisting a public-records campaign.
 The user message contains extracted text from a public record and a list of detector hits.
@@ -50,38 +58,168 @@ class ModelConfig:
 
     @classmethod
     def from_env(cls, env):
-        base = (env.get("MODEL_BASE_URL") or "").strip()
+        base = env.get("MODEL_BASE_URL") or ""
         if not base:
             return None
-        return cls(base_url=base, api_key=env.get("MODEL_API_KEY", ""), model_id=env.get("MODEL_ID", "local"),
-                   privacy_tier=env.get("PRIVACY_TIER", "redacted_cloud"),
-                   timeout=int(env.get("MODEL_TIMEOUT", DEFAULT_TIMEOUT)))
+        try:
+            timeout = int(env.get("MODEL_TIMEOUT", DEFAULT_TIMEOUT))
+        except (ValueError, TypeError, OverflowError):
+            raise ModelError("model timeout must be a finite positive number") from None
+        config = cls(base_url=base, api_key=env.get("MODEL_API_KEY", ""), model_id=env.get("MODEL_ID", "local"),
+                     privacy_tier=env.get("PRIVACY_TIER", "redacted_cloud"), timeout=timeout)
+        check_config(config)
+        return config
 
 
 def is_local_or_tailscale(url):
-    """True for loopback hosts, ``*.ts.net`` names and Tailscale address ranges."""
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if not host:
+    """Whether the URL is eligible; named hosts still require address validation."""
+    try:
+        parts = _parse_base_url(url)
+    except ModelError:
         return False
+    return _eligible_host(parts.hostname)
+
+
+def _eligible_host(host):
+    host = host.lower().rstrip(".")
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost") or host.endswith(".ts.net"):
         return True
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
+    return _allowed_address(address)
+
+
+def _allowed_address(address):
+    # Keep identical behavior across Python versions, whose mapped-address
+    # is_loopback rules differ. Accept direct IPv4 or IPv6 forms only.
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return False
     return address.is_loopback or address in TAILSCALE_V4 or address in TAILSCALE_V6
 
 
+def _parse_base_url(url):
+    """Reject ambiguous URL forms before parsing can normalize them away."""
+    error = "MODEL_BASE_URL must be an unambiguous http(s) URL without credentials, query or fragment"
+    if not isinstance(url, str) or not url or any(ord(c) <= 32 or ord(c) >= 127 for c in url):
+        raise ModelError(error)
+    if any(c in url for c in "\\?#") or re.search(r"%(?![0-9a-fA-F]{2})", url):
+        raise ModelError(error)
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+        if (parts.scheme not in {"http", "https"} or not host or parts.username is not None
+                or parts.password is not None or "%" in parts.netloc or port == 0):
+            raise ValueError
+        # urlsplit accepts trailing colons and text after an IPv6 closing bracket.
+        if parts.netloc.startswith("["):
+            if not re.fullmatch(r"\[[0-9a-fA-F:.]+\](?::[0-9]+)?", parts.netloc):
+                raise ValueError
+            if ipaddress.ip_address(host).version != 6:
+                raise ValueError
+        else:
+            if not re.fullmatch(r"[^:]+(?::[0-9]+)?", parts.netloc):
+                raise ValueError
+            labels = host.rstrip(".").split(".")
+            if len(host) > 254 or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+                                      for label in labels):
+                raise ValueError
+    except (ValueError, TypeError):
+        raise ModelError(error) from None
+    return parts
+
+
 def check_config(config):
-    """Raise ModelError for a URL the privacy tier forbids."""
-    parts = urlsplit(config.base_url)
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
-        raise ModelError("MODEL_BASE_URL must be an http(s) URL")
-    if config.privacy_tier == "strict_local" and not is_local_or_tailscale(config.base_url):
+    """Reject malformed settings and URLs the privacy tier forbids, without I/O."""
+    parts = _parse_base_url(config.base_url)
+    if not isinstance(config.privacy_tier, str) or config.privacy_tier not in {"strict_local", "redacted_cloud"}:
+        raise ModelError("unknown model privacy tier")
+    if config.privacy_tier == "strict_local" and not _eligible_host(parts.hostname):
         raise ModelError("strict_local tier refuses a non-loopback, non-Tailscale MODEL_BASE_URL")
-    if config.privacy_tier not in {"strict_local", "redacted_cloud"}:
-        raise ModelError("unknown privacy tier " + repr(config.privacy_tier))
+    if (isinstance(config.timeout, bool) or not isinstance(config.timeout, (int, float))
+            or config.timeout <= 0 or config.timeout > MAX_TIMEOUT or not math.isfinite(config.timeout)):
+        raise ModelError("model timeout must be a finite positive number no greater than 3600 seconds")
+    if not isinstance(config.model_id, str) or not config.model_id.strip():
+        raise ModelError("model id must be a nonempty string")
+    if not isinstance(config.api_key, str) or any(ord(c) < 32 or ord(c) >= 127 for c in config.api_key):
+        raise ModelError("model API key contains invalid header characters")
+
+
+def _local_addresses(host, port):
+    """Resolve once and validate every answer; never resolve again at connect time."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+        except OSError:
+            raise ModelError("strict_local model hostname could not be resolved") from None
+    else:
+        answers = [(socket.AF_INET if address.version == 4 else socket.AF_INET6,
+                    socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (str(address), port))]
+    verified = []
+    for family, socktype, protocol, _, sockaddr in answers:
+        try:
+            address = ipaddress.ip_address(sockaddr[0])
+            if (family not in {socket.AF_INET, socket.AF_INET6} or socktype != socket.SOCK_STREAM
+                    or protocol != socket.IPPROTO_TCP or not _allowed_address(address)
+                    or (family == socket.AF_INET) != (address.version == 4)
+                    or "%" in str(address) or (len(sockaddr) > 3 and sockaddr[3] != 0)):
+                raise ValueError
+        except (ValueError, IndexError, TypeError):
+            raise ModelError("strict_local model hostname resolved to a forbidden address") from None
+        target = (str(address), port) if family == socket.AF_INET else (str(address), port, 0, 0)
+        if (family, target) not in verified:
+            verified.append((family, target))
+    if not verified or len(verified) > 16:
+        raise ModelError("strict_local model hostname has no bounded verified address set")
+    return verified
+
+
+def _connect_local(addresses, timeout):
+    # Only connection establishment can retry. Never repeat a submitted POST.
+    for family, target in addresses:
+        sock = socket.socket(family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(target)
+            peer = sock.getpeername()
+            if ipaddress.ip_address(peer[0]) != ipaddress.ip_address(target[0]) or peer[1] != target[1]:
+                raise ModelError("strict_local model connection peer did not match the verified address")
+            return sock
+        except OSError:
+            sock.close()
+        except BaseException:
+            sock.close()
+            raise
+    raise ModelError("strict_local model endpoint unreachable")
+
+
+def _strict_local_post(config, payload, headers):
+    parts = _parse_base_url(config.base_url)
+    host = parts.hostname.rstrip(".")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    addresses = _local_addresses(host, port)
+    # HTTPConnection formats Host and the request but never opens the socket:
+    # install our verified connection before handing it any request bytes.
+    connection = http.client.HTTPConnection(host, port, timeout=config.timeout)
+    try:
+        connection.sock = _connect_local(addresses, config.timeout)
+        if parts.scheme == "https":
+            connection.sock = ssl.create_default_context().wrap_socket(connection.sock, server_hostname=host)
+        connection.request("POST", parts.path.rstrip("/") + "/chat/completions", body=payload, headers=headers)
+        with connection.getresponse() as response:
+            if 300 <= response.status < 400:
+                raise ModelError("strict_local model redirects are forbidden")
+            if not 200 <= response.status < 300:
+                raise ModelError(f"model HTTP {response.status}")
+            return response.read()
+    except (OSError, http.client.HTTPException):
+        # Exceptions may contain URLs, tokens or attacker-controlled server text.
+        raise ModelError("strict_local model endpoint unreachable or invalid HTTP/TLS response") from None
+    finally:
+        connection.close()
 
 
 def _extract_json(text):
@@ -105,20 +243,24 @@ def chat_json(config, messages, opener=None):
     check_config(config)
     payload = {"model": config.model_id, "messages": messages, "temperature": 0,
                "response_format": {"type": "json_object"}}
-    request = urllib.request.Request(
-        config.base_url.rstrip("/") + "/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json", "accept": "application/json",
-                 **({"authorization": "Bearer " + config.api_key} if config.api_key else {})},
-        method="POST")
-    open_fn = opener or urllib.request.urlopen
-    try:
-        with open_fn(request, timeout=config.timeout) as response:
-            body = response.read()
-    except urllib.error.HTTPError as exc:
-        raise ModelError(f"model HTTP {exc.code}") from None
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        raise ModelError("model unreachable: " + str(getattr(exc, "reason", exc))) from None
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json",
+               **({"Authorization": "Bearer " + config.api_key} if config.api_key else {})}
+    if config.privacy_tier == "strict_local":
+        if opener is not None:
+            raise ModelError("strict_local tier refuses a custom model opener")
+        body = _strict_local_post(config, data, headers)
+    else:
+        request = urllib.request.Request(config.base_url.rstrip("/") + "/chat/completions",
+                                         data=data, headers=headers, method="POST")
+        open_fn = opener or urllib.request.urlopen
+        try:
+            with open_fn(request, timeout=config.timeout) as response:
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            raise ModelError(f"model HTTP {exc.code}") from None
+        except (urllib.error.URLError, OSError, TimeoutError):
+            raise ModelError("model endpoint unreachable") from None
     try:
         envelope = json.loads(body.decode("utf-8"))
         content = envelope["choices"][0]["message"]["content"]
@@ -132,54 +274,25 @@ def chat_json(config, messages, opener=None):
     return document
 
 
-def build_user_message(redacted_units, hits, rules, max_chars=60000):
-    """Assemble the data block for the model; truncates long text explicitly.
-
-    Only redacted text crosses this boundary: each unit's locator is sent in its
-    redacted form (``model_locator`` from :func:`build.redact_units`; attachment
-    member names and sheet titles are personal data as often as the text is),
-    and detector hits carry the same redacted locators.
-    """
-    lines = []
-    total = 0
-    truncated = False
-    safe_locator = {}
-    for index, unit in enumerate(redacted_units):
-        real = json.dumps(unit.get("locator") or {}, sort_keys=True)
-        safe_locator[real] = unit.get("model_locator") if "model_locator" in unit else {**_strip_strings(unit.get("locator") or {}), "unit": index}
-    for unit in redacted_units:
-        chunk = json.dumps(safe_locator[json.dumps(unit.get("locator") or {}, sort_keys=True)], sort_keys=True) + "\t" + (unit.get("text") or "")
-        if total + len(chunk) > max_chars:
-            truncated = True
-            break
-        lines.append(chunk)
-        total += len(chunk) + 1
-    rule_list = [{"rule_id": r["rule_id"], "citation": r["citation"], "duty": r["duty"][:300]} for r in rules]
-    hit_list = []
-    for h in hits:
-        entry = {k: h[k] for k in ("detector", "rule_id", "locator", "excerpt", "kind", "detail")}
-        entry["locator"] = safe_locator.get(json.dumps(h.get("locator") or {}, sort_keys=True), _strip_strings(h.get("locator") or {}))
-        hit_list.append(entry)
-    return json.dumps({
-        "instructions": "Data follows. Each text line is <locator JSON><TAB><text>. Cite a locator exactly as given, including its unit number.",
-        "truncated": truncated,
-        "rules": rule_list,
-        "detector_hits": hit_list,
-        "record_text": lines,
-    }, ensure_ascii=True)
-
-
-def _strip_strings(locator):
-    """A locator with no free text at all, for a locator that has no redacted form."""
-    return {k: v for k, v in locator.items() if not isinstance(v, str) or k in ("scope", "kind", "type")}
-
-
-def narrative(config, redacted_units, hits, rules, opener=None):
-    """Return the validated model output (scope, actors, dates, statements, ..., conclusions)."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_message(redacted_units, hits, rules)}]
-    document = chat_json(config, messages, opener=opener)
+def build_user_message(redacted_units, hits, rules, max_chars=60000, *, allowlist=(), denylist=()):
+    """Serialize a bounded, allowlisted view with opaque local evidence references."""
     try:
-        return validate_model_output(document)
-    except ValueError as exc:
-        raise ModelError("model output failed schema validation: " + str(exc)) from None
+        return json.dumps(ModelSources(redacted_units, allowlist=allowlist, denylist=denylist)
+                          .primary_payload(hits, rules, max_chars=max_chars),
+                          ensure_ascii=True)
+    except ModelInputError:
+        raise ModelError("model input or locator references failed validation") from None
+
+
+def narrative(config, redacted_units, hits, rules, opener=None, *, allowlist=(), denylist=()):
+    """Return the validated model output (scope, actors, dates, statements, ..., conclusions)."""
+    try:
+        sources = ModelSources(redacted_units, allowlist=allowlist, denylist=denylist)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(sources.primary_payload(hits, rules), ensure_ascii=True)}]
+        document = chat_json(config, messages, opener=opener)
+        return sources.restore_output(validate_model_output(document))
+    except ModelInputError:
+        raise ModelError("model input or locator references failed validation") from None
+    except ValueError:
+        raise ModelError("model output failed schema validation") from None
