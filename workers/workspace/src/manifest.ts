@@ -8,7 +8,10 @@ import { sha256Hex } from "@deflock/shared/ids";
 import { canonicalJson, type Json, type JsonObject } from "@deflock/shared/review";
 import type { AgencyRow, CorrectionRow, FindingRow, MeetingRow, PublicationRow, Repo } from "./db.ts";
 
-export const MANIFEST_SCHEMA_VERSION = 1;
+// Build envelope v1 carries manifest v2. V2 includes the public campaign identity
+// in the content hash; v1 manifests cannot be built without guessing that identity.
+export const BUILD_ENVELOPE_SCHEMA_VERSION = 1;
+export const MANIFEST_SCHEMA_VERSION = 2;
 
 /** Keys campaign_tool.content.FINDING_KEYS accepts; anything else in finding_json stays private. */
 const FINDING_KEYS = [
@@ -34,6 +37,7 @@ export interface ContentManifest {
   schema_version: number;
   site_version: string;
   manifest_sha256: string;
+  campaign: JsonObject;
   site: JsonObject;
   findings: JsonObject[];
   meetings: JsonObject[];
@@ -165,6 +169,15 @@ export async function siteDocument(repo: Repo): Promise<JsonObject> {
 
 /** Assemble the manifest from D1. `now` bounds the meetings included (upcoming only). */
 export async function assembleManifest(repo: Repo, now: Date = new Date()): Promise<ContentManifest> {
+  const row = await repo.campaign();
+  const jurisdiction = row?.jurisdiction.match(/^([a-z]{2})-([a-z]{2})$/);
+  // Rendering identity only. Workspace host, settings, schedules and authority flags
+  // are never copied into campaign.json or conferred by this build contract.
+  // Invalid/missing identity is carried to the runner's fail-closed validator.
+  // Publication/correction/withdrawal have already changed state at this point;
+  // throwing here would strand them without a tracked build job or retry path.
+  const campaign: JsonObject = { schema_version: 1, name: row?.name ?? "", county: row?.county_name ?? "",
+    state: jurisdiction?.[2].toUpperCase() ?? "", country: jurisdiction?.[1].toUpperCase() ?? "" };
   const findings: JsonObject[] = [];
   for (const finding of await repo.findingsByState(["published", "corrected"])) {
     const publication = await repo.publicationForFinding(finding.finding_id);
@@ -177,7 +190,10 @@ export async function assembleManifest(repo: Repo, now: Date = new Date()): Prom
   const sources = (await repo.setting<Json[]>("sources_json")) ?? [];
   const map = (await repo.setting<JsonObject>("map_config")) ?? null;
   const site = await siteDocument(repo);
-  const body: JsonObject = { schema_version: MANIFEST_SCHEMA_VERSION, site, findings, meetings, sources: Array.isArray(sources) ? sources : [], agencies, map };
+  const body: JsonObject = { schema_version: MANIFEST_SCHEMA_VERSION, campaign, site, findings, meetings, sources: Array.isArray(sources) ? sources : [], agencies, map };
+  // The consumer accepts safe integer numbers only for v2 and rejects maps until
+  // their reviewed assets have a contract. Keep unsupported input in a tracked
+  // job instead of throwing after a publication/correction/withdrawal mutation.
   const hash = await sha256Hex(canonicalJson(body));
   return { ...(body as unknown as Omit<ContentManifest, "site_version" | "manifest_sha256">), site_version: "m" + hash.slice(0, 16), manifest_sha256: hash };
 }
@@ -232,7 +248,9 @@ export async function newsletterManifest(repo: Repo, now: Date = new Date()): Pr
  */
 export async function proposeRebuild(repo: Repo, proposedBy: string, reason: string): Promise<{ manifest: ContentManifest; job_id: string; job_created: boolean; action_id: string; action_created: boolean }> {
   const manifest = await assembleManifest(repo);
-  const job = await repo.enqueueJob("build_site", await sha256Hex("build_site:" + manifest.manifest_sha256), { site_version: manifest.site_version, reason, manifest });
+  const job = await repo.enqueueJob("build_site", await sha256Hex("build_site:" + manifest.manifest_sha256), {
+    schema_version: BUILD_ENVELOPE_SCHEMA_VERSION, site_version: manifest.site_version, reason, manifest,
+  });
   const action = await repo.propose(
     "deploy_site",
     job.row.job_id,
