@@ -4,6 +4,8 @@ No validator substitution: real native-text intake and installed validators bind
 all prerequisite receipts. Fictional reviewer declarations exercise preservation
 of existing non-test authority metadata; they do not create an authentication seam.
 """
+import json
+from campaign_tool.records.context_runtime import ledger_binding
 from campaign_tool.records import stage_adapters
 from campaign_tool.records.ledger import stages, store
 from campaign_tool.records.run import Pipeline, encoded, sha, root_lock
@@ -45,6 +47,7 @@ def independent_proposal(root, inbox, *, reviewer="synthetic-independent-reviewe
                            "public_markdown": public, "public_content_sha256": sha(public.encode()),
                            "manifest": manifest, "manifest_sha256": sha(encoded(manifest))}
                 payload = encoded(privacy)
+            payload = encoded({**json.loads(payload), **ledger_binding(pipeline.root.ledger, subject, name)})
             head = runner.set_content(subject, name, payload, author_id="synthetic-author", tier="A")
             claim = runner.claim(subject, name)
             stamp = store.now()

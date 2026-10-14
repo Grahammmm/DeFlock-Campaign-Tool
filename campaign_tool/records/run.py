@@ -9,6 +9,7 @@ owner's decision stays outside the automated path.
 """
 import argparse
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 import fcntl
 import hashlib
@@ -59,6 +60,13 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+_LOCKED_ROOTS = ContextVar("records_locked_roots", default=())
+
+def require_root_lock(root):
+    if str(Path(root).resolve()) not in _LOCKED_ROOTS.get():
+        raise RunError("context_root_lock_required")
+
+
 class RunError(RuntimeError):
     pass
 
@@ -77,7 +85,11 @@ def root_lock(root):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RunError("root_locked") from None
-        yield
+        token = _LOCKED_ROOTS.set((*_LOCKED_ROOTS.get(), str(Path(root).resolve())))
+        try:
+            yield
+        finally:
+            _LOCKED_ROOTS.reset(token)
     finally:
         os.close(fd)
 
@@ -147,7 +159,10 @@ class Pipeline:
         self.native_workbook_policy = native_workbook_policy
         self.package = load_package(jurisdiction)
         self.config = {"engine": ENGINE, "version": __version__, "jurisdiction": jurisdiction,
-                       "law_sources": sorted(r["rule_id"] for r in self.package["rules"]),
+                       "law_package_sha256": sha(encoded(self.package)),
+                       "event_date_declaration": event_date.isoformat() if event_date else None,
+                       "detector_code_sha256": store.file_hash(__import__("campaign_tool.digest.detectors", fromlist=[""]).__file__),
+                       "prompt_code_sha256": store.file_hash(__import__("campaign_tool.digest.model", fromlist=[""]).__file__),
                        "model_id": model.model_id if model else None,
                        "challenge_model_id": challenge.model.model_id if challenge else None,
                        "ocr": bool(ocr_tools)}
@@ -159,6 +174,7 @@ class Pipeline:
         self.config_sha256 = sha(encoded(self.config))
         self.run_id = "run-" + uuid.uuid4().hex
         self._stage = None
+        self._contexts = {}
         self.review_retirement = {"state": "complete", "processed": 0}
 
     # ----- intake -------------------------------------------------------------------------
@@ -287,6 +303,16 @@ class Pipeline:
             outcome = {"subject_sha256": subject, "stages": {}}
             report.append(outcome)
             for name in STAGE_ORDER:
+                if name == "catalog":
+                    from .context_runtime import reconcile
+                    try:
+                        current, plan = reconcile(self, subject, stage["runner"])
+                        self._contexts[subject] = current
+                        outcome["context_revision_sha256"] = current["revision"]["revision_sha256"]
+                        outcome["context_invalidated"] = plan["applied_stages"]
+                    except Exception:
+                        outcome["stages"]["context"] = "blocked:context_inputs_unresolved"
+                        break
                 state = self._states(subject)[name]
                 if state["status"] in ("done", "inapplicable"):
                     outcome["stages"][name] = state["status"]
@@ -419,16 +445,8 @@ class Pipeline:
         return {name.lower(): value for name, value in fields}
 
     def _event_date(self, subject):
-        if self.event_date:
-            return self.event_date
-        header = self._headers(subject).get("date")
-        if header:
-            from email.utils import parsedate_to_datetime
-            try:
-                return parsedate_to_datetime(header).date()
-            except (TypeError, ValueError):
-                pass
-        return date.today()
+        # Header/receipt dates and CLI declarations are not verified conduct dates.
+        return None
 
     # ----- stages ----------------------------------------------------------------------
     def stage_extract(self, subject, stage):
@@ -468,7 +486,7 @@ class Pipeline:
         title = headers.get("subject") if is_mail else None
         if not title:
             title = quote.splitlines()[0][:120] if quote else None
-        event = self._event_date(subject).isoformat() if headers.get("date") else None
+        event = None  # Source-date adapter unavailable; never copy a mail date.
         metadata = {"title": title, "doc_type": doc_type, "summary": quote[:300] or None,
                     "date_from": event, "date_to": event}
         metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
@@ -494,7 +512,7 @@ class Pipeline:
             content.update(detector_version=DETECTOR_VERSION, unit_count=0, text_leads=[],
                            structured={n: {"status": "skipped", "reason": reason} for n in stage_adapters.STRUCTURED_DETECTORS})
         elif name == "compare":
-            content.update(comparisons=[], event_date=self._event_date(subject).isoformat())
+            return self._unresolved_comparison(subject, stage, "comparison_applicability_unresolved")
         elif name == "catalog":
             # Catalog has its own adapter; an empty record is cataloged as "other" with no supports is
             # impossible (evidence required), so record the gap on the stage via a blocked receipt.
@@ -543,7 +561,7 @@ class Pipeline:
             return {"status": "blocked", "reason": "no_text_units"}
         tier = "strict_local" if (self.model and self.model.privacy_tier == "strict_local") else "redacted_cloud"
         digest = build_digest(subject, text_units, self.package, self.jurisdiction,
-                              str(self.package.get("schema_version")), tier, model_config=self.model,
+                              str(self.package.get("schema_version")), tier, model_config=None if self._event_date(subject) is None else self.model,
                               allowlist=self.allowlist, denylist=self.denylist,
                               event_date=self._event_date(subject), opener=self.opener)
         ocr_pages = sorted({u["locator"].get("page") for u in units if u["ocr"]} - {None})
@@ -552,8 +570,10 @@ class Pipeline:
                 "Page(s) " + ", ".join(str(p) for p in ocr_pages) +
                 " were read by local OCR and have not been visually reviewed; verify quotes against the page image.")
         redacted, _ = redact_units(text_units, allowlist=self.allowlist, denylist=self.denylist)
-        record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener,
+        record = challenge_mod.challenge_review(digest, redacted, self.package, config=None if self._event_date(subject) is None else self.challenge, opener=self.opener,
                                                 allowlist=self.allowlist, denylist=self.denylist)
+        if self._event_date(subject) is None:
+            digest["limitations"].append("Conduct date and rule applicability are unresolved; no dated model narrative was requested.")
         from .runner_coverage import processing_coverage
         progress = processing_coverage(self, subject, units, inventory, extraction, stage="review")
         digest["limitations"].append(
@@ -567,11 +587,25 @@ class Pipeline:
                                         coverage=coverage, locators=locators, challenges=[("factual", record)])
         return result
 
+    def _unresolved_comparison(self, subject, stage, reason):
+        from .context_revision import UNRESOLVED
+        record = {"kind": "compare", "verdict": "challenge",
+                  "disputes": [{"field": "applicability", "index": 0, "reason": reason}]}
+        content = {"schema": stage_adapters.SCHEMAS["compare"], "subject_sha256": subject,
+                   "event_date": None, "comparisons": [], "classification": UNRESOLVED,
+                   "applicability_status": "unknown"}
+        return stage_adapters.promote(stage["runner"], subject, "compare", content,
+            author_id="records-compare", coverage={"denominator": {"kind": "items", "total": 0},
+            "covered": 0, "scope": "selected"}, locators=["context:unresolved"],
+            challenges=[("legal", record)], reason=reason)
+
     def stage_compare(self, subject, stage):
         states = self._states(subject)
         review = self._content(subject, "review")
         digest = review["digest"]
         event_date = self._event_date(subject)
+        if event_date is None:
+            return self._unresolved_comparison(subject, stage, "conduct_date_or_applicability_unresolved")
         in_force = {rule["rule_id"]: rule for rule in rules_in_force(self.package, event_date)}
         rows = []
         for duty in digest.get("duties", []):
@@ -599,7 +633,7 @@ class Pipeline:
                          "evidence": evidence, "counterevidence": [],
                          "next_action": "Attorney review of applicability and compliance on the event date."})
         if not rows:
-            return self._inapplicable(subject, stage, "compare", "no_rule_in_force_matched_digest_duties")
+            return self._unresolved_comparison(subject, stage, "no_matched_duties_is_not_inapplicability")
         record = challenge_mod.challenge_compare(rows, self.package, event_date)
         content = {"schema": stage_adapters.SCHEMAS["compare"], "subject_sha256": subject,
                    "event_date": event_date.isoformat(), "comparisons": rows,

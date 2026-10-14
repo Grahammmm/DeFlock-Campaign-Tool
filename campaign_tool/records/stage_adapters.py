@@ -87,7 +87,9 @@ def _validate_review(content, subject):
 def _validate_compare(content, subject):
     rows = content.get("comparisons")
     require(isinstance(rows, list), "comparisons_list")
-    require(isinstance(content.get("event_date"), str), "compare_event_date")
+    require(isinstance(content.get("event_date"), str) or
+            (content.get("event_date") is None and content.get("classification") == "VERSION_OR_APPLICABILITY_UNRESOLVED"),
+            "compare_event_date")
     for row in rows:
         require(isinstance(row, dict) and isinstance(row.get("rule_id"), str) and
                 row.get("classification") in CLASSIFICATIONS and
@@ -133,6 +135,12 @@ class _InstalledContentValidator:
         content = decode(context["content"])
         require(content.get("schema") == SCHEMAS[self.stage], "content_schema:" + self.stage)
         require(content.get("subject_sha256") == subject, "content_subject:" + self.stage)
+        from .context_runtime import ledger_binding
+        binding = ledger_binding(self.database, subject, self.stage)
+        if binding:
+            require(content.get("context_stage_sha256") == binding["context_stage_sha256"], "context_stage_binding")
+        if content.get("classification") == "VERSION_OR_APPLICABILITY_UNRESOLVED":
+            require(context["receipt"]["verdict"] == "challenge", "unresolved_context_cannot_pass")
         VALIDATORS[self.stage](content, subject)
         return True
 
@@ -166,6 +174,8 @@ def promote(runner, subject, stage, content, *, author_id, coverage, locators, c
     ``blocked`` with the disputes recorded, never as ``done``.
     """
     require(stage in SCHEMAS, "unsupported_stage")
+    from .context_runtime import ledger_binding
+    content = {**content, **ledger_binding(runner.database, subject, stage)}
     content_bytes = encoded(content)
     states = current_states(runner.database, subject)
     if states[stage]["status"] == "done" and states[stage]["receipt_sha256"]:

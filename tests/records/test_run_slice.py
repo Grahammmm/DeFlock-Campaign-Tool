@@ -190,7 +190,9 @@ class RunSliceTests(unittest.TestCase):
         model = ModelConfig(base_url=primary.url, model_id="local-primary", privacy_tier="strict_local")
         challenger = challenge.ChallengeConfig(ModelConfig(base_url=second.url, model_id="local-challenger",
                                                            privacy_tier="strict_local"), primary_model_id="local-primary")
-        report = Pipeline(self.root, model=model, challenge=challenger).run(self.inbox)
+        # Privacy seam uses a synthetic preverified-date adapter only in this test.
+        with patch.object(Pipeline, "_event_date", return_value=__import__("datetime").date(2025, 7, 1)):
+            report = Pipeline(self.root, model=model, challenge=challenger).run(self.inbox)
         self.assertEqual(report["end_to_end_complete"], 0)
         self.assertEqual(report["proposals_awaiting_owner"], 0)
         self.assertEqual(report["counts"]["review"]["blocked"], 2)
