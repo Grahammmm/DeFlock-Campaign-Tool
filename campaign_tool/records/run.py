@@ -400,23 +400,12 @@ class Pipeline:
             head = source.read(16384)
         return intake_folder.fmt(original["storage_path"], head)
 
+    def _unit_view(self, subject):
+        from .runner_coverage import unit_view
+        return unit_view(self, subject, MAX_UNITS_PER_RECORD)
+
     def _units(self, subject):
-        rows = self._query("SELECT * FROM units WHERE original_sha256=? ORDER BY legacy_ordinal, id", (subject,))
-        units = []
-        for row in rows[:MAX_UNITS_PER_RECORD]:
-            raw = Path(row["derived_path"]).read_bytes()
-            try:
-                item = json.loads(raw)
-            except ValueError:
-                continue
-            text = item.get("text") if isinstance(item, dict) else None
-            if not isinstance(text, str):
-                continue
-            data = item.get("data") if isinstance(item.get("data"), dict) else {}
-            units.append({"unit_id": row["id"], "locator": json.loads(row["locator"]), "locator_text": row["locator"],
-                          "text": text, "artifact_sha256": sha(raw), "status": row["status"],
-                          "unit_type": row["unit_type"], "ocr": "ocr_receipt_id" in data})
-        return units
+        return self._unit_view(subject)[0]
 
     def _headers(self, subject):
         rows = self._query("SELECT headers FROM mail_messages WHERE eml_sha256=?", (subject,))
@@ -530,21 +519,25 @@ class Pipeline:
         return runner.promote(subject, name, encoded(receipt), claim_id=claim["claim_id"])
 
     def stage_detect(self, subject, stage):
-        units = self._units(subject)
+        units, inventory, extraction = self._unit_view(subject)
         text_units = [{"locator": u["locator"], "text": u["text"]} for u in units]
         leads = run_detectors(text_units, self.package) if text_units else []
         structured = {name: {"status": "skipped", "reason": "no_structured_units_of_required_type"}
                       for name in stage_adapters.STRUCTURED_DETECTORS}
         content = {"schema": stage_adapters.SCHEMAS["detect"], "subject_sha256": subject,
                    "detector_version": DETECTOR_VERSION, "unit_count": len(units),
-                   "text_leads": leads, "structured": structured, "rules_version": self.package.get("schema_version")}
-        coverage = {"denominator": {"kind": "items", "total": len(units)}, "covered": len(units), "scope": "full_text"}
+                   "text_leads": leads, "structured": structured, "rules_version": self.package.get("schema_version"),
+                   "inventory_total": len(inventory), "selection_capped": len(inventory) > MAX_UNITS_PER_RECORD,
+                   "coverage_gaps": [u for u in inventory if u.get("blocked_reason") or
+                                     u["unit_id"] not in {v["unit_id"] for v in units}]}
+        coverage = {"denominator": {"kind": "items", "total": len(inventory)},
+                    "covered": sum(bool(u["text"].strip()) for u in units), "scope": "selected"}
         locators = [u["locator_text"] for u in units] or ["stage:detect"]
         return stage_adapters.promote(stage["runner"], subject, "detect", content, author_id="records-detect",
                                       coverage=coverage, locators=locators[:1024])
 
     def stage_review(self, subject, stage):
-        units = self._units(subject)
+        units, inventory, extraction = self._unit_view(subject)
         text_units = [{"locator": u["locator"], "text": u["text"]} for u in units]
         if not text_units:
             return {"status": "blocked", "reason": "no_text_units"}
@@ -561,9 +554,14 @@ class Pipeline:
         redacted, _ = redact_units(text_units, allowlist=self.allowlist, denylist=self.denylist)
         record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener,
                                                 allowlist=self.allowlist, denylist=self.denylist)
+        from .runner_coverage import processing_coverage
+        progress = processing_coverage(self, subject, units, inventory, extraction, stage="review")
+        digest["limitations"].append(
+            "Coverage is selected: unit and model-prompt caps may omit text. Automated output "
+            "accepts no semantic-review ranges; independent factual review remains required.")
         content = {"schema": stage_adapters.SCHEMAS["review"], "subject_sha256": subject,
-                   "digest": digest, "challenge": record}
-        coverage = {"denominator": {"kind": "items", "total": len(units)}, "covered": len(units), "scope": "full_text"}
+                   "digest": digest, "challenge": record, "processing_coverage": progress}
+        coverage = progress["summary"]["receipt_coverage"]
         locators = [u["locator_text"] for u in units][:1024]
         result = stage_adapters.promote(stage["runner"], subject, "review", content, author_id="records-digest",
                                         coverage=coverage, locators=locators, challenges=[("factual", record)])

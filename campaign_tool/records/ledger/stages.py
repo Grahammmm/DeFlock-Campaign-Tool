@@ -547,7 +547,7 @@ def _coverage(receipt, stage):
     total, covered = denominator.get("total"), coverage.get("covered")
     _require(type(total) is int and type(covered) is int and 0 <= covered <= total,
              "coverage_counts")
-    if stage in ("review", "compare", "privacy"):
+    if stage in ("review", "compare", "privacy") and receipt.get("verdict") != "challenge":
         _require(total > 0 and covered > 0, "review_coverage_unknown")
     _require(coverage.get("scope") in ("selected", "full_text", "full_visual", "all_rows"),
              "coverage_scope")
