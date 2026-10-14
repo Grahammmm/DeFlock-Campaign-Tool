@@ -1,5 +1,5 @@
 """Selected-file recovery sets; no service activation, sends or deployment."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
 import json
 import os
@@ -109,6 +109,16 @@ def copy_exact(source, destination, *, expected=None):
         return result
 
 
+def require_standalone_snapshot(parent, name):
+    """Reject leftover destination sidecars after SQLite closes; never delete them."""
+    for suffix in ("-wal", "-shm", "-journal"):
+        try:
+            os.stat(name + suffix, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise RecoveryError("ledger_snapshot_sidecar_remaining")
+
+
 def snapshot_ledger(source, destination):
     """SQLite online backup captures a transaction-consistent ledger, including WAL."""
     with source_fd(source) as (fd, before), parent_fd(destination) as (parent, name):
@@ -122,17 +132,24 @@ def snapshot_ledger(source, destination):
         def bounded(status, remaining, total):
             require(time.monotonic() - started < 30, "ledger_snapshot_timeout")
             require(total * page_size <= MAX_FILE, "ledger_snapshot_bound")
-        with sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True, timeout=2) as live:
+        with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True, timeout=2)) as live:
             live.execute("PRAGMA query_only=ON")
             page_size = live.execute("PRAGMA page_size").fetchone()[0]
             pages = live.execute("PRAGMA page_count").fetchone()[0]
             require(page_size * pages <= MAX_FILE, "ledger_size_bound")
-            with sqlite3.connect(destination, timeout=2) as target:
+            with closing(sqlite3.connect(destination, timeout=2)) as target:
                 live.backup(target, pages=128, progress=bounded, sleep=0.01)
+                # The copy can inherit WAL mode. Store this new snapshot in
+                # rollback-journal mode so its bytes do not require WAL sidecars.
+                require(target.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete",
+                        "ledger_snapshot_journal_mode")
                 require(target.execute("PRAGMA quick_check").fetchone()[0] == "ok", "ledger_integrity_failed")
+        require_standalone_snapshot(parent, name)
         with parent_fd(source) as (src_parent, src_name):
             after = os.stat(src_name, dir_fd=src_parent, follow_symlinks=False)
         require(stat.S_ISREG(after.st_mode) and (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino), "ledger_path_changed")
+        # Close both SQLite handles before hashing or freezing permissions. A
+        # transaction context manager alone leaves WAL/SHM cleanup to finalization.
         # Snapshot bytes, not the changing live database file, are the backed-up hash.
         with source_fd(destination) as (snapshot, info):
             hasher = hashlib.sha256()

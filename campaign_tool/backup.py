@@ -32,6 +32,7 @@ import shutil
 import sqlite3
 import stat
 import tarfile
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,26 +79,149 @@ def _members(root):
     ledger = root / "private" / "ledger.sqlite"
     if ledger.is_file() and not ledger.is_symlink():
         wanted.append(("private/ledger.sqlite", ledger))
+    hosted = root / "private" / "d1-export.json"
+    if hosted.is_file() and not hosted.is_symlink():
+        wanted.append(("private/d1-export.json", hosted))
     objects = root / "private" / "objects"
-    if objects.is_dir():
+    if objects.is_dir() and not objects.is_symlink():
         for path in sorted(objects.iterdir()):
             if path.is_file() and not path.is_symlink() and len(path.name) == 64 and set(path.name) <= HEX64:
                 wanted.append(("private/objects/" + path.name, path))
     return wanted
 
 
-def _ledger_counts(ledger_path):
-    if not ledger_path or not Path(ledger_path).is_file():
-        return {"objects": 0, "receipts": 0}
-    db = sqlite3.connect(Path(ledger_path).as_uri() + "?mode=ro", uri=True)
+def _valid_sha(value):
+    return isinstance(value, str) and len(value) == 64 and set(value) <= HEX64
+
+
+def _valid_size(value):
+    return type(value) is int and 0 <= value <= MAX_MEMBER_BYTES
+
+
+def _unique_json(raw, label):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise BackupError(f"{label}: duplicate_json_key")
+            result[key] = value
+        return result
+
     try:
-        objects = db.execute("SELECT count(*) FROM objects").fetchone()[0]
-        receipts = db.execute("SELECT count(*) FROM receipts").fetchone()[0]
-    except sqlite3.Error:
-        objects, receipts = 0, 0
+        return json.loads(raw, object_pairs_hook=unique)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, RecursionError) as exc:
+        raise BackupError(f"{label}: unreadable JSON ({type(exc).__name__})") from None
+
+
+def _originals(rows, label):
+    originals = {}
+    for sha, size in rows:
+        if not _valid_sha(sha) or not _valid_size(size):
+            raise BackupError(f"{label}: invalid_object_metadata")
+        if sha in originals:
+            raise BackupError(f"{label}: duplicate_object_metadata")
+        originals[sha] = size
+        if len(originals) + 1 > MAX_MEMBERS:
+            raise BackupError("member_limit_exceeded")
+    return originals
+
+
+def _reference(sha, originals, label):
+    if not _valid_sha(sha):
+        raise BackupError(f"{label}: invalid_object_reference")
+    if sha not in originals:
+        raise BackupError(f"{label}: dangling_object_reference {sha}")
+
+
+def _ledger_metadata(ledger_path):
+    """Read closure from a closed, standalone snapshot, never the live ledger."""
+    db = None
+    try:
+        db = sqlite3.connect(Path(ledger_path).resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+        db.execute("PRAGMA trusted_schema=OFF")
+        if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise BackupError("invalid_ledger: integrity check failed")
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"objects", "receipts"} <= tables:
+            raise BackupError("invalid_ledger: missing objects or receipts table")
+        originals = _originals(db.execute("SELECT sha256, byte_count FROM objects"), "invalid_ledger")
+        receipts = 0
+        for sha, in db.execute("SELECT object_sha256 FROM receipts"):
+            _reference(sha, originals, "invalid_ledger")
+            receipts += 1
+        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise BackupError("invalid_ledger: foreign_key_check failed")
+    except sqlite3.Error as exc:
+        raise BackupError(f"invalid_ledger: {exc}") from None
     finally:
-        db.close()
-    return {"objects": objects, "receipts": receipts}
+        if db is not None:
+            db.close()
+    return originals, {"objects": len(originals), "receipts": receipts}
+
+
+def _hosted_metadata(export_doc):
+    if not isinstance(export_doc, dict) or type(export_doc.get("schema_version")) is not int \
+            or export_doc["schema_version"] != 1:
+        raise BackupError("invalid_d1_export: unsupported shape")
+    rows, tables = export_doc.get("rows"), export_doc.get("tables")
+    if not isinstance(rows, dict) or not isinstance(tables, list) \
+            or not all(isinstance(t, str) for t in tables) or len(set(tables)) != len(tables) \
+            or set(tables) != set(rows) or not {"campaign", "original", "receipt_occurrence"} <= set(rows):
+        raise BackupError("invalid_d1_export: incomplete table inventory")
+    if any(not isinstance(items, list) or any(not isinstance(r, dict) for r in items) for items in rows.values()):
+        raise BackupError("invalid_d1_export: invalid rows")
+    if len(rows["campaign"]) != 1 or not isinstance(export_doc.get("campaign_id"), str) \
+            or not export_doc["campaign_id"] or rows["campaign"][0].get("campaign_id") != export_doc["campaign_id"]:
+        raise BackupError("invalid_d1_export: invalid campaign row")
+    for items in rows.values():
+        if any("campaign_id" in r and r["campaign_id"] != export_doc["campaign_id"] for r in items):
+            raise BackupError("invalid_d1_export: campaign mismatch")
+    originals = _originals(((r.get("sha256"), r.get("byte_count")) for r in rows["original"]), "invalid_d1_export")
+    for table, column in (("receipt_occurrence", "sha256"), ("extraction", "sha256"),
+                          ("digest", "sha256"), ("correspondence", "raw_sha256")):
+        for row in rows.get(table, []):
+            sha = row.get(column)
+            if table == "correspondence" and sha is None:
+                continue
+            _reference(sha, originals, "invalid_d1_export: " + table)
+    for row in rows.get("finding", []):
+        finding = _unique_json(row.get("finding_json"), "invalid_d1_export: finding_json")
+        # Draft findings may not have any sources yet. Preserve them while
+        # checking every source reference that has actually been declared.
+        if not isinstance(finding, dict) or not isinstance(finding.get("sources", []), list):
+            raise BackupError("invalid_d1_export: invalid finding sources")
+        for source in finding.get("sources", []):
+            _reference(source.get("sha256") if isinstance(source, dict) else None,
+                       originals, "invalid_d1_export: finding source")
+    return originals, {"objects": len(originals), "receipts": len(rows["receipt_occurrence"]), "tables": len(rows)}
+
+
+def _metadata(paths):
+    ledger, hosted = paths.get("private/ledger.sqlite"), paths.get("private/d1-export.json")
+    if ledger and hosted:
+        raise BackupError("ambiguous_metadata: both local ledger and D1 export present")
+    if ledger:
+        return _ledger_metadata(ledger)
+    if hosted:
+        return _hosted_metadata(_unique_json(Path(hosted).read_bytes(), "invalid_d1_export"))
+    return {}, {"objects": 0, "receipts": 0}
+
+
+def _closure(files, originals, counts, manifest_counts=None, *, has_metadata):
+    if not has_metadata and any(name.startswith("private/objects/") for name in files):
+        raise BackupError("missing_metadata: objects require a ledger or D1 export")
+    for sha, size in originals.items():
+        name = "private/objects/" + sha
+        if name not in files:
+            raise BackupError(f"{name}: missing_object")
+        if files[name]["sha256"] != sha:
+            raise BackupError(f"{name}: object_hash_mismatch")
+        if files[name]["bytes"] != size:
+            raise BackupError(f"{name}: object_size_mismatch")
+    if manifest_counts is not None:
+        for key, value in counts.items():
+            if manifest_counts.get(key) != value:
+                raise BackupError(f"{key}: count_mismatch")
 
 
 def _manifest(files, counts, source):
@@ -119,15 +243,23 @@ def _add_bytes(tar, name, data, mode=0o600):
 def _snapshot_ledger(ledger, tmpdir):
     """Consistent copy of the SQLite ledger via the backup API (no torn pages)."""
     target = Path(tmpdir) / "ledger.sqlite"
-    source = sqlite3.connect(Path(ledger).as_uri() + "?mode=ro", uri=True)
+    source = None
     try:
+        source = sqlite3.connect(Path(ledger).as_uri() + "?mode=ro", uri=True)
         dest = sqlite3.connect(target)
         try:
             source.backup(dest)
+            # A standalone archive carries no WAL/SHM sidecars. Finalize the
+            # snapshot's journal format while it is still open, before hashing.
+            if dest.execute("PRAGMA journal_mode=DELETE").fetchone() != ("delete",):
+                raise BackupError("invalid_ledger: snapshot journal was not finalized")
         finally:
             dest.close()
+    except sqlite3.Error as exc:
+        raise BackupError(f"invalid_ledger: {exc}") from None
     finally:
-        source.close()
+        if source is not None:
+            source.close()
     return target
 
 
@@ -139,14 +271,27 @@ def export(root, out_path):
         raise BackupError("campaign.json not found; is this a campaign directory?")
     if out_path.exists():
         raise BackupError(f"{out_path} exists; choose a new file name")
-    members = _members(root)
-    import tempfile
+    if (root / "private").is_symlink():
+        raise BackupError("unsafe_private_directory: private must not be a symlink")
     files = {}
     with tempfile.TemporaryDirectory(prefix="deflock-backup-") as tmp:
+        ledger = root / "private" / "ledger.sqlite"
+        snapshot = None
+        if ledger.exists() or ledger.is_symlink():
+            if not ledger.is_file() or ledger.is_symlink() or ledger.parent.is_symlink():
+                raise BackupError("invalid_ledger: expected a regular non-symlink file")
+            snapshot = _snapshot_ledger(ledger, tmp)
+        # Take the database snapshot before enumerating mutable source paths.
+        # Its references, not the later live database, define the required bytes.
+        members = [(n, p) for n, p in _members(root) if n != "private/ledger.sqlite"]
+        if snapshot:
+            members.append(("private/ledger.sqlite", snapshot))
+        if len(members) + 1 > MAX_MEMBERS:
+            raise BackupError("member_limit_exceeded")
+        paths = dict(members)
+        originals, counts = _metadata(paths)
         staged = []
         for name, path in members:
-            if name == "private/ledger.sqlite":
-                path = _snapshot_ledger(path, tmp)
             size = path.stat().st_size
             if size > MAX_MEMBER_BYTES:
                 raise BackupError(f"{name}: larger than the archive member limit")
@@ -155,8 +300,8 @@ def export(root, out_path):
                 raise BackupError(f"{name}: stored object does not match its hash; intake integrity problem")
             files[name] = {"sha256": digest, "bytes": size}
             staged.append((name, path))
-        ledger = next((p for n, p in staged if n == "private/ledger.sqlite"), None)
-        manifest = _manifest(files, _ledger_counts(ledger), {"kind": "local", "root_name": root.name})
+        _closure(files, originals, counts, has_metadata=bool(snapshot or paths.get("private/d1-export.json")))
+        manifest = _manifest(files, counts, {"kind": "local", "root_name": root.name})
         manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         manifest["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
         fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -170,6 +315,8 @@ def export(root, out_path):
                     info.uname = info.gname = ""
                     with open(path, "rb") as source:
                         tar.addfile(info, source)
+            # Detect source files changing between hashing and archive writing.
+            verify(out_path, expected_manifest_sha256=manifest["manifest_sha256"])
         except BaseException:
             out_path.unlink(missing_ok=True)
             raise
@@ -177,7 +324,7 @@ def export(root, out_path):
 
 
 def _safe_name(name):
-    if not name or name.startswith("/") or name.startswith("\\") or "\x00" in name:
+    if not isinstance(name, str) or not name or name.startswith("/") or "\\" in name or "\x00" in name:
         return False
     parts = name.split("/")
     if any(part in ("", ".", "..") for part in parts):
@@ -187,34 +334,69 @@ def _safe_name(name):
     return True
 
 
-def _read_manifest(tar):
-    try:
-        member = tar.getmember(MANIFEST)
-    except KeyError:
+def _archive_members(tar):
+    members, seen = [], set()
+    for member in tar:
+        if len(members) >= MAX_MEMBERS:
+            raise BackupError("member_limit_exceeded")
+        if member.name in seen:
+            raise BackupError(f"{member.name}: duplicate_member")
+        seen.add(member.name)
+        members.append(member)
+    return members
+
+
+def _read_manifest(tar, members=None):
+    members = _archive_members(tar) if members is None else members
+    member = next((m for m in members if m.name == MANIFEST), None)
+    if member is None:
         raise BackupError("manifest.json missing from archive") from None
     if not member.isfile() or member.size > 64 * 1024 * 1024:
         raise BackupError("manifest.json is not a regular file of sane size")
     raw = tar.extractfile(member).read()
-    try:
-        manifest = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise BackupError(f"manifest.json unreadable: {exc}") from None
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION \
+    manifest = _unique_json(raw, "invalid_manifest")
+    if not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int \
+            or manifest["schema_version"] != SCHEMA_VERSION \
             or not isinstance(manifest.get("files"), dict):
-        raise BackupError("manifest.json has an unsupported shape")
+        raise BackupError("invalid_manifest: unsupported shape")
+    files = manifest["files"]
+    if len(files) + 1 > MAX_MEMBERS:
+        raise BackupError("member_limit_exceeded")
+    for name, entry in files.items():
+        if not _safe_name(name) or name == MANIFEST:
+            raise BackupError("invalid_manifest: unsafe_member_name")
+        if not isinstance(entry, dict) or not _valid_sha(entry.get("sha256")) or not _valid_size(entry.get("bytes")):
+            raise BackupError(f"{name}: invalid_manifest entry")
+        if name.startswith("private/objects/") and (not _valid_sha(name[16:]) or entry["sha256"] != name[16:]):
+            raise BackupError(f"{name}: object_hash_mismatch")
+        if any(parent.as_posix() in files for parent in Path(name).parents if parent != Path(".")):
+            raise BackupError("invalid_manifest: conflicting_member_paths")
+    if "campaign.json" not in files:
+        raise BackupError("invalid_manifest: campaign.json missing")
+    counts = manifest.get("counts")
+    if not isinstance(counts, dict) or not {"files", "bytes", "objects", "receipts"} <= counts.keys() \
+            or any(type(value) is not int or value < 0 for value in counts.values()):
+        raise BackupError("invalid_manifest: invalid counts")
+    if counts["files"] != len(files) or counts["bytes"] != sum(e["bytes"] for e in files.values()):
+        raise BackupError("manifest.json: count_mismatch")
+    source = manifest.get("source")
+    if not isinstance(source, dict) or source.get("kind") not in ("local", "hosted"):
+        raise BackupError("invalid_manifest: invalid source")
+    if source["kind"] == "hosted" and "private/d1-export.json" not in files:
+        raise BackupError("missing_metadata: hosted archive requires D1 export")
     manifest["manifest_sha256"] = hashlib.sha256(raw).hexdigest()
     return manifest
 
 
 def _check_member(member, expected):
-    if member.islnk() or member.issym() or member.isdev() or member.isfifo():
-        return "unsafe_member_type"
-    if member.isdir():
-        return None
-    if not member.isfile():
-        return "unsafe_member_type"
     if not _safe_name(member.name):
         return "unsafe_member_name"
+    if member.islnk() or member.issym() or member.isdev() or member.isfifo():
+        return "unsafe_member_type"
+    if not member.isfile():
+        return "unsafe_member_type"
+    if member.size < 0 or member.size > MAX_MEMBER_BYTES:
+        return "member_size_limit_exceeded"
     if member.name == MANIFEST:
         return None
     if member.name not in expected:
@@ -233,13 +415,14 @@ def verify(path, expected_manifest_sha256=None):
     path = Path(path)
     problems = []
     with tarfile.open(path, mode="r:") as tar:
-        manifest = _read_manifest(tar)
+        members = _archive_members(tar)
+        manifest = _read_manifest(tar, members)
         if expected_manifest_sha256 and manifest["manifest_sha256"] != expected_manifest_sha256.strip().lower():
             problems.append({"member": MANIFEST, "problem": "manifest_digest_mismatch"})
         expected = manifest["files"]
         seen = set()
         bad = set()
-        for member in tar.getmembers():
+        for member in members:
             problem = _check_member(member, expected)
             if problem:
                 problems.append({"member": member.name, "problem": problem})
@@ -260,6 +443,17 @@ def verify(path, expected_manifest_sha256=None):
                 bad.add(member.name)
         for name in sorted(set(expected) - seen):
             problems.append({"member": name, "problem": "missing_member"})
+        if not problems:
+            with tempfile.TemporaryDirectory(prefix="deflock-verify-") as tmp:
+                paths = {}
+                for member in members:
+                    if member.name in ("private/ledger.sqlite", "private/d1-export.json"):
+                        target = Path(tmp) / Path(member.name).name
+                        with tar.extractfile(member) as incoming, target.open("xb") as outgoing:
+                            shutil.copyfileobj(incoming, outgoing)
+                        paths[member.name] = target
+                originals, counts = _metadata(paths)
+                _closure(expected, originals, counts, manifest["counts"], has_metadata=bool(paths))
     report = {"path": str(path), "ok": not problems, "files": len(expected), "verified": len(seen - bad), "problems": problems,
         "manifest_sha256": manifest["manifest_sha256"],
         "engine_version": manifest.get("engine_version"), "created_at": manifest.get("created_at"),
@@ -282,8 +476,15 @@ def restore(path, root):
     os.chmod(root, 0o700)
     try:
         with tarfile.open(path, mode="r:") as tar:
-            manifest = _read_manifest(tar)
-            for member in tar.getmembers():
+            members = _archive_members(tar)
+            manifest = _read_manifest(tar, members)
+            if manifest["manifest_sha256"] != report["manifest_sha256"]:
+                raise BackupError("manifest_digest_mismatch: archive changed before restore")
+            for member in members:
+                problem = _check_member(member, manifest["files"])
+                if problem:
+                    raise BackupError(f"{member.name}: {problem}")
+            for member in members:
                 if not member.isfile() or member.name == MANIFEST:
                     continue
                 target = root / member.name
@@ -302,12 +503,16 @@ def restore(path, root):
         mismatches = []
         for name, entry in manifest["files"].items():
             target = root / name
-            if not target.is_file() or _sha256(target) != entry["sha256"]:
+            if not target.is_file() or target.stat().st_size != entry["bytes"] or _sha256(target) != entry["sha256"]:
                 mismatches.append(name)
             elif stat.S_IMODE(target.stat().st_mode) != 0o600:
                 mismatches.append(name + " (mode)")
         if mismatches:
             raise BackupError("restored files failed re-verification: " + ", ".join(mismatches[:10]))
+        paths = {name: root / name for name in manifest["files"]
+                 if name in ("private/ledger.sqlite", "private/d1-export.json")}
+        originals, counts = _metadata(paths)
+        _closure(manifest["files"], originals, counts, manifest["counts"], has_metadata=bool(paths))
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
         raise
@@ -327,13 +532,11 @@ def export_hosted(client, out_path):
     if out_path.exists():
         raise BackupError(f"{out_path} exists; choose a new file name")
     raw = client.get(EXPORT_PATH)
-    try:
-        export_doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError) as exc:
-        raise BackupError(f"export.json unreadable: {exc}") from None
-    rows = export_doc.get("rows") if isinstance(export_doc, dict) else None
-    if not isinstance(rows, dict) or not rows.get("campaign"):
-        raise BackupError("export.json has no campaign row")
+    if not isinstance(raw, bytes) or len(raw) > MAX_MEMBER_BYTES:
+        raise BackupError("invalid_d1_export: export must be bounded bytes")
+    export_doc = _unique_json(raw, "invalid_d1_export")
+    originals, counts = _hosted_metadata(export_doc)
+    rows = export_doc["rows"]
     campaign = rows["campaign"][0]
     campaign_json = json.dumps({
         "schema_version": 1, "name": campaign.get("name"), "county": campaign.get("county_name"),
@@ -344,35 +547,37 @@ def export_hosted(client, out_path):
     }, indent=2, sort_keys=True).encode("utf-8") + b"\n"
     canonical_export = json.dumps(export_doc, indent=None, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     members = [("campaign.json", campaign_json), ("private/d1-export.json", canonical_export)]
-    originals = rows.get("original") or []
+    if len(originals) + len(members) + 1 > MAX_MEMBERS:
+        raise BackupError("member_limit_exceeded")
     fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     files = {}
     try:
         with os.fdopen(fd, "wb") as handle, tarfile.open(fileobj=handle, mode="w", format=tarfile.PAX_FORMAT) as tar:
             # Manifest is written last in memory but must be first in the archive for
             # streaming verification, so members are buffered to a spool file.
-            import tempfile
             with tempfile.TemporaryDirectory(prefix="deflock-hosted-") as tmp:
                 staged = []
                 for name, data in members:
+                    if len(data) > MAX_MEMBER_BYTES:
+                        raise BackupError(f"{name}: member_size_limit_exceeded")
                     files[name] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
                     staged.append((name, data))
-                for row in originals:
-                    sha = str(row.get("sha256", ""))
-                    if len(sha) != 64 or not set(sha) <= HEX64:
-                        raise BackupError(f"original row with invalid sha256 {sha!r}")
+                for sha, size in originals.items():
                     data = client.get(ORIGINAL_PATH.format(sha256=sha))
                     if hashlib.sha256(data).hexdigest() != sha:
                         raise BackupError(f"original {sha[:16]} did not match its hash when fetched; backup stopped")
+                    if len(data) != size:
+                        raise BackupError(f"original {sha}: object_size_mismatch")
                     spool = Path(tmp) / sha
                     spool.write_bytes(data)
                     files["private/objects/" + sha] = {"sha256": sha, "bytes": len(data)}
                     staged.append(("private/objects/" + sha, spool))
-                counts = {"objects": len(originals), "receipts": len(rows.get("receipt_occurrence") or []),
-                          "tables": len(rows)}
+                _closure(files, originals, counts, has_metadata=True)
                 manifest = _manifest(files, counts, {"kind": "hosted", "campaign_id": campaign.get("campaign_id"),
                                                      "exported_at": export_doc.get("exported_at")})
-                _add_bytes(tar, MANIFEST, json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n")
+                manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+                manifest["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+                _add_bytes(tar, MANIFEST, manifest_bytes)
                 for name, item in staged:
                     if isinstance(item, bytes):
                         _add_bytes(tar, name, item)
@@ -383,6 +588,7 @@ def export_hosted(client, out_path):
                         info.uname = info.gname = ""
                         with open(item, "rb") as source:
                             tar.addfile(info, source)
+        verify(out_path, expected_manifest_sha256=manifest["manifest_sha256"])
     except BaseException:
         out_path.unlink(missing_ok=True)
         raise

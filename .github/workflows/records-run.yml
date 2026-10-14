@@ -55,5 +55,7 @@ jobs:
           python-version: '3.11'
       - name: Actual SQLite 10000/10001 retirement and bounded replay (synthetic only)
         env:
-          TMPDIR: /var/tmp
+          # Synthetic SQLite fixture only; retain real rows, commits and all guards.
+          # Avoid host-disk fsync latency while building 10001 test-only receipts.
+          TMPDIR: /dev/shm
         run: python -B -m tests.records.retirement_boundary
