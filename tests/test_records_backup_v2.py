@@ -1,6 +1,8 @@
 """Entirely synthetic, offline acceptance tests; no production interfaces."""
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import gc
 import hashlib
 import json
 import os
@@ -9,6 +11,7 @@ import shutil
 import socket
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -50,7 +53,7 @@ class RecoveryV2(unittest.TestCase):
         refs = [("original_blob", str(self.blob), self.sha),
                 ("receipt", str(self.receipt), digest(self.receipt_raw)),
                 ("review_bundle", str(self.review), digest(self.review_raw))]
-        with sqlite3.connect(self.canonical) as con:
+        with closing(sqlite3.connect(self.canonical)) as con, con:
             con.executescript("""
               CREATE TABLE documents(sha TEXT PRIMARY KEY, blob_path TEXT NOT NULL);
               CREATE TABLE backup_refs(role TEXT, source_path TEXT, sha256 TEXT);
@@ -65,7 +68,7 @@ class RecoveryV2(unittest.TestCase):
             con.execute("INSERT INTO legacy_checkpoints VALUES('synthetic-input',3)")
             canonical_schema = schema_hash(con)
         self.canonical.chmod(0o600)
-        with sqlite3.connect(self.intake) as con:
+        with closing(sqlite3.connect(self.intake)) as con, con:
             con.executescript("""
               CREATE TABLE occurrences(source TEXT PRIMARY KEY, sha TEXT NOT NULL);
               CREATE TABLE backup_refs(role TEXT, source_path TEXT, sha256 TEXT);
@@ -102,6 +105,55 @@ class RecoveryV2(unittest.TestCase):
     def changed(self, name, **changes):
         return replace(self.profile, stores=tuple(replace(s, **changes) if s.name == name else s for s in self.profile.stores))
 
+    @contextmanager
+    def retained_connections(self, *, factory=sqlite3.Connection, fail_connect_at=None):
+        """Keep strong references and disable GC to expose missed explicit closes."""
+        connect = sqlite3.connect
+        connections = []
+        calls = 0
+        gc_enabled = gc.isenabled()
+        gc.disable()
+        def retained(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == fail_connect_at:
+                raise sqlite3.OperationalError("synthetic connect failure")
+            con = connect(*args, factory=factory, **kwargs)
+            connections.append(con)
+            return con
+        try:
+            with patch.object(sqlite3, "connect", retained):
+                yield connections
+        finally:
+            for con in connections:
+                con.close()
+            if gc_enabled:
+                gc.enable()
+
+    def assert_connections_closed(self, connections):
+        self.assertTrue(connections)
+        for con in connections:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                con.execute("SELECT 1")
+
+    def quiescent_wal_profile(self):
+        """A read-only survivor keeps committed WAL; every writer is closed."""
+        with closing(sqlite3.connect(self.intake)) as writer:
+            self.assertEqual(writer.execute("PRAGMA journal_mode=WAL").fetchone(), ("wal",))
+            writer.execute("INSERT INTO occurrences VALUES('wal-committed',?)", (self.sha,))
+            writer.commit()
+            reader = sqlite3.connect(self.intake.as_uri() + "?mode=ro", uri=True)
+            self.addCleanup(reader.close)
+            reader.execute("PRAGMA query_only=ON")
+            self.assertEqual(reader.execute("SELECT COUNT(*) FROM occurrences").fetchone(), (3,))
+        extra = []
+        for suffix in ("-wal", "-shm"):
+            path = Path(str(self.intake) + suffix)
+            self.assertTrue(path.is_file())
+            path.chmod(0o600)
+            extra.append(v2.Store("intake" + suffix, str(path), included=False, exclusion="sqlite_sidecar"))
+        return replace(self.profile, stores=self.profile.stores + tuple(extra))
+
     def test_complete_two_database_roundtrip_and_explicit_synthetic_replay(self):
         source, pin = self.ready()
         report = v2.restore_v2(str(source), str(self.base/"restored"), manifest_sha256=pin)
@@ -114,13 +166,13 @@ class RecoveryV2(unittest.TestCase):
         self.assertEqual((restored/"payload/original").read_bytes(), self.raw)
         for name in ("canonical","intake","original","receipt","review"):
             self.assertEqual((restored/"payload"/name).stat().st_mode & 0o777, 0o400)
-        with sqlite3.connect((restored/"payload/canonical").as_uri()+"?mode=ro&immutable=1", uri=True) as con:
+        with closing(sqlite3.connect((restored/"payload/canonical").as_uri()+"?mode=ro&immutable=1", uri=True)) as con:
             self.assertEqual(con.execute("SELECT highest_uid FROM mail_checkpoints").fetchone(), (7,))
             self.assertEqual(con.execute("SELECT state FROM work_leases").fetchone(), ("in_progress",))
             self.assertEqual(con.execute("SELECT last_row FROM legacy_checkpoints").fetchone(), (3,))
         # Runnable reconciliation is explicitly outside restore. This clone is synthetic only.
         clone = self.base/"synthetic-replay.sqlite"; shutil.copyfile(restored/"payload/intake", clone); clone.chmod(0o600)
-        with sqlite3.connect(clone) as con:
+        with closing(sqlite3.connect(clone)) as con, con:
             con.execute("INSERT OR IGNORE INTO occurrences VALUES('source-one',?)", (self.sha,))
             con.execute("INSERT OR IGNORE INTO occurrences VALUES('source-two',?)", (self.sha,))
             self.assertEqual(con.execute("SELECT COUNT(*),COUNT(DISTINCT sha) FROM occurrences").fetchone(), (2,1))
@@ -203,7 +255,7 @@ class RecoveryV2(unittest.TestCase):
             self.backup(profile=self.changed("intake", schema_sha256="f"*64))
 
     def test_foreign_key_integrity_checked_independently(self):
-        with sqlite3.connect(self.intake) as con:
+        with closing(sqlite3.connect(self.intake)) as con, con:
             con.executescript("CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(id INTEGER REFERENCES parent(id));")
             con.execute("INSERT INTO child VALUES(99)")
             schema = schema_hash(con)
@@ -211,7 +263,7 @@ class RecoveryV2(unittest.TestCase):
             self.backup(profile=self.changed("intake", schema_sha256=schema))
 
     def test_database_reference_omission_rejected(self):
-        with sqlite3.connect(self.intake) as con:
+        with closing(sqlite3.connect(self.intake)) as con, con:
             con.execute("INSERT INTO backup_refs VALUES('receipt',? ,?)", (str(self.source/"missing.json"), "a"*64))
         with self.assertRaisesRegex(v1.RecoveryError, "reference_not_closed"):
             self.backup()
@@ -246,10 +298,141 @@ class RecoveryV2(unittest.TestCase):
         # mechanics test with a synthetic attestation, NOT proof of the caller boundary.
         profile = replace(self.profile, stores=self.profile.stores+tuple(extra))
         result = self.backup(profile=profile)
-        with sqlite3.connect((self.base/"backup/payload/intake").as_uri()+"?mode=ro&immutable=1", uri=True) as snap:
+        with closing(sqlite3.connect((self.base/"backup/payload/intake").as_uri()+"?mode=ro&immutable=1", uri=True)) as snap:
             self.assertEqual(snap.execute("SELECT COUNT(*) FROM occurrences").fetchone(), (3,))
         self.assertFalse(result["live_pipeline_recovery_proven"])
         con.rollback()
+
+    def test_quiescent_wal_verifies_and_restores_without_connection_finalization(self):
+        profile = self.quiescent_wal_profile()
+        source_before = v2._inventory(self.source)
+        with self.retained_connections() as connections:
+            result = self.backup(profile=profile)
+            source = self.base / "backup"
+            pin = result["manifest_sha256"]
+            self.assertTrue(v2.verify_v2(str(source), manifest_sha256=pin)["declared_scope_closed"])
+            restored = self.base / "restored"
+            self.assertTrue(v2.restore_v2(str(source), str(restored), manifest_sha256=pin)["isolated"])
+            manifest = json.loads((source / "manifest.json").read_bytes())
+            for root in (source, restored):
+                self.assertEqual({p.name for p in (root / "payload").iterdir()},
+                                 {row["name"] for row in manifest["files"]})
+                for row in manifest["files"]:
+                    raw = (root / row["path"]).read_bytes()
+                    self.assertEqual((digest(raw), len(raw)), (row["sha256"], row["bytes"]))
+                    if row["name"] == "intake":
+                        self.assertEqual(raw[18:20], b"\x01\x01")  # SQLite rollback-journal header.
+                with closing(sqlite3.connect((root / "payload/intake").as_uri() +
+                                             "?mode=ro&immutable=1", uri=True)) as con:
+                    self.assertEqual(con.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                    self.assertEqual(con.execute("PRAGMA journal_mode").fetchone(), ("delete",))
+                    self.assertEqual(con.execute("SELECT source FROM occurrences ORDER BY source").fetchall(),
+                                     [("source-one",), ("source-two",), ("wal-committed",)])
+            self.assert_connections_closed(connections)
+        self.assertEqual(v2._inventory(self.source), source_before)
+        with closing(sqlite3.connect(self.intake.as_uri() + "?mode=ro", uri=True)) as con:
+            self.assertEqual(con.execute("PRAGMA journal_mode").fetchone(), ("wal",))
+
+    def test_v1_wal_snapshot_is_standalone_without_connection_finalization(self):
+        self.quiescent_wal_profile()
+        target = self.base / "snapshot.sqlite"
+        with self.retained_connections() as connections:
+            result = v1.snapshot_ledger(self.intake, target)
+            for suffix in ("-wal", "-shm", "-journal"):
+                self.assertFalse(Path(str(target) + suffix).exists())
+            raw = target.read_bytes()
+            self.assertEqual(result, {"sha256": digest(raw), "bytes": len(raw)})
+            self.assertEqual(raw[18:20], b"\x01\x01")
+            with closing(sqlite3.connect(target.as_uri() + "?mode=ro&immutable=1", uri=True)) as con:
+                self.assertEqual(con.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                self.assertEqual(con.execute("PRAGMA journal_mode").fetchone(), ("delete",))
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM occurrences").fetchone(), (3,))
+            self.assert_connections_closed(connections)
+
+    def test_snapshot_connections_close_on_query_connect_and_backup_errors(self):
+        for method in ("v1", "v2"):
+            for failure in ("query", "connect", "backup"):
+                with self.subTest(method=method, failure=failure):
+                    class FailingConnection(sqlite3.Connection):
+                        def execute(self, sql, *args, **kwargs):
+                            if failure == "query" and sql == "PRAGMA query_only=ON":
+                                raise sqlite3.OperationalError("synthetic query failure")
+                            return super().execute(sql, *args, **kwargs)
+
+                        def backup(self, *args, **kwargs):
+                            if failure == "backup":
+                                raise sqlite3.OperationalError("synthetic backup failure")
+                            return super().backup(*args, **kwargs)
+
+                    target = self.base / (method + "-" + failure + ".sqlite")
+                    with self.retained_connections(factory=FailingConnection,
+                                                   fail_connect_at=2 if failure == "connect" else None) as connections:
+                        with self.assertRaisesRegex(sqlite3.OperationalError, "synthetic"):
+                            if method == "v1":
+                                v1.snapshot_ledger(self.intake, target)
+                            else:
+                                v2._snapshot_quiescent(self.intake, target, time.monotonic() + 60)
+                        self.assert_connections_closed(connections)
+
+    def test_database_validation_failure_closes_connections_without_finalization(self):
+        with self.retained_connections() as connections:
+            with self.assertRaisesRegex(v1.RecoveryError, "schema_identity"):
+                self.backup(profile=self.changed("intake", schema_sha256="f" * 64))
+            self.assert_connections_closed(connections)
+            self.assertFalse((self.base / "backup/manifest.json").exists())
+
+    def test_wal_normalization_and_integrity_failures_close_connections_without_manifest(self):
+        profile = self.quiescent_wal_profile()
+        for failure, reason in (("normalization", "ledger_snapshot_journal_mode"),
+                                ("integrity", "backup_v2_refused")):
+            with self.subTest(failure=failure):
+                class FailingCheckConnection(sqlite3.Connection):
+                    def execute(self, sql, *args, **kwargs):
+                        if failure == "normalization" and sql == "PRAGMA journal_mode=DELETE":
+                            return super().execute("PRAGMA journal_mode")
+                        cursor = super().execute(sql, *args, **kwargs)
+                        if failure == "integrity" and sql == "PRAGMA quick_check":
+                            cursor.close()
+                            raise sqlite3.OperationalError("synthetic integrity query failure")
+                        return cursor
+
+                with self.retained_connections(factory=FailingCheckConnection) as connections:
+                    with self.assertRaisesRegex(v1.RecoveryError, reason):
+                        self.backup(profile=profile, name=failure)
+                    self.assert_connections_closed(connections)
+                    self.assertFalse((self.base / failure / "manifest.json").exists())
+
+    def test_leftover_snapshot_sidecars_refuse_completion_without_deleting_files(self):
+        for mode in ("immutable", "wal"):
+            profile = self.quiescent_wal_profile() if mode == "wal" else self.profile
+            source_before = v2._inventory(self.source)
+            for suffix in ("-wal", "-shm", "-journal"):
+                with self.subTest(mode=mode, suffix=suffix):
+                    name = "leftover-" + mode + suffix
+                    target = self.base / name / "payload" / ("intake" if mode == "wal" else "canonical")
+                    sidecar = Path(str(target) + suffix)
+                    raw = b"SYNTHETIC LEFTOVER SIDECAR ONLY"
+
+                    class LeftoverConnection(sqlite3.Connection):
+                        def __init__(self, database, *args, **kwargs):
+                            super().__init__(database, *args, **kwargs)
+                            self.is_target = database == target
+                            self.injected = False
+
+                        def close(self):
+                            super().close()
+                            if self.is_target and not self.injected:
+                                sidecar.write_bytes(raw)
+                                self.injected = True
+
+                    with self.retained_connections(factory=LeftoverConnection) as connections:
+                        with self.assertRaisesRegex(v1.RecoveryError, "ledger_snapshot_sidecar_remaining"):
+                            self.backup(profile=profile, name=name)
+                        self.assert_connections_closed(connections)
+                        self.assertFalse((self.base / name / "manifest.json").exists())
+                        self.assertEqual(sidecar.read_bytes(), raw)
+                        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(v2._inventory(self.source), source_before)
 
     def test_closed_quiescent_wal_without_sidecars_is_snapshotted(self):
         for path in (self.canonical, self.intake):
