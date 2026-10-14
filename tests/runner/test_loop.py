@@ -70,7 +70,7 @@ class LoopTests(unittest.TestCase):
         self.settings.keep_workdir = True
         self.ws.enqueue("extract", {"x": 2})
         r.step()
-        kept = work / "job_0000000000000002" / "scratch.bin"
+        kept, = (work / "scratch").glob("job-*/scratch.bin")
         self.assertEqual(os.stat(kept).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(kept.parent).st_mode & 0o777, 0o700)
 

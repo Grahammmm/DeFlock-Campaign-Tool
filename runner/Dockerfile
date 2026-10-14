@@ -8,10 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Non-root user; /work is the only writable location (RUNNER_WORKDIR, 0700).
+# Non-root user; private scratch and durable result envelopes use separate roots.
 RUN groupadd --system --gid 10001 runner \
  && useradd --system --uid 10001 --gid runner --home-dir /work --shell /usr/sbin/nologin runner \
- && mkdir -p /work /app && chown runner:runner /work && chmod 0700 /work
+ && mkdir -p /work /results /app && chown runner:runner /work /results && chmod 0700 /work /results
 
 WORKDIR /app
 COPY requirements-runner.txt ./
@@ -31,11 +31,12 @@ RUN python3 -B -m runner --once --fake || test "$?" -eq 3
 
 USER runner
 ENV RUNNER_WORKDIR=/work \
+    RUNNER_RESULT_DIR=/results \
     JURISDICTIONS_DIR=/app/jurisdictions \
     PRIVACY_TIER=redacted_cloud \
     POLL_INTERVAL=15 \
     LEASE_SECONDS=300
-VOLUME ["/work"]
+VOLUME ["/work", "/results"]
 
 # WORKSPACE_URL and RUNNER_TOKEN are required at run time (never baked in).
 ENTRYPOINT ["python3", "-B", "-m", "runner"]

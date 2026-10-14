@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { HEX64, nowIso, sha256Hex } from "@deflock/shared/ids";
 import { requireRunner } from "./auth.ts";
-import { ACTION_KINDS, JOB_KINDS, Repo, type ActionKind, type JobKind } from "./db.ts";
+import { ACTION_KINDS, JOB_KINDS, Repo, type ActionKind, type JobCompletion, type JobKind } from "./db.ts";
 import type { Env } from "./env.ts";
 
 type Vars = { repo: Repo };
@@ -27,6 +27,7 @@ function jobPayload(row: import("./db.ts").JobRow, campaign: { privacy_tier: str
     max_attempts: row.max_attempts,
     enqueued_at: row.enqueued_at,
     leased_until: row.leased_until,
+    claim_token: row.claim_token,
     privacy_tier: campaign?.privacy_tier ?? "redacted_cloud",
   };
 }
@@ -39,39 +40,69 @@ runnerApi.get("/jobs", async (c) => {
   return c.json(jobPayload(row, await c.var.repo.campaign()));
 });
 
-// POST /api/runner/jobs/:id/result {status, outputs, receipt}
+// Renew only the exact, unexpired claim; receipt of a renewal is not a new attempt.
+runnerApi.post("/jobs/:id/renew", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { claim_token?: unknown; lease_seconds?: unknown } | null;
+  if (!body || typeof body.claim_token !== "string" || !body.claim_token || !Number.isInteger(body.lease_seconds) ||
+      Number(body.lease_seconds) < 30 || Number(body.lease_seconds) > 3600) {
+    return c.json({ error: "claim_token and integer lease_seconds (30..3600) required" }, 400);
+  }
+  if (!(await c.var.repo.job(c.req.param("id")))) return c.json({ error: "unknown job" }, 404);
+  const row = await c.var.repo.renewJob(c.req.param("id"), body.claim_token, Number(body.lease_seconds));
+  if (!row) return c.json({ error: "claim_conflict" }, 409);
+  return c.json({ job_id: row.job_id, claim_token: row.claim_token, attempt: row.attempt, leased_until: row.leased_until });
+});
+
+// Validate the entire envelope before the transaction. Key order is immaterial to replay;
+// array order, receipt, error and all output fields remain part of the exact result identity.
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return "{" + Object.keys(obj).sort().map(key => JSON.stringify(key) + ":" + canonicalJson(obj[key])).join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+// POST /api/runner/jobs/:id/result {claim_token, status, outputs?, receipt?, error?}
 runnerApi.post("/jobs/:id/result", async (c) => {
-  const body = (await c.req.json().catch(() => null)) as { status?: string; outputs?: unknown; receipt?: unknown; error?: string } | null;
+  const body = (await c.req.json().catch(() => null)) as {
+    claim_token?: unknown; status?: unknown; outputs?: unknown; receipt?: unknown; error?: unknown;
+  } | null;
   if (!body || !["done", "failed", "blocked"].includes(String(body.status))) return c.json({ error: "status must be done|failed|blocked" }, 400);
+  if (typeof body.claim_token !== "string" || !body.claim_token) return c.json({ error: "claim_token required" }, 400);
+  if (body.outputs !== undefined && (!body.outputs || typeof body.outputs !== "object" || Array.isArray(body.outputs))) {
+    return c.json({ error: "outputs must be an object" }, 400);
+  }
+  if (body.error !== undefined && body.error !== null && typeof body.error !== "string") return c.json({ error: "error must be a string or null" }, 400);
   const job = await c.var.repo.job(c.req.param("id"));
   if (!job) return c.json({ error: "unknown job" }, 404);
-  if (job.state !== "leased") return c.json({ error: `job is ${job.state}, not leased` }, 409);
-  const outputs = { ...((body.outputs as object) ?? {}), receipt: body.receipt ?? null } as Record<string, unknown>;
-  const updated = await c.var.repo.finishJob(job.job_id, body.status as "done" | "failed" | "blocked", outputs, body.error ?? null);
-  if (body.status === "failed" && updated?.state === "failed") {
-    await c.var.repo.raiseIncident("job:" + job.kind + ":" + job.idempotency_key, "warning", `job ${job.job_id} (${job.kind}) failed after ${job.attempt} attempts: ${body.error ?? ""}`);
-  }
-  const followups: string[] = [];
+  const outputs = { ...((body.outputs as Record<string, unknown>) ?? {}), receipt: body.receipt ?? null };
+  const resultJson = canonicalJson({ status: body.status, outputs: body.outputs ?? {}, receipt: body.receipt ?? null, error: body.error ?? null });
+  const result: JobCompletion = {
+    job_id: job.job_id, claim_token: body.claim_token, status: body.status as JobCompletion["status"], outputs,
+    error: (body.error as string | null | undefined) ?? null, result_json: resultJson,
+    result_sha256: await sha256Hex(resultJson), followups: [],
+  };
   if (body.status === "done") {
-    // outputs.followups: [{kind, idempotency_key?, inputs?}] -> queued jobs (idempotent); other keys are ignored.
-    for (const item of parseFollowups(outputs.followups)) {
-      const key = item.idempotency_key ?? (await sha256Hex(item.kind + JSON.stringify(item.inputs)));
-      const { row } = await c.var.repo.enqueueJob(item.kind, key, item.inputs);
-      followups.push(row.job_id);
+    for (const item of parseFollowups((outputs as Record<string, unknown>).followups)) {
+      result.followups.push({ ...item, idempotency_key: item.idempotency_key ?? await sha256Hex(item.kind + JSON.stringify(item.inputs)) });
     }
-    // classify_mail: outputs.correspondence_update patches the classified row (never the raw MIME).
-    const patch = outputs.correspondence_update as Record<string, unknown> | undefined;
-    const target = (JSON.parse(job.inputs_json) as { correspondence_id?: string }).correspondence_id;
-    if (job.kind === "classify_mail" && patch && typeof patch === "object" && target && (await c.var.repo.correspondence(target))) {
+    const patch = (outputs as Record<string, unknown>).correspondence_update as Record<string, unknown> | undefined;
+    const target = (JSON.parse(job.inputs_json) as { correspondence_id?: unknown }).correspondence_id;
+    if (job.kind === "classify_mail" && patch && typeof patch === "object" && !Array.isArray(patch) && typeof target === "string") {
       const classification = String(patch.classification ?? "unclassified");
-      await c.var.repo.updateCorrespondence(target, {
+      result.correspondence_update = {
+        correspondence_id: target,
         classification: CLASSIFICATIONS.includes(classification) ? classification : "unclassified",
         classification_confidence: typeof patch.classification_confidence === "string" ? patch.classification_confidence.slice(0, 32) : null,
         summary: typeof patch.summary === "string" ? patch.summary.slice(0, 300) : null,
-      });
+      };
     }
   }
-  return c.json({ job_id: job.job_id, state: updated?.state, followups });
+  const accepted = await c.var.repo.finishJob(result);
+  if (typeof accepted === "string") return c.json({ error: accepted }, 409);
+  return c.json(accepted);
 });
 
 const CLASSIFICATIONS = ["acknowledgement", "extension", "fee_estimate", "partial_production", "production", "denial", "clarification", "unrelated", "unclassified"];

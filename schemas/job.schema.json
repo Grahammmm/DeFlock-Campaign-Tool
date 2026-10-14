@@ -12,7 +12,9 @@
     "attempt",
     "max_attempts",
     "enqueued_at",
-    "privacy_tier"
+    "privacy_tier",
+    "claim_token",
+    "leased_until"
   ],
   "properties": {
     "job_id": {
@@ -62,6 +64,13 @@
         "redacted_cloud",
         "strict_local"
       ]
+    },
+    "claim_token": {
+      "type": "string",
+      "minLength": 1
+    },
+    "leased_until": {
+      "type": "string"
     }
   }
 }

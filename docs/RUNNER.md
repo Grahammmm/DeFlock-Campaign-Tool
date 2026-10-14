@@ -20,13 +20,19 @@ docker build -f runner/Dockerfile -t deflock-runner .   # image with its own smo
 ```
 
 `runner/compose.example.yml` shows a hardened single-service deployment (read-only root,
-tmpfs work directory, dropped capabilities, a stop grace period longer than the lease).
+tmpfs scratch, a private persistent volume for result envelopes, dropped capabilities,
+and a stop grace period longer than the lease). The volume must survive container
+replacement. Outside that example, set `RUNNER_RESULT_DIR` to private persistent storage;
+the default underneath `/tmp` does **not** survive host restart. Deployment and volume
+backup/retention remain operator decisions. Never store this private directory in Git.
 `runner/cloudflare-container.md` records how the same image would map onto Cloudflare
 Containers and what to verify first. CI: `.github/workflows/runner.yml`.
 
 Exit codes with `--once`: 0 job done, 1 job failed or blocked, 3 nothing queued (or the
 workspace is unreachable and the loop backed off). Without `--once` the loop runs until
-SIGTERM/SIGINT, which finishes the current job before exiting.
+SIGTERM/SIGINT, which stops lease renewal and refuses subsequent handler mutations. A
+parser/model call already in progress may finish before the process exits; its late result
+is discarded after claim loss. Stop does not forcibly terminate in-process computation.
 
 ## Environment
 
@@ -41,7 +47,14 @@ SIGTERM/SIGINT, which finishes the current job before exiting.
 | `JURISDICTIONS_DIR` | repo `jurisdictions/` | Where law packages are read from (the image sets `/app/jurisdictions`) |
 | `REDACTION_ALLOWLIST`, `REDACTION_DENYLIST` | empty | Comma-separated terms the redactor must keep / must always mask |
 | `POLL_INTERVAL`, `LEASE_SECONDS` | `15`, `300` | Idle sleep and lease length |
+| `MAX_JOB_SECONDS` | `3600` | Absolute handler ownership budget, 30–86400 seconds; renewal cannot run forever |
 | `RUNNER_WORKDIR`, `KEEP_WORKDIR` | `/tmp/deflock-runner`, unset | Private scratch root (0700/0600); set `KEEP_WORKDIR=1` only while debugging synthetic data |
+| `RUNNER_RESULT_DIR` | `$RUNNER_WORKDIR/results` | Private result outbox; point to persistent storage for container/host restart recovery |
+
+`LEASE_SECONDS` must be an integer from 30 through 3600. The initial lease is capped by
+`MAX_JOB_SECONDS`; a heartbeat runs every third of the lease while the handler is live.
+Keep the runner and workspace clocks synchronized. `MAX_JOB_SECONDS` bounds lease
+renewal and permission to mutate, not the execution time of a stuck parser/model call.
 
 `strict_local` with a `MODEL_BASE_URL` that is not loopback, `*.ts.net` or a Tailscale
 address refuses to start (`python -m runner` exits with a usage error) and fails any digest or
@@ -62,13 +75,40 @@ be loopback or on the tailnet, and the runner refuses to start otherwise.
 
 ## Loop semantics (`runner/loop.py`)
 
-- `GET /jobs?lease=N` → handler → `POST /jobs/:id/result {status, outputs, receipt, error}`.
-- A handler exception becomes `failed` with the exception class and a 300-character message;
-  record text is never put in a job error or log line. The Worker requeues `failed` jobs
+- `GET /jobs?lease=N` returns an immutable `claim_token` and `leased_until` → handler →
+  `POST /jobs/:id/result {claim_token, status, outputs, receipt, error}`.
+- `POST /jobs/:id/renew {claim_token, lease_seconds}` extends only that unexpired claim.
+  Renewal uses one HTTP attempt with a timeout of at most ten seconds. Any renewal error,
+  local expiry, stop request, or runtime budget exhaustion fences subsequent workspace
+  mutations, including every retry of an HTTP write. The heartbeat stops on handler
+  completion or exception; an already in-flight renewal may finish within its timeout.
+- The Worker's atomic completion fence is authoritative. Non-queue writes (originals,
+  receipts, proposals, and staged site files) already in flight are not rolled back or
+  atomically fenced with completion. A handler also cannot be forcibly interrupted here.
+  These guards do not provide exactly-once handler execution or transactional uploads.
+- A handler exception becomes `failed` with its exception class and a fixed message;
+  exception messages that may contain record text are omitted. The Worker requeues `failed` jobs
   until `max_attempts`, then raises an incident.
-- 5xx and connection errors back off exponentially to 300 s; 4xx errors are not retried.
-- Each job gets `RUNNER_WORKDIR/<job_id>` (0700), files written at 0600 with `O_NOFOLLOW`,
-  removed when the job finishes.
+- 5xx and connection errors back off exponentially to 300 s. Identical accepted result
+  replay returns the original acknowledgment, including after expiry or a later attempt.
+  A conflicting result or unaccepted stale claim returns 409.
+- Each invocation gets a unique `RUNNER_WORKDIR/scratch/job-*` directory (0700), with
+  files written at 0600 using `O_NOFOLLOW`. Different attempts cannot remove each other's
+  scratch. `KEEP_WORKDIR=1` retains it only for synthetic debugging.
+- Before posting, the runner atomically saves and fsyncs a private result envelope under
+  `RUNNER_RESULT_DIR/<workspace-token-scope>/result-*.json` (default below the workdir). It contains only the
+  final result request and a scratch identifier: no downloaded originals, copied job
+  inputs, or scratch files. Result metadata may still be private. Scratch is removed
+  after the envelope is durable; failed persistence preserves scratch and stops the run.
+- Pending envelopes are retried before leasing new work, including on restart, without
+  rerunning handlers. Successful acknowledgment removes the envelope. A crash between
+  saving and scratch cleanup is recovered during delivery. A local file lock prevents
+  simultaneous delivery by runners sharing a workdir.
+- A 409 preserves the envelope with a `.conflict` suffix for operator inspection and
+  ends automatic retry for that envelope. Other nonretryable errors stop the runner with
+  the envelope retained. Repair authentication/configuration before restarting. Token
+  rotation changes the local scope: reconcile or explicitly migrate the old private
+  envelopes for the same campaign; do not discard them or replay them to another campaign.
 - Logs are JSON lines on stderr with identifiers and counts only (`job.start`, `job.finish`,
   `classify.redacted`, `digest.redacted`, `site.built`, `runner.backoff`, …).
 - `outputs.followups` (`[{kind, idempotency_key?, inputs}]`) is the only way a handler
@@ -116,7 +156,10 @@ approved.
 
 `python3 -B -m unittest discover -s tests/runner -t .` runs the client (scripted opener:
 retries, 204, hash and path checks), loop (lease/dispatch/followups, exception handling,
-backoff, exit codes, SIGTERM, workdir permissions, JSON logs), every handler over synthetic
+backoff, exit codes, SIGTERM, workdir permissions, JSON logs), claim fencing and renewal
+with a synthetic clock, transport retries after ownership loss, result outbox recovery
+after timeout/lost acknowledgment/process interruption, isolated scratch and cleanup,
+every handler over synthetic
 fixtures (`examples/synthetic-mail/*.eml.txt`, generated PDF/XLSX/zip, the fictional
 campaign content), the digest library (redaction counts, placeholders, detectors, model
 path with a loopback fake server, strict_local refusal) and an end-to-end
