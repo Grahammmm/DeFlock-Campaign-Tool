@@ -39,8 +39,11 @@ class PublicationBackupCompatibilityTests(unittest.TestCase):
             old_schema = synthetic.schema_hash(con)
             con.executescript(original_resolution_v001.SQL)
             current_schema = synthetic.schema_hash(con)
+            review_retirement.start(con)
             before = con.execute("SELECT value FROM ledger_meta WHERE key=?",
                                  (review_retirement.KEY,)).fetchone()
+            self.assertEqual(before, (review_retirement.PENDING,))
+            self.assertTrue(review_retirement.pending(con))
             expected_triggers = con.execute(
                 "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
         tables = ("originals", "receipts", "ledger_meta", "backup_refs",
@@ -72,6 +75,7 @@ class PublicationBackupCompatibilityTests(unittest.TestCase):
             self.assertEqual(synthetic.schema_hash(con), current_schema)
             self.assertEqual(con.execute("SELECT value FROM ledger_meta WHERE key=?",
                                         (review_retirement.KEY,)).fetchone(), before)
+            self.assertTrue(review_retirement.pending(con))
             self.assertEqual(con.execute(
                 "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall(),
                 expected_triggers)
