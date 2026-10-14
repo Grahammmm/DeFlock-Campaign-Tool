@@ -133,6 +133,10 @@ class RunSliceTests(unittest.TestCase):
         self.assertEqual(len(payloads), 2)
         for row in payloads:
             content = json.loads(bytes(row[0]))
+            progress = content["processing_coverage"]
+            self.assertEqual(progress["summary"]["accepted_units"], 0)
+            self.assertFalse(progress["model_emission_recorded"])
+            self.assertEqual(progress["summary"]["receipt_coverage"]["scope"], "selected")
             record = content["challenge"]
             self.assertFalse(record["independent_review"])
             self.assertFalse(record["primary_evidence_inspected"])
