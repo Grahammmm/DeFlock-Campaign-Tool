@@ -6,6 +6,21 @@ main 28e9d198 and draft PR96/97/98 independently. Those drafts are not one combi
 release; no wheel, active selector, trusted manifest or rollback identity is invented.
 All live evidence digests are null and activation remains held.
 
+## Example placeholders and observed provenance
+
+The JSON is a planning template: its descriptive provenance placeholders are
+not executable release evidence. Exact observed pins are preserved here. Replace
+placeholders only after independently verifying the intended source; this
+sample never grants activation or authenticates the unavailable review kit.
+
+| Reference | Observed commit |
+| --- | --- |
+| Main used for the synthetic rehearsals | `28e9d19854ee56039a52289e6a8ded437e0ce5cc` |
+| PR96 draft | `b4c2fa2fe04c2b8ace540d5345b8877656dbb3ab` |
+| PR97 draft | `f32ada2b8638d4be0d52f853b282513dac10335b` |
+| PR98 draft, stacked on PR96 | `7bd1833b62651c142cf2b63857e1e7638092db65` |
+| Documented standalone kit candidate; source unavailable | `ef87da12170e358a9168ce7f2cc83674661a47d3` |
+
 ## Reuse and verified scope
 
 Reuse the issue's existing offline review-kit checklist: pinned source, required
@@ -19,7 +34,7 @@ authority is introduced. Use the existing [release manifest](RECORDS-RELEASE.md)
 At main 28e9d198, thirty existing tests passed with zero skips: 23 release/restore
 cases and seven publication rollback/history cases. These are synthetic temporary
 roots, not a live backup or runtime rollback qualification. Commands are recorded
-below. The JSON packet records the observed CI counts separately; CI does not
+below. The JSON example records the observed CI counts separately; CI does not
 authenticate independent review, prove deployed applicability or grant activation.
 
 ## Ordered live rehearsal plan — NOT EXECUTED

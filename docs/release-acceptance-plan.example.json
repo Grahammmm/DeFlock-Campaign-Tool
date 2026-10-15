@@ -4,21 +4,21 @@
   "authorization_verified": false,
   "deployment_authorized": false,
   "source": {
-    "main": "28e9d19854ee56039a52289e6a8ded437e0ce5cc",
+    "main": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
     "drafts": [
       {
         "pr": 96,
-        "head": "b4c2fa2fe04c2b8ace540d5345b8877656dbb3ab",
+        "head": "REVIEWED_PR96_HEAD_FROM_PLAN",
         "scope": "manual_context_only"
       },
       {
         "pr": 97,
-        "head": "f32ada2b8638d4be0d52f853b282513dac10335b",
+        "head": "REVIEWED_PR97_HEAD_FROM_PLAN",
         "scope": "coordinated_queue_candidate"
       },
       {
         "pr": 98,
-        "head": "7bd1833b62651c142cf2b63857e1e7638092db65",
+        "head": "REVIEWED_PR98_HEAD_FROM_PLAN",
         "base_pr": 96,
         "scope": "prerequisite_contract_tests_only"
       }
@@ -29,7 +29,7 @@
     "active_selector_verified": false
   },
   "reused_review_kit": {
-    "candidate": "ef87da12170e358a9168ce7f2cc83674661a47d3",
+    "candidate": "HISTORICAL_REVIEW_KIT_COMMIT_FROM_PLAN",
     "availability": "not_in_available_checkouts",
     "scope": "documented_offline_review_aid_only",
     "collector_executed": false,
@@ -53,7 +53,7 @@
     "results": [
       {
         "key": "96",
-        "sha": "b4c2fa2fe04c2b8ace540d5345b8877656dbb3ab",
+        "sha": "REVIEWED_PR96_HEAD_FROM_PLAN",
         "total": 46,
         "states": {
           "success": 46
@@ -62,7 +62,7 @@
       },
       {
         "key": "97",
-        "sha": "f32ada2b8638d4be0d52f853b282513dac10335b",
+        "sha": "REVIEWED_PR97_HEAD_FROM_PLAN",
         "total": 46,
         "states": {
           "success": 41,
@@ -72,7 +72,7 @@
       },
       {
         "key": "98",
-        "sha": "7bd1833b62651c142cf2b63857e1e7638092db65",
+        "sha": "REVIEWED_PR98_HEAD_FROM_PLAN",
         "total": 46,
         "states": {
           "queued": 30,
@@ -83,7 +83,7 @@
       },
       {
         "key": "main",
-        "sha": "28e9d19854ee56039a52289e6a8ded437e0ce5cc",
+        "sha": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
         "total": 46,
         "states": {
           "success": 46
@@ -95,7 +95,7 @@
   "synthetic_rehearsals": [
     {
       "id": "release_restore",
-      "source_commit": "28e9d19854ee56039a52289e6a8ded437e0ce5cc",
+      "source_commit": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
       "status": "executed_pass",
       "tests": 23,
       "skips": 0,
@@ -112,7 +112,7 @@
     },
     {
       "id": "rollback_history",
-      "source_commit": "28e9d19854ee56039a52289e6a8ded437e0ce5cc",
+      "source_commit": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
       "status": "executed_pass",
       "tests": 7,
       "skips": 0,
