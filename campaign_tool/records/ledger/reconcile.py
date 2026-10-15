@@ -84,10 +84,6 @@ def reconcile(kind, sources, indexed, objects):
             # A (identity, sha256) pair may bind to its index rows only once; later
             # source receipts for the same pair are duplicates, never extra matches.
             repeat = group_id is not None and group_id in seen_groups
-            if group_id is not None and not repeat:
-                seen_groups.add(group_id)
-                used.update(exact)
-                match_groups[group_id] = exact
             if kind == 'portal':
                 binding = row.get('binding_evidence')
                 joined = (key is not None and isinstance(binding,dict)
@@ -116,6 +112,17 @@ def reconcile(kind, sources, indexed, objects):
                 classification = 'duplicate_index_rows'
             else:
                 classification = 'matched'
+            # A shared identity/hash is only a candidate match. Rejected,
+            # excluded or unjoined evidence must not consume index coverage or
+            # reserve the pair ahead of a later valid source receipt.
+            eligible = classification in ('matched', 'duplicate_index_rows',
+                                          'duplicate_source_receipt', 'bytes-present-and-joined')
+            if not eligible:
+                group_id = None
+            elif group_id is not None and not repeat:
+                seen_groups.add(group_id)
+                used.update(exact)
+                match_groups[group_id] = exact
             rows.append({'source_row':i,'index_match_group':group_id,'classification':classification,
                          'subject_sha256':sha if _hash(sha) else None})
         for i,row in enumerate(indexed):
