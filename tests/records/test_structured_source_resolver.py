@@ -1,5 +1,8 @@
 """Synthetic canonical primary/support resolution, no semantic/date authority."""
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -18,11 +21,11 @@ class SourceResolverTests(unittest.TestCase):
     setUp = boundary.StructuredContextBoundaryTests.setUp
     join = boundary.StructuredContextBoundaryTests.join
 
-    def resolve(self, supports=()):
+    def resolve(self, supports=(), *, subject=None):
         return sources.resolve_sources(database=self.pipeline.root.ledger,
             original_root=self.pipeline.root.intake / "blobs",
             derived_root=self.pipeline.root.sub("artifacts") / "evidence",
-            subject_sha256=self.subject, support_sha256=supports)
+            subject_sha256=subject or self.subject, support_sha256=supports)
 
     def support(self):
         raw = b"Synthetic supporting policy text; no verified legal dates or applicability."
@@ -191,3 +194,67 @@ class SourceResolverTests(unittest.TestCase):
         self.assertEqual({r["agency_id"] for r in json.loads(snapshot.joins.rows_json)},
                          {"synthetic-a", "synthetic-b"})
         self.assertIn("verified_applicability_provider_unavailable", snapshot.requirements)
+
+    def check_exclusion(self, *, primary):
+        with store.ledger(self.pipeline.root.ledger, readonly=True) as con:
+            original = dict(con.execute("SELECT * FROM originals WHERE sha256=?",
+                                        (self.subject,)).fetchone())
+        for field, value in (("scope", "excluded"), ("scope", "out_of_scope"),
+                             ("role", "excluded_unrelated_personal")):
+            with self.subTest(field=field, value=value):
+                # Fresh immutable declarations, not rewritten accepted evidence.
+                raw = ("Synthetic unaccepted exclusion fixture " + field + value).encode()
+                identity = sha(raw)
+                row = dict(original, sha256=identity, bytes=len(raw),
+                           preservation_status="unresolved",
+                           provenance_json=json.dumps({"synthetic_fixture": "excluded_unaccepted"}))
+                path = self.pipeline.root.intake / "blobs" / identity
+                path.write_bytes(raw)
+                path.chmod(0o600)
+                row.update(storage_path=str(path))
+                row[field] = value
+                with store.ledger(self.pipeline.root.ledger) as con:
+                    columns = list(row)
+                    con.execute("INSERT INTO originals(" + ",".join(columns) + ") VALUES(" +
+                                ",".join("?" for _ in columns) + ")", [row[k] for k in columns])
+                    con.commit()
+                with patch.object(sources, "secure_open", wraps=sources.secure_open) as opened:
+                    with self.assertRaisesRegex(sources.ResolutionError, "original_missing_or_excluded"):
+                        self.resolve(() if primary else (identity,),
+                                     subject=identity if primary else self.subject)
+                self.assertNotIn(path, [call.args[0] for call in opened.call_args_list])
+
+    def test_shared_scope_exclusions_refuse_primary_before_open(self):
+        self.check_exclusion(primary=True)
+
+    def test_shared_scope_exclusions_refuse_support_before_open(self):
+        self.check_exclusion(primary=False)
+
+    def test_substituted_original_and_unit_fifos_refuse_within_subprocess_deadline(self):
+        with store.ledger(self.pipeline.root.ledger, readonly=True) as con:
+            original = store.effective_original(con, self.subject)["storage_path"]
+            unit = con.execute("SELECT derived_path FROM units WHERE id=?",
+                               (self.sources[0]["unit_id"],)).fetchone()[0]
+        script = (
+            "import sys; from campaign_tool.records.detectors.sources import resolve_sources, ResolutionError; "
+            "\ntry:\n resolve_sources(database=sys.argv[1], original_root=sys.argv[2], "
+            "derived_root=sys.argv[3], subject_sha256=sys.argv[4])"
+            "\nexcept ResolutionError:\n sys.exit(0)"
+            "\nraise SystemExit('FIFO incorrectly accepted')"
+        )
+        for name in (original, unit):
+            with self.subTest(path_kind="original" if name == original else "unit"):
+                path = Path(name)
+                raw = path.read_bytes()
+                path.unlink()
+                os.mkfifo(path, 0o600)
+                try:
+                    completed = subprocess.run([sys.executable, "-B", "-c", script,
+                        str(self.pipeline.root.ledger), str(self.pipeline.root.intake / "blobs"),
+                        str(self.pipeline.root.sub("artifacts") / "evidence"), self.subject],
+                        timeout=3, capture_output=True, text=True)
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                finally:
+                    path.unlink()
+                    path.write_bytes(raw)
+                    path.chmod(0o600)

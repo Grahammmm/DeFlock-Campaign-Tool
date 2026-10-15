@@ -105,3 +105,20 @@ interrupted rollback recovery, retained proposal provenance.
 These temporary synthetic stores do not qualify the active runtime rollback,
 establish operational dependency closure, stop all writers or authorize activation.
 The existing release plan's live gates remain unchanged.
+
+## Independent review repair cycle 1
+
+Only the two source-review findings are changed. Primary and support originals
+now use the shared ledger_catalog.scope_excluded policy, rejecting both excluded
+scope labels and excluded_unrelated_personal before opening their bytes.
+The resolver's local descriptor walk retains O_NOFOLLOW on each directory and
+the final component, adds O_NONBLOCK at final open, and validates a regular
+descriptor before buffered reads. Shared extraction/intake code is unchanged.
+
+Three new regressions cover six primary/support exclusion variants with a
+never-open assertion, plus substituted original/unit FIFOs in subprocesses
+with three-second deadlines. Both FIFO variants timed out on the reviewed head;
+the repaired resolver suite passes18 tests, including existing symlink refusal.
+Initial exclusion setup attempted immutable metadata updates and was corrected
+to insert fresh unaccepted synthetic declarations; no immutability guard bypass.
+No new semantic, date, applicability, recovery or activation authority.

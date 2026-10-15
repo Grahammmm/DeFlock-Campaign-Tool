@@ -8,7 +8,7 @@ import stat
 import sqlite3
 
 from .. import extraction_ledger as extraction, extraction_validation
-from ..intake.folder import secure_open
+from ..ledger_catalog import scope_excluded
 from ..ledger import store
 from . import pipeline as structured_adapter
 from .pipeline import canonical_joins, CanonicalJoins
@@ -27,6 +27,28 @@ class ResolutionError(ValueError):
 def require(ok, reason):
     if not ok:
         raise ResolutionError(reason)
+
+
+def secure_open(path):
+    """Walk directory descriptors without symlinks; validate before buffered IO."""
+    parts = Path(os.path.abspath(path)).parts
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        source = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory)
+    finally:
+        os.close(directory)
+    try:
+        require(stat.S_ISREG(os.fstat(source).st_mode), "private_artifact_required")
+        return os.fdopen(source, "rb")
+    except BaseException:
+        os.close(source)
+        raise
 
 
 def sha(raw):
@@ -121,7 +143,7 @@ def resolve_sources(*, database, original_root, derived_root, subject_sha256,
 
             for subject in identities:
                 original = store.effective_original(con, subject)
-                require(original is not None and original["scope"] != "out_of_scope",
+                require(original is not None and not scope_excluded(original),
                         "original_missing_or_excluded")
                 raw = read(original["storage_path"], original_root)
                 require(sha(raw) == subject and len(raw) == original["bytes"], "original_bytes_changed")
