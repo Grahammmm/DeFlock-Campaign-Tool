@@ -100,7 +100,8 @@ class ContextDateBoundaryTests(unittest.TestCase):
                     self.assertTrue(all(hit["triage_only"] for hit in result["hits"]))
                 else:
                     self.assertEqual(result["hits"], [])
-                    self.assertEqual(result["manifest"]["counts"]["blocked"], 1)
+                    self.assertEqual(result["manifest"]["counts"]["skipped"], 1)
+                    self.assertEqual(result["manifest"]["counts"]["blocked"], 0)
                     self.assertEqual(result["manifest"]["outcomes"][0]["reason"],
                                      "rule_not_effective")
 
