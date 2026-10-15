@@ -20,6 +20,10 @@ def extract_receipts(data):
     if not isinstance(values, list):
         return [], ["No canonical review array; preserve the source and request reviewer reissue."]
     receipts, errors = [], []
+    if isinstance(data, dict) and "collection_errors" in data:
+        prior = data["collection_errors"]
+        if not isinstance(prior, list) or prior:
+            errors.append("Source collection errors remain unresolved; no inferred approval.")
     for index, item in enumerate(values):
         required = ("finding_id", "finding_digest", "reviewer_agent", "role", "verdict", "rationale", "reviewed_at")
         if not isinstance(item, dict) or any(not isinstance(item.get(k), str) or not item[k].strip() for k in required):
@@ -38,21 +42,31 @@ def main():
     for agency in sorted((args.batch_root / "agencies").iterdir()):
         if not agency.is_dir() or not (agency / "findings.json").exists():
             continue
-        factual = agency / "gate-reviews.json"
-        if not factual.exists():
-            factual = agency / "factual-review.json"
-        reviews, sources, errors = [], [], []
-        for path in (factual, agency / "legal-review.json", agency / "privacy-review.json"):
-            if not path.exists():
+        reviews, sources, errors, seen = [], [], [], set()
+        for name in ("gate-reviews.json", "factual-review.json",
+                     "legal-review.json", "privacy-review.json"):
+            path = agency / name
+            if not path.exists() and not path.is_symlink():
                 continue
-            raw = path.read_bytes()
+            raw = None
             try:
+                raw = path.read_bytes()
                 parsed, issues = extract_receipts(json.loads(raw))
-                reviews.extend(parsed)
                 errors.extend({"path": str(path), "issue": issue} for issue in issues)
+                for receipt in parsed:
+                    # All fields participate; never deduplicate by reviewer/role
+                    # identity alone or let a pass replace a distinct challenge.
+                    identity = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
+                                          ensure_ascii=True, allow_nan=False)
+                    if identity not in seen:
+                        seen.add(identity)
+                        reviews.append(receipt)
+            except OSError:
+                errors.append({"path": str(path), "issue": "Review source unreadable; no inferred approval."})
             except (ValueError, TypeError) as exc:
                 errors.append({"path": str(path), "issue": str(exc)})
-            sources.append({"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()})
+            sources.append({"path": str(path),
+                            "sha256": hashlib.sha256(raw).hexdigest() if raw is not None else None})
         output = {
             "reviews": reviews,
             "receipt_sources": sources,

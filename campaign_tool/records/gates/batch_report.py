@@ -5,9 +5,9 @@ import json
 from collections import Counter
 from pathlib import Path
 if __package__:
-    from .validate_findings import gate_many, block_duplicate_ids
+    from .validate_findings import gate_many, block_duplicate_ids, review_input
 else:
-    from validate_findings import gate_many, block_duplicate_ids
+    from validate_findings import gate_many, block_duplicate_ids, review_input
 
 if __package__:
     from .safe_output import write_private
@@ -46,7 +46,7 @@ def main():
                     errors.append({"path": str(digest_file), "line": number, "error": "invalid digest"})
         else:
             errors.append({"path": str(digest_file), "error": "missing document digests"})
-        findings, reviews = [], []
+        findings, reviews, collection_errors = [], [], []
         for filename, key, dest in [("findings.json", "findings", findings),
                                     ("independent-reviews.json", "reviews", reviews)]:
             path = agency / filename
@@ -56,13 +56,18 @@ def main():
                 continue
             try:
                 data = json.loads(path.read_text())
-                items = data.get(key) if isinstance(data, dict) else data
+                if key == "reviews":
+                    items, collection_errors = review_input(data)
+                    errors.extend({"path": str(path), "error": "review_collection_failed", "issue": issue}
+                                  for issue in collection_errors)
+                else:
+                    items = data.get(key) if isinstance(data, dict) else data
                 if not isinstance(items, list):
                     raise ValueError("not an array")
                 dest.extend(items)
             except (ValueError, TypeError):
                 errors.append({"path": str(path), "error": "invalid " + key})
-        checks = gate_many(findings, reviews, args.check_files)
+        checks = gate_many(findings, reviews, args.check_files, collection_errors=collection_errors)
         results.append({"agency_package": agency.name, "document_digest_entries": len(digests),
                         "distinct_digest_hashes": len({d.get("sha256") for d in digests if d.get("sha256")}),
                         "declared_review_statuses": dict(Counter(str(d.get("review_status", "unspecified")) for d in digests)),
