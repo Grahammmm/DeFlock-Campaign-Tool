@@ -296,13 +296,40 @@ def _recover_proposals(con, root):
         con.execute("UPDATE proposal_revisions SET state='complete' WHERE revision_id=?", (row["revision_id"],))
 
 
+PUBLICATION_ROOT_KEY = "publication-recovery-root-v1"
+
+
+def _publication_root_binding(con, root, *, enroll=False):
+    """A copied ledger cannot authorize recovery of its historical output paths.
+
+    Legacy journal history without this private binding needs explicit reviewed
+    reconciliation. Never infer or rewrite its authority during recovery.
+    """
+    binding = con.execute("SELECT value FROM ledger_meta WHERE key=?",
+                          (PUBLICATION_ROOT_KEY,)).fetchone()
+    if binding is not None:
+        require(binding[0] == str(root.path), "publication_root_binding_mismatch")
+        return
+    journal = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='staging_journal'").fetchone()
+    history = journal is not None and con.execute("SELECT 1 FROM staging_journal LIMIT 1").fetchone()
+    require(not history, "publication_root_binding_required")
+    if enroll:
+        con.execute("INSERT INTO ledger_meta(key,value) VALUES(?,?)",
+                    (PUBLICATION_ROOT_KEY, str(root.path)))
+
+
 @contextmanager
 def _authority(root):
     root = Root(root)
     with root_lock(root.path):
+        # Refuse relocation before schema/proposal recovery or historical target locks.
+        with store.ledger(root.ledger, readonly=True) as observed:
+            _publication_root_binding(observed, root)
         with store.ledger(root.ledger) as con:
             con.executescript(JOURNAL_SQL)
             con.execute("BEGIN IMMEDIATE")
+            _publication_root_binding(con, root, enroll=True)
             _recover_proposals(con, root)
             con.commit()
             pending = con.execute("SELECT DISTINCT target FROM staging_journal WHERE state='prepared'").fetchall()
