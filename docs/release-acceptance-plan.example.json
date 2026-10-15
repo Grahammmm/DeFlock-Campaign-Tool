@@ -1,0 +1,258 @@
+{
+  "schema": "records-release-rehearsal-plan-v1",
+  "purpose": "planning_only",
+  "authorization_verified": false,
+  "deployment_authorized": false,
+  "source": {
+    "main": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
+    "drafts": [
+      {
+        "pr": 96,
+        "head": "REVIEWED_PR96_HEAD_FROM_PLAN",
+        "scope": "manual_context_only"
+      },
+      {
+        "pr": 97,
+        "head": "REVIEWED_PR97_HEAD_FROM_PLAN",
+        "scope": "coordinated_queue_candidate"
+      },
+      {
+        "pr": 98,
+        "head": "REVIEWED_PR98_HEAD_FROM_PLAN",
+        "base_pr": 96,
+        "scope": "prerequisite_contract_tests_only"
+      }
+    ],
+    "combined_release_commit": null,
+    "wheel_sha256": null,
+    "installed_manifest_sha256": null,
+    "active_selector_verified": false
+  },
+  "reused_review_kit": {
+    "candidate": "HISTORICAL_REVIEW_KIT_COMMIT_FROM_PLAN",
+    "availability": "not_in_available_checkouts",
+    "scope": "documented_offline_review_aid_only",
+    "collector_executed": false,
+    "checklist": [
+      "pinned_source",
+      "required_result_completeness",
+      "independent_review",
+      "artifact_target_binding",
+      "evidence_digests",
+      "explicit_holds",
+      "rollback_identity"
+    ],
+    "repository_interfaces": [
+      "campaign_tool.records.release_manifest",
+      "campaign_tool.records.recovery.backup_v2",
+      "tests.records.test_backup_publication_compatibility"
+    ]
+  },
+  "ci_observation": {
+    "scope": "source_checks_only",
+    "results": [
+      {
+        "key": "96",
+        "sha": "REVIEWED_PR96_HEAD_FROM_PLAN",
+        "total": 46,
+        "states": {
+          "success": 46
+        },
+        "failed": []
+      },
+      {
+        "key": "97",
+        "sha": "REVIEWED_PR97_HEAD_FROM_PLAN",
+        "total": 46,
+        "states": {
+          "success": 41,
+          "in_progress": 5
+        },
+        "failed": []
+      },
+      {
+        "key": "98",
+        "sha": "REVIEWED_PR98_HEAD_FROM_PLAN",
+        "total": 46,
+        "states": {
+          "queued": 30,
+          "success": 9,
+          "in_progress": 7
+        },
+        "failed": []
+      },
+      {
+        "key": "main",
+        "sha": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
+        "total": 46,
+        "states": {
+          "success": 46
+        },
+        "failed": []
+      }
+    ]
+  },
+  "synthetic_rehearsals": [
+    {
+      "id": "release_restore",
+      "source_commit": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
+      "status": "executed_pass",
+      "tests": 23,
+      "skips": 0,
+      "evidence": "existing release-manifest suite, guard compatibility, and ten selected RecoveryV2 cases",
+      "proves": [
+        "fixture_integrity",
+        "fixture_isolated_restore",
+        "quiescence_refusal",
+        "trusted_digest_refusal",
+        "WAL_close",
+        "interruption_refusal",
+        "retirement_guard_retention"
+      ]
+    },
+    {
+      "id": "rollback_history",
+      "source_commit": "PUBLIC_MAIN_COMMIT_FROM_PLAN",
+      "status": "executed_pass",
+      "tests": 7,
+      "skips": 0,
+      "evidence": "selected correction/rollback, AuthorityRegressionTests, and proposal history cases",
+      "proves": [
+        "fixture_rollback",
+        "tamper_missing_symlink_refusal",
+        "fixture_interruption_recovery",
+        "retained_provenance_history"
+      ]
+    }
+  ],
+  "live_gates": [
+    {
+      "id": "writer_quiescence",
+      "status": "not_executed",
+      "receipt_digest": null,
+      "requires": [
+        "all_roots_and_host_container_namespaces_mapped",
+        "all_writers_inventory_and_stop_receipts",
+        "independent_complete_observation",
+        "no_unresolved_FD_or_scheduler_denials",
+        "scope_exact",
+        "UTC_age_at_most_120_seconds",
+        "boundary_continuous_through_capture"
+      ]
+    },
+    {
+      "id": "recovery_closure",
+      "status": "not_executed",
+      "receipt_digest": null,
+      "requires": [
+        "actual_operation_dependency_profile",
+        "two_distinct_databases_if_using_generic_v2",
+        "exact_schema_pins",
+        "truthful_role_and_embedded_payload_mapping",
+        "actual_cursors_only",
+        "no_placeholder_review_bundles_or_SELECT_refs",
+        "all_unknown_stores_block",
+        "current_bounds_unchanged"
+      ]
+    },
+    {
+      "id": "source_readonly",
+      "status": "not_executed",
+      "receipt_digest": null,
+      "requires": [
+        "source_view_readonly_in_capture_UID_namespace",
+        "host_bind_mapping_verified",
+        "no_symlink_or_shared_permission_workaround",
+        "mode_0400_alone_insufficient"
+      ]
+    },
+    {
+      "id": "retained_evidence",
+      "status": "not_executed",
+      "receipt_digest": null,
+      "requires": [
+        "original_hashes_and_every_occurrence",
+        "receipt_and_stage_history",
+        "stage_artifacts_and_ledger_metadata",
+        "pending_retirement_and_revoked_approvals",
+        "publication_journals_and_proposal_revisions",
+        "capture_resolution_policy_dependencies",
+        "draft_extension_dependencies_if_adopted"
+      ]
+    },
+    {
+      "id": "backup_verify_restore",
+      "status": "not_executed",
+      "receipt_digest": null,
+      "requires": [
+        "new_owner_private_destinations",
+        "trusted_manifest_digest_separately_retained",
+        "snapshot_all_mutating_stores_in_one_quiescent_interval",
+        "verify_exact_closure",
+        "restore_outside_source_and_active_roots",
+        "integrity_foreign_key_schema_and_hash_checks",
+        "no_restored_services_or_models_executed"
+      ]
+    },
+    {
+      "id": "rollback_qualification",
+      "status": "not_executed",
+      "candidate_commit": null,
+      "candidate_artifact_sha256": null,
+      "receipt_digest": null,
+      "requires": [
+        "exact_runtime_selector_and_package_identity",
+        "compatible_schema_and_resume_state",
+        "retirement_publication_approval_guards_preserved",
+        "historical_receipts_not_reinterpreted",
+        "isolated_recovery_and_switchback_rehearsed",
+        "pre_guard_runtime_refused"
+      ]
+    },
+    {
+      "id": "activation",
+      "status": "held",
+      "requires": [
+        "independent_exact_combined_head_review",
+        "all_required_final_head_CI_green",
+        "built_and_installed_artifact_binding",
+        "writer_closure_restore_and_rollback_gates_pass",
+        "context_normalization_date_support_and_unattended_holds_resolved",
+        "queue_migration_runner_storage_compatibility_if_adopted",
+        "separate_explicit_owner_activation_authority"
+      ]
+    }
+  ],
+  "residual_holds": [
+    "trusted_normalizer_missing",
+    "verified_dates_and_policy_applicability_missing",
+    "complete_support_source_provider_missing",
+    "unattended_context_reconciliation_unwired",
+    "live_all_writer_proof_missing",
+    "live_profile_closure_unverified",
+    "runtime_rollback_unqualified",
+    "no_activation_or_publication_authority"
+  ],
+  "smallest_future_slice": {
+    "name": "read_only_current_structured_source_resolver",
+    "implementation_started": false,
+    "inputs": [
+      "primary_original_identity",
+      "explicit_support_original_identities",
+      "existing_canonical_read_snapshot"
+    ],
+    "outputs": [
+      "complete_accepted_unit_inventory",
+      "verified_artifact_hashes_and_locators",
+      "fresh_canonical_joins",
+      "explicit_unresolved_normalization_date_policy_requirements"
+    ],
+    "forbidden_inference": [
+      "record_type_from_labels",
+      "conduct_date_from_mail",
+      "version_verified_from_draft_rules",
+      "complete_from_capped_selection"
+    ],
+    "next_gate": "separate_source_review_and_synthetic_tests"
+  }
+}
