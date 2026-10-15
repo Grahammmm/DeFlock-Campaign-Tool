@@ -141,3 +141,30 @@ class ReviewCollectionTests(unittest.TestCase):
             with self.subTest(envelope=isinstance(payload, dict)):
                 self.collected.write_text(json.dumps(payload))
                 self.check_consumers(ready=True)
+
+    def test_inline_valid_reviews_cannot_mask_malformed_external_batch_input(self):
+        self.finding["reviews"] = self.reviews
+        self.write("findings.json", [self.finding])
+        # Inline reviews alone are a supported healthy control.
+        report = self.root / "inline-batch.json"
+        healthy = self.cli("batch-report", self.root, "--check-files", "--output", report)
+        self.assertEqual(healthy.returncode, 0, healthy.stderr)
+        self.assertEqual(json.loads(report.read_text())["publication_ready"], 1)
+        for raw in ("{", "null",
+                    '{"reviews":null,"collection_errors":[{"issue":"synthetic collection failure"}]}'):
+            with self.subTest(raw=raw):
+                self.collected.write_text(raw)
+                result = self.cli("batch-report", self.root, "--check-files", "--output", report)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                batch = json.loads(report.read_text())
+                self.assertEqual(batch["publication_ready"], 0)
+                self.assertTrue(batch["errors"])
+                self.assertIn("review_collection_failed",
+                              batch["agencies"][0]["gates"][0]["blockers"])
+        self.collected.unlink()
+        self.collected.mkdir()
+        result = self.cli("batch-report", self.root, "--check-files", "--output", report)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        batch = json.loads(report.read_text())
+        self.assertEqual(batch["publication_ready"], 0)
+        self.assertIn("review_collection_failed", batch["agencies"][0]["gates"][0]["blockers"])

@@ -65,8 +65,10 @@ def main():
                 if not isinstance(items, list):
                     raise ValueError("not an array")
                 dest.extend(items)
-            except (ValueError, TypeError):
+            except (OSError, ValueError, TypeError, RecursionError):
                 errors.append({"path": str(path), "error": "invalid " + key})
+                if key == "reviews":
+                    collection_errors.append("reviews_input_unreadable_or_invalid")
         checks = gate_many(findings, reviews, args.check_files, collection_errors=collection_errors)
         results.append({"agency_package": agency.name, "document_digest_entries": len(digests),
                         "distinct_digest_hashes": len({d.get("sha256") for d in digests if d.get("sha256")}),

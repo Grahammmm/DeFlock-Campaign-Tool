@@ -28,3 +28,17 @@ JSON/envelopes, unreadable sources after prior passing output, prior collection
 errors, exact deduplication and distinct challenges. Healthy controls still pass.
 This changes neither review authentication/independence nor substantive/legal/
 privacy approval. It grants no publication, live-data or runtime authority.
+
+## Independent review repair cycle1
+
+batch-report now treats external review read/decode/shape failures as collection
+failures even when a finding has valid inline receipts. The affected findings
+receive review_collection_failed and readiness0. The reviewer's three malformed
+inputs are reproduced in a new test alongside unreadable-file handling and a
+healthy inline-only control. Reporting exit conventions are unchanged.
+
+Only the three changed gate-module engine_sha256 entries in the reviewed
+records-gates import manifest are refreshed; historical source hashes and other
+entries stay unchanged. The existing exact manifest approval pin is updated
+using its same adjacent-literal annotations. Scanner logic, permitted paths,
+detector rules, workflow checks and provenance validation are unchanged.
