@@ -226,6 +226,8 @@ class CatalogAdapter:
                     "unknown_reasons": {field: "No supported catalog value" for field in FACT_FIELDS
                                         if normalized[field] in (None, [], "")},
                     "review_complete": False, "publication_ready": False}
+        from .context_runtime import ledger_binding
+        envelope.update(ledger_binding(self.database, subject, "catalog"))
         content = catalog.encoded(envelope)
         require(len(content) <= MAX_CARD_BYTES, "classification_envelope_size")
         return {"subject_sha256": subject, "content": content, "content_sha256": _sha(content),

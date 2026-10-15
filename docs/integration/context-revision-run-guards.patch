@@ -1,0 +1,38 @@
+--- a/campaign_tool/records/run.py
++++ b/campaign_tool/records/run.py
+@@ -148 +148,2 @@
+-                       "law_sources": sorted(r["rule_id"] for r in self.package["rules"]),
++                       "law_package_sha256": sha(encoded(self.package)),
++                       "event_date": event_date.isoformat() if event_date else None,
+@@ -361,8 +362,3 @@
+-        header = self._headers(subject).get("date")
+-        if header:
+-            from email.utils import parsedate_to_datetime
+-            try:
+-                return parsedate_to_datetime(header).date()
+-            except (TypeError, ValueError):
+-                pass
+-        return date.today()
++        # A receipt/header date is not a source-bound conduct date.
++        # The shared contextual adapter must resolve duty-specific event dates.
++        return None
+@@ -408 +404,2 @@
+-        event = self._event_date(subject).isoformat() if headers.get("date") else None
++        # Source-supported catalog dates are supplied by the contextual adapter.
++        event = None
+@@ -434 +431,2 @@
+-            content.update(comparisons=[], event_date=self._event_date(subject).isoformat())
++            return {"status": "blocked", "reason": "comparison_applicability_unresolved",
++                    "classification": "VERSION_OR_APPLICABILITY_UNRESOLVED"}
+@@ -472,0 +471,3 @@
++        if self._event_date(subject) is None:
++            return {"status": "blocked", "reason": "conduct_date_unresolved",
++                    "classification": "VERSION_OR_APPLICABILITY_UNRESOLVED"}
+@@ -501,0 +503,3 @@
++        if event_date is None:
++            return {"status": "blocked", "reason": "conduct_date_unresolved",
++                    "classification": "VERSION_OR_APPLICABILITY_UNRESOLVED"}
+@@ -529 +533,2 @@
+-            return self._inapplicable(subject, stage, "compare", "no_rule_in_force_matched_digest_duties")
++            return {"status": "blocked", "reason": "no_matched_duties_applicability_unresolved",
++                    "classification": "VERSION_OR_APPLICABILITY_UNRESOLVED"}
