@@ -65,7 +65,10 @@ def _resume(raw):
             result[key] = value
         return result
     require(len(raw) <= 4096, "resume_invalid")
-    value = json.loads(raw, object_pairs_hook=pairs)
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs)
+    except RecursionError as error:
+        raise RecoveryError("resume_invalid") from error
     require(type(value) is dict and set(value) == {"schema", "cursor", "frontier"} and
             value["schema"] == "records-advance-resume-v1", "resume_invalid")
     for key in ("cursor", "frontier"):

@@ -149,6 +149,20 @@ class RecoveryAssessorTests(unittest.TestCase):
         p.symlink_to(self.blob)
         self.assertEqual(self.run_assessor()["reasons"], ["symlink_rejected"])
 
+    def test_hash_pinned_deep_resume_returns_sanitized_rejection(self):
+        raw = b'[' * 1100 + b'0' + b']' * 1100
+        self.assertLessEqual(len(raw), 4096)
+        self.resume.write_bytes(raw)
+        self.refresh()
+        before = {p.name: p.read_bytes() for p in self.root.iterdir()}
+        report = self.run_assessor()
+        self.assertEqual(report["status"], "rejected")
+        self.assertEqual(report["reasons"], ["resume_invalid"])
+        self.assertEqual(report["coverage"], {})
+        self.assertFalse(report["activation"])
+        self.assertFalse(report["capture_eligible"])
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
+
     def test_publication_binding_mismatch_refuses_without_rebinding(self):
         self.edit("UPDATE ledger_meta SET value='/different-runtime'")
         before = self.canonical.read_bytes()
