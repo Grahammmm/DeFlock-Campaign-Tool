@@ -88,12 +88,12 @@ class ClientTests(unittest.TestCase):
         opener = Opener([http_error(409, b'{"error":"job is done, not leased"}')])
         ws, sleeps = client(opener)
         with self.assertRaises(WorkspaceError) as ctx:
-            ws.post_result("job_1", "done", {})
+            ws.post_result("job_1", "done", {}, claim_token="synthetic-claim")
         self.assertEqual(ctx.exception.status, 409)
         self.assertFalse(ctx.exception.retryable)
         self.assertEqual(sleeps, [])
         with self.assertRaises(ValueError):
-            ws.post_result("job_1", "weird")
+            ws.post_result("job_1", "weird", claim_token="synthetic-claim")
 
     def test_connection_errors_retry_then_unreachable(self):
         opener = Opener([urllib.error.URLError("refused")] * 2 + [FakeResponse(204)])

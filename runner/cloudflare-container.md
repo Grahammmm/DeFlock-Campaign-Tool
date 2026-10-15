@@ -42,8 +42,13 @@ exit with a non-retryable 401 and the next scheduled start picks up the new valu
 - Instance memory and disk: the extract worker enforces its own resource limits, but a
   large PDF or workbook still needs working space under `RUNNER_WORKDIR`. Size the instance
   for the largest expected original, or keep large originals on a self-hosted runner.
-- Maximum run duration and idle shutdown behaviour; the lease is 300 s and SIGTERM lets the
-  current job finish, so the platform's stop grace period must exceed that.
+- Durable result storage: `RUNNER_RESULT_DIR` must survive instance replacement for
+  unacknowledged result replay. An ephemeral container filesystem does not provide this
+  guarantee. Keep raw scratch in `RUNNER_WORKDIR` separate; this planned integration needs
+  a reviewed persistence mechanism before activation.
+- Maximum run duration and idle shutdown behaviour: renewal is bounded by `MAX_JOB_SECONDS`;
+  SIGTERM stops renewal and fences subsequent handler writes. In-process computation and
+  already in-flight writes cannot be forcibly rolled back; allow time for local cleanup.
 - Egress pricing and whether outbound connections to the organizer's model host are allowed.
 - Image size limits; the current image is Python 3.12 slim plus `pypdf` and `openpyxl`.
 

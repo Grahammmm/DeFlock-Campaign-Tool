@@ -10,7 +10,11 @@ enqueued from `outputs.followups`, failed jobs requeue while attempts remain).
 import hashlib
 import json
 import re
+import copy
+import threading
 import time
+import uuid
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -117,10 +121,19 @@ class Workspace:
     def lease_job(self, lease_seconds=300):
         return self._request("GET", f"/jobs?lease={int(lease_seconds)}")
 
-    def post_result(self, job_id, status, outputs=None, receipt=None, error=None):
+    def renew_job(self, job_id, claim_token, lease_seconds=300):
+        # A heartbeat must fail closed promptly, not keep retrying after its owner
+        # stopped. Result delivery uses the normal bounded transport retries.
+        heartbeat = copy.copy(self)
+        heartbeat.max_retries = 0
+        heartbeat.timeout = min(self.timeout, 10)
+        return heartbeat._request("POST", f"/jobs/{job_id}/renew",
+                                  {"claim_token": claim_token, "lease_seconds": lease_seconds})
+
+    def post_result(self, job_id, status, outputs=None, receipt=None, error=None, *, claim_token):
         if status not in ("done", "failed", "blocked"):
             raise ValueError("status must be done|failed|blocked")
-        body = {"status": status, "outputs": outputs or {}, "receipt": receipt}
+        body = {"claim_token": claim_token, "status": status, "outputs": outputs or {}, "receipt": receipt}
         if error:
             body["error"] = str(error)[:2000]
         return self._request("POST", f"/jobs/{job_id}/result", body)
@@ -170,7 +183,7 @@ class Workspace:
 class FakeWorkspace:
     """In-memory stand-in with the same interface, for tests and `--once --fake`."""
 
-    def __init__(self, privacy_tier="redacted_cloud"):
+    def __init__(self, privacy_tier="redacted_cloud", clock=time.time):
         self.privacy_tier = privacy_tier
         self.jobs = {}
         self.order = []
@@ -184,6 +197,10 @@ class FakeWorkspace:
         self.fail_next = 0
         self.calls = []
         self._n = 0
+        self.clock = clock
+        self._lock = threading.RLock()
+        self._deadlines = {}
+        self._accepted = {}
 
     def _maybe_fail(self):
         if self.fail_next > 0:
@@ -199,7 +216,7 @@ class FakeWorkspace:
         job = {"job_id": "job_%016x" % self._n, "campaign_id": "01test0000000000000000000a", "kind": kind,
                "idempotency_key": key, "inputs": dict(inputs or {}), "attempt": 0, "max_attempts": max_attempts,
                "enqueued_at": "2026-09-30T00:00:00Z", "leased_until": None, "privacy_tier": self.privacy_tier,
-               "state": "queued", "outputs": None, "error": None}
+               "state": "queued", "outputs": None, "error": None, "claim_token": None}
         self.jobs[job["job_id"]] = job
         self.order.append(job["job_id"])
         return job
@@ -207,22 +224,65 @@ class FakeWorkspace:
     def lease_job(self, lease_seconds=300):
         self.calls.append(("lease", lease_seconds))
         self._maybe_fail()
-        for job_id in self.order:
-            job = self.jobs[job_id]
-            if job["state"] == "queued" and job["attempt"] < job["max_attempts"]:
-                job["state"] = "leased"
-                job["attempt"] += 1
-                return {k: v for k, v in job.items() if k not in ("state", "outputs", "error")}
+        with self._lock:
+            for job_id in self.order:
+                job = self.jobs[job_id]
+                if job["state"] == "leased" and self._deadlines[job_id] <= self.clock():
+                    job["state"] = "queued" if job["attempt"] < job["max_attempts"] else "failed"
+                    if job["state"] == "failed":
+                        job["error"] = "lease_attempts_exhausted"
+                if job["state"] == "queued" and job["attempt"] < job["max_attempts"]:
+                    job["state"] = "leased"
+                    job["attempt"] += 1
+                    job["claim_token"] = str(uuid.uuid4())
+                    self._set_deadline(job, lease_seconds)
+                    return {k: v for k, v in job.items() if k not in ("state", "outputs", "error")}
         return None
 
-    def post_result(self, job_id, status, outputs=None, receipt=None, error=None):
-        self.calls.append(("result", job_id, status))
-        self._maybe_fail()
+    def _set_deadline(self, job, seconds, *, extend=False):
+        deadline = self.clock() + seconds
+        if extend:
+            deadline = max(self._deadlines.get(job["job_id"], 0), deadline)
+        self._deadlines[job["job_id"]] = deadline
+        job["leased_until"] = datetime.fromtimestamp(deadline, timezone.utc).isoformat()
+
+    def _check_claim(self, job_id, claim_token):
         job = self.jobs.get(job_id)
         if not job:
             raise WorkspaceError(404, "unknown job")
-        if job["state"] != "leased":
-            raise WorkspaceError(409, f"job is {job['state']}, not leased")
+        if (job["state"] != "leased" or not claim_token or job["claim_token"] != claim_token
+                or self._deadlines[job_id] <= self.clock()):
+            raise WorkspaceError(409, "claim_conflict")
+        return job
+
+    def renew_job(self, job_id, claim_token, lease_seconds=300):
+        self.calls.append(("renew", job_id, claim_token, lease_seconds))
+        self._maybe_fail()
+        if type(lease_seconds) is not int or not 30 <= lease_seconds <= 3600:
+            raise WorkspaceError(400, "invalid lease_seconds")
+        with self._lock:
+            job = self._check_claim(job_id, claim_token)
+            self._set_deadline(job, lease_seconds, extend=True)
+            return {k: job[k] for k in ("job_id", "claim_token", "attempt", "leased_until")}
+
+    def post_result(self, job_id, status, outputs=None, receipt=None, error=None, *, claim_token):
+        with self._lock:
+            return self._post_result(job_id, status, outputs, receipt, error, claim_token=claim_token)
+
+    def _post_result(self, job_id, status, outputs, receipt, error, *, claim_token):
+        self.calls.append(("result", job_id, status))
+        self._maybe_fail()
+        if status not in ("done", "failed", "blocked"):
+            raise ValueError("status must be done|failed|blocked")
+        digest = sha256_hex(json.dumps([status, outputs or {}, receipt, error or None],
+                                      sort_keys=True, allow_nan=False).encode())
+        claim_key = (job_id, claim_token)
+        if claim_key in self._accepted:
+            accepted, reply = self._accepted[claim_key]
+            if accepted != digest:
+                raise WorkspaceError(409, "result_conflict")
+            return copy.deepcopy(reply)
+        job = self._check_claim(job_id, claim_token)
         outputs = dict(outputs or {})
         outputs["receipt"] = receipt
         state = status
@@ -239,7 +299,9 @@ class FakeWorkspace:
                 key = item.get("idempotency_key")
                 inputs = item.get("inputs") if isinstance(item.get("inputs"), dict) else {}
                 followups.append(self.enqueue(item["kind"], inputs, key if isinstance(key, str) and HEX64.match(key) else None)["job_id"])
-        return {"job_id": job_id, "state": state, "followups": followups}
+        reply = {"job_id": job_id, "state": state, "followups": followups}
+        self._accepted[claim_key] = (digest, copy.deepcopy(reply))
+        return reply
 
     def get_original(self, sha256):
         self._maybe_fail()

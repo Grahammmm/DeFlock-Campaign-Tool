@@ -249,9 +249,31 @@ CREATE TABLE IF NOT EXISTS job (
   finished_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  claim_token TEXT,
   UNIQUE (campaign_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS job_campaign_state ON job(campaign_id, state, enqueued_at);
+
+-- Immutable lease identity and per-attempt result evidence. Accepted results are never
+-- overwritten; response_json acknowledges exact replay even after another attempt starts.
+CREATE TABLE IF NOT EXISTS job_claim (
+  campaign_id TEXT NOT NULL REFERENCES campaign(campaign_id),
+  job_id TEXT NOT NULL REFERENCES job(job_id),
+  claim_token TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  leased_until TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('leased','expired','done','failed','blocked')),
+  result_sha256 TEXT,
+  result_json TEXT,
+  response_json TEXT,
+  completion_id TEXT,
+  accepted_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (campaign_id, job_id, claim_token),
+  UNIQUE (campaign_id, job_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS job_claim_completion ON job_claim(campaign_id, completion_id);
 
 -- Every proposed external effect. Nothing leaves the system without state = approved.
 CREATE TABLE IF NOT EXISTS external_action (

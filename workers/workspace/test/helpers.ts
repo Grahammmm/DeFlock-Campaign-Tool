@@ -57,11 +57,18 @@ export async function call(request: Request, overrides: Partial<Env> = {}): Prom
  * Lease one specific job for a test. The pool shares D1 state across tests in a file, so
  * `GET /jobs` may hand out an older queued job; this marks exactly `jobId` as leased.
  */
-export async function leaseExactly(jobId: string): Promise<void> {
+export async function leaseExactly(jobId: string): Promise<string> {
+  const now = new Date().toISOString();
   const until = new Date(Date.now() + 300_000).toISOString();
-  await env.DB.prepare("UPDATE job SET state = 'leased', leased_until = ?, attempt = attempt + 1, updated_at = ? WHERE job_id = ?")
-    .bind(until, new Date().toISOString(), jobId)
-    .run();
+  const token = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE job SET state = 'leased', leased_until = ?, claim_token = ?, attempt = attempt + 1, updated_at = ? WHERE job_id = ?")
+      .bind(until, token, now, jobId),
+    env.DB.prepare("INSERT INTO job_claim (campaign_id, job_id, claim_token, attempt, leased_until, state, created_at, updated_at) " +
+      "SELECT campaign_id, job_id, claim_token, attempt, leased_until, state, ?, ? FROM job WHERE job_id = ?")
+      .bind(now, now, jobId),
+  ]);
+  return token;
 }
 
 export function runnerHeaders(extra: Record<string, string> = {}): Record<string, string> {

@@ -118,7 +118,8 @@ class BuildSiteWorkerContractTests(unittest.TestCase):
             self.assertIsNotNone(leased)
             if leased["kind"] == "build_site":
                 return leased
-            self.workspace.post_result(leased["job_id"], "blocked", error="Unrelated synthetic fixture job")
+            self.workspace.post_result(leased["job_id"], "blocked", error="Unrelated synthetic fixture job",
+                                       claim_token=leased["claim_token"])
         self.fail("build job not leased")
 
     def consume(self, leased):
@@ -182,7 +183,8 @@ class BuildSiteWorkerContractTests(unittest.TestCase):
         self.bridge.fail_put_at = 2
         failed = self.consume(leased)
         self.assertEqual(failed.status, "failed")
-        self.assertIn("503", failed.error)
+        self.assertEqual(failed.error, "WorkspaceError: handler failed")
+        self.assertEqual(self.bridge.put_count, 2)  # injected 503 remains exercised
         partial = self.assert_unpublished(1)
         self.assertEqual(len(partial["files"]), 1)
         self.assertEqual(next(job for job in partial["jobs"] if job["job_id"] == leased["job_id"])["state"], "queued")
@@ -195,8 +197,15 @@ class BuildSiteWorkerContractTests(unittest.TestCase):
         snapshot = self.assert_unpublished(1)
         self.assertEqual(len(snapshot["files"]), len(result.outputs["manifest"]))
         self.assertTrue(all(item["key"].startswith("sites/" + leased["inputs"]["site_version"] + "/") for item in snapshot["files"]))
+        # Exact replay acknowledges the same completion without another upload.
+        replay = self.workspace.post_result(leased["job_id"], "done", result.outputs,
+                                            receipt=result.receipt, claim_token=retried["claim_token"])
+        self.assertEqual(replay["job_id"], leased["job_id"])
+        self.assertEqual(replay["state"], "done")
+        self.assertEqual(self.assert_unpublished(1)["files"], snapshot["files"])
         with self.assertRaises(WorkspaceError) as duplicate:
-            self.workspace.post_result(leased["job_id"], "done", result.outputs)
+            self.workspace.post_result(leased["job_id"], "done", {**result.outputs, "changed": True},
+                                       receipt=result.receipt, claim_token=retried["claim_token"])
         self.assertEqual(duplicate.exception.status, 409)
 
     def test_malformed_or_version_mismatched_worker_payload_never_stages(self):
