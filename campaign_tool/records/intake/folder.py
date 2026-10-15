@@ -287,8 +287,8 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
                         tokens=[]
                         for node in para.iter():
                             if node.tag==ns+"t" and node.text: tokens.append(node.text)
-                            elif node.tag==ns+"tab": tokens.append("\\t")
-                            elif node.tag in (ns+"br",ns+"cr"): tokens.append("\\n")
+                            elif node.tag==ns+"tab": tokens.append("\t")
+                            elif node.tag in (ns+"br",ns+"cr"): tokens.append("\n")
                         value="".join(tokens)
                         if value:
                             emit("docx_paragraph",dict(part=name,paragraph=count),value)
@@ -353,6 +353,7 @@ def active(db):
 def extraction_policy(form,config):
     """Fingerprint parser-affecting settings, not host paths or agency routing."""
     return hid(js(dict(format=form,paragraph_ordinals=2 if form=="docx" else None,
+                       **({"docx_text_separators":1} if form=="docx" else {}),
                        excluded_path_fragments=sorted(set(config["excluded_path_fragments"])) if form in {"zip","eml"} else [])))
 def extraction_budget(form,limits,depth):
     """Bind effective parser resources, not the container's absolute location."""

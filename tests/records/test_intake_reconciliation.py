@@ -193,6 +193,35 @@ class ReconciliationTests(unittest.TestCase):
         db.commit()
         self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 1)
 
+    def test_docx_separators_refresh_legacy_policy_and_preserve_attempts(self):
+        ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        body = ('<w:document ' + ns + '><w:body><w:p/>'
+                '<w:p><w:r><w:t>Alpha</w:t><w:tab/><w:t>Beta</w:t>'
+                '<w:br/><w:t>Gamma</w:t><w:cr/><w:t>Delta</w:t>'
+                '</w:r></w:p></w:body></w:document>')
+        sha = self.archive("separators.docx", {"[Content_Types].xml": "<Types/>",
+                                               "word/document.xml": body})
+        self.cli()
+        db = self.db()
+        row = db.execute("SELECT text,locator FROM units WHERE sha=?", (sha,)).fetchone()
+        self.assertEqual(row["text"], "Alpha\tBeta\nGamma\nDelta")
+        self.assertEqual(json.loads(row["locator"]), {"part": "word/document.xml", "paragraph": 2})
+        # Simulate a completed extraction carrying the pre-fix policy identity.
+        legacy_policy = folder.hid(folder.js(dict(format="docx", paragraph_ordinals=2,
+                                                   excluded_path_fragments=[])))
+        digest = json.loads(db.execute("SELECT digest FROM docs WHERE sha=?", (sha,)).fetchone()[0])
+        self.assertNotEqual(digest["extraction_policy_sha256"], legacy_policy)
+        digest["extraction_policy_sha256"] = legacy_policy
+        db.execute("UPDATE docs SET digest=? WHERE sha=?", (json.dumps(digest), sha))
+        db.commit()
+        self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 1)
+        attempts = db.execute("SELECT artifact_dir FROM extraction_attempts WHERE sha=?", (sha,)).fetchall()
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(all(Path(row[0]).is_dir() for row in attempts))
+        self.assertTrue(any("history" in Path(row[0]).parts for row in attempts))
+        self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 0)
+        self.assertEqual(db.execute("SELECT count(*) FROM extraction_attempts WHERE sha=?", (sha,)).fetchone()[0], 2)
+
     def test_helpers_keep_agency_config_and_legacy_output_cli(self):
         (self.root / "keep.txt").write_text("retained")
         personal = self.root / "personal.txt"

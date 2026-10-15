@@ -6,7 +6,7 @@
       "source_relative_path": "scripts/intake.py",
       "source_sha256": "c37b6a831d7c0546f28c34db046b98c6d1fa56bd9bb815771c84679b7ab0244f",
       "engine_path": "campaign_tool/records/intake/folder.py",
-      "engine_sha256": "0c4401122dd964f79b0657041c3f44779d732548b9108c9043589db3544d1ccf"
+      "engine_sha256": "dfbb5febd0b1ac36a7f33d75b73be94f4b3038cd46989721b3f133ee1373c58a"
     },
     {
       "source_relative_path": "scripts/repair_intake.py",
