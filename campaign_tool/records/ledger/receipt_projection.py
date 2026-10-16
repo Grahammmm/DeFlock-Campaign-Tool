@@ -57,6 +57,10 @@ def select(obj, field):
 
 
 def plan(raw, mapping):
+    return _plan(raw, mapping, validate_scalars=True)
+
+
+def _plan(raw, mapping, *, validate_scalars):
     reasons=[]
     result={'original_hash':None,'artifact_hash':None,'artifact_path':None,
             'reviewed_content_hash':None,'artifact_source_locator':None,'declarations':{},'reasons':reasons}
@@ -65,6 +69,8 @@ def plan(raw, mapping):
     try:
         obj=strict_json(raw)
         if not isinstance(obj,dict): raise ValueError('not object')
+        # Validate every scalar, including unmapped fields, inside the record hold.
+        if validate_scalars: canonical(obj).encode('utf-8')
     except (ValueError,UnicodeError,RecursionError):
         reasons.append('malformed_record'); return canonical(result)
     schema=strict_json(mapping)
@@ -95,6 +101,17 @@ def plan(raw, mapping):
         if result['artifact_path'] is None: reasons.append('missing_artifact_path')
         if result['artifact_hash'] is None: reasons.append('missing_artifact_hash_role')
     return canonical(result)
+
+
+def historical_plan_matches(raw, mapping, recorded):
+    if recorded==plan(raw,mapping):return True
+    # Pre-C15 captures did not validate unmapped scalars. Accept only the exact
+    # old derived plan on replay; SQL inserts still require the current planner.
+    # Evidence hashes, binding status and gaps remain checked against that plan.
+    try:
+        return recorded==_plan(raw,mapping,validate_scalars=False)
+    except (ValueError,UnicodeError,RecursionError):
+        return False
 
 
 def reasons(plan_json, artifact_sha, error, original_sha):
@@ -236,12 +253,15 @@ def verify(con,mid):
         row=con.execute('SELECT * FROM rp_items WHERE id=?',(step['item_id'],)).fetchone()
         source=sources.get(row['source_id']) if row else None
         if row is None or source is None or step['sequence']!=n or row['manifest_id']!=mid or source['manifest_id']!=mid:raise ValueError('checkpoint mutation')
-        if row['id']!=identity(source['id'],row['line']) or (row['line']>len(lines[source['id']]) or row['raw']!=lines[source['id']][row['line']-1]) or row['plan']!=plan(row['raw'],source['mapping']):raise ValueError('item source binding mutation')
+        if row['id']!=identity(source['id'],row['line']) or (row['line']>len(lines[source['id']]) or row['raw']!=lines[source['id']][row['line']-1]) or not historical_plan_matches(row['raw'],source['mapping'],row['plan']):raise ValueError('item source binding mutation')
         if row['artifact_sha']:
             art=con.execute('SELECT * FROM rp_artifacts WHERE sha=?',(row['artifact_sha'],)).fetchone()
             if not art or digest(art['body'])!=art['sha'] or len(art['body'])!=art['size']:raise ValueError('artifact mutation')
-        p=strict_json(row['plan']); known=p['original_hash'] if con.execute('SELECT 1 FROM originals WHERE sha256=?',(p['original_hash'],)).fetchone() else None
-        if known!=row['original_sha'] or row['binding_verified']!=bound(row['plan'],row['artifact_sha'],row['capture_error'],known):raise ValueError('original binding mutation')
+        p=strict_json(row['plan']); known=row['original_sha']
+        # Replay the captured historical binding, not today's ledger membership.
+        # A later original is additive evidence; it cannot rewrite this item's gap.
+        if known is not None and (known!=p['original_hash'] or not con.execute('SELECT 1 FROM originals WHERE sha256=?',(known,)).fetchone()):raise ValueError('original binding mutation')
+        if row['binding_verified']!=bound(row['plan'],row['artifact_sha'],row['capture_error'],known):raise ValueError('original binding mutation')
         columns=('id','manifest_id','source_id','line','raw','plan','artifact_sha','capture_error','original_sha','binding_verified')
         if evidence(*(row[k] for k in columns))!=row['evidence_sha'] or step['evidence_sha']!=row['evidence_sha']:raise ValueError('evidence mutation')
         expected=sorted(reasons(row['plan'],row['artifact_sha'],row['capture_error'],known))
@@ -297,12 +317,14 @@ def project(database,root,manifest,*,batch_size=100,max_batches=1):
                 for sid,line,record,mapping in pending[offset:offset+batch_size]:
                     pjson=plan(record,mapping); p=strict_json(pjson); artsha=None;err=None
                     if p['artifact_path']:
-                        data,err=capture(root,p['artifact_path'],min(MAX_ARTIFACT,max(0,MAX_JOB_ARTIFACTS-budget)))
+                        data,err=capture(root,p['artifact_path'],MAX_ARTIFACT)
                         if data is not None:
                             artsha=digest(data)
                             existing=con.execute('SELECT body,size FROM rp_artifacts WHERE sha=?',(artsha,)).fetchone()
                             if existing and (existing['body']!=data or existing['size']!=len(data)):raise ValueError('existing artifact mutation')
-                            if not existing:
+                            if not existing and len(data)>max(0,MAX_JOB_ARTIFACTS-budget):
+                                artsha=None;err='oversize'
+                            elif not existing:
                                 con.execute('INSERT INTO rp_artifacts VALUES(?,?,?)',(artsha,len(data),data));budget+=len(data)
                     original=p['original_hash'] if con.execute('SELECT 1 FROM originals WHERE sha256=?',(p['original_hash'],)).fetchone() else None
                     iid=identity(sid,line); verified=bound(pjson,artsha,err,original)

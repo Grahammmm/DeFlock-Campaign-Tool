@@ -10,6 +10,7 @@ here parses records for content or touches the ledger.
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from . import folder
@@ -25,16 +26,35 @@ def local_uid(sha256):
 
 def _write_private(path, data):
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    # Incomplete attempts must never occupy an accepted export identity.
+    # A same-directory hard link publishes complete bytes without replacing an
+    # existing original, unlike rename/replace. Orphan temps are safe to ignore.
+    fd, temporary = tempfile.mkstemp(prefix=".export-", dir=path.parent)
     try:
-        os.fsync(directory)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
-        os.close(directory)
+        os.unlink(temporary)
+
+
+def _sync_export(receipt_path):
+    """Re-establish directory durability even when a prior publish raised."""
+    for path in (receipt_path.parent, receipt_path.parent.parent,
+                 receipt_path.parent.parent.parent):
+        directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    return receipt_path
 
 
 def _ensure_private(path, data):
@@ -49,7 +69,13 @@ def _ensure_private(path, data):
             pass
     with folder.secure_open(path) as stream:
         stored = stream.read(len(data) + 1)
-    mail_delta.require(stored == data, "export_identity_conflict")
+        mail_delta.require(stored == data, "export_identity_conflict")
+        os.fsync(stream.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, original_format="eml"):
@@ -57,7 +83,8 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, origin
 
     Layout under ``mail_root``: ``<sha>/message.eml``, ``<sha>/<part>-<name>``
     and ``<sha>/receipt.json``. Re-exporting identical bytes under the same
-    occurrence identity is a no-op that returns the same receipt. The same
+    occurrence identity preserves the files and re-syncs their directories before
+    returning the same receipt. The same
     bytes seen under another identity (a second folder, or a new UID after a
     UIDVALIDITY reset) share the stored bytes and get their own
     ``receipt-<identity>.json``: one original, several occurrences.
@@ -72,8 +99,9 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, origin
     from . import mail_wire
     if mail_wire.needs_extended(bytes(raw), original_format):
         from .native_receipt import export
-        return export(raw, mail_root=mail_root, account=account, mailbox=mailbox,
-                      uidvalidity=uidvalidity, uid=uid, original_format=original_format)
+        receipt_path = export(raw, mail_root=mail_root, account=account, mailbox=mailbox,
+                              uidvalidity=uidvalidity, uid=uid, original_format=original_format)
+        return _sync_export(receipt_path)
     mail_delta.require(original_format == "eml", "mail_wire_invalid_format")
     root = Path(mail_root)
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -84,14 +112,14 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, origin
     if receipt_path.exists():
         existing, identity, _ = mail_delta.load_receipt(receipt_path)
         if identity == wanted:
-            return receipt_path
+            return _sync_export(receipt_path)
         tag = hashlib.sha256("\0".join(wanted).encode()).hexdigest()[:16]
         receipt_path = base / ("receipt-" + tag + ".json")
         if receipt_path.exists():
             existing, identity, _ = mail_delta.load_receipt(receipt_path)
             if identity != wanted:
                 raise mail_delta.Rejected("export_identity_conflict")
-            return receipt_path
+            return _sync_export(receipt_path)
     # Plan before writing any bytes. Legacy scalar-only messages retain their receipt schema.
     wire_plan = None
     try:
@@ -142,7 +170,7 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, origin
                        budget=manifest["budget"])
     _write_private(receipt_path, (json.dumps(receipt, sort_keys=True, indent=1) + "\n").encode())
     mail_delta.load_receipt(receipt_path)
-    return receipt_path
+    return _sync_export(receipt_path)
 
 
 def _part_payload(eml_path, locator):
