@@ -57,6 +57,10 @@ def select(obj, field):
 
 
 def plan(raw, mapping):
+    return _plan(raw, mapping, validate_scalars=True)
+
+
+def _plan(raw, mapping, *, validate_scalars):
     reasons=[]
     result={'original_hash':None,'artifact_hash':None,'artifact_path':None,
             'reviewed_content_hash':None,'artifact_source_locator':None,'declarations':{},'reasons':reasons}
@@ -66,7 +70,7 @@ def plan(raw, mapping):
         obj=strict_json(raw)
         if not isinstance(obj,dict): raise ValueError('not object')
         # Validate every scalar, including unmapped fields, inside the record hold.
-        canonical(obj).encode('utf-8')
+        if validate_scalars: canonical(obj).encode('utf-8')
     except (ValueError,UnicodeError,RecursionError):
         reasons.append('malformed_record'); return canonical(result)
     schema=strict_json(mapping)
@@ -97,6 +101,17 @@ def plan(raw, mapping):
         if result['artifact_path'] is None: reasons.append('missing_artifact_path')
         if result['artifact_hash'] is None: reasons.append('missing_artifact_hash_role')
     return canonical(result)
+
+
+def historical_plan_matches(raw, mapping, recorded):
+    if recorded==plan(raw,mapping):return True
+    # Pre-C15 captures did not validate unmapped scalars. Accept only the exact
+    # old derived plan on replay; SQL inserts still require the current planner.
+    # Evidence hashes, binding status and gaps remain checked against that plan.
+    try:
+        return recorded==_plan(raw,mapping,validate_scalars=False)
+    except (ValueError,UnicodeError,RecursionError):
+        return False
 
 
 def reasons(plan_json, artifact_sha, error, original_sha):
@@ -238,7 +253,7 @@ def verify(con,mid):
         row=con.execute('SELECT * FROM rp_items WHERE id=?',(step['item_id'],)).fetchone()
         source=sources.get(row['source_id']) if row else None
         if row is None or source is None or step['sequence']!=n or row['manifest_id']!=mid or source['manifest_id']!=mid:raise ValueError('checkpoint mutation')
-        if row['id']!=identity(source['id'],row['line']) or (row['line']>len(lines[source['id']]) or row['raw']!=lines[source['id']][row['line']-1]) or row['plan']!=plan(row['raw'],source['mapping']):raise ValueError('item source binding mutation')
+        if row['id']!=identity(source['id'],row['line']) or (row['line']>len(lines[source['id']]) or row['raw']!=lines[source['id']][row['line']-1]) or not historical_plan_matches(row['raw'],source['mapping'],row['plan']):raise ValueError('item source binding mutation')
         if row['artifact_sha']:
             art=con.execute('SELECT * FROM rp_artifacts WHERE sha=?',(row['artifact_sha'],)).fetchone()
             if not art or digest(art['body'])!=art['sha'] or len(art['body'])!=art['size']:raise ValueError('artifact mutation')

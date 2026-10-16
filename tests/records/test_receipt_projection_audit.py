@@ -71,3 +71,31 @@ class ProjectionAuditTests(unittest.TestCase):
             self.assertEqual(result['binding_verified'], 33)
             self.assertEqual(result['gaps'], 0)
             self.assertEqual(self.query('SELECT count(*),sum(size) FROM rp_artifacts'), [(32, 32 * 64)])
+
+    def test_legacy_unmapped_invalid_scalars_replay_without_rewriting(self):
+        # The old planner copied mapped fields only. These invalid, unmapped
+        # scalars therefore never entered its stored canonical plan.
+        expected_plan = rp.plan(json.dumps(self.row).encode(), rp.canonical({
+            'kind': 'reviews', 'fields': self.fields,
+            'declarations': {k: k for k in ('reviewer', 'coverage', 'holds', 'supersedes', 'challenges')},
+            'artifact_paths': {}}))
+        old_raw = [json.dumps(self.row).encode()[:-1] + suffix + b'\n'
+                   for suffix in (b',"ignored":1e400}', b',"ignored":"\\ud800"}')]
+        self.write([], b''.join(old_raw + [json.dumps(self.row).encode() + b'\n']))
+        current_plan = rp.plan
+        def historical_plan(raw, mapping):
+            return expected_plan if raw in old_raw else current_plan(raw, mapping)
+        with patch.object(rp, 'plan', side_effect=historical_plan):
+            self.assertEqual(self.run_project(batch_size=2)['binding_verified'], 2)
+        before = {table: self.query(f'SELECT * FROM {table}') for table in rp.migration.KEYS}
+        result = self.run_project()
+        self.assertEqual(result['processed'], 3)
+        self.assertEqual(result['binding_verified'], 3)
+        self.assertEqual(result['gaps'], 0)
+        for table, rows in before.items():
+            self.assertEqual(self.query(f'SELECT * FROM {table}')[:len(rows)], rows)
+        self.assertEqual(self.run_project()['added'], 0)
+        # The same invalid source in a new manifest gets a current explicit hold.
+        self.write([], old_raw[0])
+        self.assertEqual(self.run_project()['binding_verified'], 0)
+        self.assertEqual(self.query('SELECT reason FROM rp_gaps'), [('malformed_record',)])
