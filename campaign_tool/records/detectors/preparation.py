@@ -200,10 +200,13 @@ def prepare(snapshot, *, provider=None):
                 set(identities) == {s["original_sha256"] for s in sources.values()}, "source_original_inventory_changed")
         require(snapshot.joins.source_bindings_sha256 == digest(bindings), "canonical_join_sources_changed")
         require(provider is not None, "trusted_provider_unavailable")
-        require(not isinstance(provider, (dict, str, bytes)) and callable(getattr(provider, "provide", None)),
-                "host_provider_required")
         try:
-            supplied = provider.provide(snapshot)
+            if isinstance(provider, (dict, str, bytes)):
+                return Preparation("blocked", "host_provider_required")
+            provide = getattr(provider, "provide", None)
+            if not callable(provide):
+                return Preparation("blocked", "host_provider_required")
+            supplied = provide(snapshot)
         except Exception:
             raise PreparationError("provider_unavailable") from None
         prepared = _prepare(snapshot, supplied, bindings, units, originals, join_rows)

@@ -167,6 +167,26 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(p.prepare(snapshot, provider=Broken()).reason, "provider_unavailable")
         self.blocked(snapshot, {"trusted": True}, "provider_result_type")
 
+    def test_provider_lookup_runtime_error_is_sanitized(self):
+        class BrokenLookup:
+            @property
+            def provide(self):
+                raise RuntimeError("synthetic-private-marker")
+        snapshot, _ = fixture()
+        result = p.prepare(snapshot, provider=BrokenLookup())
+        self.assertEqual(result, p.Preparation("blocked", "provider_unavailable"))
+        self.assertNotIn("synthetic-private-marker", repr(result))
+
+    def test_provider_lookup_preparation_error_is_sanitized(self):
+        class BrokenLookup:
+            @property
+            def provide(self):
+                raise p.PreparationError("synthetic-private-marker")
+        snapshot, _ = fixture()
+        result = p.prepare(snapshot, provider=BrokenLookup())
+        self.assertEqual(result, p.Preparation("blocked", "provider_unavailable"))
+        self.assertNotIn("synthetic-private-marker", repr(result))
+
     def test_core_row_and_byte_bounds_apply_before_provider_or_hashing(self):
         snapshot, inputs = fixture()
         over = replace(snapshot, bindings_json=canonical([{}] * 5001))
