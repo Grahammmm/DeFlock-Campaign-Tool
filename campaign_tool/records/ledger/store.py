@@ -304,15 +304,18 @@ def import_legacy(snapshot, destination, *, batch_size=1000, max_batches=None):
                     con.execute("BEGIN IMMEDIATE")
                     try:
                         for item in batch:
-                            row = dict(item)
-                            rowid = row.pop("_source_rowid_")
+                            # The first cell is importer metadata. A real source
+                            # column may have the same name (including case
+                            # variants), so never resolve or remove it by name.
+                            rowid = item[0]
+                            row = dict(zip(item.keys()[1:], item[1:]))
                             identity = canonical({key: json_value(row[key]) for key in pk} if pk else {"rowid": rowid})
                             payload = canonical({key: json_value(value) for key, value in row.items()})
                             con.execute("INSERT INTO legacy_rows VALUES(?,?,?,?,?,?)",
                                         (import_id, table, rowid, identity, payload, sha_bytes(payload.encode())))
                             if table == "docs":
                                 _seed_original(con, row, import_id, rowid, excluded)
-                        last = batch[-1]["_source_rowid_"]
+                        last = batch[-1][0]
                         copied += len(batch)
                         con.execute("INSERT INTO legacy_checkpoints VALUES(?,?,?,?) ON CONFLICT(import_id,source_table) DO UPDATE SET last_rowid=excluded.last_rowid,copied_rows=excluded.copied_rows",
                                     (import_id, table, last, copied))
