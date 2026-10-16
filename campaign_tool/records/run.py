@@ -326,6 +326,8 @@ class Pipeline:
                     outcome["stages"][name] = "error:stage_failed"
                     break
                 outcome["stages"][name] = result.get("status", "pending")
+                if name == "extract" and result.get("extraction_gaps"):
+                    outcome["extraction_gaps"] = result["extraction_gaps"]
                 if result.get("reason"):
                     outcome["stages"][name] += ":" + str(result["reason"])[:160]
                 if result.get("status") not in ("done", "inapplicable"):
@@ -463,12 +465,14 @@ class Pipeline:
             # Record a keyed alert so the gap is visible in `records status`; nothing is faked.
             reason = "extraction_" + result["status"] + ":" + ",".join(codes)
             self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
-            return {"status": "blocked", "reason": reason}
+            return {"status": "blocked", "reason": reason,
+                    "extraction_gaps": _extraction_report_gaps(subject, result)}
         enrolled = stage["enrollment"].enroll(original_path=Path(original["storage_path"]), receipt_path=receipt,
                                               receipt_sha256=result["receipt_sha256"])
         accepted = stage["extraction"].accept(enrolled["import_id"])
         return {"status": accepted.get("status"), "import_id": enrolled["import_id"], "form": form,
-                "units": enrolled.get("units")}
+                "units": enrolled.get("units"),
+                **({"extraction_gaps": _extraction_report_gaps(subject, result)} if result["status"] == "partial" else {})}
 
     def stage_catalog(self, subject, stage):
         units = [u for u in self._units(subject) if u["text"].strip()]
@@ -884,6 +888,30 @@ class Pipeline:
         return report
 
 
+def _extraction_report_gaps(subject, result):
+    """Report coordinates without copying free-form source labels or errors.
+
+    The locator hash refers to the exact locator in preserved extraction.json;
+    only numeric coordinates are repeated here. Neither source metadata nor
+    ledger identities are rewritten by this presentation projection.
+    """
+    gaps = []
+    issues = list(result.get("issues") or [])
+    issues.extend({"code": page.get("reason"), "locator": {"page": page["page_no"]}}
+                  for page in result.get("pages", []) if page.get("status") in {"partial", "blocked"})
+    for issue in issues or [{"code": "extraction_not_complete"}]:
+        locator = issue.get("locator")
+        coordinates = {key: value for key, value in (locator.items() if isinstance(locator, dict) else [])
+                       if key in {"page", "line", "row", "column", "ordinal", "line_start", "line_end", "record", "frame", "image", "altchunk"}
+                       and type(value) is int and value >= 0}
+        code = issue.get("code")
+        gaps.append({"original_sha256": subject, "extraction_status": result["status"],
+                     "reason": code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code) else "extraction_issue",
+                     "locator": coordinates or None,
+                     "locator_sha256": sha(encoded(locator)) if locator is not None else None})
+    return gaps
+
+
 def _public_locator(locator):
     if not isinstance(locator, dict):
         return "document"
@@ -998,6 +1026,9 @@ def main(argv=None):
         for name, counts in report["counts"].items():
             print(f"  {name:9} done={counts['done']} pending={counts['pending']} blocked={counts['blocked']} "
                   f"inapplicable={counts['inapplicable']}")
+        for item in report.get("subjects", []):
+            for gap in item.get("extraction_gaps", []):
+                print("  extraction gap: " + json.dumps(gap, sort_keys=True))
         print(f"  complete through privacy: {report['end_to_end_complete']}; proposals awaiting owner: "
               f"{report['proposals_awaiting_owner']}")
     return report["exit_code"]
