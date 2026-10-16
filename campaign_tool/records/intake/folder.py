@@ -120,12 +120,21 @@ def inventory(db, out, roots, config=None):
     config = config if config is not None else load_config()
     run=uuid.uuid4().hex; started=time.monotonic(); counts=collections.Counter(); root_stats=[]
     db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?)", (run,now(),None,"inventory","running",js(roots))); db.commit()
+    # Publish a conservative snapshot before any incremental commits. An interrupted
+    # scan must retain the previous denominator, including roots not yet visited.
+    previous=db.execute("SELECT value FROM meta WHERE key='inventory_run'").fetchone()
+    if previous:
+        for root in roots:
+            db.execute("INSERT OR IGNORE INTO seen SELECT ?,s.oid,s.sha FROM seen s JOIN occurrences o ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.root=?",(run,previous[0],root))
+    db.execute("INSERT OR REPLACE INTO meta VALUES('inventory_run',?)",(run,)); db.commit()
     manifest=out/"manifests"/(run+".jsonl"); manifest.parent.mkdir(exist_ok=True); (out/"blobs").mkdir(exist_ok=True)
     blocked_paths={r[0] for r in db.execute("SELECT path FROM scope_exclusions")}; blocked_hashes={r[0] for r in db.execute("SELECT sha FROM scope_exclusions WHERE sha!=''")}
     with manifest.open("w") as log:
         def record(row): log.write(js(row)+"\n"); log.flush(); counts[row["status"]]+=1
         for root in roots:
             rs=dict(root=root,hashed=0,errors=0,excluded=0); root_stats.append(rs)
+            prior={r[0] for r in db.execute("SELECT s.oid FROM seen s JOIN occurrences o ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.root=?",(run,root))}
+            observed=set()
             def onerror(e):
                 rs["errors"]+=1; record(dict(status="error",root=root,path=e.filename,error=str(e)))
                 event(db,run,"inventory","scan_error",e.filename or root,detail=e)
@@ -162,16 +171,21 @@ def inventory(db, out, roots, config=None):
                             sha=h.hexdigest(); receipt=dict(mtime_ns=before.st_mtime_ns,ctime_ns=before.st_ctime_ns,device=before.st_dev,inode=before.st_ino,observed_at=now(),received_at=None)
                             oid=register(db,sha,size,fmt(path,head,stored),path,root,receipt=receipt)
                             db.execute("INSERT OR IGNORE INTO preservations VALUES(?,?,?,?)",(sha,stored,now(),size))
-                            db.execute("INSERT INTO seen VALUES(?,?,?)",(run,oid,sha)); rs["hashed"]+=1
+                            db.execute("INSERT OR REPLACE INTO seen VALUES(?,?,?)",(run,oid,sha)); observed.add(oid); rs["hashed"]+=1
                             record(dict(status="included",oid=oid,sha256=sha,bytes=size,path=path,root=root,classification=provenance(path),classification_basis="trusted directory first; otherwise provisional filename heuristic, never excluded from review",receipt=receipt,storage="preserved",blob_path=stored,name_review_required=not pathlib.Path(path).suffix))
                             if rs["hashed"]%100==0: db.commit()
-                        except Exception as e: onerror(OSError(str(e),path))
+                        except Exception as e: onerror(OSError(None,str(e),path))
             except Exception as e:
                 rs["errors"]+=1; record(dict(status="error",root=root,path=root,error=str(e))); event(db,run,"inventory","root_error",root,detail=e)
-    db.execute("INSERT OR REPLACE INTO meta VALUES('inventory_run',?)",(run,))
+            # Only a complete root scan proves that old occurrences disappeared.
+            # Failed roots retain unseen sources; explicit scope exclusions still
+            # apply in active(). Historical occurrences and bytes are immutable.
+            if not rs["errors"]:
+                db.executemany("DELETE FROM seen WHERE run=? AND oid=?",((run,oid) for oid in prior-observed))
+            rs["retained_unverified_occurrences"]=len(prior-observed) if rs["errors"] else 0
     stats=dict(run_id=run,version=VERSION,roots=root_stats,counts=dict(counts),seconds=round(time.monotonic()-started,3),manifest=str(manifest),complete=not counts["error"])
     stats["unique_hashes"]=db.execute("SELECT count(DISTINCT sha) FROM seen WHERE run=?",(run,)).fetchone()[0]
-    stats["duplicate_occurrences"]=counts["included"]-stats["unique_hashes"]
+    stats["duplicate_occurrences"]=db.execute("SELECT count(*) FROM seen WHERE run=?",(run,)).fetchone()[0]-stats["unique_hashes"]
     stats["occurrence_bytes"]=db.execute("SELECT coalesce(sum(d.bytes),0) FROM seen s JOIN docs d ON d.sha=s.sha WHERE s.run=?",(run,)).fetchone()[0]
     stats["unique_bytes"]=db.execute("SELECT coalesce(sum(bytes),0) FROM docs WHERE sha IN (SELECT sha FROM seen WHERE run=?)",(run,)).fetchone()[0]
     db.execute("UPDATE runs SET finished=?,status=?,detail=? WHERE id=?",(now(),"complete" if stats["complete"] else "partial",js(stats),run)); db.commit()
@@ -530,6 +544,14 @@ def report(db,out,config=None):
     summary.update(physical_unique_by_class=dict(physical_classes),active_original_hashes=sum("original" in classes[s] for s in docs),preserved_active_hashes=sum(s in stored for s in docs),indexed_only_active_hashes=sum(s not in stored for s in docs),extraction_version_mismatches=sum(d["version"] not in {None,VERSION} for d in docs.values()))
     summary.update(physical_unique_hashes=sum(v==0 for v in levels.values()),physical_occurrences=db.execute("SELECT count(*) FROM seen WHERE run=? AND sha NOT IN (SELECT sha FROM scope_exclusions)",(inv,)).fetchone()[0],quarantined_hashes=db.execute("SELECT count(DISTINCT sha) FROM scope_exclusions WHERE sha!=''").fetchone()[0])
     summary.update(retired_container_edges=db.execute("SELECT count(*) FROM edge_history").fetchone()[0],format_history_records=db.execute("SELECT count(*) FROM document_history").fetchone()[0],extraction_gaps=extraction_gaps)
+    inventory_state=db.execute("SELECT status FROM runs WHERE id=?",(inv,)).fetchone()
+    inventory_gaps=[dict(reason=r["code"],path=r["path"],sha256=r["sha"] or None)
+                    for r in db.execute("SELECT * FROM events WHERE run=? AND stage='inventory' AND code IN ('scan_error','root_error')",(inv,))]
+    if inventory_state and inventory_state[0]=="running":
+        inventory_gaps.append(dict(reason="inventory_interrupted_or_running",path=None,sha256=None))
+    summary.update(inventory_complete=bool(inventory_state and inventory_state[0]=="complete"),inventory_gaps=inventory_gaps)
+    issue_counts.update(gap["reason"] for gap in inventory_gaps)
+    summary["issues"]=dict(issue_counts)
     summary["limitations"][4]="Content-addressed physical originals and children are preserved read-only from v2 onward; older hash-only history may lack bytes."
     atomic(out/"coverage.json",summary); atomic(out/"reports"/((inv or "none")+"-"+uuid.uuid4().hex+".json"),summary)
     (out/"coverage.md").write_text("# Flock intake coverage\n\n```json\n"+json.dumps(summary,indent=2)+"\n```\n")
