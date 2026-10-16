@@ -228,7 +228,7 @@ def assess(*, offline_root, historical_root, dependencies, code_commit):
     except RecoveryError as error:
         report["status"] = "rejected"
         report["reasons"] = [str(error)]
-    except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError, sqlite3.Error):
         report["status"] = "rejected"
         report["reasons"] = ["dependency_unreadable_or_invalid"]
     return report

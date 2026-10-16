@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -168,6 +169,31 @@ class RecoveryAssessorTests(unittest.TestCase):
         before = self.canonical.read_bytes()
         self.assertEqual(self.run_assessor()["reasons"], ["publication_binding_mismatch"])
         self.assertEqual(before, self.canonical.read_bytes())
+
+    def test_deep_directory_inventory_returns_sanitized_rejection(self):
+        # Exercise the real descriptor walk below its entry bound. A lower
+        # interpreter recursion limit keeps the fixture small and portable.
+        directory = self.root
+        for _ in range(180):
+            directory = directory / "d"
+            directory.mkdir(mode=0o700)
+        before = {p.name: p.read_bytes() for p in self.root.iterdir() if p.is_file()}
+        previous_limit = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(150)
+            report = self.run_assessor()
+        finally:
+            sys.setrecursionlimit(previous_limit)
+        self.assertEqual(report["status"], "rejected")
+        self.assertEqual(report["reasons"], ["dependency_unreadable_or_invalid"])
+        self.assertEqual(report["coverage"], {})
+        self.assertEqual(report["schema_sha256"], {})
+        self.assertFalse(report["activation"])
+        self.assertFalse(report["capture_eligible"])
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir() if p.is_file()})
+        encoded = json.dumps(report)
+        for private in (str(self.root), self.historical, str(directory), "RecursionError"):
+            self.assertNotIn(private, encoded)
 
     def test_zero_review_rows_remain_explicitly_held(self):
         self.edit("DELETE FROM stage_content")
