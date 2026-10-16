@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from . import context_revision as cr
+from .context_snapshot_io import read_artifact
 from .ledger import stages, store
 
 
@@ -99,16 +100,20 @@ def reconcile(pipeline, subject, runner):
         revoke(pipeline, subject)
         raise
     key = "context-revision-v1:" + subject
-    with store.ledger(pipeline.root.ledger, readonly=True) as con:
-        pointer = con.execute("SELECT value FROM ledger_meta WHERE key=?", (key,)).fetchone()
-        artifact = con.execute("SELECT payload FROM stage_artifacts WHERE sha256=?", (pointer[0],)).fetchone() if pointer else None
+    try:
+        with store.ledger(pipeline.root.ledger, readonly=True) as con:
+            pointer = con.execute("SELECT value FROM ledger_meta WHERE key=?", (key,)).fetchone()
+            artifact = read_artifact(con, pointer[0]) if pointer else None
+    except ValueError:
+        revoke(pipeline, subject)
+        raise
     previous = None
     if pointer:
-        if artifact is None or hashlib.sha256(bytes(artifact[0])).hexdigest() != pointer[0]:
+        if artifact is None or hashlib.sha256(artifact).hexdigest() != pointer[0]:
             revoke(pipeline, subject)
             raise ValueError("context_snapshot_corrupt")
         try:
-            prior = json.loads(bytes(artifact[0]))
+            prior = json.loads(artifact)
             if prior["subject_sha256"] != subject:
                 raise ValueError("context_snapshot_subject_mismatch")
             previous = prior["revision"]
@@ -142,10 +147,10 @@ def ledger_binding(database, subject, name):
         pointer = con.execute("SELECT value FROM ledger_meta WHERE key=?", ("context-revision-v1:" + subject,)).fetchone()
         if pointer is None:
             return {}
-        artifact = con.execute("SELECT payload FROM stage_artifacts WHERE sha256=?", (pointer[0],)).fetchone()
-    if artifact is None or hashlib.sha256(bytes(artifact[0])).hexdigest() != pointer[0]:
+        artifact = read_artifact(con, pointer[0])
+    if artifact is None or hashlib.sha256(artifact).hexdigest() != pointer[0]:
         raise ValueError("context_snapshot_corrupt")
-    current = json.loads(bytes(artifact[0]))
+    current = json.loads(artifact)
     if current["subject_sha256"] != subject or current["revision"]["dependencies"]["subject_sha256"] != subject:
         raise ValueError("context_snapshot_subject_mismatch")
     cr.invalidation_plan(current["revision"], current["revision"])
