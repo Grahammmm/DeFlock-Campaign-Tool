@@ -365,7 +365,8 @@ class PipelineSafetyTests(SafetyFixture, unittest.TestCase):
             pipeline.safety = self.guard()
             states = {name: {'status': 'pending' if name == 'extract' else 'done', 'receipt_sha256': None} for name in run.STAGE_ORDER}
             with patch.object(pipeline, '_states', return_value=states), patch.object(pipeline, '_original', return_value={}), patch.object(pipeline, '_form', return_value='png'), patch.object(pipeline, 'stage_extract', return_value={'status': 'blocked', 'reason': 'visual_review_required'}) as extract:
-                outcomes = pipeline.advance_all([original(70)])
+                with run.root_lock(self.root.path):
+                    outcomes = pipeline.advance_all([original(70)])
             self.assertEqual(extract.call_count, int(provisioned))
             self.assertEqual(outcomes[0]['outcome'], 'review_required')
             self.assertFalse(pipeline.safety.stopped)
@@ -465,7 +466,8 @@ class PipelineSafetyTests(SafetyFixture, unittest.TestCase):
         states = {name: {'status': 'pending', 'receipt_sha256': None} for name in run.STAGE_ORDER}
         subjects = [original(n) for n in range(201)]
         with patch.object(pipeline, '_states', return_value=states), patch.object(pipeline, '_original', return_value={}), patch.object(pipeline, '_form', return_value='png'), patch.object(pipeline, 'stage_extract', side_effect=AssertionError('unprovisioned image must remain a review hold')):
-            progress = pipeline.advance_all(subjects + subjects[:3])
+            with run.root_lock(self.root.path):
+                progress = pipeline.advance_all(subjects + subjects[:3])
         self.assertEqual(len(progress), 200)
         self.assertEqual(pipeline.originals_deferred, 1)
         self.assertEqual(pipeline.safety.phases['advance']['attempted'], 200)

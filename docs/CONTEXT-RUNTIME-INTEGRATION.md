@@ -1,8 +1,10 @@
 # Bounded contextual runtime integration
 
 This integrates PR84's unchanged pure context/applicability helper and synthetic
-tests into the manual canonical records pipeline. It is source-only and does
-not close ARCH04/05 for deployed or unattended operation.
+tests into the canonical records pipeline. Unattended runs now reconcile under the
+shared root lock and advancement budget before analytical reuse or review-hold
+acknowledgement, and after newly accepted extraction. It remains source-only
+and does not close ARCH04/05 for deployed operation.
 
 ## Implemented behavior
 
@@ -37,9 +39,16 @@ than inapplicability. Unresolved comparison content cannot pass its validator.
 
 ## Remaining holds
 
-- The unattended runner overrides stage selection. Its bounded preselection,
-  resume and shared-budget contextual reconciliation are not wired by this patch.
-  This is a manual-runner integration, not full ARCH04/05 closure.
+- Unattended selection sweeps all in-scope originals, including completed work.
+  Each context inspection consumes the same advancement attempt as its stage
+  work. Review retirement has first use of this shared budget. The finite
+  cursor/frontier defers behind-cursor changes until the next sweep; it is not
+  proof of publication freshness. Partial reconciliation and elapsed deadlines
+  retain the retry key. A persistent safety hold still requires owner repair.
+- Context snapshot reads remain cooperative, without strict per-snapshot memory
+  or wall-time bounds. The 10000-original selection ceiling is retained; the
+  database query now reads at most 10001 rows to detect overflow. Strict inner
+  snapshot bounds and publication freshness remain deployment acceptance holds.
 - No trusted source-date/applicability provider or authenticated acceptance seam
   is introduced. Historical/multiple-duty dates remain blocked, even when the
   pure helper can structurally describe them.

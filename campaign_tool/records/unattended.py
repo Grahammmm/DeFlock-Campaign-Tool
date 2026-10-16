@@ -9,7 +9,7 @@ import stat
 import sys
 
 from . import run as manual
-from . import extraction_routes
+from . import context_runtime, extraction_routes
 from .intake import eml_export, folder, imap_intake
 from .ledger import store
 from .runner.canonical_mail import CanonicalMailBackend
@@ -308,6 +308,7 @@ class UnattendedPipeline(manual.Pipeline):
                 temporary.unlink()
 
     def advance_all(self, subjects=None):
+        manual.require_root_lock(self.root.path)
         stage = self._open_stage_run()
         if not self._reconcile_review_authority(stage):
             return []
@@ -317,9 +318,8 @@ class UnattendedPipeline(manual.Pipeline):
         outside_sweep = 0
         if subjects is None:
             rows = self._query(
-                "SELECT DISTINCT o.sha256,o.first_seen_at FROM originals o JOIN stage_state s ON s.original_sha256=o.sha256 "
-                "WHERE o.scope!='out_of_scope' AND s.stage!='preserve' AND s.status NOT IN ('done','inapplicable') "
-                "ORDER BY o.first_seen_at,o.sha256")
+                "SELECT o.sha256,o.first_seen_at FROM originals o WHERE o.scope!='out_of_scope' "
+                "ORDER BY o.first_seen_at,o.sha256 LIMIT 10001")
             if len(rows) > 10000:
                 self.safety.stop("invalid_safety_state")
                 raise manual.RunError("invalid_safety_state")
@@ -335,37 +335,67 @@ class UnattendedPipeline(manual.Pipeline):
             selected = list(dict.fromkeys(subjects))
         validated_holds = False
         report = []
+        committed = 0
         for subject in selected:
-            # Metadata-only acknowledgement is bounded too, and never clears a hold.
-            if len(report) >= 400 or not self.safety.check():
+            # Context inspection, unchanged completion and hold reuse share the
+            # same charged attempt as stage work. No unbudgeted preflight lane.
+            if len(report) >= 400 or not self.safety.begin("advance", subject):
                 break
-            states = self._states(subject)
-            first = next((name for name in manual.STAGE_ORDER
-                          if states[name]["status"] not in {"done", "inapplicable"}), None)
-            if first is not None and first != "privacy" and states[first]["status"] == "blocked" and states[first]["receipt_sha256"]:
-                if not validated_holds:
-                    # Validates receipt authority, transition revision and current input bindings.
-                    manual.stages.counts(self.root.ledger)
-                    validated_holds = True
-                self.review_holds_retained += 1
-                report.append({"subject_sha256": subject, "stages": {first: "held:review_required"},
-                               "outcome": "review_required", "failure_code": "review_required", "attempted": False})
-                if resume is not None:
-                    resume["cursor"] = keys[subject]
-                continue
-            if not self.safety.begin("advance", subject):
-                break
-            outcome = {"subject_sha256": subject, "stages": {}}
+            outcome = {"subject_sha256": subject, "stages": {}, "attempted": True}
             result_kind, code = "success", None
+            reconciled, retry_context = False, False
             for name in manual.STAGE_ORDER:
                 if not self.safety.check():
                     result_kind, code = "fault", "time_budget_exceeded"
+                    retry_context = True
                     break
+                # Accepted extraction must be checked even when every analytical
+                # stage is done, or an old review receipt would otherwise skip it.
+                # Newly accepted extraction reaches the same seam at catalog.
+                if not reconciled:
+                    try:
+                        extract = self._states(subject)["extract"]
+                        if extract["status"] == "done" and extract["receipt_sha256"]:
+                            current, plan = context_runtime.reconcile(self, subject, stage["runner"])
+                            self._contexts[subject] = current
+                            outcome["context_revision_sha256"] = current["revision"]["revision_sha256"]
+                            outcome["context_invalidated"] = plan["applied_stages"]
+                            reconciled = True
+                        elif name != "extract":
+                            raise ValueError("context_extraction_not_accepted")
+                    except Exception:
+                        context_runtime.revoke(self, subject)
+                        result_kind, code = "fault", "stage_failed"
+                        outcome["stages"]["context"] = "error:stage_failed"
+                        retry_context = True
+                        break
+                    except (KeyboardInterrupt, SystemExit):
+                        # A snapshot interrupted before its own exception fence
+                        # must not leave an old approval usable after lock exit.
+                        context_runtime.revoke(self, subject)
+                        raise
+                    if not self.safety.check():
+                        result_kind, code = "fault", "time_budget_exceeded"
+                        retry_context = True
+                        break
                 state = self._states(subject)[name]
                 if state["status"] in {"done", "inapplicable"}:
                     continue
                 if state["status"] == "blocked" and state["receipt_sha256"]:
-                    result_kind, code = "review_required", "review_required"
+                    try:
+                        if not validated_holds:
+                            manual.stages.counts(self.root.ledger)
+                            validated_holds = True
+                    except Exception:
+                        result_kind, code = "fault", "stage_failed"
+                        outcome["stages"][name] = "error:stage_failed"
+                        retry_context = True
+                        break
+                    if name == "privacy":
+                        result_kind, code = "fault", "privacy_redaction_fault"
+                    else:
+                        self.review_holds_retained += 1
+                        result_kind, code = "review_required", "review_required"
                     outcome["stages"][name] = "held:review_required"
                     break
                 try:
@@ -406,11 +436,16 @@ class UnattendedPipeline(manual.Pipeline):
                 outcome["failure_code"] = code
                 outcome["outcome"] = result_kind
             report.append(outcome)
+            if retry_context:
+                # Old cursor + old/committed context pointer is replayable. Never
+                # acknowledge a partial reconciliation or skip to a later key.
+                break
+            committed += 1
             if resume is not None:
                 resume["cursor"] = keys[subject]
-        self.originals_deferred = len(selected) - len(report) + outside_sweep
+        self.originals_deferred = len(selected) - committed + outside_sweep
         if resume is not None:
-            if len(report) == len(selected):
+            if committed == len(selected):
                 resume["cursor"] = resume["frontier"] = None
             self._save_advance_resume(path, resume)
         return report
