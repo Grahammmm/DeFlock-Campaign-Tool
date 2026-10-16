@@ -283,6 +283,11 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
                 if "word/document.xml" not in parts: raise ValueError("docx_missing_document_xml")
                 for name in parts:
                     root=ET.fromstring(z.read(name))
+                    # Alternative-format imports are document content, even when
+                    # their relationship is missing or external. Do not resolve
+                    # or fetch targets; retain an explicit part-local gap.
+                    for count,_ in enumerate(root.iter(ns+"altChunk"),1):
+                        issue("docx_altchunk_content_not_extracted",dict(part=name,altchunk=count))
                     for count,para in enumerate(root.iter(ns+"p"),1):
                         tokens=[]
                         for node in para.iter():
@@ -353,7 +358,7 @@ def active(db):
 def extraction_policy(form,config):
     """Fingerprint parser-affecting settings, not host paths or agency routing."""
     return hid(js(dict(format=form,paragraph_ordinals=2 if form=="docx" else None,
-                       **({"docx_text_separators":1} if form=="docx" else {}),
+                       **({"docx_text_separators":1,"docx_altchunk_unsupported":1} if form=="docx" else {}),
                        excluded_path_fragments=sorted(set(config["excluded_path_fragments"])) if form in {"zip","eml"} else [])))
 def extraction_budget(form,limits,depth):
     """Bind effective parser resources, not the container's absolute location."""
