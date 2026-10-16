@@ -3,8 +3,9 @@
 The outbox keeps a local SQLite journal (``outbox.sqlite``, mode 0600) with
 one row per intended send. Rows move proposed -> approved -> sending ->
 sent | failed. The idempotency key is ``sha256(kind + request_id +
-scope_version)``, so the same request is never sent twice by the same
-channel however many times a job is retried. Safeguards, all enforced in
+scope_version)`` for requests/legacy follow-ups. New follow-ups append a
+versioned, approved intent identity; replay never becomes another send.
+Safeguards, all enforced in
 :meth:`Outbox.send`:
 
 * nothing sends unless the row is ``approved`` with an ``approved_by``;
@@ -64,6 +65,18 @@ CREATE TABLE IF NOT EXISTS outbox (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS outbox_agency_day ON outbox(agency_id, sent_at);
+CREATE TABLE IF NOT EXISTS outbox_retry_approval (
+  event_id INTEGER PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  prior_approved_by TEXT,
+  prior_approved_at TEXT,
+  failed_at TEXT NOT NULL,
+  prior_error TEXT,
+  resolved_by TEXT,
+  approved_by TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
 """
 
 
@@ -88,10 +101,18 @@ def now_iso():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def idempotency_key(kind, request_id, scope_version):
+def idempotency_key(kind, request_id, scope_version, intent_id=""):
     if kind not in KINDS:
         raise ValueError("kind must be one of " + "|".join(KINDS))
-    return hashlib.sha256(f"{kind}\x00{request_id}\x00{int(scope_version)}".encode()).hexdigest()
+    if not isinstance(intent_id, str):
+        raise ValueError("invalid follow-up intent")
+    identity = f"{kind}\x00{request_id}\x00{int(scope_version)}"
+    if intent_id:
+        if kind != "send_followup" or not isinstance(intent_id, str) or len(intent_id) > 100 or any(
+                c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-" for c in intent_id):
+            raise ValueError("invalid follow-up intent")
+        identity += "\x00followup-intent-v1\x00" + intent_id
+    return hashlib.sha256(identity.encode()).hexdigest()
 
 
 @dataclass
@@ -109,9 +130,13 @@ class RequestDraft:
     kind: str = "send_request"
     in_reply_to: str = ""
     extra: dict = field(default_factory=dict)
+    intent_id: str = ""
 
     def to_json(self):
-        return json.dumps(self.__dict__, sort_keys=True)
+        fields = dict(self.__dict__)
+        if not self.intent_id:
+            fields.pop("intent_id")  # Preserve existing journal bytes for legacy keys.
+        return json.dumps(fields, sort_keys=True)
 
     @classmethod
     def from_json(cls, text):
@@ -182,7 +207,10 @@ def send_email(draft, settings, smtp_factory=None):
             refused = smtp.send_message(message)
             accepted = True
             if refused:
-                raise OutboxError("recipients refused: " + ", ".join(sorted(refused)))
+                # send_message returns normally only when at least one recipient
+                # was accepted. A nonempty refusal map therefore means partial
+                # delivery, not a safe-to-retry rejection of the whole message.
+                raise AmbiguousFailure("smtp partial recipient acceptance; reconcile before retry")
     except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPAuthenticationError, smtplib.SMTPHeloError) as exc:
         raise OutboxError("smtp refused: " + str(exc)) from None
     except (smtplib.SMTPException, OSError) as exc:
@@ -266,7 +294,7 @@ class Outbox:
         """Insert a ``proposed`` row; idempotent on the key (returns the existing row)."""
         if draft.channel not in CHANNELS:
             raise ValueError("channel must be one of " + "|".join(CHANNELS))
-        key = idempotency_key(draft.kind, draft.request_id, draft.scope_version)
+        key = idempotency_key(draft.kind, draft.request_id, draft.scope_version, draft.intent_id)
         existing = self.row(key)
         if existing:
             return existing
@@ -295,6 +323,42 @@ class Outbox:
         cols = ", ".join(f"{k}=?" for k in fields)
         self.db.execute(f"UPDATE outbox SET {cols} WHERE idempotency_key=?", (*fields.values(), key))
 
+    def approve_retry(self, key, approved_by, approved_at):
+        """Trusted caller's new approval after definite failure; never clear uncertainty.
+
+        This does not send. The usual send caps and unresolved-request check remain.
+        The caller must authenticate the approver and bind approval to this draft.
+        """
+        if not isinstance(approved_by, str) or not approved_by.strip():
+            raise OutboxError("retry approval requires an identity")
+        try:
+            if not isinstance(approved_at, str) or len(approved_at) > 40 or not approved_at.endswith("Z"):
+                raise ValueError("UTC approval required")
+            approval = dt.datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise OutboxError("invalid retry approval time") from exc
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.row(key)
+            if not row or row["state"] != "failed" or row["provider_receipt"] or row["sending_at"] or row["sent_at"]:
+                raise OutboxError("retry requires a definite failure without delivery evidence")
+            failed = dt.datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
+            if approval <= failed:
+                raise OutboxError("retry approval must follow the failure")
+            stamp = self.clock()
+            self.db.execute("INSERT INTO outbox_retry_approval (idempotency_key, prior_approved_by, prior_approved_at, "
+                "failed_at, prior_error, resolved_by, approved_by, approved_at, recorded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (key, row["approved_by"], row["approved_at"], row["updated_at"], row["error"], row["resolved_by"],
+                 approved_by, approved_at, stamp))
+            self.db.execute("UPDATE outbox SET state='approved', approved_by=?, approved_at=?, error=NULL, updated_at=? "
+                "WHERE idempotency_key=? AND state='failed'", (approved_by, approved_at, stamp, key))
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+        return self.row(key)
+
     # -- safeguards ----------------------------------------------------------
     def _check(self, row):
         if row["state"] == "sent":
@@ -310,6 +374,10 @@ class Outbox:
             (row["request_id"], row["idempotency_key"])).fetchone()[0]
         if unresolved:
             raise Blocked("ambiguous_send_unresolved", "another send for this request is unresolved")
+        if row["kind"] == "send_followup" and RequestDraft.from_json(row["draft_json"]).intent_id:
+            legacy = idempotency_key("send_followup", row["request_id"], row["scope_version"])
+            if self.row(legacy):
+                raise Blocked("legacy_followup_intent_unresolved", "legacy follow-up has no trustworthy intent mapping; inspect before migration")
         # A cap of 0 (the default) blocks any draft that offers a fee; only an explicit
         # None lifts the gate, so forgetting --fee-cap-cents can never allow a fee.
         if self.campaign_fee_cap_cents is not None and row["fee_cap_cents"] > self.campaign_fee_cap_cents:
@@ -330,20 +398,29 @@ class Outbox:
         no-op that returns the sent row. Blocked raises; an ambiguous failure
         leaves the row in ``sending`` and raises AmbiguousFailure.
         """
-        row = self.row(key)
-        if not row:
-            raise OutboxError("unknown outbox row")
-        if self._check(row) == "already_sent":
-            return row
-        draft = RequestDraft.from_json(row["draft_json"])
-        # Claim the row with one conditional UPDATE: two concurrent sends (a retried job
-        # and a CLI call) cannot both move approved -> sending, so the transport runs once.
-        stamp = self.clock()
-        claimed = self.db.execute(
-            "UPDATE outbox SET state='sending', sending_at=?, error=NULL, updated_at=? WHERE idempotency_key=? AND state='approved'",
-            (stamp, stamp, key)).rowcount
-        if claimed != 1:
-            raise Blocked("ambiguous_send_unresolved", "another send claimed this row first; run reconcile if it did not finish")
+        # Serialize the safeguards and claim across keys, not only the final row UPDATE.
+        # Otherwise concurrent requests can both observe an unused agency/day budget.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.row(key)
+            if not row:
+                raise OutboxError("unknown outbox row")
+            if self._check(row) == "already_sent":
+                self.db.execute("COMMIT")
+                return row
+            draft = RequestDraft.from_json(row["draft_json"])
+            stamp = self.clock()
+            claimed = self.db.execute(
+                "UPDATE outbox SET state='sending', sending_at=?, error=NULL, updated_at=? WHERE idempotency_key=? AND state='approved'",
+                (stamp, stamp, key)).rowcount
+            if claimed != 1:
+                raise Blocked("ambiguous_send_unresolved", "another send claimed this row first; run reconcile if it did not finish")
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+        # The network operation must never hold the SQLite write transaction open.
         try:
             receipt = transport(draft)
         except Blocked as exc:

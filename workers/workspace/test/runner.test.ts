@@ -46,16 +46,16 @@ describe("runner API", () => {
   it("result: done finishes, failed with attempts left requeues, failed at max stays failed", async () => {
     const repo = await seedCampaign();
     const { row } = await repo.enqueueJob("extract", "kx", {}, 2);
-    let leased = (await (await call(new Request(BASE + "/jobs", { headers: runnerHeaders() }))).json()) as { job_id: string };
+    let leased = (await (await call(new Request(BASE + "/jobs", { headers: runnerHeaders() }))).json()) as { job_id: string; claim_token: string };
     expect(leased.job_id).toBe(row.job_id);
-    let res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status: "failed", error: "boom" }) }));
+    let res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ claim_token: leased.claim_token, status: "failed", error: "boom" }) }));
     expect(((await res.json()) as { state: string }).state).toBe("queued");
-    leased = (await (await call(new Request(BASE + "/jobs", { headers: runnerHeaders() }))).json()) as { job_id: string };
-    res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status: "failed", error: "boom again" }) }));
+    leased = (await (await call(new Request(BASE + "/jobs", { headers: runnerHeaders() }))).json()) as { job_id: string; claim_token: string };
+    res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ claim_token: leased.claim_token, status: "failed", error: "boom again" }) }));
     expect(((await res.json()) as { state: string }).state).toBe("failed");
-    expect((await repo.incidents()).length).toBe(1);
+    expect((await repo.incidents()).filter(incident => incident.fingerprint === "job:extract:kx").length).toBe(1);
     // result on a job that is not leased is a conflict
-    res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status: "done" }) }));
+    res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ claim_token: leased.claim_token, status: "done" }) }));
     expect(res.status).toBe(409);
     res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status: "weird" }) }));
     expect(res.status).toBe(400);
@@ -125,11 +125,11 @@ describe("runner API: followups, classification patch, site staging", () => {
   it("done results enqueue follow-up jobs idempotently and never a send_request", async () => {
     const repo = await seedCampaign();
     const { row } = await repo.enqueueJob("classify_mail", "kf-" + crypto.randomUUID(), { correspondence_id: "cor_missing", raw_sha256: "a".repeat(64) });
-    await leaseExactly(row.job_id);
+    const claim_token = await leaseExactly(row.job_id);
     const key = await sha256Hex("followup-" + crypto.randomUUID());
     const digestSha = await sha256Hex("digest-" + crypto.randomUUID());
     const body = JSON.stringify({
-      status: "done",
+      claim_token, status: "done",
       outputs: {
         followups: [
           { kind: "extract", idempotency_key: key, inputs: { sha256: "c".repeat(64) } },
@@ -161,9 +161,9 @@ describe("runner API: followups, classification patch, site staging", () => {
     expect(digests[0]!.kind).toBe("digest");
     expect(jobs.filter((j) => j.kind === "send_request").length).toBe(0);
     expect(jobs.some((j) => j.inputs_json.includes("req_x"))).toBe(false);
-    // the finished job's outputs keep the followups list for audit, but a second result is a conflict
+    // The finished job preserves the outputs; exact replay acknowledges the same transition.
     expect((await repo.job(row.job_id))!.outputs_json).toContain('"followups"');
-    expect((await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body }))).status).toBe(409);
+    expect((await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body }))).status).toBe(200);
   });
 
   it("failed and blocked results never enqueue followups", async () => {
@@ -171,9 +171,9 @@ describe("runner API: followups, classification patch, site staging", () => {
     const marker = await sha256Hex("never-" + crypto.randomUUID());
     for (const status of ["failed", "blocked"]) {
       const { row } = await repo.enqueueJob("extract", "kn-" + crypto.randomUUID(), { sha256: marker }, 1);
-      await leaseExactly(row.job_id);
+      const claim_token = await leaseExactly(row.job_id);
       const res = await call(new Request(`${BASE}/jobs/${row.job_id}/result`, {
-        method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status, error: "x", outputs: { followups: [{ kind: "digest", idempotency_key: marker }] } }),
+        method: "POST", headers: runnerHeaders(), body: JSON.stringify({ claim_token, status, error: "x", outputs: { followups: [{ kind: "digest", idempotency_key: marker }] } }),
       }));
       expect(res.status).toBe(200);
       expect(((await res.json()) as { followups: string[] }).followups).toEqual([]);
@@ -188,8 +188,8 @@ describe("runner API: followups, classification patch, site staging", () => {
       subject: "Ack", received_at: "2026-09-30T10:00:00Z", raw_sha256: null, classification: "unclassified", classification_confidence: null, summary: null,
     });
     const { row } = await repo.enqueueJob("classify_mail", "kc-" + crypto.randomUUID(), { correspondence_id: corr.correspondence_id, raw_sha256: "a".repeat(64) });
-    await leaseExactly(row.job_id);
-    const body = JSON.stringify({ status: "done", outputs: { correspondence_update: { classification: "extension", classification_confidence: "high", summary: "Inbound email classified as extension", subject: "must not change", from_addr: "evil@example.invalid" } } });
+    const claim_token = await leaseExactly(row.job_id);
+    const body = JSON.stringify({ claim_token, status: "done", outputs: { correspondence_update: { classification: "extension", classification_confidence: "high", summary: "Inbound email classified as extension", subject: "must not change", from_addr: "evil@example.invalid" } } });
     expect((await call(new Request(`${BASE}/jobs/${row.job_id}/result`, { method: "POST", headers: runnerHeaders(), body }))).status).toBe(200);
     const updated = await repo.correspondence(corr.correspondence_id);
     expect(updated?.classification).toBe("extension");
@@ -199,13 +199,13 @@ describe("runner API: followups, classification patch, site staging", () => {
     expect(updated?.from_addr).toBe("a@example.invalid");
     // an unknown label falls back to unclassified instead of violating the CHECK constraint
     const { row: row2 } = await repo.enqueueJob("classify_mail", "kc2-" + crypto.randomUUID(), { correspondence_id: corr.correspondence_id, raw_sha256: "e".repeat(64) });
-    await leaseExactly(row2.job_id);
-    await call(new Request(`${BASE}/jobs/${row2.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status: "done", outputs: { correspondence_update: { classification: "weird" } } }) }));
+    const token2 = await leaseExactly(row2.job_id);
+    await call(new Request(`${BASE}/jobs/${row2.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ claim_token: token2, status: "done", outputs: { correspondence_update: { classification: "weird" } } }) }));
     expect((await repo.correspondence(corr.correspondence_id))?.classification).toBe("unclassified");
     // a non-classify job cannot patch correspondence
     const { row: row3 } = await repo.enqueueJob("extract", "kc3-" + crypto.randomUUID(), { correspondence_id: corr.correspondence_id, sha256: "f".repeat(64) });
-    await leaseExactly(row3.job_id);
-    await call(new Request(`${BASE}/jobs/${row3.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ status: "done", outputs: { correspondence_update: { classification: "denial" } } }) }));
+    const token3 = await leaseExactly(row3.job_id);
+    await call(new Request(`${BASE}/jobs/${row3.job_id}/result`, { method: "POST", headers: runnerHeaders(), body: JSON.stringify({ claim_token: token3, status: "done", outputs: { correspondence_update: { classification: "denial" } } }) }));
     expect((await repo.correspondence(corr.correspondence_id))?.classification).toBe("unclassified");
   });
 

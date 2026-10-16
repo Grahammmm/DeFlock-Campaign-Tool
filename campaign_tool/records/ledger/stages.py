@@ -278,7 +278,7 @@ def _runner(value):
 def _subject(connection, subject, stage, run_id):
     _sha(subject)
     _require(stage in STAGES, "invalid_stage")
-    original = connection.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
+    original = store.effective_original(connection, subject)
     _require(original is not None, "original_missing")
     _require(original["scope"] != "out_of_scope", "original_out_of_scope")
     _require(connection.execute("SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone(),
@@ -347,6 +347,7 @@ def _preservation_content(connection, original, content):
     """Validate explicit evidence bindings, not the truth of an external byte-verification claim."""
     subject = original["sha256"]
     if _hash(content) == subject:
+        _require(original.get("resolution_sha256") is None, "resolution_bound_preservation_required")
         _require(len(content) == original["bytes"], "preservation_bytes_mismatch")
         return "original_bytes", None
     _require(len(content) <= MAX_RECEIPT_BYTES, "preservation_metadata_size")
@@ -354,6 +355,8 @@ def _preservation_content(connection, original, content):
     _require(evidence.get("schema") == "preservation-evidence-v1", "preservation_evidence_schema")
     _require(evidence.get("original_sha256") == subject and type(evidence.get("byte_length")) is int
              and evidence["byte_length"] == original["bytes"], "preservation_original_binding")
+    _require(evidence.get("resolution_sha256") == original.get("resolution_sha256"),
+             "preservation_resolution_binding")
     _require(isinstance(evidence.get("storage_ref"), str) and evidence["storage_ref"].strip(),
              "preservation_storage_reference_required")
     _sha(evidence.get("verification_receipt_sha256"))
@@ -421,7 +424,7 @@ def _inputs(states, stage, subject):
     return result
 
 
-def recover_abandoned_leases(database, *, owner, reason="runner_lock_recovered"):
+def recover_abandoned_leases(database, *, owner, reason="runner_lock_recovered", run_id=None):
     """Expire every live lease held by ``owner`` and return its stages to pending.
 
     Only a caller that has proven no other process of that owner is alive (for
@@ -429,9 +432,13 @@ def recover_abandoned_leases(database, *, owner, reason="runner_lock_recovered")
     between claim and promote otherwise leaves the stage ``in_progress`` until the
     lease TTL passes and the next run fails ``lease_run_mismatch``. Nothing
     accepted is touched; ``done``, ``inapplicable`` and ``blocked`` stages are
-    not leases. Returns the recovered ``(subject, stage)`` pairs.
+    not leases. When run_id is supplied, recover only leases with a matching
+    issued claim and stage state; another run's claims remain untouched.
+    Returns the recovered ``(subject, stage)`` pairs.
     """
     _require(isinstance(owner, str) and owner.strip(), "owner_required")
+    if run_id is not None:
+        _identity(run_id)
     recovered = []
     with _transaction(database) as (c, writer):
         now = datetime.now(timezone.utc)
@@ -441,6 +448,14 @@ def recover_abandoned_leases(database, *, owner, reason="runner_lock_recovered")
             if not lease["item_key"].startswith("stage:"):
                 continue
             subject = lease["item_key"][len("stage:"):-len(lease["stage"]) - 1]
+            if run_id is not None:
+                claim = c.execute("SELECT 1 FROM stage_claims WHERE subject_sha256=? AND stage=? "
+                                  "AND leased_at=? AND owner=? AND run_id=?",
+                                  (subject, lease["stage"], lease["leased_at"], owner, run_id)).fetchone()
+                state = c.execute("SELECT status,owner,run_id FROM stage_state "
+                                  "WHERE original_sha256=? AND stage=?", (subject, lease["stage"])).fetchone()
+                if claim is None or state is None or state["run_id"] != run_id or state["owner"] != owner:
+                    continue
             c.execute("UPDATE work_leases SET expires_at=?,last_error=? WHERE item_key=?",
                       (now.isoformat(), reason, lease["item_key"]))
             state = c.execute("SELECT status,owner,run_id FROM stage_state WHERE original_sha256=? AND stage=?",
@@ -532,7 +547,7 @@ def _coverage(receipt, stage):
     total, covered = denominator.get("total"), coverage.get("covered")
     _require(type(total) is int and type(covered) is int and 0 <= covered <= total,
              "coverage_counts")
-    if stage in ("review", "compare", "privacy"):
+    if stage in ("review", "compare", "privacy") and receipt.get("verdict") != "challenge":
         _require(total > 0 and covered > 0, "review_coverage_unknown")
     _require(coverage.get("scope") in ("selected", "full_text", "full_visual", "all_rows"),
              "coverage_scope")

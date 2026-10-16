@@ -2,7 +2,11 @@ name: Workers checks
 on:
   pull_request:
   push:
-    branches: [main, 'codex/workers-*']
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -23,6 +27,8 @@ jobs:
         working-directory: workers
       - run: npm run check
         working-directory: workers
+      - name: Signed Worker-to-outbox interoperability (synthetic loopback only)
+        run: python3 -B tools/test_hosted_outbox_bridge.py
       - run: python3 -B -m unittest tests.test_review_fixture -v
       - run: node scripts/scan-secrets.mjs
       - run: python3 -B tools/check_public_tree.py

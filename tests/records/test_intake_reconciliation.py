@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from campaign_tool.records.intake import folder
 
@@ -192,6 +193,121 @@ class ReconciliationTests(unittest.TestCase):
         db.execute("UPDATE docs SET digest=? WHERE sha=?", (json.dumps(digest), row["sha"]))
         db.commit()
         self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 1)
+
+    def test_docx_separators_refresh_legacy_policy_and_preserve_attempts(self):
+        ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        body = ('<w:document ' + ns + '><w:body><w:p/>'
+                '<w:p><w:r><w:t>Alpha</w:t><w:tab/><w:t>Beta</w:t>'
+                '<w:br/><w:t>Gamma</w:t><w:cr/><w:t>Delta</w:t>'
+                '</w:r></w:p></w:body></w:document>')
+        sha = self.archive("separators.docx", {"[Content_Types].xml": "<Types/>",
+                                               "word/document.xml": body})
+        self.cli()
+        db = self.db()
+        row = db.execute("SELECT text,locator FROM units WHERE sha=?", (sha,)).fetchone()
+        self.assertEqual(row["text"], "Alpha\tBeta\nGamma\nDelta")
+        self.assertEqual(json.loads(row["locator"]), {"part": "word/document.xml", "paragraph": 2})
+        # Simulate a completed extraction carrying the pre-fix policy identity.
+        legacy_policy = folder.hid(folder.js(dict(format="docx", paragraph_ordinals=2,
+                                                   excluded_path_fragments=[])))
+        digest = json.loads(db.execute("SELECT digest FROM docs WHERE sha=?", (sha,)).fetchone()[0])
+        self.assertNotEqual(digest["extraction_policy_sha256"], legacy_policy)
+        digest["extraction_policy_sha256"] = legacy_policy
+        db.execute("UPDATE docs SET digest=? WHERE sha=?", (json.dumps(digest), sha))
+        db.commit()
+        self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 1)
+        attempts = db.execute("SELECT artifact_dir FROM extraction_attempts WHERE sha=?", (sha,)).fetchall()
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(all(Path(row[0]).is_dir() for row in attempts))
+        self.assertTrue(any("history" in Path(row[0]).parts for row in attempts))
+        self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 0)
+        self.assertEqual(db.execute("SELECT count(*) FROM extraction_attempts WHERE sha=?", (sha,)).fetchone()[0], 2)
+
+    def altchunk_members(self, target="afchunk.html", mode="Internal", payload="<html>Omitted</html>"):
+        ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+        body = ('<w:document ' + ns + '><w:body><w:p><w:r><w:t>Visible</w:t></w:r></w:p>'
+                '<w:altChunk r:id="rChunk"/></w:body></w:document>')
+        members = {"[Content_Types].xml":"<Types/>", "word/document.xml":body,
+                   "word/_rels/document.xml.rels":
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rChunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" '
+                   'Target="' + target + '" TargetMode="' + mode + '"/></Relationships>'}
+        if payload is not None and mode == "Internal":
+            members["word/" + target] = payload
+        return members
+
+    def test_docx_altchunk_targets_are_partial_without_fetching(self):
+        for label, target, mode, payload in (
+                ("html", "afchunk.html", "Internal", "<html>Omitted HTML</html>"),
+                ("rtf", "afchunk.rtf", "Internal", r"{\rtf1 Omitted RTF}"),
+                ("missing", "missing.html", "Internal", None),
+                ("external", "https://example.invalid/never-fetch", "External", None)):
+            with self.subTest(label=label):
+                name = label + ".docx"
+                sha = self.archive(name, self.altchunk_members(target, mode, payload))
+                source = self.root / name
+                before = source.read_bytes()
+                dest = self.base / (label + "-derived")
+                # Keep resource changes inside real workers in other tests. These
+                # in-process network tripwires prove no target resolution/fetch.
+                with patch.object(folder, "apply_resource_limit", return_value=folder.LIMITS["memory_bytes"]), \
+                     patch("urllib.request.urlopen") as fetch, patch("socket.create_connection") as connect:
+                    folder.worker(source, sha, "docx", dest, self.out, folder.LIMITS, 0,
+                                  config=self.settings)
+                    fetch.assert_not_called()
+                    connect.assert_not_called()
+                digest = json.loads((dest / "digest.json").read_text())
+                self.assertEqual(digest["stage"], "partial")
+                self.assertFalse(digest["children_inventory_complete"])
+                self.assertEqual(digest["review_status"], "not_reviewed")
+                self.assertEqual(digest["issues"][0]["code"], "docx_altchunk_content_not_extracted")
+                self.assertEqual(digest["issues"][0]["locator"], {"part":"word/document.xml", "altchunk":1})
+                units = [json.loads(s) for s in (dest / "units.jsonl").read_text().splitlines()]
+                self.assertEqual([u["text"] for u in units], ["Visible"])
+                self.assertEqual(source.read_bytes(), before)
+
+    def test_docx_altchunk_ordinals_are_part_local_even_without_relationship_id(self):
+        members = self.altchunk_members()
+        members["word/document.xml"] = members["word/document.xml"].replace('</w:body>', '<w:altChunk/></w:body>')
+        members["word/header1.xml"] = ('<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                                       '<w:altChunk/></w:hdr>')
+        sha = self.archive("parts.docx", members)
+        self.cli()
+        digest = json.loads(self.db().execute("SELECT digest FROM docs WHERE sha=?", (sha,)).fetchone()[0])
+        self.assertEqual(digest["stage"], "partial")
+        self.assertEqual([x["locator"] for x in digest["issues"]], [
+            {"part":"word/document.xml", "altchunk":1},
+            {"part":"word/document.xml", "altchunk":2},
+            {"part":"word/header1.xml", "altchunk":1}])
+
+    def test_docx_altchunk_policy_refresh_preserves_history_and_idempotence(self):
+        sha = self.archive("legacy.docx", self.altchunk_members())
+        before = (self.root / "legacy.docx").read_bytes()
+        self.cli()
+        db = self.db()
+        digest = json.loads(db.execute("SELECT digest FROM docs WHERE sha=?", (sha,)).fetchone()[0])
+        legacy_policy = folder.hid(folder.js(dict(format="docx", paragraph_ordinals=2,
+                                docx_text_separators=1, excluded_path_fragments=[])))
+        self.assertNotEqual(digest["extraction_policy_sha256"], legacy_policy)
+        legacy = dict(digest, stage="complete", issues=[], children_inventory_complete=True,
+                      extraction_policy_sha256=legacy_policy)
+        legacy_raw = json.dumps(legacy)
+        (self.out / "derived" / sha / "digest.json").write_text(legacy_raw)
+        db.execute("UPDATE docs SET stage='complete',digest=? WHERE sha=?", (legacy_raw, sha))
+        db.execute("UPDATE extraction_attempts SET stage='complete',digest=? WHERE sha=?", (legacy_raw, sha))
+        db.commit()
+        occurrences = [tuple(r) for r in db.execute("SELECT * FROM occurrences ORDER BY oid")]
+        self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 1)
+        attempts = db.execute("SELECT stage,digest,artifact_dir FROM extraction_attempts WHERE sha=?", (sha,)).fetchall()
+        self.assertEqual(sorted(r["stage"] for r in attempts), ["complete", "partial"])
+        historical = next(r for r in attempts if r["stage"] == "complete")
+        self.assertIn("history", Path(historical["artifact_dir"]).parts)
+        self.assertEqual(json.loads((Path(historical["artifact_dir"]) / "digest.json").read_text()), legacy)
+        self.assertEqual(json.loads(historical["digest"]), legacy)
+        self.assertEqual(json.loads(self.cli("extract").stdout.splitlines()[-1])["processed"], 0)
+        self.assertEqual(db.execute("SELECT count(*) FROM extraction_attempts WHERE sha=?", (sha,)).fetchone()[0], 2)
+        self.assertEqual(occurrences, [tuple(r) for r in db.execute("SELECT * FROM occurrences ORDER BY oid")])
+        self.assertEqual((self.root / "legacy.docx").read_bytes(), before)
 
     def test_helpers_keep_agency_config_and_legacy_output_cli(self):
         (self.root / "keep.txt").write_text("retained")

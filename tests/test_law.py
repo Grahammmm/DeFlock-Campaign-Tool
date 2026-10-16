@@ -105,15 +105,16 @@ class CaliforniaPackageTests(unittest.TestCase):
                         "ca-civ-1798.90.55-sharing-limits",
                         "ca-veh-2413-chp-lpr-retention-and-sharing"):
             self.assertIn(rule_id, by_id)
-            self.assertEqual(by_id[rule_id]["review"], "verified", rule_id)
+            expected = "needs_attorney_review" if rule_id == "ca-civ-1798.90.5-definitions" else "verified"
+            self.assertEqual(by_id[rule_id]["review"], expected, rule_id)
         for rule_id in by_id:
             if rule_id.startswith("ca-civ-1798.90."):
                 self.assertEqual(by_id[rule_id]["effective_from"], "2016-01-01", rule_id)
-        self.assertEqual(by_id["ca-gov-7284.6-values-act-immigration-enforcement-limits"]["review"], "likely")
+        self.assertEqual(by_id["ca-gov-7284.6-values-act-immigration-enforcement-limits"]["review"], "needs_attorney_review")
         self.assertEqual(by_id["ca-oag-2023-dle-06-out-of-state-sharing-guidance"]["review"], "likely")
         for rule in self.package["rules"]:
             self.assertTrue(rule["sources"], rule["rule_id"])
-            self.assertNotEqual(rule["review"], "needs_attorney_review")
+            self.assertIn(rule["review"], ("verified", "likely", "needs_attorney_review"))
 
     def test_request_scopes_cover_template_and_reference_known_rules(self):
         ids = [scope["scope_id"] for scope in self.package["request_scopes"]]
@@ -327,7 +328,7 @@ class LawCliTests(unittest.TestCase):
         result = self.run_python("-m", "campaign_tool.law", "show", "us-ca")
         summary = json.loads(result.stdout)
         self.assertEqual(summary["status"], "draft")
-        self.assertEqual(summary["rule_count"], 11)
+        self.assertEqual(summary["rule_count"], 12)
         self.assertEqual(summary["records_law"]["determination_days"], 10)
         self.assertIn("holidays are not modeled", summary["note"])
         missing = self.run_python("-m", "campaign_tool.law", "show", "us-zz", returncode=1)

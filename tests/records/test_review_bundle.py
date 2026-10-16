@@ -455,5 +455,54 @@ class ReviewBundleTests(unittest.TestCase):
             self.assertIn("synthetic dependency blocker", self.assess(identity)["blockers"])
 
 
+    def alternate_authority(self, *, profile="synthetic-profile", key=None):
+        return bundle.Authority(profile_id=profile,
+            principals=self.authority.policy["principals"],
+            authenticate=lambda context: next(name for name, session in self.contexts.items()
+                                              if session is context),
+            signing_key=key or b"synthetic-fixture-key-not-a-secret" * 2)
+
+    def test_other_issuer_key_cannot_read_or_extend_bundle(self):
+        identity = self.create()
+        self.complete(identity)
+        other = self.alternate_authority(key=b"different-synthetic-issuer-key" * 2)
+        before = sorted(p.name for p in (self.output / identity / "reviews").iterdir())
+        with self.assertRaisesRegex(bundle.BundleError, "authentication_signature_mismatch"):
+            bundle.record_review(self.output, identity, self.payload(identity),
+                authority=other, auth_context=self.contexts["factual"])
+        self.assertEqual(before, sorted(p.name for p in (self.output / identity / "reviews").iterdir()))
+        self.assertTrue(self.assess(identity)["review_complete"])
+
+    def test_changed_profile_rejects_even_with_same_signing_key(self):
+        identity = self.create()
+        self.complete(identity)
+        with self.assertRaisesRegex(bundle.BundleError, "authority_policy_changed"):
+            bundle.assess_bundle(self.output, identity,
+                authority=self.alternate_authority(profile="other-synthetic-campaign"))
+
+    def test_authentic_receipt_cannot_be_copied_between_bundles(self):
+        old = self.create()
+        self.review(old, "factual")
+        new_public = json.loads(self.public)
+        new_public["title"] = "Another synthetic proposal"
+        new = self.create(public=bundle.encoded(new_public))
+        receipt = next((self.output / old / "reviews").glob("*.json"))
+        copied = self.output / new / "reviews" / receipt.name
+        copied.write_bytes(receipt.read_bytes())
+        copied.chmod(0o600)
+        with self.assertRaisesRegex(bundle.BundleError, "receipt_bundle_mismatch"):
+            self.assess(new)
+        self.assertEqual(self.assess(old)["review_receipts"], 1)
+
+    def test_same_policy_reconstructed_authority_preserves_exact_replay(self):
+        identity = self.create()
+        first = self.review(identity, "factual")
+        replay = bundle.record_review(self.output, identity, self.payload(identity),
+            authority=self.alternate_authority(), auth_context=self.contexts["factual"])
+        self.assertEqual(first["receipt_id"], replay["receipt_id"])
+        self.assertTrue(replay["reused"])
+        self.assertFalse(self.assess(identity)["production_review_complete"])
+
+
 if __name__ == "__main__":
     unittest.main()

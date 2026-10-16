@@ -72,3 +72,47 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(sum(map(len,result['index_match_groups'].values())),128)
         self.assertEqual(len(result['rows']),128)
         self.assertEqual(result['classifications'],{'duplicate_index_rows':1,'duplicate_source_receipt':127})
+
+    def test_rejected_mail_receipts_do_not_consume_index_coverage(self):
+        cases = [(dict(self.row, receipt_sha256=None), 'incomplete_receipt'),
+                 (dict(self.row, error='synthetic parser failure'), 'parser_error'),
+                 (dict(self.row, scope='excluded', exclusion_reason='synthetic exclusion'), 'excluded_content')]
+        for rejected, reason in cases:
+            with self.subTest(reason=reason):
+                result = self.run_mail([rejected], [self.row])
+                self.assertEqual(result['classifications'], {reason:1, 'index_without_bound_receipt':1})
+                self.assertEqual(result['index_match_groups'], {})
+                self.assertIsNone(result['rows'][0]['index_match_group'])
+
+    def test_rejected_receipt_does_not_reserve_later_valid_pair(self):
+        bad = dict(self.row, receipt_sha256=None)
+        for sources, expected in (([bad,self.row,self.row], ['incomplete_receipt','matched','duplicate_source_receipt']),
+                                  ([self.row,bad,self.row], ['matched','incomplete_receipt','duplicate_source_receipt'])):
+            with self.subTest(expected=expected):
+                result = self.run_mail(sources, [self.row])
+                self.assertEqual([r['classification'] for r in result['rows']], expected)
+                self.assertEqual(sum(map(len,result['index_match_groups'].values())), 1)
+                self.assertIsNone(next(r for r in result['rows'] if r['classification']=='incomplete_receipt')['index_match_group'])
+                self.assertEqual(result['stage_promotions'], 0)
+
+    def test_unavailable_bytes_do_not_bind_an_index_row(self):
+        result = reconcile('mail', [self.row], [self.row], [])
+        self.assertEqual(result['classifications'], {'unavailable_original':1, 'index_without_bound_receipt':1})
+        self.assertEqual(result['index_match_groups'], {})
+
+    def test_unjoined_or_error_portal_source_leaves_index_unbound(self):
+        row = {'identity':{'portal_host':'example.invalid','request_id':'R1','item_id':'1'},
+               'sha256':self.sha,'receipt_sha256':self.receipt}
+        joined = dict(row, binding_evidence=dict(row))
+        for source, objects, reason in ((row,[self.sha],'bytes-present-unjoined'),
+                                         (joined,[],'receipt-without-bytes'),
+                                         (dict(joined,error='synthetic failure'),[self.sha],'parser_error')):
+            with self.subTest(reason=reason):
+                result = reconcile('portal', [source], [row], objects)
+                self.assertEqual(result['classifications'], {reason:1, 'index_without_bound_receipt':1})
+                self.assertEqual(result['index_match_groups'], {})
+                self.assertIsNone(result['rows'][0]['index_match_group'])
+        result = reconcile('portal', [row,joined], [row], [self.sha])
+        self.assertEqual(result['classifications'], {'bytes-present-unjoined':1, 'bytes-present-and-joined':1})
+        self.assertIsNone(result['rows'][0]['index_match_group'])
+        self.assertEqual(sum(map(len,result['index_match_groups'].values())), 1)

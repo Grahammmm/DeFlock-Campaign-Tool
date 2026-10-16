@@ -19,13 +19,41 @@ sending path.
 `approved_at`, `sending_at`, `sent_at`, `provider_receipt`, `error`, `resolved_by`,
 timestamps.
 
-Key: `sha256(kind \0 request_id \0 scope_version)`. The same request and scope version is one
+Requests/legacy key: `sha256(kind \0 request_id \0 scope_version)`. The same request and scope version is one
 row forever, however many times a job retries or an organizer clicks. A new scope version is
 a new row.
 
 States: `proposed → approved → sending → sent | failed | blocked`.
 
+## Follow-up intent identity
+
+Requests and legacy journal rows retain their original three-field key and JSON
+bytes. New follow-ups use a distinct approved `intent_id`, not a changed scope.
+The canonical hash appends `\0followup-intent-v1\0intent_id` to the original
+identity. Intent is 1–100 ASCII letters, digits, period, underscore, colon or
+hyphen. The signed gateway requires it for follow-ups and refuses it on requests.
+The hosted approval binds it to the stored card idempotency key, preserving the
+runner's due-date identity and reapproval/retry identity. Local JSON drafts may
+supply `intent_id` explicitly; approval is still required before transport.
+
+A new intent never clears an unresolved send for the request or the agency/day
+and fee caps. Existing legacy follow-ups with no reliable intent mapping hold
+new intent-based sends for that request/scope (`legacy_followup_intent_unresolved`).
+No automatic conversion, deletion or re-keying of legacy receipts is performed.
+Inspect provider evidence and plan an explicit reviewed migration; changing scope
+or intent to evade a hold is not a recovery procedure. A replay of the same new
+intent returns its original receipt. Changed content on that intent conflicts at
+the gateway. Distinct later reminders require separate approval cards.
+
 ## Safeguards (`Outbox._check`, enforced on every `send`)
+
+The journal reads, safeguards and approved-to-sending claim run in one SQLite
+`BEGIN IMMEDIATE` transaction. This serializes competing keys as well as retries
+of one key: neither an agency/day budget nor an unresolved-request hold can be
+passed concurrently from stale reads. Refusals roll the transaction back. The
+transaction commits before calling SMTP or MuckRock, so network operations do
+not hold the database write lock. A database lock timeout occurs before transport
+and must not be treated as evidence that a provider delivered anything.
 
 | Check | Result |
 | --- | --- |
@@ -58,6 +86,13 @@ Both take credentials as arguments. The CLI reads them from `OUTBOX_SMTP_PASSWOR
 
 ## CLI
 
+A normal SMTP result with a nonempty refusal map means at least one recipient
+was accepted and others were refused ([Python SMTP documentation](https://docs.python.org/3/library/smtplib.html#smtplib.SMTP.sendmail)).
+The journal holds that attempt in `sending` for reconciliation; neither retrying
+the same key nor proposing another scope for the request may resend it. Inspect
+delivery by recipient before resolving the hold. An exception stating that all
+recipients were refused remains a definite `failed` attempt with no DATA sent.
+
 ```
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite propose draft.json
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite approve <key> --by organizer@example.org
@@ -88,3 +123,16 @@ message and a second `send` is a no-op, per-agency daily cap (shared by follow-u
 MuckRock 402 → `blocked` and a successful filing, MuckRock 5xx and transport crashes stay
 `sending` until reconciled, 401 → `failed`, `In-Reply-To` threading, approval and reconcile
 require an identity, CLI round trip.
+
+## Explicit approval after a definite failure
+
+The trusted hosted signer can call `Outbox.approve_retry(key, approved_by, approved_at)`
+for an unchanged draft after a definite failure. Approval must be strictly later
+than the failure; merely replaying or refreshing the old envelope is refused.
+The row must be failed without a sending/sent timestamp or provider receipt.
+Approval history and failure/resolver evidence are appended to the private
+`outbox_retry_approval` table atomically with the state change. This method does
+not send, lift agency/fee caps or reconcile uncertainty. An independently verified
+not-delivered reconciliation needs a subsequent fresh approval. Do not alter the
+canonical key or request scope to escape an unresolved effect. The CLI's ordinary
+`approve` remains proposed-only; this API requires an authenticated trusted caller.

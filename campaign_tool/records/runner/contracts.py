@@ -18,7 +18,13 @@ class Preserved:
     eml_sha256: str
     receipt_sha256: str
     documents: tuple[str, ...]
-    attachments: tuple[tuple[str, str], ...]  # (one-based hierarchical MIME path, hash)
+    attachments: tuple[tuple[str, str], ...]  # (receipt-bound MIME occurrence locator, hash)
+    attachment_parents: tuple[tuple[str, str | None], ...] = ()  # None denotes outer mail
+    eml_parts: tuple[str, ...] = ()
+    relationships: tuple[tuple[str, str, str], ...] = ()
+    native_items: tuple[dict, ...] = ()
+    original_format: str = "eml"
+    wire_schema: str | None = None
 
 @dataclass(frozen=True)
 class StageReceipt:

@@ -13,6 +13,7 @@ import stat
 import tempfile
 
 from . import ledger_catalog as catalog
+from .ledger import store
 
 ADAPTER_VERSION = "catalog-evidence-v1"
 MAX_CARD_BYTES = 256 * 1024
@@ -124,7 +125,7 @@ class CatalogAdapter:
         require(row["status"] == "ok" and row["parser"] and row["parser_version"] and
                 type(row["text_sha256"]) is str and catalog.HASH.fullmatch(row["text_sha256"]),
                 "support_unit_unverified")
-        source = con.execute("SELECT * FROM originals WHERE sha256=?", (proof["source_sha256"],)).fetchone()
+        source = store.effective_original(con, proof["source_sha256"])
         require(source is not None and not catalog.scope_excluded(source), "support_original_missing")
         raw = self._read(row["derived_path"], MAX_UNIT_BYTES)
         require(_sha(raw) == proof["artifact_sha256"], "support_artifact_hash_mismatch")
@@ -160,7 +161,7 @@ class CatalogAdapter:
         supports = card["supports"]
         require(type(supports) is list and 1 <= len(supports) <= MAX_SUPPORTS, "actual_evidence_required")
         with self.store.ledger(self.database, readonly=True) as con:
-            original = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
+            original = store.effective_original(con, subject)
             require(original is not None and not catalog.scope_excluded(original),
                     "canonical_original_unavailable")
             referenced = {subject}
@@ -225,6 +226,8 @@ class CatalogAdapter:
                     "unknown_reasons": {field: "No supported catalog value" for field in FACT_FIELDS
                                         if normalized[field] in (None, [], "")},
                     "review_complete": False, "publication_ready": False}
+        from .context_runtime import ledger_binding
+        envelope.update(ledger_binding(self.database, subject, "catalog"))
         content = catalog.encoded(envelope)
         require(len(content) <= MAX_CARD_BYTES, "classification_envelope_size")
         return {"subject_sha256": subject, "content": content, "content_sha256": _sha(content),
@@ -341,7 +344,7 @@ class CatalogStage:
             content = con.execute("SELECT payload FROM stage_artifacts WHERE sha256=?",
                                   (packet["content_sha256"],)).fetchone()
             require(content is not None, "accepted_catalog_content_unavailable")
-            original = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
+            original = store.effective_original(con, subject)
             require(original is not None, "canonical_original_unavailable")
             context = {"stage": "catalog", "receipt": packet, "subject_sha256": subject,
                        "content": bytes(content[0]), "original": dict(original)}

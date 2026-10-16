@@ -21,6 +21,10 @@ services:
       POLL_INTERVAL: "15"
       LEASE_SECONDS: "300"
       RUNNER_WORKDIR: /work
+      RUNNER_RESULT_DIR: /results
+    volumes:
+      # Result envelopes survive container recreation; raw job scratch remains tmpfs.
+      - runner-results:/results
     read_only: true
     tmpfs:
       # Private job scratch space; wiped with the container. Size it for the largest original.
@@ -32,7 +36,7 @@ services:
     mem_limit: 2g
     cpus: "2.0"
     restart: unless-stopped
-    stop_grace_period: 330s   # SIGTERM finishes the current job (lease is 300s) before exit
+    stop_grace_period: 330s   # SIGTERM stops renewal; later handler writes are fenced locally.
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
@@ -47,5 +51,6 @@ services:
   #   volumes: [models:/models:ro]
   #   expose: ["8080"]
 
-# volumes:
-#   models: {}
+volumes:
+  runner-results: {}
+  # models: {}

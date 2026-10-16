@@ -1,5 +1,7 @@
 import path from "node:path";
-import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { readFileSync } from "node:fs";
+import { unstable_splitSqlQuery } from "wrangler";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig(async () => {
@@ -9,8 +11,10 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          d1Databases: ["DB_UPGRADE", "DB_SCHEMA"],
           bindings: {
             TEST_MIGRATIONS: migrations,
+            TEST_SCHEMA: unstable_splitSqlQuery(readFileSync(path.join(import.meta.dirname, "../schema/d1.sql"), "utf8")),
             CAMPAIGN_ID: "01test0000000000000000000a",
             ACCESS_TEAM_DOMAIN: "example-team",
             ACCESS_AUD: "test-aud-0123456789abcdef",

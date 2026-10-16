@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import { BrevoError, FakeBrevo } from "../src/brevo.ts";
-import { approveAction, executeAction } from "../src/approvals.ts";
+import { approveAction, executeAction, reconcileAction } from "../src/approvals.ts";
 import { buildExecutors } from "../src/executors/index.ts";
 import { signDownload } from "../src/signing.ts";
 import { MAX_INBOUND_BYTES, emailHandler } from "../src/mail.ts";
@@ -89,7 +89,7 @@ describe("inbound mail size", () => {
 });
 
 describe("failed cards and the newsletter", () => {
-  it("a failed card is re-opened by the next proposal with the same key; send is ambiguous after create", async () => {
+  it("ambiguous sends are held until a provider check and cannot send twice", async () => {
     const repo = await seedCampaign();
     await repo.putSetting("brevo", { list_id: 42, form_url: null, sender_name: "Example Campaign", sender_email: "news@campaign.example.invalid" });
     const brevo = new FakeBrevo();
@@ -105,15 +105,18 @@ describe("failed cards and the newsletter", () => {
     const again = await repo.propose("send_newsletter", "job_x1", { subject: "x2", html: HTML, text: "" }, "audit-nl-1", ORG.email);
     expect(again.inserted).toBe(false);
     expect(again.row.action_id).toBe(row.action_id);
-    expect(again.row.state).toBe("proposed");
-    expect(again.row.error).toMatch(/^re-proposed after: brevo_send_ambiguous/);
-    expect(JSON.parse(again.row.proposal_json).subject).toBe("x2");
+    expect(again.row.state).toBe("failed");
+    expect(again.row.error).toMatch(/^brevo_send_ambiguous/);
+    expect(JSON.parse(again.row.proposal_json).subject).toBe("x");
+    expect(JSON.parse(again.row.provider_receipt!)).toMatchObject({ brevo_campaign_id: 1001, delivery: "unconfirmed" });
+    await expect(approveAction(repo, row.action_id, ORG)).rejects.toThrow(/not proposed/);
+    await reconcileAction(repo, row.action_id, ORG, "delivered", "Synthetic provider status 1001: sent", "2026-01-01T12:00:00Z");
     // an executed card is never re-opened
     brevo.failSend = null;
-    await approveAction(repo, row.action_id, ORG);
     expect((await executeAction(repo, env as Env, row.action_id, ORG, buildExecutors({ brevo }))).state).toBe("executed");
     const sent = await repo.propose("send_newsletter", "job_x1", { subject: "x3", html: HTML, text: "" }, "audit-nl-1", ORG.email);
     expect(sent.row.state).toBe("executed");
+    expect(brevo.created).toHaveLength(1);
   });
 
   it("refuses a draft that still carries the engine's template consent footer", async () => {

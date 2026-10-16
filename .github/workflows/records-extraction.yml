@@ -1,5 +1,12 @@
 name: Records extraction integration
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -36,7 +43,7 @@ jobs:
           campaign_tool.records.__path__.append(str(root/'campaign_tool'/'records'))
           tests.records.__path__.append(str(root/'tests'/'records'))
           from campaign_tool.records.ledger import stages
-          suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_extraction_routes', 'tests.records.test_extraction_ledger', 'tests.records.test_extraction_validation'])
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_extraction_routes', 'tests.records.test_extraction_ledger', 'tests.records.test_extraction_validation', 'tests.records.test_ocr_closed_cas', 'tests.records.test_workbook_policy', 'tests.records.test_extraction_inherited_budget', 'tests.records.test_reconciliation_crash_composition'])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():
               raise SystemExit(1)

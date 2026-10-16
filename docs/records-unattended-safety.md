@@ -67,13 +67,23 @@ at most 200 advancement slots. No deferred original is marked complete, and no
 IMAP checkpoint is changed by the cursor. Explicit subject lists retain their
 caller-selected ordering; an empty list selects nothing.
 
-Unchanged receipt-bound ordinary review holds are acknowledged without an
-advancement attempt only after the ledger validator checks transition authority,
-revision and prerequisite bindings. Their receipts and stage statuses remain
+All in-scope originals, including completed work, are inspected during each finite
+sweep. Context reconciliation runs before analytical reuse or ordinary review-hold
+acknowledgement, and after newly accepted extraction. Every inspected original
+consumes an advancement attempt, including unchanged completion and receipt-bound
+ordinary review holds. Hold acknowledgement also requires the ledger validator
+to check transition authority, revision and prerequisite bindings. Their receipts and stage statuses remain
 unchanged. Pending work and privacy holds do not receive this exemption. Each
-invocation inspects at most 400 originals, advances the sweep across acknowledged
-holds, and reports `review_holds_retained` separately from `originals_deferred`.
+invocation retains the 400 inspection ceiling within its shared maximum of 200
+advance attempts (including prior review retirement), advances the sweep across
+acknowledged holds, and reports `review_holds_retained` separately from `originals_deferred`.
 Malformed resume metadata fails closed; persistent safety holds are never cleared.
+Context failure or deadline expiry retains the current key for retry, even when
+a partial invalidation or new snapshot pointer committed. Behind-cursor context
+changes, and completed originals preceding an older unfinished-only cursor, are
+checked in the next full sweep. Cursor metadata is scheduling state, not context
+acceptance or a publication freshness certificate. Snapshot reads are cooperative;
+this patch does not establish strict inner-read wall-time or memory limits.
 
 `end_to_end_complete` remains the integer mechanical seven-stage completion count
 from the ledger in both manual and unattended reports, including mixed batches.

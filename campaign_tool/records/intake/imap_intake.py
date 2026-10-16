@@ -13,6 +13,8 @@ import re
 import stat
 
 from . import eml_export, mail_delta
+from .rfc822_adapter import RFC822AdapterError, RFC822_FAILURE_CODES
+from .rfc822_inventory import RFC822InventoryError
 from ..runner.contracts import Folder
 
 VERSION = "records-imap-intake-v1"
@@ -68,6 +70,8 @@ def _failure_code(error):
         allowed = _INTAKE_FAILURE_CODES
     elif type(error) is mail_delta.Rejected:
         allowed = _MAIL_DELTA_FAILURE_CODES
+    elif type(error) in {RFC822AdapterError, RFC822InventoryError}:
+        allowed = RFC822_FAILURE_CODES
     else:
         return "fetch_or_preserve_failed"
     if len(error.args) == 1:
@@ -366,11 +370,11 @@ class IMAPIntake:
                         receipt = eml_export.export_message(raw, mail_root=self.mail_root, account=self.config["account_id"],
                                                             mailbox=folder, uidvalidity=validity, uid=uid)
                         self.backend.preserve(receipt, self.config["account_id"], Folder(folder, validity), uid)
+                        with store.ledger(self.ledger) as con:
+                            self._save(con, folder, validity, uid, success=True)
+                        highest = uid
                         entry["preserved"] += 1
                         report["preserved"] += 1
-                        highest = uid
-                        with store.ledger(self.ledger) as con:
-                            self._save(con, folder, validity, highest, success=True)
                     except Exception as error:
                         code = _failure_code(error)
                         entry["failed"] = f"uid {uid}: {code}"

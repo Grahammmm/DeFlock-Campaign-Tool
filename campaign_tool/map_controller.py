@@ -13,7 +13,7 @@ SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")
 MAX_BYTES = 2 * 1024 * 1024
 
 
-def render(config, profile_renderer):
+def render(config, profile_renderer, point_context_renderer=""):
     if not isinstance(config, dict) or set(config) != KEYS:
         raise ValueError("Invalid map configuration fields")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
@@ -45,6 +45,8 @@ def render(config, profile_renderer):
         raise ValueError("Invalid candidate count label")
     if not isinstance(profile_renderer, str) or len(profile_renderer.encode("utf-8")) > MAX_BYTES:
         raise ValueError("Invalid trusted profile renderer")
+    if not isinstance(point_context_renderer, str) or len(point_context_renderer.encode("utf-8")) > MAX_BYTES:
+        raise ValueError("Invalid trusted point context renderer")
     tokens = {
         "GROUP_SLUG": json.dumps(config["group_slug"]),
         "CANDIDATE_PROPERTY": prop,
@@ -54,6 +56,7 @@ def render(config, profile_renderer):
         "INITIAL_POINT_COUNT": str(count),
         "CANDIDATE_COUNT_SUFFIX": json.dumps(suffix, ensure_ascii=False),
         "PROFILE_RENDERER": profile_renderer,
+        "POINT_CONTEXT_RENDERER": "+(" + point_context_renderer + ")(p)" if point_context_renderer else "",
     }
     template = ASSET.read_text(encoding="utf-8")
     token = re.compile(r"\{\{([A-Z_]+)\}\}")
@@ -68,9 +71,9 @@ def main():
         if len(raw) > MAX_BYTES:
             raise ValueError("Map input too large")
         value = json.loads(raw)
-        if not isinstance(value, dict) or set(value) != {"config", "profile_renderer"}:
+        if not isinstance(value, dict) or set(value) not in ({"config", "profile_renderer"}, {"config", "profile_renderer", "point_context_renderer"}):
             raise ValueError("Invalid map build payload")
-        sys.stdout.write(json.dumps({"javascript": render(value["config"], value["profile_renderer"])}))
+        sys.stdout.write(json.dumps({"javascript": render(value["config"], value["profile_renderer"], value.get("point_context_renderer", ""))}))
     except (ValueError, TypeError, OSError) as exc:
         print("Map build stopped: " + str(exc), file=sys.stderr)
         return 1

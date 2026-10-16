@@ -30,9 +30,9 @@ for (const name of readdirSync(lawDir, { withFileTypes: true }).filter((d) => d.
   if (existsSync(pkg)) planFile(join(workers, "wizard", "src", "generated", "law-" + name + ".json"), readFileSync(pkg, "utf8"));
 }
 
-// 2. D1 schema -> shared TS constant and workspace migration 0001.
+// 2. Current D1 schema -> shared TS constant for new wizard installations.
+// Applied migrations are immutable: add explicit workspace/migrations/NNNN files for upgrades.
 const schemaSql = readFileSync(join(repo, "workers", "schema", "d1.sql"), "utf8");
-planFile(join(workers, "workspace", "migrations", "0001_init.sql"), schemaSql);
 planFile(
   join(workers, "shared", "src", "generated", "schema.ts"),
   banner + "workers/schema/d1.sql. Do not edit.\nexport const D1_SCHEMA_SQL: string = " + JSON.stringify(schemaSql) + ";\n",

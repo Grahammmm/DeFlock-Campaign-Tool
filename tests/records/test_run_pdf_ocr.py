@@ -80,7 +80,10 @@ class PdfOcrTests(unittest.TestCase):
                                                               message_id="<pdf1@agency.example.invalid>"))
         report = Pipeline(self.root).run(self.inbox)
         self.assertEqual(report["originals"], 2)
-        self.assertEqual(report["end_to_end_complete"], 2)
+        self.assertEqual(report["end_to_end_complete"], 0)
+        self.assertGreaterEqual(report["counts"]["review"]["blocked"], 1)
+        if any("decoder_unavailable_or_failed" in item["stages"].get("extract", "") for item in report["subjects"]):
+            self.skipTest("UNSUPPORTED_RUNTIME: native PDF decoder unavailable before review")
         pages = self.ledger("SELECT page_no,status,needs_visual_review FROM page_state")
         self.assertEqual(pages, [(1, "ok", 1)])
 
@@ -93,24 +96,27 @@ class PdfOcrTests(unittest.TestCase):
         self.assertIsNotNone(tools)
         report = Pipeline(self.root, ocr_tools=tools, ocr_tool_signature=signature).run(self.inbox)
         self.assertEqual(report["originals"], 2)
-        self.assertEqual(report["end_to_end_complete"], 2, json.dumps(report["subjects"]))
+        self.assertEqual(report["end_to_end_complete"], 0, json.dumps(report["subjects"]))
         pages = self.ledger("SELECT page_no,status,method,needs_visual_review,confidence FROM page_state")
         self.assertEqual(len(pages), 1)
         self.assertEqual(pages[0][1], "partial")
         self.assertEqual(pages[0][2], "local-ocr-3")
         self.assertEqual(pages[0][3], 1)
         self.assertIsNotNone(pages[0][4])
-        public = next(p for p in (self.root / "proposals/public").glob("*.md") if "45 days" in p.read_text()).read_text()
-        self.assertIn("read by local OCR", public)
+        reviews = [json.loads(bytes(row[0])) for row in self.ledger(
+            "SELECT a.payload FROM stage_content c JOIN stage_artifacts a ON a.sha256=c.content_sha256 "
+            "WHERE c.stage='review'")]
+        self.assertTrue(any("read by local OCR" in json.dumps(item["digest"]["limitations"]) for item in reviews))
+        self.assertEqual(self.ledger("SELECT count(*) FROM proposals"), [(0,)])
         envelope = json.loads(bytes(self.ledger(
             "SELECT a.payload FROM stage_content c JOIN stage_artifacts a ON a.sha256=c.content_sha256 "
             "WHERE c.stage='extract' AND c.subject_sha256=(SELECT original_sha256 FROM page_state)")[0][0]))
         self.assertEqual(envelope["ocr"]["pages"], [1])
         self.assertTrue(envelope["ocr"]["visual_review_pending"])
         # Replay with OCR configured again: no new receipts, no duplicate page rows.
-        receipts = self.ledger("SELECT count(*) FROM receipts")[0][0]
+        receipts = self.ledger("SELECT count(*) FROM receipts WHERE stage='extract'")[0][0]
         Pipeline(self.root, ocr_tools=tools, ocr_tool_signature=signature).run(self.inbox)
-        self.assertEqual(self.ledger("SELECT count(*) FROM receipts")[0][0], receipts)
+        self.assertEqual(self.ledger("SELECT count(*) FROM receipts WHERE stage='extract'")[0][0], receipts)
         self.assertEqual(len(self.ledger("SELECT page_no FROM page_state")), 1)
 
     def test_image_only_pdf_without_ocr_is_held_not_faked(self):
@@ -121,12 +127,12 @@ class PdfOcrTests(unittest.TestCase):
                                                               message_id="<pdf3@agency.example.invalid>"))
         report = Pipeline(self.root).run(self.inbox)  # OCR not configured
         self.assertEqual(report["originals"], 2)
-        self.assertEqual(report["end_to_end_complete"], 1)  # the email completes; the scan is held at extract
+        self.assertEqual(report["end_to_end_complete"], 0)  # email awaits independent review; scan is held at extract
         held = [s for s in report["subjects"] if s["stages"].get("extract") not in ("done", None)]
         self.assertEqual(len(held), 1)
         self.assertIn("blocked", held[0]["stages"]["extract"])
         self.assertIn("ocr_runtime_unconfigured", held[0]["stages"]["extract"])
-        self.assertEqual(self.ledger("SELECT count(*) FROM proposals")[0][0], 1)
+        self.assertEqual(self.ledger("SELECT count(*) FROM proposals")[0][0], 0)
         alerts = self.ledger("SELECT key,count,state FROM alerts")
         self.assertEqual(len(alerts), 1)
         self.assertIn("ocr_runtime_unconfigured", alerts[0][0])

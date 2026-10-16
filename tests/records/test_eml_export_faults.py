@@ -126,6 +126,47 @@ class ExportFaultTests(unittest.TestCase):
         for path, value in accepted.items():
             self.assertEqual(value, self.snapshot()[path])
 
+    def test_receipt_directory_fsync_retry_cannot_skip_durability(self):
+        for uid, failure_boundary in ((1, 6), (2, 2)):
+            with self.subTest(uid=uid):
+                self.root = Path(self.temp.name).resolve() / f'durability-{uid}'
+                if uid == 2:
+                    self.run_export()
+                original = os.fsync
+                calls = 0
+
+                def interrupt(fd):
+                    nonlocal calls
+                    calls += 1
+                    if calls == failure_boundary:
+                        raise OSError('synthetic receipt directory failure')
+                    return original(fd)
+
+                with patch.object(export.os, 'fsync', interrupt):
+                    with self.assertRaises(OSError):
+                        self.run_export(uid=uid)
+                accepted = self.snapshot()
+                # Repeated failure must remain a failure, even with a valid receipt.
+                with patch.object(export.os, 'fsync', side_effect=OSError('still failing')):
+                    with self.assertRaises(OSError):
+                        self.run_export(uid=uid)
+                with patch.object(export.os, 'fsync', wraps=original) as sync:
+                    mail_delta.load_receipt(self.run_export(uid=uid))
+                    self.assertGreaterEqual(sync.call_count, 3)
+                self.assertEqual(accepted, self.snapshot())
+
+    def test_native_immutable_writer_replays_sync_and_checks_bytes(self):
+        target = self.root / 'native'
+        export._ensure_private(target, b'synthetic native bytes')
+        before = self.snapshot()
+        with patch.object(export.os, 'fsync', side_effect=OSError('synthetic sync failure')):
+            with self.assertRaises(OSError):
+                export._ensure_private(target, b'synthetic native bytes')
+        export._ensure_private(target, b'synthetic native bytes')
+        with self.assertRaises(mail_delta.Rejected):
+            export._ensure_private(target, b'conflicting bytes')
+        self.assertEqual(before, self.snapshot())
+
     def test_existing_file_never_replaced(self):
         target = self.root / 'accepted'
         target.write_bytes(b'accepted evidence')

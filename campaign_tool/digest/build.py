@@ -12,6 +12,7 @@ from datetime import date
 from ..law import rules_in_force
 from .detectors import DETECTOR_VERSION, run_detectors
 from .model import ModelError, narrative
+from .model_input import ModelInputError, ModelSources, model_locator
 from .redact import Redactor
 from .schema import empty_digest, validate_digest
 
@@ -20,8 +21,8 @@ def redact_units(units, allowlist=(), denylist=()):
     """Redact every unit's text with one shared placeholder table.
 
     Units are redacted one at a time (never joined), so a pattern can never
-    match across a page break, and the locator's own strings (attachment
-    member names, sheet titles) are redacted with the same table.
+    match across a page break. Original locators stay local; ``model_locator``
+    is an opaque unit reference with no original metadata.
     """
     redactor = Redactor(allowlist=allowlist, denylist=denylist)
     counts = {}
@@ -34,36 +35,18 @@ def redact_units(units, allowlist=(), denylist=()):
     return redacted, counts
 
 
-LOCATOR_SAFE_KEYS = ("scope", "kind", "type")
-
-
-def model_locator(locator, index):
-    """The locator as the model may see it: numbers and fixed vocabulary only.
-
-    Attachment member names and sheet titles are free text (often a person's
-    name), so they never cross the model boundary; ``unit`` lets
-    :func:`restore_locators` map the model's echo back to the real locator.
-    """
-    out = {k: v for k, v in locator.items() if not isinstance(v, str) or k in LOCATOR_SAFE_KEYS}
-    out["unit"] = index
-    return out
-
-
 def restore_locators(output, redacted):
-    """Replace every ``{..., "unit": i}`` locator the model echoed with unit i's real locator."""
-    def real(locator):
-        if isinstance(locator, dict) and isinstance(locator.get("unit"), int) and 0 <= locator["unit"] < len(redacted):
-            return dict(redacted[locator["unit"]].get("locator") or {})
-        return locator
-    for key in ("dates", "statements", "omissions", "counterevidence"):
-        for item in output.get(key) or []:
-            if isinstance(item, dict) and "locator" in item:
-                item["locator"] = real(item["locator"])
-    for conclusion in output.get("conclusions") or []:
-        for source in conclusion.get("sources") or []:
-            if isinstance(source, dict) and "locator" in source:
-                source["locator"] = real(source["locator"])
-    return output
+    """Restore citations against an untruncated local source view, without mutation.
+
+    Model requests use their own ``ModelSources`` instance so references to
+    sources omitted by request truncation also fail validation.
+    """
+    try:
+        sources = ModelSources(redacted)
+        sources.source_payload(max_chars=None)
+        return sources.restore_output(output)
+    except ModelInputError:
+        raise ModelError("model locator references failed validation") from None
 
 
 def _duties_from_hits(hits):
@@ -100,6 +83,8 @@ def _detector_only(digest, hits):
 
 def build_digest(sha256, units, package, jurisdiction, law_package_version, privacy_tier,
                  model_config=None, allowlist=(), denylist=(), event_date=None, opener=None):
+    if model_config is not None and model_config.privacy_tier != privacy_tier:
+        raise ModelError("model privacy tier does not match digest privacy tier")
     redacted, counts = redact_units(units, allowlist=allowlist, denylist=denylist)
     hits = run_detectors(redacted, package)
     digest = empty_digest(sha256, jurisdiction, law_package_version, privacy_tier, DETECTOR_VERSION)
@@ -112,10 +97,8 @@ def build_digest(sha256, units, package, jurisdiction, law_package_version, priv
         digest["limitations"].append("No model configured: narrative fields are detector output only.")
     else:
         rules = rules_in_force(package, event_date or date.today())
-        output = restore_locators(narrative(model_config, redacted, hits, rules, opener=opener), redacted)
-        # Units carry a model-facing locator; the digest records the real one.
-        for unit in redacted:
-            unit.pop("model_locator", None)
+        output = narrative(model_config, redacted, hits, rules, opener=opener,
+                           allowlist=allowlist, denylist=denylist)
         digest["model_id"] = model_config.model_id
         for key in ("scope", "actors", "dates", "statements", "omissions", "counterevidence"):
             digest[key] = output[key]
@@ -125,7 +108,7 @@ def build_digest(sha256, units, package, jurisdiction, law_package_version, priv
             for source in conclusion["sources"]:
                 rule_id = source.get("rule_id")
                 if rule_id is not None and rule_id not in known_rules:
-                    raise ModelError("model cited unknown rule_id " + repr(rule_id))
+                    raise ModelError("model cited unknown rule_id")
                 sources.append({"sha256": sha256, "locator": source["locator"], "rule_id": rule_id})
             confidence = conclusion["confidence"]
             if any(s["rule_id"] for s in sources):

@@ -258,8 +258,24 @@ def block_duplicate_ids(reports):
     return reports
 
 
-def gate_many(findings, reviews=(), check_files=False):
-    return block_duplicate_ids([gate(f, reviews, check_files) for f in findings])
+def gate_many(findings, reviews=(), check_files=False, *, collection_errors=()):
+    reports = block_duplicate_ids([gate(f, reviews, check_files) for f in findings])
+    if collection_errors:
+        for report in reports:
+            report["ready"] = False
+            report["blockers"] = sorted(set(report["blockers"] + ["review_collection_failed"]))
+    return reports
+
+
+def review_input(data):
+    """Preserve collection failure state instead of evaluating a passing subset."""
+    values = data.get("reviews") if isinstance(data, dict) else data
+    if not isinstance(values, list):
+        raise ValueError("input must be an array or object with reviews")
+    errors = data.get("collection_errors", []) if isinstance(data, dict) else []
+    if not isinstance(errors, list):
+        errors = ["invalid collection_errors envelope"]
+    return values, errors
 
 
 def objects(path, key):
@@ -279,17 +295,17 @@ def main():
     p.add_argument("--output")
     args = p.parse_args()
     findings = objects(args.findings, "findings")
-    reviews = objects(args.reviews, "reviews") if args.reviews else []
-    report = gate_many(findings, reviews, args.check_files)
+    reviews, collection_errors = review_input(json.loads(Path(args.reviews).read_text())) if args.reviews else ([], [])
+    report = gate_many(findings, reviews, args.check_files, collection_errors=collection_errors)
     output = {"total": len(report), "ready": sum(r["ready"] for r in report),
               "gate_scope": "structural evidence/review checks; no legal merits decision",
-              "findings": report}
+              "findings": report, "collection_errors": collection_errors}
     rendered = json.dumps(output, indent=2) + "\n"
     if args.output:
         write_private(args.output, rendered)
     else:
         print(rendered, end="")
-    return 1 if args.require_ready and (not report or any(not r["ready"] for r in report)) else 0
+    return 1 if args.require_ready and (collection_errors or not report or any(not r["ready"] for r in report)) else 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,31 @@
+--- a/campaign_tool/records/run.py
++++ b/campaign_tool/records/run.py
+@@ -31,2 +31,3 @@
+ from . import stage_adapters
++from .detectors.pipeline import evaluate_structured
+ from .catalog_stage import catalog_run_factory
+@@ -461,7 +462,14 @@
+         leads = run_detectors(text_units, self.package) if text_units else []
+-        structured = {name: {"status": "skipped", "reason": "no_structured_units_of_required_type"}
+-                      for name in stage_adapters.STRUCTURED_DETECTORS}
++        # Supplied by the installed, source-verifying normalization/context adapter.
++        # Do not build these inputs from text, labels, or the truncated _units view.
++        inputs = stage.get("structured_inputs", {}).get(subject, {})
++        result = evaluate_structured(subject_sha256=subject, **inputs)
++        structured = result["structured"]
+         content = {"schema": stage_adapters.SCHEMAS["detect"], "subject_sha256": subject,
+                    "detector_version": DETECTOR_VERSION, "unit_count": len(units),
+-                   "text_leads": leads, "structured": structured, "rules_version": self.package.get("schema_version")}
++                   "text_leads": leads, "structured": structured, "rules_version": self.package.get("schema_version"),
++                   "structured_provenance": {k: v for k, v in result.items() if k != "structured"}}
++        if any(entry["status"] == "blocked" for entry in structured.values()):
++            stage["runner"].set_content(subject, "detect", encoded(content), author_id="records-detect", tier="A")
++            return {"status": "blocked", "reason": "structured_context_unresolved"}
+         coverage = {"denominator": {"kind": "items", "total": len(units)}, "covered": len(units), "scope": "full_text"}
+--- a/campaign_tool/records/stage_adapters.py
++++ b/campaign_tool/records/stage_adapters.py
+@@ -69,3 +69,3 @@
+     for name, entry in structured.items():
+-        require(isinstance(entry, dict) and entry.get("status") in ("evaluated", "skipped", "blocked") and
++        require(isinstance(entry, dict) and entry.get("status") in ("evaluated", "skipped", "blocked", "inapplicable") and
+                 isinstance(entry.get("reason"), str), "detect_structured_entry:" + name)

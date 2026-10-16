@@ -101,29 +101,27 @@ class ExtractionRoutesTests(unittest.TestCase):
         with self.assertRaises(ValueError):er.extract('unused','unused',self.root,timeout=True)
 
     def test_msg_decoded_attachment_preserved_with_locator(self):
-        import sys,types
-        data=b'synthetic attachment'
-        attachment=types.SimpleNamespace(longFilename='fixture.txt',data=data)
-        class Message:
-            body='synthetic body';attachments=[attachment]
-            def __enter__(self):return self
-            def __exit__(self,*args):return False
-        module=types.SimpleNamespace(openMsg=lambda _:Message())
-        (self.root/'blobs').mkdir()
-        with patch.dict(sys.modules,{'extract_msg':module}):
-            units,parser,version,children=er._msg('synthetic',b'synthetic',self.root)
-        self.assertEqual(children[0]['locator'],{'attachment':1})
-        self.assertEqual((self.root/'blobs'/children[0]['sha']).read_bytes(),data)
-        self.assertEqual(units[-1]['data']['bytes_preserved'],True)
+        from tests.records import native_msg_fixtures as native
+        if not native.available():self.skipTest("optional native MSG parser unavailable")
+        data=b"Subject: Synthetic fixture\r\nContent-Type: text/plain\r\n\r\nSynthetic attachment\r\n"
+        raw=native.message(attachment=data)
+        (self.root/"blobs").mkdir()
+        units,parser,version,children=er._msg("synthetic",raw,self.root)
+        self.assertEqual((self.root/"blobs"/children[0]["sha"]).read_bytes(),data)
+        self.assertEqual(children[0]["parent_sha"],hashlib.sha256(raw).hexdigest())
+        self.assertIn("part",children[0]["locator"])
+        self.assertTrue(any(u["data"].get("bytes_preserved") for u in units))
     def test_embedded_msg_not_falsely_called_original_bytes(self):
-        import sys,types
-        class Message:
-            body='synthetic';attachments=[types.SimpleNamespace(data=object())]
-            def __enter__(self):return self
-            def __exit__(self,*args):return False
-        with patch.dict(sys.modules,{'extract_msg':types.SimpleNamespace(openMsg=lambda _:Message())}):
-            units,_,_,children=er._msg('synthetic',b'synthetic',self.root)
-        self.assertEqual(children,[]);self.assertTrue(units[-1]['data']['needs_attachment_decoder'])
+        from tests.records import native_msg_fixtures as native
+        if not native.available():self.skipTest("optional native MSG parser unavailable")
+        raw=native.message(embedded=True)
+        (self.root/"blobs").mkdir()
+        units,_,_,children=er._msg("synthetic",raw,self.root)
+        self.assertEqual(children,[])
+        item=next(u for u in units if u["kind"]=="msg_embedded_item")
+        self.assertFalse(item["data"]["received_standalone_original"])
+        self.assertTrue(item["data"]["bytes_preserved"])
+        self.assertTrue(list((self.root/"native-items").iterdir()))
 
     def test_timeout_kills_entire_worker_group(self):
         import subprocess,signal

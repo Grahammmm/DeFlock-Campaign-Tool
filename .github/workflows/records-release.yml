@@ -2,13 +2,18 @@ name: Records release package
 on:
   pull_request:
   push:
-    branches: [main, 'codex/records-*']
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
   package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Full synthetic suite plus dependency install and source-bound packaging.
+    timeout-minutes: 20
     strategy:
       matrix:
         python: ['3.11', '3.12', '3.13']
@@ -21,8 +26,9 @@ jobs:
         with:
           python-version: '${{ matrix.python }}'
       - name: Install build and test dependencies in disposable CI
-        run: python -m pip install -r requirements-build.txt -r requirements-records-test.txt
+        run: python -m pip install -r requirements-build.txt -r requirements-records-test.txt -r requirements-records-parsers.txt
       - name: Synthetic tests and public patterns (not private export clearance)
+        timeout-minutes: 15
         run: |
           python -B -m unittest discover -v
           python -B -m campaign_tool.records scan-public --patterns-only
@@ -36,3 +42,28 @@ jobs:
           PYTHONPATH= "$RUNNER_TEMP/records-runtime/bin/records" version --json > records-installed-version.json
           PYTHONPATH= "$RUNNER_TEMP/records-runtime/bin/records" validate-findings --help
           python -c 'import json,os; p=json.load(open("records-installed-version.json")); assert p["commit"]==os.environ["GITHUB_SHA"]; assert p["installation_kind"]=="installed_wheel"; assert p["source_dirty"] is False; assert p["ledger_schema_version"]==1'
+      - name: Verify installed composition with synthetic fixtures outside checkout
+        env:
+          TMPDIR: /var/tmp
+        run: |
+          records_package_path="$("$RUNNER_TEMP/records-runtime/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$records_package_path:$GITHUB_WORKSPACE" python -B - <<'PY'
+          import json, os, unittest
+          from campaign_tool.records.release_manifest import version_report
+          report = version_report()
+          assert report['commit'] == os.environ['GITHUB_SHA']
+          assert report['installation_kind'] == 'installed_wheel' and report['source_dirty'] is False
+          suite = unittest.defaultTestLoader.loadTestsFromNames([
+              'tests.records.test_original_reconciliation', 'tests.records.test_ledger_stages',
+              'tests.records.test_ledger_occurrences', 'tests.records.test_ledger_occurrence_replay',
+              'tests.records.test_queue', 'tests.records.test_extraction_validation',
+              'tests.records.test_extraction_ledger', 'tests.records.test_image_artifact_binding',
+              'tests.records.test_detectors', 'tests.records.test_detector_persistence',
+              'tests.records.test_reconciliation_crash_composition',
+              'tests.records.test_extraction_inherited_budget',
+              'tests.records.test_ocr_closed_cas', 'tests.records.test_workbook_policy'])
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped or not result.wasSuccessful():
+              raise SystemExit(1)
+          PY

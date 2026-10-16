@@ -9,6 +9,7 @@ owner's decision stays outside the automated path.
 """
 import argparse
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 import fcntl
 import hashlib
@@ -29,6 +30,7 @@ from campaign_tool.law import load_package, rules_in_force
 from . import challenge as challenge_mod
 from . import extraction_routes
 from . import stage_adapters
+from . import review_retirement
 from .catalog_stage import catalog_run_factory
 from .extraction_ledger import ExtractionLedgerAdapter
 from .extraction_validation import ExtractionStageAdapter, install_extraction_validator
@@ -58,6 +60,13 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+_LOCKED_ROOTS = ContextVar("records_locked_roots", default=())
+
+def require_root_lock(root):
+    if str(Path(root).resolve()) not in _LOCKED_ROOTS.get():
+        raise RunError("context_root_lock_required")
+
+
 class RunError(RuntimeError):
     pass
 
@@ -76,7 +85,11 @@ def root_lock(root):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RunError("root_locked") from None
-        yield
+        token = _LOCKED_ROOTS.set((*_LOCKED_ROOTS.get(), str(Path(root).resolve())))
+        try:
+            yield
+        finally:
+            _LOCKED_ROOTS.reset(token)
     finally:
         os.close(fd)
 
@@ -135,7 +148,7 @@ class Root:
 class Pipeline:
     def __init__(self, root, *, jurisdiction="us-ca", account="local", model=None, challenge=None,
                  redaction_allowlist=(), redaction_denylist=(), event_date=None, opener=None,
-                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180):
+                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180, native_workbook_policy=None):
         self.root = Root(root).prepare()
         self.jurisdiction, self.account = jurisdiction, account
         self.model, self.challenge, self.opener = model, challenge, opener
@@ -143,15 +156,26 @@ class Pipeline:
         self.event_date = event_date
         self.ocr_tools, self.ocr_tool_signature = ocr_tools, ocr_tool_signature
         self.extraction_timeout = extraction_timeout
+        self.native_workbook_policy = native_workbook_policy
         self.package = load_package(jurisdiction)
         self.config = {"engine": ENGINE, "version": __version__, "jurisdiction": jurisdiction,
-                       "law_sources": sorted(r["rule_id"] for r in self.package["rules"]),
+                       "law_package_sha256": sha(encoded(self.package)),
+                       "event_date_declaration": event_date.isoformat() if event_date else None,
+                       "detector_code_sha256": store.file_hash(__import__("campaign_tool.digest.detectors", fromlist=[""]).__file__),
+                       "prompt_code_sha256": store.file_hash(__import__("campaign_tool.digest.model", fromlist=[""]).__file__),
                        "model_id": model.model_id if model else None,
                        "challenge_model_id": challenge.model.model_id if challenge else None,
                        "ocr": bool(ocr_tools)}
+        if native_workbook_policy is not None:
+            from .workbook_policy import NativeWorkbookPolicy
+            if type(native_workbook_policy) is not NativeWorkbookPolicy:
+                raise ValueError("trusted_workbook_policy_required")
+            self.config["native_workbook_policy"] = native_workbook_policy.binding
         self.config_sha256 = sha(encoded(self.config))
         self.run_id = "run-" + uuid.uuid4().hex
         self._stage = None
+        self._contexts = {}
+        self.review_retirement = {"state": "complete", "processed": 0}
 
     # ----- intake -------------------------------------------------------------------------
     def _identity(self):
@@ -163,18 +187,20 @@ class Pipeline:
     def ingest_inbox(self, inbox):
         """Export every ``*.eml`` under ``inbox`` and preserve it through the canonical mail backend."""
         inbox = Path(inbox)
-        files = sorted(p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() == ".eml") if inbox.is_dir() else []
+        files = sorted(p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in {".eml", ".msg"}) if inbox.is_dir() else []
         backend = CanonicalMailBackend(self.root.sub("mail"), self.root.intake, self.root.ledger)
         identity = self._identity()
         backend.start_run(identity)
         preserved, replayed, failures = [], [], []
         try:
             for path in files:
-                raw = path.read_bytes()
+                with intake_folder.secure_open(path) as stream:
+                    raw = stream.read(64*1024**2 + 1)
                 uid = eml_export.local_uid(sha(raw))
                 try:
                     receipt = eml_export.export_message(raw, mail_root=self.root.sub("mail"), account=self.account,
-                                                        mailbox="inbox", uidvalidity=1, uid=uid)
+                                                        mailbox="inbox", uidvalidity=1, uid=uid,
+                                                        original_format=path.suffix.lower()[1:])
                     seen = self._query("SELECT count(*) AS n FROM mail_messages WHERE account=? AND folder='inbox' "
                                        "AND uidvalidity=1 AND uid=?", (self.account, uid))[0]["n"]
                     result = backend.preserve(receipt, self.account, Folder("inbox", 1), uid)
@@ -227,14 +253,14 @@ class Pipeline:
             con.commit()
         artifacts = self.root.sub("artifacts")
         evidence, blobs = artifacts / "evidence", self.root.intake / "blobs"
-        validators = {"extract": install_extraction_validator(database=database, evidence_root=evidence, original_root=blobs)}
+        validators = {"extract": install_extraction_validator(database=database, evidence_root=evidence, original_root=blobs, native_workbook_policy=self.native_workbook_policy)}
         validators.update(stage_adapters.install_validators(database))
         profile = "records-run:" + sha(encoded({"db": str(database), "config": self.config_sha256}))[:32]
         catalog = catalog_run_factory(database, artifacts, run_id=self.run_id, owner=OWNER, profile_id=profile,
                                       engine_version=ENGINE, config_sha256=self.config_sha256,
                                       additional_adapters=validators)
         extraction = ExtractionStageAdapter(database=database, evidence_root=evidence, original_root=blobs,
-                                            run_id=self.run_id, owner=OWNER, profile_id=profile)
+                                            run_id=self.run_id, owner=OWNER, profile_id=profile, native_workbook_policy=self.native_workbook_policy)
         enrollment = ExtractionLedgerAdapter(database=database, evidence_root=evidence)
         self._stage = {"catalog": catalog, "runner": catalog.runner, "extraction": extraction,
                        "enrollment": enrollment, "profile": profile}
@@ -270,11 +296,23 @@ class Pipeline:
     def advance_all(self, subjects=None):
         """Advance every subject through the stage order; never raise for one record."""
         stage = self._open_stage_run()
+        if not self._reconcile_review_authority(stage):
+            return []
         report = []
         for subject in (self.subjects() if subjects is None else subjects):
             outcome = {"subject_sha256": subject, "stages": {}}
             report.append(outcome)
             for name in STAGE_ORDER:
+                if name == "catalog":
+                    from .context_runtime import reconcile
+                    try:
+                        current, plan = reconcile(self, subject, stage["runner"])
+                        self._contexts[subject] = current
+                        outcome["context_revision_sha256"] = current["revision"]["revision_sha256"]
+                        outcome["context_invalidated"] = plan["applied_stages"]
+                    except Exception:
+                        outcome["stages"]["context"] = "blocked:context_inputs_unresolved"
+                        break
                 state = self._states(subject)[name]
                 if state["status"] in ("done", "inapplicable"):
                     outcome["stages"][name] = state["status"]
@@ -288,24 +326,99 @@ class Pipeline:
                     outcome["stages"][name] = "error:stage_failed"
                     break
                 outcome["stages"][name] = result.get("status", "pending")
+                if name == "extract" and result.get("extraction_gaps"):
+                    outcome["extraction_gaps"] = result["extraction_gaps"]
                 if result.get("reason"):
                     outcome["stages"][name] += ":" + str(result["reason"])[:160]
                 if result.get("status") not in ("done", "inapplicable"):
                     break
         return report
 
+    def _reconcile_review_authority(self, stage):
+        """Retire cached automated/test-only review before completed-stage reuse.
+
+        No source text is needed: the protected receipt issuer and validation
+        authority identify prior automated passes. Root lock belongs to run().
+        Genuine independent receipt submission remains a separate review seam.
+        """
+        self._arm_review_retirement()
+        safety = getattr(self, "safety", None)
+        limit = min(review_retirement.LIMIT, safety.policy.max_originals) if safety else review_retirement.LIMIT
+        rows = self._query("SELECT s.original_sha256,s.receipt_sha256 " + review_retirement.ELIGIBLE +
+                           " ORDER BY s.original_sha256 LIMIT ?", (limit,))
+        for row in rows:
+            if safety and not safety.begin("advance", sha(encoded([
+                    "review-retirement", row["original_sha256"], row["receipt_sha256"]]))):
+                break
+            # Revoke first and durably. An interrupted reconciliation can only
+            # leave authority more restrictive; it cannot restore old approval.
+            with store.ledger(self.root.ledger) as con:
+                con.execute("UPDATE proposals SET owner_approval='none',approved_content_sha256=NULL "
+                            "WHERE independent_receipt_sha256=?", (row["receipt_sha256"],))
+                con.commit()
+            try:
+                stage["runner"].invalidate(row["original_sha256"], "review",
+                                           reason="independent_factual_review_required:cached_automated_or_test_review")
+            except Exception:
+                self.review_retirement.update(state="pending", failure_code="review_authority_retirement_failed")
+                if safety:
+                    safety.finish("held", "review_authority_retirement_failed", (row["original_sha256"],))
+                raise RunError("review_authority_retirement_failed") from None
+            self.review_retirement["processed"] += 1
+            if safety:
+                safety.finish()
+        with store.ledger(self.root.ledger) as con:
+            complete = review_retirement.finish(con)
+        self.review_retirement["state"] = "complete" if complete else "pending"
+        return complete
+
+    def _arm_review_retirement(self):
+        with store.ledger(self.root.ledger) as con:
+            held = review_retirement.arm(con)
+        self.review_retirement["state"] = "pending" if held else "complete"
+
+    def _start_review_retirement(self):
+        with store.ledger(self.root.ledger) as con:
+            review_retirement.start(con)
+        self.review_retirement["state"] = "pending"
+
     # ----- helpers ---------------------------------------------------------------------
     def _original(self, subject):
-        rows = self._query("SELECT * FROM originals WHERE sha256=?", (subject,))
-        if not rows:
+        with store.ledger(self.root.ledger,readonly=True) as con:
+            original = store.effective_original(con,subject)
+        if original is None:
             raise RunError("original_missing")
-        return rows[0]
+        return original
+
+    def ingest_documents(self, documents, manifest_sha256):
+        from .intake.document_drop import ingest
+        return ingest(self, documents, manifest_sha256)
 
     def _form(self, subject, original):
+        from .ledger.occurrence_classification import validate_declarations
+        with store.ledger(self.root.ledger, readonly=True) as con:
+            validate_declarations(con, subject)
+        if original.get("mime_detected") == "application/vnd.ms-outlook":
+            return "msg"
         if original.get("mime_detected") == "message/rfc822":
             return "eml"
         for occurrence in self._query("SELECT * FROM occurrences WHERE original_sha256=?", (subject,)):
             evidence = json.loads(occurrence["evidence"])
+            if occurrence["kind"] == "local":
+                method = occurrence["acquisition_method"]
+                if method.startswith("captured_legacy_"):
+                    continue  # A captured declaration is not a document-drop receipt.
+                if method == "verified_local_document_drop":
+                    from .intake.document_drop import verify_local_occurrence
+                    return verify_local_occurrence(occurrence, self.root.intake, subject)[1]
+                if method == "verified_local_capture":
+                    from .intake.local_capture import verify_occurrence
+                    verify_occurrence(occurrence, self.root.intake, subject)
+                    name = json.loads(occurrence["source_ref"])["path"]
+                    with intake_folder.secure_open(original["storage_path"]) as source:
+                        head = source.read(16384)
+                    return intake_folder.fmt(name, head, original["storage_path"])
+                raise RunError("local_acquisition_method_unsupported")
             receipt = evidence.get("export_receipt_path")
             if receipt and Path(receipt).exists():
                 forms = eml_export.attachment_forms(Path(receipt))
@@ -315,23 +428,12 @@ class Pipeline:
             head = source.read(16384)
         return intake_folder.fmt(original["storage_path"], head)
 
+    def _unit_view(self, subject):
+        from .runner_coverage import unit_view
+        return unit_view(self, subject, MAX_UNITS_PER_RECORD)
+
     def _units(self, subject):
-        rows = self._query("SELECT * FROM units WHERE original_sha256=? ORDER BY legacy_ordinal, id", (subject,))
-        units = []
-        for row in rows[:MAX_UNITS_PER_RECORD]:
-            raw = Path(row["derived_path"]).read_bytes()
-            try:
-                item = json.loads(raw)
-            except ValueError:
-                continue
-            text = item.get("text") if isinstance(item, dict) else None
-            if not isinstance(text, str):
-                continue
-            data = item.get("data") if isinstance(item.get("data"), dict) else {}
-            units.append({"unit_id": row["id"], "locator": json.loads(row["locator"]), "locator_text": row["locator"],
-                          "text": text, "artifact_sha256": sha(raw), "status": row["status"],
-                          "unit_type": row["unit_type"], "ocr": "ocr_receipt_id" in data})
-        return units
+        return self._unit_view(subject)[0]
 
     def _headers(self, subject):
         rows = self._query("SELECT headers FROM mail_messages WHERE eml_sha256=?", (subject,))
@@ -345,16 +447,8 @@ class Pipeline:
         return {name.lower(): value for name, value in fields}
 
     def _event_date(self, subject):
-        if self.event_date:
-            return self.event_date
-        header = self._headers(subject).get("date")
-        if header:
-            from email.utils import parsedate_to_datetime
-            try:
-                return parsedate_to_datetime(header).date()
-            except (TypeError, ValueError):
-                pass
-        return date.today()
+        # Header/receipt dates and CLI declarations are not verified conduct dates.
+        return None
 
     # ----- stages ----------------------------------------------------------------------
     def stage_extract(self, subject, stage):
@@ -371,12 +465,14 @@ class Pipeline:
             # Record a keyed alert so the gap is visible in `records status`; nothing is faked.
             reason = "extraction_" + result["status"] + ":" + ",".join(codes)
             self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
-            return {"status": "blocked", "reason": reason}
+            return {"status": "blocked", "reason": reason,
+                    "extraction_gaps": _extraction_report_gaps(subject, result)}
         enrolled = stage["enrollment"].enroll(original_path=Path(original["storage_path"]), receipt_path=receipt,
                                               receipt_sha256=result["receipt_sha256"])
         accepted = stage["extraction"].accept(enrolled["import_id"])
         return {"status": accepted.get("status"), "import_id": enrolled["import_id"], "form": form,
-                "units": enrolled.get("units")}
+                "units": enrolled.get("units"),
+                **({"extraction_gaps": _extraction_report_gaps(subject, result)} if result["status"] == "partial" else {})}
 
     def stage_catalog(self, subject, stage):
         units = [u for u in self._units(subject) if u["text"].strip()]
@@ -394,7 +490,7 @@ class Pipeline:
         title = headers.get("subject") if is_mail else None
         if not title:
             title = quote.splitlines()[0][:120] if quote else None
-        event = self._event_date(subject).isoformat() if headers.get("date") else None
+        event = None  # Source-date adapter unavailable; never copy a mail date.
         metadata = {"title": title, "doc_type": doc_type, "summary": quote[:300] or None,
                     "date_from": event, "date_to": event}
         metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
@@ -420,7 +516,7 @@ class Pipeline:
             content.update(detector_version=DETECTOR_VERSION, unit_count=0, text_leads=[],
                            structured={n: {"status": "skipped", "reason": reason} for n in stage_adapters.STRUCTURED_DETECTORS})
         elif name == "compare":
-            content.update(comparisons=[], event_date=self._event_date(subject).isoformat())
+            return self._unresolved_comparison(subject, stage, "comparison_applicability_unresolved")
         elif name == "catalog":
             # Catalog has its own adapter; an empty record is cataloged as "other" with no supports is
             # impossible (evidence required), so record the gap on the stage via a blocked receipt.
@@ -445,27 +541,31 @@ class Pipeline:
         return runner.promote(subject, name, encoded(receipt), claim_id=claim["claim_id"])
 
     def stage_detect(self, subject, stage):
-        units = self._units(subject)
+        units, inventory, extraction = self._unit_view(subject)
         text_units = [{"locator": u["locator"], "text": u["text"]} for u in units]
         leads = run_detectors(text_units, self.package) if text_units else []
         structured = {name: {"status": "skipped", "reason": "no_structured_units_of_required_type"}
                       for name in stage_adapters.STRUCTURED_DETECTORS}
         content = {"schema": stage_adapters.SCHEMAS["detect"], "subject_sha256": subject,
                    "detector_version": DETECTOR_VERSION, "unit_count": len(units),
-                   "text_leads": leads, "structured": structured, "rules_version": self.package.get("schema_version")}
-        coverage = {"denominator": {"kind": "items", "total": len(units)}, "covered": len(units), "scope": "full_text"}
+                   "text_leads": leads, "structured": structured, "rules_version": self.package.get("schema_version"),
+                   "inventory_total": len(inventory), "selection_capped": len(inventory) > MAX_UNITS_PER_RECORD,
+                   "coverage_gaps": [u for u in inventory if u.get("blocked_reason") or
+                                     u["unit_id"] not in {v["unit_id"] for v in units}]}
+        coverage = {"denominator": {"kind": "items", "total": len(inventory)},
+                    "covered": sum(bool(u["text"].strip()) for u in units), "scope": "selected"}
         locators = [u["locator_text"] for u in units] or ["stage:detect"]
         return stage_adapters.promote(stage["runner"], subject, "detect", content, author_id="records-detect",
                                       coverage=coverage, locators=locators[:1024])
 
     def stage_review(self, subject, stage):
-        units = self._units(subject)
+        units, inventory, extraction = self._unit_view(subject)
         text_units = [{"locator": u["locator"], "text": u["text"]} for u in units]
         if not text_units:
             return {"status": "blocked", "reason": "no_text_units"}
         tier = "strict_local" if (self.model and self.model.privacy_tier == "strict_local") else "redacted_cloud"
         digest = build_digest(subject, text_units, self.package, self.jurisdiction,
-                              str(self.package.get("schema_version")), tier, model_config=self.model,
+                              str(self.package.get("schema_version")), tier, model_config=None if self._event_date(subject) is None else self.model,
                               allowlist=self.allowlist, denylist=self.denylist,
                               event_date=self._event_date(subject), opener=self.opener)
         ocr_pages = sorted({u["locator"].get("page") for u in units if u["ocr"]} - {None})
@@ -474,20 +574,42 @@ class Pipeline:
                 "Page(s) " + ", ".join(str(p) for p in ocr_pages) +
                 " were read by local OCR and have not been visually reviewed; verify quotes against the page image.")
         redacted, _ = redact_units(text_units, allowlist=self.allowlist, denylist=self.denylist)
-        record = challenge_mod.challenge_review(digest, redacted, self.package, config=self.challenge, opener=self.opener)
+        record = challenge_mod.challenge_review(digest, redacted, self.package, config=None if self._event_date(subject) is None else self.challenge, opener=self.opener,
+                                                allowlist=self.allowlist, denylist=self.denylist)
+        if self._event_date(subject) is None:
+            digest["limitations"].append("Conduct date and rule applicability are unresolved; no dated model narrative was requested.")
+        from .runner_coverage import processing_coverage
+        progress = processing_coverage(self, subject, units, inventory, extraction, stage="review")
+        digest["limitations"].append(
+            "Coverage is selected: unit and model-prompt caps may omit text. Automated output "
+            "accepts no semantic-review ranges; independent factual review remains required.")
         content = {"schema": stage_adapters.SCHEMAS["review"], "subject_sha256": subject,
-                   "digest": digest, "challenge": record}
-        coverage = {"denominator": {"kind": "items", "total": len(units)}, "covered": len(units), "scope": "full_text"}
+                   "digest": digest, "challenge": record, "processing_coverage": progress}
+        coverage = progress["summary"]["receipt_coverage"]
         locators = [u["locator_text"] for u in units][:1024]
         result = stage_adapters.promote(stage["runner"], subject, "review", content, author_id="records-digest",
                                         coverage=coverage, locators=locators, challenges=[("factual", record)])
         return result
+
+    def _unresolved_comparison(self, subject, stage, reason):
+        from .context_revision import UNRESOLVED
+        record = {"kind": "compare", "verdict": "challenge",
+                  "disputes": [{"field": "applicability", "index": 0, "reason": reason}]}
+        content = {"schema": stage_adapters.SCHEMAS["compare"], "subject_sha256": subject,
+                   "event_date": None, "comparisons": [], "classification": UNRESOLVED,
+                   "applicability_status": "unknown"}
+        return stage_adapters.promote(stage["runner"], subject, "compare", content,
+            author_id="records-compare", coverage={"denominator": {"kind": "items", "total": 0},
+            "covered": 0, "scope": "selected"}, locators=["context:unresolved"],
+            challenges=[("legal", record)], reason=reason)
 
     def stage_compare(self, subject, stage):
         states = self._states(subject)
         review = self._content(subject, "review")
         digest = review["digest"]
         event_date = self._event_date(subject)
+        if event_date is None:
+            return self._unresolved_comparison(subject, stage, "conduct_date_or_applicability_unresolved")
         in_force = {rule["rule_id"]: rule for rule in rules_in_force(self.package, event_date)}
         rows = []
         for duty in digest.get("duties", []):
@@ -515,7 +637,7 @@ class Pipeline:
                          "evidence": evidence, "counterevidence": [],
                          "next_action": "Attorney review of applicability and compliance on the event date."})
         if not rows:
-            return self._inapplicable(subject, stage, "compare", "no_rule_in_force_matched_digest_duties")
+            return self._unresolved_comparison(subject, stage, "no_matched_duties_is_not_inapplicability")
         record = challenge_mod.challenge_compare(rows, self.package, event_date)
         content = {"schema": stage_adapters.SCHEMAS["compare"], "subject_sha256": subject,
                    "event_date": event_date.isoformat(), "comparisons": rows,
@@ -586,30 +708,107 @@ class Pipeline:
             return {}
 
     def _record_proposal(self, subject, content, states):
+        """Persist a proposal under the caller's root lock; provenance can change without text."""
+        import stat
+
         proposal_id = "prop_" + subject[:16]
-        public = self.root.sub("proposals/public") / (proposal_id + ".md")
-        private = self.root.sub("proposals/private") / (proposal_id + ".manifest.json")
-        for path, data in ((public, content["public_markdown"].encode()), (private, encoded(content["manifest"]))):
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_bytes(data)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
+        public, manifest = content["public_markdown"].encode(), encoded(content["manifest"])
+        if sha(public) != content["public_content_sha256"] or sha(manifest) != content["manifest_sha256"]:
+            raise RunError("proposal_content_hash_mismatch")
         privacy_receipt = self._states(subject)["privacy"]["receipt_sha256"]
-        with store.ledger(self.root.ledger) as con:
-            existing = con.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
-            if existing is None:
-                con.execute("INSERT INTO proposals(id,tier,agency_id,public_content_sha256,manifest_sha256,"
-                            "privacy_receipt_sha256,independent_receipt_sha256,owner_approval,approved_content_sha256,supersedes) "
-                            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                            (proposal_id, "A", None, content["public_content_sha256"], content["manifest_sha256"],
-                             privacy_receipt, states["review"]["receipt_sha256"], "none", None, None))
-            elif existing["public_content_sha256"] != content["public_content_sha256"]:
-                # Content changed after approval state was recorded: reset approval, keep history by supersession.
-                con.execute("UPDATE proposals SET public_content_sha256=?,manifest_sha256=?,privacy_receipt_sha256=?,"
-                            "independent_receipt_sha256=?,owner_approval='none',approved_content_sha256=NULL WHERE id=?",
-                            (content["public_content_sha256"], content["manifest_sha256"], privacy_receipt,
-                             states["review"]["receipt_sha256"], proposal_id))
-            con.commit()
+        bindings = (content["public_content_sha256"], content["manifest_sha256"], privacy_receipt,
+                    states["review"]["receipt_sha256"])
+        fields = ("public_content_sha256", "manifest_sha256", "privacy_receipt_sha256", "independent_receipt_sha256")
+        revision_id = sha(encoded({"proposal_id": proposal_id, "bindings": bindings}))
+        directories = []
+        try:
+            # Pin destination directories without following symlinks. Unique exclusive
+            # temporary files cannot follow a planted, predictable .tmp symlink either.
+            if any(path.is_symlink() for path in (self.root.path, *self.root.path.parents)):
+                raise RunError("symlink_root")
+            directories.append(os.open(self.root.path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+            for part in self.root.path.parts[1:]:
+                following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directories[0])
+                os.close(directories[0])
+                directories[0] = following
+            directories.append(os.open("proposals", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=directories[0]))
+            for name in ("public", "private"):
+                directories.append(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                           dir_fd=directories[1]))
+            outputs = ((directories[2], proposal_id + ".md", public),
+                       (directories[3], proposal_id + ".manifest.json", manifest))
+            for directory, name, data in outputs:
+                try:
+                    mode = os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(mode):
+                    raise RunError("proposal_file_not_regular")
+            with store.ledger(self.root.ledger) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute("CREATE TABLE IF NOT EXISTS proposal_revisions("
+                            "revision_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL REFERENCES proposals(id),"
+                            "public_content_sha256 TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,"
+                            "privacy_receipt_sha256 TEXT, independent_receipt_sha256 TEXT,"
+                            "public_content BLOB NOT NULL, manifest_content BLOB NOT NULL,"
+                            "state TEXT NOT NULL CHECK(state IN ('pending','complete','superseded')))")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_immutable BEFORE UPDATE OF "
+                            "revision_id,proposal_id,public_content_sha256,manifest_sha256,privacy_receipt_sha256,"
+                            "independent_receipt_sha256,public_content,manifest_content ON proposal_revisions "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_no_delete BEFORE DELETE ON proposal_revisions "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                con.execute("CREATE TRIGGER IF NOT EXISTS proposal_revision_no_replace BEFORE INSERT ON proposal_revisions "
+                            "WHEN EXISTS(SELECT 1 FROM proposal_revisions WHERE revision_id=NEW.revision_id) "
+                            "BEGIN SELECT RAISE(ABORT,'proposal revision is immutable'); END")
+                existing = con.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
+                if existing is None:
+                    con.execute("INSERT INTO proposals(id,tier,agency_id,public_content_sha256,manifest_sha256,"
+                                "privacy_receipt_sha256,independent_receipt_sha256,owner_approval,approved_content_sha256,supersedes) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?)", (proposal_id, "A", None, *bindings, "none", None, None))
+                elif tuple(existing[field] for field in fields) != bindings:
+                    con.execute("UPDATE proposals SET public_content_sha256=?,manifest_sha256=?,privacy_receipt_sha256=?,"
+                                "independent_receipt_sha256=?,owner_approval='none',approved_content_sha256=NULL WHERE id=?",
+                                (*bindings, proposal_id))
+                revision = con.execute("SELECT * FROM proposal_revisions WHERE revision_id=?", (revision_id,)).fetchone()
+                if revision is not None and (tuple(revision[field] for field in fields) != bindings or
+                                             revision["proposal_id"] != proposal_id or
+                                             bytes(revision["public_content"]) != public or
+                                             bytes(revision["manifest_content"]) != manifest):
+                    raise RunError("proposal_revision_changed")
+                if revision is None:
+                    con.execute("INSERT INTO proposal_revisions VALUES(?,?,?,?,?,?,?,?,?)",
+                                (revision_id, proposal_id, *bindings, public, manifest, "pending"))
+                else:
+                    con.execute("UPDATE proposal_revisions SET state='pending' WHERE revision_id=?", (revision_id,))
+                con.execute("UPDATE proposal_revisions SET state='superseded' "
+                            "WHERE proposal_id=? AND revision_id!=? AND state='pending'", (proposal_id, revision_id))
+                # Commit intent and revoked authority before replacing either file.
+                # Publication/reopen can recover an interrupted write from this journal.
+                con.commit()
+            for directory, name, data in outputs:
+                temporary = "." + name + "." + uuid.uuid4().hex + ".tmp"
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                    os.fsync(directory)
+                finally:
+                    try:
+                        os.unlink(temporary, dir_fd=directory)
+                    except FileNotFoundError:
+                        pass
+            with store.ledger(self.root.ledger) as con:
+                con.execute("UPDATE proposal_revisions SET state='complete' WHERE revision_id=?", (revision_id,))
+                con.commit()
+        finally:
+            for directory in reversed(directories):
+                os.close(directory)
         return proposal_id
 
     # ----- whole run -------------------------------------------------------------------
@@ -628,24 +827,30 @@ class Pipeline:
             self._alert("run:lease_recovered:" + subject + ":" + stage, owner="runtime")
         return {"interrupted_runs": dead, "recovered_leases": [list(pair) for pair in leases]}
 
-    def run(self, inbox=None, mail_config=None, *, client_factory=None):
+    def run(self, inbox=None, mail_config=None, *, client_factory=None, documents=None, document_manifest_sha256=None):
+        if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
+            raise RunError('invalid_input_selection')
         with root_lock(self.root.path):
-            return self._run_locked(inbox, mail_config, client_factory=client_factory)
+            return self._run_locked(inbox, mail_config, client_factory=client_factory, documents=documents,
+                                    document_manifest_sha256=document_manifest_sha256)
 
     def _run_locked(self, *args, **kwargs):
         # Recovery precedes this invocation's run row, so it cannot interrupt itself.
         try:
+            self._start_review_retirement()
             report = self._run_locked_unchecked(*args, **kwargs)
-        except Exception:
+        except Exception as error:
+            code = error.args[0] if isinstance(error, RunError) and error.args == ("review_authority_retirement_failed",) else "run_failed"
             with store.ledger(self.root.ledger) as con:
                 con.execute("UPDATE runs SET status='failed',ended_at=?,summary=? WHERE run_id=?",
-                            (now(), encoded({"failure_code": "run_failed"}).decode(), self.run_id))
+                            (now(), encoded({"failure_code": code}).decode(), self.run_id))
                 con.commit()
-            raise RunError("run_failed") from None
+            raise RunError(code) from None
         outcomes = [value for item in report.get("subjects", []) for value in item.get("stages", {}).values()]
         technical = any(value.startswith("error:") for value in outcomes)
         gaps = technical or bool(report.get("intake", {}).get("failures")) or bool((report.get("mailbox") or {}).get("failures"))
         gaps = gaps or any(value.startswith(("blocked", "pending")) for value in outcomes)
+        gaps = gaps or report["review_retirement"]["state"] == "pending"
         status = "failed" if technical else "completed_with_gaps" if gaps else "completed"
         report.update(status=status, exit_code=2 if technical else 3 if gaps else 0)
         report.setdefault("substantive_complete", False)
@@ -659,11 +864,12 @@ class Pipeline:
         os.chmod(path, 0o600)
         return report
 
-    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None):
+    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None, documents=None, document_manifest_sha256=None):
         started = now()
         recovery = self.recover()
         self._open_stage_run()
-        intake = self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
+        self._arm_review_retirement()
+        intake = self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
         summary = stages.counts(self.root.ledger)
@@ -674,11 +880,36 @@ class Pipeline:
                   "proposals_awaiting_owner": len(self._query("SELECT id FROM proposals WHERE owner_approval='none'")),
                   "model_id": self.model.model_id if self.model else None,
                   "challenge_model_id": self.challenge.model.model_id if self.challenge else None}
+        report["review_retirement"] = dict(self.review_retirement)
         self._close_stage_run({"subjects": len(progress), "counts": summary["stages"]})
         path = self.root.sub("runs") / (self.run_id + ".json")
         path.write_bytes(json.dumps(report, sort_keys=True, indent=1).encode())
         os.chmod(path, 0o600)
         return report
+
+
+def _extraction_report_gaps(subject, result):
+    """Report coordinates without copying free-form source labels or errors.
+
+    The locator hash refers to the exact locator in preserved extraction.json;
+    only numeric coordinates are repeated here. Neither source metadata nor
+    ledger identities are rewritten by this presentation projection.
+    """
+    gaps = []
+    issues = list(result.get("issues") or [])
+    issues.extend({"code": page.get("reason"), "locator": {"page": page["page_no"]}}
+                  for page in result.get("pages", []) if page.get("status") in {"partial", "blocked"})
+    for issue in issues or [{"code": "extraction_not_complete"}]:
+        locator = issue.get("locator")
+        coordinates = {key: value for key, value in (locator.items() if isinstance(locator, dict) else [])
+                       if key in {"page", "line", "row", "column", "ordinal", "line_start", "line_end", "record", "frame", "image", "altchunk"}
+                       and type(value) is int and value >= 0}
+        code = issue.get("code")
+        gaps.append({"original_sha256": subject, "extraction_status": result["status"],
+                     "reason": code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code) else "extraction_issue",
+                     "locator": coordinates or None,
+                     "locator_sha256": sha(encoded(locator)) if locator is not None else None})
+    return gaps
 
 
 def _public_locator(locator):
@@ -699,10 +930,12 @@ def status(root):
             "SELECT original_sha256,stage,reason FROM stage_state WHERE status='blocked' ORDER BY original_sha256,stage")]
         runs = [dict(row) for row in con.execute("SELECT run_id,kind,started_at,ended_at,status FROM runs ORDER BY started_at DESC LIMIT 10")]
         alerts = [dict(row) for row in con.execute("SELECT key,first_seen,last_seen,count,owner,state FROM alerts WHERE state='open' ORDER BY last_seen DESC")]
+        retirement_pending = review_retirement.pending(con)
     from .publish import drifted_proposals
     return {"root": str(root.path), "ledger": True, "originals": summary["originals"], "stages": summary["stages"],
             "end_to_end_complete": summary["candidate_seven_stage_complete"], "proposals": proposals,
             "drifted_proposals": drifted_proposals(root.path),
+            "review_retirement_pending": retirement_pending,
             "blocked": blocked, "alerts": alerts, "recent_runs": runs}
 
 
@@ -760,6 +993,8 @@ def main(argv=None):
     parser.add_argument("--inbox", help="directory of .eml files to preserve before advancing stages")
     parser.add_argument("--mail-config", dest="mail_config",
                         help="owner-only JSON (0600) naming the IMAP host/account; new messages are fetched and preserved")
+    parser.add_argument("--documents", help="read-only flat PDF/XLSX drop")
+    parser.add_argument("--document-manifest-sha256")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date", dest="event_date", help="YYYY-MM-DD override for rule applicability")
@@ -767,8 +1002,14 @@ def main(argv=None):
     parser.add_argument("--ocr", action="store_true", help="use local tesseract/pdftoppm for image-only PDF pages when installed")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    from .runtime import require
+    if not require(args.root):
+        return 2
+    if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
+        parser.error('invalid_input_selection')
     pipeline = build_pipeline(args)
-    report = pipeline.run(args.inbox, args.mail_config)
+    report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
+                          document_manifest_sha256=args.document_manifest_sha256)
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
@@ -785,6 +1026,9 @@ def main(argv=None):
         for name, counts in report["counts"].items():
             print(f"  {name:9} done={counts['done']} pending={counts['pending']} blocked={counts['blocked']} "
                   f"inapplicable={counts['inapplicable']}")
+        for item in report.get("subjects", []):
+            for gap in item.get("extraction_gaps", []):
+                print("  extraction gap: " + json.dumps(gap, sort_keys=True))
         print(f"  complete through privacy: {report['end_to_end_complete']}; proposals awaiting owner: "
               f"{report['proposals_awaiting_owner']}")
     return report["exit_code"]

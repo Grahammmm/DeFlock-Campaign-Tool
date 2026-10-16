@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from campaign_tool.digest.model import ModelConfig
 from campaign_tool.records import challenge, stage_adapters
@@ -114,50 +115,41 @@ class RunSliceTests(unittest.TestCase):
         for secret in (PLATE, OFFICER, PHONE, "Quill"):
             self.assertNotIn(secret, text, where + " leaked " + secret)
 
-    def test_single_command_reaches_privacy_and_replays_cleanly(self):
+    def test_single_command_holds_automated_review_and_replays_cleanly(self):
         report = Pipeline(self.root).run(self.inbox)
-        self.assertEqual(report["originals"], 2)  # the email and its attachment
-        for stage, counts in report["counts"].items():
-            self.assertEqual(counts["done"], 2, stage + " not done for both originals: " + json.dumps(counts))
-        self.assertEqual(report["end_to_end_complete"], 2)
-        self.assertEqual(report["proposals_awaiting_owner"], 2)
+        self.assertEqual(report["originals"], 2)
+        for stage in ("preserve", "extract", "catalog", "detect"):
+            self.assertEqual(report["counts"][stage]["done"], 2)
+        self.assertEqual(report["counts"]["review"]["blocked"], 2)
+        for stage in ("compare", "privacy"):
+            self.assertEqual(report["counts"][stage]["done"], 0)
+        self.assertEqual(report["end_to_end_complete"], 0)
+        self.assertEqual(report["proposals_awaiting_owner"], 0)
         self.assertEqual(report["intake"]["failures"], [])
-        receipts = self.ledger("SELECT count(*) FROM receipts")[0][0]
-        self.assertEqual(receipts, 14)
         self.assertEqual(self.ledger("SELECT count(*) FROM occurrences")[0][0], 2)
-        attempts = dict(self.ledger("SELECT outcome,count(*) FROM stage_attempts GROUP BY outcome"))
-        self.assertEqual(attempts, {"accepted": 14})
-        public = sorted((self.root / "proposals/public").glob("*.md"))
-        self.assertEqual(len(public), 2)
-        for path in public:
-            text = path.read_text()
-            self.assert_private_data_absent(text, path.name)
-            self.assertNotRegex(text, r"[0-9a-f]{64}")
-            self.assertIn("## Limitations", text)
-        policy_proposal = next(p for p in public if "Usage and Privacy Policy" in p.read_text() or "retained for 90 days" in p.read_text())
-        self.assertIn("needs attorney review", policy_proposal.read_text())
-        self.assertIn("leginfo.legislature.ca.gov", policy_proposal.read_text())
-        # The digest itself (private) was redacted before anything model-facing could see it.
-        payloads = [bytes(row[0]) for row in self.ledger(
-            "SELECT a.payload FROM stage_content c JOIN stage_artifacts a ON a.sha256=c.content_sha256 WHERE c.stage='review'")]
-        digests = [json.loads(p)["digest"] for p in payloads]
-        self.assertTrue(any(d["redaction_count"] >= 3 for d in digests), [d["redaction_counts"] for d in digests])
-        for digest in digests:
-            self.assert_private_data_absent(json.dumps(digest["statements"]), "digest statements")
-            for conclusion in digest["conclusions"]:
-                self.assertEqual(conclusion["confidence"], "needs_attorney_review")
-        # Replay: the same message again, in a fresh process-independent pipeline object.
+        self.assertEqual(self.ledger("SELECT count(*) FROM proposals")[0][0], 0)
+        payloads = self.ledger("SELECT a.payload FROM stage_content c JOIN stage_artifacts a "
+                               "ON a.sha256=c.content_sha256 WHERE c.stage='review'")
+        self.assertEqual(len(payloads), 2)
+        for row in payloads:
+            content = json.loads(bytes(row[0]))
+            progress = content["processing_coverage"]
+            self.assertEqual(progress["summary"]["accepted_units"], 0)
+            self.assertFalse(progress["model_emission_recorded"])
+            self.assertEqual(progress["summary"]["receipt_coverage"]["scope"], "selected")
+            record = content["challenge"]
+            self.assertFalse(record["independent_review"])
+            self.assertFalse(record["primary_evidence_inspected"])
+            self.assertFalse(record["blind_first_pass"])
+            self.assertIn("independent_factual_review_required", {d["reason"] for d in record["disputes"]})
+            self.assert_private_data_absent(json.dumps(content["digest"]["statements"]), "digest statements")
+        self.assertEqual(self.ledger("SELECT count(*) FROM receipts WHERE stage='review' AND verdict='pass'")[0][0], 0)
         again = Pipeline(self.root).run(self.inbox)
-        self.assertEqual(again["intake"]["failures"], [])
         self.assertEqual(again["originals"], 2)
-        self.assertEqual(again["end_to_end_complete"], 2)
-        self.assertEqual(self.ledger("SELECT count(*) FROM receipts")[0][0], receipts)
+        self.assertEqual(again["end_to_end_complete"], 0)
+        self.assertEqual(again["proposals_awaiting_owner"], 0)
         self.assertEqual(self.ledger("SELECT count(*) FROM occurrences")[0][0], 2)
-        self.assertEqual(self.ledger("SELECT count(*) FROM proposals")[0][0], 2)
-        snapshot = status(self.root)
-        self.assertEqual(snapshot["end_to_end_complete"], 2)
-        self.assertEqual(snapshot["blocked"], [])
-        self.assertEqual({p["owner_approval"] for p in snapshot["proposals"]}, {"none"})
+        self.assertFalse(status(self.root)["proposals"])
 
     def test_cli_entry_point_runs_the_slice(self):
         env = {**os.environ, "PYTHONPATH": str(REPO)}
@@ -165,9 +157,9 @@ class RunSliceTests(unittest.TestCase):
         env.pop("CHALLENGE_MODEL_BASE_URL", None)
         result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "run", "--root", str(self.root),
                                  "--inbox", str(self.inbox)], cwd=REPO, env=env, capture_output=True, text=True, timeout=300)
-        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
-        self.assertIn("complete through privacy: 2", result.stdout)
-        self.assertIn("proposals awaiting owner: 2", result.stdout)
+        self.assertEqual(result.returncode, 3, result.stderr[-2000:])
+        self.assertIn("complete through privacy: 0", result.stdout)
+        self.assertIn("proposals awaiting owner: 0", result.stdout)
         shown = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "status", "--root", str(self.root)],
                                cwd=REPO, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(shown.returncode, 0, shown.stderr[-2000:])
@@ -176,12 +168,12 @@ class RunSliceTests(unittest.TestCase):
     def test_model_and_second_model_challenge_never_see_unredacted_text(self):
         narrative = {
             "scope": "Fictional ALPR policy", "actors": ["Example agency"],
-            "dates": [{"date": "2025-03-01", "locator": {"line": 4, "unit": 3}, "note": "effective date"}],
-            "statements": [{"text": "retained for 90 days and then purged automatically.", "locator": {"line": 13, "unit": 12}}],
+            "dates": [{"date": "2025-03-01", "locator": {"unit": 3}, "note": "effective date"}],
+            "statements": [{"text": "retained for 90 days and then purged automatically.", "locator": {"unit": 12}}],
             "omissions": [{"text": "No public hearing mentioned.", "locator": {"scope": "document"}}],
             "counterevidence": [],
             "conclusions": [{"text": "The policy states a 90-day retention period.", "confidence": "likely",
-                             "sources": [{"locator": {"line": 13, "unit": 12}, "rule_id": None}]}],
+                             "sources": [{"locator": {"unit": 12}, "rule_id": None}]}],
         }
         minimal = {"scope": "Short transmittal email", "actors": [], "dates": [], "statements": [],
                    "omissions": [], "counterevidence": [],
@@ -198,8 +190,12 @@ class RunSliceTests(unittest.TestCase):
         model = ModelConfig(base_url=primary.url, model_id="local-primary", privacy_tier="strict_local")
         challenger = challenge.ChallengeConfig(ModelConfig(base_url=second.url, model_id="local-challenger",
                                                            privacy_tier="strict_local"), primary_model_id="local-primary")
-        report = Pipeline(self.root, model=model, challenge=challenger).run(self.inbox)
-        self.assertEqual(report["end_to_end_complete"], 2)
+        # Privacy seam uses a synthetic preverified-date adapter only in this test.
+        with patch.object(Pipeline, "_event_date", return_value=__import__("datetime").date(2025, 7, 1)):
+            report = Pipeline(self.root, model=model, challenge=challenger).run(self.inbox)
+        self.assertEqual(report["end_to_end_complete"], 0)
+        self.assertEqual(report["proposals_awaiting_owner"], 0)
+        self.assertEqual(report["counts"]["review"]["blocked"], 2)
         self.assertEqual(report["model_id"], "local-primary")
         self.assertEqual(report["challenge_model_id"], "local-challenger")
         self.assertGreaterEqual(len(primary.requests), 1)
@@ -210,17 +206,18 @@ class RunSliceTests(unittest.TestCase):
         user_turns = [m["content"] for m in second.requests[0]["messages"] if m["role"] == "user"]
         self.assertTrue(user_turns[0].startswith("SOURCES"))
         self.assertTrue(user_turns[1].startswith("DIGEST"))
-        reviewers = {row[0] for row in self.ledger("SELECT reviewer_id FROM receipts WHERE stage='review'")}
-        self.assertEqual(reviewers, {"challenge:model:local-challenger"})
-        rows = self.ledger("SELECT a.payload FROM stage_content c JOIN stage_artifacts a ON a.sha256=c.content_sha256 WHERE c.stage='review'")
-        self.assertTrue(all(json.loads(bytes(r[0]))["digest"]["model_id"] == "local-primary" for r in rows))
-        # Legal rows keep the attorney label and carry the model's own conclusion as an observation.
-        compares = [json.loads(bytes(r[0])) for r in self.ledger(
-            "SELECT a.payload FROM stage_content c JOIN stage_artifacts a ON a.sha256=c.content_sha256 WHERE c.stage='compare'")]
-        rows_with_rules = [row for content in compares for row in content.get("comparisons", [])]
-        self.assertTrue(rows_with_rules)
-        self.assertTrue(all(row["confidence"] == "needs_attorney_review" for row in rows_with_rules))
-        self.assertTrue(all("model_observations" in row for row in rows_with_rules))
+        rows = self.ledger("SELECT a.payload FROM stage_content c JOIN stage_artifacts a "
+                           "ON a.sha256=c.content_sha256 WHERE c.stage='review'")
+        for row in rows:
+            content = json.loads(bytes(row[0]))
+            self.assertEqual(content["digest"]["model_id"], "local-primary")
+            self.assertEqual(content["challenge"]["model_check_verdict"], "pass")
+            self.assertEqual(content["challenge"]["reviewer_id"], "challenge:model:local-challenger")
+            self.assertFalse(content["challenge"]["independent_review"])
+            self.assertIn("independent_factual_review_required",
+                          {d["reason"] for d in content["challenge"]["disputes"]})
+        self.assertEqual(self.ledger("SELECT count(*) FROM receipts WHERE stage='review' AND verdict='pass'")[0][0], 0)
+        self.assertEqual(self.ledger("SELECT count(*) FROM stage_content WHERE stage='compare'")[0][0], 0)
 
     def test_same_model_challenge_requires_fresh_context_declaration(self):
         config = ModelConfig(base_url="http://127.0.0.1:1/v1", model_id="same")
@@ -229,11 +226,45 @@ class RunSliceTests(unittest.TestCase):
         declared = challenge.ChallengeConfig(config, primary_model_id="same", fresh_context=True)
         self.assertIn("fresh-context", declared.reviewer_id)
 
+    def test_primary_redaction_policy_is_forwarded_to_challenge_without_lifting_review_hold(self):
+        phrase = "Synthetic Private Context"
+        (self.inbox / "response.eml").write_bytes(synthetic_email(body=phrase + "\n"))
+        pipeline = Pipeline(self.root, redaction_allowlist=["Example agency"], redaction_denylist=[phrase])
+        with patch.object(challenge, "challenge_review", wraps=challenge.challenge_review) as checked:
+            report = pipeline.run(self.inbox)
+        self.assertEqual(checked.call_count, 2)
+        for call in checked.call_args_list:
+            self.assertEqual(call.kwargs["allowlist"], pipeline.allowlist)
+            self.assertEqual(call.kwargs["denylist"], pipeline.denylist)
+            self.assertNotIn(phrase, json.dumps(call.args[1]))
+        self.assertEqual(report["counts"]["review"]["blocked"], 2)
+        self.assertEqual(report["proposals_awaiting_owner"], 0)
+
+    def test_cached_test_review_is_reopened_and_owner_approval_revoked_before_reuse(self):
+        from campaign_tool.records import publish
+        from campaign_tool.records.unattended import UnattendedPipeline
+        from tests.records import preaccepted_publication
+        for implementation in (Pipeline, UnattendedPipeline):
+            with self.subTest(implementation=implementation.__name__):
+                self.root = self.base / ("cached-" + implementation.__name__)
+                proposal = preaccepted_publication.policy(Pipeline(self.root))
+                publish.approve(self.root, proposal, owner_id="synthetic-owner")
+                report = implementation(self.root).run(None)
+                self.assertEqual(report["end_to_end_complete"], 0)
+                self.assertEqual(report["counts"]["review"]["done"], 0)
+                self.assertEqual(self.ledger("SELECT owner_approval,approved_content_sha256 FROM proposals"), [("none", None)])
+                with self.assertRaisesRegex(publish.PublishError, "owner_approval_required"):
+                    publish.publish(self.root, proposal, staging=self.base / "synthetic-staging")
+                reasons = self.ledger("SELECT reason FROM stage_events WHERE stage='review' "
+                                      "AND reason LIKE '%cached_automated_or_test_review%'")
+                self.assertTrue(reasons)
+
     def test_disputed_review_blocks_the_stage_instead_of_passing(self):
         Pipeline(self.root).run(self.inbox)
-        subject = self.ledger("SELECT original_sha256 FROM stage_state WHERE stage='review' AND status='done'")[0][0]
+        subject = self.ledger("SELECT original_sha256 FROM stage_state WHERE stage='review' AND status='blocked'")[0][0]
         pipeline = Pipeline(self.root)  # a fresh run, as a later scheduled run would be
         stage = pipeline._open_stage_run()
+        self.addCleanup(pipeline._close_stage_run, {"synthetic_dispute": True})
         content = pipeline._content(subject, "review")
         digest = content["digest"]
         digest["statements"].append({"text": "The agency admitted deleting the logs.", "locator": {"line": 999}})

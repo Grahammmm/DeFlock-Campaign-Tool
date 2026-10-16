@@ -57,3 +57,24 @@ remain separate requirements.
 
 The pilot build must regenerate app.js byte-for-byte and then pass all existing
 asset, header, link and Worker tests. No public output change is intended.
+
+## Optional trusted popup context
+
+`campaign_tool.map_controller.render(config, profile_renderer, point_context_renderer="")`
+accepts an optional campaign-authored JavaScript function expression. The CLI accepts
+the same optional `point_context_renderer` field. The function receives the clicked
+point properties and returns an HTML fragment appended after the source link.
+Omitting the hook preserves the existing controller bytes exactly.
+
+This is build-time trusted source code, like the profile renderer. Never fill it
+from a remote API, user text or a camera property. Escape every data-derived value
+with `mapText`; do not interpolate unchecked URLs. The renderer does not collect,
+validate, join, or independently authenticate camera provenance. Campaigns must
+validate reviewed metadata before publishing it and distinguish source edit dates,
+successful checks, failed attempts and physical observation dates. Unknown evidence
+must remain unknown. Private source records and campaign-specific content do not
+belong in the reusable engine.
+
+Tests exercise the actual map click/popup path using synthetic data, including
+markup escaping, and pin the no-hook output hash to the prior accepted renderer.
+No campaign output or deployment is changed by this extension alone.

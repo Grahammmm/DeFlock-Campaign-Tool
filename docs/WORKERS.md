@@ -2,7 +2,7 @@
 
 `workers/` holds the three Workers described in [CONTRACTS.md](CONTRACTS.md) and
 [ARCHITECTURE.md](ARCHITECTURE.md). They are TypeScript, share one npm workspace, and are
-tested offline with `@cloudflare/vitest-pool-workers` (workerd, D1, R2 and KV emulated in
+tested offline with `@cloudflare/vitest-plugin` (workerd, D1, R2 and KV emulated in
 process; no account, no network). Nothing in this directory has been deployed to a
 production campaign; the pilot's private repository still runs its own code.
 
@@ -91,9 +91,11 @@ Settings (non-secret Brevo settings and the test-signup checklist, backup job bu
 presence only; runner-token rotation shows the new value once and stores its fingerprint).
 `GET /api/export.json` streams the D1 export ([BACKUP.md](BACKUP.md)).
 
-Runner API, exactly per CONTRACTS.md: `GET /api/runner/jobs?lease=300` (single
-`UPDATE ... RETURNING` lease, 204 when nothing is runnable; expired leases requeue until
-`max_attempts`), `POST /api/runner/jobs/:id/result`, `GET|PUT /api/runner/originals/:sha256`
+Runner API, exactly per CONTRACTS.md: `GET /api/runner/jobs?lease=300` (atomic lease
+with a unique `claim_token`, 204 when nothing is runnable; expired leases retry until
+`max_attempts`, then become terminal failures with a deduplicated incident),
+`POST /api/runner/jobs/:id/renew` and `POST /api/runner/jobs/:id/result` (both require
+the issuing claim token), `GET|PUT /api/runner/originals/:sha256`
 (PUT verifies the hash before storing), `POST /api/runner/proposals` (idempotent on
 `idempotency_key`), `POST /api/runner/correspondence` (deduped on `provider_message_id`),
 `POST /api/runner/receipts` (`receipt_id = sha256([source_id, sha256])`),
@@ -102,7 +104,10 @@ in the public bucket after path, extension, size and `x-object-sha256` checks; n
 served until a `deploy_site` card flips `site_version`). A `done` result may carry
 `outputs.followups`, which the Worker enqueues idempotently (known kinds only, never
 `send_request`); a `classify_mail` result's `outputs.correspondence_update` patches only the
-classification fields of its correspondence row.
+classification fields of its correspondence row. Result completion commits these writes
+and a replay receipt atomically. An identical result retry receives the original response;
+a changed result or an unaccepted stale claim is rejected. See CONTRACTS.md for migration
+and expiry behavior.
 
 `scheduled()` writes a `run_receipt` and enqueues `intake`, `digest` and, for requests whose
 determination date has passed without a production or denial, `draft_followup`, with

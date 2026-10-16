@@ -2,7 +2,11 @@ name: Runner checks
 on:
   pull_request:
   push:
-    branches: [main, 'codex/*runner*']
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -16,7 +20,7 @@ jobs:
           python-version: '3.12'
       - run: python3 -m pip install -r requirements-runner.txt -r requirements-records-test.txt
       - name: Runner, digest and outbox tests (synthetic fixtures, no network)
-        run: python3 -B -m unittest discover -s tests/runner -t . -v && python3 -B -m unittest tests.test_outbox tests.test_redact -v
+        run: python3 -B -m unittest discover -s tests/runner -t . -v && python3 -B -m unittest tests.test_outbox tests.test_outbox_gateway tests.test_redact -v
       - name: Fake workspace smoke (exit 3 = idle)
         run: python3 -B -m runner --once --fake || test "$?" -eq 3
       - run: node scripts/scan-secrets.mjs

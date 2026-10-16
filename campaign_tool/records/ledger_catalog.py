@@ -4,6 +4,7 @@ WP1 and PR19 are runtime dependencies, not copied implementations. No inference,
 review promotion, low-value closure, server, network, or publication is performed.
 """
 from __future__ import annotations
+from .ledger import store
 
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -150,7 +151,8 @@ def project(con, counts, *, overlays=None, since=None, run_id=None, link_validat
         run = con.execute("SELECT run_id,started_at,ended_at,engine_version,image_digest,config_sha256,coverage_cutoff,status FROM runs WHERE run_id=?", (run_id,)).fetchone()
         _require(run is not None, "unknown_run_id")
         run_binding = dict(run)
-    originals = _rows(con, "originals", "sha256,bytes,mime_detected,first_seen_at,role,scope", limit=MAX_ORIGINALS)
+    originals = [store.effective_original_fields(con,row) for row in
+                 _rows(con, "originals", "sha256,bytes,mime_detected,first_seen_at,role,scope", limit=MAX_ORIGINALS)]
     hashes = {row["sha256"] for row in originals}
     _require(all(type(v) is str and HASH.fullmatch(v) for v in hashes), "invalid_original_hash")
     _require(counts.get("originals") == len(originals), "count_denominator_mismatch")
