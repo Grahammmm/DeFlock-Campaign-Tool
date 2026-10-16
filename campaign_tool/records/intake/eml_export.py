@@ -10,6 +10,7 @@ here parses records for content or touches the ledger.
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from . import folder
@@ -25,9 +26,23 @@ def local_uid(sha256):
 
 def _write_private(path, data):
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
+    # Incomplete attempts must never occupy an accepted export identity.
+    # A same-directory hard link publishes complete bytes without replacing an
+    # existing original, unlike rename/replace. Orphan temps are safe to ignore.
+    fd, temporary = tempfile.mkstemp(prefix=".export-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        os.unlink(temporary)
 
 
 def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid):
