@@ -484,6 +484,17 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
         if done%25==0: print(js(dict(extracted_this_run=done,discovered=len(todo),seconds=round(time.monotonic()-started,1))),flush=True)
     summary=dict(processed=done,selected_sha=selection,seconds=round(time.monotonic()-started,3),run_id=run)
     db.execute("UPDATE runs SET finished=?,status='finished',detail=? WHERE id=?",(now(),js(summary),run)); db.commit(); report(db,out,config); print(js(summary),flush=True)
+def report_issue(issue):
+    """Present a reason/locator without copying arbitrary parser exception text.
+
+    The digest and attempt artifacts remain the original evidence. Locators are
+    evidence coordinates (including archive member names), not error messages.
+    """
+    result = dict(issue)
+    if result.get("detail"):
+        result["detail"] = "See preserved extraction evidence for details."
+    return result
+
 def report(db,out,config=None):
     config = config if config is not None else load_config()
     levels,inv=active(db); docs={r["sha"]:dict(r) for r in db.execute("SELECT * FROM docs") if r["sha"] in levels}
@@ -498,10 +509,15 @@ def report(db,out,config=None):
         for e in edges:
             if e["parent"] in levels:
                 agents[e["child"]].update(agents[e["parent"]]); classes[e["child"]].update(classes[e["parent"]])
-    stages=collections.Counter(); types=collections.Counter(); unit_counts=collections.Counter(); issue_counts=collections.Counter(); agency_counts=collections.Counter()
+    stages=collections.Counter(); types=collections.Counter(); unit_counts=collections.Counter(); issue_counts=collections.Counter(); agency_counts=collections.Counter(); extraction_gaps=[]
     with (out/"all-agency-document-queue.jsonl").open("w") as q:
         for sha,d in sorted(docs.items()):
-            stages[d["stage"]]+=1; types[d["format"]]+=1; digest=json.loads(d["digest"] or "{}"); issues=digest.get("issues",[])
+            stages[d["stage"]]+=1; types[d["format"]]+=1; digest=json.loads(d["digest"] or "{}"); issues=[report_issue(e) for e in digest.get("issues",[])]
+            if d["stage"] != "complete":
+                for issue in issues or [{"code":"extraction_not_complete","locator":None}]:
+                    extraction_gaps.append(dict(document_id="sha256:"+sha,sha256=sha,stage=d["stage"],
+                                                reason=issue["code"],locator=issue.get("locator"),
+                                                detail=issue.get("detail","")))
             issue_counts.update(e["code"] for e in issues); hints=sorted(agents[sha]) or ["UNASSIGNED"]; agency_counts.update(hints)
             q.write(js(dict(document_id="sha256:"+sha,sha256=sha,bytes=d["bytes"],format=d["format"],stage=d["stage"],extraction_version=d["version"],review_status=d["review_status"],storage="preserved" if sha in stored else "indexed_only",blob_path=str(out/"blobs"/sha) if sha in stored else None,name_review_required=any(not pathlib.Path(p).suffix for p in paths[sha]) or d["format"]=="unknown",agency_hints=hints,agency_basis="path routing only, not confirmed custodian",classification=sorted(classes[sha]) or ["unknown"],source_paths=paths[sha],parents=[e for e in edges if e["child"]==sha],digest_path=str(out/"derived"/sha/"digest.json") if d["digest"] else None,issues=issues))+"\n")
     for r in db.execute("SELECT sha,kind,count(*) AS n FROM units GROUP BY sha,kind"):
@@ -513,7 +529,7 @@ def report(db,out,config=None):
     summary=dict(version=VERSION,inventory_run=inv,active_unique_documents=len(docs),physical_unique_hashes=db.execute("SELECT count(DISTINCT sha) FROM seen WHERE run=?",(inv,)).fetchone()[0],physical_occurrences=db.execute("SELECT count(*) FROM seen WHERE run=?",(inv,)).fetchone()[0],stages=dict(stages),formats=dict(types),units=dict(unit_counts),issues=dict(issue_counts),agency_hint_counts=dict(agency_counts),semantic_reviews_complete=0,legal_comparisons_complete=0,independent_reviews_complete=0,mailbox_coverage="not established; filesystem snapshot only",limitations=["Path classifications and agencies are heuristics; prior analyses are leads, not primary proof.","No OCR or visual review performed; text-bearing PDF pages may still contain unread image regions.","CSV values retained without deduplicating rows. Workbook formulas not executed.","Archive limits apply per container and depth; excluded directory descendants are not enumerated.","Historical hashes and receipt metadata retained; physical source bytes are not copied.","No factual, legal-conflict, missing-document or redaction conclusions are auto-approved."])
     summary.update(physical_unique_by_class=dict(physical_classes),active_original_hashes=sum("original" in classes[s] for s in docs),preserved_active_hashes=sum(s in stored for s in docs),indexed_only_active_hashes=sum(s not in stored for s in docs),extraction_version_mismatches=sum(d["version"] not in {None,VERSION} for d in docs.values()))
     summary.update(physical_unique_hashes=sum(v==0 for v in levels.values()),physical_occurrences=db.execute("SELECT count(*) FROM seen WHERE run=? AND sha NOT IN (SELECT sha FROM scope_exclusions)",(inv,)).fetchone()[0],quarantined_hashes=db.execute("SELECT count(DISTINCT sha) FROM scope_exclusions WHERE sha!=''").fetchone()[0])
-    summary.update(retired_container_edges=db.execute("SELECT count(*) FROM edge_history").fetchone()[0],format_history_records=db.execute("SELECT count(*) FROM document_history").fetchone()[0])
+    summary.update(retired_container_edges=db.execute("SELECT count(*) FROM edge_history").fetchone()[0],format_history_records=db.execute("SELECT count(*) FROM document_history").fetchone()[0],extraction_gaps=extraction_gaps)
     summary["limitations"][4]="Content-addressed physical originals and children are preserved read-only from v2 onward; older hash-only history may lack bytes."
     atomic(out/"coverage.json",summary); atomic(out/"reports"/((inv or "none")+"-"+uuid.uuid4().hex+".json"),summary)
     (out/"coverage.md").write_text("# Flock intake coverage\n\n```json\n"+json.dumps(summary,indent=2)+"\n```\n")
