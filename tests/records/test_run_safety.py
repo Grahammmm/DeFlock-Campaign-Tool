@@ -389,7 +389,8 @@ class PipelineSafetyTests(SafetyFixture, unittest.TestCase):
         self.assertEqual(replay['exit_code'], 3)
         self.assertEqual(len(replay['intake']['replayed']), 1)
         self.assertEqual(replay['safety']['phases']['intake']['attempted'], 1)
-        self.assertEqual(replay['safety']['phases']['advance']['attempted'], 0)
+        # Recheck the email and attachment contexts once each, even on replay.
+        self.assertEqual(replay['safety']['phases']['advance']['attempted'], 2)
 
     def test_receipt_failure_cannot_leave_completed_or_healthy_run(self):
         pipeline = UnattendedPipeline(self.root.path)
