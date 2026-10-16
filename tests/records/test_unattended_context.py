@@ -250,10 +250,12 @@ class ContextLedgerTests(unittest.TestCase):
         self.assertTrue(p.safety.stopped)
         # Direct locked helper replay after asserting the durable guard hold;
         # this does not restart unattended work or clear the production hold.
+        replay = run.Pipeline(self.root)
+        replay.package = copy.deepcopy(p.package)
         with run.root_lock(self.root):
-            stage = p._open_stage_run()
-            current, plan = context_runtime.reconcile(p, self.subject, stage["runner"])
-            p._close_stage_run({"synthetic_repaired_replay": True})
+            stage = replay._open_stage_run()
+            current, plan = context_runtime.reconcile(replay, self.subject, stage["runner"])
+            replay._close_stage_run({"synthetic_repaired_replay": True})
         self.assertNotEqual(self.pointer(), pointer)
         self.assertIn("review", plan["applied_stages"])
         self.assertEqual(current["subject_sha256"], self.subject)
