@@ -50,7 +50,7 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(data["column_mapping"],"ambiguous")
         self.assertIsNone(data["presence"])
         self.assertEqual(d["issues"],[dict(code="csv_ragged_row_ambiguous",locator=locator,
-                         detail=m.js(dict(expected_fields=2,actual_fields=1)))])
+                         detail=str(dict(expected_fields=2,actual_fields=1)))])
     def test_csv_and_tsv_ragged_records_retain_values_without_header_inference(self):
         for form,separator in (("csv",","),("tsv","\t")):
             raw=(separator.join(("a","b"))+"\nshort\n"+
@@ -83,7 +83,7 @@ class IntakeTests(unittest.TestCase):
                 self.assertEqual(valid["presence"],["present","empty"])
                 self.assertEqual(d["issues"],[dict(code="csv_ragged_row_ambiguous",
                     locator=dict(record=record,line_start=record,line_end=record),
-                    detail=m.js(dict(expected_fields=2,actual_fields=width)))
+                    detail=str(dict(expected_fields=2,actual_fields=width)))
                     for record,width in ((2,1),(3,3),(4,0))])
     def test_zip_traversal_nested_duplicates_and_secrets(self):
         nested=io.BytesIO()

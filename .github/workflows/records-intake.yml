@@ -27,6 +27,14 @@ jobs:
       - name: Bind reviewed candidate and Linux runtime
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          C20_FOLDER_SHA256: '00eb1077446e71da41de5e32dfa2d45bf5f21b7c8865ec3f4cbcd6c6e9cfc57f' # pragma: allowlist secret - public file SHA-256
+          C20_MANIFEST_SHA256: '16fac4f376734ba3ee5a7a3db906a5f843ba1aa1490c4713f995593c56cba413' # pragma: allowlist secret - public file SHA-256
+          C20_SCANNER_SHA256: 'd14dacd77ce628a89a5451e8413c507777bb2d2a3385fadbb11e6690a60fcb23' # pragma: allowlist secret - public file SHA-256
+          C20_FOCUSED_TEST_SHA256: '27e1474f434108e0752058fc57f37187328e2e641f2ff22c800290a5cb81e6ff' # pragma: allowlist secret - public file SHA-256
+          C20_LEGACY_TEST_SHA256: '3663b906ce162da191b9f27f1efe2a5b28e4b5e7ece72c3c72e4139591e29da2' # pragma: allowlist secret - public file SHA-256
+          C20_ROUTE_TEST_SHA256: '26ced5584b029449c57ef4616f3dcaa4966aa118da52d27d77fdd5707f28070b' # pragma: allowlist secret - public file SHA-256
+          C20_RESOURCE_TEST_SHA256: '1ef57c3adcb494dd6ec08471be0eb52e872187d720e8f63c953e3266375b1046' # pragma: allowlist secret - public file SHA-256
+          C20_REQUIREMENTS_SHA256: '8699276a235c5cbe5a091aaf76f9673ff193c91af6b490bdcc9d265a220b8f54' # pragma: allowlist secret - public file SHA-256
         run: |
           python -B - <<'PYCODE'
           import hashlib, json, os, pathlib, platform, re, subprocess, sys
@@ -35,10 +43,23 @@ jobs:
           head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           assert head == expected == os.environ['GITHUB_SHA'], 'candidate commit mismatch'
           assert sys.platform == 'linux' and sys.version_info[:3] == (3, 11, 17)
-          pins = {'campaign_tool/records/intake/folder.py': '00eb1077446e71da41de5e32dfa2d45bf5f21b7c8865ec3f4cbcd6c6e9cfc57f', 'docs/records-intake-import.json': '0a7a1989f3b1d45cb3b8dbb811ceeeaaf092e1c994642d15a185f86ac8d80f40', 'tools/check_secret_report.py': '3c322f9f459492ff92e1f1c122fd1e8736018a23f0fa74eecd0eb5f31726e587', 'tests/records/test_c20_csv_strict_mapping.py': '27e1474f434108e0752058fc57f37187328e2e641f2ff22c800290a5cb81e6ff', 'tests/records/test_intake.py': 'cde0da24bfb47b9d2c2d9a7e548ae4561ae2352c5ae8cc4a88ebecb85db9b835', 'tests/records/test_extraction_routes.py': '26ced5584b029449c57ef4616f3dcaa4966aa118da52d27d77fdd5707f28070b', 'tests/records/test_extraction_inherited_budget.py': '1ef57c3adcb494dd6ec08471be0eb52e872187d720e8f63c953e3266375b1046', 'requirements-records-test.txt': '8699276a235c5cbe5a091aaf76f9673ff193c91af6b490bdcc9d265a220b8f54'}  # pragma: allowlist secret - public candidate and dependency hashes
+          pin_names = {
+              'campaign_tool/records/intake/folder.py': 'C20_FOLDER_SHA256',
+              'docs/records-intake-import.json': 'C20_MANIFEST_SHA256',
+              'tools/check_secret_report.py': 'C20_SCANNER_SHA256',
+              'tests/records/test_c20_csv_strict_mapping.py': 'C20_FOCUSED_TEST_SHA256',
+              'tests/records/test_intake.py': 'C20_LEGACY_TEST_SHA256',
+              'tests/records/test_extraction_routes.py': 'C20_ROUTE_TEST_SHA256',
+              'tests/records/test_extraction_inherited_budget.py': 'C20_RESOURCE_TEST_SHA256',
+              'requirements-records-test.txt': 'C20_REQUIREMENTS_SHA256',
+          }
+          pins = {path: os.environ[name] for path, name in pin_names.items()}
+          assert all(re.fullmatch(r'[0-9a-f]{64}', value) for value in pins.values()), 'invalid file hash anchor'
           actual = {path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() for path in pins}
           assert actual == pins, 'candidate or dependency hash mismatch'
-          print(json.dumps(dict(head=head, python=sys.version, platform=platform.platform(), sha256=actual), sort_keys=True))
+          receipt = json.dumps(dict(head=head, python=sys.version, platform=platform.platform(), sha256=actual), sort_keys=True)
+          print(receipt)
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'c20-candidate.json').write_text(receipt + "\n")
           PYCODE
       - name: Install test parsers in disposable CI only
         run: python -m pip install -r requirements-records-test.txt
@@ -64,5 +85,18 @@ jobs:
       - name: Credential scan without network verification
         if: always()
         run: |
+          set -o pipefail
           detect-secrets scan --all-files --exclude-files '^.git/' --no-verify > "$RUNNER_TEMP/secret-scan.json"
-          python tools/check_secret_report.py "$RUNNER_TEMP/secret-scan.json"
+          python tools/check_secret_report.py "$RUNNER_TEMP/secret-scan.json" | tee "$RUNNER_TEMP/c20-scan-summary.log"
+      - name: Retain C20 acceptance and scanner evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # pragma: allowlist secret - verified public action commit
+        with:
+          name: c20-evidence-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/c20-candidate.json
+            ${{ runner.temp }}/c20-acceptance.log
+            ${{ runner.temp }}/secret-scan.json
+            ${{ runner.temp }}/c20-scan-summary.log
+          if-no-files-found: error
+          retention-days: 30
