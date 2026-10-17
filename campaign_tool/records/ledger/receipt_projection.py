@@ -9,6 +9,7 @@ import stat
 
 from . import store
 from .migrations import receipt_projection_v001 as migration
+from .migrations import receipt_source_guard_v001 as source_guard
 
 VERSION = migration.VERSION
 MAX_MANIFEST = 256 * 1024
@@ -168,12 +169,29 @@ def register(con):
 def install(con):
     register(con)
     checksum=digest(migration.SQL.encode())
+    guard_checksum=digest(source_guard.SQL.encode())
+    base={VERSION:checksum}
+    guarded={**base,source_guard.VERSION:guard_checksum}
     if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rp_schema'").fetchone():
-        row=con.execute('SELECT version,checksum FROM rp_schema').fetchall()
-        if [tuple(r) for r in row]!=[(VERSION,checksum)]: raise ValueError('sidecar schema identity mismatch')
+        installed=dict(con.execute('SELECT version,checksum FROM rp_schema').fetchall())
+        if installed not in (base,guarded): raise ValueError('sidecar schema identity mismatch')
     else:
         con.executescript('BEGIN IMMEDIATE;\n'+migration.SQL)
         con.execute('INSERT INTO rp_schema VALUES(?,?)',(VERSION,checksum)); con.commit()
+        installed=base
+    if installed==base:
+        # Only append protection and its identity; historical evidence is untouched.
+        try:
+            con.executescript('BEGIN IMMEDIATE;\n'+source_guard.SQL)
+            con.execute('INSERT INTO rp_schema VALUES(?,?)',(source_guard.VERSION,guard_checksum))
+            con.commit()
+        except BaseException:
+            con.rollback();raise
+    else:
+        actual=con.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                           (source_guard.TRIGGER,)).fetchone()
+        if actual is None or actual[0].strip().rstrip(';')!=source_guard.SQL.strip().rstrip(';'):
+            raise ValueError('receipt source guard missing or changed')
 
 
 def secure_fd(root,relative):
@@ -253,6 +271,7 @@ def verify(con,mid):
         row=con.execute('SELECT * FROM rp_items WHERE id=?',(step['item_id'],)).fetchone()
         source=sources.get(row['source_id']) if row else None
         if row is None or source is None or step['sequence']!=n or row['manifest_id']!=mid or source['manifest_id']!=mid:raise ValueError('checkpoint mutation')
+        if source['error'] is not None:raise ValueError('receipt item belongs to failed source')
         if row['id']!=identity(source['id'],row['line']) or (row['line']>len(lines[source['id']]) or row['raw']!=lines[source['id']][row['line']-1]) or not historical_plan_matches(row['raw'],source['mapping'],row['plan']):raise ValueError('item source binding mutation')
         if row['artifact_sha']:
             art=con.execute('SELECT * FROM rp_artifacts WHERE sha=?',(row['artifact_sha'],)).fetchone()
