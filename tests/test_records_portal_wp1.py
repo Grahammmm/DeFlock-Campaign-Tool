@@ -5,6 +5,7 @@ No WP1 code or schema is copied into this branch. When the ledger is in tree
 an explicit overlay is required and its absence is an explicit skip.
 """
 import importlib
+import importlib.util
 import json
 import os
 import tempfile
@@ -33,8 +34,9 @@ class WP1PortalTests(unittest.TestCase):
             overlay=Path(source)/'campaign_tool'/'records'
             if not (overlay/'ledger'/'store.py').is_file():raise RuntimeError('invalid explicit WP1 overlay')
             campaign_tool.records.__path__.append(str(overlay))
-        try:cls.store=importlib.import_module('campaign_tool.records.ledger.store')
-        except ModuleNotFoundError:raise unittest.SkipTest('WP1 dependency unavailable; explicit source overlay required')
+        if importlib.util.find_spec('campaign_tool.records.ledger') is None:
+            raise unittest.SkipTest('WP1 dependency unavailable; explicit source overlay required')
+        cls.store=importlib.import_module('campaign_tool.records.ledger.store')
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)

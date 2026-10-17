@@ -1,6 +1,7 @@
 """Small synthetic WP4 -> actual WP1 overlay tests; no corpus promotions."""
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import tempfile
@@ -21,8 +22,9 @@ class ExtractionLedgerTests(unittest.TestCase):
             overlay=Path(source)/'campaign_tool'/'records'
             if not (overlay/'ledger'/'store.py').is_file():raise RuntimeError('invalid explicit overlay')
             campaign_tool.records.__path__.append(str(overlay))
-        try:cls.store=importlib.import_module('campaign_tool.records.ledger.store')
-        except ModuleNotFoundError:raise unittest.SkipTest('explicit WP1 dependency required')
+        if importlib.util.find_spec('campaign_tool.records.ledger') is None:
+            raise unittest.SkipTest('explicit WP1 dependency required')
+        cls.store=importlib.import_module('campaign_tool.records.ledger.store')
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
