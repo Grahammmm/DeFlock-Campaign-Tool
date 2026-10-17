@@ -8,12 +8,12 @@ from types import MappingProxyType
 from unittest import mock
 
 from campaign_tool.records.ledger import store, stages
-from tests.records.test_ledger import LedgerTests
+from tests.records import test_ledger as ledger_fixtures
 
 
 class StageTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = LedgerTests()
+        self.fixture = ledger_fixtures.LedgerTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown)
         self.database = self.fixture.output

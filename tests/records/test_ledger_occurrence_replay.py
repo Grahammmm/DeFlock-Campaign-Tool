@@ -3,11 +3,11 @@ import json
 import sqlite3
 import unittest
 from campaign_tool.records.ledger.occurrence_projection import project_occurrences
-from tests.records.test_ledger_occurrences import OccurrenceProjectionTests
+from tests.records import test_ledger_occurrences as occurrence_fixtures
 
 class OccurrenceReplayBindingTests(unittest.TestCase):
     def fixture(self):
-        helper = OccurrenceProjectionTests()
+        helper = occurrence_fixtures.OccurrenceProjectionTests()
         helper.setUp()
         self.addCleanup(helper.doCleanups)
         other_sha = helper.add_doc("fictional second original")

@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import patch
 
 from campaign_tool.records.intake import imap_intake as imap
-from tests.records.test_imap_intake import FakeIMAP, IMAPIntakeTests
+from tests.records import test_imap_intake as imap_fixtures
+from tests.records.test_imap_intake import FakeIMAP
 from tests.records.test_run_slice import synthetic_email
 
 
@@ -242,11 +243,11 @@ class TrackingIMAP(FakeIMAP):
 
 class GlobalBudgetTests(unittest.TestCase):
     # Reuse synthetic setup/helpers, not the original test methods.
-    setUp = IMAPIntakeTests.setUp
-    write_config = IMAPIntakeTests.write_config
-    ledger = IMAPIntakeTests.ledger
-    checkpoints = IMAPIntakeTests.checkpoints
-    run_with = IMAPIntakeTests.run_with
+    setUp = imap_fixtures.IMAPIntakeTests.setUp
+    write_config = imap_fixtures.IMAPIntakeTests.write_config
+    ledger = imap_fixtures.IMAPIntakeTests.ledger
+    checkpoints = imap_fixtures.IMAPIntakeTests.checkpoints
+    run_with = imap_fixtures.IMAPIntakeTests.run_with
 
     def configure(self, limit=2, folders=None, source=False):
         config = {"host": "imap.example.invalid", "username": "synthetic-user",
