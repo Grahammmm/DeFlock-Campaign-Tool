@@ -55,7 +55,8 @@ jobs:
           assert report['commit'] == os.environ['GITHUB_SHA']
           assert report['installation_kind'] == 'installed_wheel' and report['source_dirty'] is False
           suite = unittest.defaultTestLoader.loadTestsFromNames([
-              'tests.records.test_original_reconciliation', 'tests.records.test_ledger_stages',
+              'tests.records.test_original_reconciliation', 'tests.records.test_ledger',
+              'tests.records.test_ledger_stages',
               'tests.records.test_ledger_occurrences', 'tests.records.test_ledger_occurrence_replay',
               'tests.records.test_queue', 'tests.records.test_extraction_validation',
               'tests.records.test_extraction_ledger', 'tests.records.test_image_artifact_binding',

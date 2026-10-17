@@ -1,6 +1,7 @@
 """Synthetic WP5 tests. Dependency overlays are explicit, never source copies."""
 import hashlib
 import html
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,11 +14,12 @@ import campaign_tool.records
 for root in json.loads(os.environ.get("RECORDS_TEST_DEPENDENCIES", "[]")):
     campaign_tool.records.__path__.append(str(Path(root) / "campaign_tool" / "records"))
 from campaign_tool.records import ledger_catalog as module
-try:
-    from campaign_tool.records.ledger import store
-    from campaign_tool.records import catalog_links
-except ImportError:
-    store = catalog_links = None
+from campaign_tool.records.ledger import store
+# Missing PR19 may skip integration; an installed module's import failure may not.
+if importlib.util.find_spec("campaign_tool.records.catalog_links") is None:
+    catalog_links = None
+else:
+    catalog_links = importlib.import_module("campaign_tool.records.catalog_links")
 H1 = hashlib.sha256(b"synthetic original one").hexdigest()
 H2 = hashlib.sha256(b"synthetic original two").hexdigest()
 
