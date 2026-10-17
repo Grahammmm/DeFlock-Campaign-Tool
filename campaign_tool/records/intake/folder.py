@@ -274,16 +274,31 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
             except UnicodeError:
                 text=raw.decode("utf-16") if raw[:2] in {b"\xff\xfe",b"\xfe\xff"} else raw.decode("cp1252"); encoding="utf-16" if raw[:2] in {b"\xff\xfe",b"\xfe\xff"} else "cp1252"
                 issue("encoding_fallback",detail=encoding)
-            csv.field_size_limit(min(sys.maxsize,limits["source_bytes"])); reader=csv.reader(io.StringIO(text,newline=""),delimiter="\t" if form=="tsv" else ",")
-            headers=next(reader,[]); emit("csv_header",dict(record=1,line_start=1,line_end=reader.line_num),js(headers)); fields=[collections.Counter() for _ in headers]; duplicates={}; end=reader.line_num
-            for rowno,row in enumerate(reader,2):
-                loc=dict(record=rowno,line_start=end+1,line_end=reader.line_num); end=reader.line_num
-                states=[presence(row[i] if i<len(row) else None) for i in range(len(headers))]
-                for i,s in enumerate(states): fields[i][s]+=1
-                key=hid(js(row)); duplicate=duplicates.get(key); duplicates.setdefault(key,rowno)
-                if duplicate is not None: stats["duplicate_rows"]+=1
-                if len(row)!=len(headers): stats["ragged_rows"]+=1
-                emit("csv_row",loc,js(row),dict(values=row,presence=states,duplicate_of_record=duplicate,row_sha256=key))
+            csv.field_size_limit(min(sys.maxsize,limits["source_bytes"]))
+            reader=csv.reader(io.StringIO(text,newline=""),delimiter="\t" if form=="tsv" else ",",strict=True)
+            rowno=1; end=0; headers=[]; fields=[]; duplicates={}
+            try:
+                headers=next(reader,[])
+                emit("csv_header",dict(record=1,line_start=1,line_end=reader.line_num),js(headers))
+                fields=[collections.Counter() for _ in headers]; end=reader.line_num
+                for rowno,row in enumerate(reader,2):
+                    loc=dict(record=rowno,line_start=end+1,line_end=reader.line_num); end=reader.line_num
+                    ragged=len(row)!=len(headers)
+                    # Keep positional source values, but do not infer header alignment.
+                    states=None if ragged else [presence(value) for value in row]
+                    if ragged:
+                        stats["ragged_rows"]+=1
+                        issue("csv_ragged_row_ambiguous",loc,dict(expected_fields=len(headers),actual_fields=len(row)))
+                    else:
+                        for i,state in enumerate(states): fields[i][state]+=1
+                    key=hid(js(row)); duplicate=duplicates.get(key); duplicates.setdefault(key,rowno)
+                    if duplicate is not None: stats["duplicate_rows"]+=1
+                    emit("csv_row",loc,js(row),dict(values=row,presence=states,duplicate_of_record=duplicate,row_sha256=key,
+                                                   column_mapping="ambiguous" if ragged else "positional"))
+            except csv.Error:
+                # Failed next() does not update enumerate's record counter.
+                record=1 if end==0 else stats["csv_row"]+2
+                issue("csv_malformed_quoting_or_record",dict(record=record,line_start=end+1,line_end=reader.line_num))
             stats["fields"]=[dict(index=i,header=h,counts=dict(fields[i])) for i,h in enumerate(headers)]; stats["encoding"]=encoding
         elif form=="docx":
             import xml.etree.ElementTree as ET
@@ -372,6 +387,7 @@ def active(db):
 def extraction_policy(form,config):
     """Fingerprint parser-affecting settings, not host paths or agency routing."""
     return hid(js(dict(format=form,paragraph_ordinals=2 if form=="docx" else None,
+                       **({"csv_strict_records":1} if form in {"csv","tsv"} else {}),
                        **({"docx_text_separators":1,"docx_altchunk_unsupported":1} if form=="docx" else {}),
                        excluded_path_fragments=sorted(set(config["excluded_path_fragments"])) if form in {"zip","eml"} else [])))
 def extraction_budget(form,limits,depth):

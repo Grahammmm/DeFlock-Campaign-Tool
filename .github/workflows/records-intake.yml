@@ -1,35 +1,68 @@
+# Review-branch-only acceptance; do not merge this workflow variant into main.
 name: Records intake checks
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed candidate commit SHA
+        required: true
+        type: string
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.run_id }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
   intake:
+    if: github.ref == 'refs/heads/codex/flock-c20-ci-review'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '${{ matrix.python }}'
+          python-version: '3.11.17'
+      - name: Bind reviewed candidate and Linux runtime
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          python -B - <<'PYCODE'
+          import hashlib, json, os, pathlib, platform, re, subprocess, sys
+          expected = os.environ['EXPECTED_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}', expected), 'invalid expected commit'
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert head == expected == os.environ['GITHUB_SHA'], 'candidate commit mismatch'
+          assert sys.platform == 'linux' and sys.version_info[:3] == (3, 11, 17)
+          pins = {'campaign_tool/records/intake/folder.py': '00eb1077446e71da41de5e32dfa2d45bf5f21b7c8865ec3f4cbcd6c6e9cfc57f', 'docs/records-intake-import.json': '0a7a1989f3b1d45cb3b8dbb811ceeeaaf092e1c994642d15a185f86ac8d80f40', 'tools/check_secret_report.py': '3c322f9f459492ff92e1f1c122fd1e8736018a23f0fa74eecd0eb5f31726e587', 'tests/records/test_c20_csv_strict_mapping.py': '27e1474f434108e0752058fc57f37187328e2e641f2ff22c800290a5cb81e6ff', 'tests/records/test_intake.py': 'cde0da24bfb47b9d2c2d9a7e548ae4561ae2352c5ae8cc4a88ebecb85db9b835', 'tests/records/test_extraction_routes.py': '26ced5584b029449c57ef4616f3dcaa4966aa118da52d27d77fdd5707f28070b', 'tests/records/test_extraction_inherited_budget.py': '1ef57c3adcb494dd6ec08471be0eb52e872187d720e8f63c953e3266375b1046', 'requirements-records-test.txt': '8699276a235c5cbe5a091aaf76f9673ff193c91af6b490bdcc9d265a220b8f54'}  # pragma: allowlist secret - public candidate and dependency hashes
+          actual = {path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() for path in pins}
+          assert actual == pins, 'candidate or dependency hash mismatch'
+          print(json.dumps(dict(head=head, python=sys.version, platform=platform.platform(), sha256=actual), sort_keys=True))
+          PYCODE
       - name: Install test parsers in disposable CI only
         run: python -m pip install -r requirements-records-test.txt
-      - name: Synthetic offline extraction tests
+      - name: C20 plus legacy CSV contracts with real worker guards
         timeout-minutes: 15
-        run: python -B -m unittest discover -v
+        run: |
+          set -o pipefail
+          python -B - <<'PYCODE' 2>&1 | tee "$RUNNER_TEMP/c20-acceptance.log"
+          import unittest
+          names = [
+              'tests.records.test_extraction_inherited_budget.InheritedExtractionBudgetTests.test_native_text_respects_parent_caps_and_records_effective_memory',
+              'tests.records.test_intake.IntakeTests.test_csv_whitespace_redaction_duplicate_and_multiline_locators',
+              'tests.records.test_intake.IntakeTests.test_csv_and_tsv_ragged_records_retain_values_without_header_inference',
+              'tests.records.test_extraction_routes.ExtractionRoutesTests.test_csv_empty_redacted_and_na_preserved',
+              'tests.records.test_c20_csv_strict_mapping',
+          ]
+          suite = unittest.defaultTestLoader.loadTestsFromNames(names)
+          assert suite.countTestCases() == 12, 'focused test inventory changed'
+          result = unittest.TextTestRunner(verbosity=2, failfast=True).run(suite)
+          if result.skipped or result.testsRun != 12 or not result.wasSuccessful():
+              raise SystemExit(1)
+          PYCODE
       - name: Credential scan without network verification
+        if: always()
         run: |
           detect-secrets scan --all-files --exclude-files '^.git/' --no-verify > "$RUNNER_TEMP/secret-scan.json"
           python tools/check_secret_report.py "$RUNNER_TEMP/secret-scan.json"

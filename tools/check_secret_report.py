@@ -20,10 +20,10 @@ APPROVED_MANIFESTS = {
         '7776a834fcf471b5'  # pragma: allowlist secret
     ),
     'docs/records-intake-import.json': (
-        'edc56bd51692dfb1'  # pragma: allowlist secret
-        '0de6d5392427f67c'  # pragma: allowlist secret
-        '7460e6f9a5d1db2e'  # pragma: allowlist secret
-        '9ec01b12142ad653'  # pragma: allowlist secret
+        '0a7a1989f3b1d45c'  # pragma: allowlist secret
+        'b3b8dbb811ceeeaa'  # pragma: allowlist secret
+        'f092e1c994642d15'  # pragma: allowlist secret
+        'a185f86ac8d80f40'  # pragma: allowlist secret
     ),
 }
 
