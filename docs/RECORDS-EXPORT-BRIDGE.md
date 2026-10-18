@@ -21,12 +21,50 @@ holding the same canonical root lock as ordinary intake. It then calls the same
 review, recovery or public-output framework is added. Existing stage leases,
 budgets, malformed-output checks and owner publication gates still apply.
 
-The library-only selection is a mapping with `root` (the explicit existing export
+The existing library selection is a mapping with `root` (the explicit existing export
 root), `receipts` (bounded exact paths) and `inventory` (a `CollectionInventory`
 whose existing `Queue` is at the selected canonical root's `portal` directory).
-No new CLI, configuration fallback, live source scan, scheduler or listener is
-installed. A reviewed operator binding must select the receipts and runtime.
+The ordinary CLI can also construct this selection as described below. No
+configuration fallback, live source scan, scheduler or listener is installed.
+A reviewed operator binding must select the receipts and runtime.
 There is no implicit full-backlog or mailbox-coverage claim.
+
+## Explicit selected-export CLI
+
+On a separately qualified Linux runtime, an operator can select existing local
+receipts with the ordinary runner. This example is a command that writes the
+selected canonical root and runs its existing stages, not a read-only probe or
+permission to process private data:
+
+```sh
+python -m campaign_tool.records.run --root /approved/private/canonical \
+  --export-root /approved/read-only/exports \
+  --export-receipt receipts/selected-message.json \
+  --collection-host archive.example.invalid \
+  --collection-exclude-host social.example.invalid --json
+```
+
+Repeat `--export-receipt` for 1–60 unique explicit paths. Relative paths are
+relative to `--export-root`; absolute paths must remain beneath that root.
+Traversal, symlinks, sources inside canonical `intake`, duplicate normalized
+selections, invalid/conflicting hosts, incomplete options and other intake modes
+are rejected before the runtime probe or root creation. Receipt contents and
+original bytes are still checked by the unchanged bridge during enrollment.
+There is no glob, folder scan, latest-message guess or mailbox configuration read.
+
+The immutable selection opens the existing portal queue and inventory only under
+the runner's existing root lock, and closes the constructed queue even if inventory
+construction or the core run fails. Collection-host flags select inventory scope;
+they do not grant HTTP/credential permission. Omitted hosts leave links explicitly
+unapproved rather than silently complete. Scope changes do not refresh exhausted
+attempts. Unresolved retrieval keeps `completed_with_gaps` and exit code 3.
+
+`--unattended` rejects these flags. Ordinary inbox/IMAP discovery, unattended
+export accounting, real provider parsing/acquisition and installed adoption are
+separate open work. Synthetic CLI/adapter checks in
+`tests.records.test_export_selection_cli` do not qualify a functional ledger,
+native extraction, model route or private input. Existing library callers and
+their explicit mappings retain their interface.
 
 ## Expectations before retrieval
 

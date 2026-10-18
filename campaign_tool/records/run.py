@@ -890,11 +890,16 @@ class Pipeline:
 
     def run(self, inbox=None, mail_config=None, *, client_factory=None, documents=None, document_manifest_sha256=None,
             exports=None):
+        from .export_selection import ExportSelection
         if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
             raise RunError('invalid_input_selection')
         if exports is not None and (inbox or mail_config or documents):
             raise RunError('invalid_input_selection')
         with root_lock(self.root.path):
+            if type(exports) is ExportSelection:
+                with exports.open(self.root.path) as selected:
+                    return self._run_locked(inbox, mail_config, client_factory=client_factory, documents=documents,
+                                            document_manifest_sha256=document_manifest_sha256, exports=selected)
             return self._run_locked(inbox, mail_config, client_factory=client_factory, documents=documents,
                                     document_manifest_sha256=document_manifest_sha256, exports=exports)
 
@@ -1061,6 +1066,10 @@ def main(argv=None):
                         help="owner-only JSON (0600) naming the IMAP host/account; new messages are fetched and preserved")
     parser.add_argument("--documents", help="read-only flat PDF/XLSX drop")
     parser.add_argument("--document-manifest-sha256")
+    parser.add_argument("--export-root", help="existing local export root; does not fetch mail")
+    parser.add_argument("--export-receipt", action="append", help="explicit receipt path under --export-root; repeat up to 60 times")
+    parser.add_argument("--collection-host", action="append", help="host to classify for collection inventory; does not authorize retrieval")
+    parser.add_argument("--collection-exclude-host", action="append", help="explicit non-record host exclusion for this inventory scope")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date", dest="event_date", help="YYYY-MM-DD override for rule applicability")
@@ -1068,14 +1077,20 @@ def main(argv=None):
     parser.add_argument("--ocr", action="store_true", help="use local tesseract/pdftoppm for image-only PDF pages when installed")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
+        parser.error('invalid_input_selection')
+    from .export_selection import from_cli
+    try:
+        exports = from_cli(args)
+    except ValueError:
+        parser.error('invalid_export_selection')
     from .runtime import require
     if not require(args.root):
         return 2
-    if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
-        parser.error('invalid_input_selection')
     pipeline = build_pipeline(args)
+    selection = {"exports": exports} if exports is not None else {}
     report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
-                          document_manifest_sha256=args.document_manifest_sha256)
+                          document_manifest_sha256=args.document_manifest_sha256, **selection)
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
