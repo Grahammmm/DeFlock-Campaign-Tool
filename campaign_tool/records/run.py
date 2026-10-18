@@ -523,21 +523,42 @@ class Pipeline:
         is_mail = original.get("mime_detected") == "message/rfc822"
         first = next((u for u in units if u["unit_type"] == "email_body"), units[0])
         quote = first["text"].strip()[:400]
-        proof = {"unit_id": first["unit_id"], "source_sha256": subject, "locator": first["locator_text"],
-                 "artifact_sha256": first["artifact_sha256"], "quote": quote}
-        text_blob = " ".join(u["text"] for u in units[:50]).lower()
-        doc_type = "correspondence" if is_mail else next((t for key, t in DOC_TYPE_HINTS if key in text_blob), "other")
+        type_match = None if is_mail else next(
+            ((u, key, kind) for key, kind in DOC_TYPE_HINTS for u in units[:50]
+             if key in u["text"].lower()), None)
+        doc_type = "correspondence" if is_mail else type_match[2] if type_match else "other"
         title = headers.get("subject") if is_mail else None
-        if not title:
+        title_unit = next((u for u in units if title and title in u["text"]), None)
+        if title_unit is None:
             title = quote.splitlines()[0][:120] if quote else None
+            title_unit = first
         event = None  # Source-date adapter unavailable; never copy a mail date.
         metadata = {"title": title, "doc_type": doc_type, "summary": quote[:300] or None,
                     "date_from": event, "date_to": event}
         metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
-        field_support = {k: [first["unit_id"]] for k in metadata}
-        metadata["evidence"] = [{"source_sha256": subject, "locator": first["locator_text"]}]
+        field_units = {"title": title_unit, "summary": first,
+                       "doc_type": type_match[0] if type_match else first}
+        field_support = {k: [field_units[k]["unit_id"]] for k in metadata}
+        supports = {}
+        for field in ("summary", "title", "doc_type"):
+            if field not in metadata:
+                continue
+            unit = field_units[field]
+            if field == "doc_type" and not type_match and unit["unit_id"] in supports:
+                continue
+            text = unit["text"]
+            # Keep an exact source substring near the evidence used for this
+            # field, including type hints beyond the first display excerpt.
+            start = text.lower().find(type_match[1]) if field == "doc_type" and type_match else (
+                text.find(title) if field == "title" else 0)
+            supports[unit["unit_id"]] = {
+                "unit_id": unit["unit_id"], "source_sha256": subject,
+                "locator": unit["locator_text"], "artifact_sha256": unit["artifact_sha256"],
+                "quote": text[max(0, start):max(0, start) + 400]}
+        metadata["evidence"] = [{"source_sha256": subject, "locator": p["locator"]}
+                                for p in supports.values()]
         card = {"schema": "catalog-card-evidence-v1", "subject_sha256": subject, "metadata": metadata,
-                "supports": [proof], "field_support": field_support}
+                "supports": list(supports.values()), "field_support": field_support}
         path = self.root.sub("artifacts") / (subject + "-card.json")
         raw = encoded(card)
         if not path.exists() or path.read_bytes() != raw:
