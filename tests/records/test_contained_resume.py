@@ -188,8 +188,18 @@ class CompositionTests(unittest.TestCase):
     def test_leader_exit_reaps_session_escaped_descendant(self):
         # Deliberate synthetic violation of the no-child admission contract.
         # It proves the outer composition fence, not permission for real forks.
-        process = self.start(CHILD)
+        # Keep the leader alive until the test pins the original live child.
+        # Heartbeat existence alone cannot synchronize pidfd admission.
+        wait_for_pin = '''
+deadline = time.monotonic() + 3
+while not (root / 'release-leader').exists():
+    if time.monotonic() > deadline:
+        raise RuntimeError('synthetic pin acknowledgement expired')
+    time.sleep(.01)
+'''
+        process = self.start(CHILD + wait_for_pin)
         fd = self.pin_child(process)
+        (self.root/'release-leader').touch()
         result = self.finish(process)
         self.assertEqual(result, {'status':'completed','completion_claimed':True,'quiescent':True})
         self.assert_child_stopped(fd)
