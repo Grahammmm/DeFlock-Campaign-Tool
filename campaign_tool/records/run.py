@@ -241,6 +241,46 @@ class Pipeline:
                                              "preserved": report["preserved"], "failures": report["failures"]})
         return report
 
+    def ingest_exports(self, exports):
+        """Explicit bounded legacy receipts; no mailbox/configuration access."""
+        from .export_bridge import enroll_export
+        require_root_lock(self.root.path)
+        if not isinstance(exports, dict) or set(exports) != {"root", "receipts", "inventory"}:
+            raise RunError("invalid_export_selection")
+        receipts = exports["receipts"]
+        inventory = exports["inventory"]
+        if not isinstance(receipts, (list, tuple)) or not 1 <= len(receipts) <= 60:
+            raise RunError("export_receipt_bound")
+        if inventory.queue.root != self.root.path / "portal":
+            raise RunError("export_inventory_root_mismatch")
+        backend = CanonicalMailBackend(Path(os.path.abspath(exports["root"])), self.root.intake, self.root.ledger)
+        identity = self._identity()
+        identity["run_id"] = "export-" + self.run_id
+        backend.start_run(identity)
+        report = {"messages": len(receipts), "preserved": [], "replayed": [], "failures": [], "events": []}
+        try:
+            for receipt in receipts:
+                try:
+                    from .intake import mail_delta
+                    path = mail_delta.source_path(backend.mail_root, str(receipt), backend.output)
+                    _, scope, _ = mail_delta.load_receipt(path)
+                    seen = self._query("SELECT id FROM mail_messages WHERE account=? AND folder=? AND uidvalidity=? AND uid=?",
+                                       (scope[0], scope[1], int(scope[2]), int(scope[3])))
+                    value = enroll_export(path, export_root=backend.mail_root, backend=backend, inventory=inventory)
+                    entry = {"event": value.message_id, "eml_sha256": value.eml_sha256, "documents": list(value.documents)}
+                    report["replayed" if seen else "preserved"].append(entry)
+                    report["events"].append(inventory.readiness(value.message_id))
+                except Exception:
+                    # Never place private paths, account names, URLs or arbitrary
+                    # exception text in the run report.
+                    report["failures"].append({"detail": "export_enrollment_or_discovery_failed"})
+            backend.finish_run(identity, "completed_with_gaps" if report["failures"] else "slice_completed",
+                               {"messages": len(receipts), "failures": len(report["failures"])})
+        except BaseException:
+            backend.finish_run(identity, "failed", {"messages": len(receipts)})
+            raise
+        return report
+
     # ----- stage runner ------------------------------------------------------------------
     def _open_stage_run(self):
         if self._stage is not None:
@@ -827,12 +867,15 @@ class Pipeline:
             self._alert("run:lease_recovered:" + subject + ":" + stage, owner="runtime")
         return {"interrupted_runs": dead, "recovered_leases": [list(pair) for pair in leases]}
 
-    def run(self, inbox=None, mail_config=None, *, client_factory=None, documents=None, document_manifest_sha256=None):
+    def run(self, inbox=None, mail_config=None, *, client_factory=None, documents=None, document_manifest_sha256=None,
+            exports=None):
         if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
+            raise RunError('invalid_input_selection')
+        if exports is not None and (inbox or mail_config or documents):
             raise RunError('invalid_input_selection')
         with root_lock(self.root.path):
             return self._run_locked(inbox, mail_config, client_factory=client_factory, documents=documents,
-                                    document_manifest_sha256=document_manifest_sha256)
+                                    document_manifest_sha256=document_manifest_sha256, exports=exports)
 
     def _run_locked(self, *args, **kwargs):
         # Recovery precedes this invocation's run row, so it cannot interrupt itself.
@@ -849,6 +892,7 @@ class Pipeline:
         outcomes = [value for item in report.get("subjects", []) for value in item.get("stages", {}).values()]
         technical = any(value.startswith("error:") for value in outcomes)
         gaps = technical or bool(report.get("intake", {}).get("failures")) or bool((report.get("mailbox") or {}).get("failures"))
+        gaps = gaps or any(not event["retrieval_complete"] for event in report["intake"].get("events", []))
         gaps = gaps or any(value.startswith(("blocked", "pending")) for value in outcomes)
         gaps = gaps or report["review_retirement"]["state"] == "pending"
         status = "failed" if technical else "completed_with_gaps" if gaps else "completed"
@@ -864,12 +908,13 @@ class Pipeline:
         os.chmod(path, 0o600)
         return report
 
-    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None, documents=None, document_manifest_sha256=None):
+    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None, documents=None, document_manifest_sha256=None,
+                              exports=None):
         started = now()
         recovery = self.recover()
         self._open_stage_run()
         self._arm_review_retirement()
-        intake = self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
+        intake = self.ingest_exports(exports) if exports is not None else self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
         summary = stages.counts(self.root.ledger)
