@@ -524,8 +524,8 @@ class Pipeline:
         first = next((u for u in units if u["unit_type"] == "email_body"), units[0])
         quote = first["text"].strip()[:400]
         type_match = None if is_mail else next(
-            ((u, key, kind) for key, kind in DOC_TYPE_HINTS for u in units[:50]
-             if key in u["text"].lower()), None)
+            ((u, match.start(), kind) for key, kind in DOC_TYPE_HINTS for u in units[:50]
+             if (match := re.search(re.escape(key), u["text"], flags=re.IGNORECASE | re.ASCII))), None)
         doc_type = "correspondence" if is_mail else type_match[2] if type_match else "other"
         title = headers.get("subject") if is_mail else None
         title_unit = next((u for u in units if title and title in u["text"]), None)
@@ -549,7 +549,7 @@ class Pipeline:
             text = unit["text"]
             # Keep an exact source substring near the evidence used for this
             # field, including type hints beyond the first display excerpt.
-            start = text.lower().find(type_match[1]) if field == "doc_type" and type_match else (
+            start = type_match[1] if field == "doc_type" and type_match else (
                 text.find(title) if field == "title" else 0)
             supports[unit["unit_id"]] = {
                 "unit_id": unit["unit_id"], "source_sha256": subject,

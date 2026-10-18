@@ -67,6 +67,11 @@ class CatalogFieldSupportTests(unittest.TestCase):
         self.assertEqual(card["metadata"]["doc_type"], "policy")
         self.assertIn("POLICY", proofs["synthetic-unit-1"]["quote"])
 
+    def test_unicode_case_expansion_keeps_original_quote_coordinates(self):
+        card, proofs = self.catalog([self.unit(1, "\u0130" * 500 + "POLICY")])
+        self.assertEqual(card["metadata"]["doc_type"], "policy")
+        self.assertEqual(proofs["synthetic-unit-1"]["quote"], "POLICY")
+
     def test_hint_priority_preserved_with_its_actual_source(self):
         card, _ = self.catalog([self.unit(1, "Invoice"), self.unit(2, "Agreement"), self.unit(3, "Policy")])
         self.assertEqual(card["metadata"]["doc_type"], "policy")
