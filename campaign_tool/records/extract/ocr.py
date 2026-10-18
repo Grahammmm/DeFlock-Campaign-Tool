@@ -191,10 +191,14 @@ def _confidence(tsv: str) -> float | None:
 
 
 def _limit_child() -> None:
-    """preexec_fn for OCR children: bound address space and written file size."""
+    """Bound OCR children without relaxing stricter inherited process limits."""
     import resource
-    resource.setrlimit(resource.RLIMIT_AS, (CHILD_MEMORY_BYTES, CHILD_MEMORY_BYTES))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (CHILD_FILE_BYTES, CHILD_FILE_BYTES))
+    for kind, ceiling in ((resource.RLIMIT_AS, CHILD_MEMORY_BYTES),
+                          (resource.RLIMIT_FSIZE, CHILD_FILE_BYTES)):
+        inherited = resource.getrlimit(kind)
+        finite = [value for value in inherited if value != resource.RLIM_INFINITY]
+        effective = min(ceiling, *finite) if finite else ceiling
+        resource.setrlimit(kind, (effective, effective))
     os.umask(0o077)
 
 
