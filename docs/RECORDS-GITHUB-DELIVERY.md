@@ -37,12 +37,19 @@ An operator can bind a separately reviewed callable through `run_once`. That
 callable must already have authorized narrow dependencies and honor the immutable
 request: one item maximum, notifications false, pruning false. This contract is
 not a sandbox for arbitrary code and does not itself enforce adapter semantics.
-Adapters must not daemonize or escape the supervised process group. They must not
+Adapters and their dependencies must spawn **no child processes**, even ordinary
+children in the same process group. The supervisor guarantees cleanup of its own
+worker only; it does not claim descendant cleanup after that worker exits.
+Adapter admission must include a static dependency review and synthetic evidence
+of this no-child restriction. Adapters requiring subprocesses are inadmissible to
+this boundary and need a separately qualified runner. Adapters must not
 load an unapproved broad configuration file through a new route.
 
 Execution requires explicit opt-in and a supported Linux runtime. The child has
 an absolute deadline and the parent independently enforces at most 120 seconds.
-Timeout/failure returns stable status and never claims completion. Adapter output,
+Timeout/failure returns stable status and never claims completion. Both OS output
+file descriptors and Python output streams are redirected to the null sink.
+Adapter output,
 exceptions and payloads are not returned. An interrupted operation can still have
 partial immutable writes; its adapter must supply idempotent recovery receipts.
 

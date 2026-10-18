@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import platform
 import signal
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -56,11 +58,21 @@ class BoundedResumeTests(unittest.TestCase):
                         time.monotonic() - 1, connection)
         self.assertEqual(messages, ['not_admitted'])
 
+    def test_worker_rejects_request_allowing_children(self):
+        messages = []
+        connection = type('Connection', (), {'send': lambda _, v: messages.append(v),
+                                             'close': lambda _: None})()
+        bounded._worker(lambda _: self.fail('adapter called'),
+                        bounded.Request(execute=True, spawn_children=True),
+                        time.monotonic() + 1, connection)
+        self.assertEqual(messages, ['not_admitted'])
+
     @unittest.skipUnless(platform.system() == 'Linux', 'qualified Linux supervisor case')
     def test_adapter_receives_one_item_no_notify_no_prune(self):
         def adapter(request):
             assert request.execute and request.max_items == 1
             assert not request.notify and not request.prune
+            assert not request.spawn_children
             print('synthetic output must not be returned')
         self.assertEqual(bounded.run_once(adapter, execute=True, seconds=1)['status'], 'completed')
 
@@ -79,6 +91,26 @@ class BoundedResumeTests(unittest.TestCase):
         result = bounded.run_once(adapter, execute=True, seconds=1)
         self.assertEqual(result['status'], 'failed')
         self.assertNotIn('private', json.dumps(result))
+
+    @unittest.skipUnless(platform.system() == 'Linux', 'qualified Linux output fence case')
+    def test_raw_fd_and_inherited_child_output_do_not_escape(self):
+        # The short-lived child deliberately violates the no-child admission
+        # contract only to test descriptor inheritance. This is not descendant
+        # cleanup qualification or permission for a live adapter to spawn.
+        source = '''
+import json, os, subprocess, sys
+from campaign_tool.records.bounded_resume import run_once
+def adapter(request):
+    os.write(1, b'synthetic-private-stdout')
+    os.write(2, b'synthetic-private-stderr')
+    subprocess.run([sys.executable, '-c', 'import os; os.write(1, b"synthetic-private-child")'], check=True)
+print(json.dumps(run_once(adapter, execute=True, seconds=2)))
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', source], capture_output=True,
+                                text=True, timeout=5, check=True)
+        self.assertEqual(json.loads(result.stdout)['status'], 'completed')
+        self.assertEqual(result.stderr, '')
+        self.assertNotIn('synthetic-private', result.stdout)
 
 
 if __name__ == '__main__':

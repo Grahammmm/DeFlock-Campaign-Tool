@@ -20,6 +20,7 @@ class Request:
     max_items: int = 1
     notify: bool = False
     prune: bool = False
+    spawn_children: bool = False
 
 
 def _worker(adapter, request, deadline, connection):
@@ -38,6 +39,8 @@ def _worker(adapter, request, deadline, connection):
         # Adapter results/exceptions/output can contain private material. Return
         # stable aggregate status only. A reviewed adapter must honor Request.
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            os.dup2(sink.fileno(), 1)
+            os.dup2(sink.fileno(), 2)
             adapter(request)
         connection.send('completed')
     except BaseException:
@@ -47,6 +50,8 @@ def _worker(adapter, request, deadline, connection):
 
 
 def _stop(process):
+    # Only the owned worker is guaranteed to be cleaned up. Admission requires
+    # separately reviewed adapters and their dependencies to spawn no children.
     if not process.is_alive():
         return
     # A worker creates a new session before entering adapter code. Never signal
