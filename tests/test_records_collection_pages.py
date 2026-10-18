@@ -265,7 +265,7 @@ class CollectionPageTests(unittest.TestCase):
         value = self.enroll("records")
         ticks = iter((0, 0, 26, 26, 26))
         result = self.run_pages(value, Transport({BASE + "/browse?id=records": "page-1.html"}),
-                                limits=Limits(backoff=0), mono=lambda: next(ticks))
+                                limits=Limits(backoff=0, max_bytes=pages.MAX_PAGE_BYTES), mono=lambda: next(ticks))
         self.assertEqual(result["pending"], 1)
         self.assertEqual(self.count("portal_versions"), 0)
         self.assertEqual(self.queue.db.execute("SELECT reason FROM portal_items").fetchone()[0], "timeout")
@@ -274,10 +274,10 @@ class CollectionPageTests(unittest.TestCase):
         value = self.enroll("records")
         transport = Transport({BASE + "/browse?id=records": lambda: Response(503, {})})
         for _ in range(3):
-            self.run_pages(value, transport, limits=Limits(backoff=0))
+            self.run_pages(value, transport, limits=Limits(backoff=0, max_bytes=pages.MAX_PAGE_BYTES))
         before = self.queue.db.execute("SELECT state,tries FROM portal_items").fetchone()[:]
         self.assertEqual(before, ("blocked", 3))
-        self.run_pages(value, transport, limits=Limits(backoff=0))
+        self.run_pages(value, transport, limits=Limits(backoff=0, max_bytes=pages.MAX_PAGE_BYTES))
         self.assertEqual(len(transport.calls), 3)
         self.assertEqual(self.queue.db.execute("SELECT state,tries FROM portal_items").fetchone()[:], before)
 
@@ -301,8 +301,8 @@ class CollectionPageTests(unittest.TestCase):
         value = self.enroll("records")
         first, second = BASE + "/browse?id=records", BASE + "/browse?id=records&page=2"
         transport = Transport({first: "page-1.html", second: "page-2.html"})
-        self.assertEqual(self.run_pages(value, transport, limits=Limits(max_items=1))["indexed"], 1)
-        self.assertEqual(self.run_pages(value, transport, limits=Limits(max_items=1))["indexed"], 1)
+        self.assertEqual(self.run_pages(value, transport, limits=Limits(max_items=1, max_bytes=pages.MAX_PAGE_BYTES))["indexed"], 1)
+        self.assertEqual(self.run_pages(value, transport, limits=Limits(max_items=1, max_bytes=pages.MAX_PAGE_BYTES))["indexed"], 1)
         self.assertEqual(transport.calls, [first, second])
         self.assertEqual(self.count("export_collection_pages"), 2)
 
