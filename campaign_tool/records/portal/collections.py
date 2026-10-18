@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS export_body_links(
  PRIMARY KEY(event,part,ordinal));
 CREATE TABLE IF NOT EXISTS export_collections(
  id TEXT PRIMARY KEY, url_private TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
- cursor_private TEXT NOT NULL, expected_total INTEGER, reason TEXT);
+ cursor_private TEXT NOT NULL, expected_total INTEGER, reason TEXT, scope_sha256 TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS export_collection_pages(
  collection TEXT REFERENCES export_collections(id), cursor_private TEXT,
  source_sha256 TEXT NOT NULL, parser_sha256 TEXT NOT NULL, manifest_json TEXT NOT NULL,
@@ -92,12 +92,33 @@ class CollectionInventory:
         from campaign_tool.records.run import require_root_lock
         require_root_lock(self.queue.root.parent)
 
-    def register(self, preserved, identity):
-        self._require_writer()
-        scope_hash = digest_bytes(encoded({"hosts": sorted(self.scope.hosts),
+    def _scope_hash(self):
+        return digest_bytes(encoded({"hosts": sorted(self.scope.hosts),
             "excluded": sorted(self.scope.excluded_hosts), "depth": self.scope.max_depth,
             "pages": self.scope.max_pages, "members": self.scope.max_members,
             "links": self.scope.max_links}).encode())
+
+    def _event(self, event):
+        row = self.queue.db.execute("SELECT * FROM export_events WHERE id=?", (event,)).fetchone()
+        if row is None:
+            raise PortalError("export_event_missing")
+        if row["scope_sha256"] != self._scope_hash():
+            raise PortalError("export_event_scope_mismatch")
+        return row
+
+    def _node(self, collection):
+        node = self.queue.db.execute("SELECT * FROM export_collections WHERE id=?", (collection,)).fetchone()
+        if node is None:
+            raise PortalError("collection_missing_or_blocked")
+        # Nodes may be shared by events only under the exact same immutable
+        # plan. A broader event cannot populate an old narrow event's graph.
+        if node["scope_sha256"] != self._scope_hash():
+            raise PortalError("collection_scope_mismatch")
+        return node
+
+    def register(self, preserved, identity):
+        self._require_writer()
+        scope_hash = self._scope_hash()
         values = (preserved.message_id, encoded(identity), preserved.receipt_sha256,
                   preserved.eml_sha256, encoded(preserved.attachments), scope_hash)
         with self.queue.lock(), self.queue.db:
@@ -111,8 +132,9 @@ class CollectionInventory:
     def _collection(self, url):
         key = digest_bytes(url.encode())
         with self.queue.lock(), self.queue.db:
-            self.queue.db.execute("INSERT OR IGNORE INTO export_collections(id,url_private,cursor_private) "
-                                  "VALUES(?,?,?)", (key, url, url))
+            self.queue.db.execute("INSERT OR IGNORE INTO export_collections(id,url_private,cursor_private,scope_sha256) "
+                                  "VALUES(?,?,?,?)", (key, url, url, self._scope_hash()))
+            self._node(key)
         return key
 
     def _document(self, url, stable_id, source):
@@ -143,9 +165,7 @@ class CollectionInventory:
 
     def discover(self, event, bodies):
         self._require_writer()
-        row = self.queue.db.execute("SELECT eml_sha256,discovery FROM export_events WHERE id=?", (event,)).fetchone()
-        if row is None:
-            raise PortalError("export_event_missing")
+        row = self._event(event)
         planned, count, total = [], 0, 0
         for part, text, content_type in bodies:
             total += len(text.encode("utf-8"))
@@ -184,6 +204,7 @@ class CollectionInventory:
 
     def discovery_failed(self, event):
         self._require_writer()
+        self._event(event)
         with self.queue.lock(), self.queue.db:
             self.queue.db.execute("UPDATE export_events SET discovery='blocked' WHERE id=?", (event,))
 
@@ -197,14 +218,15 @@ class CollectionInventory:
         Caller serializes this method under the canonical root lock.
         """
         self._require_writer()
+        self._event(event)
+        node = self._node(collection)
         check_hash(source_sha256)
         check_hash(parser_sha256)
         if type(source_bytes) is not int or not 1 <= source_bytes <= 25 * 1024 * 1024:
             raise PortalError("collection_page_size_bound")
         self.queue.verify_object(source_sha256, source_bytes)
         cursor = normalized(cursor)
-        node = self.queue.db.execute("SELECT * FROM export_collections WHERE id=?", (collection,)).fetchone()
-        if node is None or node["state"] == "blocked":
+        if node["state"] == "blocked":
             raise PortalError("collection_missing_or_blocked")
         # Collection enumeration stays same-origin. Approved cross-origin file
         # downloads still pass the existing per-hop transport authorization.
@@ -263,7 +285,7 @@ class CollectionInventory:
         rows = []
         for member in plan:
             target = self._collection(member["url"]) if member["kind"] == "collection" else self._document(
-                member["url"], member["id"], collection)
+                member["url"], member["id"], source_sha256)
             rows.append((collection, member["id"], member["kind"], member["url"], target))
         with self.queue.lock(), self.queue.db:
             self.queue.db.executemany("INSERT OR IGNORE INTO export_collection_members VALUES(?,?,?,?,?)", rows)
@@ -275,6 +297,7 @@ class CollectionInventory:
 
     def block(self, collection, reason):
         self._require_writer()
+        self._node(collection)
         if reason not in {"authorization_required", "expired_link", "unsupported_navigation",
                           "pagination_loop_or_bound", "retry_exhausted", "missing_or_conflicting_members"}:
             raise PortalError("invalid_collection_exception")
@@ -288,6 +311,7 @@ class CollectionInventory:
         checks and a qualified parser/containment binding. No automatic retry
         or URL replacement is introduced here.
         """
+        self._event(event)
         if type(limit) is not int or not 1 <= limit <= 60:
             raise PortalError("invalid_inventory_bound")
         todo = [(r[0], ()) for r in self.queue.db.execute(
@@ -298,7 +322,7 @@ class CollectionInventory:
             if key in seen or key in ancestors or len(ancestors) >= self.scope.max_depth:
                 continue
             seen.add(key)
-            node = self.queue.db.execute("SELECT * FROM export_collections WHERE id=?", (key,)).fetchone()
+            node = self._node(key)
             if node["state"] in {"pending", "partial"}:
                 result.append({"collection": key, "url_private": node["cursor_private"],
                                "depth": len(ancestors), "denominator_known": node["expected_total"] is not None})
@@ -308,9 +332,7 @@ class CollectionInventory:
         return result
 
     def readiness(self, event):
-        row = self.queue.db.execute("SELECT * FROM export_events WHERE id=?", (event,)).fetchone()
-        if row is None:
-            raise PortalError("export_event_missing")
+        row = self._event(event)
         gaps, documents, visited = [], [], 0
 
         def visit(kind, target, ancestors):
@@ -332,8 +354,8 @@ class CollectionInventory:
                 if target in ancestors or len(ancestors) >= self.scope.max_depth:
                     gaps.append("collection_cycle_or_depth")
                     return
-                node = self.queue.db.execute("SELECT state FROM export_collections WHERE id=?", (target,)).fetchone()
-                if not node or node[0] != "enumerated":
+                node = self._node(target)
+                if node["state"] != "enumerated":
                     gaps.append("collection_membership_unknown_or_exception")
                 for member in self.queue.db.execute("SELECT kind,target FROM export_collection_members WHERE collection=?", (target,)):
                     visit(member[0], member[1], (*ancestors, target))

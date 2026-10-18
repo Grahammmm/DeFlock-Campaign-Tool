@@ -175,8 +175,8 @@ class ExportBridgeTests(unittest.TestCase):
         html = "".join('<a href="' + BASE + '/WebLink/Browse.aspx?id=F' + str(n) + '">collection</a>' for n in range(1, 8))
         path, _ = legacy_export(self.export, html=html)
         value = self.enroll(path)
-        self.page(value, "F1", self.members("B", "C"), 2)
-        self.page(value, "F2", self.members("C", "D"), 2)
+        first_page = self.page(value, "F1", self.members("B", "C"), 2)
+        second_page = self.page(value, "F2", self.members("C", "D"), 2)
         self.page(value, "F3", [], 0)
         next_url = BASE + "/WebLink/Browse.aspx?id=F4&page=2"
         self.page(value, "F4", self.members("E"), 2, next_cursor=next_url)
@@ -201,6 +201,20 @@ class ExportBridgeTests(unittest.TestCase):
         self.assertFalse(result["digestion_complete"])
         self.assertFalse(result["publication_authorized"])
         self.assertEqual(self.count("originals"), 10)  # Nine documents AND original EML.
+        # URL identity is not evidence-byte identity. The shared member retains
+        # both verified original page hashes through portal and canonical delivery.
+        c_item = self.queue.db.execute("SELECT target FROM export_collection_members WHERE collection=? AND member='C'",
+                                       (self.collection("F1"),)).fetchone()[0]
+        page_hashes = {first_page["source_sha256"], second_page["source_sha256"]}
+        notices = {r[0] for r in self.queue.db.execute("SELECT source_sha256 FROM portal_notices WHERE item=?", (c_item,))}
+        self.assertEqual(notices, page_hashes)
+        self.assertTrue(page_hashes.isdisjoint({self.collection("F1"), self.collection("F2")}))
+        version = self.queue.db.execute("SELECT id,provenance_json FROM portal_versions WHERE item=?", (c_item,)).fetchone()
+        self.assertEqual(set(json.loads(version["provenance_json"])["source_sha256s"]), page_hashes)
+        canonical_run = self.pipeline._query("SELECT summary FROM runs WHERE run_id=?", ("portal-delivery:" + version["id"],))[0]
+        self.assertEqual(set(json.loads(canonical_run["summary"])["receipt"]["provenance"]["source_sha256s"]), page_hashes)
+        occurrence = self.pipeline._query("SELECT evidence FROM occurrences WHERE id=?", ("portal:" + version["id"],))[0]
+        self.assertEqual(set(json.loads(occurrence["evidence"])["receipt"]["provenance"]["source_sha256s"]), page_hashes)
 
     def test_unknown_denominator_not_empty_and_terminal_mismatch_rejected(self):
         path, _ = legacy_export(self.export, body=BASE + "/WebLink/Browse.aspx?id=F1\n")
@@ -281,6 +295,75 @@ class ExportBridgeTests(unittest.TestCase):
             self.inventory.accept_page(self.collection("F1"), cursor=BASE + "/WebLink/Browse.aspx?id=F1",
                 source_sha256="f" * 64, source_bytes=1, parser_sha256=PARSER, members=[], expected_total=0,
                 event=value.message_id)
+
+    def test_reopen_scope_guard_precedes_page_replay_discovery_and_readiness(self):
+        path, _ = legacy_export(self.export, body=BASE + "/WebLink/Browse.aspx?id=F1\n")
+        value = self.enroll(path)
+        next_url = BASE + "/WebLink/Browse.aspx?id=F1&page=2"
+        page = self.page(value, "F1", self.members("B"), 2, next_cursor=next_url)
+        scope = self.inventory.scope
+        self.queue.close()
+        self.queue = Queue(self.root.path / "portal")
+        self.addCleanup(self.queue.close)
+        self.inventory = CollectionInventory(self.queue, scope)
+        # Same-plan reopen and immutable replay remain valid. This is persistence
+        # coverage, not an injected crash or real-input recovery acceptance.
+        with root_lock(self.root.path):
+            self.inventory.accept_page(self.collection("F1"), **page)
+        self.assertEqual(self.inventory.pending_pages(value.message_id)[0]["url_private"], next_url)
+        self.assertFalse(self.inventory.readiness(value.message_id)["retrieval_complete"])
+
+        tables = ("export_events", "export_collections", "export_body_links", "export_collection_pages",
+                  "export_collection_members", "portal_items", "portal_notices")
+        before = {table: [tuple(r) for r in self.queue.db.execute("SELECT * FROM " + table + " ORDER BY rowid")] for table in tables}
+        variants = (
+            Scope(scope.hosts | frozenset({"other.example.invalid"}), scope.excluded_hosts),
+            Scope(scope.hosts, scope.excluded_hosts, max_depth=2),
+            Scope(scope.hosts),
+        )
+        for plan in variants:
+            changed = CollectionInventory(self.queue, plan)
+            # Deliberately do not call register: every resumed/read path must
+            # enforce the previously sealed event plan independently.
+            with root_lock(self.root.path):
+                for data in (page, dict(page, cursor=next_url, members=self.members("C"), next_cursor=None)):
+                    with self.assertRaisesRegex(PortalError, "export_event_scope_mismatch"):
+                        changed.accept_page(self.collection("F1"), **data)
+                with self.assertRaisesRegex(PortalError, "export_event_scope_mismatch"):
+                    changed.discover(value.message_id, [])
+                with self.assertRaisesRegex(PortalError, "export_event_scope_mismatch"):
+                    changed.discovery_failed(value.message_id)
+            for read in (changed.pending_pages, changed.readiness):
+                with self.assertRaisesRegex(PortalError, "export_event_scope_mismatch"):
+                    read(value.message_id)
+        after = {table: [tuple(r) for r in self.queue.db.execute("SELECT * FROM " + table + " ORDER BY rowid")] for table in tables}
+        self.assertEqual(after, before)
+
+    def test_shared_collection_cannot_be_populated_by_a_different_event_plan(self):
+        url = BASE + "/WebLink/Browse.aspx?id=F1"
+        path, _ = legacy_export(self.export, body=url + "\n")
+        first = self.enroll(path)
+        key = self.collection("F1")
+        second_path, _ = legacy_export(self.export, body=url + "\n", uid=42)
+        changed = CollectionInventory(self.queue, Scope(self.inventory.scope.hosts | frozenset({"other.example.invalid"}),
+                                                       self.inventory.scope.excluded_hosts))
+        _, identity, _ = mail_delta.load_receipt(second_path)
+        with root_lock(self.root.path):
+            from campaign_tool.records.runner.contracts import Folder
+            second = self.backend.preserve(second_path, identity[0], Folder(identity[1], int(identity[2])), int(identity[3]))
+            changed.register(second, identity)
+            with self.assertRaisesRegex(PortalError, "collection_scope_mismatch"):
+                changed.discover(second.message_id, [("1.1", url, "text/plain")])
+            # Even a separately registered broader event cannot mutate the shared
+            # narrow node before CAS/page/member handling.
+            with self.assertRaisesRegex(PortalError, "collection_scope_mismatch"):
+                changed.accept_page(key, cursor=url, source_sha256="f" * 64, source_bytes=1, parser_sha256=PARSER,
+                    members=[{"id": "outside", "kind": "document", "url": "https://other.example.invalid/outside.pdf"}],
+                    expected_total=1, event=second.message_id)
+        for table in ("export_collection_members", "export_collection_pages", "portal_items", "portal_notices"):
+            self.assertEqual(self.queue.db.execute("SELECT count(*) FROM " + table).fetchone()[0], 0)
+        self.assertEqual(len(self.inventory.pending_pages(first.message_id)), 1)
+        self.assertFalse(self.inventory.readiness(first.message_id)["retrieval_complete"])
 
     def test_pipeline_uses_same_advance_path_but_reports_collection_gaps(self):
         path, _ = legacy_export(self.export, body=BASE + "/WebLink/Browse.aspx?id=F1\n")

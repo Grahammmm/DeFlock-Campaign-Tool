@@ -48,7 +48,11 @@ The caller supplies reviewed host scope and explicit irrelevant-host exclusions.
 expectations even without file extensions. Recognized document URLs use the existing
 portal item queue. Unknown paths, unapproved origins, insecure or malformed URLs
 remain visible exceptions. An email cannot add an approved origin or exclusion.
-Scope drift for an enrolled occurrence is rejected.
+Scope drift for an enrolled occurrence is rejected before discovery, page replay
+or mutation, worklist construction and readiness evaluation, including after a
+queue reopen. Shared collection nodes also bind the exact scope fingerprint:
+another event with different origins, exclusions or bounds cannot populate that
+node or change the first event's membership through a broader plan.
 
 Signed URL queries remain private and byte-preserved, not sorted or decoded.
 Direct-document path identity excludes the query, so a replacement token cannot
@@ -83,6 +87,9 @@ reconcile. A member does not count as retrieved until the existing portal queue
 has received its current bytes and delivered its version to the canonical ledger.
 Collection/page/parent relationships stay in the private sidecar. The existing
 portal ledger adapter still marks bytes pending trusted stage validation.
+Portal document notices and delivered canonical provenance reference the verified
+original page-byte SHA, separately from the collection URL identity. A member seen
+on two collection pages retains both page digests through delivery.
 
 This candidate does **not** implement a live WebLink HTML parser or a collection
 HTTP reader. It never calls an injected unbounded loader. A qualified provider
@@ -111,7 +118,7 @@ it is not evidence that undiscovered linked documents were processed.
 
 ## Synthetic acceptance and adoption
 
-The candidate suite is `tests.records.test_export_bridge` (12 cases). Its positive
+The candidate suite is `tests.records.test_export_bridge` (14 cases). Its positive
 oracle has attachment A and seven collections: B/C, C/D, empty, paged E/F, G, H,
 I. The existing mocked portal transport and real ledger adapter must preserve nine
 unique documents across ten document occurrences, plus the original EML. A hash
@@ -122,7 +129,13 @@ Other controls cover exact UID identity, replay/UIDVALIDITY reset, corrupt origi
 missing MIME members, plain/HTML discovery, unknown denominators, pagination loops,
 three-attempt exhaustion, authorization exceptions, nested-depth bounds, unapproved
 links, scope drift, page integrity and pipeline branch/status integration. The
-pipeline integration control substitutes only the already existing stage driver;
+reopen controls reject broader origins, changed exclusions and changed bounds on
+page replay, new-page submission, discovery, worklist and readiness paths without
+re-registering. A second event cannot populate a collection under a different
+plan. The positive fixture also asserts exact page-byte hashes in notices, portal
+versions and delivered canonical run/occurrence provenance for shared member C.
+These controls cover same-plan reopen persistence, not injected crash acceptance.
+The pipeline integration control substitutes only the already existing stage driver;
 it does not claim a new extraction, OCR, legal or real-document acceptance result.
 
 Do not run this suite or trigger PR CI until the exact source/fixture seal receives
