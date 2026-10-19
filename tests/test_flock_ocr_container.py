@@ -376,5 +376,103 @@ class FlockOcrVerifyTests(unittest.TestCase):
         self.assertEqual(calls[0][:6], ["docker", "run", "--rm", "--network", "none", "--entrypoint"])
 
 
+_RB_SPEC = importlib.util.spec_from_file_location("flock_ocr_check_runbook", RECIPE / "check_runbook.py")
+check_runbook = importlib.util.module_from_spec(_RB_SPEC)
+_RB_SPEC.loader.exec_module(check_runbook)
+RUNBOOK = json.loads((RECIPE / "runbook.json").read_text())
+DOC = (ROOT / "docs" / "RECORDS-OCR-CONTAINER.md").read_text()
+
+
+class FlockOcrRunbookOrderTests(unittest.TestCase):
+    """Synthetic command-order regressions; no lifecycle command is executed."""
+
+    def mutated(self, change):
+        plan = json.loads(json.dumps(RUNBOOK))
+        change(plan)
+        return check_runbook.check(plan)
+
+    @staticmethod
+    def move(steps, kind, before_kind):
+        step = next(s for s in steps if s["kind"] == kind)
+        steps.remove(step)
+        steps.insert(next(i for i, s in enumerate(steps) if s["kind"] == before_kind), step)
+
+    def test_reviewed_runbook_passes(self):
+        self.assertEqual(check_runbook.check(RUNBOOK), [])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(check_runbook.main([str(RECIPE / "runbook.json")]), 0)
+        self.assertIn("runbook: OK", out.getvalue())
+
+    def test_doc_lists_the_same_steps_in_the_same_order(self):
+        section = DOC[DOC.index("## Owner runbook"):]
+        found = re.findall(r"^\s*\d+\.\s+\[([A-Z0-9-]+)\]", section, re.M)
+        self.assertEqual(found, check_runbook.ordered_ids(RUNBOOK))
+
+    def test_doc_requires_wal_safe_owner_preserving_verified_snapshot(self):
+        section = DOC[DOC.index("[S1]"):DOC.index("[B1]")]
+        for needle in ("--numeric-owner", "-wal", ".backup", "PRAGMA integrity_check",
+                       "content manifest", "snapshot_ok", "empty scratch directory"):
+            self.assertIn(needle, section)
+        quiesce = DOC[DOC.index("[Q1]"):DOC.index("[S1]")]
+        self.assertIn("existing owner-controlled pause/lock", quiesce)
+        self.assertIn("Do not disable", quiesce)
+
+    def test_snapshot_before_quiescence_is_rejected(self):
+        errors = self.mutated(lambda p: self.move(p["main"], "snapshot", "pause_writers"))
+        self.assertTrue(any("out of order" in e for e in errors), errors)
+
+    def test_build_or_recreate_before_snapshot_gate_is_rejected(self):
+        for kind in ("build", "verify_image", "rename_old", "create_new"):
+            with self.subTest(kind=kind):
+                errors = self.mutated(lambda p, k=kind: self.move(p["main"], k, "snapshot"))
+                self.assertTrue(any("before the snapshot gate" in e for e in errors), errors)
+
+    def test_missing_restore_test_or_gate_is_rejected(self):
+        for kind in ("restore_test", "snapshot_gate", "stop_all_mount_users"):
+            with self.subTest(kind=kind):
+                errors = self.mutated(lambda p, k=kind: p["main"].remove(
+                    next(s for s in p["main"] if s["kind"] == k)))
+                self.assertTrue(errors)
+
+    def test_reviewed_defect_start_old_before_restore_is_rejected(self):
+        errors = self.mutated(lambda p: self.move(p["rollback"]["RB-C"], "start_old", "compare_data"))
+        self.assertTrue(any("restores data after a container has started" in e for e in errors), errors)
+
+    def test_start_old_without_validation_is_rejected(self):
+        for path in ("RB-A", "RB-B", "RB-C"):
+            with self.subTest(path=path):
+                errors = self.mutated(lambda p, n=path: p["rollback"][n].remove(
+                    next(s for s in p["rollback"][n] if s["kind"] == "validate_data")))
+                self.assertTrue(any("validate data" in e for e in errors), errors)
+
+    def test_restore_without_stopping_every_mount_user_is_rejected(self):
+        def change(plan):
+            plan["rollback"]["RB-C"][0]["kind"] = "confirm_stopped"
+        errors = self.mutated(change)
+        self.assertTrue(any("stop every mount user first" in e for e in errors), errors)
+
+    def test_failure_before_replacement_exists_restores_old_name(self):
+        errors = self.mutated(lambda p: p["rollback"]["RB-B"].remove(
+            next(s for s in p["rollback"]["RB-B"] if s["kind"] == "rename_old_back")))
+        self.assertTrue(any("rename the old container back" in e for e in errors), errors)
+        self.assertEqual([s["on_fail"] for s in RUNBOOK["main"] if s["kind"] in ("rename_old", "create_new")],
+                         ["RB-B", "RB-B"])
+
+    def test_writers_reenabled_only_last(self):
+        for path in ("RB-A", "RB-B", "RB-C"):
+            with self.subTest(path=path):
+                errors = self.mutated(lambda p, n=path: self.move(p["rollback"][n], "release_writers", "start_old"))
+                self.assertTrue(any("re-enable writers" in e for e in errors), errors)
+        errors = self.mutated(lambda p: self.move(p["main"], "release_writers", "start_new"))
+        self.assertTrue(errors)
+
+    def test_rollback_never_starts_replacement_and_every_step_has_a_path(self):
+        errors = self.mutated(lambda p: p["rollback"]["RB-C"].insert(1, {"id": "X", "kind": "start_new"}))
+        self.assertTrue(any("never start the replacement" in e for e in errors), errors)
+        def drop(plan):
+            plan["main"][5]["on_fail"] = "RB-Z"
+        self.assertTrue(any("no rollback path" in e for e in self.mutated(drop)))
+
+
 if __name__ == "__main__":
     unittest.main()

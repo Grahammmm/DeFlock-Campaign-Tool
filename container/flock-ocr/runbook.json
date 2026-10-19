@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "notes": [
+    "Ordered form of the owner runbook in docs/RECORDS-OCR-CONTAINER.md. Step IDs and order must match the doc (tested).",
+    "check_runbook.py validates ordering rules only. Nothing in this repository executes these steps; every step is an owner action."
+  ],
+  "main": [
+    {"id": "R1", "kind": "record", "on_fail": "stop_unchanged"},
+    {"id": "Q1", "kind": "pause_writers", "on_fail": "RB-A"},
+    {"id": "Q2", "kind": "stop_all_mount_users", "on_fail": "RB-A"},
+    {"id": "S1", "kind": "snapshot", "on_fail": "RB-A"},
+    {"id": "S2", "kind": "snapshot_evidence", "on_fail": "RB-A"},
+    {"id": "S3", "kind": "restore_test", "on_fail": "RB-A"},
+    {"id": "G1", "kind": "snapshot_gate", "on_fail": "RB-A"},
+    {"id": "B1", "kind": "build", "on_fail": "RB-A"},
+    {"id": "B2", "kind": "build", "on_fail": "RB-A"},
+    {"id": "V1", "kind": "verify_image", "on_fail": "RB-A"},
+    {"id": "C1", "kind": "rename_old", "on_fail": "RB-B"},
+    {"id": "C2", "kind": "create_new", "on_fail": "RB-B"},
+    {"id": "C3", "kind": "start_new", "on_fail": "RB-C"},
+    {"id": "A1", "kind": "validate_data", "on_fail": "RB-C"},
+    {"id": "A2", "kind": "release_writers", "on_fail": "RB-C"}
+  ],
+  "rollback": {
+    "RB-A": [
+      {"id": "RB-A1", "kind": "confirm_stopped"},
+      {"id": "RB-A2", "kind": "validate_data"},
+      {"id": "RB-A3", "kind": "start_old"},
+      {"id": "RB-A4", "kind": "release_writers"}
+    ],
+    "RB-B": [
+      {"id": "RB-B1", "kind": "confirm_stopped", "also": "set aside a created, never-started replacement"},
+      {"id": "RB-B2", "kind": "rename_old_back"},
+      {"id": "RB-B3", "kind": "validate_data"},
+      {"id": "RB-B4", "kind": "start_old"},
+      {"id": "RB-B5", "kind": "release_writers"}
+    ],
+    "RB-C": [
+      {"id": "RB-C1", "kind": "stop_all_mount_users"},
+      {"id": "RB-C2", "kind": "set_aside_new"},
+      {"id": "RB-C3", "kind": "compare_data"},
+      {"id": "RB-C4", "kind": "restore"},
+      {"id": "RB-C5", "kind": "validate_data"},
+      {"id": "RB-C6", "kind": "rename_old_back"},
+      {"id": "RB-C7", "kind": "start_old"},
+      {"id": "RB-C8", "kind": "release_writers"}
+    ]
+  }
+}

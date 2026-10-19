@@ -17,6 +17,8 @@ Files in `container/flock-ocr/`:
 | `build_wheel.py` | Builds the engine wheel twice from the pinned commit and checks it against `pins.json` |
 | `preflight.py` | Validates inputs, the pinned commit and the build context; prints the `docker build` command |
 | `verify.py` | Read-only acceptance check of a built image or running container |
+| `runbook.json` | Ordered owner runbook steps and rollback paths (IDs match the runbook below) |
+| `check_runbook.py` | Static ordering check of `runbook.json`; runs no lifecycle command |
 | `.dockerignore` | Deny-by-default context: only `requirements.lock` and the one wheel |
 
 ## What is pinned
@@ -110,7 +112,15 @@ It also checks that:
   `manifest_sha256` and dependency-lock hash, and `source_dirty: false`;
 - the OCR doctor reports `"ready": true`.
 
-## Owner runbook: snapshot, rebuild, verify, rollback
+## Owner runbook: quiesce, snapshot, rebuild, verify, rollback
+
+The ordered, machine-checked form of this runbook is
+`container/flock-ocr/runbook.json`. Each step below carries its ID in square
+brackets. `tests/test_flock_ocr_container.py` checks that this document lists the
+same IDs in the same order and that the ordering rules hold (for example: all
+mount users stopped before the snapshot and before any restore, the snapshot
+gate passed before any build or recreate, data validated before any container
+start, writers re-enabled last). Nothing in this repository runs these steps.
 
 Placeholders:
 
@@ -119,30 +129,94 @@ Placeholders:
 - `$NEW_TAG`: a new tag that no other container uses
 - `$BUILD_PY`: an approved interpreter that already has setuptools==84.0.0 and
   wheel==0.48.0 (`docs/RECORDS-RELEASE.md`)
-- `$PRIVATE`: a private directory outside every Git checkout
+- `$PRIVATE`: a private directory outside every Git checkout, on a different
+  filesystem from the mounts, writable only by the owner
+- `$MOUNTS`: every named volume and bind source `$CONTAINER` mounts
+- `$MOUNT_USERS`: every container and host process that reads or writes any of
+  `$MOUNTS`, including the Flock coordinator and the local Qwen queue
 
-Keep the real values in the private runbook.
+Keep the real values, receipts and manifests in `$PRIVATE` and the private
+runbook. None of them belong in Git, in a fixture or in a cloud task.
 
-1. Snapshot, before anything else:
+The rule for the whole run: once [Q1] starts, no mount user runs again until
+either acceptance [A2] or a rollback path's validated-data step has passed. If
+any step fails, stop and take the rollback path named for that step.
+
+### Record (read only)
+
+1. [R1] Record the current state:
 
         docker inspect "$CONTAINER" > "$PRIVATE/inspect-before.json"
         docker inspect "$CONTAINER" --format '{{.Image}}'      # record as $OLD_IMAGE_ID
 
-   Back up every named volume and bind directory the container mounts. For each
-   one, record the file count and an owner/mode digest, for example
-   `find <dir> | wc -l` and
-   `find <dir> -printf '%u:%g %m %p\n' | sort | sha256sum`.
-   Never retag or overwrite a tag that another container uses.
+   From `inspect-before.json`, list every mount source. Then find every other
+   user of each one: `docker ps -a --filter volume=<name>` for named volumes, the
+   `Mounts` of every other container for bind sources, and the owner's private
+   inventory of host jobs. Record the result as `$MOUNT_USERS`. An unknown user
+   is a failure: stop here. Nothing has changed yet.
 
-2. Build the wheel from the pinned commit, in a clean clone. This step installs
-   nothing and makes no network calls.
+### Quiesce and snapshot gate
+
+2. [Q1] Pause the writers with the existing owner-controlled pause/lock that the
+   Flock coordinator and the local Qwen queue already honor. Do not disable,
+   edit or replace timers or schedules, and do not cut any job over to a new
+   runner. Wait until the coordinator reports no in-flight job. Record the pause
+   time in `$PRIVATE/snapshot-receipt.json`.
+
+3. [Q2] Stop `$CONTAINER` and every other container in `$MOUNT_USERS` with
+   `docker stop` (never `rm`). Confirm that none is running and that no host
+   process has a file open under any mount (for example `fuser -vm <source>`).
+   From here until [A2] or a rollback's validated start, everything stays
+   stopped.
+
+4. [S1] Take a consistent, owner-preserving copy of every mount, as root:
+
+        tar --numeric-owner --acls --xattrs -cpf "$PRIVATE/<mount>.tar" -C <source> .
+
+   Because every writer is stopped, SQLite `-wal` and `-shm` files are copied in
+   a consistent state together with their databases. In addition, for each
+   SQLite database write a copy with the WAL folded in, using the SQLite backup
+   API (`sqlite3 <db> ".backup '$PRIVATE/<db>.backup'"` or Python
+   `sqlite3.Connection.backup`). Do not checkpoint, vacuum or otherwise write
+   to the live database.
+
+5. [S2] Record evidence for every mount, in `$PRIVATE` only:
+
+   - a content manifest: `sha256sum` of every regular file, sorted by path;
+   - an owner/mode manifest: `find <source> -printf '%U:%G %m %y %p\n' | sort`
+     (numeric IDs, so a renamed user cannot hide a change);
+   - `PRAGMA integrity_check` on every `.backup` copy, which must print `ok`;
+   - the SHA-256 of each `.tar` and `.backup` file.
+
+   File counts and owner/mode digests alone do not prove byte integrity; the
+   content manifest does.
+
+6. [S3] Prove the backup restores. Extract each `.tar` with
+   `tar --numeric-owner --acls --xattrs -xpf` into an empty scratch directory
+   in `$PRIVATE`. Its content and owner/mode manifests must equal the [S2]
+   manifests (after the path prefix), and every restored SQLite database must
+   pass `PRAGMA integrity_check`. Then recompute the live mounts' content
+   manifests: they must still equal [S2], which proves nothing wrote during the
+   copy.
+
+7. [G1] Snapshot gate. Write `"snapshot_ok": true`, the backup references and
+   their SHA-256 values, and the completion time into
+   `$PRIVATE/snapshot-receipt.json` only if [S1] to [S3] all passed. No wheel
+   build, image build, rename or create may start unless this receipt says
+   `"snapshot_ok": true`. If the gate fails, take rollback path [RB-A].
+
+### Build and verify (mounts stay quiescent)
+
+8. [B1] Build the wheel from the pinned commit, in a clean clone. This step
+   installs nothing and makes no network calls.
 
         python3 container/flock-ocr/build_wheel.py --build-python "$BUILD_PY" \
           --provenance-out "$PRIVATE/wheel-provenance.json"
 
-   It must end with `WHEEL_SHA256=<64 hex>`. Any FAIL means stop.
+   It must end with `WHEEL_SHA256=<64 hex>`. Any FAIL: rollback path [RB-A].
 
-3. Run the preflight, then build. The build uses the network for apt and PyPI.
+9. [B2] Run the preflight, then build. The build uses the network for apt and
+   PyPI.
 
         python3 container/flock-ocr/preflight.py --base-image "$OLD_IMAGE_ID" \
           --engine-commit 0ab680433b7fe9a1593c19ad64ae2ed27dd045f3 \
@@ -151,42 +225,105 @@ Keep the real values in the private runbook.
    Then run the `docker build --pull=false ...` command it prints. Without
    buildx, the legacy builder resolves `FROM <image ID>` locally. The build
    fails closed on any apt pin, Python hash, wheel hash, manifest or doctor
-   mismatch.
+   mismatch. Any failure: rollback path [RB-A].
 
-4. Check the image before it touches the container:
+10. [V1] Check the image before it touches the container:
 
         python3 container/flock-ocr/verify.py --image "$NEW_TAG"
-        docker run --rm --entrypoint find "$NEW_TAG" /opt/campaign-tool -maxdepth 2
+        docker run --rm --network none --entrypoint find "$NEW_TAG" /opt/campaign-tool -maxdepth 2
 
-   `verify.py` must end with `verify: OK`. The `find` must list only
-   `ENGINE_COMMIT`, `requirements.lock`, `venv/...` and `dist/<the one wheel>`.
-   The context filter is a port of Docker's matcher, tested with synthetic
-   files, so this `find` is the real check.
+    `verify.py` must end with `verify: OK`. The `find` must list only
+    `ENGINE_COMMIT`, `requirements.lock`, `venv/...` and `dist/<the one wheel>`.
+    The context filter is a port of Docker's matcher, tested with synthetic
+    files, so this `find` is the real check. These runs mount no data. Any
+    failure: rollback path [RB-A].
 
-5. Recreate the container:
+### Recreate
 
-   - Stop it and rename it to `$CONTAINER-pre-ocr`. Do not remove it.
-   - Create `$CONTAINER` from the new image ID with every setting in
-     `inspect-before.json` unchanged: volumes, binds, user, capabilities,
-     security options, tmpfs, limits, network, restart policy and labels.
-   - Diff the new `docker inspect` against the saved one. Only image, ID,
-     creation time and state fields may differ.
+11. [C1] Rename the stopped `$CONTAINER` to `$CONTAINER-pre-ocr`. Do not remove
+    it. If the rename fails: rollback path [RB-B].
 
-6. Accept:
+12. [C2] Create (do not start) `$CONTAINER` from the new image ID with every
+    setting in `inspect-before.json` unchanged: volumes, binds, user,
+    capabilities, security options, tmpfs, limits, network, restart policy and
+    labels. Diff its `docker inspect` against the saved one. Only image, ID,
+    creation time and state fields may differ. If create fails, or the diff
+    shows anything else: rollback path [RB-B].
+
+13. [C3] Start the new `$CONTAINER`. Other mount users stay stopped. If it does
+    not start: rollback path [RB-C].
+
+### Accept
+
+14. [A1] With every other mount user still stopped:
 
         python3 container/flock-ocr/verify.py --container "$CONTAINER"
 
-   Then recompute the step-1 counts and owner/mode digests for every volume and
-   bind. They must match the snapshot.
+    Then recompute the content and owner/mode manifests of every mount. They
+    must equal [S2]. Any difference is a data-check failure unless the owner
+    reviews the listed paths and accepts them in writing in the private runbook.
+    Any failure: rollback path [RB-C].
 
-7. Roll back if step 5 or 6 fails, or later on request:
+15. [A2] Restart the other containers in `$MOUNT_USERS`, then release the
+    [Q1] pause/lock. Watch the coordinator's next job complete.
 
-        docker stop "$CONTAINER" && docker rename "$CONTAINER" "$CONTAINER-ocr-failed"
-        docker rename "$CONTAINER-pre-ocr" "$CONTAINER" && docker start "$CONTAINER"
-        docker inspect "$CONTAINER" --format '{{.Image}}'      # must equal $OLD_IMAGE_ID
+### Rollback paths
 
-   If the data checks failed, restore the volumes from the step-1 backup.
-   Remove `$CONTAINER-pre-ocr` and the old image only after the owner signs off.
+Every path keeps all mount users stopped until the data is validated, starts
+the retained old container before anything else, and re-enables writers last.
+Never start a container while a restore is in progress.
+
+[RB-A]: failure at or before [V1]. `$CONTAINER` is unchanged and still stopped.
+
+1. [RB-A1] Confirm that every user in `$MOUNT_USERS` is still stopped.
+2. [RB-A2] Validate the data: recompute the content and owner/mode manifests of
+   every mount and compare them with [S2]. If [S2] was never completed, nothing
+   was copied or restored, so there is nothing to compare. If they differ,
+   restore as in [RB-C4] and validate as in [RB-C5] first.
+3. [RB-A3] `docker start "$CONTAINER"`; its image must equal `$OLD_IMAGE_ID`.
+4. [RB-A4] Restart the other mount users, then release the [Q1] pause/lock.
+
+[RB-B]: failure in [C1] or [C2], before the replacement has ever started.
+
+1. [RB-B1] Confirm that every user in `$MOUNT_USERS` is stopped. If a new
+   `$CONTAINER` was created, it is stopped; rename it to
+   `$CONTAINER-ocr-failed`. Do not start it.
+2. [RB-B2] If the rename in [C1] happened, rename `$CONTAINER-pre-ocr` back to
+   `$CONTAINER`. `docker inspect "$CONTAINER" --format '{{.Image}}'` must equal
+   `$OLD_IMAGE_ID`.
+3. [RB-B3] Validate the data as in [RB-A2]; restore and validate first if it
+   differs.
+4. [RB-B4] `docker start "$CONTAINER"`.
+5. [RB-B5] Restart the other mount users, then release the [Q1] pause/lock.
+
+[RB-C]: failure in [C3] or [A1], or a later rollback on the owner's request.
+
+1. [RB-C1] Pause writers again with the [Q1] pause/lock if it was released,
+   wait for no in-flight job, then stop every user in `$MOUNT_USERS`, including
+   the new `$CONTAINER`. Confirm none is running and no host process has a file
+   open under a mount.
+2. [RB-C2] Rename the new `$CONTAINER` to `$CONTAINER-ocr-failed`. Do not
+   start it again.
+3. [RB-C3] Recompute the content and owner/mode manifests of every mount and
+   compare them with [S2]. On a later rollback the difference includes real
+   work done since [A2]; the owner decides in writing whether to keep it, and
+   an [S1]-style copy of the current state is taken before any restore.
+4. [RB-C4] If the data checks failed or the owner chose to restore: for each
+   mount, move the current contents aside into `$PRIVATE`, then extract the
+   [S1] `.tar` with `tar --numeric-owner --acls --xattrs -xpf` into the empty
+   source.
+5. [RB-C5] Validate before any start: content and owner/mode manifests equal
+   [S2] (or the owner-accepted current state when no restore was chosen), and
+   every SQLite database passes `PRAGMA integrity_check`. If this fails, leave
+   everything stopped and escalate to the owner. Do not start any container.
+6. [RB-C6] Rename `$CONTAINER-pre-ocr` back to `$CONTAINER`. Its image must
+   equal `$OLD_IMAGE_ID`.
+7. [RB-C7] `docker start "$CONTAINER"`. Check that it stays running and that
+   its own health check, if it has one, reports healthy.
+8. [RB-C8] Restart the other mount users, then release the [Q1] pause/lock.
+
+Remove `$CONTAINER-pre-ocr`, `$CONTAINER-ocr-failed`, the old image and the
+`$PRIVATE` backups only after the owner signs off.
 
 Passing `verify.py` means the tools are ready. It is not corpus, fidelity,
 extraction or review acceptance, and it does not certify the base image.
