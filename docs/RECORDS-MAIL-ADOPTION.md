@@ -380,6 +380,37 @@ rerun at most as permitted above only when the report shows a transient code
 (e.g. a live lease after a crash); otherwise stop and escalate with the safe
 codes.
 
+## Scripted TEST verification (`scripts/verify_adoption_test.py`)
+
+The local-only acceptance worker can run steps 0 to 5 above as one standard-library
+script inside the Flock container. It decides no policy, never writes or
+changes the config, and never runs on anything except a `*-TEST` copy:
+
+    python3 -B <engine>/scripts/verify_adoption_test.py \
+        --test-root "$TEST" --config "$TEST_CONFIG" \
+        --receipt <new file outside $TEST> [--dry-run-only]
+
+- `--test-root` must name a directory ending in `-TEST`. `processing-v1/` and
+  `mail-history/` are fixed children of it and cannot be overridden.
+- The effective uid must own the ledger, and the config must already exist and
+  be owner-only.
+- The engine is the checkout that contains the script. `--engine` overrides it.
+- The expected totals default to 154 messages and 82 attachments.
+- The script stops before apply if any step-2 precondition fails, and stops
+  before the rerun if any step-3 check fails.
+
+Exit codes: `0` every check passed, `1` a check failed (the receipt shows
+`stopped_at` and `failed_checks`), `2` refused before running anything.
+
+The receipt contains only integers, booleans and fixed codes: check names, the
+gate state and safe error codes. It holds the counts from the dry run, the
+apply and the rerun, the SQL counts (`mail_messages`, `runs`, mail-history run
+statuses, open runs, unfinished preserve stages, quick_check, foreign keys),
+`new_on_rerun`, and non-mutation checks for the dry run, the zero-new branch,
+the rerun, the export and the marker. It contains no paths, headers or record
+text. Step 6 (the final config and gate state) remains a manual G decision.
+Synthetic tests: `tests.records.test_verify_adoption_test_script`.
+
 ## Tests (synthetic only)
 
     python3 -B -m unittest tests.records.test_mail_adoption \
