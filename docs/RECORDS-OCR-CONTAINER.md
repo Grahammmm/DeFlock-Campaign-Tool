@@ -34,18 +34,39 @@ change to every requirements file.
    Replacing a container keeps named volumes only if the same volumes are reused.
 2. From a clean checkout of the accepted commit, build the wheel
    (`docs/RECORDS-RELEASE.md`) into `container/flock-ocr/dist/` and record its
-   sha256. Exactly one `deflock_campaign_tool-*.whl` may be present.
-3. Build a **new** tag; never overwrite a tag that other containers use:
+   sha256. `dist/` must hold that one wheel and nothing else.
+3. Run the preflight. It accepts only an immutable base, either a local image
+   ID (`sha256:<64 hex>`) or a digest reference (`name@sha256:<64 hex>`), and
+   rejects tags. USER, ENTRYPOINT and CMD are inherited from the base, so a
+   moved tag could change more than the OCR packages. The preflight also
+   confirms that the base is already local (it never pulls), and that the
+   computed build context is exactly `requirements.lock` plus the hashed wheel.
+   Keep the real image identity in the private runbook, not here.
 
-        docker build -f container/flock-ocr/Dockerfile \
-          --build-arg BASE_IMAGE="$BASE_IMAGE" \
-          --build-arg ENGINE_COMMIT="$ENGINE_COMMIT" \
-          --build-arg WHEEL_SHA256="$WHEEL_SHA256" \
-          -t "$NEW_TAG" container/flock-ocr
+        python3 container/flock-ocr/preflight.py \
+          --base-image "$BASE_IMAGE_ID" \
+          --engine-commit "$ENGINE_COMMIT" \
+          --wheel-sha256 "$WHEEL_SHA256" \
+          --tag "$NEW_TAG"
 
-   The build fails unless the base is Debian 12, every apt pin resolves, every
-   Python hash matches, the wheel hash matches, `records version --json` reports
-   an installed clean wheel for `ENGINE_COMMIT`, and the OCR doctor is ready.
+   Then run the `docker build --pull=false ...` command it prints. Build a
+   **new** tag, and never overwrite a tag that other containers use.
+
+   The build fails unless BASE_IMAGE is an ID or digest, the base is Debian 12,
+   every apt pin resolves, every Python hash matches, `/opt/campaign-tool/dist`
+   holds exactly one regular wheel file and the wheel hash matches,
+   `records version --json` reports an installed clean wheel for
+   `ENGINE_COMMIT`, and the OCR doctor is ready.
+
+   The context filter is deny-by-default (`.dockerignore`). `COPY` takes only
+   the wheel glob. The preflight's context listing is a port of Docker's
+   matcher, tested with synthetic files. It models Docker's behaviour and does
+   not prove it. After the build, confirm that nothing extra shipped:
+
+        docker run --rm --entrypoint find "$NEW_TAG" /opt/campaign-tool -maxdepth 2
+
+   The output must show only `ENGINE_COMMIT`, `requirements.lock`, `venv/` and
+   `dist/<the one wheel>`.
 4. Recreate the container from the new image ID with its existing run settings
    unchanged. USER, ENTRYPOINT and CMD are inherited from the base image.
 

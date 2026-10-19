@@ -7,11 +7,14 @@
 # a clean checkout of the accepted commit (docs/RECORDS-RELEASE.md) and placed in
 # ./dist/ (gitignored). Its sha256 and commit are required build arguments:
 #
-#   docker build -f container/flock-ocr/Dockerfile \
-#     --build-arg BASE_IMAGE=<exact local bookworm image> \
-#     --build-arg ENGINE_COMMIT=<40-hex commit> \
-#     --build-arg WHEEL_SHA256=<64-hex wheel sha256> \
-#     -t <new tag> container/flock-ocr
+#   python3 container/flock-ocr/preflight.py --base-image <immutable ref> \
+#     --engine-commit <40-hex commit> --wheel-sha256 <64-hex wheel sha256>
+#
+# preflight.py validates the inputs and the context, confirms the base exists
+# locally, and prints the docker build command. BASE_IMAGE must be immutable: a
+# local image ID (sha256:<64 hex>) or a digest reference (name@sha256:<64 hex>).
+# Mutable tags are rejected here and in preflight.py, because USER, ENTRYPOINT
+# and CMD are inherited from the base and a moved tag could change them.
 #
 # Apt pins are exact Debian 12 versions. If the mirror has moved on (for example
 # a new +deb12uN security update), the build fails closed; update the pin in a
@@ -19,11 +22,13 @@
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+ARG BASE_IMAGE
 ARG ENGINE_COMMIT
 ARG WHEEL_SHA256
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1
 
-RUN printf '%s' "${ENGINE_COMMIT}" | grep -Eqx '[0-9a-f]{40}' \
+RUN printf '%s' "${BASE_IMAGE}" | grep -Eqx '(sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64})' \
+ && printf '%s' "${ENGINE_COMMIT}" | grep -Eqx '[0-9a-f]{40}' \
  && printf '%s' "${WHEEL_SHA256}" | grep -Eqx '[0-9a-f]{64}' \
  && grep -Eqx '12\.[0-9]+' /etc/debian_version
 
@@ -49,9 +54,10 @@ RUN apt-get update \
 # Engine in its own root-owned venv, read-only to the runtime user. The wheel has
 # no dependencies; pypdf/openpyxl are the hash-locked parser bundle.
 COPY requirements.lock /opt/campaign-tool/requirements.lock
-COPY dist/ /opt/campaign-tool/dist/
+COPY dist/deflock_campaign_tool-*-py3-none-any.whl /opt/campaign-tool/dist/
 RUN cd /opt/campaign-tool/dist \
- && test "$(ls deflock_campaign_tool-*-py3-none-any.whl | wc -l)" -eq 1 \
+ && test "$(find . -mindepth 1 | wc -l)" -eq 1 \
+ && test "$(find . -mindepth 1 -maxdepth 1 -type f -name 'deflock_campaign_tool-*-py3-none-any.whl' | wc -l)" -eq 1 \
  && printf '%s  %s\n' "${WHEEL_SHA256}" deflock_campaign_tool-*-py3-none-any.whl | sha256sum -c - \
  && python3 -m venv /opt/campaign-tool/venv \
  && /opt/campaign-tool/venv/bin/pip install --require-hashes --only-binary=:all: \

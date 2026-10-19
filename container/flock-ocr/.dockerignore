@@ -1,5 +1,11 @@
-# Build context for container/flock-ocr/Dockerfile: only the lock and one wheel.
+# Build context for container/flock-ocr/Dockerfile: deny by default, then admit
+# only the hash lock and top-level engine wheel files. Docker applies the last
+# matching rule, and a rule also matches every path below a matching directory,
+# so each admitted name is followed by a recursive re-exclusion of anything
+# nested under it. tests/test_flock_ocr_container.py exercises these semantics.
 *
+dist/**
 !requirements.lock
-!dist/
 !dist/deflock_campaign_tool-*-py3-none-any.whl
+requirements.lock/**
+dist/*/**
