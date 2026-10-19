@@ -69,17 +69,37 @@ Each valid receipt is classified against the ledger:
 | `incomplete` | identity enrolled with matching bindings, but at least one declared original is not preserve `done` | resumed through the same idempotent `preserve` call |
 | `identity_*` conflict | identity enrolled but the receipt declares different bytes or evidence | refused; nothing written; earlier evidence untouched |
 
-Binding validation for an enrolled identity (first failure wins):
+Binding validation for an enrolled identity is the read-only equivalent of what
+`CanonicalMailBackend.preserve` (re-enrollment) and its `_validator`
+(preservation replay) require. The expected occurrence set is recomputed from
+the receipt and the intake catalog (`intake.sqlite`, MIME locators) exactly as
+the backend derives it: occurrence ids, kinds, CAS hashes, `source_ref`
+(including `mime_path`), `parent_occurrence_id`, acquisition method and
+evidence. The verification receipt is opened at its content-addressed path
+`<root>/intake/verification-receipts/<receipt_sha256>` (derived from the
+digest, never taken from stored evidence, no symlinks) and re-hashed. First
+failure wins:
 
 | code | meaning |
 |---|---|
-| `identity_message_id_mismatch` | the identity's row does not carry the canonical message id, or the id and identity resolve to different rows |
+| `identity_message_id_mismatch` | the identity's row does not carry the canonical message id, the id and identity resolve to different rows, or the row's identity columns differ |
 | `identity_eml_changed` | `mail_messages.eml_sha256` differs from the receipt's EML hash |
-| `identity_occurrence_mismatch` | the `verified_mail_export` mail occurrence is missing, duplicated or bound to other bytes |
-| `identity_attachment_set_changed` | the identity's attachment occurrence hashes differ from the declared attachment set (plus native items) |
+| `identity_attachment_set_changed` | the identity's attachment occurrence hashes (as a multiset) differ from the declared attachments plus native items: added, removed or duplicated attachment |
 | `identity_receipt_changed` | an occurrence's evidence `receipt_sha256` differs from the current receipt bytes |
-| `identity_evidence_mismatch` / `identity_evidence_unreadable` | evidence `cas_sha256`/`bytes` disagree with the declaration, or cannot be parsed |
-| `identity_original_missing` / `identity_original_*` | a declared original has no effective declaration, or one the backend would refuse |
+| `identity_evidence_unreadable` | stored evidence cannot be parsed |
+| `identity_intake_missing` / `identity_intake_occurrence_mismatch` | the intake catalog lacks, duplicates or disagrees with an occurrence the receipt declares |
+| `identity_occurrence_duplicate` | the receipt would derive the same occurrence id twice |
+| `identity_occurrence_mismatch` | an expected occurrence id is missing, an unexpected one is present (changed id, duplicate mail occurrence), or kind / CAS hash / acquisition method differs |
+| `identity_locator_changed` | `source_ref` (account, folder, uidvalidity, uid, `mime_path`) differs |
+| `identity_parent_changed` | `parent_occurrence_id` differs |
+| `identity_verification_receipt_missing` / `identity_verification_receipt_changed` | the content-addressed verification receipt is absent, not a regular file (symlink) or its bytes no longer hash to the receipt digest |
+| `identity_evidence_mismatch` | evidence keys differ from the backend's exact set, or `cas_sha256`, `bytes` or `native_item` disagree |
+| `identity_verification_path_changed` | evidence `verification_receipt_path` is not the canonical content-addressed path |
+| `identity_original_missing` / `identity_original_*` | an original has no effective declaration, or one the backend would refuse |
+| `identity_mail_row_changed` / `identity_mail_row_unverifiable` | the `mail_messages` row differs from the projection the backend would write (headers, Message-ID, received date, provenance), or that projection cannot be recomputed |
+
+Only `export_receipt_path` may differ (it must still be a string): the backend
+itself accepts a superseded export path for the same receipt bytes.
 
 `identity_receipt_changed` is deliberately strict: the backend binds occurrences
 to the exact receipt bytes, so even a semantically equal but re-serialised
@@ -121,10 +141,16 @@ The dry run never uses `store.ledger(readonly=True)`: a `mode=ro` open creates
   and `-journal` must be unchanged afterwards, otherwise
   `ledger_changed_during_read`.
 
+The intake catalog `<root>/intake/intake.sqlite` (read only when an enrolled
+identity must be validated) follows the same rules with the codes
+`intake_wal_not_checkpointed`, `intake_changed_during_read` and
+`intake_not_owner_only`.
+
 Apply holds the records-root lock and, if the WAL is non-empty, first opens and
 closes the ledger read-write so SQLite recovers committed frames and checkpoints
 (`ledger_wal_recovered: true`). If the WAL is still non-empty afterwards, a
-writer outside the lock is live and apply refuses with `ledger_active_writer`.
+writer outside the lock is live and apply refuses with `ledger_active_writer`
+(`intake_active_writer` for the intake catalog).
 
 ## Idempotency
 
@@ -184,15 +210,21 @@ needs the separately reviewed original-resolution contract
 ## TEST acceptance runbook (CONDITIONAL; NOT APPROVED)
 
 This is the exact procedure for the local-only acceptance worker. It is NOT an
-authorization: it may be executed only after (a) this exact head has passed an
+authorization. It may only be executed after (a) this exact head has passed an
 independent different-model review, (b) G has decided the legacy-original
 policy, the unsupported `message/rfc822` receipt handling, TEST restore versus
-re-freeze, and the final gate state, and (c) G has explicitly re-approved the
-acceptance card. B1 limits are absent from the supplied plan; none are invented
-here. Rule: at most two unsuccessful attempts in total after the first failure,
-then stop and escalate through the prescribed route. Never hand-edit the ledger,
-never delete the marker, never follow or write live-root storage paths. Keep all
-detailed output local; report aggregates only.
+re-freeze, and the final gate/config state, and (c) G has explicitly re-approved
+the acceptance card. This runbook decides none of those. B1 limits are absent
+from the supplied plan; none are invented here. Rule: at most two unsuccessful
+attempts in total after the first failure, then stop and escalate through the
+prescribed route. Never hand-edit the ledger or intake catalog, never delete
+the marker, never follow or write live-root storage paths. Keep all detailed
+output local; report aggregates only.
+
+Acceptance target: the TEST ledger ends with exactly `154` `mail_messages` rows,
+all of them identities from the frozen export (`receipts=154`). Only a written
+G decision naming a different total changes that target; without one, any other
+count is a stop, not a pass.
 
 Variables (set locally; all paths must resolve inside the TEST copy):
 
@@ -201,15 +233,27 @@ Variables (set locally; all paths must resolve inside the TEST copy):
     EXPORT="$TEST/mail-history"
     TEST_CONFIG=<owner-only mail-history-adoption-v1 config, approved locally>
     LEDGER="$ROOT/ledger.sqlite"
+    INTAKE="$ROOT/intake/intake.sqlite"
     EV=<private local evidence dir outside $TEST, mode 0700>
+    TOTAL=154                     # change ONLY on a written G decision; record its reference in $EV
+    G_GATE_STATE=<final gate.state from G's written decision>
+    G_CONFIG_SHA256=<sha256 of the final config G approved, or 'none' if G decided no config>
     Q() { sqlite3 "file:$LEDGER?mode=ro&immutable=1" "$1"; }   # only valid when WAL is empty
+    J() { python3 -B -c 'import json,sys
+    v=json.load(open(sys.argv[1]))
+    for k in sys.argv[2].split("."): v=v[k]
+    print(json.dumps(v, sort_keys=True))' "$1" "$2"; }          # print one report key
     # No sqlite3 CLI? Use python3's sqlite3 module with the same URI (uri=True), read-only.
+
+If `G_GATE_STATE` and `G_CONFIG_SHA256` are not available from a written G
+decision, stop before step 0: step 6 cannot be evaluated.
 
 Step 0 -- preconditions (any failure: stop, no retry, escalate):
 
     test "$(stat -c %u "$LEDGER")" = "$(id -u)" && test "$(stat -c %a "$LEDGER")" = 600
     test ! -s "$LEDGER-wal" && test ! -e "$LEDGER-journal"     # quiesced, checkpointed
-    ! fuser "$LEDGER" 2>/dev/null                               # no live writer
+    test ! -s "$INTAKE-wal" && test ! -e "$INTAKE-journal"
+    ! fuser "$LEDGER" "$INTAKE" 2>/dev/null                     # no live writer
     git -C <engine checkout> rev-parse HEAD                     # must equal the reviewed head
     grep -rIl -- <live root prefix> "$ROOT" "$EXPORT" | wc -l    # expect 0 live-root references (G-approved snapshot only)
     Q "PRAGMA quick_check"                                      # expect: ok
@@ -231,35 +275,56 @@ Step 2 -- dry run (exit must be 0):
         --config "$TEST_CONFIG" > "$EV/dry.json"; echo "exit=$?"
     manifest "$TEST" > "$EV/tree1"; cmp "$EV/tree0" "$EV/tree1"       # full-tree non-mutation
 
-Required dry-run values: `receipts=154`, `attachments=82` (INVENTORY);
-`gaps={}`, `identity_conflicts={}`, `incomplete_messages=0`,
-`unfinalized_runs=0`, `predicted_binding_conflicts={}` (unless G's legacy policy
-explicitly accepts a stated count), `gate.open=true`, `gate.marker_sha256`
-matching `$EV/marker0`. Record `A0=already_adopted` and `N0=new_messages`;
-require `A0 + N0 = 154` and `eligible_new_messages = N0`. Do not assume N0 = 154:
-the original freeze already contained adopted identities (three per the upstream
-handoff); A0 must equal the number of export identities already in
-`mail_messages`. Any deviation: stop and escalate; do not apply.
+Required dry-run values:
+
+- INVENTORY (every valid receipt, whatever its state): `receipts=$TOTAL` (154),
+  `attachments=82`.
+- `gaps={}`, `identity_conflicts={}`, `incomplete_messages=0`,
+  `unfinalized_runs=0`, `predicted_binding_conflicts={}`. A non-empty
+  `predicted_binding_conflicts` passes only if G's written legacy-original
+  decision states that count and the matching `TOTAL`.
+- `gate.open=true`, and `gate.marker_sha256` matches `$EV/marker0`.
+- NEW/ELIGIBLE counts, distinct from inventory: record `A0=already_adopted`
+  and `N0=new_messages`; require `A0 + N0 = $TOTAL`,
+  `eligible_new_messages = N0` and `pending_messages = N0`.
+- Require `M0 = A0`: every existing `mail_messages` row is an export identity
+  whose canonical bindings were fully validated. `M0 > A0` means the ledger
+  holds rows unrelated to this export; stop and escalate, never accept them
+  silently. Do not assume `N0 = 154`: the original freeze already contained
+  adopted identities (three per the upstream handoff).
+
+Any deviation: stop and escalate; do not apply.
 
 Step 3 -- apply (exit must be 0):
 
     python3 -B -m campaign_tool.records adopt-mail --root "$ROOT" --mail-history "$EXPORT" \
         --config "$TEST_CONFIG" --apply > "$EV/apply1.json"; echo "exit=$?"
+    manifest "$TEST" > "$EV/tree2"
 
-Required: `failures={}`, `adopted_messages=N0`, `resumed_messages=0`,
-`after` = `{already_adopted: 154, new_messages: 0, incomplete_messages: 0,
+Required in both branches: `failures={}`, `resumed_messages=0`,
+`after = {already_adopted: $TOTAL, new_messages: 0, incomplete_messages: 0,
 pending_messages: 0, identity_conflicts: {}, unfinalized_runs: 0}`, and no
-`recovered_runs`/`ledger_wal_recovered` key. SQL:
+`recovered_runs` or `ledger_wal_recovered` key.
 
-    test ! -s "$LEDGER-wal"
-    Q "SELECT count(*) FROM mail_messages"                         # = M0 + N0 (= 154 iff M0 = A0)
-    Q "SELECT count(*) FROM runs"                                  # = R0 + 1
-    Q "SELECT status,count(*) FROM runs WHERE run_id LIKE 'mail-history-%' GROUP BY status"
-                                                                   # runs0 plus exactly one 'completed'; no 'running'
+Branch on `N0`:
+
+- `N0 > 0`: `adopted_messages = N0` and a `run_id` key. Expect `R1 = R0 + 1`,
+  and the `mail-history-` status counts equal `runs0` plus exactly one
+  `completed`.
+- `N0 = 0`: the command does not start a run. Require `adopted_messages = 0`,
+  no `run_id` key, `R1 = R0`, `runs1` identical to `runs0`, and
+  `cmp "$EV/tree1" "$EV/tree2"` succeeds (nothing written).
+
+SQL (both branches):
+
+    test ! -s "$LEDGER-wal" && test ! -s "$INTAKE-wal"
+    Q "SELECT count(*) FROM mail_messages"            # = $TOTAL exactly (154), and = M0 + N0
+    R1=$(Q "SELECT count(*) FROM runs")               # = R0 + 1 if N0 > 0; = R0 if N0 = 0
+    Q "SELECT status,count(*) FROM runs WHERE run_id LIKE 'mail-history-%' GROUP BY status" > "$EV/runs1"
+    Q "SELECT count(*) FROM runs WHERE run_id LIKE 'mail-history-%' AND (status='running' OR ended_at IS NULL)"   # 0
     Q "SELECT count(*) FROM stage_state s WHERE s.stage='preserve' AND s.status!='done' AND s.original_sha256 IN
        (SELECT original_sha256 FROM occurrences WHERE acquisition_method='verified_mail_export')"   # 0
     Q "PRAGMA quick_check"; Q "PRAGMA foreign_key_check" | wc -l   # ok; 0
-    manifest "$TEST" > "$EV/tree2"
 
 Step 4 -- zero-pending rerun (exit must be 0):
 
@@ -268,22 +333,43 @@ Step 4 -- zero-pending rerun (exit must be 0):
     manifest "$TEST" > "$EV/tree3"; cmp "$EV/tree2" "$EV/tree3"       # nothing written
 
 Required: no `run_id`, `adopted_messages=0`, `resumed_messages=0`,
-`pending_messages=0`, `already_adopted=154`, `failures={}`; SQL counts identical
-to step 3. Zero adopted alone does not pass: every step-2/3 condition must also
-hold.
+`pending_messages=0`, `incomplete_messages=0`, `already_adopted=$TOTAL`,
+`identity_conflicts={}`, `failures={}`, `gaps={}`; SQL counts identical to step
+3 (`mail_messages = $TOTAL`, `runs = R1`). Zero adopted alone does not pass:
+every step-2/3 condition must also hold.
 
 Step 5 -- source integrity:
 
     manifest "$EXPORT" > "$EV/export1"; cmp "$EV/export0" "$EV/export1"
     sha256sum "$ROOT/.adoption-disabled-v1.json" | cmp - "$EV/marker0"   # or still absent
 
-Report back aggregates only (counts, exit codes, cmp results, sha256 of each
-manifest file), never paths, receipts, headers or ledger rows. If apply exits
-`3`, do not "fix" anything: rerun at most as permitted above only when the
-report shows a transient code (e.g. a live lease after a crash), otherwise stop
-and escalate with the safe codes.
+Step 6 -- final configuration and gate state (G's written decision only):
+
+Put the final config in place only as G's decision states (for example
+re-disabling adoption by replacing the owner-only config file). Never touch the
+marker. Then verify with a dry run, which must not mutate anything:
+
+    python3 -B -m campaign_tool.records adopt-mail --root "$ROOT" --mail-history "$EXPORT" \
+        ${G_FINAL_CONFIG:+--config "$G_FINAL_CONFIG"} > "$EV/final.json"; echo "exit=$?"   # 0
+    manifest "$TEST" > "$EV/tree4"; diff "$EV/tree3" "$EV/tree4"   # empty, except the config file's own lines if G placed it inside $TEST
+    J "$EV/final.json" gate.state                                  # = "$G_GATE_STATE"
+    J "$EV/final.json" already_adopted; J "$EV/final.json" pending_messages   # $TOTAL; 0
+    test "$(stat -c %a "$G_FINAL_CONFIG")" = 600 && sha256sum "$G_FINAL_CONFIG"   # = $G_CONFIG_SHA256 (skip if 'none')
+    sha256sum "$ROOT/.adoption-disabled-v1.json" | cmp - "$EV/marker0"   # marker unchanged (or absent)
+
+`G_FINAL_CONFIG` is the config path G's decision names (unset when G decided no
+config). A gate state or config hash other than G's decision is a failure; the
+acceptance worker never chooses one.
+
+Report back aggregates only (counts, exit codes, cmp results, the final gate
+state, sha256 of each manifest file and of the final config), never paths,
+receipts, headers or ledger rows. If apply exits `3`, do not "fix" anything:
+rerun at most as permitted above only when the report shows a transient code
+(e.g. a live lease after a crash); otherwise stop and escalate with the safe
+codes.
 
 ## Tests (synthetic only)
 
     python3 -B -m unittest tests.records.test_mail_adoption \
-        tests.records.test_mail_adoption_regression tests.records.test_mail_adoption_recovery
+        tests.records.test_mail_adoption_regression tests.records.test_mail_adoption_recovery \
+        tests.records.test_mail_adoption_bindings

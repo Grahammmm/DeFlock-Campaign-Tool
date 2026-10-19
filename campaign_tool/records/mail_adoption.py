@@ -13,10 +13,12 @@ Every receipt is classified against the ledger, read-only:
 
 * ``new`` -- no ``mail_messages`` row for its (account, folder, uidvalidity,
   uid) identity yet;
-* ``complete`` -- the identity is enrolled, its canonical bindings (message id,
-  EML hash, occurrence set, attachment set, verification-receipt hash, byte
-  sizes, original declarations) match this receipt exactly, and every declared
-  original has a ``done`` preserve stage;
+* ``complete`` -- the identity is enrolled, its full canonical binding matches
+  this receipt exactly (mail_messages row, occurrence ids, CAS hashes, MIME
+  locators, parents, multiplicity, evidence incl. the content-addressed
+  verification receipt bytes, original declarations; the read-only equivalent
+  of CanonicalMailBackend's re-enrollment and replay checks), and every
+  declared original has a ``done`` preserve stage;
 * ``incomplete`` -- bindings match but preservation is unfinished (for example
   enrollment committed and the process then failed or crashed). Apply resumes
   these through the same idempotent backend call;
@@ -149,6 +151,7 @@ def discover(mail_root, output):
         seen.add(identity)
         found.append({"path": path, "identity": identity, "attachments": len(items) - 1,
                       "receipt_sha256": receipt_sha, "native_shas": native_shas,
+                      "declaration": declaration, "items": items,
                       "originals": tuple((item["sha"], item["size"]) for item in items)})
     return found, gaps
 
@@ -190,43 +193,51 @@ def _wal_pending(path):
 
 
 @contextlib.contextmanager
-def _snapshot_ledger(ledger_path):
-    """Read-only ledger access that never creates, changes or removes a file.
+def _snapshot_db(db_path, prefix):
+    """Read-only SQLite access that never creates, changes or removes a file.
 
-    ``store.ledger(readonly=True)`` opens ``mode=ro``, which creates ``-shm``
-    (and rebuilds it from a crashed writer's WAL), so it is never used here.
-    A cleanly checkpointed ledger (no or empty WAL, no rollback journal) is
+    ``mode=ro`` alone (as in ``store.ledger(readonly=True)``) creates ``-shm``
+    and rebuilds it from a crashed writer's WAL, so it is never used here. A
+    cleanly checkpointed database (no or empty WAL, no rollback journal) is
     read with ``immutable=1``, which touches no sidecar. A non-empty WAL means
     a live writer or an unrecovered crash; the read then fails closed with
-    ``ledger_wal_not_checkpointed`` before opening anything. Recovery belongs
-    to a writer holding the records-root lock (``--apply``), not to a dry run.
-    The ledger and all sidecar identities must be unchanged afterwards,
-    otherwise the read fails closed with ``ledger_changed_during_read``.
+    ``<prefix>_wal_not_checkpointed`` before opening anything. Recovery
+    belongs to a writer holding the records-root lock (``--apply``), not to a
+    dry run. The file and all sidecar identities must be unchanged afterwards,
+    otherwise the read fails closed with ``<prefix>_changed_during_read``.
     """
     from .ledger import store
-    from .ledger.migrations import v001
-    path = store.checked_path(ledger_path)
-    store.private_parent(path)
+    path = store.checked_path(db_path)
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
-        raise AdoptionError("ledger_not_owner_only")
+        raise AdoptionError(prefix + "_not_owner_only")
     before = _sidecar_keys(path)
     if (before[1] is not None and before[1][1] > 0) or before[3] is not None:
-        raise AdoptionError("ledger_wal_not_checkpointed")
+        raise AdoptionError(prefix + "_wal_not_checkpointed")
     con = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=5)
     con.row_factory = sqlite3.Row
     try:
         con.execute("PRAGMA query_only=ON")
+        yield con
+    finally:
+        con.close()
+    if _sidecar_keys(path) != before:
+        raise AdoptionError(prefix + "_changed_during_read")
+
+
+@contextlib.contextmanager
+def _snapshot_ledger(ledger_path):
+    """Sidecar-free read of the canonical ledger, schema-checked."""
+    from .ledger import store
+    from .ledger.migrations import v001
+    store.private_parent(store.checked_path(ledger_path))
+    with _snapshot_db(ledger_path, "ledger") as con:
         row = con.execute("SELECT checksum FROM schema_migrations WHERE version=?",
                           (v001.VERSION,)).fetchone()
         if (con.execute("PRAGMA user_version").fetchone()[0] != v001.VERSION
                 or row is None or row[0] != store.SCHEMA_HASH):
             raise AdoptionError("ledger_schema_mismatch")
         yield con
-    finally:
-        con.close()
-    if _sidecar_keys(path) != before:
-        raise AdoptionError("ledger_changed_during_read")
 
 
 def _settle_ledger(ledger_path):
@@ -247,6 +258,20 @@ def _settle_ledger(ledger_path):
     return True
 
 
+def _settle_intake(intake_path):
+    """The same writer-side WAL recovery for the intake catalog (apply only)."""
+    if not _wal_pending(intake_path) or not os.path.isfile(intake_path):
+        return False
+    con = sqlite3.connect(intake_path, timeout=5)
+    try:
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    finally:
+        con.close()
+    if _wal_pending(intake_path):
+        raise AdoptionError("intake_active_writer")
+    return True
+
+
 def message_id(identity):
     """Same canonical mail id the backend derives for an identity."""
     account, mailbox, validity, uid = identity
@@ -254,10 +279,20 @@ def message_id(identity):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+_OCCURRENCE_COLUMNS = "id,original_sha256,kind,source_ref,parent_occurrence_id,acquisition_method,evidence"
+_EVIDENCE_KEYS = frozenset({"receipt_sha256", "cas_sha256", "bytes", "export_receipt_path",
+                            "verification_receipt_path"})
+
+
 def _occurrence_groups(con, wanted):
+    """Every mail/attachment occurrence whose source_ref names a wanted identity.
+
+    Not filtered by acquisition method, so a drifted method is seen as a
+    mismatch instead of silently dropped.
+    """
     groups = {}
-    for row in con.execute("SELECT id,original_sha256,kind,source_ref,evidence FROM occurrences "
-                           "WHERE acquisition_method='verified_mail_export' AND kind IN ('mail','attachment')"):
+    for row in con.execute("SELECT " + _OCCURRENCE_COLUMNS + " FROM occurrences "
+                           "WHERE kind IN ('mail','attachment')"):
         try:
             source = json.loads(row["source_ref"])
             key = (source["account"], source["folder"], str(source["uidvalidity"]), str(source["uid"]))
@@ -268,42 +303,171 @@ def _occurrence_groups(con, wanted):
     return groups
 
 
-def identity_conflict(con, store, blobs, item, rows, occurrences):
+def expected_occurrences(item, intake):
+    """The exact occurrence rows CanonicalMailBackend.preserve derives, read-only.
+
+    Mirrors LegacyIntakeBackend.preserve (MIME locators from the intake
+    catalog, parent parts, native items) and CanonicalMailBackend.preserve
+    (occurrence ids, parent occurrence ids, source_ref) without importing,
+    copying or writing anything. ``intake`` is a read-only snapshot of
+    ``intake.sqlite``. Returns a list of
+    ``(id, sha, kind, parent_id, source_ref, native_item)`` or a safe code.
+    """
+    from .runner.core import hid, js
+    receipt, items, identity = item["declaration"], item["items"], item["identity"]
+    account, mailbox, validity, uid = identity
+    mid = message_id(identity)
+    extended = receipt.get("schema") == "mail-wire-receipt-v2"
+    native_items = tuple({key: value for key, value in entry.items() if key not in {"manifest_path", "streams"}}
+                         for entry in receipt.get("native_items", [])) if extended else ()
+    attached, parents = [], []
+    for entry in items[1:]:
+        oid = intake_folder.hid(intake_folder.js(["mail-receipt-v1", *identity, entry["part"]]))
+        rows = intake.execute("SELECT sha,locator FROM occurrences WHERE oid=?", (oid,)).fetchall()
+        if len(rows) != 1 or rows[0][0] != entry["sha"]:
+            return "identity_intake_occurrence_mismatch"
+        try:
+            loc = entry["part"] if receipt.get("schema") else json.loads(rows[0][1])["mime"]
+            if receipt.get("schema"):
+                parent = entry["source"]["parent_part"]
+                parents.append((loc, None if parent == "0" else parent))
+        except (ValueError, KeyError, TypeError):
+            return "identity_intake_occurrence_mismatch"
+        attached.append((loc, entry["sha"]))
+    for entry in native_items:
+        parents.append((entry["part"], None if entry["parent_part"] == "0" else entry["parent_part"]))
+    parents = dict(parents)
+    native = {entry["part"]: entry for entry in native_items}
+
+    def parent_id(loc):
+        parent = parents.get(loc)
+        return mid if parent is None else hid(["native-msg-item" if parent in native else "attachment", mid, parent])
+
+    def source(loc):
+        return js({"account": account, "folder": mailbox, "uidvalidity": int(validity), "uid": int(uid),
+                   "mime_path": loc})
+
+    records = [(mid, items[0]["sha"], "mail", None, source(None), None)]
+    records.extend((hid(["attachment", mid, loc]), sha, "attachment", parent_id(loc), source(loc), None)
+                   for loc, sha in attached)
+    records.extend((hid(["native-msg-item", mid, loc]), entry["source_original_sha256"], "attachment",
+                    parent_id(loc), source(loc), entry) for loc, entry in native.items())
+    return records
+
+
+def _verification_receipt(blobs, receipt_sha):
+    """Canonical content-addressed verification receipt, re-hashed read-only.
+
+    The path is derived from the receipt digest, never taken from stored
+    evidence; ``secure_open`` refuses a symlink on any component.
+    """
+    path = blobs.parent / "verification-receipts" / receipt_sha
+    try:
+        with intake_folder.secure_open(path) as stream:
+            raw = stream.read(1024 * 1024 + 1)
+    except (OSError, ValueError):
+        return path, "identity_verification_receipt_missing"
+    if len(raw) > 1024 * 1024 or hashlib.sha256(raw).hexdigest() != receipt_sha:
+        return path, "identity_verification_receipt_changed"
+    return path, None
+
+
+def identity_conflict(con, store, blobs, item, rows, occurrences, intake=None, projection=None):
     """Validate an enrolled identity against this receipt, read-only.
 
-    Returns a safe ``identity_*`` code when the canonical bindings differ from
-    the receipt; None when they match exactly. Never rewrites evidence.
+    Checks the whole canonical binding CanonicalMailBackend requires on
+    re-enrollment and on preservation replay (its ``_validator``): the
+    mail_messages row, the exact occurrence set (ids, kinds, CAS hashes, MIME
+    locators, parent occurrence ids, multiplicity, acquisition method), every
+    evidence field including the verification receipt path and the stored
+    receipt bytes, and the original declarations. Returns a safe
+    ``identity_*`` code for the first difference, None when everything
+    matches. Never rewrites evidence and never follows a path from evidence.
     """
     mid = message_id(item["identity"])
     if len(rows) != 1 or rows[0]["id"] != mid:
+        return "identity_message_id_mismatch"
+    account, mailbox, validity, uid = item["identity"]
+    if (rows[0]["account"], rows[0]["folder"], str(rows[0]["uidvalidity"]),
+            str(rows[0]["uid"])) != (account, mailbox, validity, uid):
         return "identity_message_id_mismatch"
     declared = dict(item["originals"])
     eml_sha = item["originals"][0][0]
     if rows[0]["eml_sha256"] != eml_sha:
         return "identity_eml_changed"
-    mails = [o for o in occurrences if o["kind"] == "mail"]
-    if len(mails) != 1 or mails[0]["id"] != mid or mails[0]["original_sha256"] != eml_sha:
-        return "identity_occurrence_mismatch"
-    attached = [o["original_sha256"] for o in occurrences if o["kind"] == "attachment"]
-    expected = {sha for sha, _ in item["originals"][1:]} | item["native_shas"]
-    if set(attached) != expected or len(attached) < len(item["originals"]) - 1:
+    # Attachment multiset declared by this receipt vs. what the ledger holds.
+    receipt_attached = sorted([entry["sha"] for entry in item["items"][1:]] + [
+        entry.get("source_original_sha256") for entry in (item["declaration"].get("native_items") or ())
+        if item["declaration"].get("schema") == "mail-wire-receipt-v2" and isinstance(entry, dict)])
+    if sorted(o["original_sha256"] for o in occurrences if o["kind"] == "attachment") != receipt_attached:
         return "identity_attachment_set_changed"
     for occurrence in occurrences:
         try:
             evidence = json.loads(occurrence["evidence"])
-        except ValueError:
+        except (TypeError, ValueError):
             return "identity_evidence_unreadable"
         if not isinstance(evidence, dict) or evidence.get("receipt_sha256") != item["receipt_sha256"]:
             return "identity_receipt_changed"
-        sha = occurrence["original_sha256"]
-        if evidence.get("cas_sha256") != sha or (sha in declared and evidence.get("bytes") != declared[sha]):
+    if intake is None:
+        return "identity_intake_missing"
+    expected = expected_occurrences(item, intake)
+    if isinstance(expected, str):
+        return expected
+    expected_ids = [record[0] for record in expected]
+    if len(set(expected_ids)) != len(expected_ids):
+        return "identity_occurrence_duplicate"
+    # Rows holding an expected id even if their source_ref moved elsewhere.
+    by_id = {}
+    elsewhere = con.execute("SELECT " + _OCCURRENCE_COLUMNS + " FROM occurrences WHERE id IN (%s)"
+                            % ",".join("?" * len(expected_ids)), expected_ids).fetchall()
+    for row in list(occurrences) + elsewhere:
+        by_id.setdefault(row["id"], {})[tuple(row)] = row
+    if set(by_id) != set(expected_ids) or len(occurrences) != len(expected_ids):
+        return "identity_occurrence_mismatch"
+    path, code = _verification_receipt(blobs, item["receipt_sha256"])
+    if code:
+        return code
+    for oid, sha, kind, parent, source, native_item in expected:
+        if len(by_id[oid]) != 1:
+            return "identity_occurrence_mismatch"
+        row = next(iter(by_id[oid].values()))
+        if (row["original_sha256"], row["kind"], row["acquisition_method"]) != (sha, kind, "verified_mail_export"):
+            return "identity_occurrence_mismatch"
+        if row["source_ref"] != source:
+            return "identity_locator_changed"
+        if row["parent_occurrence_id"] != parent:
+            return "identity_parent_changed"
+        evidence = json.loads(row["evidence"])
+        if not isinstance(evidence, dict) or evidence.get("receipt_sha256") != item["receipt_sha256"]:
+            return "identity_receipt_changed"
+        original = store.effective_original(con, sha)
+        if not original:
+            return "identity_original_missing"
+        keys = _EVIDENCE_KEYS | ({"native_item"} if native_item is not None else frozenset())
+        if (set(evidence) != keys or evidence.get("cas_sha256") != sha
+                or evidence.get("bytes") != original["bytes"]
+                or (sha in declared and evidence["bytes"] != declared[sha])
+                or not isinstance(evidence.get("export_receipt_path"), str)
+                or (native_item is not None and evidence.get("native_item") != native_item)):
             return "identity_evidence_mismatch"
+        if evidence.get("verification_receipt_path") != str(path):
+            return "identity_verification_path_changed"
+        code = binding_conflict(con, store, blobs, sha, original["bytes"])
+        if code:
+            return "identity_" + code
     for sha, size in item["originals"]:
         if not store.effective_original(con, sha):
             return "identity_original_missing"
         code = binding_conflict(con, store, blobs, sha, size)
         if code:
             return "identity_" + code
+    if projection is not None:
+        try:
+            values = projection(item)
+        except Exception:  # an unverifiable header projection fails closed
+            return "identity_mail_row_unverifiable"
+        if tuple(rows[0]) != tuple(values):
+            return "identity_mail_row_changed"
     return None
 
 
@@ -316,7 +480,22 @@ def _preserved(con, item):
     return True
 
 
-def classify_receipts(ledger_path, receipts, blobs):
+def _projection(mail_root, output, ledger_path):
+    """Read-only recomputation of the mail_messages row the backend would write."""
+    from types import SimpleNamespace
+    from .runner.canonical_mail import CanonicalMailBackend
+    from .runner.contracts import Folder
+    backend = CanonicalMailBackend(mail_root, output, ledger_path)
+
+    def project(item):
+        account, mailbox, validity, uid = item["identity"]
+        value = SimpleNamespace(message_id=message_id(item["identity"]), eml_sha256=item["originals"][0][0],
+                                original_format=item["declaration"]["original_eml"].get("format", "eml"))
+        return backend._eml_projection(value, item["path"], account, Folder(mailbox, int(validity)), int(uid))
+    return project
+
+
+def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
     """Read-only classification. Returns ({identity: (state, predicted)}, unfinalized runs).
 
     state is ``new``, ``complete``, ``incomplete`` or an ``identity_*`` code;
@@ -324,11 +503,15 @@ def classify_receipts(ledger_path, receipts, blobs):
     """
     from .ledger import store
     states = {}
-    with _snapshot_ledger(ledger_path) as con:
+    intake_path = blobs.parent / "intake.sqlite"
+    projection = _projection(mail_root, blobs.parent, ledger_path) if mail_root is not None else None
+    with contextlib.ExitStack() as stack:
+        con = stack.enter_context(_snapshot_ledger(ledger_path))
+        intake = None
         groups = _occurrence_groups(con, {item["identity"] for item in receipts})
         for item in receipts:
             account, mailbox, validity, uid = item["identity"]
-            rows = con.execute("SELECT id,eml_sha256 FROM mail_messages WHERE id=? OR (account=? AND "
+            rows = con.execute("SELECT * FROM mail_messages WHERE id=? OR (account=? AND "
                                "folder=? AND uidvalidity=? AND uid=?)",
                                (message_id(item["identity"]), account, mailbox, int(validity),
                                 int(uid))).fetchall()
@@ -340,7 +523,10 @@ def classify_receipts(ledger_path, receipts, blobs):
                         break
                 states[item["identity"]] = ("new", predicted)
                 continue
-            code = identity_conflict(con, store, blobs, item, rows, groups.get(item["identity"], []))
+            if intake is None and intake_path.exists():
+                intake = stack.enter_context(_snapshot_db(intake_path, "intake"))
+            code = identity_conflict(con, store, blobs, item, rows, groups.get(item["identity"], []),
+                                     intake=intake, projection=projection)
             if code:
                 states[item["identity"]] = (code, None)
             else:
@@ -353,7 +539,8 @@ def classify_receipts(ledger_path, receipts, blobs):
 
 def _classify(root, mail_root):
     receipts, gaps = discover(mail_root, root / "intake")
-    states, unfinalized = classify_receipts(root / "ledger.sqlite", receipts, root / "intake" / "blobs")
+    states, unfinalized = classify_receipts(root / "ledger.sqlite", receipts, root / "intake" / "blobs",
+                                            mail_root=mail_root)
     for item in receipts:
         item["state"], item["predicted"] = states[item["identity"]]
     new = [r for r in receipts if r["state"] == "new"]
@@ -457,6 +644,7 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
         if not gate(root, config)["open"]:
             raise AdoptionError("adoption_gate_changed")
         settled = _settle_ledger(ledger_path)
+        _settle_intake(root / "intake" / "intake.sqlite")
         report, pending, unfinalized = _classify(root, mail_root)
         report.update(mode="apply", gate=decision, adopted_messages=0, resumed_messages=0,
                       adopted_attachments=0, failures={})
@@ -500,6 +688,7 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
                       adopted_attachments=attachments, failures=dict(sorted(failures.items())))
         # Read the post-run state while still holding the writer lock.
         _settle_ledger(ledger_path)
+        _settle_intake(root / "intake" / "intake.sqlite")
         remaining = _classify(root, mail_root)[0]
     report["after"] = _after(remaining)
     return report
