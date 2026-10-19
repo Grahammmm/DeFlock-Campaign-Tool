@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "variant": "rootless",
+  "notes": [
+    "Rootless-Docker form of the owner runbook in docs/RECORDS-OCR-CONTAINER-ROOTLESS.md. Step IDs and order must match that doc (tested) and check_runbook.py must pass.",
+    "rootless_swap.py executes these steps in this order and takes the on_fail path of a failing step. Nothing in CI runs it against Docker."
+  ],
+  "main": [
+    {"id": "R1", "kind": "record", "on_fail": "stop_unchanged", "does": "check rootless daemon, private dir, names, tag and pause units; save docker inspect; derive mounts and mount users; probe helper image"},
+    {"id": "Q1", "kind": "pause_writers", "on_fail": "RB-A", "does": "systemctl --user stop each pause timer, wait for its service to be idle, stop the service"},
+    {"id": "Q2", "kind": "stop_all_mount_users", "on_fail": "RB-A", "does": "docker stop (never rm) every container using the mounts, including the target and its app-server; confirm quiescence"},
+    {"id": "S1", "kind": "snapshot", "on_fail": "RB-A", "does": "helper (namespace root, live read-only): baseline manifest, --numeric-owner tar, manifest again, compare"},
+    {"id": "S2", "kind": "snapshot_evidence", "on_fail": "RB-A", "does": "helper: extract tar to isolated copy, sqlite-evidence on the copy only"},
+    {"id": "S3", "kind": "restore_test", "on_fail": "RB-A", "does": "helper: fresh restore equals baseline; live still equals baseline"},
+    {"id": "G1", "kind": "snapshot_gate", "on_fail": "RB-A", "does": "write snapshot_ok receipt with archive and backup hashes only if S1-S3 passed"},
+    {"id": "B1", "kind": "build", "on_fail": "RB-A", "does": "build_wheel.py from the pinned commit"},
+    {"id": "B2", "kind": "build", "on_fail": "RB-A", "does": "preflight.py, then docker build --pull=false onto the old image ID"},
+    {"id": "V1", "kind": "verify_image", "on_fail": "RB-A", "does": "verify.py --image and the /opt/campaign-tool listing check"},
+    {"id": "C1", "kind": "rename_old", "on_fail": "RB-B", "does": "docker rename the stopped target to <name>-pre-ocr"},
+    {"id": "C2", "kind": "create_new", "on_fail": "RB-B", "does": "create (not start) the replacement from the saved inspect with only the image changed; diff inspect"},
+    {"id": "C3", "kind": "start_new", "on_fail": "RB-C", "does": "docker start the replacement only"},
+    {"id": "A1", "kind": "stop_all_mount_users_again", "on_fail": "RB-C", "does": "docker stop the replacement; confirm every mount user stopped"},
+    {"id": "A2", "kind": "validate_data", "on_fail": "RB-C", "does": "helper: current-state manifest, tar, isolated sqlite-evidence, restore test; hold for owner review if it differs from S1"},
+    {"id": "A3", "kind": "restart_new", "on_fail": "RB-C", "does": "docker start the replacement while every other user stays stopped"},
+    {"id": "A4", "kind": "runtime_reverify", "on_fail": "RB-C", "does": "verify.py --container"},
+    {"id": "A5", "kind": "release_writers", "on_fail": "RB-C", "does": "start the other mount users that ran at R1, then the pause timers that were active at R1"}
+  ],
+  "rollback": {
+    "RB-A": [
+      {"id": "RB-A1", "kind": "confirm_stopped", "does": "every mount user stopped"},
+      {"id": "RB-A2", "kind": "validate_data", "does": "live equals S1 baseline; restore only from a gate-verified archive, otherwise escalate"},
+      {"id": "RB-A3", "kind": "start_old", "does": "docker start the unchanged target (image must equal the old image)"},
+      {"id": "RB-A4", "kind": "release_writers", "does": "start other users that ran at R1, then the pause timers"}
+    ],
+    "RB-B": [
+      {"id": "RB-B1", "kind": "confirm_stopped", "also": "set aside a created, never-started replacement", "does": "every mount user stopped; rename a created replacement to <name>-ocr-failed"},
+      {"id": "RB-B2", "kind": "rename_old_back", "does": "rename <name>-pre-ocr back; ID and image must equal the recorded ones"},
+      {"id": "RB-B3", "kind": "validate_data", "does": "as RB-A2"},
+      {"id": "RB-B4", "kind": "start_old", "does": "docker start the old container"},
+      {"id": "RB-B5", "kind": "release_writers", "does": "as RB-A4"}
+    ],
+    "RB-C": [
+      {"id": "RB-C1", "kind": "stop_all_mount_users", "does": "stop pause timers if released, docker stop every mount user including the replacement; confirm"},
+      {"id": "RB-C2", "kind": "set_aside_new", "does": "rename the replacement to <name>-ocr-failed; never start it"},
+      {"id": "RB-C3", "kind": "compare_data", "does": "helper: live manifests against the S1 baseline"},
+      {"id": "RB-C4", "kind": "restore", "does": "for each differing mount: archive current state into the private dir, verify it, clear, extract the S1 archive"},
+      {"id": "RB-C5", "kind": "validate_data", "does": "live equals the S1 baseline before any start"},
+      {"id": "RB-C6", "kind": "rename_old_back", "does": "rename <name>-pre-ocr back; ID and image must equal the recorded ones"},
+      {"id": "RB-C7", "kind": "start_old", "does": "docker start the old container; stays running and healthy"},
+      {"id": "RB-C8", "kind": "release_writers", "does": "as RB-A4"}
+    ]
+  }
+}
