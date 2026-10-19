@@ -472,6 +472,30 @@ class FlockOcrRunbookOrderTests(unittest.TestCase):
         errors = self.mutated(lambda p: self.move(p["main"], "release_writers", "start_new"))
         self.assertTrue(errors)
 
+    def test_acceptance_requiesces_all_users_before_current_state_evidence(self):
+        steps = RUNBOOK["main"]
+        kinds = [step["kind"] for step in steps]
+        self.assertLess(kinds.index("start_new"), kinds.index("stop_all_mount_users_again"))
+        self.assertLess(kinds.index("stop_all_mount_users_again"), kinds.index("validate_data"))
+        self.assertLess(kinds.index("validate_data"), kinds.index("restart_new"))
+        self.assertLess(kinds.index("restart_new"), kinds.index("runtime_reverify"))
+        self.assertLess(kinds.index("runtime_reverify"), kinds.index("release_writers"))
+        section = DOC[DOC.index("### Accept"):DOC.index("### Rollback paths")]
+        for needle in ("including the replacement", "ALL users", "integrity_check=ok",
+                       "integrity-valid but", "restart", "runtime verification"):
+            self.assertIn(needle, section)
+
+    def test_acceptance_without_renewed_quiescence_or_runtime_reverify_is_rejected(self):
+        for kind in ("stop_all_mount_users_again", "runtime_reverify"):
+            with self.subTest(kind=kind):
+                errors = self.mutated(lambda p, k=kind: p["main"].remove(
+                    next(s for s in p["main"] if s["kind"] == k)))
+                self.assertTrue(any("acceptance step" in e for e in errors), errors)
+        errors = self.mutated(lambda p: self.move(p["main"], "validate_data", "stop_all_mount_users_again"))
+        self.assertTrue(any("out of order" in e for e in errors), errors)
+        errors = self.mutated(lambda p: self.move(p["main"], "release_writers", "runtime_reverify"))
+        self.assertTrue(errors)
+
     def test_rollback_never_starts_replacement_and_every_step_has_a_path(self):
         errors = self.mutated(lambda p: p["rollback"]["RB-C"].insert(1, {"id": "X", "kind": "start_new"}))
         self.assertTrue(any("never start the replacement" in e for e in errors), errors)
@@ -532,6 +556,39 @@ class FlockOcrSnapshotEvidenceTests(unittest.TestCase):
         if not changed:
             self.skipTest("this SQLite build left the source unchanged")
         self.assertTrue(any(p.startswith("state/synthetic.db") for p in changed), changed)
+
+    def test_sequential_live_member_copy_can_be_integrity_valid_but_lose_wal_commit(self):
+        source_root = self.tmp / "interleaving-live"
+        copy_root = self.tmp / "interleaving-copy"
+        source_root.mkdir()
+        copy_root.mkdir()
+        db = source_root / "synthetic.db"
+        conn = sqlite3.connect(db)
+        conn.execute("pragma journal_mode=wal")
+        conn.execute("create table rows(value)")
+        conn.execute("insert into rows values (1)")
+        conn.commit()
+        conn.execute("pragma wal_checkpoint(truncate)")
+        conn.execute("insert into rows values (2)")
+        conn.commit()
+        expected = conn.execute("select count(*) from rows").fetchone()[0]
+        # Model S1-style raw archive member reads with a writer/checkpoint
+        # interleaved after DB bytes but before WAL/SHM bytes are copied.
+        shutil.copyfile(db, copy_root / db.name)
+        conn.execute("pragma wal_checkpoint(truncate)")
+        for suffix in ("-wal", "-shm"):
+            shutil.copyfile(Path(str(db) + suffix), copy_root / (db.name + suffix))
+        report = snapshot_evidence.sqlite_evidence(copy_root, self.private / "interleaved-evidence", [source_root])
+        backup = sqlite3.connect(self.private / "interleaved-evidence" / "synthetic.db.backup")
+        try:
+            actual = backup.execute("select count(*) from rows").fetchone()[0]
+        finally:
+            backup.close()
+            conn.close()
+        self.assertEqual(expected, 2)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["databases"]["synthetic.db"]["integrity_check"], ["ok"])
+        self.assertEqual(actual, 1, "integrity alone must not certify committed-row preservation")
 
     def test_runbook_sequence_preserves_live_bytes_and_restores_exactly(self):
         mount = "synthetic-mount"

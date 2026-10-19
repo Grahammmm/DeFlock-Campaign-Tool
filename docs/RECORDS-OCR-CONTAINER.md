@@ -284,21 +284,36 @@ any step fails, stop and take the rollback path named for that step.
 
 ### Accept
 
-14. [A1] With every other mount user still stopped:
+14. [A1] Stop the replacement `$CONTAINER` again. Confirm that ALL users in
+    `$MOUNT_USERS`, including the replacement, are stopped and no process can
+    access any mount. Do not take acceptance evidence until this quiescence is
+    confirmed. Any stop or confirmation failure: rollback path [RB-C].
 
-        python3 container/flock-ocr/verify.py --container "$CONTAINER"
+15. [A2] While all mount users remain stopped, take the current-state baseline
+    and raw `tar` archive for each mount. Extract each archive into an isolated
+    directory and run `sqlite-evidence` only on that copy. Compare manifests
+    and record exact archive/evidence references. The isolated SQLite integrity
+    check is necessary but not sufficient: `integrity_check=ok` does not prove
+    that a raw sequential DB/WAL copy contains all committed rows. A checkpoint
+    between reading the DB and WAL members can produce an integrity-valid but
+    stale backup. Therefore accept current-state differences only after this
+    renewed all-user quiescence, archive/evidence sequence, and owner review
+    recorded in the private runbook. Any mismatch, evidence failure, or
+    uncertain mount user: rollback path [RB-C].
 
-    Then recompute each mount's manifest with `snapshot_evidence.py manifest`
-    and `compare` it with the [S1] baseline. Any difference is a data-check
-    failure unless the owner reviews the listed paths and accepts them in
-    writing in the private runbook. A started service that opens a WAL
-    database may checkpoint it, so differences limited to a database and its
-    `-wal`/`-shm` files are expected; the owner accepts them only after an
-    [S1]-style `tar` of the current mount, extracted to an isolated directory,
-    passes `sqlite-evidence`. Any failure: rollback path [RB-C].
+16. [A3] Restart the replacement while every other mount user remains stopped
+    and the [Q1] pause/lock is held. If start fails: rollback path [RB-C].
 
-15. [A2] Restart the other containers in `$MOUNT_USERS`, then release the
-    [Q1] pause/lock. Watch the coordinator's next job complete.
+17. [A4] Re-run runtime verification of the restarted replacement:
+
+        python3 "$E" verify.py --container "$CONTAINER"
+
+    If verification fails: rollback path [RB-C]. Do not release any other mount
+    user or writer before this succeeds.
+
+18. [A5] Only after [A4] succeeds, restart the other containers in
+    `$MOUNT_USERS`, then release the [Q1] pause/lock. Watch the coordinator's
+    next job complete.
 
 ### Rollback paths
 

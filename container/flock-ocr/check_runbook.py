@@ -53,9 +53,10 @@ def check_main(main, paths):
             continue
         if target not in paths:
             errors.append(f"{step['id']} has no rollback path")
-    order = ["rename_old", "create_new", "start_new", "validate_data", "release_writers"]
+    order = ["rename_old", "create_new", "start_new", "stop_all_mount_users_again",
+             "validate_data", "restart_new", "runtime_reverify", "release_writers"]
     if any(kinds.count(kind) != 1 for kind in order):
-        errors.append("main needs exactly one rename, create, start, validate and release step")
+        errors.append("main needs exactly one recreate and ordered acceptance step")
     elif [kinds.index(kind) for kind in order] != sorted(kinds.index(kind) for kind in order):
         errors.append("recreate and acceptance steps are out of order")
     if kinds and kinds[-1] != "release_writers":

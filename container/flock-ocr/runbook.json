@@ -18,8 +18,11 @@
     {"id": "C1", "kind": "rename_old", "on_fail": "RB-B"},
     {"id": "C2", "kind": "create_new", "on_fail": "RB-B"},
     {"id": "C3", "kind": "start_new", "on_fail": "RB-C"},
-    {"id": "A1", "kind": "validate_data", "on_fail": "RB-C"},
-    {"id": "A2", "kind": "release_writers", "on_fail": "RB-C"}
+    {"id": "A1", "kind": "stop_all_mount_users_again", "on_fail": "RB-C"},
+    {"id": "A2", "kind": "validate_data", "on_fail": "RB-C"},
+    {"id": "A3", "kind": "restart_new", "on_fail": "RB-C"},
+    {"id": "A4", "kind": "runtime_reverify", "on_fail": "RB-C"},
+    {"id": "A5", "kind": "release_writers", "on_fail": "RB-C"}
   ],
   "rollback": {
     "RB-A": [
