@@ -73,6 +73,30 @@ class MailAdoptionTests(unittest.TestCase):
         for private in ("fixture-account", "Records", str(self.export), "objects/"):
             self.assertNotIn(private, text)
 
+    def test_dry_run_leaves_records_root_tree_identical(self):
+        # store.ledger(readonly=True) would create -wal/-shm sidecars; a dry run
+        # must leave every path, mode, size, mtime and byte unchanged, both
+        # before and after a completed apply.
+        def tree():
+            result = {}
+            for base, dirs, files in os.walk(self.base):
+                result[base] = os.lstat(base).st_mtime_ns
+                for name in files:
+                    path = Path(base) / name
+                    info = path.lstat()
+                    result[str(path)] = (info.st_mode, info.st_size, info.st_mtime_ns,
+                                         hashlib.sha256(path.read_bytes()).hexdigest())
+            return result
+        config = self.config()
+        before = tree()
+        self.adopt(config_path=config)
+        self.assertEqual(tree(), before)
+        self.adopt(config_path=config, apply=True)
+        before = tree()
+        report = self.adopt(config_path=config)
+        self.assertEqual((report["pending_messages"], report["already_adopted"]), (0, 3))
+        self.assertEqual(tree(), before)
+
     def test_apply_refused_without_open_gate(self):
         with self.assertRaisesRegex(mail_adoption.AdoptionError, "disabled_no_config"):
             self.adopt(apply=True)

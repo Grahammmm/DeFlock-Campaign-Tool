@@ -17,10 +17,12 @@ only read; this command never connects to a mailbox or runs an exporter.
 """
 import argparse
 from collections import Counter
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import sys
 import uuid
@@ -150,11 +152,61 @@ def binding_conflict(con, store, blobs, sha, size):
     return None
 
 
+@contextlib.contextmanager
+def _snapshot_ledger(ledger_path):
+    """Read-only ledger access that leaves no sidecar files behind.
+
+    ``store.ledger(readonly=True)`` opens ``mode=ro`` which creates fresh
+    ``-wal``/``-shm`` files next to a checkpointed WAL-mode ledger, so a dry
+    run would change the records root. A cleanly checkpointed ledger (no or
+    empty WAL) is therefore read with ``immutable=1``. A non-empty WAL means a
+    writer is live or crashed; it is read through plain ``mode=ro`` so its
+    committed frames are honoured (its sidecars already exist). The ledger and
+    WAL identity must be unchanged afterwards, otherwise the read fails closed.
+    """
+    from .ledger import store
+    from .ledger.migrations import v001
+    path = store.checked_path(ledger_path)
+    store.private_parent(path)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
+        raise AdoptionError("ledger_not_owner_only")
+    wal = Path(str(path) + "-wal")
+
+    def identity():
+        keys = []
+        for item in (path, wal):
+            try:
+                value = item.lstat()
+                keys.append((value.st_ino, value.st_size, value.st_mtime_ns))
+            except FileNotFoundError:
+                keys.append(None)
+        return keys
+
+    before = identity()
+    clean = before[1] is None or before[1][1] == 0
+    con = sqlite3.connect(path.as_uri() + ("?mode=ro&immutable=1" if clean else "?mode=ro"),
+                          uri=True, timeout=5)
+    con.row_factory = sqlite3.Row
+    try:
+        con.execute("PRAGMA query_only=ON")
+        row = con.execute("SELECT checksum FROM schema_migrations WHERE version=?",
+                          (v001.VERSION,)).fetchone()
+        if (con.execute("PRAGMA user_version").fetchone()[0] != v001.VERSION
+                or row is None or row[0] != store.SCHEMA_HASH):
+            raise AdoptionError("ledger_schema_mismatch")
+        yield con
+    finally:
+        con.close()
+    if identity() != before:
+        raise AdoptionError("ledger_changed_during_read")
+
+
 def adopted_identities(ledger_path, receipts, blobs):
     """Return (adopted identity set, {identity: conflict code} for pending ones)."""
     from .ledger import store
     adopted, conflicts = set(), {}
-    with store.ledger(ledger_path, readonly=True) as con:
+    with _snapshot_ledger(ledger_path) as con:
         for item in receipts:
             account, mailbox, validity, uid = item["identity"]
             row = con.execute("SELECT 1 FROM mail_messages WHERE account=? AND folder=? AND "
@@ -224,6 +276,8 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
         fresh, pending = _classify(root, mail_root)
         report.update(fresh)
         if not pending:
+            report["after"] = {"already_adopted": report["already_adopted"],
+                               "pending_messages": 0}
             return report
         factory = backend_factory or CanonicalMailBackend
         backend = factory(mail_root, root / "intake", root / "ledger.sqlite")
@@ -249,7 +303,8 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
             raise
         report.update(run_id=identity["run_id"], adopted_messages=adopted, adopted_attachments=attachments,
                       failures=dict(sorted(failures.items())))
-    remaining = _classify(root, mail_root)[0]
+        # Read the post-run state while still holding the writer lock.
+        remaining = _classify(root, mail_root)[0]
     report["after"] = {"already_adopted": remaining["already_adopted"],
                        "pending_messages": remaining["pending_messages"]}
     return report
