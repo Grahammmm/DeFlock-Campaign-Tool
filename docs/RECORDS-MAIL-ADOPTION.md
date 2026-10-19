@@ -7,9 +7,9 @@ reuses the existing adapters instead of writing ledger rows itself:
 - `intake.mail_delta` loads each receipt and checks its bytes and MIME
   (`load_receipt`, `source_path`).
 - `runner.canonical_mail.CanonicalMailBackend` performs the writes:
-  `start_run`, `preserve` per receipt, then `finish_run`. Canonical mail and
-  occurrence identity checks, CAS storage and verification receipts all stay
-  inside that backend.
+  `start_run`, `preserve` per receipt, then `finish_run` (and `recover_run` for
+  a dead prior adoption run). Canonical mail and occurrence identity checks, CAS
+  storage and verification receipts all stay inside that backend.
 
 The command only reads the export directory. It never connects to a mailbox,
 runs an exporter, sends mail, or deletes or moves any file.
@@ -30,7 +30,7 @@ runs an exporter, sends mail, or deletes or moves any file.
 
 Python API, used by the tests: `adopt(root, mail_root, *, config_path=None,
 apply=False, backend_factory=None)` returns the report dict. A refusal raises
-`AdoptionError(code)`.
+`AdoptionError(code)`. `blocking(report)` is the CLI's exit-3 predicate.
 
 ## Adoption gate (configuration, never file deletion)
 
@@ -58,30 +58,81 @@ Apply checks the gate a second time under the records-root writer lock. If the
 gate has changed by then, apply is refused with `adoption_gate_changed`. A
 refused apply writes nothing.
 
+## Receipt classification (read-only)
+
+Each valid receipt is classified against the ledger:
+
+| state | condition | apply action |
+|---|---|---|
+| `new` | no `mail_messages` row for the `(account, folder, uidvalidity, uid)` identity | enrolled through `preserve` |
+| `complete` | identity enrolled, bindings match exactly (below), and every declared original (EML and attachments) has preserve stage `done` | none (`already_adopted`) |
+| `incomplete` | identity enrolled with matching bindings, but at least one declared original is not preserve `done` | resumed through the same idempotent `preserve` call |
+| `identity_*` conflict | identity enrolled but the receipt declares different bytes or evidence | refused; nothing written; earlier evidence untouched |
+
+Binding validation for an enrolled identity (first failure wins):
+
+| code | meaning |
+|---|---|
+| `identity_message_id_mismatch` | the identity's row does not carry the canonical message id, or the id and identity resolve to different rows |
+| `identity_eml_changed` | `mail_messages.eml_sha256` differs from the receipt's EML hash |
+| `identity_occurrence_mismatch` | the `verified_mail_export` mail occurrence is missing, duplicated or bound to other bytes |
+| `identity_attachment_set_changed` | the identity's attachment occurrence hashes differ from the declared attachment set (plus native items) |
+| `identity_receipt_changed` | an occurrence's evidence `receipt_sha256` differs from the current receipt bytes |
+| `identity_evidence_mismatch` / `identity_evidence_unreadable` | evidence `cas_sha256`/`bytes` disagree with the declaration, or cannot be parsed |
+| `identity_original_missing` / `identity_original_*` | a declared original has no effective declaration, or one the backend would refuse |
+
+`identity_receipt_changed` is deliberately strict: the backend binds occurrences
+to the exact receipt bytes, so even a semantically equal but re-serialised
+receipt is refused rather than silently accepted. An identically re-written
+receipt (same bytes, different path) stays `complete`.
+
+## Failure after enrollment (durable incomplete state)
+
+`CanonicalMailBackend.preserve` commits `mail_messages` and occurrences in one
+transaction and only then runs installed preservation. An exception or crash
+between the two leaves an enrolled identity with pending or in-progress preserve
+state. That state is never hidden:
+
+- every later dry run and apply reports it as `incomplete_messages` (and inside
+  `pending_messages`), and the CLI exits `3`;
+- apply resumes it: the backend re-verifies the receipt, matches the existing
+  rows exactly, and runs only the unfinished preservation;
+- a prior adoption run left `running` by a dead process is reported as
+  `unfinalized_runs`; apply finalizes it as `interrupted` through
+  `CanonicalMailBackend.recover_run` (reported in `recovered_runs`). This is
+  safe because only this command creates `mail-history-` runs and it holds the
+  exclusive records-root lock for a run's whole life;
+- if the dead process held a live preserve lease (crash after claim), the stage
+  engine refuses the resume until the lease expires (default 300 s). Apply
+  reports a failure and `after.incomplete_messages`, exit `3`; a later apply
+  after expiry completes it.
+
 ## Dry run: no persistent side effects
 
-The dry run reads the ledger through a private snapshot reader instead of
-`store.ledger(readonly=True)`, because a plain `mode=ro` open creates fresh
-`-wal`/`-shm` sidecars next to a checkpointed WAL-mode ledger. If the WAL is
-missing or empty, the ledger is opened with `immutable=1`. If the WAL is
-non-empty (a live or crashed writer), it is opened with `mode=ro` so committed
-frames are honoured; in that case the sidecars already exist. In both cases the
-ledger and WAL identity (inode, size, mtime) must be unchanged after the read,
-or the read fails with `ledger_changed_during_read`.
+The dry run never uses `store.ledger(readonly=True)`: a `mode=ro` open creates
+`-shm` (and rebuilds it from a crashed writer's WAL). Instead:
 
-`test_dry_run_leaves_records_root_tree_identical` checks that every path, mode,
-size, mtime and sha256 under the fixture base is unchanged by a dry run, both
-before and after an apply.
+- WAL absent or empty, no rollback journal: the ledger is read with
+  `immutable=1`, which touches no file;
+- WAL non-empty (live writer, or a crash not yet recovered), or a rollback
+  journal present: refused with `ledger_wal_not_checkpointed` before anything is
+  opened (exit `2`);
+- the identity (inode, size, mtime, mode) of the ledger and its `-wal`, `-shm`
+  and `-journal` must be unchanged afterwards, otherwise
+  `ledger_changed_during_read`.
+
+Apply holds the records-root lock and, if the WAL is non-empty, first opens and
+closes the ledger read-write so SQLite recovers committed frames and checkpoints
+(`ledger_wal_recovered: true`). If the WAL is still non-empty afterwards, a
+writer outside the lock is live and apply refuses with `ledger_active_writer`.
 
 ## Idempotency
 
-A receipt counts as adopted when a `mail_messages` row already exists for its
-`(account, folder, uidvalidity, uid)` identity, which is the canonical mail
-identity the backend enforces. Only pending receipts are passed to `preserve`.
-If nothing is pending under the lock, apply returns without starting a run: no
-`runs` row is written and the ledger bytes stay the same. Duplicate receipt
-identities inside the export are reported as the gap
-`duplicate_receipt_identity` and are not adopted twice.
+Only `new` and `incomplete` receipts are passed to `preserve`. If nothing is
+pending under the lock and no dead run needs finalizing, apply returns without
+starting a run: no `runs` row is written and the records-root tree stays
+byte-identical. Duplicate receipt identities inside the export are reported as
+the gap `duplicate_receipt_identity` and are not adopted twice.
 
 Run rows use `run_id` `mail-history-<uuid4 hex>`, and
 `summary.runner_summary.source` is `mail-history`. The runner outcome is
@@ -90,23 +141,36 @@ Run rows use `run_id` `mail-history-<uuid4 hex>`, and
 
 ## Report counters (counts and hashes only; no paths, accounts or headers)
 
+Invariant: `receipts == already_adopted + pending_messages + sum(identity_conflicts)`.
+
 | key | meaning |
 |---|---|
 | `mode` | `dry-run` or `apply` |
 | `source` | always `mail-history` |
-| `receipts` / `attachments` | valid receipts found, and their attachment total (message parts minus the EML) |
-| `already_adopted` | receipts whose identity already has a `mail_messages` row |
-| `pending_messages` / `pending_attachments` | receipts and attachments not yet adopted |
-| `predicted_binding_conflicts` | pending receipts that the backend will refuse because of an existing ledger original declaration (`original_scope_unresolved`, `original_scope_not_in_scope`, `original_bytes_conflict`, `original_storage_elsewhere`) |
+| `receipts` / `attachments` | INVENTORY: every valid receipt in the export and its attachment total, whatever its ledger state |
+| `already_adopted` | `complete` receipts |
+| `new_messages` / `new_attachments` | `new` receipts (not yet enrolled) |
+| `eligible_new_messages` | `new` minus `predicted_binding_conflicts` |
+| `incomplete_messages` | `incomplete` receipts (enrolled, preservation unfinished) |
+| `pending_messages` / `pending_attachments` | work remaining: `new` + `incomplete` |
+| `identity_conflicts` | refused enrolled identities, by `identity_*` code |
+| `predicted_binding_conflicts` | `new` receipts the backend will refuse because of an existing original declaration (`original_scope_unresolved`, `original_scope_not_in_scope`, `original_bytes_conflict`, `original_storage_elsewhere`) |
+| `unfinalized_runs` | `mail-history-` runs still `running` (a dead prior apply) |
 | `gaps` | receipts that could not be loaded, by safe code |
 | `gate` | gate decision: `state`, `open`, `marker_present`, `marker_sha256` |
-| `adopted_messages` / `adopted_attachments` | written by this apply (always 0 in a dry run) |
+| `adopted_messages` / `adopted_attachments` | `new` receipts enrolled and preserved by this apply (0 in a dry run) |
+| `resumed_messages` | `incomplete` receipts completed by this apply |
 | `failures` | per-receipt refusals during apply, by safe code |
 | `run_id` | present only when apply started a run |
-| `after` | apply only: `already_adopted` and `pending_messages` re-read under the lock after the run |
+| `recovered_runs` | apply only, when dead runs existed: `{finalized|already_finalized|recovery_refused: n}` |
+| `ledger_wal_recovered` | apply only, when a non-empty WAL was recovered under the lock |
+| `after` | apply only: `already_adopted`, `new_messages`, `incomplete_messages`, `pending_messages`, `identity_conflicts`, `unfinalized_runs` re-read under the lock after the run |
 
 CLI exit codes: `0` clean; `2` refused (prints `{"status": "refused", "code": ...}`);
-`3` the report has `failures` or `gaps`.
+`3` blocking: `failures`, `gaps` or `identity_conflicts` present; a dry run with
+`incomplete_messages` or `unfinalized_runs`; an apply whose `after` still has
+pending, incomplete, conflicting or unfinalized items; or `recovery_refused`.
+Zero adopted messages alone never means success.
 
 ## Known limit
 
@@ -115,8 +179,111 @@ ledger as an unresolved legacy original (`canonical_original_binding_conflict`).
 This command does not resolve such declarations. They are reported in advance as
 `predicted_binding_conflicts` and counted in `failures` on apply. Resolving them
 needs the separately reviewed original-resolution contract
-(`ledger/original_resolution.py`) and owner approval.
+(`ledger/original_resolution.py`) and owner (G) approval.
+
+## TEST acceptance runbook (CONDITIONAL; NOT APPROVED)
+
+This is the exact procedure for the local-only acceptance worker. It is NOT an
+authorization: it may be executed only after (a) this exact head has passed an
+independent different-model review, (b) G has decided the legacy-original
+policy, the unsupported `message/rfc822` receipt handling, TEST restore versus
+re-freeze, and the final gate state, and (c) G has explicitly re-approved the
+acceptance card. B1 limits are absent from the supplied plan; none are invented
+here. Rule: at most two unsuccessful attempts in total after the first failure,
+then stop and escalate through the prescribed route. Never hand-edit the ledger,
+never delete the marker, never follow or write live-root storage paths. Keep all
+detailed output local; report aggregates only.
+
+Variables (set locally; all paths must resolve inside the TEST copy):
+
+    TEST=<approved TEST copy root, resolved locally by the acceptance worker>   # verify actual layout first
+    ROOT="$TEST/processing-v1"
+    EXPORT="$TEST/mail-history"
+    TEST_CONFIG=<owner-only mail-history-adoption-v1 config, approved locally>
+    LEDGER="$ROOT/ledger.sqlite"
+    EV=<private local evidence dir outside $TEST, mode 0700>
+    Q() { sqlite3 "file:$LEDGER?mode=ro&immutable=1" "$1"; }   # only valid when WAL is empty
+    # No sqlite3 CLI? Use python3's sqlite3 module with the same URI (uri=True), read-only.
+
+Step 0 -- preconditions (any failure: stop, no retry, escalate):
+
+    test "$(stat -c %u "$LEDGER")" = "$(id -u)" && test "$(stat -c %a "$LEDGER")" = 600
+    test ! -s "$LEDGER-wal" && test ! -e "$LEDGER-journal"     # quiesced, checkpointed
+    ! fuser "$LEDGER" 2>/dev/null                               # no live writer
+    git -C <engine checkout> rev-parse HEAD                     # must equal the reviewed head
+    grep -rIl -- <live root prefix> "$ROOT" "$EXPORT" | wc -l    # expect 0 live-root references (G-approved snapshot only)
+    Q "PRAGMA quick_check"                                      # expect: ok
+    Q "PRAGMA foreign_key_check" | wc -l                        # expect 0
+
+Step 1 -- baseline (record locally):
+
+    M0=$(Q "SELECT count(*) FROM mail_messages")
+    R0=$(Q "SELECT count(*) FROM runs")
+    Q "SELECT status,count(*) FROM runs WHERE run_id LIKE 'mail-history-%' GROUP BY status" > "$EV/runs0"
+    sha256sum "$ROOT/.adoption-disabled-v1.json" > "$EV/marker0" 2>/dev/null || echo absent > "$EV/marker0"
+    manifest() { (cd "$1" && find . -printf '%p %y %m %s %T@\n' | LC_ALL=C sort; \
+                  find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum); }
+    manifest "$TEST" > "$EV/tree0"; manifest "$EXPORT" > "$EV/export0"
+
+Step 2 -- dry run (exit must be 0):
+
+    python3 -B -m campaign_tool.records adopt-mail --root "$ROOT" --mail-history "$EXPORT" \
+        --config "$TEST_CONFIG" > "$EV/dry.json"; echo "exit=$?"
+    manifest "$TEST" > "$EV/tree1"; cmp "$EV/tree0" "$EV/tree1"       # full-tree non-mutation
+
+Required dry-run values: `receipts=154`, `attachments=82` (INVENTORY);
+`gaps={}`, `identity_conflicts={}`, `incomplete_messages=0`,
+`unfinalized_runs=0`, `predicted_binding_conflicts={}` (unless G's legacy policy
+explicitly accepts a stated count), `gate.open=true`, `gate.marker_sha256`
+matching `$EV/marker0`. Record `A0=already_adopted` and `N0=new_messages`;
+require `A0 + N0 = 154` and `eligible_new_messages = N0`. Do not assume N0 = 154:
+the original freeze already contained adopted identities (three per the upstream
+handoff); A0 must equal the number of export identities already in
+`mail_messages`. Any deviation: stop and escalate; do not apply.
+
+Step 3 -- apply (exit must be 0):
+
+    python3 -B -m campaign_tool.records adopt-mail --root "$ROOT" --mail-history "$EXPORT" \
+        --config "$TEST_CONFIG" --apply > "$EV/apply1.json"; echo "exit=$?"
+
+Required: `failures={}`, `adopted_messages=N0`, `resumed_messages=0`,
+`after` = `{already_adopted: 154, new_messages: 0, incomplete_messages: 0,
+pending_messages: 0, identity_conflicts: {}, unfinalized_runs: 0}`, and no
+`recovered_runs`/`ledger_wal_recovered` key. SQL:
+
+    test ! -s "$LEDGER-wal"
+    Q "SELECT count(*) FROM mail_messages"                         # = M0 + N0 (= 154 iff M0 = A0)
+    Q "SELECT count(*) FROM runs"                                  # = R0 + 1
+    Q "SELECT status,count(*) FROM runs WHERE run_id LIKE 'mail-history-%' GROUP BY status"
+                                                                   # runs0 plus exactly one 'completed'; no 'running'
+    Q "SELECT count(*) FROM stage_state s WHERE s.stage='preserve' AND s.status!='done' AND s.original_sha256 IN
+       (SELECT original_sha256 FROM occurrences WHERE acquisition_method='verified_mail_export')"   # 0
+    Q "PRAGMA quick_check"; Q "PRAGMA foreign_key_check" | wc -l   # ok; 0
+    manifest "$TEST" > "$EV/tree2"
+
+Step 4 -- zero-pending rerun (exit must be 0):
+
+    python3 -B -m campaign_tool.records adopt-mail --root "$ROOT" --mail-history "$EXPORT" \
+        --config "$TEST_CONFIG" --apply > "$EV/apply2.json"; echo "exit=$?"
+    manifest "$TEST" > "$EV/tree3"; cmp "$EV/tree2" "$EV/tree3"       # nothing written
+
+Required: no `run_id`, `adopted_messages=0`, `resumed_messages=0`,
+`pending_messages=0`, `already_adopted=154`, `failures={}`; SQL counts identical
+to step 3. Zero adopted alone does not pass: every step-2/3 condition must also
+hold.
+
+Step 5 -- source integrity:
+
+    manifest "$EXPORT" > "$EV/export1"; cmp "$EV/export0" "$EV/export1"
+    sha256sum "$ROOT/.adoption-disabled-v1.json" | cmp - "$EV/marker0"   # or still absent
+
+Report back aggregates only (counts, exit codes, cmp results, sha256 of each
+manifest file), never paths, receipts, headers or ledger rows. If apply exits
+`3`, do not "fix" anything: rerun at most as permitted above only when the
+report shows a transient code (e.g. a live lease after a crash), otherwise stop
+and escalate with the safe codes.
 
 ## Tests (synthetic only)
 
-    python3 -B -m unittest tests.records.test_mail_adoption tests.records.test_mail_adoption_regression
+    python3 -B -m unittest tests.records.test_mail_adoption \
+        tests.records.test_mail_adoption_regression tests.records.test_mail_adoption_recovery

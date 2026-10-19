@@ -127,7 +127,8 @@ class MailAdoptionTests(unittest.TestCase):
         report = self.adopt(apply=True, config_path=config)
         self.assertEqual((report["adopted_messages"], report["adopted_attachments"]), (3, 3))
         self.assertEqual(report["failures"], {})
-        self.assertEqual(report["after"], {"already_adopted": 3, "pending_messages": 0})
+        self.assertEqual(report["after"], {"already_adopted": 3, "new_messages": 0, "incomplete_messages": 0,
+                                           "pending_messages": 0, "identity_conflicts": {}, "unfinalized_runs": 0})
         self.assertEqual(self.count("SELECT count(*) FROM mail_messages"), 3)
         self.assertEqual(self.count("SELECT count(*) FROM occurrences WHERE kind='attachment'"), 3)
         summary = json.loads(self.count("SELECT summary FROM runs WHERE run_id LIKE 'mail-history-%'"))
@@ -171,7 +172,8 @@ class MailAdoptionTests(unittest.TestCase):
         report = self.adopt(apply=True, config_path=self.config())
         self.assertEqual(report["adopted_messages"], 3)
         self.assertEqual(report["failures"], {"canonical_original_binding_conflict": 1})
-        self.assertEqual(report["after"], {"already_adopted": 3, "pending_messages": 1})
+        self.assertEqual(report["after"], {"already_adopted": 3, "new_messages": 1, "incomplete_messages": 0,
+                                           "pending_messages": 1, "identity_conflicts": {}, "unfinalized_runs": 0})
         # The legacy declaration is left untouched for its own resolution contract.
         self.assertEqual(self.count("SELECT scope FROM originals WHERE sha256='" + sha + "'"), "unresolved")
 
