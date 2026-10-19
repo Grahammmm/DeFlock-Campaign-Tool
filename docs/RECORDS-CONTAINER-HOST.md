@@ -69,6 +69,40 @@ using actual private journal flock operations, and lost admission response.
 
 ## Private profile and public API
 
+### Explicit offline export mode
+
+An export profile replaces `mail_config` with `input_mode: "exports"`,
+`export_root`, `export_receipts` (1–60 unique explicit paths),
+`export_manifest_sha256`, `collection_hosts` and `collection_excluded_hosts`
+(explicit arrays, including empty arrays). All other required profile fields and
+the 16 KiB profile bound remain. It requires network none, an exact read-only
+input-root mount, no writable source alias or shadowing submount, and the existing
+ownership and runtime mount checks. Host-inaccessible mapped-UID input is checked
+inside the worker; permissions are never relaxed to make a host read succeed.
+
+Use `container_host export-manifest --root ROOT --export-root EXPORTS
+--export-receipt RECEIPT ... --collection-host HOST ...` to compute the selected
+input digest under a separately authorized local-input scope. Only named receipts
+and their declared originals/attachments are read. The returned digest binds
+receipt byte hashes, all part paths/sizes/hashes, original mail identity and
+inventory scope. The unique selected-input cap is 256 MiB including receipts,
+with existing stricter per-item/count limits. Paths are root-relative in the
+manifest so an exact host bind and its container destination agree.
+
+Probe and entry verify the immutable expected digest and actual read-only input
+flags. Entry forwards that exact selection through the existing supervisor to
+`records run --unattended`, which uses one backend run with per-receipt budgets.
+It does not invoke the ordinary driver to bypass unattended safety. Collection
+hosts classify inventory; they grant no HTTP/credential access. See
+[export selection](RECORDS-EXPORT-BRIDGE.md#offline-unattended-export-selection)
+for interruption, replay, deferred work and readiness semantics.
+
+This source routing adds no aggregate output quota, CPU-time budget, independent
+watchdog or whole-process/P1 qualification. Synthetic tests capture Docker and
+native effects; a source pass does not approve an installed profile or private run.
+
+### Common profile fields
+
 Profile: exact-schema JSON regular one-link owner0600 file, bounded16KiB, in an
 owner0700 directory, trusted root/current-owner non-writable parents, no symlinks.
 Duplicate keys, unknown fields, nonfinite/Boolean budgets, traversal and

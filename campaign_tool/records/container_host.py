@@ -2,6 +2,7 @@
 import argparse
 from contextlib import contextmanager
 from datetime import date
+import errno
 import fcntl
 import hashlib
 import json
@@ -88,11 +89,35 @@ def _fingerprint(value):
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
 
 
+# macOS 11+ O_NOFOLLOW_ANY: one open that the kernel refuses if ANY path component is a symlink, without a read open
+# of any ancestor (#137). Chosen once from the platform; where it is absent the descriptor walk is used unchanged.
+# XNU rejects O_NOFOLLOW_ANY combined with O_NOFOLLOW (EINVAL), so the atomic open uses O_NOFOLLOW_ANY alone.
+NOFOLLOW_ANY = getattr(os, "O_NOFOLLOW_ANY", 0)
+
+
+def _trusted_chain(parts):
+    """Identities of '/' and each component, from lstat: no symlink, directories only, each owned by root or this
+    user and not group- or world-writable. Only those owners can rename a trusted component."""
+    value = os.stat("/", follow_symlinks=False)
+    chain, prefix = [(value.st_dev, value.st_ino)], ""
+    for part in parts:
+        prefix += "/" + part
+        value = os.stat(prefix, follow_symlinks=False)
+        if stat.S_ISLNK(value.st_mode):
+            raise OSError(errno.ELOOP, "symlink in path")
+        require(stat.S_ISDIR(value.st_mode) and value.st_uid in (0, os.getuid()) and not value.st_mode & 0o022)
+        chain.append((value.st_dev, value.st_ino))
+    return chain
+
+
 class PrivateDir:
     """No symlinks, trusted non-writable parents, pinned owner-only final directory."""
     def __init__(self, path, *, private=True):
         self.path = os.fspath(path)
         parts = [] if self.path == "/" and not private else _absolute(self.path)
+        if NOFOLLOW_ANY:
+            self._open_atomic(parts, private)
+            return
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
             value = os.fstat(fd)
@@ -104,6 +129,25 @@ class PrivateDir:
                 value = os.fstat(fd)
                 require(value.st_uid in (0, os.getuid()) and not value.st_mode & 0o022)
             value = os.fstat(fd)
+            if private:
+                require(value.st_uid == os.getuid() and stat.S_IMODE(value.st_mode) == 0o700)
+            self.fd, self.private = fd, private
+            self.inode = (value.st_dev, value.st_ino)
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _open_atomic(self, parts, private):
+        # The open itself refuses a symlink anywhere (atomic). The trust rule is checked on every component before
+        # and after it, and the opened directory must be the inode the trusted chain named.
+        chain = _trusted_chain(parts)
+        fd = os.open("/" + "/".join(parts), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | NOFOLLOW_ANY)
+        try:
+            value = os.fstat(fd)
+            require(stat.S_ISDIR(value.st_mode) and (value.st_dev, value.st_ino) == chain[-1]
+                    and _trusted_chain(parts) == chain)
+            if parts:
+                require(value.st_uid in (0, os.getuid()) and not value.st_mode & 0o022)
             if private:
                 require(value.st_uid == os.getuid() and stat.S_IMODE(value.st_mode) == 0o700)
             self.fd, self.private = fd, private
@@ -220,12 +264,20 @@ def locked(directory, name, *, wait=0):
 def input_selection(paths):
     """Fixed selectors only. Legacy profiles/entrypoints remain mailbox mode."""
     mode = paths.get("input_mode") or "mailbox"
-    require(mode in {"mailbox", "inbox", "documents"})
-    keys = {"mailbox": "mail_config", "inbox": "inbox", "documents": "documents"}
+    require(mode in {"mailbox", "inbox", "documents", "exports"})
+    keys = {"mailbox": "mail_config", "inbox": "inbox", "documents": "documents", "exports": "export_root"}
     selected = keys[mode]
     require(all(paths.get(key) is None for key in keys.values() if key != selected))
     path = paths.get(selected)
     _absolute(path)
+    if mode == "exports":
+        require(paths.get("inbox_manifest_sha256") is None and paths.get("document_manifest_sha256") is None)
+        manifest = paths.get("export_manifest_sha256")
+        require(isinstance(manifest, str) and SHA.fullmatch(manifest))
+        export_parameters(paths)
+        return mode, selected, path, manifest
+    require(all(paths.get(key) is None for key in
+                ("export_receipts", "export_manifest_sha256", "collection_hosts", "collection_excluded_hosts")))
     if mode == "mailbox":
         require(paths.get("inbox_manifest_sha256") is None and paths.get("document_manifest_sha256") is None)
         return mode, selected, path, None
@@ -240,8 +292,36 @@ def input_arguments(paths):
     mode, key, path, manifest = input_selection(paths)
     if mode == "mailbox":
         return ["--mail-config", path]
+    if mode == "exports":
+        return ["--input-mode", mode, *export_arguments(paths)]
     flag = "--inbox-manifest-sha256" if mode == "inbox" else "--document-manifest-sha256"
     return ["--input-mode", mode, "--" + key, path, flag, manifest]
+
+
+def export_parameters(paths):
+    from .intake.export_snapshot import selected_paths
+    from .portal.collections import Scope
+    hosts, excluded = paths.get("collection_hosts"), paths.get("collection_excluded_hosts")
+    require(all(value is None or isinstance(value, list) and all(type(x) is str for x in value)
+                for value in (hosts, excluded)))
+    scope = Scope(frozenset(hosts or ()), frozenset(excluded or ()))
+    output = Path(paths["root"]) / "intake"
+    receipts = selected_paths(paths["export_root"], paths.get("export_receipts"), output)
+    return {"receipts": receipts, "scope": scope,
+            "logical_root": paths["export_root"], "output": output}
+
+
+def export_arguments(paths):
+    parameters = export_parameters(paths)
+    args = ["--export-root", paths["export_root"],
+            "--export-manifest-sha256", paths["export_manifest_sha256"]]
+    for receipt in parameters["receipts"]:
+        args += ["--export-receipt", receipt]
+    for flag, values in (("--collection-host", parameters["scope"].hosts),
+                         ("--collection-exclude-host", parameters["scope"].excluded_hosts)):
+        for value in sorted(values):
+            args += [flag, value]
+    return args
 
 
 def document_snapshot(path, **options):
@@ -249,7 +329,10 @@ def document_snapshot(path, **options):
     return snapshot(path, **options)
 
 
-def offline_snapshot(mode, path, **options):
+def offline_snapshot(mode, path, *, selection=None, **options):
+    if mode == "exports":
+        from .intake.export_snapshot import snapshot
+        return snapshot(path, **export_parameters(selection), **options)
     return (inbox_snapshot if mode == "inbox" else document_snapshot)(path, **options)
 
 
@@ -391,12 +474,17 @@ class Profile:
             require(isinstance(value, dict) and set(value) in (
                 PROFILE_KEYS, PROFILE_KEYS | {"input_mode"},
                 (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "inbox", "inbox_manifest_sha256"},
-                (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "documents", "document_manifest_sha256"})
+                (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "documents", "document_manifest_sha256"},
+                (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "export_root", "export_receipts",
+                    "export_manifest_sha256", "collection_hosts", "collection_excluded_hosts"})
                 and type(value["schema"]) is int and value["schema"] == 1)
             require("input_mode" not in value or type(value["input_mode"]) is str
-                    and value["input_mode"] in {"mailbox", "inbox", "documents"})
+                    and value["input_mode"] in {"mailbox", "inbox", "documents", "exports"})
             mode, input_key, _, _ = input_selection(value)
-            for key in PATH_KEYS | {"inbox", "documents"}:
+            if mode == "exports":
+                require(all(isinstance(value[key], list) for key in
+                            ("export_receipts", "collection_hosts", "collection_excluded_hosts")))
+            for key in PATH_KEYS | {"inbox", "documents", "export_root"}:
                 if key in value:
                     _absolute(value[key])
             require(isinstance(value["name_prefix"], str)
@@ -625,7 +713,8 @@ class Docker:
                 self.input_anchor = anchor
                 if anchor[0] == os.getuid():
                     self.input_snapshot = offline_snapshot(mode,
-                        mount["source"], expected=manifest, prior=self.input_snapshot)
+                        mount["source"], expected=manifest, prior=self.input_snapshot,
+                        **({"selection": p} if mode == "exports" else {}))
                 # A mapped owner0700 bind cannot be read by the host UID. Do not
                 # chmod, chown or relax PrivateDir. Exact runtime mount identity,
                 # strict worker ownership/RO bytes and the manifest are mandatory
@@ -1139,13 +1228,15 @@ def entry(paths):
                 time.sleep(.02)
     if role == "worker":
         if mode != "mailbox":
-            offline_snapshot(mode, input_path, expected=manifest, readonly=True)
+            offline_snapshot(mode, input_path, expected=manifest, readonly=True,
+                             **({"selection": paths} if mode == "exports" else {}))
         argv = [paths["python"], "-B", "-m", WORKER_MODULE, "supervise", "--state-dir",
                 paths["worker_state_parent"] + "/" + job_id, "--wall-seconds", str(paths["wall_seconds"]),
                 "--term-seconds", "5", "--kill-seconds", "5", "--", paths["python"], "-B", "-m",
-                "campaign_tool.records", "run", "--root", paths["root"],
-                "--" + ({"mailbox": "mail-config", "inbox": "inbox", "documents": "documents"}[mode]), input_path,
-                "--unattended", "--max-originals-per-run", "200", "--ocr", "--json"]
+                "campaign_tool.records", "run", "--root", paths["root"]]
+        argv += export_arguments(paths) if mode == "exports" else [
+            "--" + ({"mailbox": "mail-config", "inbox": "inbox", "documents": "documents"}[mode]), input_path]
+        argv += ["--unattended", "--max-originals-per-run", "200", "--ocr", "--json"]
         if mode == "documents":
             argv.extend(["--document-manifest-sha256", manifest])
         os.execve(paths["python"], argv, dict(os.environ))
@@ -1188,7 +1279,8 @@ def probe(paths):
             pass
     mode, _, input_path, manifest = input_selection(paths)
     if mode != "mailbox":
-        offline_snapshot(mode, input_path, expected=manifest, readonly=True)
+        offline_snapshot(mode, input_path, expected=manifest, readonly=True,
+                         **({"selection": paths} if mode == "exports" else {}))
     else:
         with PrivateDir(str(Path(input_path).parent), private=False) as directory:
             fd = directory.open_file(Path(input_path).name)
@@ -1336,13 +1428,22 @@ def build_board(root, output, state_dir, job_id):
 
 
 def _input_options(command):
-    command.add_argument("--input-mode", choices=("mailbox", "inbox", "documents"))
+    command.add_argument("--input-mode", choices=("mailbox", "inbox", "documents", "exports"))
     selector = command.add_mutually_exclusive_group(required=True)
     selector.add_argument("--mail-config")
     selector.add_argument("--inbox")
     selector.add_argument("--documents")
+    selector.add_argument("--export-root")
     command.add_argument("--inbox-manifest-sha256")
     command.add_argument("--document-manifest-sha256")
+    _export_options(command)
+
+
+def _export_options(command):
+    command.add_argument("--export-receipt", dest="export_receipts", action="append")
+    command.add_argument("--export-manifest-sha256")
+    command.add_argument("--collection-host", dest="collection_hosts", action="append")
+    command.add_argument("--collection-exclude-host", dest="collection_excluded_hosts", action="append")
 
 
 class Parser(argparse.ArgumentParser):
@@ -1362,6 +1463,10 @@ def main(arguments=None):
         command.add_argument("--inbox", required=True)
         command = commands.add_parser("document-manifest", add_help=False)
         command.add_argument("--documents", required=True)
+        command = commands.add_parser("export-manifest", add_help=False)
+        command.add_argument("--root", required=True)
+        command.add_argument("--export-root", required=True)
+        _export_options(command)
         command = commands.add_parser("probe", add_help=False)
         _input_options(command)
         for name in ("root", "tmp_dir", "worker_state_parent", "board_dir", "release_root", "parser_path"):
@@ -1394,6 +1499,12 @@ def main(arguments=None):
             snapshot = document_snapshot(args.documents)
             result = {k: snapshot[k] for k in ("sha256", "documents", "bytes")}
             result.update(schema=1, status="document_manifest")
+        elif args.action == "export-manifest":
+            from .intake.export_snapshot import snapshot as export_snapshot
+            snapshot = export_snapshot(args.export_root, **export_parameters(vars(args)),
+                                       expected=args.export_manifest_sha256)
+            result = {k: snapshot[k] for k in ("sha256", "messages", "bytes")}
+            result.update(schema=1, status="export_manifest")
         elif args.action == "inbox-manifest":
             snapshot = inbox_snapshot(args.inbox)
             result = {k: snapshot[k] for k in ("sha256", "messages", "bytes")}
@@ -1403,7 +1514,7 @@ def main(arguments=None):
     except BaseException:
         result = _output("invalid_state")
     print(json.dumps(result, sort_keys=True), flush=True)
-    return {"completed": 0, "quiescent": 0, "runtime_ready": 0, "board_ready": 0, "inbox_manifest": 0, "document_manifest": 0,
+    return {"completed": 0, "quiescent": 0, "runtime_ready": 0, "board_ready": 0, "inbox_manifest": 0, "document_manifest": 0, "export_manifest": 0,
             "admitted": 0, "postrun_failed": 0 if getattr(locals().get("args"), "action", None) == "entry" else 10, "held": 32, "invalid_state": 30}[result["status"]]
 
 
