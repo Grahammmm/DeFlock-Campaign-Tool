@@ -1,80 +1,190 @@
 # Records runtime orchestration templates
 
 Versioned, placeholder-only templates for the host-side records run. The
-private runtime is a deploy target: rendered copies are installed there at
-cutover. Never commit rendered files, host paths, image digests, chat IDs or
-tokens to this repository.
+private runtime is only a deploy target: rendered copies are installed there
+at cutover (plan T17, owner-approved). Never commit rendered files, host
+paths, image digests, chat IDs or tokens to this repository.
 
 Files
 
-- `run-records.sh.in`: POSIX sh wrapper for one records run.
-- `notify.py`: stdlib-only, non-fatal Telegram notifier used by the wrapper.
-- `records-run.service.in`, `records-run.timer.in`: systemd user units.
+- `run-records.sh.in`: POSIX sh wrapper for one records run. It handles
+  the overlap lock, the Docker wait and the image pin check, then calls the
+  stage orchestrator, then notify.
+- `records-run.service.in`, `records-run.timer.in`: systemd user units. The
+  timer fires at 07:00, 13:00 and 20:30 America/Los_Angeles.
+- `notify.py`: non-fatal Telegram notifier. It writes the report's `notify`
+  stage.
+- `targets/stub.json.in`: a stage plan that wires every work stage to the
+  synthetic stub backend. It is for TEST targets and the T12 harness only;
+  live targets refuse it.
+- `render.py`: fail-closed renderer for all of the above.
+- Engine side: `campaign_tool/records/run_orchestrator.py`,
+  `schemas/records-run-report-v1.json`, `schemas/records-stage-result-v1.json`.
 
-Robustness behaviour (plan T10)
+Rendering
 
-- Docker wait: before any records work the wrapper polls `docker info` and
-  checks that the records container is running. It makes up to
-  `@DOCKER_WAIT_ATTEMPTS@` attempts, sleeping `@DOCKER_WAIT_DELAY@` seconds
-  and doubling up to `@DOCKER_WAIT_MAX_DELAY@`, and stops retrying once the
-  overall `@DOCKER_WAIT_DEADLINE@` (seconds since the wait began) is reached.
-  Every docker call (`info`, both `inspect`s) runs under GNU `timeout`
-  (`@TIMEOUT@`) with a `@DOCKER_CMD_TIMEOUT@` second deadline plus a 2 s
-  TERM-to-KILL grace; `timeout` signals the whole process group, so a hung
-  client and its children are terminated. If Docker is still not ready, or
-  the image inspect fails or times out, the wrapper logs a clear error,
-  writes the run report with status `docker_unavailable`, attempts a
-  notification and exits 75. No records work is attempted. This covers the
-  Oct 17 case, where the timer fired after a reboot before rootless Docker
-  was up, and an unresponsive daemon.
-- Non-fatal notify: `notify.py` sends one metadata-only message. The failure
-  wording is used only when the run did not succeed. Any delivery problem
-  (bad token, HTTP error, network down, missing credentials) is logged to
-  `run-records.log`. It also writes `alerts/notify-failed-<run_id>.json` and
-  sets `"notify_failed": true` in the run report. The run keeps the
-  pipeline's own exit status. This covers the Oct 16 case, where a Telegram
-  delivery failure failed the whole run.
-- Helper fallback: the helper runs under a `@NOTIFY_TIMEOUT@` second
-  deadline. If it cannot execute, exits non-zero, times out, or exits 0
-  without recording a `notify` outcome in the report, the wrapper itself
-  writes the same receipts: `notify_failed: true`, a `notify` object with
-  reason `helper_failed`, `helper_timeout` or `helper_no_outcome`, and the
-  alert file. The exit status is still the pipeline's own.
+    python3 deploy/records-runtime/render.py --values VALUES.json --out DIR \
+        --target TEST=deploy/records-runtime/targets/stub.json.in
 
-Run report: `RUNTIME_DIR/reports/run-<run_id>.json`, copied to
-`RUNTIME_DIR/run-report.json`. It holds only enums, integers and
-timestamps. Plan T11 extends it with per-stage status and adds the overlap
-lock.
+`VALUES.json` maps each placeholder (without `@`) to a shell-safe word. The
+renderer refuses:
 
-Exit codes: pipeline status passed through; 75 Docker not ready; 78
-configuration, identity or image check failed.
+- missing or unknown values, unsafe characters and relative paths
+- a leftover placeholder or an invalid stage plan
+- a timer that is not the three Pacific slots
+- a budget that does not fit `TimeoutStartSec=47min`
+- a `DEFAULT_TARGET` or `SCHEDULED_TARGET` with no rendered plan
+- an output directory that is non-empty or inside a Git checkout
+
+Install `DIR/run-records.sh` and `DIR/targets/NAME.json` as
+`RUNTIME_DIR/run-records.sh` and `RUNTIME_DIR/targets/NAME.json`. Rendering
+installs, enables and starts nothing.
+
+Usage
+
+    run-records.sh [--target NAME] [--dry-run] [--scheduled]
+
+- `--dry-run` prints the preflight steps and all 8 stages, with each stage's
+  exit code, timeout, failure policy and argv. It takes no lock, calls no
+  docker and writes nothing.
+- `--scheduled` is passed by the unit and sets report mode `scheduled`. A
+  plan with mode `test` always reports `test`.
+- Receipts go to `RUNTIME_DIR/NAME/`: `run-report.json` (latest),
+  `reports/<run_id>.json`, `alerts/`, `run-records.log` and `work/` (stage
+  stdout spool, unlinked immediately).
+
+Order of one run
+
+1. Static checks. Refusals exit 78 and append a code-only line to
+   `RUNTIME_DIR/preflight-refusals.log`.
+2. Overlap lock `RUNTIME_DIR/run-records.lock` (`flock -n`, one run per
+   runtime across all targets). If the lock is held, the slot is skipped
+   rather than queued. The wrapper writes
+   `alerts/run-skipped-<run_id>.json`, does no work, sends no message and
+   exits 73. The running run is never interrupted.
+3. Stage plan check. On failure it writes the report (`sync`
+   `TARGET_CONFIG_INVALID`), then notifies and exits 78.
+4. Bounded Docker wait (plan T10, Oct 17 regression). On failure: report
+   `sync` `DOCKER_UNAVAILABLE` plus a blocking needs-G item, notify, exit 75.
+5. Image pin check. On mismatch: `IMAGE_MISMATCH`, exit 78.
+6. Stage orchestrator. It runs sync, delta, adoption, portal, extract,
+   digest_gates and outputs in order, each under its own timeout. All stages
+   share one deadline: `RUN_BUDGET_SECONDS` counted from wrapper start, so
+   it includes the Docker wait. A GNU timeout backstop sends TERM 15 s after
+   the deadline. On TERM the orchestrator kills the stage's process group,
+   records `RUN_INTERRUPTED` and still writes the report.
+7. Notify (plan T10, Oct 16 regression). It never changes the exit code; see
+   below.
+8. Publish `run-report.json`.
+
+Exit codes
+
+- 0: every work stage ok, warn or skipped
+- 10–16: first failed work stage (10 sync, 11 delta, 12 adoption, 13 portal,
+  14 extract, 15 digest_gates, 16 outputs)
+- 64: usage
+- 70: internal orchestrator error
+- 73: lock held, slot skipped
+- 75: Docker not ready
+- 78: configuration, identity, image or stage plan refused
+
+Stage contract (pluggable stages)
+
+Each target's stage plan (`targets/NAME.json`) lists exactly the seven work
+stages in order. Each stage has an absolute `argv[0]`, `timeout_seconds`
+(1–2700), `on_fail` (`stop` skips later stages with `UPSTREAM_FAILED`;
+`continue` keeps going) and an optional `enabled: false`, which reports the
+stage `skipped` / `STAGE_DISABLED`. The tokens `{run_id}` and `{target}`
+are expanded in argv. The real container stages are wired in T11i. A stage
+then becomes a `docker exec ... python3 -m campaign_tool.records <command>`
+adapter.
+
+A stage prints one JSON line last on stdout, following
+`schemas/records-stage-result-v1.json`: status, counts and optional
+error_code, new_data, review_required and needs_g. These are codes and
+counts only. stderr is discarded. stdout is only parsed, never logged or
+copied. The orchestrator maps:
+
+- a non-zero exit to `fail` (the stage's own fail code, else
+  `STAGE_EXIT_<n>` or `STAGE_SIGNAL_<n>`)
+- a missing or invalid result line to `STAGE_RESULT_INVALID`
+- a timeout to `STAGE_TIMEOUT`, or `RUN_DEADLINE_REACHED` when the run
+  budget clipped it
+- a spawn error to `STAGE_SPAWN_FAILED`
+
+Killing a `docker exec` client does not stop the process inside the
+container. Container-side stages must also enforce their own limits (T11i).
+
+Phase 1 without OCR (G, 2026-10-19). The extract stage handles native text
+only. Documents that need OCR are queued as `awaiting_ocr` and never
+dropped. The stage counts them in `counts.skipped` and emits an info needs-G
+item `AWAITING_OCR` with the document count. The report therefore carries
+them with no schema change. OCR is added in Phase 2 after the container
+swap.
+
+Stub backend: `python3 -m campaign_tool.records.run_orchestrator stub-stage
+--stage NAME --fixture FILE` replays a synthetic fixture
+(`examples/run-report/stub-stages.synthetic.json`). For fault injection it
+supports `exit_code`, `sleep_seconds` and `emit: invalid|none`. Every stub
+result adds `STUB_STAGE_BACKEND` (info) to needs_g, so a stub run is never
+mistaken for real coverage.
+
+Run report
+
+`schemas/records-run-report-v1.json`, validated by
+`campaign_tool.records.run_report.validate_run_report` before every write.
+It holds only enums, counts, codes and timestamps. The orchestrator writes it
+with the notify stage `skipped` / `NOTIFY_PENDING`. The notify step then
+sets that stage to `ok`, or to `fail` with `NOTIFY_<REASON>` and
+`notify_failed: true`, and extends `finished_at` to cover the notify step. A
+machine-valid report is review-required, not semantic acceptance of the run.
+
+Note: the v1 roll-up rule makes `overall_status` `fail` when only notify
+failed, even though the exit code stays that of the work stages. Consumers
+should read the exit code or the work-stage statuses to judge the pipeline
+itself.
+
+Non-fatal notify
+
+`notify.py` sends one metadata-only message, built from the report's codes.
+Any delivery problem is logged and writes
+`alerts/notify-failed-<run_id>.json`. Delivery problems include a bad token,
+an HTTP error, the network being down and missing credentials. If the
+helper cannot run, exits non-zero, exceeds `NOTIFY_TIMEOUT` or exits 0
+without recording an outcome, the wrapper records the outcome itself with
+`run_orchestrator notify-fallback` (`helper_failed`, `helper_timeout` or
+`helper_no_outcome`). If even that fails, the wrapper writes the alert file
+directly. The Telegram API base may only be overridden to loopback, and only
+for tests.
 
 Placeholders
 
-`@RELEASE_COMMIT@` `@RELEASE_DIR@` `@RECORDS_ROOT@` `@PARSERS_DIR@`
-`@PRIVATE_TMP@` `@DOCKER@` `@CONTAINER@` `@EXPECTED_IMAGE@` `@RUN_UID@`
-`@RUNTIME_DIR@` `@HOST_PYTHON@` `@NOTIFY_PY@` `@NOTIFY_ENV_FILE@`
-`@NOTIFY_LABEL@` `@DOCKER_WAIT_ATTEMPTS@` `@DOCKER_WAIT_DELAY@`
-`@DOCKER_WAIT_MAX_DELAY@` `@DOCKER_WAIT_DEADLINE@` `@DOCKER_CMD_TIMEOUT@`
-`@NOTIFY_TIMEOUT@` `@TIMEOUT@` `@RUN_RECORDS_SH@`
+`@RELEASE_COMMIT@` `@ENGINE_DIR@` `@DOCKER@` `@TIMEOUT@` `@FLOCK@`
+`@CONTAINER@` `@EXPECTED_IMAGE@` `@RUN_UID@` `@RUNTIME_DIR@` `@HOST_PYTHON@`
+`@NOTIFY_PY@` `@NOTIFY_ENV_FILE@` `@NOTIFY_LABEL@` `@DOCKER_WAIT_ATTEMPTS@`
+`@DOCKER_WAIT_DELAY@` `@DOCKER_WAIT_MAX_DELAY@` `@DOCKER_CMD_TIMEOUT@`
+`@DOCKER_WAIT_DEADLINE@` `@NOTIFY_TIMEOUT@` `@RUN_BUDGET_SECONDS@`
+`@DEFAULT_TARGET@` `@SCHEDULED_TARGET@` `@RUN_RECORDS_SH@`. The stub plan
+also uses `@STUB_FIXTURE@`; `@TARGET_NAME@` is set by the renderer.
 
-Values must be shell-safe words, with no spaces or quotes. `@TIMEOUT@` is
-the absolute path of GNU coreutils `timeout` (checked executable, else 78).
+`ENGINE_DIR` is the host path of the pinned engine source tree. The wrapper
+runs the orchestrator and notify from it via `PYTHONPATH`. `TIMEOUT` and
+`FLOCK` are absolute paths of GNU coreutils `timeout` and util-linux
+`flock`; each is checked for being executable, else exit 78.
 
-True maximum durations (D = DOCKER_WAIT_DEADLINE, T = DOCKER_CMD_TIMEOUT,
-K = 2 s kill grace, N = NOTIFY_TIMEOUT). Sleeps are clipped so they never
-run past D; at most one more attempt (info + running inspect) can start
-before D and finish after it, and the image inspect follows:
+Budget (D = DOCKER_WAIT_DEADLINE, T = DOCKER_CMD_TIMEOUT, K = 2 s kill grace,
+N = NOTIFY_TIMEOUT, B = RUN_BUDGET_SECONDS)
 
-- Docker readiness, including all command deadlines: at most D + 3(T + K).
-- Notify step: at most N + K.
+- Docker readiness: at most D + 3(T + K). The renderer requires this to be
+  less than B.
+- Work stages end by B, measured from start, plus at most 15 s of backstop
+  and K.
+- Notify: at most N + K.
+- The renderer requires B + 15 + K + N + K + 30 s margin ≤ 2820 s (47 min).
 
-Suggested values: 12 attempts, 5 s initial delay, 60 s cap, D = 600,
-T = 20, N = 60. Their sleeps alone total 495 s (5+10+20+40, then 7 x 60),
-so D rarely binds for a down daemon, but it does when calls hang. Worst
-case: 600 + 66 = 666 s of readiness plus 62 s of notify, about 12.1
-minutes, inside the 47 minute unit timeout and leaving the pipeline its own
-budget.
+Suggested values: 12 attempts, 5 s initial delay, 60 s cap, D = 600, T = 20,
+N = 60, B = 2640 (44 min). Worst case is 2640 + 17 + 62 = 2719 s.
 
 Tests: `python3 -B -m unittest tests.test_records_runtime -v`. They use a
-fake docker shim and a loopback fake Telegram, with no external network.
+fake docker shim, the stub backend and a loopback fake Telegram, with no
+external network.
