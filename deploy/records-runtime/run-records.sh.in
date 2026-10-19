@@ -1,0 +1,132 @@
+#!/bin/sh
+# Records intake run wrapper (template). Render every placeholder before
+# installing; the rendered file belongs in the private runtime, never here.
+#
+# Exit codes:
+#   0..N  exit status of the records pipeline itself (passed through)
+#   75    Docker daemon or records container not ready after bounded retry
+#   78    configuration / identity check failed (nothing attempted)
+# A notification failure NEVER changes the exit status; it is logged, an
+# alert file is written and the run report carries "notify_failed": true.
+set -eu
+umask 077
+
+RELEASE_COMMIT=@RELEASE_COMMIT@
+RELEASE=@RELEASE_DIR@
+ROOT=@RECORDS_ROOT@
+PARSERS=@PARSERS_DIR@
+PRIVATE_TMP=@PRIVATE_TMP@
+DOCKER=@DOCKER@
+CONTAINER=@CONTAINER@
+EXPECTED_IMAGE=@EXPECTED_IMAGE@
+RUN_UID=@RUN_UID@
+RUNTIME_DIR=@RUNTIME_DIR@
+HOST_PYTHON=@HOST_PYTHON@
+NOTIFY=@NOTIFY_PY@
+NOTIFY_ENV_FILE=@NOTIFY_ENV_FILE@
+NOTIFY_LABEL=@NOTIFY_LABEL@
+DOCKER_WAIT_ATTEMPTS=@DOCKER_WAIT_ATTEMPTS@
+DOCKER_WAIT_DELAY=@DOCKER_WAIT_DELAY@
+DOCKER_WAIT_MAX_DELAY=@DOCKER_WAIT_MAX_DELAY@
+
+case "$RELEASE_COMMIT" in *[!0-9a-f]*|"") exit 78;; esac
+[ "${#RELEASE_COMMIT}" -eq 40 ] || exit 78
+[ "$(id -u)" -eq "$RUN_UID" ] || exit 78
+case "$DOCKER_WAIT_ATTEMPTS$DOCKER_WAIT_DELAY$DOCKER_WAIT_MAX_DELAY" in
+  *[!0-9]*|"") exit 78;;
+esac
+[ "$DOCKER_WAIT_ATTEMPTS" -ge 1 ] || exit 78
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+mkdir -p "$RUNTIME_DIR/reports" "$RUNTIME_DIR/alerts"
+LOG="$RUNTIME_DIR/run-records.log"
+REPORT="$RUNTIME_DIR/reports/run-$RUN_ID.json"
+
+log() {
+  line="$(date -u +%Y-%m-%dT%H:%M:%SZ) run=$RUN_ID $*"
+  printf '%s\n' "$line" >>"$LOG"
+  printf '%s\n' "$line" >&2
+}
+
+docker_ready() {
+  "$DOCKER" info >/dev/null 2>&1 || return 1
+  [ "$("$DOCKER" inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = true ]
+}
+
+# Bounded wait for rootless Docker and the records container (Oct 17: the
+# timer fired after reboot before the rootless daemon was up).
+DOCKER_ATTEMPTS_USED=0
+wait_for_docker() {
+  delay="$DOCKER_WAIT_DELAY"
+  attempt=1
+  while :; do
+    DOCKER_ATTEMPTS_USED=$attempt
+    if docker_ready; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$DOCKER_WAIT_ATTEMPTS" ]; then
+      return 1
+    fi
+    log "docker not ready (attempt $attempt/$DOCKER_WAIT_ATTEMPTS); retrying in ${delay}s"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+    [ "$delay" -le "$DOCKER_WAIT_MAX_DELAY" ] || delay="$DOCKER_WAIT_MAX_DELAY"
+  done
+}
+
+write_report() {
+  # $1 status, $2 exit code. Only fixed enums and integers; no record data.
+  tmp="$REPORT.tmp"
+  printf '{"schema":"records-run-report-v1","run_id":"%s","started_at":"%s","finished_at":"%s","status":"%s","exit_code":%s,"docker_wait":{"attempts":%s,"max_attempts":%s},"notify_failed":false}\n' \
+    "$RUN_ID" "$STARTED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
+    "$DOCKER_ATTEMPTS_USED" "$DOCKER_WAIT_ATTEMPTS" >"$tmp"
+  mv -f "$tmp" "$REPORT"
+}
+
+notify() {
+  # Never fatal: any failure inside notify.py, or of notify.py itself, is
+  # logged and the run keeps its own exit status (Oct 16 regression).
+  if ! "$HOST_PYTHON" "$NOTIFY" --report "$REPORT" --alerts-dir "$RUNTIME_DIR/alerts" \
+      --log "$LOG" --env-file "$NOTIFY_ENV_FILE" --label "$NOTIFY_LABEL"; then
+    log "notify: helper exited non-zero; treated as notify failure (run status unchanged)"
+  fi
+  cp -f "$REPORT" "$RUNTIME_DIR/run-report.json.tmp" 2>/dev/null &&
+    mv -f "$RUNTIME_DIR/run-report.json.tmp" "$RUNTIME_DIR/run-report.json" || true
+}
+
+finish() {
+  # $1 status, $2 exit code
+  write_report "$1" "$2"
+  log "finished status=$1 exit=$2"
+  notify
+  exit "$2"
+}
+
+log "started"
+if ! wait_for_docker; then
+  log "ERROR: Docker daemon or container '$CONTAINER' not ready after $DOCKER_WAIT_ATTEMPTS attempts; no records work was attempted"
+  finish docker_unavailable 75
+fi
+if [ "$("$DOCKER" inspect --format '{{.Image}}' "$CONTAINER")" != "$EXPECTED_IMAGE" ]; then
+  log "ERROR: container image does not match the pinned image; no records work was attempted"
+  finish config_error 78
+fi
+
+# No password is placed in arguments or environment. The engine reads the
+# owner-only mail source through private ROOT/mail.json. All payload parsing
+# and OCR run non-root inside the dedicated container.
+set +e
+"$DOCKER" exec --user coder --workdir "$RELEASE" "$CONTAINER" \
+  /usr/bin/env -i HOME=/home/coder PATH=/usr/local/bin:/usr/bin:/bin \
+  PYTHONPATH="$RELEASE:$PARSERS" TMPDIR="$PRIVATE_TMP" \
+  /usr/bin/python3 -m campaign_tool.records run \
+  --root "$ROOT" --mail-config "$ROOT/mail.json" \
+  --unattended --max-originals-per-run 200 --ocr --json
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then
+  finish ok 0
+fi
+finish pipeline_failed "$rc"
