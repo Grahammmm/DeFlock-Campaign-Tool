@@ -111,6 +111,15 @@ copied. The orchestrator maps:
 - a timeout to `STAGE_TIMEOUT`, or `RUN_DEADLINE_REACHED` when the run
   budget clipped it
 - a spawn error to `STAGE_SPAWN_FAILED`
+- a stage whose leader exited but left processes in its group to
+  `STAGE_LEFT_PROCESSES` (the leftovers are killed first)
+
+Every stage runs in its own process group. On timeout, TERM or after a
+normal exit, the orchestrator sends TERM to the whole group, waits up to
+2 s for every member (not just the leader) to exit, then sends KILL to
+whatever remains. No host-side stage descendant outlives its stage, the
+report or the overlap lock. A descendant that calls setsid() leaves the
+group and is outside this guarantee.
 
 Killing a `docker exec` client does not stop the process inside the
 container. Container-side stages must also enforce their own limits (T11i).

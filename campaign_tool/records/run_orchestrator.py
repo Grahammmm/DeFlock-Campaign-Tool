@@ -179,17 +179,69 @@ def parse_stage_result(raw, schema):
     return result
 
 
-def _kill_group(proc):
+def _group_alive(pgid):
+    """True while any process (zombies included) is still in process group pgid."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _group_gone(proc, grace):
+    """Reap the leader and wait up to grace seconds for the whole group to empty.
+
+    Reaping the leader is not enough: a same-group descendant (for example
+    one that ignores SIGTERM) keeps the group alive after the leader exits.
+    """
+    deadline = time.monotonic() + grace
+    while True:
+        leader_done = proc.poll() is not None
+        if leader_done and not _group_alive(proc.pid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+
+
+def _kill_group(proc, grace=KILL_GRACE_SECONDS):
+    """Terminate the stage's whole process group, bounded.
+
+    SIGTERM, then up to grace seconds for every group member to exit, then
+    SIGKILL to whatever remains even if the leader has already been reaped.
+    The stage was started with start_new_session=True, so its pgid is its pid
+    and the group stays referenced (cannot be reused) while any member lives.
+    """
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(proc.pid, sig)
         except ProcessLookupError:
+            break
+        if _group_gone(proc, grace):
             return
-        try:
-            proc.wait(timeout=KILL_GRACE_SECONDS)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+    # SIGKILL cannot be ignored; anything left is a zombie awaiting its
+    # (re)parent. Make sure our own leader is reaped either way.
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+LINGER_SETTLE_SECONDS = 0.2
+
+
+def _reap_lingering(proc):
+    """After a normal leader exit, kill any stage descendants left behind.
+
+    Returns True when the group still had members after a short settle
+    period (a stage contract violation: work must not outlive the stage).
+    """
+    if _group_gone(proc, LINGER_SETTLE_SECONDS):
+        return False
+    _kill_group(proc)
+    return True
 
 
 class Interrupted(Exception):
@@ -211,8 +263,8 @@ def _on_signal(signum, frame):
 def run_stage(argv, timeout, schema, work_dir, env):
     """Run one stage command; return (status, counts, error_code, result, seconds)."""
     started = time.monotonic()
+    proc = None
     with tempfile.TemporaryFile(dir=work_dir) as out:
-        _SIGNAL_STATE["in_stage"] = True
         try:
             if _SIGNAL_STATE["interrupted"]:
                 raise Interrupted()
@@ -223,17 +275,32 @@ def run_stage(argv, timeout, schema, work_dir, env):
             except OSError:
                 return ("fail", zero_counts(), "STAGE_SPAWN_FAILED", None,
                         time.monotonic() - started)
+            # Signals raise Interrupted only while waiting on the stage; one
+            # that arrived during spawn is caught by the flag check.
+            _SIGNAL_STATE["in_stage"] = True
+            if _SIGNAL_STATE["interrupted"]:
+                raise Interrupted()
             try:
                 rc = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                _kill_group(proc)
-                return "fail", zero_counts(), "STAGE_TIMEOUT", None, time.monotonic() - started
-            except Interrupted:
+                # Remember, never raise, a signal while the group is killed.
                 _SIGNAL_STATE["in_stage"] = False
                 _kill_group(proc)
-                raise
+                return "fail", zero_counts(), "STAGE_TIMEOUT", None, time.monotonic() - started
+            _SIGNAL_STATE["in_stage"] = False
+            lingered = _reap_lingering(proc)
+        except Interrupted:
+            # Interrupted anywhere after spawn (including just after the
+            # leader exited): no stage descendant may outlive the run.
+            _SIGNAL_STATE["in_stage"] = False
+            if proc is not None:
+                _kill_group(proc)
+            raise
         finally:
             _SIGNAL_STATE["in_stage"] = False
+        if lingered:
+            return ("fail", zero_counts(), "STAGE_LEFT_PROCESSES", None,
+                    time.monotonic() - started)
         size = out.seek(0, os.SEEK_END)
         out.seek(max(0, size - RESULT_TAIL_BYTES))
         result = parse_stage_result(out.read(), schema)

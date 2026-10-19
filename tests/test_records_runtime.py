@@ -570,6 +570,121 @@ class OrchestratorSignalTests(unittest.TestCase):
         self.assertEqual(report["stages"][-1]["error_code"], "NOTIFY_PENDING")
 
 
+# Synthetic stage: forks a same-group child that ignores SIGTERM and keeps
+# appending to a marker file. The leader keeps default SIGTERM handling and
+# either hangs ("hang") or exits 0 with a valid result ("exit").
+TERM_IGNORING_STAGE = r"""
+import json, os, signal, sys, time
+mode, state = sys.argv[1], sys.argv[2]
+pid = os.fork()
+if pid == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open(os.path.join(state, "child.pid.tmp"), "w") as fh:
+        fh.write(str(os.getpid()))
+    os.replace(os.path.join(state, "child.pid.tmp"), os.path.join(state, "child.pid"))
+    while True:
+        with open(os.path.join(state, "marker"), "a") as fh:
+            fh.write("x\n")
+        time.sleep(0.05)
+while not os.path.exists(os.path.join(state, "child.pid")):
+    time.sleep(0.01)
+if mode == "hang":
+    time.sleep(60)
+print(json.dumps({"stage_result_version": 1, "status": "ok",
+                  "counts": {"input": 0, "output": 0, "failed": 0, "skipped": 0}}))
+sys.stdout.flush()
+"""
+
+
+class StageProcessGroupTests(unittest.TestCase):
+    """No stage descendant may outlive its stage (Sol review of d10c1b6)."""
+
+    def setUp(self):
+        from campaign_tool.records import run_orchestrator  # noqa: PLC0415
+        self.orch = run_orchestrator
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = self.tmp / "state"
+        self.state.mkdir()
+        self.script = self.tmp / "term_ignoring_stage.py"
+        self.script.write_text(TERM_IGNORING_STAGE)
+        self.addCleanup(self.kill_child_if_alive)
+
+    def child_pid(self):
+        path = self.state / "child.pid"
+        return int(path.read_text()) if path.exists() else None
+
+    @staticmethod
+    def pid_running(pid):
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+    def kill_child_if_alive(self):
+        pid = self.child_pid()
+        if pid and self.pid_running(pid):
+            os.kill(pid, signal.SIGKILL)
+
+    def assert_no_survivor_and_no_late_write(self):
+        pid = self.child_pid()
+        self.assertIsNotNone(pid, "synthetic child never started")
+        marker = self.state / "marker"
+        size = marker.stat().st_size
+        time.sleep(0.6)
+        self.assertFalse(self.pid_running(pid), "TERM-ignoring descendant survived")
+        self.assertEqual(marker.stat().st_size, size, "late write after stage returned")
+
+    def stage_argv(self, mode):
+        return [sys.executable, "-B", str(self.script), mode, str(self.state)]
+
+    def test_timeout_kills_term_ignoring_descendant(self):
+        schema = self.orch.load_stage_result_schema()
+        status, counts, code, result, _ = self.orch.run_stage(
+            self.stage_argv("hang"), 0.5, schema, self.tmp, dict(os.environ))
+        self.assertEqual((status, code, result), ("fail", "STAGE_TIMEOUT", None))
+        self.assertEqual(counts, self.orch.zero_counts())
+        self.assert_no_survivor_and_no_late_write()
+
+    def test_descendant_left_after_normal_exit_is_killed_and_fails_stage(self):
+        schema = self.orch.load_stage_result_schema()
+        status, _, code, result, _ = self.orch.run_stage(
+            self.stage_argv("exit"), 30, schema, self.tmp, dict(os.environ))
+        self.assertEqual((status, code, result), ("fail", "STAGE_LEFT_PROCESSES", None))
+        self.assert_no_survivor_and_no_late_write()
+
+    def test_sigterm_kills_term_ignoring_descendant_and_still_writes_report(self):
+        config = json.loads(STUB_TEMPLATE.read_text().replace("@TARGET_NAME@", "TEST")
+                            .replace("@HOST_PYTHON@", sys.executable)
+                            .replace("@STUB_FIXTURE@", str(SYNTHETIC_FIXTURE)))
+        config["stages"][1]["argv"] = self.stage_argv("hang")
+        (self.tmp / "TEST.json").write_text(json.dumps(config))
+        report_path = self.tmp / "report.json"
+        now = time.time()
+        started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        run_id = "run_" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now)) + "_0badc0de"
+        proc = subprocess.Popen(
+            [sys.executable, "-B", "-m", "campaign_tool.records.run_orchestrator", "run",
+             "--target-config", str(self.tmp / "TEST.json"), "--run-id", run_id,
+             "--started-at", started_at, "--deadline-epoch", str(int(now) + 300),
+             "--report", str(report_path), "--work-dir", str(self.tmp)],
+            env={**os.environ, "PYTHONPATH": str(ROOT)})
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        deadline = time.monotonic() + 20
+        while self.child_pid() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNotNone(self.child_pid(), "delta stage never started")
+        proc.send_signal(signal.SIGTERM)
+        self.assertEqual(proc.wait(timeout=20), 11)
+        self.assert_no_survivor_and_no_late_write()
+        report = json.loads(report_path.read_text())
+        run_report.validate_run_report(report)
+        delta = next(stage for stage in report["stages"] if stage["name"] == "delta")
+        self.assertEqual(delta["error_code"], "RUN_INTERRUPTED")
+        self.assertEqual(report["stages"][-1]["error_code"], "NOTIFY_PENDING")
+
+
 class RendererTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
