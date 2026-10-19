@@ -179,8 +179,8 @@ class PinScanTests(unittest.TestCase):
 
     def test_wrong_line_value_detector_path_or_symlink_fails(self):
         hit = self.hit_for("tree")
-        for change in ({"line_number": 1}, {"line_number": 0}, {"line_number": True},
-                       {"line_number": 999}, {"hashed_secret": "wrong"}, {"type": "Secret Keyword"}):
+        for change in ({"line_number": 1}, {"line_number": 0}, {"line_number": True}, {"line_number": 999},
+                       {"hashed_secret": "wrong"}, {"type": "Secret Keyword"}):  # pragma: allowlist secret
             with self.subTest(change=change):
                 self.assertFalse(self.allowed({**hit, **change}))
         self.assertFalse(self.allowed(hit, path="container/other/pins.json"))
