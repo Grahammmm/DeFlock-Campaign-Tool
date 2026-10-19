@@ -169,35 +169,59 @@ any step fails, stop and take the rollback path named for that step.
    From here until [A2] or a rollback's validated start, everything stays
    stopped.
 
-4. [S1] Take a consistent, owner-preserving copy of every mount, as root:
+4. [S1] Take a raw, owner-preserving copy of every mount, as root, without
+   opening any database. Never run `sqlite3`, Python `sqlite3` or any other
+   SQLite client against a live mount, not even read-only: a SQLite connection
+   to a WAL database can checkpoint it and delete its `-wal` and `-shm` files
+   when the last connection closes, which changes the live bytes even though
+   every writer is stopped. For each mount:
 
+        E=container/flock-ocr/snapshot_evidence.py
+        python3 "$E" manifest <source> > "$PRIVATE/<mount>.baseline.json"
         tar --numeric-owner --acls --xattrs -cpf "$PRIVATE/<mount>.tar" -C <source> .
+        python3 "$E" manifest <source> > "$PRIVATE/<mount>.after-tar.json"
+        python3 "$E" compare "$PRIVATE/<mount>.baseline.json" "$PRIVATE/<mount>.after-tar.json"
 
-   Because every writer is stopped, SQLite `-wal` and `-shm` files are copied in
-   a consistent state together with their databases. In addition, for each
-   SQLite database write a copy with the WAL folded in, using the SQLite backup
-   API (`sqlite3 <db> ".backup '$PRIVATE/<db>.backup'"` or Python
-   `sqlite3.Connection.backup`). Do not checkpoint, vacuum or otherwise write
-   to the live database.
+   The baseline manifest is the comparison baseline for every later check. It
+   is a content manifest (SHA-256 of every regular file, including each
+   database and its `-wal` and `-shm` files exactly as they are) and an
+   owner/mode manifest (numeric `uid:gid`, so a renamed user cannot hide a
+   change, plus mode and type). `manifest` only reads bytes and `lstat`s; it
+   never opens SQLite. The `compare` must print `manifests: equal`.
 
-5. [S2] Record evidence for every mount, in `$PRIVATE` only:
+5. [S2] Record SQLite evidence from an isolated copy, never from the live mount.
+   Extract each `.tar` into an empty, disposable directory in `$PRIVATE`, then
+   run the backup API and `PRAGMA integrity_check` there:
 
-   - a content manifest: `sha256sum` of every regular file, sorted by path;
-   - an owner/mode manifest: `find <source> -printf '%U:%G %m %y %p\n' | sort`
-     (numeric IDs, so a renamed user cannot hide a change);
-   - `PRAGMA integrity_check` on every `.backup` copy, which must print `ok`;
-   - the SHA-256 of each `.tar` and `.backup` file.
+        mkdir "$PRIVATE/inspect/<mount>"
+        tar --numeric-owner --acls --xattrs -xpf "$PRIVATE/<mount>.tar" -C "$PRIVATE/inspect/<mount>"
+        python3 "$E" sqlite-evidence "$PRIVATE/inspect/<mount>" \
+          --out "$PRIVATE/sqlite/<mount>" --live <every mount source> \
+          > "$PRIVATE/<mount>.sqlite-evidence.json"
 
-   File counts and owner/mode digests alone do not prove byte integrity; the
-   content manifest does.
+   `sqlite-evidence` refuses to run if the copy or output overlaps any `--live`
+   source. It writes a `.backup` copy of each database with the WAL folded in,
+   and `PRAGMA integrity_check` on each `.backup` must print `ok`. The inspect
+   copy may be checkpointed by this step; that is why it is disposable and is
+   never used as a restore source or comparison baseline. Record the SHA-256 of
+   each `.tar` and `.backup` file. File counts and owner/mode digests alone do
+   not prove byte integrity; the content manifest does.
 
-6. [S3] Prove the backup restores. Extract each `.tar` with
-   `tar --numeric-owner --acls --xattrs -xpf` into an empty scratch directory
-   in `$PRIVATE`. Its content and owner/mode manifests must equal the [S2]
-   manifests (after the path prefix), and every restored SQLite database must
-   pass `PRAGMA integrity_check`. Then recompute the live mounts' content
-   manifests: they must still equal [S2], which proves nothing wrote during the
-   copy.
+6. [S3] Prove the backup restores and that the live data never changed. Extract
+   each `.tar` into a second, empty scratch directory in `$PRIVATE` and, before
+   anything opens it, compare its manifest with the baseline. Then recompute
+   the live manifest and compare it with the baseline again:
+
+        mkdir "$PRIVATE/restore-test/<mount>"
+        tar --numeric-owner --acls --xattrs -xpf "$PRIVATE/<mount>.tar" -C "$PRIVATE/restore-test/<mount>"
+        python3 "$E" manifest "$PRIVATE/restore-test/<mount>" > "$PRIVATE/<mount>.restored.json"
+        python3 "$E" compare "$PRIVATE/<mount>.baseline.json" "$PRIVATE/<mount>.restored.json"
+        python3 "$E" manifest <source> > "$PRIVATE/<mount>.live-after.json"
+        python3 "$E" compare "$PRIVATE/<mount>.baseline.json" "$PRIVATE/<mount>.live-after.json"
+
+   Both must print `manifests: equal`: the archive restores every byte, owner
+   and mode, including the `-wal` and `-shm` files, and nothing (including
+   [S2]) wrote to the live mounts.
 
 7. [G1] Snapshot gate. Write `"snapshot_ok": true`, the backup references and
    their SHA-256 values, and the completion time into
@@ -259,10 +283,14 @@ any step fails, stop and take the rollback path named for that step.
 
         python3 container/flock-ocr/verify.py --container "$CONTAINER"
 
-    Then recompute the content and owner/mode manifests of every mount. They
-    must equal [S2]. Any difference is a data-check failure unless the owner
-    reviews the listed paths and accepts them in writing in the private runbook.
-    Any failure: rollback path [RB-C].
+    Then recompute each mount's manifest with `snapshot_evidence.py manifest`
+    and `compare` it with the [S1] baseline. Any difference is a data-check
+    failure unless the owner reviews the listed paths and accepts them in
+    writing in the private runbook. A started service that opens a WAL
+    database may checkpoint it, so differences limited to a database and its
+    `-wal`/`-shm` files are expected; the owner accepts them only after an
+    [S1]-style `tar` of the current mount, extracted to an isolated directory,
+    passes `sqlite-evidence`. Any failure: rollback path [RB-C].
 
 15. [A2] Restart the other containers in `$MOUNT_USERS`, then release the
     [Q1] pause/lock. Watch the coordinator's next job complete.
@@ -276,10 +304,11 @@ Never start a container while a restore is in progress.
 [RB-A]: failure at or before [V1]. `$CONTAINER` is unchanged and still stopped.
 
 1. [RB-A1] Confirm that every user in `$MOUNT_USERS` is still stopped.
-2. [RB-A2] Validate the data: recompute the content and owner/mode manifests of
-   every mount and compare them with [S2]. If [S2] was never completed, nothing
-   was copied or restored, so there is nothing to compare. If they differ,
-   restore as in [RB-C4] and validate as in [RB-C5] first.
+2. [RB-A2] Validate the data: recompute each mount's manifest with
+   `snapshot_evidence.py manifest` and `compare` it with the [S1] baseline.
+   If no baseline was written, [S1] never started and nothing was copied,
+   opened or restored, so there is nothing to compare. If they differ, restore
+   as in [RB-C4] and validate as in [RB-C5] first.
 3. [RB-A3] `docker start "$CONTAINER"`; its image must equal `$OLD_IMAGE_ID`.
 4. [RB-A4] Restart the other mount users, then release the [Q1] pause/lock.
 
@@ -304,18 +333,22 @@ Never start a container while a restore is in progress.
    open under a mount.
 2. [RB-C2] Rename the new `$CONTAINER` to `$CONTAINER-ocr-failed`. Do not
    start it again.
-3. [RB-C3] Recompute the content and owner/mode manifests of every mount and
-   compare them with [S2]. On a later rollback the difference includes real
-   work done since [A2]; the owner decides in writing whether to keep it, and
-   an [S1]-style copy of the current state is taken before any restore.
+3. [RB-C3] Recompute each mount's manifest and `compare` it with the [S1]
+   baseline. On a later rollback the difference includes real work done since
+   [A2]; the owner decides in writing whether to keep it, and an [S1]-style
+   `tar` and manifest of the current state are taken before any restore.
 4. [RB-C4] If the data checks failed or the owner chose to restore: for each
    mount, move the current contents aside into `$PRIVATE`, then extract the
    [S1] `.tar` with `tar --numeric-owner --acls --xattrs -xpf` into the empty
    source.
-5. [RB-C5] Validate before any start: content and owner/mode manifests equal
-   [S2] (or the owner-accepted current state when no restore was chosen), and
-   every SQLite database passes `PRAGMA integrity_check`. If this fails, leave
-   everything stopped and escalate to the owner. Do not start any container.
+5. [RB-C5] Validate before any start, without opening the live databases: each
+   mount's manifest must `compare` equal to the [S1] baseline, whose isolated
+   copy already passed [S2] `sqlite-evidence`. When the owner chose to keep the
+   current state instead, its manifest must equal the one taken in [RB-C3],
+   and that state's archive, extracted to an isolated directory, must pass
+   `sqlite-evidence` (`PRAGMA integrity_check` prints `ok`). If this fails,
+   leave everything stopped and escalate to the owner. Do not start any
+   container.
 6. [RB-C6] Rename `$CONTAINER-pre-ocr` back to `$CONTAINER`. Its image must
    equal `$OLD_IMAGE_ID`.
 7. [RB-C7] `docker start "$CONTAINER"`. Check that it stays running and that

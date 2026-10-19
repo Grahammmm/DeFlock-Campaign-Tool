@@ -5,7 +5,12 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
+import shutil
+import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -472,6 +477,134 @@ class FlockOcrRunbookOrderTests(unittest.TestCase):
         def drop(plan):
             plan["main"][5]["on_fail"] = "RB-Z"
         self.assertTrue(any("no rollback path" in e for e in self.mutated(drop)))
+
+
+_SE_SPEC = importlib.util.spec_from_file_location("flock_ocr_snapshot_evidence", RECIPE / "snapshot_evidence.py")
+snapshot_evidence = importlib.util.module_from_spec(_SE_SPEC)
+_SE_SPEC.loader.exec_module(snapshot_evidence)
+
+_WAL_FIXTURE = (
+    "import os, sqlite3, sys\n"
+    "c = sqlite3.connect(sys.argv[1])\n"
+    "c.execute('pragma journal_mode=wal')\n"
+    "c.execute('create table synthetic(value)')\n"
+    "c.executemany('insert into synthetic values (?)', [(n,) for n in range(42)])\n"
+    "c.commit()\n"
+    "os._exit(0)\n"
+)
+
+
+class FlockOcrSnapshotEvidenceTests(unittest.TestCase):
+    """Synthetic WAL regressions for the [S1]-[S3] sequence. No real data."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="flock-ocr-snapshot-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.live = self.tmp / "live"
+        self.private = self.tmp / "private"
+        (self.live / "state").mkdir(parents=True)
+        self.private.mkdir()
+        (self.live / "state" / "notes.txt").write_text("synthetic\n")
+        os.chmod(self.live / "state" / "notes.txt", 0o640)
+        self.db = self.live / "state" / "synthetic.db"
+        # A writer commits and exits without closing: committed frames stay in
+        # the WAL and both sidecars remain, as after a stop with no checkpoint.
+        subprocess.run([sys.executable, "-B", "-c", _WAL_FIXTURE, str(self.db)], check=True)
+        wal = Path(str(self.db) + "-wal")
+        self.assertTrue(wal.is_file() and wal.stat().st_size > 0, "fixture must leave WAL frames")
+        self.assertTrue(Path(str(self.db) + "-shm").is_file())
+
+    def tar(self, *args):
+        if shutil.which("tar") is None:
+            self.skipTest("tar not available")
+        subprocess.run(["tar", "--numeric-owner", "--acls", "--xattrs", *args], check=True,
+                       stderr=subprocess.DEVNULL)
+
+    def test_default_sqlite_backup_on_live_source_is_the_reviewed_hazard(self):
+        before = snapshot_evidence.manifest(self.live)
+        source = sqlite3.connect(self.db)
+        destination = sqlite3.connect(self.private / "unsafe.backup")
+        source.backup(destination)
+        destination.close()
+        source.close()
+        changed = snapshot_evidence.compare(before, snapshot_evidence.manifest(self.live))
+        if not changed:
+            self.skipTest("this SQLite build left the source unchanged")
+        self.assertTrue(any(p.startswith("state/synthetic.db") for p in changed), changed)
+
+    def test_runbook_sequence_preserves_live_bytes_and_restores_exactly(self):
+        mount = "synthetic-mount"
+        # [S1] baseline manifest, raw archive, manifest again: no SQLite opened.
+        baseline = snapshot_evidence.manifest(self.live)
+        self.assertIn("state/synthetic.db-wal", baseline["entries"])
+        self.assertIn("state/synthetic.db-shm", baseline["entries"])
+        archive = self.private / f"{mount}.tar"
+        self.tar("-cpf", str(archive), "-C", str(self.live), ".")
+        self.assertEqual(snapshot_evidence.compare(baseline, snapshot_evidence.manifest(self.live)), [])
+        # [S2] SQLite evidence on an isolated, disposable extracted copy only.
+        inspect = self.private / "inspect" / mount
+        inspect.mkdir(parents=True)
+        self.tar("-xpf", str(archive), "-C", str(inspect))
+        out = self.private / "sqlite" / mount
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = snapshot_evidence.main(["sqlite-evidence", str(inspect), "--out", str(out),
+                                           "--live", str(self.live)])
+        self.assertEqual(code, 0, stdout.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(list(report["databases"]), ["state/synthetic.db"])
+        self.assertEqual(report["databases"]["state/synthetic.db"]["integrity_check"], ["ok"])
+        backup = sqlite3.connect(out / "state" / "synthetic.db.backup")
+        try:
+            self.assertEqual(backup.execute("select count(*) from synthetic").fetchone()[0], 42,
+                             "backup must include the committed WAL frames")
+        finally:
+            backup.close()
+        # [S3] fresh restore equals the baseline before anything opens it, and
+        # the live mount, sidecars included, is still byte-identical.
+        restore = self.private / "restore-test" / mount
+        restore.mkdir(parents=True)
+        self.tar("-xpf", str(archive), "-C", str(restore))
+        self.assertEqual(snapshot_evidence.compare(baseline, snapshot_evidence.manifest(restore)), [])
+        self.assertEqual(snapshot_evidence.compare(baseline, snapshot_evidence.manifest(self.live)), [])
+        self.assertTrue(Path(str(self.db) + "-wal").is_file())
+        self.assertTrue(Path(str(self.db) + "-shm").is_file())
+
+    def test_sqlite_evidence_refuses_live_or_overlapping_paths(self):
+        for copy_root, out in ((self.live, self.private / "o1"),
+                               (self.live / "state", self.private / "o2"),
+                               (self.tmp, self.private / "o3"),
+                               (self.private, self.live / "out")):
+            with self.subTest(copy_root=copy_root.name, out=out.name):
+                with self.assertRaises(ValueError):
+                    snapshot_evidence.sqlite_evidence(copy_root, out, [self.live])
+        with self.assertRaises(ValueError):
+            snapshot_evidence.sqlite_evidence(self.private, self.private / "o4", [])
+        self.assertFalse((self.live / "out").exists())
+        self.assertEqual(sorted(p.name for p in (self.live / "state").iterdir()),
+                         ["notes.txt", "synthetic.db", "synthetic.db-shm", "synthetic.db-wal"])
+
+    def test_manifest_detects_content_owner_mode_and_sidecar_changes(self):
+        baseline = snapshot_evidence.manifest(self.live)
+        self.assertEqual(baseline["entries"]["state/notes.txt"]["mode"], "0640")
+        os.chmod(self.live / "state" / "notes.txt", 0o644)
+        self.assertEqual(snapshot_evidence.compare(baseline, snapshot_evidence.manifest(self.live)),
+                         ["state/notes.txt"])
+        os.chmod(self.live / "state" / "notes.txt", 0o640)
+        Path(str(self.db) + "-shm").unlink()
+        self.assertEqual(snapshot_evidence.compare(baseline, snapshot_evidence.manifest(self.live)),
+                         ["state/synthetic.db-shm"])
+        edited = json.loads(json.dumps(baseline))
+        edited["entries"]["state/notes.txt"]["owner"] = "0:0"
+        self.assertEqual(snapshot_evidence.compare(baseline, edited), ["state/notes.txt"])
+
+    def test_doc_never_points_sqlite_at_a_live_mount(self):
+        section = DOC[DOC.index("[S1]"):DOC.index("[B1]")]
+        self.assertNotIn("sqlite3 <db>", DOC)
+        self.assertIn("Never run `sqlite3`", section)
+        self.assertIn("--live <every mount source>", section)
+        s1 = section[:section.index("[S2]")]
+        self.assertLess(s1.index("baseline.json"), s1.index("-cpf"))
+        self.assertNotIn("sqlite-evidence", s1)
 
 
 if __name__ == "__main__":
