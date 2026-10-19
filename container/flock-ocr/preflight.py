@@ -146,7 +146,19 @@ def build_command(args):
             "--build-arg", f"BASE_IMAGE={args.base_image}",
             "--build-arg", f"ENGINE_COMMIT={args.engine_commit}",
             "--build-arg", f"WHEEL_SHA256={args.wheel_sha256}",
+            "--build-arg", f"ENGINE_MANIFEST_SHA256={args.engine_manifest_sha256}",
             "-t", args.tag, str(RECIPE)]
+
+
+def check_pins(args, pins_path=RECIPE / "pins.json"):
+    """The engine commit must be the reviewed pin; the manifest hash comes from it."""
+    engine = json.loads(Path(pins_path).read_text())["engine"]
+    if args.engine_commit != engine["commit"]:
+        raise PreflightError("--engine-commit differs from pins.json engine.commit; change the pin in a reviewed PR")
+    if not SHA256_RE.fullmatch(engine["manifest_sha256"]):
+        raise PreflightError("pins.json engine.manifest_sha256 must be 64 lowercase hex")
+    args.engine_manifest_sha256 = engine["manifest_sha256"]
+    return engine
 
 
 def main(argv=None):
@@ -163,6 +175,7 @@ def main(argv=None):
             raise PreflightError("--engine-commit must be 40 lowercase hex")
         if not SHA256_RE.fullmatch(args.wheel_sha256):
             raise PreflightError("--wheel-sha256 must be 64 lowercase hex")
+        check_pins(args)
         sent = check_context(RECIPE, args.wheel_sha256)
         if not args.skip_docker:
             check_local_base(args.base_image)

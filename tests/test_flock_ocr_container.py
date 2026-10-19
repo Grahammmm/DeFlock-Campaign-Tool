@@ -4,9 +4,11 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
 import re
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,10 +199,181 @@ class FlockOcrBuildContextTests(unittest.TestCase):
 
     def test_build_command_never_pulls(self):
         args = argparse.Namespace(base_image="sha256:" + "a" * 64, engine_commit="a" * 40,
-                                  wheel_sha256=SHA, tag="t")
+                                  wheel_sha256=SHA, engine_manifest_sha256=SHA, tag="t")
         command = preflight.build_command(args)
         self.assertIn("--pull=false", command)
         self.assertNotIn("--pull", [c for c in command if c != "--pull=false"])
+        self.assertIn(f"ENGINE_MANIFEST_SHA256={SHA}", command)
+
+    def test_preflight_requires_the_pinned_engine_commit(self):
+        args = argparse.Namespace(engine_commit="a" * 40)
+        with self.assertRaisesRegex(preflight.PreflightError, "pins.json"):
+            preflight.check_pins(args)
+        args = argparse.Namespace(engine_commit=PINS["engine"]["commit"])
+        preflight.check_pins(args)
+        self.assertEqual(args.engine_manifest_sha256, PINS["engine"]["manifest_sha256"])
+
+
+PINS = json.loads((RECIPE / "pins.json").read_text())
+_BW_SPEC = importlib.util.spec_from_file_location("flock_ocr_build_wheel", RECIPE / "build_wheel.py")
+build_wheel = importlib.util.module_from_spec(_BW_SPEC)
+_BW_SPEC.loader.exec_module(build_wheel)
+_VF_SPEC = importlib.util.spec_from_file_location("flock_ocr_verify", RECIPE / "verify.py")
+verify = importlib.util.module_from_spec(_VF_SPEC)
+_VF_SPEC.loader.exec_module(verify)
+
+
+class FlockOcrPinsTests(unittest.TestCase):
+    def test_pins_are_concrete(self):
+        engine = PINS["engine"]
+        self.assertRegex(engine["commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(engine["tree"], r"^[0-9a-f]{40}$")
+        for key in ("manifest_sha256", "dependency_lock_sha256"):
+            self.assertRegex(engine[key], r"^[0-9a-f]{64}$")
+        self.assertIsInstance(engine["commit_time_epoch"], int)
+        for requirement in PINS["wheel_build"]["requirements"]:
+            self.assertRegex(requirement, r"^[a-z]+==\d+(\.\d+)+$")
+        for value in PINS["apt"].values():
+            self.assertNotIn(value.lower(), ("latest", "", "*"))
+
+    def test_dockerfile_apt_pins_equal_pins_json(self):
+        self.assertEqual(dict(spec.split("=", 1) for spec in apt_install_specs()), PINS["apt"])
+
+    def test_wheel_build_tools_match_repository_build_pins(self):
+        self.assertEqual(sorted(PINS["wheel_build"]["requirements"]),
+                         sorted(f"{n}=={v}" for n, v in pins(ROOT / "requirements-build.txt").items()))
+
+    def test_engine_version_matches_package_and_lock_digest_is_reproducible_locally(self):
+        from campaign_tool import __version__
+        engine = PINS["engine"]
+        self.assertEqual(engine["wheel_filename"], f"deflock_campaign_tool-{engine['package_version']}-py3-none-any.whl")
+        # The pinned commit is an ancestor of this tree; the lock is unchanged since then.
+        self.assertEqual(__version__, engine["package_version"])
+        lock = (ROOT / "requirements-records-test.txt").read_bytes()
+        self.assertEqual(hashlib.sha256(lock).hexdigest(), engine["dependency_lock_sha256"])
+
+    def test_expected_versions_cover_every_requested_tool(self):
+        commands = {command.split()[0] for command in PINS["expected_versions"]}
+        self.assertLessEqual({"ocrmypdf", "pdftotext", "qpdf", "tesseract"}, commands)
+        for command, expected in PINS["expected_versions"].items():
+            upstream = expected.split()[-1]
+            package = {"ocrmypdf": "ocrmypdf", "pdftotext": "poppler-utils", "pdftoppm": "poppler-utils",
+                       "qpdf": "qpdf", "tesseract": "tesseract-ocr"}[command.split()[0]]
+            self.assertTrue(PINS["apt"][package].split(":")[-1].startswith(upstream), command)
+
+
+def _synthetic_wheel(root, manifest, name=None):
+    wheel = Path(root) / (name or PINS["engine"]["wheel_filename"])
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(build_wheel.MANIFEST_MEMBER, json.dumps(manifest))
+    return wheel
+
+
+class FlockOcrBuildWheelTests(unittest.TestCase):
+    """Synthetic manifests only; no build, network or real wheel."""
+
+    def manifest(self, files=None):
+        count = PINS["engine"]["package_file_count"]
+        return {"commit": PINS["engine"]["commit"], "source_dirty": False,
+                "package_files": files or {f"f{i}": SHA for i in range(count)}}
+
+    def test_check_wheel_rejects_manifest_that_differs_from_pin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wheel = _synthetic_wheel(tmp, self.manifest())
+            with self.assertRaisesRegex(build_wheel.BuildError, "manifest_sha256"):
+                build_wheel.check_wheel(wheel, PINS)
+
+    def test_check_wheel_accepts_manifest_bound_by_pin(self):
+        manifest = self.manifest()
+        local = json.loads(json.dumps(PINS))
+        local["engine"]["manifest_sha256"] = build_wheel.canonical_sha256(manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            wheel = _synthetic_wheel(tmp, manifest)
+            self.assertEqual(build_wheel.check_wheel(wheel, local), hashlib.sha256(wheel.read_bytes()).hexdigest())
+
+    def test_check_wheel_rejects_dirty_wrong_commit_or_name(self):
+        local = json.loads(json.dumps(PINS))
+        for change in ({"source_dirty": True}, {"commit": "b" * 40}):
+            manifest = {**self.manifest(), **change}
+            local["engine"]["manifest_sha256"] = build_wheel.canonical_sha256(manifest)
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(build_wheel.BuildError, "clean build"):
+                    build_wheel.check_wheel(_synthetic_wheel(tmp, manifest), local)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(build_wheel.BuildError, "wheel name"):
+                build_wheel.check_wheel(_synthetic_wheel(tmp, self.manifest(), "other.whl"), PINS)
+
+    def test_build_python_must_carry_pinned_tools(self):
+        def fake(versions):
+            return lambda *a, **k: argparse.Namespace(returncode=0, stdout=json.dumps(versions), stderr="")
+        good = dict(r.split("==") for r in PINS["wheel_build"]["requirements"])
+        self.assertEqual(build_wheel.check_build_python("py", PINS, run=fake(good)), good)
+        with self.assertRaisesRegex(build_wheel.BuildError, "setuptools"):
+            build_wheel.check_build_python("py", PINS, run=fake({**good, "setuptools": "68.1.2"}))
+
+
+def _fake_container(overrides=None):
+    """Synthetic command responses for a correctly built image."""
+    engine = PINS["engine"]
+    table = {cmd: (0, expected + " (synthetic)\n", "") for cmd, expected in PINS["expected_versions"].items()}
+    table["pdftotext -v"] = (0, "", PINS["expected_versions"]["pdftotext -v"] + "\nCopyright\n")
+    table["dpkg-query"] = (0, "".join(f"{n}={v}\n" for n, v in PINS["apt"].items()), "")
+    table["apt-mark showhold"] = (0, "\n".join(PINS["apt"]) + "\n", "")
+    table["cat /opt/campaign-tool/ENGINE_COMMIT"] = (0, engine["commit"] + "\n", "")
+    table["version"] = (0, json.dumps({"installation_kind": "installed_wheel", "commit": engine["commit"],
+                                       "source_dirty": False, "manifest_sha256": engine["manifest_sha256"],
+                                       "dependency_lock_sha256": engine["dependency_lock_sha256"],
+                                       "package_version": engine["package_version"]}), "")
+    table["--doctor"] = (0, json.dumps({"ready": True, "missing": [], "version_unverified": []}), "")
+    table.update(overrides or {})
+
+    def run(argv):
+        joined = " ".join(argv)
+        for key in ("dpkg-query", "version", "--doctor"):
+            if key in argv:
+                return table[key]
+        return table.get(joined, (127, "", "not found"))
+    return run
+
+
+class FlockOcrVerifyTests(unittest.TestCase):
+    def run_verify(self, overrides=None):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = verify.main([], run=_fake_container(overrides))
+        return code, out.getvalue()
+
+    def test_verify_passes_for_pinned_image(self):
+        code, out = self.run_verify()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("FAIL", out)
+
+    def test_verify_fails_on_any_drift(self):
+        engine = PINS["engine"]
+        cases = {
+            "qpdf --version": (0, "qpdf version 11.9.1\n", ""),
+            "ocrmypdf --version": (127, "", "not found"),
+            "dpkg-query": (0, "qpdf=11.3.0-1\n", ""),
+            "apt-mark showhold": (0, "qpdf\n", ""),
+            "cat /opt/campaign-tool/ENGINE_COMMIT": (0, "b" * 40, ""),
+            "version": (0, json.dumps({"installation_kind": "source_checkout", "commit": engine["commit"]}), ""),
+            "--doctor": (2, json.dumps({"ready": False, "missing": ["qpdf"], "version_unverified": []}), ""),
+        }
+        for key, response in cases.items():
+            with self.subTest(drift=key):
+                code, out = self.run_verify({key: response})
+                self.assertEqual(code, 1, out)
+                self.assertIn("FAIL", out)
+
+    def test_image_mode_runs_without_network(self):
+        calls = []
+        original = verify.subprocess.run
+        verify.subprocess.run = lambda command, **kw: calls.append(command) or argparse.Namespace(
+            returncode=0, stdout="", stderr="")
+        try:
+            verify.docker_runner(image="sha256:" + "a" * 64)(["qpdf", "--version"])
+        finally:
+            verify.subprocess.run = original
+        self.assertEqual(calls[0][:6], ["docker", "run", "--rm", "--network", "none", "--entrypoint"])
 
 
 if __name__ == "__main__":

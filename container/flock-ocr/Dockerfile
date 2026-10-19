@@ -3,12 +3,14 @@
 # operator action (see docs/RECORDS-OCR-CONTAINER.md). Nothing is fetched at run
 # time and the image carries no credentials, campaign data or settings.
 #
-# The build context is this directory. The engine wheel is built beforehand from
-# a clean checkout of the accepted commit (docs/RECORDS-RELEASE.md) and placed in
-# ./dist/ (gitignored). Its sha256 and commit are required build arguments:
+# The build context is this directory. The engine wheel is built beforehand by
+# build_wheel.py from the commit pinned in pins.json (two byte-identical builds,
+# embedded manifest equal to pins.json engine.manifest_sha256) and placed in
+# ./dist/ (gitignored). Commit, manifest hash and wheel sha256 are required
+# build arguments, which preflight.py fills from pins.json:
 #
 #   python3 container/flock-ocr/preflight.py --base-image <immutable ref> \
-#     --engine-commit <40-hex commit> --wheel-sha256 <64-hex wheel sha256>
+#     --engine-commit <pins.json engine.commit> --wheel-sha256 <64-hex wheel sha256>
 #
 # preflight.py validates the inputs and the context, confirms the base exists
 # locally, and prints the docker build command. BASE_IMAGE must be immutable: a
@@ -25,11 +27,13 @@ FROM ${BASE_IMAGE}
 ARG BASE_IMAGE
 ARG ENGINE_COMMIT
 ARG WHEEL_SHA256
+ARG ENGINE_MANIFEST_SHA256
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1
 
 RUN printf '%s' "${BASE_IMAGE}" | grep -Eqx '(sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64})' \
  && printf '%s' "${ENGINE_COMMIT}" | grep -Eqx '[0-9a-f]{40}' \
  && printf '%s' "${WHEEL_SHA256}" | grep -Eqx '[0-9a-f]{64}' \
+ && printf '%s' "${ENGINE_MANIFEST_SHA256}" | grep -Eqx '[0-9a-f]{64}' \
  && grep -Eqx '12\.[0-9]+' /etc/debian_version
 
 # Exact Debian 12 versions (resolved 2026-10-19 from the 2026-09-30 OCR candidate
@@ -77,7 +81,7 @@ RUN ocrmypdf --version \
  && tesseract --list-langs | grep -qx eng \
  && cd / \
  && /opt/campaign-tool/venv/bin/records version --json > /tmp/engine-version.json \
- && /opt/campaign-tool/venv/bin/python -I -c 'import json,sys; r=json.load(open("/tmp/engine-version.json")); sys.exit(0 if r["installation_kind"]=="installed_wheel" and r["commit"]==sys.argv[1] and r["source_dirty"] is False else "engine manifest does not match ENGINE_COMMIT or is dirty")' "${ENGINE_COMMIT}" \
+ && /opt/campaign-tool/venv/bin/python -I -c 'import json,sys; r=json.load(open("/tmp/engine-version.json")); sys.exit(0 if r["installation_kind"]=="installed_wheel" and r["commit"]==sys.argv[1] and r["manifest_sha256"]==sys.argv[2] and r["source_dirty"] is False else "engine manifest does not match ENGINE_COMMIT/ENGINE_MANIFEST_SHA256 or is dirty")' "${ENGINE_COMMIT}" "${ENGINE_MANIFEST_SHA256}" \
  && rm /tmp/engine-version.json \
  && /opt/campaign-tool/venv/bin/python -I -m campaign_tool.records.extract.ocr --doctor
 
