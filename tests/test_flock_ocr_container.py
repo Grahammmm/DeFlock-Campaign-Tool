@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 from pathlib import Path
 
@@ -552,6 +553,8 @@ class FlockOcrSnapshotEvidenceTests(unittest.TestCase):
         self.assertEqual(code, 0, stdout.getvalue())
         report = json.loads(stdout.getvalue())
         self.assertEqual(list(report["databases"]), ["state/synthetic.db"])
+        self.assertEqual(report["files_inspected"],
+                         sum(e["type"] == "f" for e in baseline["entries"].values()))
         self.assertEqual(report["databases"]["state/synthetic.db"]["integrity_check"], ["ok"])
         backup = sqlite3.connect(out / "state" / "synthetic.db.backup")
         try:
@@ -596,6 +599,93 @@ class FlockOcrSnapshotEvidenceTests(unittest.TestCase):
         edited = json.loads(json.dumps(baseline))
         edited["entries"]["state/notes.txt"]["owner"] = "0:0"
         self.assertEqual(snapshot_evidence.compare(baseline, edited), ["state/notes.txt"])
+
+    def cli(self, *args):
+        """Run the real snapshot_evidence.py CLI in a subprocess."""
+        return subprocess.run([sys.executable, "-B", str(RECIPE / "snapshot_evidence.py"), *args],
+                              capture_output=True, text=True, check=False)
+
+    def test_cli_sqlite_evidence_fails_closed_on_missing_or_non_directory_root(self):
+        # Reviewed defect: a nonexistent copy returned exit 0 and ok:true.
+        regular = self.private / "regular-file"
+        regular.write_text("synthetic\n")
+        for root in (self.private / "nonexistent-copy", regular):
+            with self.subTest(root=root.name):
+                out = self.private / f"out-{root.name}"
+                result = self.cli("sqlite-evidence", str(root), "--out", str(out),
+                                  "--live", str(self.live))
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertNotIn('"ok": true', result.stdout)
+                self.assertIn("FAIL", result.stderr)
+                self.assertFalse(out.exists())
+        result = self.cli("manifest", str(self.private / "nonexistent-copy"))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_cli_database_free_directory_is_a_valid_result(self):
+        copy = self.private / "inspect" / "no-db"
+        (copy / "nested").mkdir(parents=True)
+        (copy / "nested" / "notes.txt").write_text("synthetic\n")
+        (copy / "readme.txt").write_text("synthetic\n")
+        (copy / "empty").mkdir()
+        result = self.cli("sqlite-evidence", str(copy), "--out", str(self.private / "out"),
+                          "--live", str(self.live))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report, {"databases": {}, "files_inspected": 2, "ok": True})
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root bypasses permission bits")
+    def test_cli_unreadable_directory_or_file_fails_closed(self):
+        copy = self.private / "inspect" / "mount"
+        (copy / "locked").mkdir(parents=True)
+        (copy / "locked" / "hidden.db").write_text("synthetic\n")
+        unreadable = copy / "unreadable.bin"
+        unreadable.write_text("synthetic\n")
+        for target, restore in ((copy / "locked", 0o755), (unreadable, 0o644)):
+            with self.subTest(target=target.name):
+                os.chmod(target, 0)
+                self.addCleanup(os.chmod, target, restore)
+                for args in (("sqlite-evidence", str(copy), "--out",
+                              str(self.private / f"out-{target.name}"), "--live", str(self.live)),
+                             ("manifest", str(copy))):
+                    result = self.cli(*args)
+                    self.assertEqual(result.returncode, 2, args[0] + result.stdout + result.stderr)
+                    self.assertIn("FAIL", result.stderr)
+                    self.assertNotIn('"ok": true', result.stdout)
+                os.chmod(target, restore)
+
+    def test_enumeration_and_read_errors_propagate_without_permissions(self):
+        # Same failure modes injected directly, so the regression also runs as root.
+        copy = self.private / "inspect" / "mount"
+        (copy / "sub").mkdir(parents=True)
+        (copy / "data.bin").write_text("synthetic\n")
+        real_walk = os.walk
+
+        def failing_walk(top, onerror=None, **kwargs):
+            if onerror is None:
+                self.fail("os.walk must be called with an onerror handler")
+            onerror(PermissionError(13, "Permission denied", str(copy / "sub")))
+            yield from real_walk(top, onerror=onerror, **kwargs)
+
+        with unittest.mock.patch.object(snapshot_evidence.os, "walk", failing_walk):
+            for call in (lambda: snapshot_evidence.manifest(copy),
+                         lambda: snapshot_evidence.sqlite_evidence(copy, self.private / "o1",
+                                                                   [self.live])):
+                with self.assertRaises(snapshot_evidence.InspectionError):
+                    call()
+        real_open = open
+
+        def failing_open(path, *args, **kwargs):
+            if Path(path).name == "data.bin":
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        with unittest.mock.patch("builtins.open", failing_open):
+            with self.assertRaises(snapshot_evidence.InspectionError):
+                snapshot_evidence.sqlite_evidence(copy, self.private / "o2", [self.live])
+            with self.assertRaises(snapshot_evidence.InspectionError):
+                snapshot_evidence.manifest(copy)
 
     def test_doc_never_points_sqlite_at_a_live_mount(self):
         section = DOC[DOC.index("[S1]"):DOC.index("[B1]")]

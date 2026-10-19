@@ -22,6 +22,11 @@ data. It has three subcommands:
       delete its sidecars when the last connection closes, so this command
       refuses to run when COPY_ROOT is, contains or is inside any LIVE mount
       source. Writes <relpath>.backup files under DIR and prints a JSON report.
+      Fails closed (exit 2): a missing or non-directory COPY_ROOT, a directory
+      that cannot be enumerated, a file that cannot be stat'ed or read, or a
+      SQLite error is an error, never "no databases". A fully inspected
+      database-free directory is a valid result: empty "databases", ok true,
+      with "files_inspected" counting the regular files read.
 
 SQLite databases are found by their 16-byte file header, not by name.
 """
@@ -46,10 +51,34 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+class InspectionError(ValueError):
+    """Evidence could not be gathered; never treated as an empty result."""
+
+
+def _why(error):
+    return error.strerror or str(error)
+
+
+def _raise(error):
+    raise InspectionError(f"cannot enumerate {error.filename}: {_why(error)}")
+
+
+def _require_dir(root):
+    """Reject a missing or non-directory root before any inspection."""
+    try:
+        info = os.stat(root)
+    except OSError as error:
+        raise InspectionError(f"cannot inspect root {root}: {_why(error)}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise InspectionError(f"not a directory: {root}")
+
+
 def _walk(root):
+    """Yield every entry under ``root``; any enumeration error is fatal."""
+    _require_dir(root)
     root = Path(root)
     yield root, "."
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_raise, followlinks=False):
         dirnames.sort()
         for name in sorted(dirnames + filenames):
             path = Path(dirpath) / name
@@ -58,16 +87,20 @@ def _walk(root):
 
 def manifest(root):
     """Return the read-only content and owner/mode manifest of ``root``."""
-    if not Path(root).is_dir():
-        raise ValueError(f"not a directory: {root}")
     entries = {}
     for path, rel in _walk(root):
-        info = os.lstat(path)
+        try:
+            info = os.lstat(path)
+        except OSError as error:
+            raise InspectionError(f"cannot stat {rel}: {_why(error)}")
         kind = _KINDS.get(stat.S_IFMT(info.st_mode), "other")
         entry: dict = {"type": kind, "owner": f"{info.st_uid}:{info.st_gid}",
                        "mode": format(stat.S_IMODE(info.st_mode), "04o")}
         if kind == "f":
-            entry["sha256"] = _sha256(path)
+            try:
+                entry["sha256"] = _sha256(path)
+            except OSError as error:
+                raise InspectionError(f"cannot read {rel}: {_why(error)}")
             entry["size"] = info.st_size
         elif kind == "l":
             entry["target"] = os.readlink(path)
@@ -102,11 +135,12 @@ def check_isolated(copy_root, live_roots):
 
 
 def is_sqlite(path):
+    """True if ``path`` starts with the SQLite header; read errors are fatal."""
     try:
         with open(path, "rb") as handle:
             return handle.read(16) == SQLITE_MAGIC
-    except OSError:
-        return False
+    except OSError as error:
+        raise InspectionError(f"cannot read {path}: {_why(error)}")
 
 
 def sqlite_evidence(copy_root, out_dir, live_roots):
@@ -115,30 +149,49 @@ def sqlite_evidence(copy_root, out_dir, live_roots):
     check_isolated(out_dir, live_roots)
     out_dir = Path(out_dir)
     report = {}
-    for path, rel in _walk(copy_root):
-        if not path.is_file() or path.is_symlink() or not is_sqlite(path):
+    # Inspect the whole copy before opening any database: opening a WAL copy
+    # may checkpoint it and delete its sidecars, which must not be mistaken for
+    # (or hide) an inspection error.
+    databases = []
+    files_inspected = 0
+    for path, rel in list(_walk(copy_root)):
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError as error:
+            raise InspectionError(f"cannot stat {rel}: {_why(error)}")
+        if not stat.S_ISREG(mode):
             continue
+        files_inspected += 1
+        if is_sqlite(path):
+            databases.append((path, rel))
+    for path, rel in databases:
         target = out_dir / (rel + ".backup")
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             raise ValueError(f"refusing to overwrite {target}")
-        source = sqlite3.connect(path)
         try:
-            destination = sqlite3.connect(target)
+            source = sqlite3.connect(path)
             try:
-                source.backup(destination)
+                destination = sqlite3.connect(target)
+                try:
+                    source.backup(destination)
+                finally:
+                    destination.close()
             finally:
-                destination.close()
-        finally:
-            source.close()
-        check = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
-        try:
-            result = [row[0] for row in check.execute("PRAGMA integrity_check")]
-        finally:
-            check.close()
+                source.close()
+            check = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+            try:
+                result = [row[0] for row in check.execute("PRAGMA integrity_check")]
+            finally:
+                check.close()
+        except sqlite3.Error as error:
+            raise InspectionError(f"SQLite evidence failed for {rel}: {error}")
         report[rel] = {"backup": str(target), "backup_sha256": _sha256(target),
                        "integrity_check": result, "ok": result == ["ok"]}
-    return {"databases": report, "ok": all(item["ok"] for item in report.values())}
+    # An empty "databases" map is valid only because the root was verified to
+    # be a directory and every entry was enumerated and read without error.
+    return {"databases": report, "files_inspected": files_inspected,
+            "ok": all(item["ok"] for item in report.values())}
 
 
 def main(argv=None):
@@ -168,7 +221,7 @@ def main(argv=None):
         report = sqlite_evidence(args.copy_root, args.out, args.live)
         print(json.dumps(report, indent=1, sort_keys=True))
         return 0 if report["ok"] else 1
-    except ValueError as error:
+    except (ValueError, OSError) as error:
         print("FAIL", error, file=sys.stderr)
         return 2
 

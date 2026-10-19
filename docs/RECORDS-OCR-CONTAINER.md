@@ -205,7 +205,12 @@ any step fails, stop and take the rollback path named for that step.
    copy may be checkpointed by this step; that is why it is disposable and is
    never used as a restore source or comparison baseline. Record the SHA-256 of
    each `.tar` and `.backup` file. File counts and owner/mode digests alone do
-   not prove byte integrity; the content manifest does.
+   not prove byte integrity; the content manifest does. `sqlite-evidence` must
+   exit 0 with `"ok": true`; it fails closed (exit 2) on a missing or
+   non-directory copy, an unreadable directory or file, or a SQLite error. An
+   empty `"databases"` map is valid only for a mount the inventory lists as
+   database-free, and `"files_inspected"` must match the regular-file count of
+   the baseline manifest.
 
 6. [S3] Prove the backup restores and that the live data never changed. Extract
    each `.tar` into a second, empty scratch directory in `$PRIVATE` and, before
