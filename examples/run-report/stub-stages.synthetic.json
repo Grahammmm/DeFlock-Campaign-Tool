@@ -1,0 +1,12 @@
+{
+  "stub_fixture_version": 1,
+  "stages": {
+    "sync": {"result": {"status": "ok", "counts": {"input": 3, "output": 3, "failed": 0, "skipped": 0}}},
+    "delta": {"result": {"status": "ok", "counts": {"input": 120, "output": 4, "failed": 0, "skipped": 116}}},
+    "adoption": {"result": {"status": "ok", "counts": {"input": 4, "output": 4, "failed": 0, "skipped": 0}, "new_data": {"documents": 4}}},
+    "portal": {"result": {"status": "warn", "error_code": "PORTAL_HOST_REFUSED", "counts": {"input": 2, "output": 1, "failed": 0, "skipped": 1}, "new_data": {"portal_releases": 1}, "needs_g": [{"code": "PORTAL_HOST_NOT_ALLOWLISTED", "severity": "action", "count": 1}]}},
+    "extract": {"result": {"status": "ok", "counts": {"input": 5, "output": 3, "failed": 0, "skipped": 2}, "new_data": {"pages": 21, "extracted_units": 140}, "needs_g": [{"code": "AWAITING_OCR", "severity": "info", "count": 2}]}},
+    "digest_gates": {"result": {"status": "warn", "error_code": "GATE_REVIEW_REQUIRED", "counts": {"input": 3, "output": 3, "failed": 0, "skipped": 0}, "review_required": 2}},
+    "outputs": {"result": {"status": "ok", "counts": {"input": 3, "output": 3, "failed": 0, "skipped": 0}}}
+  }
+}
