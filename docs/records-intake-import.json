@@ -6,7 +6,7 @@
       "source_relative_path": "scripts/intake.py",
       "source_sha256": "c37b6a831d7c0546f28c34db046b98c6d1fa56bd9bb815771c84679b7ab0244f",
       "engine_path": "campaign_tool/records/intake/folder.py",
-      "engine_sha256": "00eb1077446e71da41de5e32dfa2d45bf5f21b7c8865ec3f4cbcd6c6e9cfc57f"
+      "engine_sha256": "966624dba4a086568a90c553b4171ba64e86539152161e90df07614d573aa639"
     },
     {
       "source_relative_path": "scripts/repair_intake.py",
@@ -50,7 +50,8 @@
     "Native EML/MSG exact-wire inventory and derived-item provenance retain lower shared budgets; extraction edges bind verified immediate parent hashes",
     "Respect inherited extraction resource limits and include effective worker memory in parser-budget cache identity",
     "C20: strict CSV/TSV record parsing with logical/physical error spans; ragged rows retain values with ambiguous column mapping; version CSV extraction policy",
-    "C20 acceptance reconciliation: ragged CSV/TSV records retain values and exact locators without inferred missing header fields; well-shaped empty cells retain empty presence"
+    "C20 acceptance reconciliation: ragged CSV/TSV records retain values and exact locators without inferred missing header fields; well-shaped empty cells retain empty presence",
+    "#137: secure_open opens once with O_NOFOLLOW_ANY alone where the platform defines it (macOS 11+), refusing a symlink in any path component; elsewhere the original descriptor walk is unchanged. Engine-byte binding only: the original source identity is unchanged"
   ],
   "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported",
   "engine_revision": "portable-intake-3"
