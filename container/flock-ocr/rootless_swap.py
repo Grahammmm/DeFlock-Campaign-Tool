@@ -60,6 +60,7 @@ UNIT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]*")
 TAG_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*")
 IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 HEX64_RE = re.compile(r"[0-9a-f]{64}")
+ATTEMPT_RE = re.compile(r"attempt-(\d{3,})")
 _MISSING = object()
 
 
@@ -1006,27 +1007,116 @@ class Swap:
         if not self.rbc_differs:
             self.log("    nothing to restore")
 
+    # Preservation of the pre-restore state. Each capture is a numbered attempt
+    # directory $RUN/rollback/<label>/attempt-NNN holding current.json (live
+    # manifest), current.tar and, written last, receipt.json. An attempt
+    # directory is created exclusively and never written again: a retried or
+    # interrupted rollback adds a new attempt instead of truncating an old
+    # one, so the first capture (the only copy of replacement-only work) can
+    # never be replaced by an empty or partial restore.
+
+    def _attempt_dirs(self, label):
+        root = self.run_dir / "rollback" / label
+        if not root.is_dir():
+            return []
+        return sorted(p for p in root.iterdir() if p.is_dir() and ATTEMPT_RE.fullmatch(p.name))
+
+    def validated_preservations(self, label):
+        """Validate every receipted attempt for label; return them oldest first.
+
+        Any receipted attempt whose files no longer match its receipt (or the
+        hashes recorded in state) stops the rollback before live data is
+        touched. Attempts without a receipt were interrupted before they were
+        verified; they are kept untouched and never relied on.
+        """
+        recorded = {a["attempt"]: a for a in self.state.get("preservations", {}).get(label, [])}
+        valid = []
+        for path in self._attempt_dirs(label):
+            receipt_path = path / "receipt.json"
+            if not receipt_path.is_file():
+                self.log(f"    {label}: {path.name} has no receipt (interrupted capture); kept untouched, not used")
+                continue
+            receipt = json.loads(receipt_path.read_text())
+            problems = []
+            if receipt.get("label") != label or receipt.get("attempt") != path.name:
+                problems.append("receipt names another attempt")
+            for name, key in (("current.tar", "archive_sha256"), ("current.json", "manifest_sha256")):
+                f = path / name
+                if not f.is_file() or sha256_file(f) != receipt.get(key):
+                    problems.append(f"{name} differs from its receipt")
+            known = recorded.get(path.name)
+            if known is not None and any(known.get(k) != receipt.get(k)
+                                         for k in ("archive_sha256", "manifest_sha256")):
+                problems.append("receipt differs from the hashes recorded in state.json")
+            if problems:
+                raise StepFailed(f"{label}: preserved {path.name} failed validation ({'; '.join(problems)}); "
+                                 "leaving live data untouched")
+            valid.append((path, receipt))
+        missing = set(recorded) - {p.name for p, _ in valid}
+        if missing:
+            raise StepFailed(f"{label}: preserved attempt(s) {sorted(missing)} recorded in state.json are "
+                             "missing or unreceipted; leaving live data untouched")
+        return valid
+
+    def preserve_current(self, label, current):
+        """Capture live <label> into a new, exclusive attempt directory and verify it."""
+        dirs = self._attempt_dirs(label)
+        number = 1 + max((int(ATTEMPT_RE.fullmatch(p.name).group(1)) for p in dirs), default=0)
+        name = f"attempt-{number:03d}"
+        rel = f"rollback/{label}/{name}"
+        path = self.run_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.mkdir(mode=0o700)  # exclusive: never reuse an attempt directory
+        (path / "current.json").write_text(json.dumps(current, indent=1, sort_keys=True) + "\n")
+        self.helper([*TAR, "-cpf", f"{PRIV}/{rel}/current.tar", "-C", f"{LIVE}/{label}", "."], only=[label])
+        check_rel = f"rollback/verify/{label}-{name}"
+        self.mkdir(check_rel)
+        self.helper([*TAR, "-xpf", f"{PRIV}/{rel}/current.tar", "-C", f"{PRIV}/{check_rel}"], live=None)
+        self.require_equal(current, self.private_manifest(check_rel), f"{label} {name} current-state archive")
+        self.helper(["rm", "-rf", "--one-file-system", f"{PRIV}/{check_rel}"], live=None)
+        receipt = {"label": label, "attempt": name, "created": self.system.now(),
+                   "archive_sha256": sha256_file(path / "current.tar"),
+                   "manifest_sha256": sha256_file(path / "current.json"),
+                   "verified": "extracted to an isolated directory; manifest equal to live"}
+        tmp = path / "receipt.json.tmp"
+        tmp.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n")
+        os.replace(tmp, path / "receipt.json")
+        for f in ("current.tar", "current.json", "receipt.json"):
+            os.chmod(path / f, 0o400)
+        self.state.setdefault("preservations", {}).setdefault(label, []).append(
+            {k: receipt[k] for k in ("attempt", "archive_sha256", "manifest_sha256", "created")})
+        self.save_state()
+        self.log(f"    {label}: current state preserved and verified in $RUN/{rel}")
+        return path
+
     def restore_mount(self, label):
-        """Archive the current state aside, verify that archive, then restore S1."""
+        """Preserve the current state (immutably), verify it, then restore S1."""
         if not self.gate_ok():
             raise StepFailed("refusing to restore without a passed snapshot gate")
         receipt = self.read_json("snapshot-receipt.json")
         archive = self.run_dir / "s1" / f"{label}.tar"
         if sha256_file(archive) != receipt["archives_sha256"].get(label):
             raise StepFailed(f"{label}: S1 archive hash differs from the receipt")
+        previous = self.validated_preservations(label)
         current = self.live_manifest(label)
-        self.write_json(f"rollback/{label}.current.json", current)
-        self.mkdir("rollback")
-        self.helper([*TAR, "-cpf", f"{PRIV}/rollback/{label}.current.tar", "-C", f"{LIVE}/{label}", "."],
-                    only=[label])
-        check_rel = f"rollback/verify/{label}"
-        self.mkdir(check_rel)
-        self.helper([*TAR, "-xpf", f"{PRIV}/rollback/{label}.current.tar", "-C", f"{PRIV}/{check_rel}"], live=None)
-        self.require_equal(current, self.private_manifest(check_rel), f"{label} current-state archive")
-        self.helper(["rm", "-rf", "--one-file-system", f"{PRIV}/{check_rel}"], live=None)
+        match = next((p for p, _ in reversed(previous)
+                      if not snapshot_evidence.compare(json.loads((p / "current.json").read_text()), current)),
+                     None)
+        if match is not None:
+            self.log(f"    {label}: live already preserved in $RUN/rollback/{label}/{match.name}; not re-archived")
+        else:
+            match = self.preserve_current(label, current)
+        # Invariant before any destructive step: a receipted, validated
+        # attempt holds exactly the live state about to be cleared.
+        self.state.setdefault("restoring", {})[label] = {"preserved_in": match.name, "clear_started": True}
+        self.save_state()
         self.helper(["find", f"{LIVE}/{label}", "-mindepth", "1", "-delete"], live="rw", only=[label])
         self.helper([*TAR, "-xpf", f"{PRIV}/s1/{label}.tar", "-C", f"{LIVE}/{label}"], live="rw", only=[label])
-        self.log(f"    {label}: current state kept in $RUN/rollback/{label}.current.tar; S1 restored")
+        self.state["restoring"][label]["extracted"] = True
+        self.save_state()
+        kept = [p.name for p, _ in previous if p.name != match.name]
+        self.log(f"    {label}: S1 restored; preserved states in $RUN/rollback/{label}/: "
+                 f"{', '.join(kept + [match.name])}")
 
     # -- runners --
 

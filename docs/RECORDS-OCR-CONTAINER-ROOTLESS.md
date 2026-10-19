@@ -272,10 +272,19 @@ last. A rollback never starts the replacement and never uses `docker rm`.
    again.
 3. [RB-C3] Compare each live mount with its S1 baseline.
 4. [RB-C4] For each mount that differs, first check the S1 archive hash
-   against the receipt. Archive the current state into
-   `$RUN/rollback/mNN.current.tar`, extract it to an isolated directory and
-   check that it matches the current manifest. Only then clear the mount and
-   extract the S1 archive into it. The current state is kept, not discarded.
+   against the receipt, then validate every earlier preservation of that
+   mount against its receipt (stop if any differs). Unless one of them already
+   holds exactly the live state, archive the current state into a new attempt
+   directory `$RUN/rollback/mNN/attempt-NNN/` (`current.json`, `current.tar`).
+   Extract it to an isolated directory and check it against the current
+   manifest. Write `receipt.json` (hashes) last and make the three files
+   read-only. Only then clear the mount and extract the S1 archive into it.
+   Attempt directories are created exclusively and never rewritten. A retried
+   or interrupted rollback adds `attempt-002`, and so on; it never truncates an
+   earlier capture, so the first one keeps the replacement's work even if a
+   restore fails part-way. An attempt without a receipt was interrupted before
+   verification; it is kept untouched and never used. `state.json` records
+   each receipt and which attempt covered the clear.
 5. [RB-C5] Each mount must equal its S1 baseline before any start. Otherwise
    escalate.
 6. [RB-C6] Rename `<name>-pre-ocr` back. Its ID must equal the recorded one.

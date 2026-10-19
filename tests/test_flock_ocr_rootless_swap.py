@@ -327,6 +327,10 @@ class RunMixin:
     def state(self):
         return json.loads((self.run_dir() / "state.json").read_text())
 
+    @staticmethod
+    def tar_listing(archive):
+        return subprocess.run(["tar", "-tf", str(archive)], capture_output=True, text=True, check=True).stdout
+
     def assert_live_unchanged(self):
         self.assertEqual(evidence.compare(self.live_before["vol"], evidence.manifest(self.fake.volume)), [])
         self.assertEqual(evidence.compare(self.live_before["bind"], evidence.manifest(self.fake.bind)), [])
@@ -690,10 +694,10 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
         self.assertIn("mounts differing from S1: ['m00']", out)
         self.assert_live_unchanged()
-        self.assertTrue((run / "rollback" / "m00.current.tar").is_file())
-        listing = subprocess.run(["tar", "-tf", str(run / "rollback" / "m00.current.tar")],
-                                 capture_output=True, text=True, check=True).stdout
-        self.assertIn("./state/new.txt", listing)
+        attempt = run / "rollback" / "m00" / "attempt-001"
+        self.assertTrue((attempt / "receipt.json").is_file())
+        self.assertIn("./state/new.txt", self.tar_listing(attempt / "current.tar"))
+        self.assertEqual([p.name for p in (run / "rollback" / "m00").iterdir()], ["attempt-001"])
         old, failed = self.fake.find(TARGET), self.fake.find(TARGET + "-ocr-failed")
         self.assertEqual((old["Id"], old["State"]["Running"]), ("1" * 64, True))
         self.assertEqual((failed["Id"], failed["State"]["Running"]), ("9" * 64, False))
@@ -703,6 +707,164 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertEqual(self.state()["phase"], "rolled_back")
         code, out = self.run_swap(["--rollback", str(run)])
         self.assertEqual(code, swap.EXIT_REFUSED, out)
+
+
+class RollbackPreservationTests(RunMixin, unittest.TestCase):
+    """Rollback retries never replace an earlier preserved current state."""
+
+    EXTRACT_S1 = "-xpf /private/s1/m00.tar -C /live/m00"
+
+    def held_run(self):
+        def write():
+            (self.fake.volume / "state" / "notes.txt").write_text("written by the replacement\n")
+            (self.fake.volume / "state" / "new.txt").write_text("replacement-only work\n")
+        self.fake.hooks["start:" + "9" * 64] = write
+        self.assertEqual(self.run_swap(self.args())[0], swap.EXIT_HELD)
+        self.fake.hooks.clear()
+        return self.run_dir()
+
+    def guard_starts(self):
+        """Every start must find live data already equal to the S1 baseline."""
+        self.starts_seen = []
+
+        def check():
+            self.starts_seen.append(evidence.compare(self.live_before["vol"], evidence.manifest(self.fake.volume)))
+        self.fake.hooks["docker start"] = check
+        self.fake.hooks["systemctl --user start"] = check
+
+    @staticmethod
+    def file_hashes(directory):
+        return {p.name: swap.sha256_file(p) for p in sorted(directory.iterdir()) if p.is_file()}
+
+    def extract(self, archive):
+        dest = Path(tempfile.mkdtemp(dir=self.tmp))
+        subprocess.run(["tar", "-xf", str(archive), "-C", str(dest)], check=True)
+        return dest
+
+    def destructive_helpers(self, since=0):
+        return [r["command"] for r in self.fake.helper_runs[since:]
+                if any(d.startswith("/live/") and not ro for d, ro in r["mounts"])]
+
+    def test_retry_after_failed_extraction_keeps_the_original_preservation(self):
+        run = self.held_run()
+        self.guard_starts()
+        self.fake.faults[self.EXTRACT_S1] = (1, "", "synthetic extraction failure")
+        events = len(lifecycle(self.fake))
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn("ESCALATE at [RB-C4]", out)
+        self.assertFalse(any(e.startswith(("start", "systemctl start")) for e in lifecycle(self.fake)[events:]))
+        self.assertEqual(self.starts_seen, [])
+        self.assertFalse((self.fake.volume / "state" / "new.txt").exists(), "live was cleared before the fault")
+        first = run / "rollback" / "m00" / "attempt-001"
+        receipt = json.loads((first / "receipt.json").read_text())
+        hashes = self.file_hashes(first)
+        self.assertEqual(hashes["current.tar"], receipt["archive_sha256"])
+        self.assertEqual(self.state()["restoring"]["m00"], {"preserved_in": "attempt-001", "clear_started": True})
+
+        self.fake.faults.clear()
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertEqual(self.file_hashes(first), hashes, "attempt-001 was rewritten by the retry")
+        kept = self.extract(first / "current.tar")
+        self.assertEqual((kept / "state" / "new.txt").read_text(), "replacement-only work\n")
+        self.assertEqual((kept / "state" / "notes.txt").read_text(), "written by the replacement\n")
+        second = run / "rollback" / "m00" / "attempt-002"
+        self.assertTrue((second / "receipt.json").is_file(), "the partial live state is preserved separately")
+        self.assertIn("attempt-001, attempt-002", out)
+        self.assert_live_unchanged()
+        self.assertEqual(self.state()["phase"], "rolled_back")
+        self.assertEqual([p["attempt"] for p in self.state()["preservations"]["m00"]],
+                         ["attempt-001", "attempt-002"])
+        self.assertTrue(self.starts_seen)
+        self.assertTrue(all(diff == [] for diff in self.starts_seen), self.starts_seen)
+        self.assertEqual(lifecycle(self.fake)[-3:], ["start old", "start sidecar",
+                                                     "systemctl start synthetic-mail.timer"])
+        self.assert_safe_helpers(allow_restore=True)
+
+    def test_interrupted_preservation_is_kept_untouched_and_never_used(self):
+        run = self.held_run()
+        self.guard_starts()
+
+        def interrupt():
+            raise KeyboardInterrupt("synthetic interruption while verifying the capture")
+        self.fake.hooks["-xpf /private/rollback/m00/attempt-001/current.tar"] = interrupt
+        helpers = len(self.fake.helper_runs)
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_swap(["--rollback", str(run)])
+        self.assertEqual(self.destructive_helpers(helpers), [])
+        self.assertEqual((self.fake.volume / "state" / "new.txt").read_text(), "replacement-only work\n")
+        first = run / "rollback" / "m00" / "attempt-001"
+        self.assertFalse((first / "receipt.json").exists())
+        hashes = self.file_hashes(first)
+        self.assertEqual(self.state()["phase"], "rollback:RB-C")
+        self.assertNotIn("preservations", self.state())
+        self.assertEqual(self.starts_seen, [])
+
+        del self.fake.hooks["-xpf /private/rollback/m00/attempt-001/current.tar"]
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("attempt-001 has no receipt (interrupted capture); kept untouched, not used", out)
+        self.assertEqual(self.file_hashes(first), hashes)
+        second = run / "rollback" / "m00" / "attempt-002"
+        self.assertEqual(self.state()["restoring"]["m00"]["preserved_in"], "attempt-002")
+        kept = self.extract(second / "current.tar")
+        self.assertEqual((kept / "state" / "new.txt").read_text(), "replacement-only work\n")
+        self.assert_live_unchanged()
+        self.assertTrue(self.starts_seen and all(diff == [] for diff in self.starts_seen), self.starts_seen)
+
+    def test_failed_capture_leaves_live_untouched_and_retry_uses_a_new_attempt(self):
+        run = self.held_run()
+        first = run / "rollback" / "m00" / "attempt-001"
+
+        def partial():
+            (first / "current.tar").write_bytes(b"truncated")
+        self.fake.hooks["-cpf /private/rollback/m00/attempt-001/current.tar"] = partial
+        self.fake.faults["-cpf /private/rollback/m00/attempt-001/current.tar"] = (2, "", "synthetic tar failure")
+        helpers = len(self.fake.helper_runs)
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertEqual(self.destructive_helpers(helpers), [])
+        self.assertEqual((self.fake.volume / "state" / "new.txt").read_text(), "replacement-only work\n")
+        self.fake.hooks.clear()
+        self.fake.faults.clear()
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertEqual((first / "current.tar").read_bytes(), b"truncated")
+        self.assertFalse((first / "receipt.json").exists())
+        self.assertTrue((run / "rollback" / "m00" / "attempt-002" / "receipt.json").is_file())
+        self.assert_live_unchanged()
+
+    def test_tampered_preservation_stops_before_live_is_touched(self):
+        run = self.held_run()
+        self.fake.faults[self.EXTRACT_S1] = (1, "", "synthetic extraction failure")
+        self.assertEqual(self.run_swap(["--rollback", str(run)])[0], swap.EXIT_ESCALATE)
+        self.fake.faults.clear()
+        archive = run / "rollback" / "m00" / "attempt-001" / "current.tar"
+        os.chmod(archive, 0o600)
+        with open(archive, "ab") as handle:
+            handle.write(b"\0")
+        self.guard_starts()
+        helpers, events = len(self.fake.helper_runs), len(lifecycle(self.fake))
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn("attempt-001 failed validation (current.tar differs from its receipt)", out)
+        self.assertEqual(self.destructive_helpers(helpers), [])
+        self.assertFalse(any(e.startswith(("start", "systemctl start")) for e in lifecycle(self.fake)[events:]))
+        self.assertFalse((run / "rollback" / "m00" / "attempt-002").exists())
+
+    def test_reused_preservation_when_live_still_matches(self):
+        run = self.held_run()
+        # Fail the clear after the capture: live is never changed, so the
+        # retry reuses the verified attempt instead of capturing again.
+        self.fake.faults["/live/m00 -mindepth 1 -delete"] = (1, "", "synthetic delete failure")
+        self.assertEqual(self.run_swap(["--rollback", str(run)])[0], swap.EXIT_ESCALATE)
+        self.fake.faults.clear()
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("live already preserved in $RUN/rollback/m00/attempt-001; not re-archived", out)
+        self.assertEqual([p.name for p in (run / "rollback" / "m00").iterdir()], ["attempt-001"])
+        self.assert_live_unchanged()
 
 
 if __name__ == "__main__":
