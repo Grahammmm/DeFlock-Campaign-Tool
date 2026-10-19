@@ -7,7 +7,8 @@ Type=oneshot
 UMask=0077
 ExecStart=/bin/sh @RUN_RECORDS_SH@
 # Engine must stop new work at 45 minutes; two minutes allow final receipts.
-# The bounded Docker wait (attempts x delay, capped) must fit inside this.
+# The bounded Docker wait (readiness deadline plus per-command deadlines, see
+# README) and the bounded notify step must fit inside this.
 TimeoutStartSec=47min
 # Private run receipts, ledger, run-report.json and run-records.log in
 # RUNTIME_DIR are authoritative, not discarded stdout.

@@ -6,12 +6,14 @@ import http.server
 import json
 import os
 import re
+import shutil
 import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -24,16 +26,22 @@ FAKE_DOCKER = r"""#!/bin/sh
 # Synthetic docker shim. State lives in $STATE (rendered absolute path).
 STATE=@STATE@
 echo "$*" >>"$STATE/calls"
+hang() {
+  # Simulate an unresponsive daemon: a child that outlives a naive kill.
+  [ -e "$STATE/hang-$1" ] || return 0
+  sleep 30 & echo $! >"$STATE/hang-pid"; wait; exit 0
+}
 case "$1" in
   info)
+    hang info
     n=$(cat "$STATE/info-count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$STATE/info-count"
     up_after=$(cat "$STATE/up-after" 2>/dev/null || echo 999999)
     [ "$n" -ge "$up_after" ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
     exit 0;;
   inspect)
     case "$*" in
-      *State.Running*) echo true;;
-      *Image*) cat "$STATE/image";;
+      *State.Running*) hang inspect-running; echo true;;
+      *Image*) hang inspect-image; cat "$STATE/image";;
     esac
     exit 0;;
   exec)
@@ -96,7 +104,7 @@ class RecordsRuntimeTests(unittest.TestCase):
         self.runtime = self.tmp / "runtime"
         self.env_file = self.tmp / "telegram.env"
         self.env_file.write_text(f"TELEGRAM_BOT_TOKEN={FAKE_TOKEN}\nTELEGRAM_HOME_CHANNEL=-100\n")
-        values = {
+        self.values = {
             "RELEASE_COMMIT": "a" * 40, "RELEASE_DIR": "/synthetic/release",
             "RECORDS_ROOT": "/synthetic/root", "PARSERS_DIR": "/synthetic/parsers",
             "PRIVATE_TMP": "/synthetic/tmp", "DOCKER": str(docker),
@@ -105,14 +113,48 @@ class RecordsRuntimeTests(unittest.TestCase):
             "HOST_PYTHON": sys.executable, "NOTIFY_PY": str(RUNTIME / "notify.py"),
             "NOTIFY_ENV_FILE": str(self.env_file), "NOTIFY_LABEL": "Synthetic",
             "DOCKER_WAIT_ATTEMPTS": "3", "DOCKER_WAIT_DELAY": "0",
-            "DOCKER_WAIT_MAX_DELAY": "0",
+            "DOCKER_WAIT_MAX_DELAY": "0", "TIMEOUT": shutil.which("timeout"),
+            "DOCKER_CMD_TIMEOUT": "1", "DOCKER_WAIT_DEADLINE": "30",
+            "NOTIFY_TIMEOUT": "30",
         }
+        self.script = self.tmp / "run-records.sh"
+        self.render()
+
+    def render(self, **overrides):
         text = (RUNTIME / "run-records.sh.in").read_text()
-        for key, value in values.items():
+        for key, value in {**self.values, **overrides}.items():
             text = text.replace(f"@{key}@", value)
         self.assertIsNone(re.search(r"@[A-Z_]+@", text), "unrendered placeholder")
-        self.script = self.tmp / "run-records.sh"
         self.script.write_text(text)
+
+    def fake_helper(self, body, **overrides):
+        helper = self.tmp / "fake_notify.py"
+        helper.write_text(body)
+        self.render(NOTIFY_PY=str(helper), **overrides)
+
+    def assert_fallback_receipts(self, reason, status, code):
+        report = self.report()
+        self.assertEqual((report["status"], report["exit_code"]), (status, code))
+        self.assertTrue(report["notify_failed"])
+        self.assertEqual(report["notify"]["reason"], reason)
+        [alert] = self.alerts()
+        data = json.loads(alert.read_text())
+        self.assertEqual(
+            (data["kind"], data["reason"], data["run_status"], data["run_exit_code"]),
+            ("notify_failed", reason, status, code))
+        self.assertEqual(data["run_id"], report["run_id"])
+        log = (self.runtime / "run-records.log").read_text()
+        self.assertIn(f"notify: FAILED reason={reason}", log)
+
+    def assert_hang_child_gone(self):
+        pid = int((self.state / "hang-pid").read_text())
+        for _ in range(30):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        self.fail("hung docker child survived the command deadline")
 
     def run_script(self, api=None):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -148,13 +190,14 @@ class RecordsRuntimeTests(unittest.TestCase):
         (self.state / "up-after").write_text("999\n")
         result = self.run_script()
         self.assertEqual(result.returncode, 75)
-        self.assertIn("not ready after 3 attempts", result.stderr)
+        self.assertIn("not ready after 3/3 attempts", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(sum(c == "info" for c in self.calls()), 3)
         self.assertFalse(any(c.startswith("exec ") for c in self.calls()))
         report = self.report()
         self.assertEqual(report["status"], "docker_unavailable")
-        self.assertEqual(report["docker_wait"], {"attempts": 3, "max_attempts": 3})
+        self.assertEqual(report["docker_wait"],
+                         {"attempts": 3, "max_attempts": 3, "deadline_seconds": 30})
         self.assertIn("Docker", FakeTelegram.calls[0][1])
         log = (self.runtime / "run-records.log").read_text()
         self.assertEqual(log.count("retrying"), 2)
@@ -205,12 +248,72 @@ class RecordsRuntimeTests(unittest.TestCase):
         self.assertEqual(self.report()["notify"]["reason"], "missing_credentials")
         self.assertEqual(FakeTelegram.calls, [])
 
-    def test_notify_helper_crash_is_non_fatal(self):
-        text = self.script.read_text().replace(str(RUNTIME / "notify.py"), "/nonexistent/notify.py")
-        self.script.write_text(text)
+    def test_notify_helper_missing_writes_fallback_receipts(self):
+        self.render(NOTIFY_PY="/nonexistent/notify.py")
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("helper exited non-zero", result.stderr)
+        self.assert_fallback_receipts("helper_failed", "ok", 0)
+
+    def test_notify_helper_crash_preserves_failing_pipeline_exit(self):
+        (self.state / "exec-rc").write_text("3\n")
+        self.fake_helper("raise SystemExit(5)\n")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assert_fallback_receipts("helper_failed", "pipeline_failed", 3)
+
+    def test_notify_helper_exit_zero_without_outcome_is_detected(self):
+        self.fake_helper("raise SystemExit(0)\n")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_fallback_receipts("helper_no_outcome", "ok", 0)
+
+    def test_notify_helper_hang_is_bounded(self):
+        self.fake_helper("import time\ntime.sleep(60)\n", NOTIFY_TIMEOUT="1")
+        started = time.monotonic()
+        result = self.run_script()
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_fallback_receipts("helper_timeout", "ok", 0)
+
+    # --- hung docker daemon: per-command and overall deadlines -------------
+    def assert_clean_docker_unavailable(self, result, started):
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertEqual(self.report()["status"], "docker_unavailable")
+        self.assertFalse(any(c.startswith("exec ") for c in self.calls()))
+        self.assertEqual(len(FakeTelegram.calls), 1)
+        self.assert_hang_child_gone()
+
+    def test_hung_docker_info_reaches_docker_unavailable(self):
+        (self.state / "hang-info").touch()
+        started = time.monotonic()
+        result = self.run_script()
+        self.assert_clean_docker_unavailable(result, started)
+        self.assertEqual(sum(c == "info" for c in self.calls()), 3)
+
+    def test_hung_running_inspect_reaches_docker_unavailable(self):
+        (self.state / "hang-inspect-running").touch()
+        started = time.monotonic()
+        result = self.run_script()
+        self.assert_clean_docker_unavailable(result, started)
+
+    def test_hung_image_inspect_reaches_docker_unavailable(self):
+        (self.state / "hang-inspect-image").touch()
+        started = time.monotonic()
+        result = self.run_script()
+        self.assert_clean_docker_unavailable(result, started)
+        self.assertIn("timed out", result.stderr)
+
+    def test_overall_deadline_stops_retries_early(self):
+        (self.state / "up-after").write_text("999\n")
+        self.render(DOCKER_WAIT_ATTEMPTS="50", DOCKER_WAIT_DELAY="1",
+                    DOCKER_WAIT_MAX_DELAY="1", DOCKER_WAIT_DEADLINE="3")
+        started = time.monotonic()
+        result = self.run_script()
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual(result.returncode, 75)
+        self.assertLess(self.report()["docker_wait"]["attempts"], 50)
+        self.assertIn("readiness deadline 3s reached", result.stderr)
 
     # --- failure wording only on pipeline failure --------------------------
     def test_pipeline_failure_passes_exit_code_and_sends_failure(self):

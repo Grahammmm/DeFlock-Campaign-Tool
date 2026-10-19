@@ -4,10 +4,13 @@
 #
 # Exit codes:
 #   0..N  exit status of the records pipeline itself (passed through)
-#   75    Docker daemon or records container not ready after bounded retry
+#   75    Docker daemon or records container not ready within the bounded
+#         readiness deadline (including hung docker commands)
 #   78    configuration / identity check failed (nothing attempted)
 # A notification failure NEVER changes the exit status; it is logged, an
 # alert file is written and the run report carries "notify_failed": true.
+# That holds even when the notify helper itself cannot run, hangs, or exits
+# without recording an outcome: the wrapper then writes the receipts itself.
 set -eu
 umask 077
 
@@ -17,6 +20,7 @@ ROOT=@RECORDS_ROOT@
 PARSERS=@PARSERS_DIR@
 PRIVATE_TMP=@PRIVATE_TMP@
 DOCKER=@DOCKER@
+TIMEOUT=@TIMEOUT@
 CONTAINER=@CONTAINER@
 EXPECTED_IMAGE=@EXPECTED_IMAGE@
 RUN_UID=@RUN_UID@
@@ -28,14 +32,24 @@ NOTIFY_LABEL=@NOTIFY_LABEL@
 DOCKER_WAIT_ATTEMPTS=@DOCKER_WAIT_ATTEMPTS@
 DOCKER_WAIT_DELAY=@DOCKER_WAIT_DELAY@
 DOCKER_WAIT_MAX_DELAY=@DOCKER_WAIT_MAX_DELAY@
+DOCKER_CMD_TIMEOUT=@DOCKER_CMD_TIMEOUT@
+DOCKER_WAIT_DEADLINE=@DOCKER_WAIT_DEADLINE@
+NOTIFY_TIMEOUT=@NOTIFY_TIMEOUT@
+# Grace between TERM and KILL for a timed-out command.
+KILL_AFTER=2
 
 case "$RELEASE_COMMIT" in *[!0-9a-f]*|"") exit 78;; esac
 [ "${#RELEASE_COMMIT}" -eq 40 ] || exit 78
 [ "$(id -u)" -eq "$RUN_UID" ] || exit 78
-case "$DOCKER_WAIT_ATTEMPTS$DOCKER_WAIT_DELAY$DOCKER_WAIT_MAX_DELAY" in
-  *[!0-9]*|"") exit 78;;
-esac
+for n in "$DOCKER_WAIT_ATTEMPTS" "$DOCKER_WAIT_DELAY" "$DOCKER_WAIT_MAX_DELAY" \
+    "$DOCKER_CMD_TIMEOUT" "$DOCKER_WAIT_DEADLINE" "$NOTIFY_TIMEOUT"; do
+  case "$n" in *[!0-9]*|"") exit 78;; esac
+done
 [ "$DOCKER_WAIT_ATTEMPTS" -ge 1 ] || exit 78
+[ "$DOCKER_CMD_TIMEOUT" -ge 1 ] || exit 78
+[ "$DOCKER_WAIT_DEADLINE" -ge 1 ] || exit 78
+[ "$NOTIFY_TIMEOUT" -ge 1 ] || exit 78
+[ -x "$TIMEOUT" ] || exit 78
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -49,14 +63,27 @@ log() {
   printf '%s\n' "$line" >&2
 }
 
+# Run one docker command under a hard deadline. GNU timeout puts the command
+# in its own process group and signals the whole group, so a hung client and
+# anything it spawned are terminated. stdin is closed.
+dcmd() {
+  "$TIMEOUT" -k "$KILL_AFTER" "$DOCKER_CMD_TIMEOUT" "$DOCKER" "$@" </dev/null
+}
+
 docker_ready() {
-  "$DOCKER" info >/dev/null 2>&1 || return 1
-  [ "$("$DOCKER" inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = true ]
+  dcmd info >/dev/null 2>&1 || return 1
+  [ "$(dcmd inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = true ]
 }
 
 # Bounded wait for rootless Docker and the records container (Oct 17: the
-# timer fired after reboot before the rootless daemon was up).
+# timer fired after reboot before the rootless daemon was up). Bounded by
+# both an attempt count and an overall wall-clock deadline; every docker call
+# also has its own deadline, so a hung daemon cannot stall the run.
 DOCKER_ATTEMPTS_USED=0
+WAIT_STARTED=$(date +%s)
+deadline_left() {
+  echo $((WAIT_STARTED + DOCKER_WAIT_DEADLINE - $(date +%s)))
+}
 wait_for_docker() {
   delay="$DOCKER_WAIT_DELAY"
   attempt=1
@@ -68,6 +95,12 @@ wait_for_docker() {
     if [ "$attempt" -ge "$DOCKER_WAIT_ATTEMPTS" ]; then
       return 1
     fi
+    left=$(deadline_left)
+    if [ "$left" -le 0 ]; then
+      log "docker not ready (attempt $attempt/$DOCKER_WAIT_ATTEMPTS); readiness deadline ${DOCKER_WAIT_DEADLINE}s reached"
+      return 1
+    fi
+    [ "$delay" -le "$left" ] || delay="$left"
     log "docker not ready (attempt $attempt/$DOCKER_WAIT_ATTEMPTS); retrying in ${delay}s"
     sleep "$delay"
     attempt=$((attempt + 1))
@@ -76,29 +109,60 @@ wait_for_docker() {
   done
 }
 
+RUN_STATUS=unknown
+RUN_EXIT=0
 write_report() {
-  # $1 status, $2 exit code. Only fixed enums and integers; no record data.
+  # $1 notify_failed (true|false), $2 optional pre-rendered ',"notify":{...}'.
+  # Only fixed enums, integers and timestamps; no record data.
   tmp="$REPORT.tmp"
-  printf '{"schema":"records-run-report-v1","run_id":"%s","started_at":"%s","finished_at":"%s","status":"%s","exit_code":%s,"docker_wait":{"attempts":%s,"max_attempts":%s},"notify_failed":false}\n' \
-    "$RUN_ID" "$STARTED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" \
-    "$DOCKER_ATTEMPTS_USED" "$DOCKER_WAIT_ATTEMPTS" >"$tmp"
+  printf '{"schema":"records-run-report-v1","run_id":"%s","started_at":"%s","finished_at":"%s","status":"%s","exit_code":%s,"docker_wait":{"attempts":%s,"max_attempts":%s,"deadline_seconds":%s},"notify_failed":%s%s}\n' \
+    "$RUN_ID" "$STARTED_AT" "$FINISHED_AT" "$RUN_STATUS" "$RUN_EXIT" \
+    "$DOCKER_ATTEMPTS_USED" "$DOCKER_WAIT_ATTEMPTS" "$DOCKER_WAIT_DEADLINE" \
+    "$1" "${2:-}" >"$tmp"
   mv -f "$tmp" "$REPORT"
 }
 
+notify_fallback() {
+  # $1 fixed reason enum. Independent of notify.py: written by the wrapper
+  # when the helper could not run, failed, hung or left no outcome.
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  log "notify: FAILED reason=$1; run status unchanged"
+  write_report true ",\"notify\":{\"status\":\"failed\",\"at\":\"$at\",\"reason\":\"$1\"}" ||
+    log "notify: could not update run report"
+  alert="$RUNTIME_DIR/alerts/notify-failed-$RUN_ID.json"
+  printf '{"schema":"records-notify-alert-v1","kind":"notify_failed","run_id":"%s","run_status":"%s","run_exit_code":%s,"reason":"%s","at":"%s"}\n' \
+    "$RUN_ID" "$RUN_STATUS" "$RUN_EXIT" "$1" "$at" >"$alert.tmp" 2>/dev/null &&
+    mv -f "$alert.tmp" "$alert" || log "notify: could not write alert file"
+}
+
 notify() {
-  # Never fatal: any failure inside notify.py, or of notify.py itself, is
-  # logged and the run keeps its own exit status (Oct 16 regression).
-  if ! "$HOST_PYTHON" "$NOTIFY" --report "$REPORT" --alerts-dir "$RUNTIME_DIR/alerts" \
-      --log "$LOG" --env-file "$NOTIFY_ENV_FILE" --label "$NOTIFY_LABEL"; then
-    log "notify: helper exited non-zero; treated as notify failure (run status unchanged)"
+  # Never fatal (Oct 16 regression). Every path below returns 0.
+  set +e
+  "$TIMEOUT" -k "$KILL_AFTER" "$NOTIFY_TIMEOUT" \
+    "$HOST_PYTHON" "$NOTIFY" --report "$REPORT" --alerts-dir "$RUNTIME_DIR/alerts" \
+    --log "$LOG" --env-file "$NOTIFY_ENV_FILE" --label "$NOTIFY_LABEL" </dev/null
+  nrc=$?
+  if [ "$nrc" -eq 124 ] || [ "$nrc" -eq 137 ]; then
+    notify_fallback helper_timeout
+  elif [ "$nrc" -ne 0 ]; then
+    notify_fallback helper_failed
+  elif ! grep -q '"notify": *{' "$REPORT" 2>/dev/null; then
+    # Helper exited 0 but recorded no outcome (e.g. its last-resort guard).
+    notify_fallback helper_no_outcome
   fi
   cp -f "$REPORT" "$RUNTIME_DIR/run-report.json.tmp" 2>/dev/null &&
-    mv -f "$RUNTIME_DIR/run-report.json.tmp" "$RUNTIME_DIR/run-report.json" || true
+    mv -f "$RUNTIME_DIR/run-report.json.tmp" "$RUNTIME_DIR/run-report.json" ||
+    log "notify: could not publish run-report.json"
+  set -e
+  return 0
 }
 
 finish() {
   # $1 status, $2 exit code
-  write_report "$1" "$2"
+  RUN_STATUS=$1
+  RUN_EXIT=$2
+  FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  write_report false
   log "finished status=$1 exit=$2"
   notify
   exit "$2"
@@ -106,10 +170,18 @@ finish() {
 
 log "started"
 if ! wait_for_docker; then
-  log "ERROR: Docker daemon or container '$CONTAINER' not ready after $DOCKER_WAIT_ATTEMPTS attempts; no records work was attempted"
+  log "ERROR: Docker daemon or container '$CONTAINER' not ready after $DOCKER_ATTEMPTS_USED/$DOCKER_WAIT_ATTEMPTS attempts (deadline ${DOCKER_WAIT_DEADLINE}s, per-command ${DOCKER_CMD_TIMEOUT}s); no records work was attempted"
   finish docker_unavailable 75
 fi
-if [ "$("$DOCKER" inspect --format '{{.Image}}' "$CONTAINER")" != "$EXPECTED_IMAGE" ]; then
+set +e
+image="$(dcmd inspect --format '{{.Image}}' "$CONTAINER" 2>/dev/null)"
+irc=$?
+set -e
+if [ "$irc" -ne 0 ]; then
+  log "ERROR: docker inspect of container '$CONTAINER' failed or timed out (rc=$irc); no records work was attempted"
+  finish docker_unavailable 75
+fi
+if [ "$image" != "$EXPECTED_IMAGE" ]; then
   log "ERROR: container image does not match the pinned image; no records work was attempted"
   finish config_error 78
 fi
