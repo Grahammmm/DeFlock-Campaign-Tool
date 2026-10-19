@@ -77,7 +77,14 @@ the backend derives it: occurrence ids, kinds, CAS hashes, `source_ref`
 (including `mime_path`), `parent_occurrence_id`, acquisition method and
 evidence. The verification receipt is opened at its content-addressed path
 `<root>/intake/verification-receipts/<receipt_sha256>` (derived from the
-digest, never taken from stored evidence, no symlinks) and re-hashed. First
+digest, never taken from stored evidence, no symlinks) and re-hashed. Once all
+declarations agree, every canonical original bound to the identity (the EML or
+native original, each attachment, each native item) is opened read-only at
+`<root>/intake/blobs/<sha256>` (path derived from the digest, never from
+evidence; no symlink on any component), stream-hashed and length-checked
+against its declaration, and its file identity must stay stable across the
+read. Nothing is repaired, re-sealed or re-chmod-ed. This applies to
+`incomplete` identities too, so a damaged one is never resumed. First
 failure wins:
 
 | code | meaning |
@@ -96,6 +103,11 @@ failure wins:
 | `identity_evidence_mismatch` | evidence keys differ from the backend's exact set, or `cas_sha256`, `bytes` or `native_item` disagree |
 | `identity_verification_path_changed` | evidence `verification_receipt_path` is not the canonical content-addressed path |
 | `identity_original_missing` / `identity_original_*` | an original has no effective declaration, or one the backend would refuse |
+| `identity_original_blob_missing` | a bound canonical original is absent from the CAS |
+| `identity_original_blob_unsafe` | the CAS entry is a symlink, not a regular file, or unreadable |
+| `identity_original_blob_changed` | the stored bytes no longer hash to the digest or their length differs from the declared `bytes` (same-length corruption included) |
+| `identity_original_blob_unstable` | the CAS file changed identity, size or timestamps while it was being verified |
+| `identity_original_blob_invalid` | the digest or declared length is not well-formed (never opened) |
 | `identity_mail_row_changed` / `identity_mail_row_unverifiable` | the `mail_messages` row differs from the projection the backend would write (headers, Message-ID, received date, provenance), or that projection cannot be recomputed |
 
 Only `export_receipt_path` may differ (it must still be a string): the backend

@@ -17,8 +17,9 @@ Every receipt is classified against the ledger, read-only:
   this receipt exactly (mail_messages row, occurrence ids, CAS hashes, MIME
   locators, parents, multiplicity, evidence incl. the content-addressed
   verification receipt bytes, original declarations; the read-only equivalent
-  of CanonicalMailBackend's re-enrollment and replay checks), and every
-  declared original has a ``done`` preserve stage;
+  of CanonicalMailBackend's re-enrollment and replay checks), every bound
+  canonical original in the CAS still stream-hashes to its digest at its
+  declared length, and every declared original has a ``done`` preserve stage;
 * ``incomplete`` -- bindings match but preservation is unfinished (for example
   enrollment committed and the process then failed or crashed). Apply resumes
   these through the same idempotent backend call;
@@ -372,6 +373,51 @@ def _verification_receipt(blobs, receipt_sha):
     return path, None
 
 
+_HEX = frozenset("0123456789abcdef")
+
+
+def _stat_fields(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def verify_original_bytes(blobs, sha, size):
+    """Stream-hash one canonical original in the CAS, read-only.
+
+    The read-only equivalent of ``intake_folder.verify_blob`` plus the length
+    and stability checks of CanonicalMailBackend's ``_validator``. The path
+    is derived from the trusted CAS directory and the digest, never from
+    evidence; ``secure_open`` refuses a symlink on any path component. The
+    file is opened read-only and never chmod-ed, repaired or rewritten.
+    Returns a safe ``identity_original_blob_*`` code or None when the stored
+    bytes hash to ``sha`` with exactly ``size`` bytes.
+    """
+    if not isinstance(sha, str) or len(sha) != 64 or not set(sha) <= _HEX:
+        return "identity_original_blob_invalid"
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        return "identity_original_blob_invalid"
+    path = blobs / sha
+    digest, length = hashlib.sha256(), 0
+    try:
+        with intake_folder.secure_open(path) as stream:
+            before = os.fstat(stream.fileno())
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                length += len(block)
+                if length > size:
+                    return "identity_original_blob_changed"
+                digest.update(block)
+            after = os.fstat(stream.fileno())
+        current = path.lstat()
+    except FileNotFoundError:
+        return "identity_original_blob_missing"
+    except (OSError, ValueError):  # symlink (ELOOP), not a regular file, unreadable
+        return "identity_original_blob_unsafe"
+    if _stat_fields(before) != _stat_fields(after) or _stat_fields(after) != _stat_fields(current):
+        return "identity_original_blob_unstable"
+    if length != size or digest.hexdigest() != sha:
+        return "identity_original_blob_changed"
+    return None
+
+
 def identity_conflict(con, store, blobs, item, rows, occurrences, intake=None, projection=None):
     """Validate an enrolled identity against this receipt, read-only.
 
@@ -380,7 +426,9 @@ def identity_conflict(con, store, blobs, item, rows, occurrences, intake=None, p
     mail_messages row, the exact occurrence set (ids, kinds, CAS hashes, MIME
     locators, parent occurrence ids, multiplicity, acquisition method), every
     evidence field including the verification receipt path and the stored
-    receipt bytes, and the original declarations. Returns a safe
+    receipt bytes, the original declarations, and finally the stored bytes of
+    every bound canonical original (streamed, hashed and length-checked
+    read-only, see ``verify_original_bytes``). Returns a safe
     ``identity_*`` code for the first difference, None when everything
     matches. Never rewrites evidence and never follows a path from evidence.
     """
@@ -461,6 +509,18 @@ def identity_conflict(con, store, blobs, item, rows, occurrences, intake=None, p
         code = binding_conflict(con, store, blobs, sha, size)
         if code:
             return "identity_" + code
+    # Declarations agree; now the stored bytes themselves. Every canonical
+    # original bound to this identity (EML or native original, attachments,
+    # native items) is stream-hashed and length-checked in the CAS, read-only,
+    # exactly as preservation would verify it before a re-enrollment.
+    checked = set()
+    for _, sha, _, _, _, _ in expected:
+        if sha in checked:
+            continue
+        checked.add(sha)
+        code = verify_original_bytes(blobs, sha, store.effective_original(con, sha)["bytes"])
+        if code:
+            return code
     if projection is not None:
         try:
             values = projection(item)

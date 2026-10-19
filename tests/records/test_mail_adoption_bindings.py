@@ -212,6 +212,180 @@ class CanonicalBindingDriftTests(_Base):
         self.assertEqual(tree(self.base), before_tree)
 
 
+class _BytesBase(_Base):
+    def blob(self, sha):
+        path = self.root / "intake" / "blobs" / sha
+        self.assertTrue(path.is_file() and not path.is_symlink())
+        return path
+
+    def eml_sha(self, uid=11):
+        mid = mail_adoption.message_id(("synthetic-adopt-account", "Adoption", "900", str(uid)))
+        con = sqlite3.connect(self.ledger.as_uri() + "?mode=ro&immutable=1", uri=True)
+        try:
+            return con.execute("SELECT eml_sha256 FROM mail_messages WHERE id=?", (mid,)).fetchone()[0]
+        finally:
+            con.close()
+
+    def rewrite(self, path, data):
+        mode = os.stat(path).st_mode & 0o777
+        os.chmod(path, 0o600)
+        path.write_bytes(data)
+        os.chmod(path, mode)
+
+    def assert_bytes_untouched(self, path, data):
+        # The damaged file is reported, never repaired, re-sealed or re-chmod-ed.
+        self.assertEqual(path.read_bytes(), data)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o400)
+
+
+class CanonicalOriginalBytesTests(_BytesBase):
+    """Round-2 finding: completed identities must re-verify the stored CAS bytes.
+
+    Each case damages exactly one canonical original under ``intake/blobs``
+    after a successful adoption, leaving the ledger and every receipt
+    untouched. Dry-run and apply must refuse the identity with a safe
+    ``identity_original_blob_*`` code, never write, never repair the bytes, and
+    the CLI must exit 3.
+    """
+
+    def setUp(self):
+        super().setUp()
+        first = self.adopt(apply=True)
+        self.assertEqual((first["adopted_messages"], first["failures"]), (2, {}))
+
+    def test_same_length_attachment_corruption_is_refused(self):
+        path = self.blob(self.attachment()["original_sha256"])
+        raw = path.read_bytes()
+        middle = len(raw) // 2
+        damaged = raw[:middle] + bytes([raw[middle] ^ 1]) + raw[middle + 1:]
+        self.assertEqual(len(damaged), len(raw))
+        self.rewrite(path, damaged)
+        self.assert_refused_conflict("identity_original_blob_changed")
+        self.assert_bytes_untouched(path, damaged)
+
+    def test_first_byte_attachment_corruption_is_refused(self):
+        # The reviewer's review_cas_probe.py case.
+        path = self.blob(self.attachment()["original_sha256"])
+        raw = path.read_bytes()
+        damaged = bytes([raw[0] ^ 1]) + raw[1:]
+        self.rewrite(path, damaged)
+        self.assert_refused_conflict("identity_original_blob_changed")
+        self.assert_bytes_untouched(path, damaged)
+
+    def test_truncated_attachment_is_refused(self):
+        path = self.blob(self.attachment()["original_sha256"])
+        damaged = path.read_bytes()[:-1]
+        self.rewrite(path, damaged)
+        self.assert_refused_conflict("identity_original_blob_changed")
+        self.assert_bytes_untouched(path, damaged)
+
+    def test_extended_attachment_is_refused(self):
+        path = self.blob(self.attachment()["original_sha256"])
+        damaged = path.read_bytes() + b"\n"
+        self.rewrite(path, damaged)
+        self.assert_refused_conflict("identity_original_blob_changed")
+        self.assert_bytes_untouched(path, damaged)
+
+    def test_missing_attachment_blob_is_refused(self):
+        path = self.blob(self.attachment()["original_sha256"])
+        path.unlink()
+        self.assert_refused_conflict("identity_original_blob_missing")
+        self.assertFalse(os.path.lexists(path))
+
+    def test_symlinked_attachment_blob_is_refused(self):
+        # The link target holds the correct bytes; following it would hide the swap.
+        path = self.blob(self.attachment()["original_sha256"])
+        moved = self.base / "moved-blob"
+        shutil.move(path, moved)
+        os.symlink(moved, path)
+        self.assert_refused_conflict("identity_original_blob_unsafe")
+        self.assertTrue(path.is_symlink())
+
+    def test_attachment_blob_replaced_by_directory_is_refused(self):
+        path = self.blob(self.attachment()["original_sha256"])
+        path.unlink()
+        path.mkdir(mode=0o700)
+        self.assert_refused_conflict("identity_original_blob_unsafe")
+
+    def test_eml_body_only_corruption_is_refused(self):
+        path = self.blob(self.eml_sha())
+        raw = path.read_bytes()
+        marker = b"Synthetic adoption body for uid 11."
+        at = raw.index(marker) + len(b"Synthetic ")
+        self.assertGreater(at, raw.index(b"\r\n\r\n"))   # inside the body, headers untouched
+        damaged = raw[:at] + (b"B" if raw[at:at + 1] != b"B" else b"C") + raw[at + 1:]
+        self.assertEqual(len(damaged), len(raw))
+        self.rewrite(path, damaged)
+        self.assert_refused_conflict("identity_original_blob_changed")
+        self.assert_bytes_untouched(path, damaged)
+
+    def test_missing_eml_blob_is_refused(self):
+        self.blob(self.eml_sha()).unlink()
+        self.assert_refused_conflict("identity_original_blob_missing")
+
+    def test_unchanged_bytes_stay_complete_without_mutation(self):
+        before_rows, before_tree = ledger_rows(self.ledger), tree(self.base)
+        for apply in (False, True):
+            report = self.adopt(apply=apply)
+            self.assertEqual((report["already_adopted"], report["identity_conflicts"],
+                              report["pending_messages"]), (2, {}, 0))
+            self.assertFalse(mail_adoption.blocking(report))
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.cli("--apply")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ledger_rows(self.ledger), before_rows)
+        self.assertEqual(tree(self.base), before_tree)
+
+
+class IncompleteIdentityBytesTests(_BytesBase):
+    """Enrollment committed, preservation unfinished, then the stored bytes changed."""
+
+    def test_corrupt_blob_of_incomplete_identity_is_refused_not_resumed(self):
+        from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
+        failing = lambda *a: CanonicalMailBackend(*a, installed_preservation=False)
+        first = self.adopt(apply=True, backend_factory=failing)
+        self.assertEqual(first["after"]["incomplete_messages"], 2)
+        damaged_sha = self.attachment()["original_sha256"]
+        uid11_shas = {damaged_sha, self.eml_sha(11)}
+        path = self.blob(damaged_sha)
+        raw = path.read_bytes()
+        damaged = raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:]
+        self.rewrite(path, damaged)
+        before_rows, before_tree = ledger_rows(self.ledger), tree(self.root)
+        dry = self.adopt()
+        self.assertEqual(tree(self.root), before_tree)
+        self.assertEqual(dry["identity_conflicts"], {"identity_original_blob_changed": 1})
+        self.assertEqual((dry["incomplete_messages"], dry["already_adopted"]), (1, 0))
+        self.assertTrue(mail_adoption.blocking(dry))
+        # Apply resumes only the intact identity (uid 12). The damaged one is
+        # never handed to the backend and keeps its rows and unfinished stages.
+        applied = self.adopt(apply=True)
+        self.assertEqual(applied["identity_conflicts"], {"identity_original_blob_changed": 1})
+        self.assertEqual((applied["resumed_messages"], applied["failures"]), (1, {}))
+        self.assertEqual(applied["after"]["identity_conflicts"], {"identity_original_blob_changed": 1})
+        self.assertEqual((applied["after"]["already_adopted"], applied["after"]["incomplete_messages"]), (1, 0))
+        self.assertTrue(mail_adoption.blocking(applied))
+        after_rows = ledger_rows(self.ledger)
+        self.assertEqual(after_rows[:2], before_rows[:2])
+        stages = lambda rows: sorted(tuple(r) for r in rows[2] if r[0] in uid11_shas)
+        self.assertEqual(stages(after_rows), stages(before_rows))
+        self.assertNotIn((damaged_sha, "done"), stages(after_rows))
+        self.assert_bytes_untouched(path, damaged)
+        result = self.cli("--apply")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(ledger_rows(self.ledger), after_rows)
+
+
+class VerifyOriginalBytesUnitTests(unittest.TestCase):
+    def test_rejects_untrusted_digest_and_size_without_opening(self):
+        blobs = Path("/nonexistent-cas")
+        for sha, size in (("../" + "a" * 61, 1), ("A" * 64, 1), ("a" * 63, 1), (None, 1),
+                          ("a" * 64, -1), ("a" * 64, True), ("a" * 64, "1")):
+            self.assertEqual(mail_adoption.verify_original_bytes(blobs, sha, size),
+                             "identity_original_blob_invalid")
+
+
 class ExactWireReceiptBindingTests(_Base):
     """Schema'd nested receipts (non-trivial parents) must validate as complete."""
 
@@ -258,6 +432,29 @@ class ExactWireReceiptBindingTests(_Base):
             self.assertTrue(mail_adoption.blocking(report))
         self.assertEqual(ledger_rows(self.ledger), before_rows)
 
+    def test_nested_wire_receipt_corrupt_nested_blob_is_refused(self):
+        raw, _, _, _ = chain()
+        self.export_raw(raw, 11)
+        first = self.adopt(apply=True)
+        self.assertEqual((first["adopted_messages"], first["failures"]), (1, {}), first)
+        con = sqlite3.connect(self.ledger.as_uri() + "?mode=ro&immutable=1", uri=True)
+        sha = con.execute("SELECT original_sha256 FROM occurrences WHERE id=?",
+                          (self.nested_parent_row(),)).fetchone()[0]
+        con.close()
+        path = self.root / "intake" / "blobs" / sha
+        data = path.read_bytes()
+        os.chmod(path, 0o600)
+        path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+        os.chmod(path, 0o400)
+        before_rows, before_tree = ledger_rows(self.ledger), tree(self.root)
+        for apply in (False, True):
+            report = self.adopt(apply=apply)
+            self.assertEqual(report["identity_conflicts"], {"identity_original_blob_changed": 1})
+            self.assertEqual(report["already_adopted"], 0)
+            self.assertTrue(mail_adoption.blocking(report))
+            self.assertEqual(tree(self.root), before_tree)
+        self.assertEqual(ledger_rows(self.ledger), before_rows)
+
     @unittest.skipUnless(native.available(), "optional native MSG parser unavailable")
     def test_native_msg_item_receipt_validates_then_native_item_drift_is_refused(self):
         _, scalar, _, _ = chain()
@@ -278,8 +475,28 @@ class ExactWireReceiptBindingTests(_Base):
         report = self.adopt()
         self.assertEqual(report["identity_conflicts"], {"identity_evidence_mismatch": 1})
 
+    @unittest.skipUnless(native.available(), "optional native MSG parser unavailable")
+    def test_native_msg_item_corrupt_native_blob_is_refused(self):
+        _, scalar, _, _ = chain()
+        msg = native.message(embedded=True, attachment=scalar)
+        self.export_raw(mixed([leaf(), binary(msg, b"outer.msg", b"application/vnd.ms-outlook")]), 11)
+        first = self.adopt(apply=True)
+        self.assertEqual((first["adopted_messages"], first["failures"]), (1, {}), first)
+        con = sqlite3.connect(self.ledger.as_uri() + "?mode=ro&immutable=1", uri=True)
+        sha = con.execute("SELECT original_sha256 FROM occurrences WHERE "
+                          "json_extract(evidence,'$.native_item') IS NOT NULL").fetchone()[0]
+        con.close()
+        path = self.root / "intake" / "blobs" / sha
+        data = path.read_bytes()
+        os.chmod(path, 0o600)
+        path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+        os.chmod(path, 0o400)
+        for apply in (False, True):
+            report = self.adopt(apply=apply)
+            self.assertEqual(report["identity_conflicts"], {"identity_original_blob_changed": 1})
 
-del _Base
+
+del _Base, _BytesBase
 
 if __name__ == "__main__":
     unittest.main()
