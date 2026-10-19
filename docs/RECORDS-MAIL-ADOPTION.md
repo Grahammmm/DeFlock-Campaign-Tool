@@ -399,8 +399,20 @@ changes the config, and never runs on anything except a `*-TEST` copy:
 - The script stops before apply if any step-2 precondition fails, and stops
   before the rerun if any step-3 check fails.
 
-Exit codes: `0` every check passed, `1` a check failed (the receipt shows
-`stopped_at` and `failed_checks`), `2` refused before running anything.
+Exit codes: `0` every check passed and the receipt was written, `1` a check
+failed or an operational error occurred (the receipt shows `stopped_at` and
+`failed_checks`), `2` refused before running anything (this includes a receipt
+directory that is not writable), `3` every check passed but the receipt file
+could not be written.
+
+Filesystem, SQLite and subprocess failures are caught at the CLI boundary. The
+receipt then has `status: error`, the phase in `stopped_at` and a fixed
+`error.code` such as `os_error:eacces` or `sqlite_error:sqlite_notadb`. No
+exception message, path or traceback is printed, because a file name in the
+export can itself be record text. A failure before the apply phase never runs
+apply. An unreadable directory fails the tree digest instead of being skipped.
+If the receipt itself cannot be written, the same sanitized JSON goes to stdout
+with `receipt_write_error`.
 
 The receipt contains only integers, booleans and fixed codes: check names, the
 gate state and safe error codes. It holds the counts from the dry run, the

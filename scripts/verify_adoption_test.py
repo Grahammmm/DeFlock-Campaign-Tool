@@ -34,10 +34,20 @@ addresses, hashes of records or other record text. The engine's own output is
 parsed in memory and never echoed. Its stderr is discarded; the receipt only
 records whether stderr was empty.
 
+Operational failures (filesystem, SQLite, subprocess) are caught at the CLI
+boundary. They become ``status: error`` with the phase in ``stopped_at`` and a
+fixed ``error.code`` such as ``os_error:eacces``. Exception messages, paths and
+tracebacks are never printed, because a file name can itself be record text. A
+failure before the apply phase never reaches apply. If the receipt file cannot
+be written, the same sanitized JSON is still printed with
+``receipt_write_error``.
+
 The configuration is never written or changed by this script. Enabling or
 disabling adoption stays the operator's documented, G-approved step. Exit
-codes: 0 all checks passed; 1 a check failed (receipt says where it stopped);
-2 refused before anything was run.
+codes: 0 all checks passed and the receipt was written; 1 a check failed or an
+operational error occurred (the receipt says where it stopped); 2 refused
+before anything was run; 3 every check passed but the receipt file could not
+be written.
 
 Standard library only (Python >= 3.11), so it runs inside the Flock container
 from an exported engine checkout:
@@ -48,6 +58,7 @@ from an exported engine checkout:
         --receipt <new file outside the fixture> [--dry-run-only]
 """
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -83,6 +94,29 @@ def safe_code(value):
     return value if SAFE_CODE.fullmatch(value) else "unrecognized_code"
 
 
+def error_code(error):
+    """Fixed-vocabulary code for an exception; never its message, path or traceback."""
+    if isinstance(error, KeyboardInterrupt):
+        return "interrupted"
+    if isinstance(error, OSError):
+        name = errno.errorcode.get(error.errno, "unknown") if isinstance(error.errno, int) else "unknown"
+        return safe_code("os_error:" + name.lower())
+    if isinstance(error, sqlite3.Error):
+        name = getattr(error, "sqlite_errorname", None) or type(error).__name__
+        return safe_code("sqlite_error:" + str(name).lower())
+    if isinstance(error, subprocess.SubprocessError):
+        return "subprocess_error"
+    if isinstance(error, UnicodeError):
+        return "unicode_error"
+    if isinstance(error, (ValueError, TypeError, KeyError)):
+        return "value_error"
+    return "internal_error"
+
+
+def _raise(error):
+    raise error
+
+
 def safe_counts(value):
     if not isinstance(value, dict):
         return {"unrecognized_shape": 1}
@@ -109,7 +143,8 @@ def tree_digest(top):
     digest = hashlib.sha256()
     files = entries = 0
     top = str(top)
-    for base, dirs, names in os.walk(top, followlinks=False):
+    # onerror re-raises: an unreadable directory must fail closed, not be skipped.
+    for base, dirs, names in os.walk(top, followlinks=False, onerror=_raise):
         dirs.sort()
         for name in sorted(dirs + names):
             path = os.path.join(base, name)
@@ -251,6 +286,8 @@ def guard(args, *, euid=None):
         raise Refused("receipt_exists")
     if not receipt.parent.is_dir():
         raise Refused("receipt_dir_missing")
+    if not os.access(receipt.parent, os.W_OK | os.X_OK):
+        raise Refused("receipt_dir_not_writable")
     engine = Path(os.path.abspath(args.engine)) if args.engine else Path(__file__).resolve().parents[1]
     module = engine / "campaign_tool" / "records" / "mail_adoption.py"
     if not module.is_file():
@@ -337,16 +374,27 @@ def rerun_checks(checks, again, counts_before, counts, tree_same, total):
     _check(checks, "rerun_counts_unchanged", counts is not None and counts == counts_before)
 
 
-def verify(paths, args):
+def new_receipt(args):
+    return {"schema": SCHEMA, "status": None, "stopped_at": "start",
+            "expected": {"messages": args.expect_messages, "attachments": args.expect_attachments},
+            "dry_run_only": bool(args.dry_run_only), "checks": {}}
+
+
+def verify(paths, args, receipt=None):
+    """Run the phases, filling ``receipt`` in place.
+
+    ``stopped_at`` names the phase in progress, so an operational exception
+    escaping to main() is reported against the phase where it happened. Each
+    phase runs only after the previous one returned normally.
+    """
     total, attachments = args.expect_messages, args.expect_attachments
     raw, root, export, ledger, config = (paths[k] for k in ("raw", "root", "export", "ledger", "config"))
     engine = paths["engine"]
-    receipt = {"schema": SCHEMA, "status": None, "stopped_at": None,
-               "expected": {"messages": total, "attachments": attachments},
-               "engine": {"mail_adoption_sha256": file_sha256(paths["module"]),
-                          "script_sha256": file_sha256(Path(__file__).resolve())},
-               "dry_run_only": bool(args.dry_run_only), "checks": {}}
+    receipt = new_receipt(args) if receipt is None else receipt
     checks = receipt["checks"]
+    receipt["stopped_at"] = "baseline"
+    receipt["engine"] = {"mail_adoption_sha256": file_sha256(paths["module"]),
+                         "script_sha256": file_sha256(Path(__file__).resolve())}
     marker0 = marker_state(root)
     export0 = tree_digest(export)
     tree0 = tree_digest(raw)
@@ -370,6 +418,7 @@ def verify(paths, args):
             receipt["status"] = "pass_dry_run_only" if args.dry_run_only else "pass"
         return receipt
 
+    receipt["stopped_at"] = "dry_run"
     dry = run(False)
     tree1 = tree_digest(raw)
     receipt["dry_run"] = {"exit": dry["exit"], "timed_out": dry["timed_out"],
@@ -381,6 +430,7 @@ def verify(paths, args):
         return finish("done")
 
     n0 = dry["report"]["new_messages"]
+    receipt["stopped_at"] = "apply"
     app = run(True)
     tree2 = tree_digest(raw)
     counts = ledger_counts(ledger)
@@ -393,6 +443,7 @@ def verify(paths, args):
     if not all(checks.values()):
         return finish("apply")
 
+    receipt["stopped_at"] = "rerun"
     again = run(True)
     tree3 = tree_digest(raw)
     counts_again = ledger_counts(ledger)
@@ -404,12 +455,33 @@ def verify(paths, args):
     return finish("done")
 
 
+def encode(receipt):
+    return (json.dumps(receipt, sort_keys=True, indent=1) + "\n").encode()
+
+
 def write_receipt(path, receipt):
-    data = (json.dumps(receipt, sort_keys=True, indent=1) + "\n").encode()
+    data = encode(receipt)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        try:  # never leave a truncated receipt that looks like a result
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
     return data
+
+
+def emit(data):
+    try:
+        sys.stdout.buffer.write(data)
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        pass
 
 
 def parse_args(argv=None):
@@ -429,15 +501,32 @@ def parse_args(argv=None):
 def main(argv=None):
     os.umask(0o077)
     args = parse_args(argv)
+    paths = code = None
     try:
         paths = guard(args)
     except Refused as error:
-        refused = {"schema": SCHEMA, "status": "refused", "code": safe_code(error)}
-        print(json.dumps(refused, sort_keys=True))
+        code = safe_code(error)
+    except (Exception, KeyboardInterrupt) as error:  # sanitized CLI boundary
+        code = "guard_" + error_code(error)
+    if code is not None or paths is None:
+        emit((json.dumps({"schema": SCHEMA, "status": "refused", "code": safe_code(code)},
+                         sort_keys=True) + "\n").encode())
         return 2
-    receipt = verify(paths, args)
-    sys.stdout.write(write_receipt(paths["receipt"], receipt).decode())
-    return 0 if receipt["status"].startswith("pass") else 1
+    receipt = new_receipt(args)
+    try:
+        verify(paths, args, receipt)
+    except (Exception, KeyboardInterrupt) as error:  # sanitized CLI boundary
+        receipt["status"] = "error"
+        receipt["error"] = {"code": error_code(error)}
+        receipt["failed_checks"] = sorted(name for name, ok in receipt["checks"].items() if not ok)
+    status = 0 if str(receipt["status"]).startswith("pass") else 1
+    try:
+        data = write_receipt(paths["receipt"], receipt)
+    except (Exception, KeyboardInterrupt) as error:  # sanitized CLI boundary
+        data = encode({**receipt, "receipt_write_error": error_code(error)})
+        status = status or 3
+    emit(data)
+    return status
 
 
 if __name__ == "__main__":
