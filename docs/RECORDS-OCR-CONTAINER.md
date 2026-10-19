@@ -138,9 +138,13 @@ Placeholders:
 Keep the real values, receipts and manifests in `$PRIVATE` and the private
 runbook. None of them belong in Git, in a fixture or in a cloud task.
 
-The rule for the whole run: once [Q1] starts, no mount user runs again until
-either acceptance [A2] or a rollback path's validated-data step has passed. If
-any step fails, stop and take the rollback path named for that step.
+The rule for the whole run: after [Q2], all mount users remain stopped through
+the snapshot, build and recreate steps. [C3] is the sole exception: start only
+the replacement while every other user remains stopped. For acceptance, stop
+and confirm all users again at [A1], capture evidence at [A2], restart only the
+replacement at [A3], and verify it at [A4]. Release other users and writers only
+at [A5]. A rollback follows its own validated-data and restart order. If any
+step fails, stop and take the rollback path named for that step.
 
 ### Record (read only)
 
@@ -166,8 +170,8 @@ any step fails, stop and take the rollback path named for that step.
 3. [Q2] Stop `$CONTAINER` and every other container in `$MOUNT_USERS` with
    `docker stop` (never `rm`). Confirm that none is running and that no host
    process has a file open under any mount (for example `fuser -vm <source>`).
-   From here until [A2] or a rollback's validated start, everything stays
-   stopped.
+   Keep every user stopped through [A2]. Only the replacement may start at [C3];
+   other users remain stopped until [A5] or a rollback's validated restart.
 
 4. [S1] Take a raw, owner-preserving copy of every mount, as root, without
    opening any database. Never run `sqlite3`, Python `sqlite3` or any other
@@ -306,7 +310,7 @@ any step fails, stop and take the rollback path named for that step.
 
 17. [A4] Re-run runtime verification of the restarted replacement:
 
-        python3 "$E" verify.py --container "$CONTAINER"
+        python3 container/flock-ocr/verify.py --container "$CONTAINER"
 
     If verification fails: rollback path [RB-C]. Do not release any other mount
     user or writer before this succeeds.
@@ -345,7 +349,8 @@ Never start a container while a restore is in progress.
 4. [RB-B4] `docker start "$CONTAINER"`.
 5. [RB-B5] Restart the other mount users, then release the [Q1] pause/lock.
 
-[RB-C]: failure in [C3] or [A1], or a later rollback on the owner's request.
+[RB-C]: failure in [C3] or any acceptance step [A1]-[A5], or a later rollback
+on the owner's request.
 
 1. [RB-C1] Pause writers again with the [Q1] pause/lock if it was released,
    wait for no in-flight job, then stop every user in `$MOUNT_USERS`, including
@@ -355,7 +360,7 @@ Never start a container while a restore is in progress.
    start it again.
 3. [RB-C3] Recompute each mount's manifest and `compare` it with the [S1]
    baseline. On a later rollback the difference includes real work done since
-   [A2]; the owner decides in writing whether to keep it, and an [S1]-style
+   [A5]; the owner decides in writing whether to keep it, and an [S1]-style
    `tar` and manifest of the current state are taken before any restore.
 4. [RB-C4] If the data checks failed or the owner chose to restore: for each
    mount, move the current contents aside into `$PRIVATE`, then extract the

@@ -485,6 +485,15 @@ class FlockOcrRunbookOrderTests(unittest.TestCase):
                        "integrity-valid but", "restart", "runtime verification"):
             self.assertIn(needle, section)
 
+    def test_acceptance_runtime_command_targets_real_verifier_and_boundaries_are_clear(self):
+        section = DOC[DOC.index("### Accept"):DOC.index("### Rollback paths")]
+        self.assertIn("python3 container/flock-ocr/verify.py --container \"$CONTAINER\"", section)
+        self.assertNotIn('python3 "$E" verify.py', section)
+        self.assertIn("Only the replacement may start at [C3]", DOC)
+        self.assertIn("Release other users and writers only\nat [A5]", DOC)
+        self.assertIn("any acceptance step [A1]-[A5]", DOC)
+        self.assertIn("real work done since\n   [A5]", DOC)
+
     def test_acceptance_without_renewed_quiescence_or_runtime_reverify_is_rejected(self):
         for kind in ("stop_all_mount_users_again", "runtime_reverify"):
             with self.subTest(kind=kind):
