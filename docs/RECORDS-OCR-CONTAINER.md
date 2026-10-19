@@ -19,6 +19,8 @@ Files in `container/flock-ocr/`:
 | `verify.py` | Read-only acceptance check of a built image or running container |
 | `runbook.json` | Ordered owner runbook steps and rollback paths (IDs match the runbook below) |
 | `check_runbook.py` | Static ordering check of `runbook.json`; runs no lifecycle command |
+| `runbook-rootless.json` | The same steps for rootless Docker (`docs/RECORDS-OCR-CONTAINER-ROOTLESS.md`); passes `check_runbook.py` |
+| `rootless_swap.py` | Owner-run driver for the rootless variant: `--dry-run`, `--apply`, `--resume`, `--rollback` |
 | `.dockerignore` | Deny-by-default context: only `requirements.lock` and the one wheel |
 
 ## What is pinned
@@ -113,6 +115,10 @@ It also checks that:
 - the OCR doctor reports `"ready": true`.
 
 ## Owner runbook: quiesce, snapshot, rebuild, verify, rollback
+
+On a rootless Docker host, use `docs/RECORDS-OCR-CONTAINER-ROOTLESS.md`
+instead. It runs these same steps without sudo, in namespace-root helper
+containers, through one driver script.
 
 The ordered, machine-checked form of this runbook is
 `container/flock-ocr/runbook.json`. Each step below carries its ID in square
