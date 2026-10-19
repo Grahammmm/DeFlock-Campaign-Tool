@@ -6,6 +6,7 @@ container paths (/live, /private, /recipe) mapped onto temporary directories,
 so the real tar and snapshot_evidence.py run against a synthetic WAL database.
 No Docker daemon, systemd unit, network or real data is touched.
 """
+import contextlib
 import copy
 import importlib.util
 import io
@@ -297,6 +298,20 @@ class FakeSystem:
 def lifecycle(fake):
     """Ordered state-changing events (no helpers, no reads), labelled at call time."""
     return list(fake.events)
+
+
+def malformed_sqlite(path):
+    """Write a synthetic SQLite file whose schema page is deliberately corrupt."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("create table synthetic(value)")
+    conn.executemany("insert into synthetic values (?)", [(n,) for n in range(20)])
+    conn.commit()
+    conn.close()
+    data = bytearray(path.read_bytes())
+    data[100] = 0xFF  # page-1 b-tree type byte: "database disk image is malformed"
+    path.write_bytes(bytes(data))
+    return swap.sha256_file(path)
 
 
 class RunMixin:
@@ -707,6 +722,130 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertEqual(self.state()["phase"], "rolled_back")
         code, out = self.run_swap(["--rollback", str(run)])
         self.assertEqual(code, swap.EXIT_REFUSED, out)
+
+
+class AcceptMalformedSqliteTests(RunMixin, unittest.TestCase):
+    """A hash-pinned, intentionally corrupt fixture is exempt from integrity only."""
+
+    FIXTURE = "fixtures/regressions-v1/db-mutation/ledger.sqlite"
+    COPY = "fixtures/regressions-v2/db-mutation/ledger.sqlite"
+
+    def setUp(self):
+        super().setUp()
+        self.digest = malformed_sqlite(self.fake.bind / self.FIXTURE)
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+
+    def pinned(self, *pins, mode="--apply"):
+        argv = self.args(mode)
+        for pin in pins:
+            argv += ["--accept-malformed-sqlite", pin]
+        return argv
+
+    def evidence_runs(self):
+        return [r["command"] for r in self.fake.helper_runs if "sqlite-evidence" in r["command"]]
+
+    def test_default_still_refuses_a_malformed_database(self):
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S2]", out)
+        self.assertIn(f"SQLite evidence failed for {self.FIXTURE}: database disk image is malformed", out)
+        failure = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence-failure.json").read_text())
+        self.assertEqual(failure["exit"], 2)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+        self.assertEqual(self.fake.api_calls, [])
+        self.assertFalse(any("--accept-malformed" in c for c in self.evidence_runs()))
+        self.assert_live_unchanged()
+
+    def test_pinned_fixture_is_archived_restore_tested_and_hash_matched(self):
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.state()["done"], [s["id"] for s in PLAN["main"]])
+        receipt = json.loads((self.run_dir() / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["sqlite_accepted_malformed_sha256"], {f"m01/{self.FIXTURE}": self.digest})
+        self.assertEqual(list(receipt["sqlite_backups_sha256"]), ["m00/state/flock.db"])
+        report = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence.json").read_text())
+        self.assertEqual(report["databases"], {self.FIXTURE: {"accepted_malformed": True, "sha256": self.digest,
+                                                              "integrity_check": None, "ok": True}})
+        self.assertFalse((self.run_dir() / "s2" / "sqlite" / "m01" / (self.FIXTURE + ".backup")).exists())
+        # Archived: the S1 tar holds it. Restore-tested and hash-matched: S3
+        # and A2 compare full manifests, which include its sha256.
+        self.assertIn(f"./{self.FIXTURE}", self.tar_listing(self.run_dir() / "s1" / "m01.tar"))
+        baseline = json.loads((self.run_dir() / "s1" / "m01.baseline.json").read_text())
+        self.assertEqual(baseline["entries"][self.FIXTURE]["sha256"], self.digest)
+        restored = json.loads((self.run_dir() / "s3" / "m01.restored.json").read_text())
+        self.assertEqual(restored["entries"][self.FIXTURE]["sha256"], self.digest)
+        self.assertIn("1 hash-pinned malformed exempted", out)
+        runs = self.evidence_runs()
+        self.assertEqual(len(runs), 4)  # S2 and A2, two mounts each
+        for cmd in runs:
+            pinned = "--accept-malformed" in cmd
+            self.assertEqual(pinned, "/private/s2/inspect/m01" in cmd or "/private/a2/inspect/m01" in cmd, cmd)
+            if pinned:
+                self.assertEqual(cmd[cmd.index("--accept-malformed") + 1], f"{self.FIXTURE}={self.digest}")
+        self.assert_live_unchanged()
+        self.assert_safe_helpers()
+
+    def test_pin_with_another_hash_fails_at_s2(self):
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={'0' * 64}"))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S2]", out)
+        self.assertIn("no snapshotted mount holds that path with the pinned sha256", out)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+        self.assert_live_unchanged()
+
+    def test_pin_for_a_path_that_does_not_exist_fails_at_s2(self):
+        code, out = self.run_swap(self.pinned(f"fixtures/absent/ledger.sqlite={self.digest}"))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S2]", out)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+
+    def test_pin_exempts_only_its_own_path_and_every_failure_is_named(self):
+        (self.fake.bind / self.COPY).parent.mkdir(parents=True)
+        shutil.copyfile(self.fake.bind / self.FIXTURE, self.fake.bind / self.COPY)
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        failure = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence-failure.json").read_text())
+        named = [line for line in failure["stderr"] if line.startswith("FAIL SQLite evidence failed")]
+        self.assertEqual(len(named), 2, failure)
+        self.assertTrue(any(self.FIXTURE in line for line in named))
+        self.assertTrue(any(self.COPY in line for line in named))
+        shutil.rmtree(self.private)
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}"))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn(f"SQLite evidence failed for {self.COPY}", out)
+        self.assertNotIn(f"SQLite evidence failed for {self.FIXTURE}", out)
+        shutil.rmtree(self.private)
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}", f"{self.COPY}={self.digest}"))
+        self.assertEqual(code, 0, out)
+        receipt = json.loads((self.run_dir() / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["sqlite_accepted_malformed_sha256"],
+                         {f"m01/{self.FIXTURE}": self.digest, f"m01/{self.COPY}": self.digest})
+
+    def test_dry_run_names_the_exemption_and_changes_nothing(self):
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}", mode="--dry-run"))
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"would exempt from the SQLite integrity requirement only: {self.FIXTURE} "
+                      f"(sha256 {self.digest})", out)
+        self.assertFalse(self.private.exists())
+        self.assert_live_unchanged()
+
+    def test_malformed_pins_are_refused_before_anything_runs(self):
+        good = f"{self.FIXTURE}={self.digest}"
+        for pin in (self.FIXTURE, f"{self.FIXTURE}={'A' * 64}", f"{self.FIXTURE}={self.digest[:-1]}",
+                    f"/{self.FIXTURE}={self.digest}", f"fixtures/../{self.FIXTURE}={self.digest}",
+                    f"./{self.FIXTURE}={self.digest}", f"={self.digest}"):
+            with self.subTest(pin=pin):
+                with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as raised:
+                    swap.parse_args(self.pinned(pin))
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--accept-malformed-sqlite", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            swap.parse_args(self.pinned(good, good))
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            swap.parse_args(["--resume", str(self.tmp), "--accept-malformed-sqlite", good])
+        self.assertIn("fixed at --apply", err.getvalue())
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(swap.parse_args(self.args()).accepted_malformed_sqlite, {})
 
 
 class RollbackPreservationTests(RunMixin, unittest.TestCase):

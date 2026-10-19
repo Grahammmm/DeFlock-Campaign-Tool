@@ -555,38 +555,84 @@ class Swap:
             self.require_equal(baselines[label], after, f"{label} live after tar vs baseline")
         return baselines
 
+    def accepted_per_mount(self, baselines):
+        """Assign each --accept-malformed-sqlite pin to the mount(s) holding it.
+
+        A pin applies to a mount only if that mount's baseline manifest has a
+        regular file at RELPATH whose SHA-256 equals the pin. A pin that no
+        snapshotted mount holds at that hash fails the step: the owner's
+        evidence no longer describes the data.
+        """
+        accepted = self.state.get("accepted_malformed_sqlite") or {}
+        per_mount = {m["label"]: {} for m in self.state["mounts"]}
+        if self.dry:
+            for rel, digest in sorted(accepted.items()):
+                self.log(f"    would exempt from the SQLite integrity requirement only: {rel} (sha256 {digest})")
+            return per_mount
+        for rel, digest in sorted(accepted.items()):
+            hits = [label for label in per_mount
+                    if (baselines[label]["entries"].get(rel) or {}).get("type") == "f"
+                    and baselines[label]["entries"][rel].get("sha256") == digest]
+            if not hits:
+                self.fail(f"--accept-malformed-sqlite {rel}: no snapshotted mount holds that path "
+                          "with the pinned sha256")
+            for label in hits:
+                per_mount[label][rel] = digest
+        return per_mount
+
     def sqlite_evidence(self, archives, prefix, baselines):
-        """SQLite backup + integrity_check on an isolated extract of each archive."""
-        backups = {}
+        """SQLite backup + integrity_check on an isolated extract of each archive.
+
+        Returns (backups, accepted): backup hashes by "label/rel", and the
+        hash-pinned malformed databases that were exempted, by "label/rel".
+        """
+        backups, accepted = {}, {}
+        per_mount = self.accepted_per_mount(baselines)
         live_args = [x for m in self.state["mounts"] for x in ("--live", f"{LIVE}/{m['label']}")]
         for mount in self.state["mounts"]:
             label = mount["label"]
             inspect_rel = f"{prefix}/inspect/{label}"
+            pins = per_mount[label]
+            pin_args = [x for rel, digest in sorted(pins.items())
+                        for x in ("--accept-malformed", f"{rel}={digest}")]
             self.mkdir(inspect_rel)
             self.helper([*TAR, "-xpf", f"{PRIV}/{archives}/{label}.tar", "-C", f"{PRIV}/{inspect_rel}"],
                         live=None)
             code, out, err = self.helper(self.evidence_cmd(
                 "sqlite-evidence", f"{PRIV}/{inspect_rel}", "--out", f"{PRIV}/{prefix}/sqlite/{label}",
-                *live_args), check=False)
+                *live_args, *pin_args), check=False)
             if not self.dry:
                 if code != 0:
-                    self.fail(f"{label}: sqlite-evidence exit {code}: {err.strip()[-300:]}")
+                    failure = f"{prefix}/{label}.sqlite-evidence-failure.json"
+                    self.write_json(failure, {"exit": code, "stderr": err.splitlines()})
+                    self.fail(f"{label}: sqlite-evidence exit {code}: {err.strip()[-300:]} "
+                              f"(every failure: $RUN/{failure})")
                 report = json.loads(out)
                 files = sum(e["type"] == "f" for e in baselines[label]["entries"].values())
                 if report.get("ok") is not True or report.get("files_inspected") != files:
                     self.fail(f"{label}: sqlite-evidence not ok or inspected "
                               f"{report.get('files_inspected')} of {files} files")
+                exempted = {}
                 for rel, item in report["databases"].items():
+                    if item.get("accepted_malformed"):
+                        if pins.get(rel) != item.get("sha256"):
+                            self.fail(f"{label}: sqlite-evidence exempted a database that was not pinned")
+                        exempted[rel] = item["sha256"]
+                        continue
                     backup = self.run_dir / prefix / "sqlite" / label / (rel + ".backup")
                     actual = sha256_file(backup)
                     if actual != item["backup_sha256"]:
                         self.fail(f"{label}: backup hash mismatch for a database")
                     backups[f"{label}/{rel}"] = actual
+                if exempted != pins:
+                    self.fail(f"{label}: pinned malformed database(s) not reported as exempted: "
+                              f"{sorted(set(pins) - set(exempted))}")
+                accepted.update({f"{label}/{rel}": digest for rel, digest in exempted.items()})
                 self.write_json(f"{prefix}/{label}.sqlite-evidence.json", report)
-                self.log(f"    {label}: {len(report['databases'])} database(s) integrity ok, "
-                         f"{files} files inspected")
+                self.log(f"    {label}: {len(report['databases']) - len(exempted)} database(s) integrity ok, "
+                         f"{len(exempted)} hash-pinned malformed exempted, {files} files inspected")
             self.helper(["rm", "-rf", "--one-file-system", f"{PRIV}/{inspect_rel}"], live=None)
-        return backups
+        return backups, accepted
 
     def restore_test(self, archives, prefix, baselines):
         """Fresh extract equals the baseline; the live mount still equals it."""
@@ -693,6 +739,7 @@ class Swap:
         args, st = self.args, self.state
         st.update({"container": args.container, "pause_units": list(args.pause_unit),
                    "new_tag": args.new_tag, "build_python": args.build_python,
+                   "accepted_malformed_sqlite": dict(args.accepted_malformed_sqlite),
                    "done": [], "phase": "running"})
         _, out, _ = self.sh(["docker", "info", "--format", "{{json .SecurityOptions}}"], check=False)
         if "name=rootless" not in out:
@@ -734,6 +781,8 @@ class Swap:
         self.log("    mount users: " + ", ".join(u["Name"].lstrip("/") + ("*" if u["State"]["Running"] else "")
                                                   for u in users) + "  (* running)")
         self.log("    pause timers active: " + json.dumps(st["timers_active"]))
+        for rel, digest in sorted(st["accepted_malformed_sqlite"].items()):
+            self.log(f"    hash-pinned malformed SQLite (integrity exemption only): {rel} sha256 {digest}")
         self.write_json("inspect-before.json", before)
         self.write_json("mount-users.json", [{"id": u["Id"], "name": u["Name"], "running": u["State"]["Running"]}
                                              for u in users])
@@ -764,7 +813,9 @@ class Swap:
         return {m["label"]: (None if self.dry else self.baseline(m["label"])) for m in self.state["mounts"]}
 
     def s2_evidence(self):
-        self.state["sqlite_backups"] = self.sqlite_evidence("s1", "s2", self.s1_baselines())
+        backups, accepted = self.sqlite_evidence("s1", "s2", self.s1_baselines())
+        self.state["sqlite_backups"] = backups
+        self.state["sqlite_accepted_malformed"] = accepted
 
     def s3_restore_test(self):
         self.restore_test("s1", "s3", self.s1_baselines())
@@ -779,6 +830,7 @@ class Swap:
                 archives[mount["label"]] = sha256_file(self.run_dir / "s1" / f"{mount['label']}.tar")
         receipt = {"snapshot_ok": True, "variant": "rootless", "completed_at": self.system.now(),
                    "archives_sha256": archives, "sqlite_backups_sha256": self.state.get("sqlite_backups", {}),
+                   "sqlite_accepted_malformed_sha256": self.state.get("sqlite_accepted_malformed", {}),
                    "old_container_id": self.state["old_id"], "old_image": self.state["old_image"]}
         self.write_json("snapshot-receipt.json", receipt)
         self.state["archives_sha256"] = archives
@@ -1243,8 +1295,18 @@ def parse_args(argv):
     parser.add_argument("--stop-timeout", type=int, default=120, help="docker stop --time")
     parser.add_argument("--health-wait", type=int, default=300, help="seconds to wait for a health check")
     parser.add_argument("--helper-timeout", type=int, default=7200, help="seconds per helper command (tar, manifest)")
+    parser.add_argument("--accept-malformed-sqlite", action="append", default=[], metavar="RELPATH=SHA256",
+                        help="exempt one known, intentionally corrupt database from the SQLite integrity "
+                             "requirement only; RELPATH is relative to its mount, SHA256 pins its bytes "
+                             "(repeatable; --apply/--dry-run)")
     args = parser.parse_args(argv)
+    try:
+        args.accepted_malformed_sqlite = snapshot_evidence.parse_accepted(args.accept_malformed_sqlite)
+    except ValueError as error:
+        parser.error(str(error).replace("--accept-malformed ", "--accept-malformed-sqlite ", 1))
     if args.resume or args.rollback:
+        if args.accept_malformed_sqlite:
+            parser.error("--accept-malformed-sqlite is fixed at --apply; the run's state.json keeps it")
         args.run_dir = args.resume or args.rollback
         args.mode = "resume" if args.resume else "rollback"
         return args
