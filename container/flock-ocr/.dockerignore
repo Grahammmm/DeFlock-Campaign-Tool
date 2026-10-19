@@ -1,0 +1,5 @@
+# Build context for container/flock-ocr/Dockerfile: only the lock and one wheel.
+*
+!requirements.lock
+!dist/
+!dist/deflock_campaign_tool-*-py3-none-any.whl

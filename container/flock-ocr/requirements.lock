@@ -1,0 +1,9 @@
+# Hash-locked parser bundle for container/flock-ocr/Dockerfile (pip --require-hashes).
+# Versions must match requirements-runner.txt / requirements-records-test.txt;
+# tests/test_flock_ocr_container.py enforces that. Hashes are PyPI wheel sha256.
+pypdf==6.10.0 \
+    --hash=sha256:90005e959e1596c6e6c84c8b0ad383285b3e17011751cedd17f2ce8fcdfc86de
+openpyxl==3.1.5 \
+    --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2
+et_xmlfile==2.0.0 \
+    --hash=sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa
