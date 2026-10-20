@@ -1,0 +1,17 @@
+[Unit]
+Description=Dedicated records intake and processing
+# Candidate only: the old writer must be quiesced before this unit is installed.
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/bin/sh @RUN_RECORDS_SH@ --target @SCHEDULED_TARGET@ --scheduled
+# Engine must stop new work at 45 minutes; two minutes allow final receipts.
+# The wrapper's RUN_BUDGET_SECONDS (counted from start, so it includes the
+# bounded Docker wait) plus the bounded notify step must fit inside this;
+# render.py refuses values that do not.
+TimeoutStartSec=47min
+# Private run receipts, ledger, run-report.json and run-records.log under
+# RUNTIME_DIR are authoritative, not discarded stdout.
+StandardOutput=null
+StandardError=null
