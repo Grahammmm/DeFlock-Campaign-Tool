@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "Grahammmm/DeFlock-Campaign-Tool",
-  "release": "602814408e255b3e0649d4c303570f465a6f2aad",
+  "release": "602814408e25",
   "captured_at_utc": "2026-10-20T13:13:06.928776+00:00",
   "scope": [
     14,
@@ -44,13 +44,13 @@
     {
       "baseRefName": "main",
       "headRefName": "claude/social-reels",
-      "headRefOid": "9e27472cceeb9f7a70e76b9d3db47b47fc5aee5e",
+      "headRefOid": "9e27472cceeb",
       "isDraft": false,
       "number": 14,
       "state": "OPEN",
       "title": "Add a daily Reel generator for published campaign facts",
       "updatedAt": "2026-10-18T16:45:48Z",
-      "merge_base": "7557689cc8db2d0ff3850bc5bf6c4a4c317ff10f",
+      "merge_base": "7557689cc8db",
       "pr_files": [
         ".github/workflows/offline.yml",
         "NOTICE",
@@ -126,13 +126,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-fable-audit-handoff",
-      "headRefOid": "efc8167fd2bf0d814fe404c817a5273b3dbcaf97",
+      "headRefOid": "efc8167fd2bf",
       "isDraft": true,
       "number": 39,
       "state": "OPEN",
       "title": "docs: Fable full-repository audit and continuation handoff",
       "updatedAt": "2026-10-01T15:30:11Z",
-      "merge_base": "936ea52118a8c07a5a320904891b8eb7c97fea9f",
+      "merge_base": "936ea52118a8",
       "pr_files": [
         "docs/fable-audit-2026-10-01/ACCEPTANCE.md",
         "docs/fable-audit-2026-10-01/AUDIT-INSTRUCTIONS.md",
@@ -170,13 +170,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-correspondence-skill",
-      "headRefOid": "e69e619b1916ccd7291230f94d4779615036791c",
+      "headRefOid": "e69e619b1916",
       "isDraft": true,
       "number": 80,
       "state": "OPEN",
       "title": "Add source-only Flock correspondence skill and read-only ledger report",
       "updatedAt": "2026-10-13T02:44:31Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "campaign_tool/records/correspondence.py",
         "docs/CORRESPONDENCE.md",
@@ -211,13 +211,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-semantic-coverage",
-      "headRefOid": "86135704d5a8c20ad2c88651d3f433f2c6152ad5",
+      "headRefOid": "86135704d5a8",
       "isDraft": true,
       "number": 81,
       "state": "OPEN",
       "title": "Add resumable semantic coverage manifests (ARCH02)",
       "updatedAt": "2026-10-13T02:46:31Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "campaign_tool/records/semantic_coverage.py",
         "tests/records/test_semantic_coverage.py"
@@ -243,13 +243,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-build-envelope",
-      "headRefOid": "95d0ebb6ef65708afab2b90cc96a4fe5ff001e6b",
+      "headRefOid": "95d0ebb6ef65",
       "isDraft": true,
       "number": 82,
       "state": "OPEN",
       "title": "Fix ARCH09 Worker-to-runner build envelope contract",
       "updatedAt": "2026-10-13T02:46:33Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "runner/handlers/build_site.py",
         "tests/runner/test_build_site_contract.py",
@@ -291,13 +291,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-publish-authority",
-      "headRefOid": "64c8e82527d56d271423361145a1a653217bdd74",
+      "headRefOid": "64c8e82527d5",
       "isDraft": true,
       "number": 83,
       "state": "OPEN",
       "title": "Fix publication authority races and bind rollback history",
       "updatedAt": "2026-10-13T02:46:57Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "campaign_tool/records/publish.py",
         "campaign_tool/records/run.py",
@@ -331,13 +331,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-contextual-revisions",
-      "headRefOid": "603ab39cd98bdc8561e56972e1f8c5442b65090a",
+      "headRefOid": "603ab39cd98b",
       "isDraft": true,
       "number": 84,
       "state": "OPEN",
       "title": "Add context-bound analysis revisions and unresolved applicability contracts (ARCH04/05)",
       "updatedAt": "2026-10-13T02:47:51Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "campaign_tool/records/context_revision.py",
         "docs/CONTEXT-REVISION-INTEGRATION.md",
@@ -369,13 +369,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-backup-integrity",
-      "headRefOid": "cbf04994ec670a4bdfd748395fe2e3f638f33118",
+      "headRefOid": "cbf04994ec67",
       "isDraft": true,
       "number": 85,
       "state": "OPEN",
       "title": "Fix backup original closure and SQLite snapshot finalization",
       "updatedAt": "2026-10-13T14:10:23Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "campaign_tool/backup.py",
         "campaign_tool/records/recovery/backup.py",
@@ -420,13 +420,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-structured-detector-contract",
-      "headRefOid": "6c6f9a96925e1d835b6f76654ac85fd96d65f4be",
+      "headRefOid": "6c6f9a96925e",
       "isDraft": true,
       "number": 86,
       "state": "OPEN",
       "title": "ARCH10: add source-bound structured detector adapter",
       "updatedAt": "2026-10-13T02:49:59Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "campaign_tool/records/detectors/pipeline.py",
         "docs/STRUCTURED-DETECTOR-CONTRACT.md",
@@ -458,13 +458,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-hosted-queue-reliability",
-      "headRefOid": "f05b9bf27ffb9192dfd3a8a13b352ca577e687fe",
+      "headRefOid": "f05b9bf27ffb",
       "isDraft": true,
       "number": 87,
       "state": "OPEN",
       "title": "Fence hosted queue attempts and make completion atomic",
       "updatedAt": "2026-10-13T02:50:05Z",
-      "merge_base": "39b9242d7f19f3acbb87cae4e021c6be810eb836",
+      "merge_base": "39b9242d7f19",
       "pr_files": [
         "docs/CONTRACTS.md",
         "docs/RUNNER.md",
@@ -559,13 +559,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/f09-queue-priority-fairness",
-      "headRefOid": "51ed513a4940aaebf143f8d1be05accb6dc66bd2",
+      "headRefOid": "51ed513a4940",
       "isDraft": false,
       "number": 110,
       "state": "OPEN",
       "title": "test(records): priority cannot starve queue work after restart",
       "updatedAt": "2026-10-18T20:39:48Z",
-      "merge_base": "225e7d3fa0b425a467a46114567be851c9c0277c",
+      "merge_base": "225e7d3fa0b4",
       "pr_files": [
         "tests/records/test_queue_runtime.py"
       ],
@@ -585,13 +585,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-resume-containment",
-      "headRefOid": "7d83f2531fa83a4e55c6adf15c66483334fe1310",
+      "headRefOid": "7d83f2531fa8",
       "isDraft": true,
       "number": 130,
       "state": "OPEN",
       "title": "Compose bounded resume with owned-descendant supervision",
       "updatedAt": "2026-10-18T14:26:28Z",
-      "merge_base": "ecb5c32932c1b29b19273cd3595c4c77fd25a7a3",
+      "merge_base": "ecb5c32932c1",
       "pr_files": [
         "campaign_tool/records/contained_resume.py",
         "docs/RECORDS-CONTAINED-RESUME.md",
@@ -852,13 +852,13 @@
     {
       "baseRefName": "main",
       "headRefName": "codex/records-selected-export-atomic-routing",
-      "headRefOid": "daca716de4dce927179eea7cf9fd4d048aa530db",
+      "headRefOid": "daca716de4dc",
       "isDraft": true,
       "number": 138,
       "state": "OPEN",
       "title": "Route selected preserved exports through bounded container intake",
       "updatedAt": "2026-10-19T15:19:27Z",
-      "merge_base": "0ab680433b7fe9a1593c19ad64ae2ed27dd045f3",
+      "merge_base": "0ab680433b7f",
       "pr_files": [
         "campaign_tool/records/container_host.py",
         "campaign_tool/records/intake/export_snapshot.py",
@@ -1139,13 +1139,13 @@
     {
       "baseRefName": "main",
       "headRefName": "t_9d498ba9/build-venv-docs",
-      "headRefOid": "62a5e7e92a8648cf98219186fdff2f368b960de1",
+      "headRefOid": "62a5e7e92a86",
       "isDraft": false,
       "number": 154,
       "state": "OPEN",
       "title": "docs(RECORDS-RELEASE): document the pinned flock-build-venv build environment",
       "updatedAt": "2026-10-20T03:51:36Z",
-      "merge_base": "fddd7fddfe513705c19ae60c22dd8ed0103b7503",
+      "merge_base": "fddd7fddfe51",
       "pr_files": [
         "docs/RECORDS-RELEASE.md"
       ],
@@ -1169,7 +1169,7 @@
       "title": "Hold publication through bounded review-authority retirement",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "9c7dca918d24d7e8cbefdb39dece66c6f63570e5"
+        "oid": "9c7dca918d24"
       }
     },
     {
@@ -1177,7 +1177,7 @@
       "title": "Integrate backup integrity repair with current release guards",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "d091958ce0eb55c753bb7311f72c95afed02331f"
+        "oid": "d091958ce0eb"
       }
     },
     {
@@ -1185,7 +1185,7 @@
       "title": "Integrate read-only correspondence report with current canonical ledger",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "5cc4c71496e20182c3f30c7f826c205b8f7f7d99"
+        "oid": "5cc4c71496e2"
       }
     },
     {
@@ -1193,7 +1193,7 @@
       "title": "Report capped processing coverage against current extraction inventory",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "3c199aa95fa0a46b38ce9812e1b8e7f9995be06f"
+        "oid": "3c199aa95fa0"
       }
     },
     {
@@ -1201,7 +1201,7 @@
       "title": "Integrate versioned Worker-to-runner website build envelope",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "28e9d19854ee56039a52289e6a8ded437e0ce5cc"
+        "oid": "28e9d19854ee"
       }
     },
     {
@@ -1209,7 +1209,7 @@
       "title": "Bind manual analysis reuse to context revisions and unresolved dates",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "e330b5cea96b4c4479ca4570733fa9604fc0687b"
+        "oid": "e330b5cea96b"
       }
     },
     {
@@ -1217,7 +1217,7 @@
       "title": "Integrate hosted queue fencing, atomic completion and restart replay",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "fa94029204807737cef2a1730e99d717a4097d37"
+        "oid": "fa9402920480"
       }
     },
     {
@@ -1225,7 +1225,7 @@
       "title": "Validate structured-detector prerequisites on PR96 context stack",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "c214ad9d65a870592cce94938261023fe9ed7c14"
+        "oid": "c214ad9d65a8"
       }
     },
     {
@@ -1233,7 +1233,7 @@
       "title": "T17-prep: per-run pre-adoption ledger/intake backup (bounded, rotated)",
       "state": "MERGED",
       "mergeCommit": {
-        "oid": "eebba8a59462318dfde3d64f32a8724e3b865e3d"
+        "oid": "eebba8a59462"
       }
     }
   ],

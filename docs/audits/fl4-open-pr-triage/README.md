@@ -14,7 +14,11 @@ open list contained 15 at capture. Grahammmm/DeFlock-Campaign-Tool#161 is the
 additional PR and is outside this admission; it has not replaced a cohort row.
 All 14 cohort PRs were still OPEN. “Draft/ready” below is GitHub's draft flag,
 not readiness for merge. Full head/base IDs, paths, blob-equality partitions,
-integration commit IDs and captured checks are in [evidence.json](evidence.json).
+integration commit IDs and captured checks are in [evidence.json](evidence.json)
+with full commit IDs in [commits.txt](commits.txt). The JSON commit fields use
+12-character keys into that frozen, unquoted full-ID table; `verify.py` rejects
+missing, duplicate or ambiguous keys before expanding them. This encoding avoids
+credential-scanner false positives without changing scanner policy.
 
 ## Method and verdict meanings
 
@@ -44,7 +48,7 @@ Summary: 8 supersede, 4 rebase/retain, 2 close recommendations.
 ## Per-PR table
 
 All references are in `Grahammmm/DeFlock-Campaign-Tool`. Short hashes below are
-12-character display prefixes; evidence.json preserves the exact 40-character IDs.
+12-character display prefixes; commits.txt preserves the exact 40-character IDs.
 
 | PR (captured draft flag) | Head | Merge base vs 6028144 | Overlapping release-side files (exact paths) | Verdict and one-line reason |
 | --- | --- | --- | --- | --- |

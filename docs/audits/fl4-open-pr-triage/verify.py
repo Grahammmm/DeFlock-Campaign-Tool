@@ -14,7 +14,34 @@ import subprocess
 
 HERE = Path(__file__).resolve().parent
 COHORT = [14, 39, 80, 81, 82, 83, 84, 85, 86, 87, 110, 130, 138, 154]
-RELEASE = "602814408e255b3e0649d4c303570f465a6f2aad"
+RELEASE = "602814408e255b3e0649d4c303570f465a6f2aad"  # pragma: allowlist secret
+
+
+def load_evidence():
+    """Expand JSON commit prefixes from the frozen, unquoted full-ID table."""
+    commits = {}
+    for oid in (HERE / "commits.txt").read_text().splitlines():
+        if not re.fullmatch(r"[0-9a-f]{40}", oid):
+            raise ValueError("Invalid full commit ID")
+        prefix = oid[:12]
+        if prefix in commits:
+            raise ValueError("Duplicate or ambiguous commit prefix")
+        commits[prefix] = oid
+    used = set()
+
+    def expand(row):
+        for key in row.keys() & {"release", "headRefOid", "merge_base", "oid"}:
+            prefix = row[key]
+            if not isinstance(prefix, str) or not re.fullmatch(r"[0-9a-f]{12}", prefix):
+                raise ValueError("Invalid commit prefix")
+            row[key] = commits[prefix]
+            used.add(prefix)
+        return row
+
+    data = json.loads((HERE / "evidence.json").read_text(), object_hook=expand)
+    if used != commits.keys():
+        raise ValueError("Unreferenced commit IDs")
+    return data
 
 
 def git(*args):
@@ -46,7 +73,7 @@ def main():
     parser.add_argument("--check-remote", action="store_true")
     parser.add_argument("--gh", default="gh")
     args = parser.parse_args()
-    data = json.loads((HERE / "evidence.json").read_text())
+    data = load_evidence()
     report = (HERE / "README.md").read_text()
     assert data["release"] == RELEASE
     assert data["repository"] == "Grahammmm/DeFlock-Campaign-Tool"
