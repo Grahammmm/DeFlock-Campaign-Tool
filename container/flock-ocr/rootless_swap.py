@@ -63,6 +63,24 @@ IGNORED_TOP = {"Id", "Created", "Image", "State", "ResolvConfPath", "HostnamePat
 # newer daemon (seen at C2 on dockerd 29.6, API 1.55: saved null -> created false).
 # null and false mean the same thing; treat them as equal when diffing.
 HOSTCONFIG_NULL_IS_FALSE = ("OomKillDisable",)
+# More HostConfig values the create endpoint stores in a canonical form, from a
+# create-only probe against rootless dockerd 29.6.2 / API 1.55 (old image, no
+# mounts, network none, never started, removed after inspect; see
+# docs/RECORDS-OCR-CONTAINER-ROOTLESS.md "[C2] settings diff"). Each maps both
+# sides of the diff to one form; the create body is unchanged. Everything else,
+# including MaskedPaths/ReadonlyPaths (null = default masks, [] = none) and
+# Config.Entrypoint/Cmd, stays strict.
+HOSTCONFIG_EQUIVALENT = {
+    "MemorySwappiness": lambda v: None if v == -1 else v,                 # -1 stored as null
+    "PidsLimit": lambda v: None if isinstance(v, int) and v <= 0 else v,  # 0, -1 stored as null
+    "ConsoleSize": lambda v: [0, 0] if v is None else v,                  # null stored as [0, 0]
+    "Mounts": lambda v: v or None,                                        # [] omitted
+    "Links": lambda v: v or None,                                         # [] stored as null
+    "Tmpfs": lambda v: v or None,                                         # {} omitted
+    "Sysctls": lambda v: v or None,                                       # {} omitted
+    "StorageOpt": lambda v: v or None,                                    # {} omitted
+    "Annotations": lambda v: v or None,                                   # {} omitted
+}
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 UNIT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]*")
 TAG_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*")
@@ -178,11 +196,23 @@ def _normalize(inspect):
     for key in HOSTCONFIG_NULL_IS_FALSE:
         if host.get(key) is None:  # absent or null: the daemon's false
             host[key] = False
+    for key, canon in HOSTCONFIG_EQUIVALENT.items():
+        host[key] = canon(host.get(key))
     data["HostConfig"] = host
     data["Mounts"] = sorted(data.get("Mounts") or [],
                             key=lambda m: (m.get("Destination", ""), m.get("Type", "")))
     data["Networks"] = _endpoints(inspect)
     return data
+
+
+def default_normalisations(before, after):
+    """HostConfig fields stored differently that the two tables above treat as equal (for the log)."""
+    left, right = (before.get("HostConfig") or {}), (after.get("HostConfig") or {})
+    tables = {**dict.fromkeys(HOSTCONFIG_NULL_IS_FALSE, lambda v: False if v is None else v),
+              **HOSTCONFIG_EQUIVALENT}
+    return [f"HostConfig.{k}: {json.dumps(left.get(k))} == {json.dumps(right.get(k))}"
+            for k, canon in sorted(tables.items())
+            if left.get(k) != right.get(k) and canon(left.get(k)) == canon(right.get(k))]
 
 
 def inspect_diff(before, after, old_image_config, new_image_config):
@@ -398,11 +428,19 @@ class Swap:
             return None
         return json.loads(out)[0]
 
-    def image_config(self, ref):
+    def image_inspect(self, ref):
         code, out, _ = self.sh(["docker", "image", "inspect", ref], check=False)
         if code != 0:
             self.fail(f"cannot inspect image {ref}")
-        return json.loads(out)[0].get("Config") or {}
+        return json.loads(out)[0]
+
+    def image_config(self, ref):
+        return self.image_inspect(ref).get("Config") or {}
+
+    def image_id(self, ref):
+        """The image ID a tag resolves to now, or None when it does not exist."""
+        code, out, _ = self.sh(["docker", "image", "inspect", "--format", "{{.Id}}", ref], check=False)
+        return out.strip() if code == 0 else None
 
     def mount_users(self):
         """Every container (any state) whose mounts overlap a snapshotted mount."""
@@ -776,6 +814,37 @@ class Swap:
             self.fail("the container has no persistent mounts to snapshot")
         return mounts, excluded
 
+    def check_reuse(self, before, tag_id):
+        """Validate --reuse-image: an earlier run built and V1-verified this tag on this base image."""
+        args = self.args
+        prev_dir = Path(os.path.expanduser(args.reuse_image)).resolve()
+        if prev_dir.parent != Path(self.state["private"]).resolve():
+            self.fail("--reuse-image must be a run directory directly under --private")
+        if str(prev_dir) == str(Path(self.state["run_dir"]).resolve()):
+            self.fail("--reuse-image must name an earlier run")
+        try:
+            prev = json.loads((prev_dir / "state.json").read_text())
+        except (OSError, ValueError) as error:
+            raise StepFailed(f"--reuse-image: cannot read {prev_dir}/state.json: {error}") from error
+        if Path(str(prev.get("run_dir", ""))).resolve() != prev_dir:
+            self.fail("--reuse-image: state.json belongs to another run directory")
+        image, wheel = str(prev.get("new_image_id", "")), str(prev.get("wheel_sha256", ""))
+        if prev.get("new_tag") != args.new_tag:
+            self.fail(f"--reuse-image: that run built {prev.get('new_tag')!r}, not --new-tag {args.new_tag}")
+        if "V1" not in (prev.get("done") or []):
+            self.fail("--reuse-image: that run did not pass [V1]")
+        if not IMAGE_ID_RE.fullmatch(image) or not HEX64_RE.fullmatch(wheel):
+            self.fail("--reuse-image: that run recorded no valid image ID and wheel sha256")
+        if prev.get("old_image") != before["Image"]:
+            self.fail("--reuse-image: that image was built on another base image than the target's")
+        if tag_id != image:
+            self.fail(f"--reuse-image: {args.new_tag} resolves to {tag_id}, not the recorded {image}")
+        old_layers = (self.image_inspect(before["Image"]).get("RootFS") or {}).get("Layers") or []
+        new_layers = (self.image_inspect(image).get("RootFS") or {}).get("Layers") or []
+        if not old_layers or len(new_layers) <= len(old_layers) or new_layers[:len(old_layers)] != old_layers:
+            self.fail("--reuse-image: the image's layers do not extend the target's image layers")
+        return {"run_dir": str(prev_dir), "new_image_id": image, "wheel_sha256": wheel}
+
     def r1_record(self):
         args, st = self.args, self.state
         st.update({"container": args.container, "pause_units": list(args.pause_unit),
@@ -801,8 +870,14 @@ class Swap:
         for suffix in ("-pre-ocr", "-ocr-failed"):
             if self.inspect(args.container + suffix) is not None:
                 self.fail(f"a container named {args.container}{suffix} already exists")
-        if self.sh(["docker", "image", "inspect", args.new_tag], check=False)[0] == 0:
-            self.fail(f"image tag {args.new_tag} already exists; choose a new tag")
+        tag_id = self.image_id(args.new_tag)
+        if args.reuse_image:
+            st["reuse"] = self.check_reuse(before, tag_id)
+            self.log(f"    reusing {args.new_tag} = {st['reuse']['new_image_id']} built and V1-verified by "
+                     f"{st['reuse']['run_dir']}; [B1]/[B2] will not rebuild, [V1] runs again")
+        elif tag_id is not None:
+            self.fail(f"image tag {args.new_tag} already exists; choose a new tag, or --reuse-image the run "
+                      "that built and verified it")
         st["mounts"], st["excluded"] = self.derive_mounts(before)
         st["timers_active"] = {}
         for base in st["pause_units"]:
@@ -875,11 +950,18 @@ class Swap:
                    "sqlite_accepted_malformed_sha256": self.state.get("sqlite_accepted_malformed", {}),
                    "non_archivable": special,
                    "old_container_id": self.state["old_id"], "old_image": self.state["old_image"]}
+        if self.state.get("reuse"):
+            receipt["reused_image"] = self.state["reuse"]
         self.write_json("snapshot-receipt.json", receipt)
         self.state["archives_sha256"] = archives
 
     def b1_wheel(self):
         self.require_gate()
+        reuse = self.state.get("reuse")
+        if reuse:
+            self.state["wheel_sha256"] = reuse["wheel_sha256"]
+            self.log(f"    not rebuilt: reusing wheel sha256 {reuse['wheel_sha256']} recorded by {reuse['run_dir']}")
+            return
         _, out, _ = self.sh([sys.executable, "-B", RECIPE / "build_wheel.py", "--build-python",
                              self.state["build_python"], "--provenance-out",
                              Path(self.state["run_dir"]) / "wheel-provenance.json"], effect=True, timeout=3600)
@@ -895,6 +977,14 @@ class Swap:
     def b2_image(self):
         self.require_gate()
         st = self.state
+        reuse = st.get("reuse")
+        if reuse:
+            current = self.image_id(st["new_tag"])
+            if current != reuse["new_image_id"]:
+                self.fail(f"{st['new_tag']} now resolves to {current}, not the recorded {reuse['new_image_id']}")
+            st["new_image_id"] = reuse["new_image_id"]
+            self.log(f"    not rebuilt: {st['new_tag']} = {current} (checked at [R1] and again now)")
+            return
         commit = self.pins["engine"]["commit"]
         self.sh([sys.executable, "-B", RECIPE / "preflight.py", "--base-image", st["old_image"],
                  "--engine-commit", commit, "--wheel-sha256", st["wheel_sha256"], "--tag", st["new_tag"]],
@@ -957,6 +1047,8 @@ class Swap:
         self.write_json("create-diff.json", diff)
         if after["Image"] != st["new_image_id"] or after["State"]["Running"]:
             self.fail("the created container is not the new image or is running")
+        for line in default_normalisations(before, after):
+            self.log(f"    API default, treated as equal: {line}")
         if diff:
             self.fail(f"replacement settings differ from the saved ones: {diff}")
         self.log("    created; settings equal apart from image, ID, creation and state")
@@ -1343,8 +1435,13 @@ def parse_args(argv):
     parser.add_argument("--pause-unit", action="append", default=[],
                         help="systemd --user unit base name; BASE.timer is stopped, then BASE.service")
     parser.add_argument("--private", help="owner-private directory outside Git (created 0700)")
-    parser.add_argument("--new-tag", help="new image tag that does not exist yet (name:tag)")
-    parser.add_argument("--build-python", help="interpreter with the pinned wheel build tools")
+    parser.add_argument("--new-tag", help="new image tag that does not exist yet (name:tag), or the tag "
+                                          "that --reuse-image built")
+    parser.add_argument("--reuse-image", metavar="PREV_RUN_DIR",
+                        help="reuse the --new-tag image that an earlier run under --private built and passed "
+                             "[V1] with; [B1]/[B2] skip the rebuild, [V1] runs again (--apply/--dry-run)")
+    parser.add_argument("--build-python", help="interpreter with the pinned wheel build tools "
+                                               "(not needed with --reuse-image)")
     parser.add_argument("--helper-image", help="image for data helpers (default: the old image ID)")
     parser.add_argument("--accept-a2", help="sha256 of the reviewed a2/diff.json (with --resume)")
     parser.add_argument("--mail-wait", type=int, default=900, help="seconds to wait for a running service")
@@ -1363,11 +1460,13 @@ def parse_args(argv):
     if args.resume or args.rollback:
         if args.accept_malformed_sqlite:
             parser.error("--accept-malformed-sqlite is fixed at --apply; the run's state.json keeps it")
+        if args.reuse_image:
+            parser.error("--reuse-image is fixed at --apply; the run's state.json keeps it")
         args.run_dir = args.resume or args.rollback
         args.mode = "resume" if args.resume else "rollback"
         return args
-    missing = [f"--{n.replace('_', '-')}" for n in ("container", "private", "new_tag", "build_python")
-               if not getattr(args, n)]
+    needed = ("container", "private", "new_tag") + (() if args.reuse_image else ("build_python",))
+    missing = [f"--{n.replace('_', '-')}" for n in needed if not getattr(args, n)]
     if not args.pause_unit:
         missing.append("--pause-unit")
     if missing:
