@@ -28,7 +28,10 @@ the absolute ``path`` of the pinned original), rewritten in full on every run.
 ``Pipeline.stage_extract`` records one keyed open
 alert per held document. A later run reads that alert and counts the
 document again without parsing it again. A corrupt document is coded per
-document and never stops the stage.
+document and never stops the stage. The per-run ``max_documents`` cap counts
+parse attempts only. Images, unsupported forms and missing-parser documents are
+classified and counted on every run without using it, so they cannot starve the
+parseable documents behind them.
 
 Each document gets exactly one outcome code per run (``OUTCOMES``). The
 stage result carries ``outcomes`` as ``[{code, count}]``, and the counts sum
@@ -65,7 +68,8 @@ FORM_PARSER = {"pdf": "pypdf", "xlsx": "openpyxl", "msg": "extract_msg"}
 # Fixed issue codes in a held document's alert key ("extract:<sha256>:<code>,<code>").
 # Pipeline.stage_extract writes the parser ones; this module writes the last two.
 OCR_CODES = {"ocr_runtime_unconfigured"}
-WORKBOOK_CODES = {"workbook_cached_values_and_objects_not_reviewed"}
+WORKBOOK_CODES = {"workbook_cached_values_and_objects_not_reviewed", "workbook_policy_refused"}
+WORKBOOK_REFUSED_CODE = "workbook_policy_refused"
 TIMEOUT_CODES = {"extraction_timeout"}
 DECODER_CODES = {"decoder_needed", "unsupported_format"}
 CORRUPT_CODES = {"decoder_unavailable_or_failed", "invalid_or_bounded_parser_output", "extraction_error"}
@@ -167,29 +171,51 @@ def _pages(pipeline, import_id):
                            (import_id,))[0]["n"]
 
 
-def extract_one(pipeline, stage, subject, *, missing, timeout):
-    """Return ``(outcome, form, units, pages)`` for one pending, not held original."""
+def classify_form(pipeline, subject, *, missing):
+    """``(form, outcome)`` before any parse; ``outcome`` is None when the original needs parsing.
+
+    This only resolves the declared form (a ledger read and a bounded head read). It
+    never parses, so ``run`` does not charge it to the per-run parse budget: images,
+    unsupported forms and missing parsers are counted on every run without using the
+    slots that parseable documents need. ``PARSER_MISSING`` is not held, so the
+    document is eligible again on the first run after the parser is installed.
+    """
     from . import extraction_routes
-    from .extraction_ledger import ExtractionBindingError
 
     try:
         form = pipeline._form(subject, pipeline._original(subject))
     except Exception:  # noqa: BLE001 - unresolved declarations or unreadable original
-        _hold(pipeline, subject, ERROR_CODE)
-        return ERROR, None, 0, 0
+        _hold(pipeline, subject, ERROR_CODE)  # retryable: held after MAX_ATTEMPTS runs
+        return None, ERROR
     if form in extraction_routes.IMAGES:
-        return AWAITING_OCR, form, 0, 0  # Phase 1: image originals wait for OCR/vision
+        return form, AWAITING_OCR  # Phase 1: image originals wait for OCR/vision
     if form not in extraction_routes.SUPPORTED and form != "msg":
-        return DECODER_NEEDED, form, 0, 0
+        return form, DECODER_NEEDED
     needed = FORM_PARSER.get(form)
     if needed and (needed in missing or (form == "msg" and not _importable(needed))):
-        return PARSER_MISSING, form, 0, 0
+        return form, PARSER_MISSING
+    return form, None
+
+
+def _workbook_refusal(form, error):
+    # The installed check raises ExtractionBindingError("workbook_...") from the native
+    # workbook policy (formula cells, gaps, package holds). Hold it as a workbook outcome.
+    return form == "xlsx" and str(error).startswith("workbook_")
+
+
+def extract_one(pipeline, stage, subject, *, form, timeout):
+    """Return ``(outcome, form, units, pages)`` for one classified, parseable original."""
+    from .extraction_ledger import ExtractionBindingError
+
     pipeline.extraction_timeout = timeout
     try:
         result = pipeline.stage_extract(subject, stage)
-    except (ExtractionBindingError, ValueError):
+    except (ExtractionBindingError, ValueError) as error:
         # Parsed and possibly enrolled, but the installed extraction check refused it.
         # Held, so later runs do not parse and enroll the same document again.
+        if _workbook_refusal(form, error):
+            _hold(pipeline, subject, WORKBOOK_REFUSED_CODE)
+            return WORKBOOK_HELD, form, 0, 0
         _hold(pipeline, subject, REFUSED_CODE)
         return NOT_ACCEPTED, form, 0, 0
     except Exception:  # noqa: BLE001 - one document never stops the stage
@@ -257,12 +283,18 @@ def write_awaiting_ocr(root, lines):
 
 
 def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
-        document_timeout=DEFAULT_DOCUMENT_TIMEOUT, clock=time.monotonic, pipeline_factory=None):
+        document_timeout=DEFAULT_DOCUMENT_TIMEOUT, clock=time.monotonic, pipeline_factory=None,
+        native_workbook_policy=None):
     """Advance pending extraction under the root lock; return the outcome summary.
 
     ``deadline`` is a ``clock()`` value. No document starts unless it can get at
-    least ``MIN_DOCUMENT_SECONDS`` before it. Documents left unstarted when the
-    budget or ``max_documents`` runs out are coded ``DEFERRED_RUN_BUDGET``.
+    least ``MIN_DOCUMENT_SECONDS`` before it. ``max_documents`` caps parse attempts
+    only: documents classified without a parse (images, unsupported forms, missing
+    parsers) and held documents are counted but never use the budget, so they cannot
+    starve parseable documents behind them. Parseable documents left unstarted when
+    the budget or ``max_documents`` runs out are coded ``DEFERRED_RUN_BUDGET``.
+    ``native_workbook_policy`` is a ``workbook_policy.NativeWorkbookPolicy`` from
+    trusted startup (``load_native_workbook_policy``), else XLSX stays held.
     Raises ``RootNotInitialized`` (nothing created) and ``run.RunError``
     (``root_locked``).
     """
@@ -271,7 +303,10 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
     root = Path(os.path.abspath(root))
     if not (root / "ledger.sqlite").is_file() or not (root / "intake" / "intake.sqlite").is_file():
         raise RootNotInitialized()
-    pipeline = (pipeline_factory or records_run.Pipeline)(root)
+    if pipeline_factory is None:
+        pipeline = records_run.Pipeline(root, native_workbook_policy=native_workbook_policy)
+    else:
+        pipeline = pipeline_factory(root)
     missing = missing_parsers()
     outcomes = {code: 0 for code in OUTCOMES}
     documents, new_units, new_pages = [], 0, 0
@@ -289,18 +324,22 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
                     outcome = PRESERVE_PENDING
                 elif held is not None:
                     outcome = held  # counted every run, never parsed again
-                elif attempted >= max_documents or remaining < MIN_DOCUMENT_SECONDS:
+                elif remaining < MIN_DOCUMENT_SECONDS:
                     outcome = DEFERRED
                 else:
-                    attempted += 1
-                    if stage is None:
-                        stage = pipeline._open_stage_run()
-                    timeout = int(max(1, min(document_timeout, remaining - 5)))
-                    outcome, form, units, pages = extract_one(pipeline, stage, subject,
-                                                              missing=missing, timeout=timeout)
-                    unexpected += outcome in (ERROR, NOT_ACCEPTED)
-                    new_units += units
-                    new_pages += pages
+                    form, outcome = classify_form(pipeline, subject, missing=missing)
+                    if outcome is None and attempted >= max_documents:
+                        outcome = DEFERRED
+                    elif outcome is None:
+                        attempted += 1
+                        if stage is None:
+                            stage = pipeline._open_stage_run()
+                        timeout = int(max(1, min(document_timeout, remaining - 5)))
+                        outcome, form, units, pages = extract_one(pipeline, stage, subject,
+                                                                  form=form, timeout=timeout)
+                        unexpected += outcome in (ERROR, NOT_ACCEPTED)
+                        new_units += units
+                        new_pages += pages
                 outcomes[outcome] += 1
                 documents.append({"original_sha256": subject, "form": form, "outcome": outcome})
         finally:
