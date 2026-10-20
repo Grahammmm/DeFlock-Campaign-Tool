@@ -44,6 +44,7 @@ import urllib.parse
 from pathlib import Path
 
 RECIPE = Path(__file__).resolve().parent
+DIST = RECIPE / "dist"  # build_wheel.py output and the Dockerfile build context's only wheel
 RUNBOOK = RECIPE / "runbook-rootless.json"
 LIVE, PRIV, REC = "/live", "/private", "/recipe"
 HELPER_LABEL = "deflock.flock-swap.helper=1"
@@ -878,8 +879,39 @@ class Swap:
         self.write_json("snapshot-receipt.json", receipt)
         self.state["archives_sha256"] = archives
 
+    def park_stale_dist(self):
+        """Move a previous attempt's wheel out of the build context (never delete).
+
+        build_wheel.py refuses a non-empty dist/ and the Dockerfile context must
+        hold exactly one wheel, so any attempt that failed after B1 left a dist/
+        that made the next attempt fail at B1 (attempt 4, 2026-10-19).  Only a
+        directory holding nothing but engine wheels is parked; anything else is
+        a hand-made state and stops the run before the build.
+        """
+        dist = Path(DIST)
+        if dist.is_symlink() or (dist.exists() and not dist.is_dir()):
+            self.fail(f"{dist} must be absent or a real directory")
+        if not dist.exists():
+            return
+        entries = sorted(p.name for p in dist.iterdir())
+        if not entries:
+            return
+        unexpected = [e for e in entries if not (e.startswith("deflock_campaign_tool-") and e.endswith(".whl"))
+                      or (dist / e).is_symlink() or not (dist / e).is_file()]
+        if unexpected:
+            self.fail(f"{dist} holds entries that are not engine wheels: {unexpected}; move them aside by hand")
+        target = self.run_dir / "b1" / "stale-dist"
+        if self.dry:
+            self.log(f"    would move stale {dist} ({', '.join(entries)}) to {target}")
+            return
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.move(str(dist), str(target))
+        self.state["stale_dist_parked"] = entries
+        self.log(f"    moved stale {dist} ({', '.join(entries)}) to {target}")
+
     def b1_wheel(self):
         self.require_gate()
+        self.park_stale_dist()
         _, out, _ = self.sh([sys.executable, "-B", RECIPE / "build_wheel.py", "--build-python",
                              self.state["build_python"], "--provenance-out",
                              Path(self.state["run_dir"]) / "wheel-provenance.json"], effect=True, timeout=3600)
