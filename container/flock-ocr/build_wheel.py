@@ -65,8 +65,10 @@ def check_wheel(wheel, pins):
         raise BuildError("embedded manifest is not a clean build of the pinned commit")
     if canonical_sha256(manifest) != engine["manifest_sha256"]:
         raise BuildError("embedded manifest_sha256 differs from pins.json")
-    if len(manifest.get("package_files", {})) != engine["package_file_count"]:
-        raise BuildError("embedded package inventory size differs from pins.json")
+    found = len(manifest.get("package_files", {}))
+    if found != engine["package_file_count"]:
+        raise BuildError(f"embedded package inventory size differs from pins.json: "
+                         f"manifest lists {found} package files, pins.json says {engine['package_file_count']}")
     return hashlib.sha256(wheel.read_bytes()).hexdigest()
 
 

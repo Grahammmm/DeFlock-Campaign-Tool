@@ -258,6 +258,23 @@ class FlockOcrPinsTests(unittest.TestCase):
         lock = (ROOT / "requirements-records-test.txt").read_bytes()
         self.assertEqual(hashlib.sha256(lock).hexdigest(), engine["dependency_lock_sha256"])
 
+    def test_package_file_count_equals_committed_package_files_at_pinned_commit(self):
+        # build_wheel.check_wheel compares len(manifest.package_files) with this pin, so a
+        # miscounted pin (173 was the wheel member count, not the inventory) fails every build.
+        from campaign_tool.records.release_manifest import GENERATED
+        commit = PINS["engine"]["commit"]
+        probe = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", f"{commit}^{{commit}}"],
+                               capture_output=True, check=False)
+        if probe.returncode != 0:
+            self.skipTest("pinned engine commit is not in this clone (shallow checkout)")
+        listing = subprocess.run(["git", "-C", str(ROOT), "ls-tree", "-r", "--name-only", commit, "campaign_tool"],
+                                 capture_output=True, text=True, check=True).stdout.splitlines()
+        inventory = [path for path in listing
+                     if "__pycache__" not in path.split("/") and not path.endswith((".pyc", ".pyo"))
+                     and path.split("/", 1)[1] not in GENERATED]
+        self.assertTrue(inventory)
+        self.assertEqual(PINS["engine"]["package_file_count"], len(inventory))
+
     def test_expected_versions_cover_every_requested_tool(self):
         commands = {command.split()[0] for command in PINS["expected_versions"]}
         self.assertLessEqual({"ocrmypdf", "pdftotext", "qpdf", "tesseract"}, commands)
