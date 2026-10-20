@@ -1,0 +1,13 @@
+[Unit]
+Description=Records intake at three Pacific slots
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 America/Los_Angeles
+OnCalendar=*-*-* 13:00:00 America/Los_Angeles
+OnCalendar=*-*-* 20:30:00 America/Los_Angeles
+Persistent=true
+AccuracySec=1min
+Unit=records-run.service
+
+[Install]
+WantedBy=timers.target

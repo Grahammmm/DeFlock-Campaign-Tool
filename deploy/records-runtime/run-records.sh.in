@@ -1,0 +1,317 @@
+#!/bin/sh
+# Records run wrapper (template; plan T10 + T11). Render every placeholder
+# with render.py before installing. The rendered file belongs in the private
+# runtime, never in this repository.
+#
+# Usage: run-records.sh [--target NAME] [--dry-run] [--scheduled]
+#   --target NAME  stage plan RUNTIME_DIR/targets/NAME.json (default
+#                  @DEFAULT_TARGET@); receipts go to RUNTIME_DIR/NAME/
+#   --dry-run      print the preflight steps and every stage, then exit;
+#                  takes no lock, calls no docker, writes nothing
+#   --scheduled    set by the systemd unit; report mode "scheduled"
+#                  (a target whose stage plan says mode "test" always
+#                  reports mode "test")
+#
+# Exit codes:
+#   0      every work stage ok, warn or skipped
+#   10-16  first failed work stage: 10 sync, 11 delta, 12 adoption,
+#          13 portal, 14 extract, 15 digest_gates, 16 outputs
+#   64     usage error
+#   70     internal orchestrator error
+#   73     another run holds the overlap lock; this slot was skipped
+#          (nothing attempted, skip receipt written, no queueing)
+#   75     Docker daemon or records container not ready within the bounded
+#          readiness deadline (including hung docker commands)
+#   78     configuration, identity, image or stage plan check failed
+# A notification failure NEVER changes the exit status. It is logged, an
+# alert file is written and the run report carries "notify_failed": true.
+# That holds even when the notify helper itself cannot run, hangs, or exits
+# without recording an outcome: the wrapper then records the outcome itself.
+set -eu
+umask 077
+
+RELEASE_COMMIT=@RELEASE_COMMIT@
+ENGINE_DIR=@ENGINE_DIR@
+DOCKER=@DOCKER@
+TIMEOUT=@TIMEOUT@
+FLOCK=@FLOCK@
+CONTAINER=@CONTAINER@
+EXPECTED_IMAGE=@EXPECTED_IMAGE@
+RUN_UID=@RUN_UID@
+RUNTIME_DIR=@RUNTIME_DIR@
+HOST_PYTHON=@HOST_PYTHON@
+NOTIFY=@NOTIFY_PY@
+NOTIFY_ENV_FILE=@NOTIFY_ENV_FILE@
+NOTIFY_LABEL=@NOTIFY_LABEL@
+DOCKER_WAIT_ATTEMPTS=@DOCKER_WAIT_ATTEMPTS@
+DOCKER_WAIT_DELAY=@DOCKER_WAIT_DELAY@
+DOCKER_WAIT_MAX_DELAY=@DOCKER_WAIT_MAX_DELAY@
+DOCKER_CMD_TIMEOUT=@DOCKER_CMD_TIMEOUT@
+DOCKER_WAIT_DEADLINE=@DOCKER_WAIT_DEADLINE@
+NOTIFY_TIMEOUT=@NOTIFY_TIMEOUT@
+RUN_BUDGET_SECONDS=@RUN_BUDGET_SECONDS@
+TARGET=@DEFAULT_TARGET@
+# Grace between TERM and KILL for a timed-out command.
+KILL_AFTER=2
+# Extra time the orchestrator gets past its own deadline before the
+# backstop timeout signals it (it then writes RUN_INTERRUPTED and exits).
+BACKSTOP_GRACE=15
+
+usage() {
+  printf '%s\n' "usage: run-records.sh [--target NAME] [--dry-run] [--scheduled]" >&2
+  exit 64
+}
+
+DRY_RUN=0
+SCHEDULED=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --target) [ $# -ge 2 ] || usage; TARGET=$2; shift 2;;
+    --target=*) TARGET=${1#--target=}; shift;;
+    --dry-run) DRY_RUN=1; shift;;
+    --scheduled) SCHEDULED=1; shift;;
+    *) usage;;
+  esac
+done
+case "$TARGET" in ""|[!A-Z]*|*[!A-Z0-9_]*) usage;; esac
+[ "${#TARGET}" -le 32 ] || usage
+
+# Static preflight. A refusal is noted (code only) in a private receipt
+# line when RUNTIME_DIR exists, because the unit discards stderr.
+refuse() {
+  printf '%s\n' "run-records: refused ($1); nothing attempted" >&2
+  if [ -d "$RUNTIME_DIR" ]; then
+    printf '%s target=%s refused=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TARGET" "$1" \
+      >>"$RUNTIME_DIR/preflight-refusals.log" 2>/dev/null || :
+  fi
+  exit 78
+}
+case "$RELEASE_COMMIT" in *[!0-9a-f]*|"") refuse RELEASE_COMMIT_INVALID;; esac
+[ "${#RELEASE_COMMIT}" -eq 40 ] || refuse RELEASE_COMMIT_INVALID
+[ "$(id -u)" -eq "$RUN_UID" ] || refuse RUN_UID_MISMATCH
+for n in "$DOCKER_WAIT_ATTEMPTS" "$DOCKER_WAIT_DELAY" "$DOCKER_WAIT_MAX_DELAY" \
+    "$DOCKER_CMD_TIMEOUT" "$DOCKER_WAIT_DEADLINE" "$NOTIFY_TIMEOUT" "$RUN_BUDGET_SECONDS"; do
+  case "$n" in *[!0-9]*|"") refuse NUMBER_INVALID;; esac
+done
+[ "$DOCKER_WAIT_ATTEMPTS" -ge 1 ] || refuse NUMBER_INVALID
+[ "$DOCKER_CMD_TIMEOUT" -ge 1 ] || refuse NUMBER_INVALID
+[ "$DOCKER_WAIT_DEADLINE" -ge 1 ] || refuse NUMBER_INVALID
+[ "$NOTIFY_TIMEOUT" -ge 1 ] || refuse NUMBER_INVALID
+[ "$RUN_BUDGET_SECONDS" -gt "$DOCKER_WAIT_DEADLINE" ] || refuse NUMBER_INVALID
+[ -x "$TIMEOUT" ] || refuse TIMEOUT_MISSING
+[ -x "$FLOCK" ] || refuse FLOCK_MISSING
+[ -x "$HOST_PYTHON" ] || refuse HOST_PYTHON_MISSING
+[ -f "$ENGINE_DIR/campaign_tool/records/run_orchestrator.py" ] || refuse ENGINE_DIR_INVALID
+TARGET_CONFIG="$RUNTIME_DIR/targets/$TARGET.json"
+[ -f "$TARGET_CONFIG" ] || refuse TARGET_CONFIG_MISSING
+
+orch() {
+  PYTHONPATH="$ENGINE_DIR" "$HOST_PYTHON" -B -m campaign_tool.records.run_orchestrator "$@"
+}
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "dry-run target=$TARGET: nothing is executed, locked or written"
+  printf '%s\n' "preflight 1 lock: $RUNTIME_DIR/run-records.lock (held by another run: skip, exit 73)"
+  printf '%s\n' "preflight 2 docker: wait up to $DOCKER_WAIT_ATTEMPTS attempts / ${DOCKER_WAIT_DEADLINE}s for daemon and container (else exit 75)"
+  printf '%s\n' "preflight 3 image: container image must equal the pinned image (else exit 78)"
+  printf '%s\n' "budget: ${RUN_BUDGET_SECONDS}s from start for all work stages; notify ${NOTIFY_TIMEOUT}s"
+  orch plan --target-config "$TARGET_CONFIG"
+  exit $?
+fi
+
+START_EPOCH=$(date +%s)
+STARTED_AT=$(date -u -d "@$START_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+RUN_ID="run_$(date -u -d "@$START_EPOCH" +%Y%m%dT%H%M%SZ)_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+TARGET_DIR="$RUNTIME_DIR/$TARGET"
+mkdir -p "$TARGET_DIR/reports" "$TARGET_DIR/alerts" "$TARGET_DIR/work"
+LOG="$TARGET_DIR/run-records.log"
+REPORT="$TARGET_DIR/reports/$RUN_ID.json"
+SCHED_FLAG=
+[ "$SCHEDULED" -eq 0 ] || SCHED_FLAG=--scheduled
+
+log() {
+  line="$(date -u +%Y-%m-%dT%H:%M:%SZ) run=$RUN_ID $*"
+  printf '%s\n' "$line" >>"$LOG"
+  printf '%s\n' "$line" >&2
+}
+
+# Overlap lock (plan T11): one records run at a time per runtime, across all
+# targets. A slot that finds the lock held is skipped, not queued; the
+# running run is never interrupted. flock releases on process exit.
+exec 9>>"$RUNTIME_DIR/run-records.lock"
+if ! "$FLOCK" -n 9; then
+  log "skipped: another records run holds the lock; nothing attempted"
+  skip="$TARGET_DIR/alerts/run-skipped-$RUN_ID.json"
+  printf '{"schema":"records-run-skipped-v1","kind":"lock_held","run_id":"%s","target":"%s","at":"%s"}\n' \
+    "$RUN_ID" "$TARGET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$skip.tmp" && mv -f "$skip.tmp" "$skip" ||
+    log "could not write skip receipt"
+  exit 73
+fi
+
+# Run one docker command under a hard deadline. GNU timeout puts the command
+# in its own process group and signals the whole group, so a hung client and
+# anything it spawned are terminated. stdin is closed.
+dcmd() {
+  "$TIMEOUT" -k "$KILL_AFTER" "$DOCKER_CMD_TIMEOUT" "$DOCKER" "$@" </dev/null
+}
+
+docker_ready() {
+  dcmd info >/dev/null 2>&1 || return 1
+  [ "$(dcmd inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = true ]
+}
+
+# Bounded wait for rootless Docker and the records container (Oct 17: the
+# timer fired after reboot before the rootless daemon was up). Bounded by
+# both an attempt count and an overall wall-clock deadline; every docker call
+# also has its own deadline, so a hung daemon cannot stall the run.
+DOCKER_ATTEMPTS_USED=0
+WAIT_STARTED=$(date +%s)
+deadline_left() {
+  echo $((WAIT_STARTED + DOCKER_WAIT_DEADLINE - $(date +%s)))
+}
+wait_for_docker() {
+  delay="$DOCKER_WAIT_DELAY"
+  attempt=1
+  while :; do
+    DOCKER_ATTEMPTS_USED=$attempt
+    if docker_ready; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$DOCKER_WAIT_ATTEMPTS" ]; then
+      return 1
+    fi
+    left=$(deadline_left)
+    if [ "$left" -le 0 ]; then
+      log "docker not ready (attempt $attempt/$DOCKER_WAIT_ATTEMPTS); readiness deadline ${DOCKER_WAIT_DEADLINE}s reached"
+      return 1
+    fi
+    [ "$delay" -le "$left" ] || delay="$left"
+    log "docker not ready (attempt $attempt/$DOCKER_WAIT_ATTEMPTS); retrying in ${delay}s"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+    [ "$delay" -le "$DOCKER_WAIT_MAX_DELAY" ] || delay="$DOCKER_WAIT_MAX_DELAY"
+  done
+}
+
+RUN_EXIT=0
+abort_report() {
+  # $1 reason code. Writes a schema-valid report: sync failed with the code,
+  # every later stage skipped, a blocking needs-G item.
+  orch abort --run-id "$RUN_ID" --started-at "$STARTED_AT" \
+    --target-config "$TARGET_CONFIG" $SCHED_FLAG --reason "$1" --report "$REPORT" ||
+    log "could not write abort report"
+}
+
+alert_without_report() {
+  # Last resort when even the orchestrator cannot record the notify outcome.
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  alert="$TARGET_DIR/alerts/notify-failed-$RUN_ID.json"
+  printf '{"schema":"records-notify-alert-v1","kind":"notify_failed","run_id":"%s","run_overall_status":"unknown","run_exit_code":%s,"reason":"%s","at":"%s"}\n' \
+    "$RUN_ID" "$RUN_EXIT" "$1" "$at" >"$alert.tmp" 2>/dev/null &&
+    mv -f "$alert.tmp" "$alert" || log "notify: could not write alert file"
+}
+
+notify_fallback() {
+  # $1 reason enum, $2 optional --only-if-pending. Independent of notify.py:
+  # used when the helper could not run, failed, hung or left no outcome.
+  orch notify-fallback --report "$REPORT" --alerts-dir "$TARGET_DIR/alerts" \
+    --reason "$1" --exit-code "$RUN_EXIT" ${2:-}
+  frc=$?
+  if [ "$frc" -eq 3 ]; then
+    return 0
+  fi
+  log "notify: FAILED reason=$1; run status unchanged"
+  if [ "$frc" -ne 0 ]; then
+    log "notify: could not update run report"
+    alert_without_report "$1"
+  fi
+}
+
+notify() {
+  # Never fatal (Oct 16 regression). Every path below returns 0.
+  set +e
+  PYTHONPATH="$ENGINE_DIR" "$TIMEOUT" -k "$KILL_AFTER" "$NOTIFY_TIMEOUT" \
+    "$HOST_PYTHON" -B "$NOTIFY" --report "$REPORT" --alerts-dir "$TARGET_DIR/alerts" \
+    --exit-code "$RUN_EXIT" --log "$LOG" --env-file "$NOTIFY_ENV_FILE" \
+    --label "$NOTIFY_LABEL" </dev/null
+  nrc=$?
+  if [ "$nrc" -eq 124 ] || [ "$nrc" -eq 137 ]; then
+    notify_fallback helper_timeout
+  elif [ "$nrc" -ne 0 ]; then
+    notify_fallback helper_failed
+  else
+    # Helper exited 0; make sure it actually recorded an outcome.
+    notify_fallback helper_no_outcome --only-if-pending
+  fi
+  cp -f "$REPORT" "$TARGET_DIR/run-report.json.tmp" 2>/dev/null &&
+    mv -f "$TARGET_DIR/run-report.json.tmp" "$TARGET_DIR/run-report.json" ||
+    log "notify: could not publish run-report.json"
+  set -e
+  return 0
+}
+
+finish() {
+  # $1 exit code
+  RUN_EXIT=$1
+  log "finished exit=$1"
+  notify
+  exit "$1"
+}
+
+log "started target=$TARGET"
+set +e
+orch check --target-config "$TARGET_CONFIG"
+crc=$?
+set -e
+if [ "$crc" -ne 0 ]; then
+  log "ERROR: stage plan for target $TARGET is invalid; no records work was attempted"
+  abort_report TARGET_CONFIG_INVALID
+  finish 78
+fi
+if ! wait_for_docker; then
+  log "ERROR: Docker daemon or container '$CONTAINER' not ready after $DOCKER_ATTEMPTS_USED/$DOCKER_WAIT_ATTEMPTS attempts (deadline ${DOCKER_WAIT_DEADLINE}s, per-command ${DOCKER_CMD_TIMEOUT}s); no records work was attempted"
+  abort_report DOCKER_UNAVAILABLE
+  finish 75
+fi
+log "docker ready after $DOCKER_ATTEMPTS_USED/$DOCKER_WAIT_ATTEMPTS attempts"
+set +e
+image="$(dcmd inspect --format '{{.Image}}' "$CONTAINER" 2>/dev/null)"
+irc=$?
+set -e
+if [ "$irc" -ne 0 ]; then
+  log "ERROR: docker inspect of container '$CONTAINER' failed or timed out (rc=$irc); no records work was attempted"
+  abort_report DOCKER_UNAVAILABLE
+  finish 75
+fi
+if [ "$image" != "$EXPECTED_IMAGE" ]; then
+  log "ERROR: container image does not match the pinned image; no records work was attempted"
+  abort_report IMAGE_MISMATCH
+  finish 78
+fi
+
+# Work stages. The orchestrator owns per-stage timeouts and the overall
+# deadline (RUN_BUDGET_SECONDS from START_EPOCH, so the Docker wait counts).
+# GNU timeout is only a backstop: on its TERM the orchestrator records
+# RUN_INTERRUPTED and still writes the report. Stage stdout/stderr never
+# reach this log.
+DEADLINE_EPOCH=$((START_EPOCH + RUN_BUDGET_SECONDS))
+BACKSTOP=$((DEADLINE_EPOCH - $(date +%s) + BACKSTOP_GRACE))
+[ "$BACKSTOP" -ge 1 ] || BACKSTOP=1
+set +e
+"$TIMEOUT" -k "$KILL_AFTER" "$BACKSTOP" env PYTHONPATH="$ENGINE_DIR" \
+  "$HOST_PYTHON" -B -m campaign_tool.records.run_orchestrator run \
+  --target-config "$TARGET_CONFIG" --expect-target "$TARGET" --run-id "$RUN_ID" \
+  --started-at "$STARTED_AT" --deadline-epoch "$DEADLINE_EPOCH" --report "$REPORT" \
+  --work-dir "$TARGET_DIR/work" $SCHED_FLAG </dev/null
+rc=$?
+set -e
+if [ ! -f "$REPORT" ]; then
+  log "ERROR: orchestrator exited rc=$rc without a run report"
+  abort_report ORCHESTRATOR_FAILED
+  finish 70
+fi
+case "$rc" in
+  0|1[0-6]|70|78) finish "$rc";;
+  *) log "ERROR: orchestrator exited with unexpected rc=$rc"; finish 70;;
+esac
