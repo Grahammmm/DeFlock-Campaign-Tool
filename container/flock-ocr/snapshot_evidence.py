@@ -9,11 +9,16 @@ data. It has three subcommands:
       path, type, numeric uid:gid and mode, plus the SHA-256 of every regular
       file and the target of every symlink. Files are opened read-only as plain
       bytes; SQLite is never used, so -wal and -shm sidecars are hashed as they
-      are and never checkpointed or removed.
+      are and never checkpointed or removed. Special files (sockets, fifos,
+      character and block devices) are entries of type "other" with a
+      "special" kind and are also listed in the top-level "non_archivable"
+      map (path -> kind), empty when there are none.
 
   compare A.json B.json
       Exit 0 only if the two manifests are identical; otherwise print every
-      differing path and exit 1.
+      differing path and exit 1. Special files are compared too; the rootless
+      driver instead uses compare_archivable(), which leaves them out and
+      reports them.
 
   sqlite-evidence COPY_ROOT --out DIR --live LIVE [--live LIVE ...]
                   [--accept-malformed RELPATH=SHA256 ...]
@@ -54,6 +59,9 @@ from pathlib import Path
 SQLITE_MAGIC = b"SQLite format 3\x00"
 HEX64_RE = re.compile(r"[0-9a-f]{64}")
 _KINDS = {stat.S_IFREG: "f", stat.S_IFDIR: "d", stat.S_IFLNK: "l"}
+ARCHIVABLE = frozenset(_KINDS.values())
+_SPECIAL = {stat.S_IFSOCK: "socket", stat.S_IFIFO: "fifo",
+            stat.S_IFCHR: "char_device", stat.S_IFBLK: "block_device"}
 
 
 def _sha256(path):
@@ -100,7 +108,7 @@ def _walk(root):
 
 def manifest(root):
     """Return the read-only content and owner/mode manifest of ``root``."""
-    entries = {}
+    entries, special = {}, {}
     for path, rel in _walk(root):
         try:
             info = os.lstat(path)
@@ -109,7 +117,10 @@ def manifest(root):
         kind = _KINDS.get(stat.S_IFMT(info.st_mode), "other")
         entry: dict = {"type": kind, "owner": f"{info.st_uid}:{info.st_gid}",
                        "mode": format(stat.S_IMODE(info.st_mode), "04o")}
-        if kind == "f":
+        if kind == "other":
+            entry["special"] = _SPECIAL.get(stat.S_IFMT(info.st_mode), "unknown")
+            special[rel] = entry["special"]
+        elif kind == "f":
             try:
                 entry["sha256"] = _sha256(path)
             except OSError as error:
@@ -118,13 +129,40 @@ def manifest(root):
         elif kind == "l":
             entry["target"] = os.readlink(path)
         entries[rel] = entry
-    return {"manifest_version": 1, "entries": dict(sorted(entries.items()))}
+    return {"manifest_version": 1, "entries": dict(sorted(entries.items())),
+            "non_archivable": dict(sorted(special.items()))}
 
 
 def compare(left, right):
     """Return the sorted list of paths whose manifest entries differ."""
     a, b = left["entries"], right["entries"]
     return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
+
+
+def non_archivable(manifest_data):
+    """Map each special-file path (socket, fifo, device) to its kind.
+
+    Derived from the entries, not the top-level "non_archivable" key, so a
+    manifest written before that key existed (type "other", no "special")
+    is read the same way.
+    """
+    return {p: e.get("special", "other") for p, e in sorted(manifest_data["entries"].items())
+            if e.get("type") not in ARCHIVABLE}
+
+
+def compare_archivable(left, right):
+    """Compare only regular files, directories and symlinks.
+
+    Returns (diff, excluded): the sorted paths whose archivable entries
+    differ, and the sorted special-file paths of either side that were left
+    out. A path that is a special file on one side and a regular file,
+    directory or symlink on the other is still a difference.
+    """
+    a = {p: e for p, e in left["entries"].items() if e.get("type") in ARCHIVABLE}
+    b = {p: e for p, e in right["entries"].items() if e.get("type") in ARCHIVABLE}
+    diff = sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
+    excluded = sorted(set(non_archivable(left)) | set(non_archivable(right)))
+    return diff, excluded
 
 
 def _within(child, parent):

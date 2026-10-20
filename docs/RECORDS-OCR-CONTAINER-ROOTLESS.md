@@ -171,7 +171,9 @@ container check is the primary control.
 4. [S1] For each mount, in helpers with the live mount read-only: write a
    baseline manifest, take a `--numeric-owner` tar into
    `$RUN/s1/mNN.tar`, take a second manifest and compare it with the baseline.
-   No database is opened.
+   No database is opened. Special files (sockets, fifos, devices) are
+   recorded in the manifest's `non_archivable` map and named in the log (see
+   "Sockets and other special files" below).
 
 5. [S2] Extract each S1 archive into `$RUN/s2/inspect/mNN` and run
    `sqlite-evidence` on that copy only. It must exit 0 with `"ok": true`, and
@@ -184,11 +186,13 @@ container check is the primary control.
 
 6. [S3] Extract each S1 archive into an empty `$RUN/s3/restore-test/mNN`.
    Its manifest must equal the baseline, and a fresh live manifest must still
-   equal it too.
+   equal it too. Every regular file, directory and symlink is compared;
+   special files are excluded from these checks and listed by path.
 
 7. [G1] Write `snapshot-receipt.json` with `"snapshot_ok": true`, the
    archive and backup SHA-256 values, any hash-pinned malformed databases
-   that were exempted (`sqlite_accepted_malformed_sha256`) and the completion
+   that were exempted (`sqlite_accepted_malformed_sha256`), the special files
+   per mount (`non_archivable`, path to kind) and the completion
    time, only if [S1] to [S3] all passed. Every build, rename, create and
    start step re-reads this receipt and refuses without it.
 
@@ -288,8 +292,11 @@ last. A rollback never starts the replacement and never uses `docker rm`.
    holds exactly the live state, archive the current state into a new attempt
    directory `$RUN/rollback/mNN/attempt-NNN/` (`current.json`, `current.tar`).
    Extract it to an isolated directory and check it against the current
-   manifest. Write `receipt.json` (hashes) last and make the three files
+   manifest. Write `receipt.json` (hashes and the `non_archivable` special
+   files of the captured state) last and make the three files
    read-only. Only then clear the mount and extract the S1 archive into it.
+   Clearing removes the mount's sockets too; the S1 archive does not bring
+   them back, and the log names each one.
    Attempt directories are created exclusively and never rewritten. A retried
    or interrupted rollback adds `attempt-002`, and so on; it never truncates an
    earlier capture, so the first one keeps the replacement's work even if a
@@ -338,10 +345,42 @@ So does an unpinned malformed database. Pins are fixed at `--apply`, kept in
 `state.json` and reused by [A2]. `--resume` and `--rollback` do not take
 them.
 
+## Sockets and other special files
+
+A mount can hold Unix sockets left by a stopped process (for example an
+app-server control socket or a lifecycle socket under a rehearsal's `tmp/`).
+GNU tar skips sockets ("socket ignored", exit 0), so a fresh restore never
+has them. Before this rule, [S3] failed with "fresh restore vs baseline:
+N difference(s)" for every such socket.
+
+The manifest records every entry that is not a regular file, directory or
+symlink as `"type": "other"` with a `"special"` kind (`socket`, `fifo`,
+`char_device`, `block_device` or `unknown`), and lists them all in its
+top-level `non_archivable` map (path to kind; `{}` when there are none). The
+driver then:
+
+- names each one by path in the [S1] and [A2] log for its mount, and writes
+  them per mount into `snapshot-receipt.json` (`non_archivable`) and into
+  each rollback attempt's `receipt.json`;
+- leaves them out of every equality check ([S1] after-tar, [S3] restore
+  and live, [A2] against S1, `--resume`, [RB-A2]/[RB-C3]-[RB-C5]) and logs
+  the excluded paths each time. They are never silently dropped;
+- still fails on any difference in a regular file, directory or symlink,
+  including a path that is a special file on one side and a regular file,
+  directory or symlink on the other.
+
+A socket that appears or disappears between [S1] and [A2] therefore does not
+hold the run; it is listed in the [A2] log. fifos are archived and restored
+by tar but are excluded the same way. A device node would be archived but
+the helper cannot recreate it (no `CAP_MKNOD`), so its extract fails and the
+step stops safely. `snapshot_evidence.py compare` (the CLI) stays strict and
+still reports special files.
+
 ## Known limits
 
 - File binds are refused, not snapshotted. Socket binds and tmpfs are not data
-  and are listed as excluded.
+  and are listed as excluded. Sockets inside a mount are recorded and listed
+  but not archived or compared (see above).
 - Open-file detection sees only this user's processes.
 - The private directory is usually on the same filesystem as the Docker data
   root. The archives protect against a bad swap, not against disk loss.
