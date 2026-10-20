@@ -20,22 +20,35 @@ the run report.
   runs T8 allowlist-gated intake into ``portal-queue-v1`` and then a fetch
   *dry run*. The allowlist is only read. Downloads are a separate, explicit
   step and are never done here.
-* ``extract``: Phase 1 (G 2026-10-19) native text only. Reports the extract
-  backlog from the ledger; documents that need OCR are counted as
-  ``awaiting_ocr`` (never dropped). When the running interpreter lacks the
-  native parsers (pypdf/openpyxl) the backlog is reported with a needs-G action
-  instead of pretending to extract. The pinned flock-ocr image carries them in
-  its parser venv (``/opt/campaign-tool/venv``), which the stage plan selects
-  as ``CONTAINER_PYTHON`` when present.
+* ``extract``: Phase 1 (G 2026-10-19) native text only (``native_extract``).
+  Every original whose ledger extract stage is pending goes through the
+  engine's existing extraction, enrollment and installed extraction check
+  under the processing root lock. Each run has a document cap and its own
+  deadline. Each document gets one outcome code (``EXTRACTED``,
+  ``AWAITING_OCR``, ``CORRUPT_DOCUMENT``, ...). The stage result carries those
+  codes as counts in ``outcomes``. Scanned/no-text documents are counted as
+  ``AWAITING_OCR``, never dropped. The parsers come from the interpreter the
+  stage runs under: the stage plan's ``CONTAINER_PYTHON`` is the campaign-tool
+  parser venv (``/opt/campaign-tool/venv``). Without pypdf/openpyxl, PDF and
+  XLSX documents are coded ``PARSER_MISSING`` and not attempted. The document
+  cap counts parse attempts only; images, unsupported forms and missing-parser
+  documents are counted on every run without using it. XLSX is accepted only
+  with ``--workbook-policy`` naming the pinned read-only native workbook
+  component (``workbook_policy.load_native_workbook_policy``); without it,
+  workbooks are held as ``WORKBOOK_POLICY_REQUIRED``. The flag comes from the
+  operator stage plan only, and the TEST plan does not set it (owner policy
+  authorization is a deployment gate, docs/NATIVE-WORKBOOK-COMPOSITION.md).
 * ``digest_gates``: ledger stage-state roll-up for the gated stages; anything
   past privacy needs the owner, so it is review-required, never accepted.
 * ``outputs``: writes a counts-only snapshot under ``DIR/run-outputs/``.
   Nothing is published or sent.
 
-``extract``, ``digest_gates`` and ``outputs`` read the ledger (and portal
+``digest_gates`` and ``outputs`` read the ledger (and portal
 queue) with ``immutable=1``, like ``adopt-mail``'s dry run, so counting never
 creates ``-wal``/``-shm`` sidecars. A non-empty WAL or rollback journal (an
-active or crashed writer) is reported as ``*_LEDGER_BUSY`` and not read.
+active or crashed writer) is reported as ``*_LEDGER_BUSY`` and not read. The
+writers (``adoption``, ``extract``) hold the records-root lock, and their last
+connection close checkpoints the WAL.
 
 Every stage runs under its own container-side deadline (``--timeout``): killing
 a ``docker exec`` client does not stop work inside the container, so the
@@ -58,12 +71,12 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 
 STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs")
 GATED = ("catalog", "detect", "review", "compare", "privacy")
 MAX_EML_BYTES = 64 * 1024 * 1024
 MAX_NOTICE_BODY = 2 * 1024 * 1024
-OCR_REASONS = ("ocr_needed_or_blank",)
 
 
 class StageTimeout(Exception):
@@ -74,7 +87,7 @@ def result(status, counts, error_code=None, **extra):
     out = {"stage_result_version": 1, "status": status,
            "counts": {key: int(counts.get(key, 0)) for key in ("input", "output", "failed", "skipped")},
            "error_code": error_code}
-    for key in ("new_data", "review_required", "needs_g"):
+    for key in ("new_data", "review_required", "needs_g", "outcomes"):
         if extra.get(key):
             out[key] = extra[key]
     return out
@@ -399,16 +412,6 @@ def stage_portal(args):
 
 # --- extract / digest_gates / outputs ----------------------------------------
 
-def native_parsers():
-    missing = []
-    for module in ("pypdf", "openpyxl"):
-        try:
-            __import__(module)
-        except ImportError:
-            missing.append(module)
-    return missing
-
-
 def stage_counts(db):
     rows = db.execute("SELECT stage, status, COUNT(*) FROM stage_state GROUP BY stage, status").fetchall()
     counts = {}
@@ -417,45 +420,87 @@ def stage_counts(db):
     return counts
 
 
-def awaiting_ocr(db):
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if "extraction_adapter_pages" not in tables:
-        return 0
-    # Documents (current extraction imports) with at least one page held for OCR.
-    waiting = set()
-    for import_id, page_json in db.execute("SELECT import_id, page_json FROM extraction_adapter_pages"):
-        try:
-            page = json.loads(page_json)
-        except ValueError:
-            continue
-        if isinstance(page, dict) and page.get("reason") in OCR_REASONS:
-            waiting.add(import_id)
-    return len(waiting)
-
-
 def stage_extract(args):
+    """Phase 1 native-text extraction; see ``native_extract`` for the per-document codes."""
+    from . import native_extract as ne
+    from .run import RunError
+
     _, processing, _ = paths(args.project)
+    deadline = time.monotonic() + args.timeout - ne.DEADLINE_MARGIN
+    policy = None
+    if args.workbook_policy:
+        # Operator stage plan only (never a record-chosen path). The loader admits the exact
+        # pinned read-only component bytes; any other file fails the stage, with no fallback.
+        from .workbook_policy import load_native_workbook_policy
+        try:
+            policy = load_native_workbook_policy(args.workbook_policy)
+        except (ValueError, OSError):
+            return result("fail", {"failed": 1}, "EXTRACT_WORKBOOK_POLICY_INVALID"), 1
     try:
-        with ledger_ro(processing) as db:
-            extract = stage_counts(db).get("extract", {})
-            ocr = awaiting_ocr(db)
-    except LedgerBusy:
-        return busy("EXTRACT_LEDGER_BUSY")
-    except sqlite3.Error:
+        summary = ne.run(processing, run_id=args.run_id, deadline=deadline,
+                         max_documents=args.max_documents, document_timeout=args.document_timeout,
+                         native_workbook_policy=policy)
+    except ne.RootNotInitialized:
+        return result("fail", {"failed": 1}, "EXTRACT_ROOT_NOT_INITIALIZED"), 1
+    except RunError as error:
+        if error.args == ("root_locked",):
+            # Another writer (adoption, a manual records run) holds the root: retry next run.
+            return result("warn", {"skipped": 1}, "EXTRACT_ROOT_LOCKED",
+                          needs_g=needs(("EXTRACT_ROOT_LOCKED", "info", 1))), 0
+        return result("fail", {"failed": 1}, "EXTRACT_RUN_FAILED"), 1
+    except (sqlite3.Error, ValueError, OSError):
         return result("fail", {"failed": 1}, "EXTRACT_LEDGER_UNREADABLE"), 1
-    pending, blocked, done = extract.get("pending", 0), extract.get("blocked", 0), extract.get("done", 0)
-    counts = {"input": pending + blocked + done, "output": done, "failed": blocked,
-              "skipped": pending + ocr}
-    items = needs(("AWAITING_OCR", "info", ocr))
-    missing = native_parsers()
-    if missing and pending:
-        # The running image cannot extract native text; report the backlog, extract nothing.
-        items += needs(("EXTRACT_NATIVE_PARSER_MISSING", "action", pending))
-        return result("warn", counts, "EXTRACT_NATIVE_PARSER_MISSING", needs_g=items), 0
-    if pending:
-        items += needs(("EXTRACT_BACKLOG", "info", pending))
-        return result("warn", counts, "EXTRACT_BACKLOG_PENDING", needs_g=items), 0
-    return result("ok", counts, needs_g=items), 0
+    return extract_result(summary)
+
+
+EXTRACT_NEEDS = (
+    # outcome code, needs-G code, severity
+    ("AWAITING_OCR", "AWAITING_OCR", "info"),
+    ("PARSER_MISSING", "EXTRACT_NATIVE_PARSER_MISSING", "action"),
+    ("CORRUPT_DOCUMENT", "EXTRACT_CORRUPT_DOCUMENT", "action"),
+    ("EXTRACT_INCOMPLETE", "EXTRACT_INCOMPLETE", "action"),
+    ("EXTRACT_TIMEOUT", "EXTRACT_TIMEOUT", "action"),
+    ("EXTRACT_NOT_ACCEPTED", "EXTRACT_NOT_ACCEPTED", "action"),
+    ("EXTRACT_ERROR", "EXTRACT_ERROR", "action"),
+    ("WORKBOOK_POLICY_REQUIRED", "EXTRACT_WORKBOOK_POLICY_REQUIRED", "action"),
+    ("DECODER_NEEDED", "EXTRACT_DECODER_NEEDED", "action"),
+    ("PRESERVE_PENDING", "EXTRACT_PRESERVE_PENDING", "info"),
+    ("DEFERRED_RUN_BUDGET", "EXTRACT_DEFERRED", "info"),
+)
+SYSTEMIC_MIN_ATTEMPTS = 3
+
+
+def extract_result(summary):
+    from . import native_extract as ne
+
+    outcomes = summary["outcomes"]
+    total = sum(outcomes.values())
+    extracted = outcomes[ne.EXTRACTED]
+    failed = sum(outcomes[code] for code in ne.FAILED)
+    counts = {"input": total, "output": extracted, "failed": failed, "skipped": total - extracted - failed}
+    items = needs(*((code, severity, outcomes[outcome]) for outcome, code, severity in EXTRACT_NEEDS))
+    extra = {"needs_g": items,
+             "outcomes": [{"code": code, "count": outcomes[code]} for code in ne.OUTCOMES if outcomes[code]],
+             "new_data": {key: value for key, value in (("extracted_units", summary["new_units"]),
+                                                       ("pages", summary["new_pages"])) if value} or None}
+    attempted = summary["attempted"]
+    if (attempted >= SYSTEMIC_MIN_ATTEMPTS and not extracted
+            and summary["unexpected_failures"] == attempted):
+        # Several documents tried, none extracted, every one refused or errored: the
+        # extraction path itself is broken (not a property of one document).
+        return result("fail", counts, "EXTRACT_ALL_ATTEMPTS_FAILED", **extra), 1
+    if outcomes[ne.PARSER_MISSING]:
+        return result("warn", counts, "EXTRACT_NATIVE_PARSER_MISSING", **extra), 0
+    if failed:
+        return result("warn", counts, "EXTRACT_DOCUMENT_FAILURES", **extra), 0
+    if outcomes[ne.DECODER_NEEDED]:
+        return result("warn", counts, "EXTRACT_DECODER_NEEDED", **extra), 0
+    if outcomes[ne.WORKBOOK_HELD]:
+        return result("warn", counts, "EXTRACT_WORKBOOK_POLICY_REQUIRED", **extra), 0
+    if outcomes[ne.DEFERRED] or outcomes[ne.PRESERVE_PENDING]:
+        return result("warn", counts, "EXTRACT_BACKLOG_DEFERRED", **extra), 0
+    # Phase 1: documents awaiting OCR are an expected, counted deferral (info item).
+    return result("ok", counts, **extra), 0
 
 
 def stage_digest_gates(args):
@@ -526,13 +571,20 @@ def parser():
     p.add_argument("--sync-script", help="sync: existing mail sync script to run first (live only)")
     p.add_argument("--config", help="adoption: owner-only mail-history-adoption-v1 config")
     p.add_argument("--approval-file", help="portal: root-owned allowlist (read only)")
+    p.add_argument("--max-documents", type=int, default=200,
+                   help="extract: documents attempted per run; the rest are counted as deferred")
+    p.add_argument("--document-timeout", type=int, default=120,
+                   help="extract: per-document parser deadline (seconds)")
+    p.add_argument("--workbook-policy",
+                   help="extract: pinned native workbook policy component (operator stage plan only)")
     return p
 
 
 def main(argv=None):
     os.umask(0o077)
     args = parser().parse_args(argv)
-    if not 1 <= args.timeout <= 2700:
+    if (not 1 <= args.timeout <= 2700 or not 1 <= args.max_documents <= 5000
+            or not 10 <= args.document_timeout <= 600):
         print(json.dumps(result("fail", {"failed": 1}, "STAGE_CONFIG_INVALID")))
         return 1
     if args.stage == "portal" and not args.approval_file:

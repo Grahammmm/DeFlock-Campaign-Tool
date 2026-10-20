@@ -500,9 +500,15 @@ class Pipeline:
                                            ocr_tools=self.ocr_tools, tool_signature=self.ocr_tool_signature)
         receipt = Path(result["run_path"]) / "extraction.json"
         codes = [i.get("code", "?") for i in result.get("issues", [])]
-        if result["status"] == "blocked" or (result["status"] == "partial" and not result.get("ocr_receipts")):
-            # Not acceptable yet (no decoder, timeout, or image-only pages with no OCR runtime).
-            # Record a keyed alert so the gap is visible in `records status`; nothing is faked.
+        # A plain workbook is "partial" by construction (the reader hold below). It may go on to
+        # enrollment only when trusted startup loaded the native workbook policy; the installed
+        # extraction check then qualifies it under that policy or refuses it. Nothing is waived here.
+        workbook = (form == "xlsx" and self.native_workbook_policy is not None and result["status"] == "partial"
+                    and codes == ["workbook_cached_values_and_objects_not_reviewed"] and not result.get("ocr_receipts"))
+        if result["status"] != "complete" and not workbook and not (result["status"] == "partial" and result.get("ocr_receipts")):
+            # Not acceptable yet (no decoder, a parser failure on a damaged file, timeout, or
+            # image-only pages with no OCR runtime). Record a keyed alert so the gap is visible
+            # in `records status`; nothing is faked and nothing unacceptable is enrolled.
             reason = "extraction_" + result["status"] + ":" + ",".join(codes)
             self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
             return {"status": "blocked", "reason": reason,

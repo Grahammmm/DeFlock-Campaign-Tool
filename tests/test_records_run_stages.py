@@ -29,7 +29,8 @@ from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool.records import run_orchestrator, run_stages
+from campaign_tool.records import native_extract, run_orchestrator, run_stages
+from campaign_tool.records import run as records_run
 from campaign_tool.records.ledger import store
 from campaign_tool.records.portal.policy import PortalError, parse_approval
 from tests.test_records_portal import NOW, policy_data
@@ -54,7 +55,7 @@ def eml(body_html):
             + body_html + "\r\n").encode()
 
 
-def synthetic_ledger(path, *, extract=None, gated=None, proposals=0, ocr_imports=0, mail_messages=2):
+def synthetic_ledger(path, *, extract=None, gated=None, proposals=0, mail_messages=2):
     """Only the tables/columns the count-only stages read (real schema: see smoke test)."""
     con = sqlite3.connect(path)
     con.executescript("""
@@ -62,7 +63,6 @@ def synthetic_ledger(path, *, extract=None, gated=None, proposals=0, ocr_imports
         CREATE TABLE proposals(id TEXT);
         CREATE TABLE mail_messages(id TEXT);
         CREATE TABLE originals(sha256 TEXT);
-        CREATE TABLE extraction_adapter_pages(import_id TEXT, page_json TEXT);
     """)
     n = 0
     for stage, states in (("extract", extract or {}), *((s, (gated or {}).get(s, {})) for s in run_stages.GATED)):
@@ -73,12 +73,6 @@ def synthetic_ledger(path, *, extract=None, gated=None, proposals=0, ocr_imports
     con.executemany("INSERT INTO proposals VALUES(?)", [(f"p{i}",) for i in range(proposals)])
     con.executemany("INSERT INTO mail_messages VALUES(?)", [(f"m{i}",) for i in range(mail_messages)])
     con.executemany("INSERT INTO originals VALUES(?)", [(f"o{i}",) for i in range(3)])
-    for i in range(ocr_imports):
-        con.execute("INSERT INTO extraction_adapter_pages VALUES(?,?)",
-                    (f"imp{i}", json.dumps({"reason": "ocr_needed_or_blank"})))
-        con.execute("INSERT INTO extraction_adapter_pages VALUES(?,?)",
-                    (f"imp{i}", json.dumps({"reason": "ocr_needed_or_blank"})))
-    con.execute("INSERT INTO extraction_adapter_pages VALUES('native', ?)", (json.dumps({"reason": "text"}),))
     con.commit()
     con.close()
     path.chmod(0o600)
@@ -293,33 +287,77 @@ class CountStageTests(StageTestCase):
     def sidecars(self, path):
         return sorted(p.name for p in path.parent.iterdir() if p.name.startswith(path.name + "-"))
 
-    def test_extract_reports_missing_parsers_and_ocr(self):
-        synthetic_ledger(self.ledger, extract={"pending": 4, "done": 2, "blocked": 1}, ocr_imports=2)
-        with mock.patch.object(run_stages, "native_parsers", return_value=["pypdf"]):
-            code, parsed, raw = self.stage("extract")
+    # The extract stage is a writer (native_extract, under the root lock), not a
+    # count-only reader. Real extraction on synthetic roots is covered in
+    # tests/records/test_native_extract.py; here only the result mapping.
+    def summary(self, attempted=0, unexpected=0, units=0, pages=0, **outcomes):
+        counts = {code: 0 for code in native_extract.OUTCOMES}
+        counts.update(outcomes)
+        return {"documents": sum(counts.values()), "outcomes": counts, "missing_parsers": [],
+                "attempted": attempted, "unexpected_failures": unexpected, "new_units": units, "new_pages": pages}
+
+    def extract_with(self, summary=None, error=None):
+        with mock.patch.object(native_extract, "run", return_value=summary, side_effect=error) as fake:
+            code, parsed, raw = self.stage("extract", "--max-documents", "7", "--document-timeout", "30")
         self.assertContract(code, parsed, raw)
-        self.assertEqual(parsed["error_code"], "EXTRACT_NATIVE_PARSER_MISSING")
-        self.assertEqual(parsed["counts"], {"input": 7, "output": 2, "failed": 1, "skipped": 6})
+        if summary is not None or error is not None:
+            kwargs = fake.call_args.kwargs
+            self.assertEqual((kwargs["run_id"], kwargs["max_documents"], kwargs["document_timeout"]),
+                             ("run-1", 7, 30))
+        return parsed
+
+    def test_extract_reports_outcomes_and_awaiting_ocr(self):
+        parsed = self.extract_with(self.summary(attempted=3, units=5, pages=4, EXTRACTED=2, AWAITING_OCR=1,
+                                                PRESERVE_PENDING=0))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("ok", None))
+        self.assertEqual(parsed["counts"], {"input": 3, "output": 2, "failed": 0, "skipped": 1})
+        self.assertEqual(parsed["outcomes"], [{"code": "EXTRACTED", "count": 2}, {"code": "AWAITING_OCR", "count": 1}])
+        self.assertEqual(parsed["needs_g"], [{"code": "AWAITING_OCR", "severity": "info", "count": 1}])
+        self.assertEqual(parsed["new_data"], {"extracted_units": 5, "pages": 4})
+
+    def test_extract_parser_missing_and_corrupt_warn(self):
+        parsed = self.extract_with(self.summary(attempted=2, EXTRACTED=1, CORRUPT_DOCUMENT=1, PARSER_MISSING=4))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_NATIVE_PARSER_MISSING"))
+        self.assertEqual(parsed["counts"], {"input": 6, "output": 1, "failed": 1, "skipped": 4})
         codes = {item["code"]: item["count"] for item in parsed["needs_g"]}
-        self.assertEqual(codes, {"AWAITING_OCR": 2, "EXTRACT_NATIVE_PARSER_MISSING": 4})
-        self.assertEqual(self.sidecars(self.ledger), [], "count-only read creates no sidecar")
+        self.assertEqual(codes, {"EXTRACT_NATIVE_PARSER_MISSING": 4, "EXTRACT_CORRUPT_DOCUMENT": 1})
+        parsed = self.extract_with(self.summary(attempted=2, EXTRACTED=1, CORRUPT_DOCUMENT=1))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_DOCUMENT_FAILURES"))
 
-    def test_extract_with_parsers_reports_backlog(self):
-        synthetic_ledger(self.ledger, extract={"pending": 4})
-        with mock.patch.object(run_stages, "native_parsers", return_value=[]):
-            code, parsed, raw = self.stage("extract")
-        self.assertContract(code, parsed, raw)
-        self.assertEqual(parsed["error_code"], "EXTRACT_BACKLOG_PENDING")
-        synthetic_ledger(self.ledger.with_name("other.sqlite"))
+    def test_extract_backlog_and_workbook_warn(self):
+        parsed = self.extract_with(self.summary(attempted=1, EXTRACTED=1, DEFERRED_RUN_BUDGET=3))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_BACKLOG_DEFERRED"))
+        parsed = self.extract_with(self.summary(attempted=1, WORKBOOK_POLICY_REQUIRED=1))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_WORKBOOK_POLICY_REQUIRED"))
 
-    def test_extract_clean_is_ok(self):
-        synthetic_ledger(self.ledger, extract={"done": 3})
-        code, parsed, raw = self.stage("extract")
-        self.assertContract(code, parsed, raw)
-        self.assertEqual(parsed["status"], "ok")
+    def test_extract_systemic_failure_fails(self):
+        parsed = self.extract_with(self.summary(attempted=3, unexpected=3, EXTRACT_ERROR=2, EXTRACT_NOT_ACCEPTED=1))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "EXTRACT_ALL_ATTEMPTS_FAILED"))
+        # Two failed attempts are not yet systemic.
+        parsed = self.extract_with(self.summary(attempted=2, unexpected=2, EXTRACT_ERROR=2))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_DOCUMENT_FAILURES"))
+
+    def test_extract_nothing_pending_is_ok(self):
+        parsed = self.extract_with(self.summary())
+        self.assertEqual((parsed["status"], parsed["counts"]["input"]), ("ok", 0))
+        self.assertNotIn("outcomes", parsed)
+
+    def test_extract_root_locked_warns(self):
+        parsed = self.extract_with(error=records_run.RunError("root_locked"))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_ROOT_LOCKED"))
+        parsed = self.extract_with(error=records_run.RunError("other"))
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "EXTRACT_RUN_FAILED"))
+
+    def test_extract_invalid_limits_refused(self):
+        for flag, value in (("--max-documents", "0"), ("--max-documents", "5001"),
+                            ("--document-timeout", "9"), ("--document-timeout", "601")):
+            with self.subTest(flag=flag, value=value):
+                code, parsed, raw = self.stage("extract", flag, value)
+                self.assertEqual((code, parsed["error_code"]), (1, "STAGE_CONFIG_INVALID"))
 
     def test_missing_ledger_is_unreadable_and_not_created(self):
-        for stage, expected in (("extract", "EXTRACT_LEDGER_UNREADABLE"), ("digest_gates", "GATES_LEDGER_UNREADABLE"),
+        for stage, expected in (("extract", "EXTRACT_ROOT_NOT_INITIALIZED"),
+                                ("digest_gates", "GATES_LEDGER_UNREADABLE"),
                                 ("outputs", "OUTPUTS_LEDGER_UNREADABLE")):
             with self.subTest(stage):
                 code, parsed, raw = self.stage(stage)
@@ -332,8 +370,8 @@ class CountStageTests(StageTestCase):
         wal = Path(str(self.ledger) + "-wal")
         wal.write_bytes(b"x" * 32)
         before = (self.ledger.read_bytes(), wal.read_bytes(), self.sidecars(self.ledger))
-        for stage, expected in (("extract", "EXTRACT_LEDGER_BUSY"), ("digest_gates", "GATES_LEDGER_BUSY"),
-                                ("outputs", "OUTPUTS_LEDGER_BUSY")):
+        # extract is a writer under the root lock (no snapshot read); see test_native_extract.
+        for stage, expected in (("digest_gates", "GATES_LEDGER_BUSY"), ("outputs", "OUTPUTS_LEDGER_BUSY")):
             with self.subTest(stage):
                 code, parsed, raw = self.stage(stage)
                 self.assertContract(code, parsed, raw)
@@ -388,12 +426,11 @@ class CountStageTests(StageTestCase):
 
     def test_real_schema_ledger(self):
         # A ledger created by the engine itself: queries match the real schema.
+        # (extract over a real engine root: tests/records/test_native_extract.py)
         store.initialize(self.ledger)
-        for stage in ("extract", "digest_gates"):
-            with self.subTest(stage):
-                code, parsed, raw = self.stage(stage)
-                self.assertContract(code, parsed, raw)
-                self.assertEqual(parsed["status"], "ok")
+        code, parsed, raw = self.stage("digest_gates")
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(parsed["status"], "ok")
         self.assertEqual(self.sidecars(self.ledger), [])
 
 

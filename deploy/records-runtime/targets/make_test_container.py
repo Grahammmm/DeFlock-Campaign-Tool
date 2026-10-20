@@ -8,7 +8,8 @@ CONTAINER_PYTHON -m campaign_tool.records.run_stages STAGE --project PROJECT
 ``CONTAINER_PYTHON`` is the image's parser environment
 (``/opt/campaign-tool/venv/bin/python`` in the pinned flock-ocr image, which
 carries the hash-locked pypdf/openpyxl bundle) when present, else the system
-``python3``; the extract stage reports which parsers the interpreter lacks. The
+``python3``; without pypdf/openpyxl the extract stage codes PDF/XLSX documents
+``PARSER_MISSING`` and does not attempt them. The
 adapter enforces its own
 container-side deadline (``--timeout``, 10 s inside the host timeout) because
 killing the ``docker exec`` client does not stop work in the container.
@@ -28,7 +29,9 @@ STAGES = (
     # Adoption is fail-closed per identity; other stages work on already-ledgered data.
     ("adoption", 900, "continue", ["--config", "@ADOPTION_CONFIG@"]),
     ("portal", 300, "continue", ["--approval-file", "@CONTAINER_APPROVAL_FILE@"]),
-    ("extract", 300, "stop", []),
+    # Native-text extraction (T11k) works through the backlog under its own
+    # deadline and per-run document cap; the rest is counted as deferred.
+    ("extract", 600, "stop", ["--max-documents", "200", "--document-timeout", "120"]),
     ("digest_gates", 120, "stop", []),
     ("outputs", 120, "stop", []),
 )

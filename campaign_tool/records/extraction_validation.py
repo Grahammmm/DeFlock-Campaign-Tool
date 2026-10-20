@@ -28,7 +28,7 @@ MAX_ACCEPT_SOURCE = 8 * 1024 * 1024
 MAX_ACCEPT_EVIDENCE = 64 * 1024 * 1024
 MAX_ACCEPT_PAGES = 256
 TEXT_FORMS = frozenset(("txt", "md", "log", "rst"))
-REPARSE_FORMS = frozenset(("eml", "msg"))
+REPARSE_FORMS = frozenset(("eml", "msg", "docx"))
 
 
 def require(ok, reason):

@@ -26,6 +26,16 @@ def _parse_utc(text):
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
+def check_outcomes(outcomes, counts, where="outcomes"):
+    """Per-document outcome codes: unique, and exactly one per counted input unit."""
+    codes = [item["code"] for item in outcomes]
+    if len(set(codes)) != len(codes):
+        raise ValueError(f"{where}: duplicate outcome code")
+    total = sum(item["count"] for item in outcomes)
+    if total != counts["input"]:
+        raise ValueError(f"{where}: outcome counts sum to {total}, counts.input is {counts['input']}")
+
+
 def validate_run_report(report, schema=None):
     """Raise ValueError when ``report`` does not satisfy run report v1."""
     schema = schema if schema is not None else load_schema()
@@ -51,6 +61,8 @@ def validate_run_report(report, schema=None):
             raise ValueError(f"{where}.error_code: must be null when status is ok")
         if stage["duration_seconds"] is None and status != "skipped":
             raise ValueError(f"{where}.duration_seconds: null only allowed for skipped stages")
+        if "outcomes" in stage:
+            check_outcomes(stage["outcomes"], stage["counts"], f"{where}.outcomes")
 
     statuses = {stage["status"] for stage in report["stages"]}
     expected = "fail" if "fail" in statuses else "warn" if "warn" in statuses else "ok"

@@ -20,9 +20,10 @@ so a stub run can never be mistaken for real coverage. Live targets refuse it.
 
 Phase 1 (G, 2026-10-19) runs without OCR. The extract stage handles native
 text only. Documents that need OCR are queued as ``awaiting_ocr`` and never
-dropped. The stage reports them in ``counts.skipped`` plus an info needs-G
-item ``AWAITING_OCR`` with the document count, so the run report counts them
-without a schema change.
+dropped. The stage reports them in ``counts.skipped``, in an info needs-G item
+``AWAITING_OCR`` with the document count, and in the stage's optional
+``outcomes`` list. That list has one outcome code per document considered, and
+its counts sum to ``counts.input``.
 
 Run exit codes: 0 when every work stage is ok/warn/skipped, otherwise
 ``10 + index`` of the first failed work stage (sync=10 ... outputs=16).
@@ -176,6 +177,11 @@ def parse_stage_result(raw, schema):
         if item["code"] in seen:
             return None
         seen.add(item["code"])
+    if "outcomes" in result:
+        try:
+            run_report.check_outcomes(result["outcomes"], result["counts"])
+        except ValueError:
+            return None
     return result
 
 
@@ -412,6 +418,8 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
         if code == "STAGE_TIMEOUT" and entry["timeout_seconds"] > remaining:
             code = "RUN_DEADLINE_REACHED"
         stages.append(stage_entry(name, status, counts, seconds, code))
+        if result and result.get("outcomes") and dict(result["counts"]) == counts:
+            stages[-1]["outcomes"] = [dict(item) for item in result["outcomes"]]
         if result:
             for key, value in result.get("new_data", {}).items():
                 new_data[key] = new_data.get(key, 0) + value
