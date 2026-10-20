@@ -37,7 +37,7 @@ jobs:
         run: |
           python -B - <<'PY'
           import unittest
-          names = ['tests.records.test_runtime', 'tests.records.test_run_slice', 'tests.records.test_publish', 'tests.records.test_run_pdf_ocr', 'tests.records.test_review_retirement', 'tests.records.test_publish_authority', 'tests.records.test_proposal_provenance', 'tests.records.test_context_revision', 'tests.records.test_context_runtime', 'tests.records.test_unattended_context', 'tests.records.test_unattended_resume', 'tests.records.test_run_safety', 'tests.records.test_native_extract', 'tests.records.test_t12_harness_strictness']
+          names = ['tests.records.test_runtime', 'tests.records.test_run_slice', 'tests.records.test_publish', 'tests.records.test_run_pdf_ocr', 'tests.records.test_review_retirement', 'tests.records.test_publish_authority', 'tests.records.test_proposal_provenance', 'tests.records.test_context_revision', 'tests.records.test_context_runtime', 'tests.records.test_unattended_context', 'tests.records.test_unattended_resume', 'tests.records.test_run_safety', 'tests.records.test_native_extract', 'tests.records.test_t12_harness_strictness', 'tests.records.test_t13_receipt_tooling']
           suite = unittest.defaultTestLoader.loadTestsFromNames(names)
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():

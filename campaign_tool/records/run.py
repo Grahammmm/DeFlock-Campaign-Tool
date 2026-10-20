@@ -473,7 +473,15 @@ class Pipeline:
                 raise RunError("local_acquisition_method_unsupported")
             receipt = evidence.get("export_receipt_path")
             if receipt and Path(receipt).exists():
-                forms = eml_export.attachment_forms(Path(receipt))
+                if (Path(receipt).parent.parent / "objects").is_dir():
+                    forms = eml_export.attachment_forms(Path(receipt))
+                else:
+                    # Pre-T4 identities bind export_receipt_path to the intake verification
+                    # copy of the receipt, so its objects are not beside it. Name the format
+                    # from the receipt entry and the canonical original's (same) bytes.
+                    with intake_folder.secure_open(original["storage_path"]) as source:
+                        head = source.read(16384)
+                    forms = eml_export.attachment_forms(Path(receipt), heads={subject: head})
                 if subject in forms:
                     return forms[subject]
         with intake_folder.secure_open(original["storage_path"]) as source:
