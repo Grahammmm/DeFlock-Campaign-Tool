@@ -437,6 +437,30 @@ class PureFunctionTests(unittest.TestCase):
         new_img = {"Env": ["PATH=/usr/bin", "PIP_NO_CACHE_DIR=1"], "Labels": {"base": "1", "title": "ocr"}}
         self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
 
+    def test_inspect_diff_ignores_daemon_canonical_null_and_image_manifest_descriptor(self):
+        # Swap attempt 3 (2026-10-19, dockerd 29.6 / API 1.55) failed at C2 on exactly these
+        # two keys: the saved container (older daemon) stored OomKillDisable null, the
+        # replacement created from the same body reported false; and the new API field
+        # ImageManifestDescriptor carries the image ID, which changes by design.
+        before = self.base()
+        before["HostConfig"]["OomKillDisable"] = None
+        before["ImageManifestDescriptor"] = {"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                             "digest": OLD_IMAGE, "size": 4034}
+        after = copy.deepcopy(before)
+        after.update(Id="9" * 64, Image=NEW_IMAGE)
+        after["Config"]["Image"] = NEW_IMAGE
+        after["HostConfig"]["OomKillDisable"] = False
+        after["ImageManifestDescriptor"] = {"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                            "digest": NEW_IMAGE, "size": 4915}
+        old_img = new_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+        # absent on the saved side is the same as null
+        del before["HostConfig"]["OomKillDisable"]
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+        # a real change of the setting is still a difference
+        after["HostConfig"]["OomKillDisable"] = True
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), ["HostConfig.OomKillDisable"])
+
     def test_inspect_diff_rejects_setting_changes(self):
         before = self.base()
         old_img = new_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}
