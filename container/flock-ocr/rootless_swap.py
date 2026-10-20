@@ -54,7 +54,15 @@ BUSY = {"active", "activating", "deactivating", "reloading", "refreshing"}
 EXIT_OK, EXIT_ROLLED_BACK, EXIT_REFUSED, EXIT_HELD, EXIT_ESCALATE = 0, 1, 2, 3, 4
 IGNORED_TOP = {"Id", "Created", "Image", "State", "ResolvConfPath", "HostnamePath", "HostsPath",
                "LogPath", "GraphDriver", "RestartCount", "NetworkSettings", "SizeRw",
-               "SizeRootFs", "ExecIDs"}
+               "SizeRootFs", "ExecIDs",
+               # Docker API >= 1.48 reports the image's own manifest descriptor (digest =
+               # the image ID) on the container: image identity, like "Image".
+               "ImageManifestDescriptor"}
+# HostConfig booleans the daemon stores as null when a container was created by an
+# older daemon or without the field, and as false when the same body is POSTed to a
+# newer daemon (seen at C2 on dockerd 29.6, API 1.55: saved null -> created false).
+# null and false mean the same thing; treat them as equal when diffing.
+HOSTCONFIG_NULL_IS_FALSE = ("OomKillDisable",)
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 UNIT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]*")
 TAG_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*")
@@ -166,6 +174,11 @@ def _normalize(inspect):
     for key in ("Image", "Env", "Labels"):
         config.pop(key, None)
     data["Config"] = config
+    host = dict(data.get("HostConfig") or {})
+    for key in HOSTCONFIG_NULL_IS_FALSE:
+        if host.get(key) is None:  # absent or null: the daemon's false
+            host[key] = False
+    data["HostConfig"] = host
     data["Mounts"] = sorted(data.get("Mounts") or [],
                             key=lambda m: (m.get("Destination", ""), m.get("Type", "")))
     data["Networks"] = _endpoints(inspect)
