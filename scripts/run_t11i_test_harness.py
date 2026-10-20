@@ -71,6 +71,16 @@ def docker(args, docker_bin):
     return sh([docker_bin, *args], timeout=600)
 
 
+PARSER_VENV_PYTHON = "/opt/campaign-tool/venv/bin/python"  # container/flock-ocr/Dockerfile
+
+
+def container_interpreter(docker_bin):
+    """The pinned image's parser venv (pypdf/openpyxl) when present, else system python3."""
+    probe = subprocess.run([docker_bin, "exec", CONTAINER, "test", "-x", PARSER_VENV_PYTHON],
+                           capture_output=True, timeout=60)
+    return PARSER_VENV_PYTHON if probe.returncode == 0 else "/usr/bin/python3"
+
+
 def ledger_counts(docker_bin, project):
     out = subprocess.run([docker_bin, "exec", "-i", "-u", "coder", CONTAINER, "python3", "-B", "-"],
                          input=LEDGER_COUNTS % project, capture_output=True, text=True,
@@ -125,6 +135,8 @@ def main(argv=None):
     p.add_argument("--receipt", required=True)
     p.add_argument("--container", required=True, help="Flock container name")
     p.add_argument("--container-work", required=True, help="work directory inside the container")
+    p.add_argument("--container-python", help="stage interpreter inside the container (absolute); default: "
+                   "the image's parser venv when present, else /usr/bin/python3")
     args = p.parse_args(argv)
     global CONTAINER, CONTAINER_WORK, TEST_DIR, LIVE_DIR
     CONTAINER, CONTAINER_WORK = args.container, args.container_work.rstrip("/")
@@ -142,6 +154,7 @@ def main(argv=None):
             f"umask 077 && mkdir -p '{container_project}' && cp -a {copy} '{container_project}/'"], args.docker)
     before_test = ledger_counts(args.docker, TEST_DIR)
     image = docker(["inspect", "--format", "{{.Image}}", CONTAINER], args.docker).strip()
+    container_python = args.container_python or container_interpreter(args.docker)
     scratch.mkdir(parents=True, exist_ok=True)
     env_file = scratch / "fake-telegram.env"
     env_file.write_text("TELEGRAM_BOT_TOKEN=000000:SYNTHETIC_NOT_A_TOKEN\nTELEGRAM_HOME_CHANNEL=-100\n")
@@ -163,6 +176,7 @@ def main(argv=None):
         "CONTAINER_ENGINE_DIR": f"{CONTAINER_WORK}/{engine.name}",
         "CONTAINER_PROJECT_DIR": container_project,
         "CONTAINER_APPROVAL_FILE": f"{CONTAINER_WORK}/.flock-portal-intake/approval.json",
+        "CONTAINER_PYTHON": container_python,
         "ADOPTION_CONFIG": f"{container_project}/.t4-adoption-config-v1.json",
     }
     runtime = scratch / "runtime"

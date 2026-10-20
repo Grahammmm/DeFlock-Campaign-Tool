@@ -2,9 +2,14 @@
 """Write the TEST container stage plan (T11i) from one argv table.
 
 Generates ``deploy/records-runtime/targets/test-container.json.in``. Each stage
-is ``docker exec -u CONTAINER_USER CONTAINER env PYTHONPATH=ENGINE python3 -m
-campaign_tool.records.run_stages STAGE --project PROJECT ...`` against a
-sandbox copy of TEST inside the Flock container. The adapter enforces its own
+is ``docker exec -u CONTAINER_USER CONTAINER env PYTHONPATH=ENGINE
+CONTAINER_PYTHON -m campaign_tool.records.run_stages STAGE --project PROJECT
+...`` against a sandbox copy of TEST inside the Flock container.
+``CONTAINER_PYTHON`` is the image's parser environment
+(``/opt/campaign-tool/venv/bin/python`` in the pinned flock-ocr image, which
+carries the hash-locked pypdf/openpyxl bundle) when present, else the system
+``python3``; the extract stage reports which parsers the interpreter lacks. The
+adapter enforces its own
 container-side deadline (``--timeout``, 10 s inside the host timeout) because
 killing the ``docker exec`` client does not stop work in the container.
 ``tests/test_records_run_stages.py`` checks the committed template is current.
@@ -15,7 +20,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 EXEC = ["@DOCKER@", "exec", "-u", "@CONTAINER_USER@", "@CONTAINER@",
         "env", "PYTHONPATH=@CONTAINER_ENGINE_DIR@",
-        "python3", "-B", "-m", "campaign_tool.records.run_stages"]
+        "@CONTAINER_PYTHON@", "-B", "-m", "campaign_tool.records.run_stages"]
 STAGES = (
     # name, timeout, on_fail, extra adapter arguments
     ("sync", 120, "stop", []),
