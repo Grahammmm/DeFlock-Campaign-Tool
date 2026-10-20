@@ -22,9 +22,11 @@ Queue interface (``awaiting-ocr-v1``): JSON Lines, one document per line::
 
     {"document_id": "<safe id>", "sha256": "<64 hex>", "path": "<absolute path>"}
 
-``path`` must lie under ``--source-root``. The source is read once, hashed and
-copied into a private work directory; the tools only ever see that copy, and
-the original is never modified.
+``path`` must be a normalized absolute path under ``--source-root``. It is
+opened component by component beneath the root with ``O_NOFOLLOW``, so no
+symlinked file or ancestor directory can lead outside it. The source is read
+once through that descriptor, hashed and copied into a private work directory;
+the tools only ever see that copy, and the original is never modified.
 
 Outputs live only under the stage's own ``--out`` root, one directory per
 source hash and configuration signature (``<out>/<sha256>/<sig16>/``):
@@ -32,6 +34,11 @@ source hash and configuration signature (``<out>/<sha256>/<sig16>/``):
 per-page status, engine, method, character count and text hash, never raw
 text. Publication is a no-replace rename, so a finished document is never
 rewritten and a rerun with the same configuration makes no backend call.
+A cache hit is verified first (no symlinks, private regular files, manifest
+consistency, every page text's length and hash); a result that fails to verify
+is reported as ``cache_damaged`` and left in place for the operator, never
+used. Cache hits do not count against ``--max-documents``, and partial
+documents keep reporting their unresolved pages on every run.
 Transient failures (tool timeout, vision server down) are not cached and are
 retried next run. This stage never writes the canonical ledger; binding OCR
 text into the ledger is the separate T6 wiring step.
@@ -44,7 +51,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 import errno
 import fcntl
@@ -76,6 +83,7 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 MAX_SOURCE_BYTES = 512 * 1024 ** 2
 MAX_SIDECAR_BYTES = 64 * 1024 ** 2
+MAX_MANIFEST_BYTES = 16 * 1024 ** 2
 MAX_IMAGE_BYTES = 32 * 1024 ** 2
 MAX_RESPONSE_BYTES = 4 * 1024 ** 2
 MAX_QUEUE_LINE = 64 * 1024
@@ -86,6 +94,8 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SKIPPED_PAGE = re.compile(r"^\[OCR skipped on page\(s\) [0-9, -]+\]$")
 THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
+# Page statuses a published result.json may carry.
+PAGE_STATUSES = frozenset({"native_text", "ocr_text", "ocr_empty", "ocr_low_quality"})
 
 # OCRmyPDF ExitCode values (ocrmypdf.exceptions.ExitCode).
 OCRMYPDF_EXIT = {1: "ocrmypdf_bad_args", 2: "ocrmypdf_input_file", 3: "ocrmypdf_missing_dependency",
@@ -350,6 +360,8 @@ class QueueItem:
     document_id: str
     sha256: str
     path: str
+    root: str = "/"
+    parts: tuple = ()
 
 
 def parse_queue_line(line: str, source_root: Path) -> QueueItem:
@@ -367,11 +379,17 @@ def parse_queue_line(line: str, source_root: Path) -> QueueItem:
             and isinstance(digest, str) and SHA256.match(digest)
             and isinstance(path, str) and os.path.isabs(path) and "\x00" not in path):
         raise BackendError("queue_item_invalid")
-    resolved = os.path.normpath(path)
+    # The path must already be normal: no ".", "..", "//" or trailing slash, so
+    # the lexical check below and the physical traversal open the same names.
+    if os.path.normpath(path) != path or path.startswith("//"):
+        raise BackendError("queue_item_invalid")
     root = os.path.normpath(str(source_root))
-    if os.path.commonpath((root, resolved)) != root or resolved == root:
+    if os.path.commonpath((root, path)) != root or path == root:
         raise BackendError("source_outside_root")
-    return QueueItem(document_id, digest, resolved)
+    parts = tuple(Path(os.path.relpath(path, root)).parts)
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise BackendError("source_outside_root")
+    return QueueItem(document_id, digest, path, root, parts)
 
 
 def read_queue(queue_path: Path, source_root: Path):
@@ -401,12 +419,14 @@ class Outcome:
     """Per-document outcome; ``status`` and ``code`` are fixed enums."""
 
     document_id: str
-    status: str  # ocr_complete | ocr_partial | ocr_failed | source_invalid | cached
+    # ocr_complete | ocr_partial | ocr_failed | source_invalid | cache_invalid | cached
+    status: str
     code: str | None = None
     engines: dict = field(default_factory=dict)
     vision_calls: int = 0
     unresolved_pages: int = 0
     cached: bool = False
+    attempted: bool = False  # uncached work that counts against --max-documents
 
     def summary(self) -> dict:
         return {"document_id": self.document_id, "status": self.status, "code": self.code,
@@ -431,24 +451,67 @@ def _owner_dir(path: Path) -> Path:
     return path
 
 
-def _copy_verified(source: str, expected: str, destination: Path) -> None:
-    """Copy the original into the work dir while hashing; never follows a symlink."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CLOEXEC
+# O_NONBLOCK keeps a FIFO planted in place of a file from hanging the open.
+_FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | _CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+
+
+def _is_symlink_at(dir_fd: int, name: str) -> bool:
     try:
-        fd = os.open(source, flags)
+        return stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+    except OSError:
+        return False
+
+
+def open_source(item: QueueItem) -> int:
+    """Open ``item`` beneath its source root without following any symlink.
+
+    The root is the operator's ``--source-root`` and is opened as given. Every
+    component below it is opened relative to its parent's descriptor with
+    ``O_NOFOLLOW``, so a symlinked file or ancestor directory (or one swapped
+    in mid-run) cannot lead outside the root. Returns a read-only descriptor
+    of a regular file; raises ``BackendError`` with a ``source_*`` code.
+    """
+    try:
+        fd = os.open(item.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _CLOEXEC)
     except FileNotFoundError:
         raise BackendError("source_missing") from None
-    except OSError as error:
-        raise BackendError("source_symlink" if error.errno == errno.ELOOP else "source_unreadable") from None
-    digest, size = hashlib.sha256(), 0
+    except OSError:
+        raise BackendError("source_unreadable") from None
     try:
-        info = os.fstat(fd)
-        if not stat_is_regular(info.st_mode):
+        for index, name in enumerate(item.parts):
+            last = index == len(item.parts) - 1
+            try:
+                child = os.open(name, _FILE_FLAGS if last else _DIR_FLAGS, dir_fd=fd)
+            except FileNotFoundError:
+                raise BackendError("source_missing") from None
+            except OSError as error:
+                if error.errno == errno.ELOOP or _is_symlink_at(fd, name):
+                    raise BackendError("source_symlink") from None
+                if error.errno == errno.ENOTDIR:
+                    raise BackendError("source_not_regular") from None
+                raise BackendError("source_unreadable") from None
+            os.close(fd)
+            fd = child
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise BackendError("source_not_regular")
-        if info.st_size > MAX_SOURCE_BYTES:
-            raise BackendError("source_oversize")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _copy_verified(fd: int, expected: str, destination: Path) -> int:
+    """Copy an opened original into the work dir while hashing; returns its size."""
+    digest, size, head = hashlib.sha256(), 0, b""
+    info = os.fstat(fd)
+    if info.st_size > MAX_SOURCE_BYTES:
+        raise BackendError("source_oversize")
+    os.lseek(fd, 0, os.SEEK_SET)
+    try:
         with os.fdopen(os.dup(fd), "rb") as stream, open(destination, "xb") as out:
-            head = b""
             while True:
                 chunk = stream.read(1024 * 1024)
                 if not chunk:
@@ -460,16 +523,56 @@ def _copy_verified(source: str, expected: str, destination: Path) -> None:
                     head = chunk[:5]
                 digest.update(chunk)
                 out.write(chunk)
-    finally:
-        os.close(fd)
+    except OSError:
+        raise BackendError("source_unreadable") from None
     if digest.hexdigest() != expected:
         raise BackendError("source_hash_mismatch")
     if head != b"%PDF-":
         raise BackendError("source_not_pdf")
+    return size
 
 
-def stat_is_regular(mode: int) -> bool:
-    return stat.S_ISREG(mode)
+class CacheDamaged(Exception):
+    """A published result directory exists but does not verify."""
+
+
+def _read_at(dir_fd: int, name: str, limit: int) -> bytes:
+    """Read an owner-only regular file under ``dir_fd``; any doubt is damage."""
+    try:
+        fd = os.open(name, _FILE_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        raise CacheDamaged() from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 \
+                or info.st_size > limit:
+            raise CacheDamaged()
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            data = stream.read(limit + 1)
+    except OSError:
+        raise CacheDamaged() from None
+    finally:
+        os.close(fd)
+    if len(data) > limit:
+        raise CacheDamaged()
+    return data
+
+
+def _open_dir_at(dir_fd: int | None, name, missing_ok: bool) -> int | None:
+    """Open an owner-only, non-symlink directory; ``None`` when absent and allowed."""
+    try:
+        fd = os.open(name, _DIR_FLAGS, dir_fd=dir_fd) if dir_fd is not None else os.open(name, _DIR_FLAGS)
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise CacheDamaged() from None
+    except OSError:
+        raise CacheDamaged() from None
+    info = os.fstat(fd)
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        os.close(fd)
+        raise CacheDamaged()
+    return fd
 
 
 def _write_private(path: Path, data: bytes) -> None:
@@ -527,51 +630,123 @@ class OcrStage:
         finally:
             os.close(fd)
 
-    def cached(self, item: QueueItem) -> Outcome | None:
-        path = self.result_dir(item.sha256) / "result.json"
-        try:
-            with open(path, "rb") as stream:
-                record = json.loads(stream.read(MAX_SIDECAR_BYTES))
-        except (OSError, ValueError):
-            return None
+    def cached(self, item: QueueItem) -> tuple[Outcome, int] | None:
+        """The verified published result for ``item`` as ``(outcome, source_bytes)``.
+
+        ``None`` when nothing is published for this source hash and
+        configuration. Raises ``CacheDamaged`` when a result directory exists
+        but anything in it fails to verify: a symlinked or foreign directory,
+        a missing, symlinked, oversize or unparsable ``result.json``, a
+        manifest inconsistent with itself, or a page text that is missing,
+        not a private regular file, or does not match its recorded hash and
+        length. A damaged result is never a cache hit and is never deleted
+        or overwritten here; the operator inspects it.
+        """
+        with ExitStack() as stack:
+            root = _open_dir_at(None, self.out_root, missing_ok=True)
+            if root is None:
+                return None
+            stack.callback(os.close, root)
+            by_hash = _open_dir_at(root, item.sha256, missing_ok=True)
+            if by_hash is None:
+                return None
+            stack.callback(os.close, by_hash)
+            result = _open_dir_at(by_hash, self.signature[:16], missing_ok=True)
+            if result is None:
+                return None
+            stack.callback(os.close, result)
+            try:
+                return self._verify(item, result)
+            except CacheDamaged:
+                raise
+            except Exception:  # noqa: BLE001 - any malformed manifest is damage, never a crash
+                raise CacheDamaged() from None
+
+    def _verify(self, item: QueueItem, result_fd: int) -> tuple[Outcome, int]:
+        record = json.loads(_read_at(result_fd, "result.json", MAX_MANIFEST_BYTES).decode("utf-8"))
         if not isinstance(record, dict) or record.get("schema") != SCHEMA \
                 or record.get("config_signature") != self.signature \
                 or record.get("source_sha256") != item.sha256:
-            return None
-        engines = {}
-        for page in record.get("pages", []):
-            if page.get("engine"):
-                engines[page["engine"]] = engines.get(page["engine"], 0) + 1
-        return Outcome(item.document_id, "cached", record.get("code"), engines,
-                       unresolved_pages=int(record.get("unresolved_pages", 0)), cached=True)
+            raise CacheDamaged()
+        pages, source_bytes = record["pages"], record["source_bytes"]
+        if not isinstance(pages, list) or record["page_count"] != len(pages) or not pages \
+                or type(source_bytes) is not int or source_bytes <= 0:
+            raise CacheDamaged()
+        known_engines = {self.primary.engine}
+        if self.fallback is not None:
+            known_engines.add(self.fallback.engine)
+        engines, unresolved = {}, 0
+        for number, row in enumerate(pages, start=1):
+            if not isinstance(row, dict) or row.get("page") != number \
+                    or row.get("status") not in PAGE_STATUSES:
+                raise CacheDamaged()
+            engine = row.get("engine")
+            if row["status"] == "native_text":
+                if engine is not None or "text_file" in row:
+                    raise CacheDamaged()
+                continue
+            if engine not in known_engines:
+                raise CacheDamaged()
+            engines[engine] = engines.get(engine, 0) + 1
+            if row["status"] != "ocr_text":
+                unresolved += 1
+            if "text_file" not in row:
+                if row["status"] == "ocr_text":
+                    raise CacheDamaged()
+                continue
+            if row["text_file"] != f"page-{number:04d}.txt":
+                raise CacheDamaged()
+            data = _read_at(result_fd, row["text_file"], MAX_SIDECAR_BYTES)
+            if _sha(data) != row["text_sha256"] or len(data.decode("utf-8")) != row["chars"]:
+                raise CacheDamaged()
+        status = "ocr_partial" if unresolved else "ocr_complete"
+        if record["unresolved_pages"] != unresolved or record["status"] != status \
+                or record["engines"] != dict(sorted(engines.items())) \
+                or record["code"] != ("ocr_pages_unresolved" if unresolved else None):
+            raise CacheDamaged()
+        outcome = Outcome(item.document_id, "cached", record["code"], engines,
+                          unresolved_pages=unresolved, cached=True)
+        return outcome, source_bytes
 
-    def process(self, item: QueueItem) -> Outcome:
-        # Cheap path check first, so a vanished or swapped original is reported
-        # even when its content hash already has a published result.
+    def process(self, item: QueueItem, allow_work: bool = True) -> Outcome | None:
+        """One queue item. ``None`` means uncached work was needed but not allowed (backlog).
+
+        The original is opened beneath the source root first, so a vanished,
+        symlinked or swapped original is reported even when its content hash
+        already has a published result. Cache hits cost no backend call and
+        never count as work.
+        """
         try:
-            info = os.lstat(item.path)
-        except FileNotFoundError:
-            return Outcome(item.document_id, "source_invalid", "source_missing")
-        except OSError:
-            return Outcome(item.document_id, "source_invalid", "source_unreadable")
-        if stat.S_ISLNK(info.st_mode):
-            return Outcome(item.document_id, "source_invalid", "source_symlink")
-        if not stat.S_ISREG(info.st_mode):
-            return Outcome(item.document_id, "source_invalid", "source_not_regular")
-        hit = self.cached(item)
-        if hit is not None:
-            return hit
-        work_root = _owner_dir(self.out_root / ".work")
-        workdir = Path(tempfile.mkdtemp(prefix="doc-", dir=work_root))
+            fd = open_source(item)
+        except BackendError as error:
+            return Outcome(item.document_id, "source_invalid", error.code)
         try:
-            return self._process(item, workdir)
+            try:
+                hit = self.cached(item)
+            except CacheDamaged:
+                return Outcome(item.document_id, "cache_invalid", "cache_damaged")
+            if hit is not None:
+                outcome, source_bytes = hit
+                if os.fstat(fd).st_size != source_bytes:
+                    return Outcome(item.document_id, "source_invalid", "source_hash_mismatch")
+                return outcome
+            if not allow_work:
+                return None
+            work_root = _owner_dir(self.out_root / ".work")
+            workdir = Path(tempfile.mkdtemp(prefix="doc-", dir=work_root))
+            try:
+                outcome = self._process(item, fd, workdir)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+            outcome.attempted = True
+            return outcome
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            os.close(fd)
 
-    def _process(self, item: QueueItem, workdir: Path) -> Outcome:
+    def _process(self, item: QueueItem, fd: int, workdir: Path) -> Outcome:
         source = workdir / "source.pdf"
         try:
-            _copy_verified(item.path, item.sha256, source)
+            source_bytes = _copy_verified(fd, item.sha256, source)
         except BackendError as error:
             return Outcome(item.document_id, "source_invalid", error.code)
         try:
@@ -616,10 +791,10 @@ class OcrStage:
             # Not published: the vision server or a tool may be back next run.
             outcome.code = "vision_transient"
             return outcome
-        self._publish(item, pages, outcome)
+        self._publish(item, pages, outcome, source_bytes)
         return outcome
 
-    def _publish(self, item: QueueItem, pages, outcome: Outcome) -> None:
+    def _publish(self, item: QueueItem, pages, outcome: Outcome, source_bytes: int) -> None:
         staging = Path(tempfile.mkdtemp(prefix="publish-", dir=_owner_dir(self.out_root / ".work")))
         rows = []
         for row, text in pages:
@@ -630,8 +805,9 @@ class OcrStage:
                 row.update(text_file=name, chars=len(text), text_sha256=_sha(data))
             rows.append(row)
         record = {"schema": SCHEMA, "document_id": item.document_id, "source_sha256": item.sha256,
-                  "config_signature": self.signature, "status": outcome.status, "code": outcome.code,
-                  "page_count": len(rows), "unresolved_pages": outcome.unresolved_pages,
+                  "source_bytes": source_bytes, "config_signature": self.signature,
+                  "status": outcome.status, "code": outcome.code, "page_count": len(rows),
+                  "unresolved_pages": outcome.unresolved_pages,
                   "engines": dict(sorted(outcome.engines.items())), "review_state": "not_reviewed",
                   "pages": rows}
         _write_private(staging / "result.json", _canonical(record) + b"\n")
@@ -648,9 +824,13 @@ def stage_result(outcomes: list[Outcome], queue_errors: dict, backlog: int = 0) 
 
     processed = count("ocr_complete", "ocr_partial")
     cached = count("cached")
-    failed = count("ocr_failed", "source_invalid") + sum(queue_errors.values())
+    damaged = count("cache_invalid")
+    failed = count("ocr_failed", "source_invalid", "cache_invalid") + sum(queue_errors.values())
     vision_pages = sum(o.engines.get("qwen", 0) for o in outcomes if not o.cached)
-    unresolved = sum(o.unresolved_pages for o in outcomes if not o.cached)
+    # Outstanding coverage gaps: pages left unresolved by this run AND by
+    # earlier published results that are still in the queue. A cache hit does
+    # not make a partial document whole, so it keeps warning every run.
+    unresolved = sum(o.unresolved_pages for o in outcomes if o.status in ("ocr_partial", "cached"))
     transient = sum(1 for o in outcomes if o.code == "vision_transient"
                     or (o.status == "ocr_failed" and o.code in TRANSIENT))
     pages = sum(sum(o.engines.values()) for o in outcomes if not o.cached and o.status != "ocr_failed")
@@ -662,6 +842,7 @@ def stage_result(outcomes: list[Outcome], queue_errors: dict, backlog: int = 0) 
         ("OCR_BACKEND_TRANSIENT", "action", transient),
         ("OCR_DOCUMENT_FAILED", "action", count("ocr_failed")),
         ("OCR_SOURCE_INVALID", "action", count("source_invalid")),
+        ("OCR_CACHE_DAMAGED", "action", damaged),
         ("OCR_QUEUE_ITEM_INVALID", "action", sum(queue_errors.values())),
         ("OCR_BACKLOG", "info", backlog)) if n > 0]
     out = {"stage_result_version": 1, "status": "ok", "counts": counts, "error_code": None}
@@ -761,16 +942,21 @@ def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, 
         return (*fail("OCR_CONFIG_INVALID"), [])
     if not stage.primary.available():
         return (*fail("OCR_BACKEND_UNAVAILABLE"), [])
-    outcomes, errors, backlog = [], {}, 0
+    outcomes, errors, backlog, attempted = [], {}, 0, 0
     try:
         with stage.locked():
             for item, error in read_queue(Path(args.queue), Path(args.source_root)):
                 if error:
                     errors[error] = errors.get(error, 0) + 1
-                elif len(outcomes) >= args.max_documents:
+                    continue
+                # Only uncached work counts against the cap, so cached documents
+                # never starve the rest of a stable queue across capped runs.
+                outcome = stage.process(item, allow_work=attempted < args.max_documents)
+                if outcome is None:
                     backlog += 1
-                else:
-                    outcomes.append(stage.process(item))
+                    continue
+                attempted += outcome.attempted
+                outcomes.append(outcome)
     except BackendError as error:
         if error.code == "stage_busy":
             line = {"stage_result_version": 1, "status": "warn",

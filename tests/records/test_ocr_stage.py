@@ -399,6 +399,226 @@ class TranscribePngAdapterTest(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
 
 
+class CacheAndContainmentTest(unittest.TestCase):
+    """Sol review of #152 at 4e1118d: capped drain, cached warnings, ancestor symlinks, damaged cache."""
+
+    def setUp(self):
+        self.ws = Workspace(self)
+        self.config = self.ws.config(ocrmypdf=fake_ocrmypdf(self.ws.tmp))
+        self.sidecars = {}
+
+    def add(self, name, text=CLEAN, seed=0):
+        data = scanned_pdf([noise_page(seed)])
+        digest = self.ws.add(name, data)
+        self.sidecars[digest] = [text]
+        return digest
+
+    def run_stage(self, max_documents=50):
+        tools = FakeTools(self.sidecars)
+        line, code, outcomes = stage.run(self.ws.args(self.config, max_documents=max_documents),
+                                         runner=tools, transport=FakeVision())
+        return line, code, outcomes, tools
+
+    # 1. cache hits must not consume --max-documents
+    def test_capped_runs_drain_a_stable_queue_without_reprocessing(self):
+        for index in range(3):
+            self.add(f"doc-{index}.pdf", seed=index)
+        self.ws.write_queue()
+        backlog = []
+        for run in range(3):
+            line, _, outcomes, tools = self.run_stage(max_documents=1)
+            self.assertEqual(tools.count("ocrmypdf"), 1, f"run {run}")
+            self.assertEqual(line["counts"], {"input": 3, "output": 1, "failed": 0, "skipped": 2})
+            self.assertEqual(sum(o.cached for o in outcomes), run)
+            backlog.append({i["code"]: i["count"] for i in line.get("needs_g", [])}.get("OCR_BACKLOG", 0))
+        self.assertEqual(backlog, [2, 1, 0])
+        self.assertEqual(len(results(self.ws.out)), 3)
+        line, _, outcomes, tools = self.run_stage(max_documents=1)
+        self.assertEqual((tools.calls, line["status"]), ([], "ok"))
+        self.assertEqual(line["counts"], {"input": 3, "output": 0, "failed": 0, "skipped": 3})
+        self.assertTrue(all(o.cached for o in outcomes))
+
+    def test_failed_attempts_count_against_the_cap(self):
+        self.add("a.pdf", seed=1)
+        self.add("b.pdf", seed=2)
+        self.ws.write_queue()
+        tools = FakeTools(exit_code=8)
+        line, _, outcomes = stage.run(self.ws.args(self.config, max_documents=1), runner=tools,
+                                      transport=FakeVision())
+        self.assertEqual((tools.count("ocrmypdf"), len(outcomes)), (1, 1))
+        self.assertIn({"code": "OCR_BACKLOG", "severity": "info", "count": 1}, line["needs_g"])
+
+    # 2. cached partial documents keep warning
+    def test_cached_unresolved_pages_keep_warning_without_new_output(self):
+        self.add("blank.pdf", text="", seed=3)
+        self.add("clean.pdf", seed=4)
+        self.ws.write_queue()
+        first, _, _, _ = self.run_stage()
+        self.assertEqual((first["status"], first["error_code"]), ("warn", "OCR_PAGES_UNRESOLVED"))
+        for _ in range(2):
+            again, _, outcomes, tools = self.run_stage()
+            self.assertEqual(tools.calls, [])
+            self.assertEqual((again["status"], again["error_code"]), ("warn", "OCR_PAGES_UNRESOLVED"))
+            self.assertIn({"code": "OCR_PAGES_UNRESOLVED", "severity": "action", "count": 1}, again["needs_g"])
+            self.assertEqual(again["counts"], {"input": 2, "output": 0, "failed": 0, "skipped": 2})
+            self.assertNotIn("new_data", again)
+            self.assertNotIn("review_required", again)
+            partial = [o for o in outcomes if o.unresolved_pages]
+            self.assertEqual([(o.status, o.code) for o in partial], [("cached", "ocr_pages_unresolved")])
+
+    # 3. containment through every path component
+    def test_symlinked_ancestor_directory_cannot_escape_the_source_root(self):
+        outside = self.ws.tmp / "outside"
+        outside.mkdir()
+        data = scanned_pdf([noise_page(5)])
+        (outside / "doc.pdf").write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        self.sidecars[digest] = [CLEAN]
+        os.symlink(outside, self.ws.sources / "linked_dir")
+        self.ws.lines.append(json.dumps({"document_id": "doc:escape", "sha256": digest,
+                                         "path": str(self.ws.sources / "linked_dir" / "doc.pdf")}))
+        self.ws.write_queue()
+        line, _, outcomes, tools = self.run_stage()
+        self.assertEqual([(o.status, o.code) for o in outcomes], [("source_invalid", "source_symlink")])
+        self.assertEqual(tools.calls, [])  # external bytes never reach a backend
+        self.assertEqual(results(self.ws.out), {})
+        self.assertEqual((line["status"], line["error_code"]), ("warn", "OCR_DOCUMENT_FAILED"))
+
+    def test_cached_source_check_also_refuses_a_swapped_in_ancestor_symlink(self):
+        sub = self.ws.sources / "sub"
+        sub.mkdir()
+        data = scanned_pdf([noise_page(6)])
+        (sub / "doc.pdf").write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        self.sidecars[digest] = [CLEAN]
+        self.ws.lines.append(json.dumps({"document_id": "doc:sub", "sha256": digest, "path": str(sub / "doc.pdf")}))
+        self.ws.write_queue()
+        self.assertEqual(self.run_stage()[2][0].status, "ocr_complete")
+        moved = self.ws.tmp / "moved"
+        os.rename(sub, moved)
+        os.symlink(moved, sub)
+        _, _, outcomes, tools = self.run_stage()
+        self.assertEqual([(o.status, o.code) for o in outcomes], [("source_invalid", "source_symlink")])
+        self.assertEqual(tools.calls, [])
+
+    def test_unnormalized_paths_and_dot_dot_are_rejected(self):
+        self.add("doc.pdf", seed=7)
+        digest = next(iter(self.sidecars))
+        for path in (str(self.ws.sources / "x" / ".." / "doc.pdf"), str(self.ws.sources) + "/./doc.pdf",
+                     str(self.ws.sources) + "//doc.pdf", str(self.ws.sources / "doc.pdf") + "/"):
+            self.ws.lines.append(json.dumps({"document_id": "doc:odd", "sha256": digest, "path": path}))
+        self.ws.write_queue()
+        line, _, outcomes, _ = self.run_stage()
+        self.assertEqual(len(outcomes), 1)
+        self.assertIn({"code": "OCR_QUEUE_ITEM_INVALID", "severity": "action", "count": 4}, line["needs_g"])
+
+    def test_source_swapped_after_publication_is_not_a_cache_hit(self):
+        self.add("doc.pdf", seed=8)
+        self.ws.write_queue()
+        self.run_stage()
+        (self.ws.sources / "doc.pdf").write_bytes(b"%PDF-1.4\nreplaced\n")
+        _, _, outcomes, tools = self.run_stage()
+        self.assertEqual([(o.status, o.code) for o in outcomes], [("source_invalid", "source_hash_mismatch")])
+        self.assertEqual(tools.calls, [])
+
+    # 4. cache hits are verified
+    def published_dir(self, digest):
+        return next((self.ws.out / digest).iterdir())
+
+    def assert_damaged(self, digest, other):
+        line, code, outcomes, tools = self.run_stage()
+        by_id = {o.document_id: o for o in outcomes}
+        self.assertEqual((by_id["doc:target.pdf"].status, by_id["doc:target.pdf"].code),
+                         ("cache_invalid", "cache_damaged"))
+        self.assertTrue(by_id["doc:target.pdf"].cached is False)
+        self.assertEqual(by_id["doc:other.pdf"].status, "ocr_complete")  # the queue continues
+        self.assertEqual(tools.count("ocrmypdf"), 1)  # only `other`; the damaged doc is not redone
+        self.assertEqual(code, 0)
+        self.assertEqual((line["status"], line["error_code"]), ("warn", "OCR_DOCUMENT_FAILED"))
+        self.assertIn({"code": "OCR_CACHE_DAMAGED", "severity": "action", "count": 1}, line["needs_g"])
+        self.assertTrue(self.published_dir(digest).exists())  # left in place for the operator
+
+    def damage_case(self, damage):
+        digest = self.add("target.pdf", seed=9)
+        self.ws.write_queue()
+        self.run_stage()
+        directory = self.published_dir(digest)
+        damage(directory)
+        self.add("other.pdf", seed=10)
+        self.ws.write_queue()
+        self.assert_damaged(digest, "other")
+
+    def test_missing_page_text_is_damage(self):
+        self.damage_case(lambda d: (d / "page-0001.txt").unlink())
+
+    def test_tampered_page_text_is_damage(self):
+        def tamper(directory):
+            path = directory / "page-0001.txt"
+            text = path.read_text()
+            path.write_text(text[:-1] + ("X" if text[-1] != "X" else "Y"))  # same length, new hash
+        self.damage_case(tamper)
+
+    def test_symlinked_page_text_is_damage(self):
+        def link(directory):
+            elsewhere = self.ws.tmp / "elsewhere.txt"
+            os.rename(directory / "page-0001.txt", elsewhere)
+            os.symlink(elsewhere, directory / "page-0001.txt")
+        self.damage_case(link)
+
+    def test_symlinked_result_json_is_damage(self):
+        def link(directory):
+            elsewhere = self.ws.tmp / "elsewhere.json"
+            os.rename(directory / "result.json", elsewhere)
+            os.symlink(elsewhere, directory / "result.json")
+        self.damage_case(link)
+
+    def test_missing_result_json_is_damage(self):
+        self.damage_case(lambda d: (d / "result.json").unlink())
+
+    def test_malformed_manifests_are_damage_not_a_crash(self):
+        bad_records = [b"not json", b"[]", b'{"schema": "ocr-stage-v1"}']
+
+        def rewrite(record):
+            def damage(directory):
+                path = directory / "result.json"
+                original = json.loads(path.read_text())
+                path.write_bytes(record(original))
+            return damage
+
+        mutations = [lambda r, bad=bad: bad for bad in bad_records] + [
+            lambda r: json.dumps(dict(r, pages=[1])).encode(),
+            lambda r: json.dumps(dict(r, pages=[dict(r["pages"][0], page="1")])).encode(),
+            lambda r: json.dumps(dict(r, unresolved_pages=0, status="ocr_complete",
+                                      pages=[dict(r["pages"][0], text_file="../../x")])).encode(),
+            lambda r: json.dumps(dict(r, unresolved_pages=3)).encode(),
+            lambda r: json.dumps(dict(r, source_sha256="0" * 64)).encode(),
+            lambda r: json.dumps(dict(r, pages=[dict(r["pages"][0], engine="other")])).encode(),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                self.ws = Workspace(self)
+                self.config = self.ws.config(ocrmypdf=fake_ocrmypdf(self.ws.tmp))
+                self.sidecars = {}
+                self.damage_case(rewrite(mutation))
+
+    def test_group_or_world_readable_cache_entries_are_damage(self):
+        self.damage_case(lambda d: os.chmod(d / "page-0001.txt", 0o644))
+
+    def test_symlinked_result_directory_is_damage(self):
+        def link(directory):
+            elsewhere = self.ws.tmp / "elsewhere-dir"
+            os.rename(directory, elsewhere)
+            os.symlink(elsewhere, directory)
+        digest = self.add("target.pdf", seed=11)
+        self.ws.write_queue()
+        self.run_stage()
+        directory = self.published_dir(digest)
+        link(directory)
+        self.add("other.pdf", seed=12)
+        self.ws.write_queue()
+        self.assert_damaged(digest, "other")
+
+
 @unittest.skipUnless(os.access(stage.DEFAULT_OCRMYPDF, os.X_OK) and os.access(stage.DEFAULT_PDFTOPPM, os.X_OK),
                      "real ocrmypdf/pdftoppm not installed")
 class RealToolSmokeTest(unittest.TestCase):

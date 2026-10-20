@@ -61,11 +61,16 @@ It prints exactly one `records-stage-result-v1` line: counts, an enum status
 and fixed codes, never paths or text. `input` counts every queue line,
 `output` the documents published in this run, `skipped` the documents already
 published plus the backlog over `--max-documents`, and `failed` the failed
-documents plus invalid queue lines. Every published document is counted in
-`review_required`. `needs_g` codes: `OCR_VISION_PAGES` (info),
-`OCR_PAGES_UNRESOLVED`, `OCR_BACKEND_TRANSIENT`, `OCR_DOCUMENT_FAILED`,
-`OCR_SOURCE_INVALID`, `OCR_QUEUE_ITEM_INVALID` (action) and `OCR_BACKLOG`
-(info). Stage-level failures are `OCR_CONFIG_INVALID`,
+documents (including damaged cache entries) plus invalid queue lines. Only
+uncached work counts against `--max-documents`: cache hits are always reported
+and never become backlog, so repeated capped runs drain a stable queue.
+Every document published in this run is counted in `review_required`.
+`needs_g` codes: `OCR_VISION_PAGES` (info, this run only),
+`OCR_PAGES_UNRESOLVED` (all outstanding unresolved pages, including those of
+partial documents published by earlier runs, so a cached partial document
+keeps the run at `warn`), `OCR_BACKEND_TRANSIENT`, `OCR_DOCUMENT_FAILED`,
+`OCR_SOURCE_INVALID`, `OCR_CACHE_DAMAGED`, `OCR_QUEUE_ITEM_INVALID` (action)
+and `OCR_BACKLOG` (info). Stage-level failures are `OCR_CONFIG_INVALID`,
 `OCR_BACKEND_UNAVAILABLE`, `OCR_OUT_ROOT_UNSAFE` and `OCR_QUEUE_UNREADABLE`;
 `OCR_STAGE_BUSY` is a warning when another run holds the lock. The optional
 `--report` is a private per-document list holding ids, statuses, codes and
@@ -73,17 +78,31 @@ engine counts.
 
 ## Outputs and safety
 
-- The original is checked with `lstat` (missing, symlink or non-regular file),
-  read once with `O_NOFOLLOW`, size-bounded, hashed against the queued
-  SHA-256, required to start with `%PDF-`, and copied into a private work
-  directory. The tools only ever see that copy.
+- The queued path must be a normalized absolute path under `--source-root`
+  (no `.`, `..`, `//` or trailing slash). It is opened component by component
+  from a descriptor of the root, each component with `O_NOFOLLOW`, so a
+  symlinked file or ancestor directory (even one swapped in mid-run) is
+  refused as `source_symlink` before any byte reaches a backend. The root
+  itself is the operator's argument and is trusted as given. The same
+  descriptor is size-bounded, hashed against the queued SHA-256, required to
+  start with `%PDF-`, and copied into a private work directory. The tools only
+  ever see that copy.
 - Results go to `<out>/<sha256>/<config-signature[:16]>/`: `page-NNNN.txt` for
   pages with text, and `result.json` (schema `ocr-stage-v1`, per page:
   status, engine, method, chars, text sha256, reason/vision error;
-  `review_state: not_reviewed`; no text). Publication is a no-replace
-  directory rename. A rerun with the same configuration makes no tool or model
-  call. A configuration change gets a new signature directory and never
-  rewrites the old one.
+  `source_bytes`; `review_state: not_reviewed`; no text). Publication is a
+  no-replace directory rename. A rerun with the same configuration makes no
+  tool or model call. A configuration change gets a new signature directory
+  and never rewrites the old one.
+- A cache hit is verified before use: the source is still reachable beneath
+  the root with the recorded size, the result directories and files are
+  owner-only and not symlinks (opened by descriptor with `O_NOFOLLOW`), the
+  manifest is internally consistent (pages, statuses, engines, counts,
+  signature, source hash), and every recorded page text exists with the
+  recorded length and SHA-256. Anything else is `cache_invalid` /
+  `cache_damaged` (`OCR_CACHE_DAMAGED`): never a hit, never reprocessed over,
+  never deleted. The rest of the queue continues; the operator inspects or
+  moves the damaged directory, after which the next run redoes the document.
 - Outcomes that may clear on their own (tool timeout, vision server
   unreachable/timeout/HTTP error) and failed documents are not published and
   are retried on the next run.
