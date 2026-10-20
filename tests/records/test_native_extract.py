@@ -253,6 +253,7 @@ class NativeExtractionTests(ExtractStageCase):
         self.assertEqual(by_subject[broken], ("pdf", "CORRUPT_DOCUMENT"))
         self.assertEqual(by_subject[xlsx], ("xlsx", "WORKBOOK_POLICY_REQUIRED"))
         self.assertEqual(by_subject[docx], ("docx", "EXTRACTED"))
+        self.assertQueue([scan])
         # Writer settled: the next count-only stage can read the ledger.
         wal = self.processing / "ledger.sqlite-wal"
         self.assertFalse(wal.exists() and wal.stat().st_size)
@@ -274,6 +275,22 @@ class NativeExtractionTests(ExtractStageCase):
         self.assertEqual(self.query("SELECT key,count FROM alerts ORDER BY key"), alerts)
         self.assertEqual(self.query("SELECT COUNT(*) FROM stage_state WHERE stage='extract' AND status='done'"),
                          [(7,)])
+        self.assertQueue([self.subject("scan.pdf")])  # held scans stay queued on every run
+
+    def assertQueue(self, subjects):
+        """awaiting-ocr-v1 (the OCR stage's queue input): owner-only, exact keys, pinned bytes."""
+        queue = self.processing / native_extract.AWAITING_OCR_QUEUE
+        self.assertEqual(stat.S_IMODE(queue.stat().st_mode), 0o600)
+        lines = [json.loads(line) for line in queue.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([line["sha256"] for line in lines], sorted(subjects))
+        for line in lines:
+            self.assertEqual(set(line), {"document_id", "sha256", "path"})
+            self.assertRegex(line["document_id"], r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+            path = Path(line["path"])
+            self.assertTrue(path.is_absolute())
+            self.assertTrue(path.resolve().is_relative_to(self.processing.resolve()), "under the records root")
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), line["sha256"])
+            self.assertTrue(path.read_bytes().startswith(b"%PDF-"))
 
     def test_missing_parsers_code_pdf_and_xlsx_without_attempting_them(self):
         with mock.patch.object(native_extract, "missing_parsers", return_value=["pypdf", "openpyxl"]):

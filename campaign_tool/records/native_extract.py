@@ -17,11 +17,15 @@ uses (``run.Pipeline.stage_extract``):
    review-required downstream.
 
 This module adds no parser, no OCR and no ledger SQL writes of its own. Its
-only write is the private per-document list under ``<root>/runs``.
+only writes are the private per-document list under ``<root>/runs`` and the
+``awaiting-ocr-v1`` queue ``<root>/awaiting-ocr.jsonl`` (both 0600).
 
 Phase 1 (G 2026-10-19) has no OCR. Scanned or no-text PDF pages and image
 originals are counted as ``AWAITING_OCR`` and never dropped. They stay
-``pending`` for Phase 2. ``Pipeline.stage_extract`` records one keyed open
+``pending`` for Phase 2. The PDF ones are listed in the queue file in the OCR
+stage's input shape (one line per document: ``document_id``, ``sha256`` and
+the absolute ``path`` of the pinned original), rewritten in full on every run.
+``Pipeline.stage_extract`` records one keyed open
 alert per held document. A later run reads that alert and counts the
 document again without parsing it again. A corrupt document is coded per
 document and never stops the stage.
@@ -72,6 +76,8 @@ DEFAULT_MAX_DOCUMENTS = 200
 DEFAULT_DOCUMENT_TIMEOUT = 120
 MIN_DOCUMENT_SECONDS = 10
 DEADLINE_MARGIN = 15
+# Queue file for the OCR stage (awaiting-ocr-v1 JSON Lines), rewritten every run.
+AWAITING_OCR_QUEUE = "awaiting-ocr.jsonl"
 
 
 class RootNotInitialized(Exception):
@@ -202,15 +208,52 @@ def extract_one(pipeline, stage, subject, *, missing, timeout):
 def write_private_list(root, run_id, documents):
     directory = Path(root) / "runs"
     name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"
-    target = directory / f"extract-{name}.json"
-    temporary = directory / f".extract-{name}.json.tmp"
     body = {"schema": "records-extract-outcomes-v1", "run_id": run_id,
             "written_at": datetime.now(timezone.utc).isoformat(), "documents": documents}
+    _write_private(directory / f"extract-{name}.json", json.dumps(body, sort_keys=True) + "\n")
+
+
+def _write_private(target, text):
+    temporary = target.with_name("." + target.name + ".tmp")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(body, stream, sort_keys=True)
-        stream.write("\n")
+        stream.write(text)
     os.replace(temporary, target)
+
+
+def awaiting_ocr_queue(pipeline, documents):
+    """``awaiting-ocr-v1`` lines for this run's ``AWAITING_OCR`` PDF originals.
+
+    The shape is the OCR stage's queue input (``ocr_stage``, docs/RECORDS-OCR-STAGE.md):
+    ``{"document_id", "sha256", "path"}`` with ``path`` the absolute pinned original
+    under the records root. That stage takes PDFs only, so image originals stay
+    counted as ``AWAITING_OCR`` but are not queued (``awaiting_ocr_images``).
+    """
+    lines, images = [], 0
+    for document in documents:
+        if document["outcome"] != AWAITING_OCR:
+            continue
+        subject = document["original_sha256"]
+        try:
+            original = pipeline._original(subject)
+            form = document["form"] or pipeline._form(subject, original)
+        except Exception:  # noqa: BLE001 - still counted; the queue only lists resolvable PDFs
+            continue
+        if form != "pdf":
+            images += 1
+            continue
+        path = Path(original["storage_path"])
+        if not path.is_absolute():
+            path = Path(pipeline.root.path) / path
+        lines.append({"document_id": "sha256:" + subject, "sha256": subject, "path": os.path.abspath(path)})
+    lines.sort(key=lambda line: line["sha256"])
+    return lines, images
+
+
+def write_awaiting_ocr(root, lines):
+    """Rewrite ``<root>/awaiting-ocr.jsonl`` (0600) with the current queue, even when empty."""
+    _write_private(Path(root) / AWAITING_OCR_QUEUE,
+                   "".join(json.dumps(line, sort_keys=True) + "\n" for line in lines))
 
 
 def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
@@ -264,6 +307,9 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
             if stage is not None:
                 pipeline._close_stage_run({"stage": "extract", "outcomes": outcomes})
         write_private_list(pipeline.root.path, run_id, documents)
+        queue, images = awaiting_ocr_queue(pipeline, documents)
+        write_awaiting_ocr(pipeline.root.path, queue)
     return {"documents": len(subjects), "outcomes": outcomes, "missing_parsers": missing,
             "attempted": attempted, "unexpected_failures": unexpected,
-            "new_units": new_units, "new_pages": new_pages}
+            "new_units": new_units, "new_pages": new_pages,
+            "awaiting_ocr_queued": len(queue), "awaiting_ocr_images": images}

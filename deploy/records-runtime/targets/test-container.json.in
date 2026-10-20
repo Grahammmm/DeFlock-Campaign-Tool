@@ -125,11 +125,15 @@
     "--project",
     "@CONTAINER_PROJECT_DIR@",
     "--timeout",
-    "290",
+    "590",
     "--run-id",
-    "{run_id}"
+    "{run_id}",
+    "--max-documents",
+    "200",
+    "--document-timeout",
+    "120"
    ],
-   "timeout_seconds": 300,
+   "timeout_seconds": 600,
    "on_fail": "stop"
   },
   {
