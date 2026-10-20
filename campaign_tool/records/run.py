@@ -146,6 +146,12 @@ class Root:
 
 
 class Pipeline:
+    # Per-child OCR limits (None: the parse timeout, as before) and the per-document wall-clock
+    # budget (None: no budget). The records run extract stage sets the budget per document
+    # (native_extract.extract_one); see extraction_routes.extract. Class defaults keep
+    # partially constructed pipelines (tests, subclasses) on the unbudgeted path.
+    ocr_page_timeout = ocr_vision_timeout = document_budget = None
+
     def __init__(self, root, *, jurisdiction="us-ca", account="local", model=None, challenge=None,
                  redaction_allowlist=(), redaction_denylist=(), event_date=None, opener=None,
                  ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180, native_workbook_policy=None,
@@ -160,11 +166,7 @@ class Pipeline:
             raise ValueError("ocr_vision_requires_ocr_tools")
         self.ocr_vision = ocr_vision
         self.extraction_timeout = extraction_timeout
-        # Per-child OCR limits (None: the parse timeout, as before) and the per-document
-        # wall-clock budget (None: no budget). The records run extract stage sets the budget
-        # per document (native_extract.extract_one); see extraction_routes.extract.
         self.ocr_page_timeout, self.ocr_vision_timeout = ocr_page_timeout, ocr_vision_timeout
-        self.document_budget = None
         self.native_workbook_policy = native_workbook_policy
         self.package = load_package(jurisdiction)
         self.config = {"engine": ENGINE, "version": __version__, "jurisdiction": jurisdiction,
