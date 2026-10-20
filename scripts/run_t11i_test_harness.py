@@ -30,10 +30,9 @@ import shutil
 import subprocess
 import sys
 
-CONTAINER = "agentorange-flock"
-CONTAINER_WORK = "/workspace/flockbot/work"
-TEST_DIR = CONTAINER_WORK + "/records-project-TEST"
-LIVE_DIR = CONTAINER_WORK + "/records-project"
+CONTAINER = None       # set from --container (no host values in source)
+CONTAINER_WORK = None  # set from --container-work
+TEST_DIR = LIVE_DIR = None
 MANIFEST = """
 import hashlib, os
 root = "%s"
@@ -124,7 +123,12 @@ def main(argv=None):
     p.add_argument("--docker", default=shutil.which("docker") or "/usr/bin/docker")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--receipt", required=True)
+    p.add_argument("--container", required=True, help="Flock container name")
+    p.add_argument("--container-work", required=True, help="work directory inside the container")
     args = p.parse_args(argv)
+    global CONTAINER, CONTAINER_WORK, TEST_DIR, LIVE_DIR
+    CONTAINER, CONTAINER_WORK = args.container, args.container_work.rstrip("/")
+    TEST_DIR, LIVE_DIR = CONTAINER_WORK + "/records-project-TEST", CONTAINER_WORK + "/records-project"
     engine, scratch = Path(args.engine).resolve(), Path(args.scratch).resolve()
     if not (engine / "campaign_tool/records/run_stages.py").is_file():
         print(json.dumps({"status": "refused", "code": "engine_tree_missing"}))
