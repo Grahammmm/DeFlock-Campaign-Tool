@@ -310,9 +310,11 @@ class NativeExtractionTests(ExtractStageCase):
         self.assertContract(code, parsed, raw)
         self.assertEqual(self.outcomes(parsed)["DEFERRED_RUN_BUDGET"], 7)
         self.assertEqual(parsed["counts"]["input"], 10)
-        for _ in range(3):  # held documents do not use the per-run budget
+        for _ in range(4):  # 3 + 3 + 1 fresh attempts left; held documents do not use the per-run budget
             code, parsed, raw = self.stage("--max-documents", "3")
             self.assertContract(code, parsed, raw)
+        # Every document has been attempted once: the last run only counts the held ones.
+        # (Fixture order follows sha256, and the XLSX bytes carry a timestamp.)
         self.assertEqual(self.outcomes(parsed), self.EXPECTED_HELD)
 
     def test_stage_deadline_defers_instead_of_starting_work(self):
