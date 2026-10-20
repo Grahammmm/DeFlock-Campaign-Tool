@@ -27,6 +27,12 @@ jobs:
   rehearse:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # The OCR host has no buildx plugin, so its B2 `docker build` runs the
+      # classic builder, which resolves `FROM sha256:<old image ID>` locally.
+      # The runner ships buildx/BuildKit, which treats a bare image ID as a
+      # registry name (pull access denied). Mirror the host's builder.
+      DOCKER_BUILDKIT: "0"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Allow unprivileged user namespaces (rootlesskit)
@@ -37,6 +43,8 @@ jobs:
           grep -q "^$(id -un):" /etc/subgid || echo "$(id -un):100000:65536" | sudo tee -a /etc/subgid
       - uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
         with:
+          # Same engine version as the OCR host's rootless dockerd.
+          version: v29.6.2
           rootless: true
           set-host: true
           # No systemd --user session on the runner: the systemd cgroup driver
