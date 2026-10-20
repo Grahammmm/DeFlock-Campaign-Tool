@@ -13,6 +13,7 @@ import sys
 import tempfile
 from .intake import folder
 from .extract import ocr as page_ocr
+from .extract import vision as page_vision
 
 VERSION = 'format-routes-1'
 SUPPORTED = {'pdf','eml','csv','tsv','docx','xlsx','zip','txt','md','json','jsonl','xml','html','htm','log','rst','yaml','yml'}
@@ -21,6 +22,8 @@ MAX_UNITS = 100000
 MAX_UNIT_BYTES = 64*1024*1024
 OCR_METHOD = page_ocr.VERSION
 OCR_TEXT_STATES = {'ocr_text_unreviewed','visual_check_queued'}
+VISION_METHOD = page_vision.VERSION
+VISION_TEXT_STATE = page_vision.TEXT_STATE
 
 def route(form, role='original'):
     form=str(form).lower()
@@ -129,16 +132,37 @@ def page_manifest(units, expected_pages=None, parser='unknown', parser_version='
             state=receipt['status']
             row.update(method=OCR_METHOD,method_version=receipt['method_version'],needs_visual_review=True,
                        confidence=receipt['confidence'] if state in OCR_TEXT_STATES else None,
-                       ocr_receipt_id=receipt['receipt_id'],ocr_receipt_sha256=receipt['receipt_sha256'])
+                       ocr_receipt_id=receipt['receipt_id'],ocr_receipt_sha256=receipt['receipt_sha256'],
+                       engine='tesseract')
             if state in OCR_TEXT_STATES:row.update(status='partial',reason='ocr_visual_review_required')
             elif state=='blocked':row.update(status='blocked',reason=receipt['blocked_reason'])
             else:row.update(status='partial',reason='ocr_skipped_machine_text')
+            vision=receipt.get('vision')
+            if vision is not None:
+                # engine names whose text (or disposition) the page carries: tesseract or the vision engine.
+                row.update(vision_receipt_id=vision['receipt_id'],vision_receipt_sha256=vision['receipt_sha256'],
+                           vision_status=vision['status'])
+                if vision['status']==VISION_TEXT_STATE:
+                    row.update(method=VISION_METHOD,method_version=vision['engine']+'/'+vision['model'],
+                               confidence=None,engine=vision['engine'],status='partial',reason='ocr_visual_review_required')
+                elif state not in OCR_TEXT_STATES:
+                    row.update(engine=vision['engine'],status='blocked',reason=vision['blocked_reason'])
     return rows
 
 def ocr_unit(page, receipt_id, receipt_sha256, text):
     """The unit carrying one page's OCR text; the text is the receipt's sidecar.txt."""
     return {'kind':'pdf_page','locator':{'page':page},'text':text,
-            'data':{'method':OCR_METHOD,'ocr_receipt_id':receipt_id,'ocr_receipt_sha256':receipt_sha256,'visual_review':'not_done'}}
+            'data':{'method':OCR_METHOD,'engine':'tesseract','ocr_receipt_id':receipt_id,'ocr_receipt_sha256':receipt_sha256,'visual_review':'not_done'}}
+
+def text_unit(page, summary, text):
+    """The OCR text unit of one page: vision text when the fallback produced it, else Tesseract text."""
+    vision=summary.get('vision')
+    if vision is not None and vision['status']==VISION_TEXT_STATE:
+        return {'kind':'pdf_page','locator':{'page':page},'text':text,
+                'data':{'method':VISION_METHOD,'engine':vision['engine'],'ocr_receipt_id':summary['receipt_id'],
+                        'ocr_receipt_sha256':summary['receipt_sha256'],'vision_receipt_id':vision['receipt_id'],
+                        'vision_receipt_sha256':vision['receipt_sha256'],'visual_review':'not_done'}}
+    return ocr_unit(page,summary['receipt_id'],summary['receipt_sha256'],text)
 
 def merge_ocr_units(native_units, ocr_text_units):
     """Replace only the units of pages that received OCR text; every other unit is untouched.
@@ -163,6 +187,31 @@ def ocr_summary(loaded):
             'status':receipt['status'],'blocked_reason':receipt['blocked_reason'],
             'confidence':receipt['confidence'],
             'method_version':receipt['tool_versions'].get('tesseract','unverified')}
+
+def vision_summary(loaded):
+    """Page-manifest view of a verified ``page_vision.load_vision_receipt`` result."""
+    receipt=loaded['receipt']
+    return {'receipt_id':receipt['receipt_id'],'receipt_sha256':loaded['receipt_sha256'],
+            'status':receipt['status'],'blocked_reason':receipt['blocked_reason'],
+            'engine':receipt['engine'],'model':receipt['model'],'base_receipt_id':receipt['base']['receipt_id']}
+
+def page_text(summary, ocr_sidecar, vision_sidecar=None):
+    """Text a page carries, or None: vision text supersedes Tesseract text only when produced."""
+    vision=summary.get('vision')
+    if vision is not None and vision['status']==VISION_TEXT_STATE:
+        if vision_sidecar is None:raise ValueError('vision_receipt_text_missing')
+        return vision_sidecar.decode('utf-8')
+    if summary['status'] in OCR_TEXT_STATES:
+        if ocr_sidecar is None:raise ValueError('ocr_receipt_text_missing')
+        return ocr_sidecar.decode('utf-8')
+    return None
+
+def vision_entries(results):
+    """Receipt entries for pages routed to the vision fallback (empty when none were)."""
+    return [{'page':page,'receipt_id':r['summary']['vision']['receipt_id'],
+             'receipt_sha256':r['summary']['vision']['receipt_sha256'],'status':r['summary']['vision']['status'],
+             'engine':r['summary']['vision']['engine'],'base_receipt_id':r['summary']['receipt_id']}
+            for page,r in sorted(results.items()) if r['summary'].get('vision') is not None]
 
 def _child(source,sha,form,dest,root):
     if form in IMAGES or form=='msg':
@@ -220,11 +269,12 @@ def _read_output(dest):
     pages=page_manifest(units,metadata.get('counts',{}).get('pages_expected'),parser,version)
     return metadata,units,pages
 
-def _ocr_pages(pinned_sha, intake_root, ocr_root, page_numbers, tools, tool_signature, attempt_id, *, timeout=180, runner=subprocess.run):
+def _ocr_pages(pinned_sha, intake_root, ocr_root, page_numbers, tools, tool_signature, attempt_id, *, timeout=180, runner=subprocess.run, vision=None):
     """Per-page OCR (the only OCR path) for the given non-ok pages.
 
-    Returns page -> {'summary': page-manifest receipt summary, 'text': sidecar text or None}.
-    Text is used only for ocr_text_unreviewed/visual_check_queued receipts.
+    Tesseract always runs first. With a vision adapter configured, a page whose Tesseract
+    receipt is empty or low confidence (``page_vision.needs_fallback``) is sent to it once.
+    Returns page -> {'summary': page-manifest receipt summary, 'text': page text or None}.
     """
     page_numbers=tuple(page_numbers)
     receipts=page_ocr.extract_image_only_pages(intake_root,pinned_sha,ocr_root,tool_signature=tool_signature,
@@ -235,24 +285,30 @@ def _ocr_pages(pinned_sha, intake_root, ocr_root, page_numbers, tools, tool_sign
         page=receipt['locator']['page']
         loaded=page_ocr.load_page_receipt(ocr_root,pinned_sha,page,receipt['receipt_id'])
         summary=ocr_summary(loaded)
-        text=None
-        if summary['status'] in OCR_TEXT_STATES:
-            if loaded['sidecar'] is None:raise ValueError('ocr_receipt_text_missing')
-            text=loaded['sidecar'].decode('utf-8')
-        results[page]={'summary':summary,'text':text}
+        vision_sidecar=None
+        if vision is not None and page_vision.needs_fallback(loaded['receipt']):
+            published=page_vision.run_fallback(ocr_root,pinned_sha,page,receipt['receipt_id'],vision_adapter=vision,
+                                               attempt_id=attempt_id,timeout=timeout,runner=runner)
+            seen=page_vision.load_vision_receipt(ocr_root,pinned_sha,page,published['receipt_id'])
+            summary['vision']=vision_summary(seen)
+            vision_sidecar=seen['sidecar']
+        results[page]={'summary':summary,'text':page_text(summary,loaded['sidecar'],vision_sidecar)}
     return results
 
 def apply_ocr(native_units, expected_pages, parser, parser_version, results):
     """Merge per-page OCR results onto native units/pages; native-text pages keep their units."""
-    texts={page:ocr_unit(page,r['summary']['receipt_id'],r['summary']['receipt_sha256'],r['text']) for page,r in results.items() if r['text'] is not None}
+    texts={page:text_unit(page,r['summary'],r['text']) for page,r in results.items() if r['text'] is not None}
     units=merge_ocr_units(native_units,texts)
     pages=page_manifest(units,expected_pages,parser,parser_version,ocr_receipts={page:r['summary'] for page,r in results.items()})
     receipts=[{'page':page,'receipt_id':r['summary']['receipt_id'],'receipt_sha256':r['summary']['receipt_sha256'],'status':r['summary']['status']} for page,r in sorted(results.items())]
     return units,pages,receipts
 
-def _ocr_configuration(ocr_output_root, ocr_tools, tool_signature):
+def _ocr_configuration(ocr_output_root, ocr_tools, tool_signature, vision=None):
     """None when OCR is not configured at all; otherwise a validated configuration."""
-    if ocr_output_root is None and ocr_tools is None and tool_signature is None:return None
+    if ocr_output_root is None and ocr_tools is None and tool_signature is None:
+        if vision is not None:
+            raise ValueError('ocr_configuration_incomplete: the vision fallback needs the Tesseract OCR configuration')
+        return None
     if ocr_output_root is None or ocr_tools is None or tool_signature is None:
         raise ValueError('ocr_configuration_incomplete: ocr_output_root, ocr_tools and tool_signature are all required')
     root=Path(ocr_output_root)
@@ -263,16 +319,23 @@ def _ocr_configuration(ocr_output_root, ocr_tools, tool_signature):
     except ValueError as error:raise ValueError('ocr_configuration_invalid: '+str(error)) from None
     if not isinstance(tool_signature,str) or not re.fullmatch(r"[\w .+/-]{1,120}",tool_signature):
         raise ValueError('ocr_configuration_invalid: tool_signature must be an operator-pinned version label')
-    return {'root':root,'tools':ocr_tools,'tool_signature':tool_signature}
+    if vision is not None:
+        try:
+            if not isinstance(vision,dict):raise ValueError('vision adapter must be a mapping')
+            vision=page_vision.adapter(vision.get('argv'),vision.get('engine'),vision.get('model'),vision.get('signature'))
+        except ValueError as error:raise ValueError('ocr_configuration_invalid: '+str(error)) from None
+    return {'root':root,'tools':ocr_tools,'tool_signature':tool_signature,'vision':vision}
 
-def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_root=None,ocr_tools=None,tool_signature=None,ocr_attempt_id='initial',ocr_runner=subprocess.run):
+def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_root=None,ocr_tools=None,tool_signature=None,ocr_attempt_id='initial',ocr_runner=subprocess.run,ocr_vision=None):
     """Parse one immutable input in a child process; never promote review stages.
 
     OCR runs only through ``extract.ocr`` per-page receipts, only for PDF pages that are
-    not ``ok``; native-text pages keep their units and page rows unchanged.
+    not ``ok``; native-text pages keep their units and page rows unchanged. ``ocr_vision``
+    optionally names a local vision adapter (``extract.vision.adapter``) that receives only
+    pages Tesseract left empty or below the confidence threshold.
     """
     if type(timeout)is not int or not 1<=timeout<=600:raise ValueError('timeout bound')
-    ocr_config=_ocr_configuration(ocr_output_root,ocr_tools,tool_signature)
+    ocr_config=_ocr_configuration(ocr_output_root,ocr_tools,tool_signature,ocr_vision)
     if not isinstance(ocr_attempt_id,str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",ocr_attempt_id):
         raise ValueError('ocr_configuration_invalid: ocr_attempt_id must be a safe label')
     root=_private_directory(output_root);raw=_capture(source,expected_sha)
@@ -312,22 +375,25 @@ def _run_page_ocr(result,run,raw,expected_sha,metadata,config,attempt_id,timeout
     fd=os.open(intake/'blobs'/expected_sha,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
     with os.fdopen(fd,'wb') as stream:stream.write(raw)
     try:
-        results=_ocr_pages(expected_sha,intake,config['root'],non_ok,config['tools'],config['tool_signature'],attempt_id,timeout=timeout,runner=runner)
+        results=_ocr_pages(expected_sha,intake,config['root'],non_ok,config['tools'],config['tool_signature'],attempt_id,timeout=timeout,runner=runner,vision=config.get('vision'))
     except Exception as error:  # bounded batch failure: native results stay partial
         result['issues'].append({'code':'ocr_failed','owner':'runtime','error_type':type(error).__name__})
         return
     expected=metadata.get('counts',{}).get('pages_expected')
     units,pages,receipts=apply_ocr(result['units'],expected,result['parser'],result['parser_version'],results)
+    visions=vision_entries(results)
+    extra={'vision_receipts':visions} if visions else {}
     derived=run/'ocr-derived';derived.mkdir(mode=0o700)
     with (derived/'units.jsonl').open('x') as stream:
         for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
     os.chmod(derived/'units.jsonl',0o600)
-    _write(derived/'digest.json',{**metadata,'ocr_receipts':receipts})
+    _write(derived/'digest.json',{**metadata,'ocr_receipts':receipts,**extra})
     result['pre_ocr']={'status':result['status'],'unit_count':len(result['units']),'page_count':len(result['pages']),'issues':list(result['issues'])}
-    result.update(units=units,pages=pages,status='partial',ocr_receipts=receipts,ocr_output_root=str(config['root']),ocr_method=OCR_METHOD)
-    if any(r['status'] in OCR_TEXT_STATES for r in receipts):
+    result.update(units=units,pages=pages,status='partial',ocr_receipts=receipts,ocr_output_root=str(config['root']),ocr_method=OCR_METHOD,**extra)
+    effective={p['page_no']:p for p in pages if p.get('ocr_receipt_id')}
+    if any(p['reason']=='ocr_visual_review_required' for p in effective.values()):
         result['issues'].append({'code':'ocr_visual_review_required','owner':'visual-review'})
-    blocked=[r['page'] for r in receipts if r['status']=='blocked']
+    blocked=[page for page,p in sorted(effective.items()) if p['status']=='blocked']
     if blocked:result['issues'].append({'code':'ocr_pages_blocked','owner':'runtime','pages':blocked})
 
 def main():
