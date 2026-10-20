@@ -80,7 +80,7 @@ def ledger_counts(docker_bin, project):
 
 
 def summarize(report, exit_code):
-    stages = {s["stage"]: {"status": s["status"], "error_code": s.get("error_code"),
+    stages = {s["name"]: {"status": s["status"], "error_code": s.get("error_code"),
                            "counts": s.get("counts")} for s in report.get("stages", [])}
     return {"exit": exit_code, "overall_status": report.get("overall_status"),
             "notify_failed": report.get("notify_failed"), "stages": stages,
