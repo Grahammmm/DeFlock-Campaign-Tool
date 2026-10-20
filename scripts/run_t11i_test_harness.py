@@ -53,8 +53,8 @@ WORK_STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates",
 LEDGER_COUNTS = """
 import json, sqlite3
 p = "%s"
-db = sqlite3.connect("file:" + p + "/processing-v1/ledger.sqlite?mode=ro", uri=True)
-q = sqlite3.connect("file:" + p + "/portal-queue-v1/portal.sqlite?mode=ro", uri=True)
+db = sqlite3.connect("file:" + p + "/processing-v1/ledger.sqlite?mode=ro&immutable=1", uri=True)
+q = sqlite3.connect("file:" + p + "/portal-queue-v1/portal.sqlite?mode=ro&immutable=1", uri=True)
 t = {r[0] for r in q.execute("select name from sqlite_master where type='table'")}
 print(json.dumps({"mail_messages": db.execute("select count(*) from mail_messages").fetchone()[0],
   "originals": db.execute("select count(*) from originals").fetchone()[0],
