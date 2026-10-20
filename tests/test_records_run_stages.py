@@ -841,19 +841,35 @@ class DeadlineTests(unittest.TestCase):
 
 
 class TemplateTests(unittest.TestCase):
-    def test_committed_plan_matches_generator(self):
+    def _load_generator(self):
         path = REPO / "deploy/records-runtime/targets/make_test_container.py"
         spec = importlib.util.spec_from_file_location("make_test_container", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        committed = (path.parent / "test-container.json.in").read_text(encoding="utf-8")
-        self.assertEqual(committed, module.render_text())
+        return path.parent, module
+
+    def _check_template(self, module, directory, filename, mode):
+        committed = (directory / filename).read_text(encoding="utf-8")
+        self.assertEqual(committed, module.render_text(mode))
         plan = json.loads(committed)
+        self.assertEqual(plan["mode"], mode)
         self.assertEqual([s["name"] for s in plan["stages"]], list(run_stages.STAGES))
         for entry in plan["stages"]:
             argv = entry["argv"]
             self.assertIn("@CONTAINER_PYTHON@", argv)
             self.assertLess(int(argv[argv.index("--timeout") + 1]), entry["timeout_seconds"])
+        return plan
+
+    def test_committed_plan_matches_generator(self):
+        directory, module = self._load_generator()
+        self._check_template(module, directory, "test-container.json.in", "test")
+        self._check_template(module, directory, "live-container.json.in", "live")
+
+    def test_test_and_live_plans_differ_only_in_mode(self):
+        directory, module = self._load_generator()
+        test_plan = self._check_template(module, directory, "test-container.json.in", "test")
+        live_plan = self._check_template(module, directory, "live-container.json.in", "live")
+        self.assertEqual(test_plan["stages"], live_plan["stages"])
 
     def test_render_accepts_container_python(self):
         sys.path.insert(0, str(REPO / "deploy/records-runtime"))
