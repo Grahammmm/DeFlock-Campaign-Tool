@@ -23,6 +23,10 @@ Files
   is `docker exec ... -m campaign_tool.records.run_stages` against a sandbox
   TEST copy or the real records project. The committed-template-is-current
   test covers both files.
+- `targets/live-ocr-container.json.in`,
+  `targets/live-ocr-vision-container.json.in`: Phase 2 (T6) LIVE plans from
+  the same generator. They are `live-container.json.in` with only the extract
+  stage changed (see "Phase 2 OCR plans" below). The same test covers them.
 - `render.py`: fail-closed renderer for all of the above.
 - Engine side: `campaign_tool/records/run_orchestrator.py`,
   `schemas/records-run-report-v1.json`, `schemas/records-stage-result-v1.json`.
@@ -86,6 +90,46 @@ enables and starts nothing; installing the rendered files and switching the
 timer are separate owner-approved cutover steps. Until the per-run
 ledger+intake backup pre-step lands (planned T17), the operator takes a
 manual ledger and intake backup before each live run.
+
+Phase 2 OCR plans (T6)
+
+Two LIVE plans enable OCR without hand-editing the Phase 1 plan, which stays
+byte-identical. Render one of them as the LIVE target in place of
+`live-container.json.in`:
+
+    python3 deploy/records-runtime/render.py --values VALUES.json --out DIR \
+        --target TEST=deploy/records-runtime/targets/test-container.json.in \
+        --target LIVE=deploy/records-runtime/targets/live-ocr-vision-container.json.in
+
+- `live-ocr-container.json.in`: per-page Tesseract only. Extract argv adds
+  `--ocr`, with `--max-documents 20 --document-timeout 300`.
+- `live-ocr-vision-container.json.in`: Tesseract, then the local vision
+  fallback for empty or low-confidence pages. Extract argv adds `--ocr
+  --ocr-vision-config @CONTAINER_OCR_VISION_CONFIG@`, with
+  `--max-documents 20 --document-timeout 600` (a 27B vision page can take
+  minutes).
+
+In both, extract has `--timeout 1490`, `timeout_seconds: 1500` and `on_fail:
+stop`; every other stage is the Phase 1 LIVE stage. The stage caps then sum
+to more than `RUN_BUDGET_SECONDS`, which stays the real guard together with
+the 47 minute unit (budget check below). OCR publishes an immutable receipt
+per page, so a run cut short (`RUN_INTERRUPTED`) resumes on the next slot.
+
+`CONTAINER_OCR_VISION_CONFIG` is the absolute in-container path of the
+owner-only `local-vision-config-v1` file. Only the vision plan uses it, so
+it is required there and refused as unknown for the other plans. Like the
+other paths it must be absolute and shell-safe. Example value only:
+`/srv/flock-live/vision.json`; the real path belongs in the private
+`VALUES.json`, never in this repo.
+
+`--document-timeout` bounds each child command on the OCR path: the native
+parse, then per image-only page `pdftoppm`, `tesseract` and, if used, the
+vision adapter. It does not bound the document as a whole: each image-only
+page can add 2 timeouts (Tesseract only) or 3 (with vision) to the parse,
+so one page with vision may take 4 x 600 s. The installed-extraction
+validator's re-parses keep their own fixed bounds (20 s for PDF, 60 s for
+re-parsed workbook and container forms). Within a run only the extract
+stage deadline caps a document.
 
 Order of one run
 
@@ -281,7 +325,9 @@ Placeholders
 also uses `@STUB_FIXTURE@`; `@TARGET_NAME@` is set by the renderer. The
 container stage plans use `@CONTAINER@` `@CONTAINER_USER@`
 `@CONTAINER_ENGINE_DIR@` `@CONTAINER_PYTHON@` `@CONTAINER_PROJECT_DIR@`
-`@ADOPTION_CONFIG@` `@CONTAINER_APPROVAL_FILE@`.
+`@ADOPTION_CONFIG@` `@CONTAINER_APPROVAL_FILE@`. The Phase 2 vision plan
+(`live-ocr-vision-container.json.in`) also uses
+`@CONTAINER_OCR_VISION_CONFIG@`.
 
 `ENGINE_DIR` is the host path of the pinned engine source tree. The wrapper
 runs the orchestrator and notify from it via `PYTHONPATH`. `TIMEOUT` and

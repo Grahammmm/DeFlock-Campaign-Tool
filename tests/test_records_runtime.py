@@ -4,9 +4,12 @@ Every test renders the real templates with render.py into a temporary
 directory. The tests use a fake docker shim, the synthetic stub stage
 backend and a loopback fake Telegram server only. No network, no records.
 """
+import contextlib
 import fcntl
+import hashlib
 import http.server
 import importlib.util
+import io
 import json
 import os
 import re
@@ -33,6 +36,15 @@ FAKE_IMAGE = "sha256:" + "0" * 64
 STUB_TEMPLATE = RUNTIME / "targets" / "stub.json.in"
 SYNTHETIC_FIXTURE = ROOT / "examples" / "run-report" / "stub-stages.synthetic.json"
 STAGES = run_report.STAGE_ORDER
+# Phase 1 container plans, pinned at origin/main 4750f69: T6-plan (Phase 2 OCR
+# plans) must not change them. Update only with an intentional, reviewed edit.
+PHASE1_TEMPLATE_SHA256 = {
+    # pragma comments: SHA-256 of public committed templates, not credentials.
+    "live-container.json.in":
+        "ed928535b1b110fdd63ece9d47cecf770a097935c7c4e20a18a78fff40c73071",  # pragma: allowlist secret
+    "test-container.json.in":
+        "f4f042de70fd1fce1cdf36b1ca62c0cbc40f4f7369fabfc1ff25e77b60b7fc52",  # pragma: allowlist secret
+}
 
 FAKE_DOCKER = r"""#!/bin/sh
 # Synthetic docker shim. State lives in $STATE (rendered absolute path).
@@ -878,6 +890,117 @@ class RendererTests(unittest.TestCase):
         for name in ("TEST", "LIVE"):
             self.assertIsNone(re.search(r"@[A-Z_]+@",
                                         (out / "targets" / f"{name}.json").read_text()), name)
+
+    # ---- Phase 2 (T6-plan) OCR-enabled LIVE stage plans ----
+
+    def ocr_container_values(self, **extra):
+        """Synthetic container values (placeholder paths only) for TEST + an OCR LIVE plan."""
+        return {**{k: v for k, v in self.values.items() if k != "STUB_FIXTURE"},
+                "CONTAINER_USER": "0", "CONTAINER_ENGINE_DIR": "/opt/flock-engine",
+                "CONTAINER_PYTHON": "/opt/campaign-tool/venv/bin/python",
+                "CONTAINER_PROJECT_DIR": "/srv/flock-live",
+                "CONTAINER_APPROVAL_FILE": "/srv/flock-live/approval.json",
+                "ADOPTION_CONFIG": "/srv/flock-live/adoption.json",
+                "SCHEDULED_TARGET": "LIVE", **extra}
+
+    def render_ocr_plan(self, template, values, out=None):
+        out = out or self.tmp / "out"
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(RUNTIME / "targets" / template))]
+        written = self.do_render(values=values, targets=targets, out=out)
+        self.assertIn("targets/LIVE.json", written)
+        text = (out / "targets" / "LIVE.json").read_text()
+        self.assertIsNone(re.search(r"@[A-Z_]+@", text))
+        self.assertEqual(stat.S_IMODE((out / "targets" / "LIVE.json").stat().st_mode), 0o600)
+        return json.loads(text)
+
+    def run_rendered_extract(self, argv, tools):
+        """Run the rendered extract argv's adapter arguments through run_stages.main."""
+        from unittest import mock  # noqa: PLC0415
+        from campaign_tool.records import run_stages  # noqa: PLC0415
+        adapter = argv[argv.index("campaign_tool.records.run_stages") + 1:]
+        project = self.tmp / "project"
+        project.mkdir(exist_ok=True)
+        adapter[adapter.index("--project") + 1] = str(project)
+        out = io.StringIO()
+        with mock.patch("campaign_tool.records.run.local_ocr_tools", return_value=tools), \
+                contextlib.redirect_stdout(out):
+            code = run_stages.main(adapter)
+        return code, json.loads(out.getvalue())
+
+    def test_phase1_container_templates_are_unchanged(self):
+        # T6-plan must leave the Phase 1 plans byte-identical (sha256 at origin/main 4750f69).
+        for name, digest in PHASE1_TEMPLATE_SHA256.items():
+            data = (RUNTIME / "targets" / name).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), digest, name)
+
+    def test_render_live_ocr_targets_with_exact_extract_limits(self):
+        # The Phase 1 LIVE plan rendered with the same values: every non-extract stage matches it.
+        phase1 = {stage["name"]: stage for stage in self.render_ocr_plan(
+            "live-container.json.in", self.ocr_container_values(), out=self.tmp / "out-phase1")["stages"]}
+        cases = (("live-ocr-container.json.in", {}, "300", ["--ocr"]),
+                 ("live-ocr-vision-container.json.in",
+                  {"CONTAINER_OCR_VISION_CONFIG": "/srv/flock-live/vision.json"}, "600",
+                  ["--ocr", "--ocr-vision-config", "/srv/flock-live/vision.json"]))
+        for index, (template, extra, document_timeout, ocr_flags) in enumerate(cases):
+            with self.subTest(template):
+                plan = self.render_ocr_plan(template, self.ocr_container_values(**extra),
+                                            out=self.tmp / f"out-{index}")
+                self.assertEqual((plan["target"], plan["mode"]), ("LIVE", "live"))
+                self.assertEqual(self.render.run_orchestrator.report_mode(plan, False), "manual")
+                self.assertEqual(self.render.run_orchestrator.report_mode(plan, True), "scheduled")
+                stages = {stage["name"]: stage for stage in plan["stages"]}
+                self.assertEqual(list(stages), list(phase1))
+                extract = stages.pop("extract")
+                self.assertEqual(extract["argv"], phase1["extract"]["argv"][:11] + [
+                    "extract", "--project", "/srv/flock-live", "--timeout", "1490",
+                    "--run-id", "{run_id}", "--max-documents", "20",
+                    "--document-timeout", document_timeout, *ocr_flags])
+                self.assertEqual((extract["timeout_seconds"], extract["on_fail"]), (1500, "stop"))
+                for name, stage in stages.items():
+                    self.assertEqual(stage, phase1[name], name)
+
+    def test_rendered_ocr_extract_argv_is_accepted_by_run_stages(self):
+        # Tesseract-only: no vision file is a valid OCR plan (it reaches the OCR tools check,
+        # then the records root), never STAGE_CONFIG_INVALID.
+        plan = self.render_ocr_plan("live-ocr-container.json.in", self.ocr_container_values(),
+                                    out=self.tmp / "out-ocr")
+        argv = next(s["argv"] for s in plan["stages"] if s["name"] == "extract")
+        code, line = self.run_rendered_extract(argv, (None, None))
+        self.assertEqual((code, line["error_code"]), (1, "EXTRACT_OCR_UNAVAILABLE"))
+        code, line = self.run_rendered_extract(argv, ({"tesseract": "/x"}, "sig"))
+        self.assertEqual((code, line["error_code"]), (1, "EXTRACT_ROOT_NOT_INITIALIZED"))
+        # Vision: the rendered config path reaches the vision loader (absent here: synthetic).
+        plan = self.render_ocr_plan("live-ocr-vision-container.json.in",
+                                    self.ocr_container_values(
+                                        CONTAINER_OCR_VISION_CONFIG="/srv/flock-live/vision.json"),
+                                    out=self.tmp / "out-vision")
+        argv = next(s["argv"] for s in plan["stages"] if s["name"] == "extract")
+        code, line = self.run_rendered_extract(argv, ({"tesseract": "/x"}, "sig"))
+        self.assertEqual((code, line["error_code"]), (1, "EXTRACT_OCR_VISION_CONFIG_INVALID"))
+        # The vision flag without --ocr stays a stage configuration error.
+        without_ocr = [arg for arg in argv if arg != "--ocr"]
+        code, line = self.run_rendered_extract(without_ocr, ({"tesseract": "/x"}, "sig"))
+        self.assertEqual((code, line["error_code"]), (1, "STAGE_CONFIG_INVALID"))
+
+    def test_live_ocr_vision_requires_a_safe_absolute_vision_config(self):
+        template = str(RUNTIME / "targets" / "live-ocr-vision-container.json.in")
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")), ("LIVE", template)]
+        self.assert_refused("no value for ['CONTAINER_OCR_VISION_CONFIG']",
+                            values=self.ocr_container_values(), targets=targets)
+        for bad, fragment in (("vision.json", "absolute path"), ("/srv/a b.json", "shell-safe"),
+                              ("/srv/x;rm", "shell-safe"), ("/srv/$(id)", "shell-safe")):
+            with self.subTest(bad):
+                self.assert_refused(fragment, targets=targets,
+                                    values=self.ocr_container_values(CONTAINER_OCR_VISION_CONFIG=bad))
+        # Only the vision plan uses the key: the other plans refuse it as unknown.
+        for other in ("live-ocr-container.json.in", "live-container.json.in"):
+            with self.subTest(other):
+                self.assert_refused("unknown placeholder", targets=[
+                    ("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                    ("LIVE", str(RUNTIME / "targets" / other))],
+                    values=self.ocr_container_values(
+                        CONTAINER_OCR_VISION_CONFIG="/srv/flock-live/vision.json"))
 
     def assert_refused(self, fragment, **kwargs):
         with self.assertRaises(ValueError) as caught:

@@ -871,6 +871,46 @@ class TemplateTests(unittest.TestCase):
         live_plan = self._check_template(module, directory, "live-container.json.in", "live")
         self.assertEqual(test_plan["stages"], live_plan["stages"])
 
+    def test_committed_ocr_plans_match_generator_and_differ_only_in_extract(self):
+        # T6-plan: Phase 2 LIVE plans. Only the extract stage differs from the Phase 1 LIVE plan.
+        directory, module = self._load_generator()
+        self.assertEqual(module.TEMPLATES, {
+            "test-container.json.in": ("test", None), "live-container.json.in": ("live", None),
+            "live-ocr-container.json.in": ("live", "ocr"),
+            "live-ocr-vision-container.json.in": ("live", "ocr-vision")})
+        live_plan = self._check_template(module, directory, "live-container.json.in", "live")
+        tail = {"ocr": ["--max-documents", "20", "--document-timeout", "300", "--ocr"],
+                "ocr-vision": ["--max-documents", "20", "--document-timeout", "600", "--ocr",
+                               "--ocr-vision-config", "@CONTAINER_OCR_VISION_CONFIG@"]}
+        for filename, variant in (("live-ocr-container.json.in", "ocr"),
+                                  ("live-ocr-vision-container.json.in", "ocr-vision")):
+            with self.subTest(filename):
+                committed = (directory / filename).read_text(encoding="utf-8")
+                self.assertEqual(committed, module.render_text("live", variant))
+                plan = json.loads(committed)
+                self.assertEqual(plan["mode"], "live")
+                self.assertEqual([s["name"] for s in plan["stages"]], list(run_stages.STAGES))
+                for ocr_stage, phase1 in zip(plan["stages"], live_plan["stages"]):
+                    if ocr_stage["name"] != "extract":
+                        self.assertEqual(ocr_stage, phase1)
+                        continue
+                    argv = ocr_stage["argv"]
+                    self.assertEqual(argv[:argv.index("--max-documents")],
+                                     phase1["argv"][:phase1["argv"].index("--timeout")]
+                                     + ["--timeout", "1490", "--run-id", "{run_id}"])
+                    self.assertEqual(argv[argv.index("--max-documents"):], tail[variant])
+                    self.assertEqual((ocr_stage["timeout_seconds"], ocr_stage["on_fail"]), (1500, "stop"))
+                    # The adapter accepts these limits (its own bounds) and sees the OCR flags.
+                    args = run_stages.parser().parse_args(argv[argv.index(run_stages.__name__) + 1:])
+                    self.assertTrue(1 <= args.timeout <= 2700 and 1 <= args.max_documents <= 5000
+                                    and 10 <= args.document_timeout <= 600)
+                    self.assertTrue(args.ocr)
+                    self.assertEqual(args.ocr_vision_config,
+                                     "@CONTAINER_OCR_VISION_CONFIG@" if variant == "ocr-vision" else None)
+        for bad in (("test", "ocr"), ("live", "tesseract")):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                module.plan(*bad)
+
     def test_render_accepts_container_python(self):
         sys.path.insert(0, str(REPO / "deploy/records-runtime"))
         try:
