@@ -144,19 +144,51 @@ def pending_subjects(pipeline):
     return [(row["sha256"], row["preserve"] == "done") for row in rows]
 
 
-def held_outcome(pipeline, subject):
+def ocr_released(codes):
+    """True when an alert held the document only because no OCR runtime was configured.
+
+    Its codes classify as ``AWAITING_OCR`` and, without the OCR runtime code, name no
+    other hold (workbook, timeout, decoder, corrupt, refused, error). Such an alert
+    stops holding once a valid OCR runtime is enabled; every other alert still holds.
+    """
+    codes = set(codes)
+    return classify_codes(codes) == AWAITING_OCR and classify_codes(codes - OCR_CODES) == INCOMPLETE
+
+
+def open_alerts(pipeline, subject):
+    return pipeline._query("SELECT key,count FROM alerts WHERE state='open' AND substr(key,1,?)=?",
+                           (len(ALERT_PREFIX) + len(subject) + 1, ALERT_PREFIX + subject + ":"))
+
+
+def held_outcome(pipeline, subject, *, ocr_enabled=False):
     """Outcome of an earlier run's open extract alert that holds the document, else None.
 
     Retryable outcomes (timeouts, unexpected errors) hold only once their alert has
     counted ``MAX_ATTEMPTS`` runs. Resolving the alert (state != 'open') re-queues it.
+    With ``ocr_enabled`` (Phase 2, T6), an alert that held the document only for the
+    missing OCR runtime (``ocr_released``) no longer holds it, so a PDF queued
+    ``AWAITING_OCR`` in Phase 1 is extracted with OCR on the first OCR-enabled run.
     """
-    rows = pipeline._query("SELECT key,count FROM alerts WHERE state='open' AND substr(key,1,?)=?",
-                           (len(ALERT_PREFIX) + len(subject) + 1, ALERT_PREFIX + subject + ":"))
-    for row in rows:
-        outcome = classify_codes(row["key"].rsplit(":", 1)[-1].split(","))
+    for row in open_alerts(pipeline, subject):
+        codes = row["key"].rsplit(":", 1)[-1].split(",")
+        if ocr_enabled and ocr_released(codes):
+            continue
+        outcome = classify_codes(codes)
         if outcome not in RETRYABLE or row["count"] >= MAX_ATTEMPTS:
             return outcome
     return None
+
+
+def resolve_ocr_released(pipeline, subject):
+    """Mark the subject's OCR-runtime-only alerts resolved after it is extracted with OCR."""
+    keys = [row["key"] for row in open_alerts(pipeline, subject)
+            if ocr_released(row["key"].rsplit(":", 1)[-1].split(","))]
+    if keys and hasattr(pipeline, "_resolve_alert"):
+        for key in keys:
+            try:
+                pipeline._resolve_alert(key)
+            except Exception:  # noqa: BLE001 - the document is extracted; a stale alert only shows in status
+                pass
 
 
 def _hold(pipeline, subject, code):
@@ -284,7 +316,7 @@ def write_awaiting_ocr(root, lines):
 
 def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
         document_timeout=DEFAULT_DOCUMENT_TIMEOUT, clock=time.monotonic, pipeline_factory=None,
-        native_workbook_policy=None):
+        native_workbook_policy=None, ocr=None):
     """Advance pending extraction under the root lock; return the outcome summary.
 
     ``deadline`` is a ``clock()`` value. No document starts unless it can get at
@@ -295,6 +327,10 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
     the budget or ``max_documents`` runs out are coded ``DEFERRED_RUN_BUDGET``.
     ``native_workbook_policy`` is a ``workbook_policy.NativeWorkbookPolicy`` from
     trusted startup (``load_native_workbook_policy``), else XLSX stays held.
+    ``ocr`` (Phase 2, T6) is ``{"tools", "tool_signature", "vision"}`` from the operator stage
+    plan: image-only PDF pages then go through per-page Tesseract and, when ``vision`` names a
+    local adapter (``extract.vision``), empty or low-confidence pages through it. Without it
+    those documents stay ``AWAITING_OCR`` exactly as in Phase 1.
     Raises ``RootNotInitialized`` (nothing created) and ``run.RunError``
     (``root_locked``).
     """
@@ -304,9 +340,13 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
     if not (root / "ledger.sqlite").is_file() or not (root / "intake" / "intake.sqlite").is_file():
         raise RootNotInitialized()
     if pipeline_factory is None:
-        pipeline = records_run.Pipeline(root, native_workbook_policy=native_workbook_policy)
+        ocr = ocr or {}
+        pipeline = records_run.Pipeline(root, native_workbook_policy=native_workbook_policy,
+                                        ocr_tools=ocr.get("tools"), ocr_tool_signature=ocr.get("tool_signature"),
+                                        ocr_vision=ocr.get("vision"))
     else:
         pipeline = pipeline_factory(root)
+    ocr_enabled = bool(getattr(pipeline, "ocr_tools", None))
     missing = missing_parsers()
     outcomes = {code: 0 for code in OUTCOMES}
     documents, new_units, new_pages = [], 0, 0
@@ -319,7 +359,7 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
             for subject, preserved in subjects:
                 form = None
                 remaining = deadline - clock()
-                held = held_outcome(pipeline, subject) if preserved else None
+                held = held_outcome(pipeline, subject, ocr_enabled=ocr_enabled) if preserved else None
                 if not preserved:
                     outcome = PRESERVE_PENDING
                 elif held is not None:
@@ -338,6 +378,8 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
                         outcome, form, units, pages = extract_one(pipeline, stage, subject,
                                                                   form=form, timeout=timeout)
                         unexpected += outcome in (ERROR, NOT_ACCEPTED)
+                        if ocr_enabled and outcome == EXTRACTED:
+                            resolve_ocr_released(pipeline, subject)
                         new_units += units
                         new_pages += pages
                 outcomes[outcome] += 1
