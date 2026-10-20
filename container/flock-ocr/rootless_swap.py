@@ -45,6 +45,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -1078,13 +1079,19 @@ class Swap:
                      "no mount holds at its hash; would name every special file")
             return surveys
         problems = []
+        # Structured record of what the survey refused on (the rehearsal's
+        # fault mode checks that the refusal names the injected fixture).
+        findings = self.state["preflight"]["survey_findings"] = {
+            "overflow_owned": {}, "unpinned_malformed": {}, "stale_pins": []}
         for label, report in surveys.items():
             if report["overflow_owned"]:
+                findings["overflow_owned"][label] = sorted(report["overflow_owned"])
                 problems.append(f"{label}: {len(report['overflow_owned'])} entr(y/ies) owned by the overflow ID "
                                 f"65534 (outside the rootless namespace; S1 would refuse): "
                                 f"{report['overflow_owned'][:5]}")
             bad = sorted(rel for rel, item in report["sqlite"].items() if item["status"] == "malformed")
             if bad:
+                findings["unpinned_malformed"][label] = bad
                 problems.append(f"{label}: {len(bad)} SQLite database(s) fail integrity_check read-only and are "
                                 f"not pinned (S2 would fail): {bad[:5]}; confirm read-only that each is an "
                                 "intentional fixture, then pin it with --accept-malformed-sqlite RELPATH=SHA256, "
@@ -1097,6 +1104,7 @@ class Swap:
         for rel, digest in sorted(pins.items()):
             statuses = {label: r["pins"].get(rel) for label, r in surveys.items()}
             if "accepted" not in statuses.values():
+                findings["stale_pins"].append(rel)
                 problems.append(f"--accept-malformed-sqlite {rel}: no mount holds it at sha256 {digest} "
                                 f"(per mount: {statuses}); S2 would fail")
         if problems:
@@ -1776,9 +1784,27 @@ class Rehearsal:
     def __init__(self, args, system=None, out=None):
         self.args, self.out = args, out or sys.stdout
         self.root = Path(os.path.expanduser(args.private))
+        # Owner identity: a UTC second plus 32 random bits, unique per
+        # invocation. It names every resource and is the value of the
+        # rehearsal label, so cleanup only ever matches this invocation's.
         self.stamp = None
         self.system = system
-        self.created = {"volume": None, "bind": None, "tag": None}
+        # Filled only once this invocation has proved it created the resource;
+        # cleanup touches nothing else.
+        self.created = {"volume": None, "bind": None, "private": None, "tag": None}
+
+    @property
+    def label(self):
+        return f"{REHEARSAL_LABEL}={self.stamp}"
+
+    def owned_dir(self, path, kind):
+        """Create `path` under the scratch root; refuse to adopt an existing one."""
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            raise StepFailed(f"{kind} {path} already exists; the rehearsal never adopts a resource it did "
+                             "not create (another rehearsal may own it)") from None
+        self.created[kind] = path
 
     def log(self, message):
         print(message, file=self.out, flush=True)
@@ -1799,14 +1825,27 @@ class Rehearsal:
                              "(the rehearsal never pulls)")
         return out.strip()
 
+    def volume_owner(self, volume):
+        code, out, _ = self.sh(["docker", "volume", "inspect", "--format",
+                                f'{{{{index .Labels "{REHEARSAL_LABEL}"}}}}', volume], check=False)
+        return out.strip() if code == 0 else None
+
     def setup(self, base):
-        name = self.name
-        label = f"{REHEARSAL_LABEL}={self.stamp}"
+        name, label = self.name, self.label
         volume, bind = f"{name}-data", self.root / f"{name}-bind"
+        self.owned_dir(self.root / f"{name}-private", "private")
+        if self.volume_owner(volume) is not None:
+            raise StepFailed(f"volume {volume} already exists; the rehearsal never adopts a resource it did not "
+                             "create (another rehearsal may own it)")
         self.sh(["docker", "volume", "create", "--label", label, volume])
+        # `docker volume create` succeeds on an existing name without relabelling
+        # it: the label proves this invocation made the volume.
+        owner = self.volume_owner(volume)
+        if owner != self.stamp:
+            raise StepFailed(f"volume {volume} is labelled for rehearsal {owner!r}, not {self.stamp!r}; "
+                             "left untouched")
         self.created["volume"] = volume
-        bind.mkdir(mode=0o700)
-        self.created["bind"] = bind
+        self.owned_dir(bind, "bind")
         _, out, _ = self.sh(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
                              "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
                              "--label", label,
@@ -1829,7 +1868,7 @@ class Rehearsal:
     def swap_args(self, base, pins):
         return argparse.Namespace(
             mode="apply", rehearse=True, container=self.name, pause_unit=[f"{self.name}-mail"],
-            private=str(self.root / "private"), new_tag=f"flock-swap-rehearsal:{self.stamp}",
+            private=str(self.root / f"{self.name}-private"), new_tag=self.tag,
             reuse_image=None, build_python=None, helper_image=base, accept_a2=None,
             mail_wait=60, stop_timeout=20, health_wait=120, helper_timeout=3600,
             accepted_malformed_sqlite=dict(pins))
@@ -1849,28 +1888,79 @@ class Rehearsal:
             problems.append(f"run phase {st.get('phase')!r}, last step {st.get('done', [])[-1:]}")
         return problems
 
-    def cleanup(self, base, run_dir):
-        label = f"{REHEARSAL_LABEL}={self.stamp}"
-        _, out, _ = self.sh(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={label}"], check=False)
-        for ident in out.split():
-            self.sh(["docker", "rm", "-f", "-v", ident], check=False)
-        if self.created["tag"] and self.system.run(["docker", "image", "inspect", "--format", "{{.Id}}",
-                                                    self.created["tag"]], 60)[0] == 0:
-            self.sh(["docker", "image", "rm", self.created["tag"]], check=False)
+    def fault_verdict(self, swap, code, fixture):
+        """Why the run is NOT proof that the preflight caught the unpinned fixture.
+
+        Exit 2 at [R1] alone is not enough: an unrelated refusal (not rootless,
+        a missing container, a leftover dist/) exits the same way before the
+        survey ever looks at the fixture. The survey's own findings must name
+        exactly the fixture's withheld pins and nothing else, and nothing may
+        have changed.
+        """
+        st = swap.state
+        expected = sorted(fixture["pins"])
+        problems = []
+        if code != EXIT_REFUSED or st.get("phase") != "refused":
+            problems.append(f"driver exit {code}, phase {st.get('phase')!r}; not a refusal with nothing changed")
+        if st.get("current") != "R1" or st.get("started") != ["R1"] or st.get("done"):
+            problems.append(f"refused at {st.get('current')!r} after {st.get('done')}, not inside [R1]")
+        findings = (st.get("preflight") or {}).get("survey_findings")
+        if findings is None:
+            problems.append("the refusal came before the preflight survey ran")
+        else:
+            named = sorted(rel for rels in findings["unpinned_malformed"].values() for rel in rels)
+            if named != expected:
+                problems.append(f"the survey refused on unpinned {named}, not on the injected fixture {expected}")
+            if findings["overflow_owned"] or findings["stale_pins"]:
+                problems.append(f"the survey also refused on unrelated findings: overflow-owned "
+                                f"{findings['overflow_owned']}, stale pins {findings['stale_pins']}")
+        if getattr(self.system, "unit_log", None):
+            problems.append(f"the simulated pause units changed: {self.system.unit_log}")
+        target = swap.inspect(self.name)
+        if (not target or target["Id"] != st.get("old_id") or target["Image"] != st.get("old_image")
+                or not target["State"]["Running"]):
+            problems.append("the throwaway target is not still running unchanged under its name")
+        return problems
+
+    def cleanup(self, base):
+        """Remove only what this invocation demonstrably created."""
+        label = self.label
+        # The label value is this invocation's unique owner identity, proven on
+        # this daemon by the volume it created first; no container of this
+        # rehearsal can exist before that.
+        if self.created["volume"]:
+            _, out, _ = self.sh(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={label}"], check=False)
+            for ident in out.split():
+                self.sh(["docker", "rm", "-f", "-v", ident], check=False)
+        if self.created["tag"]:
+            code, out, _ = self.system.run(["docker", "image", "inspect", "--format",
+                                            f'{{{{index .Config.Labels "{REHEARSAL_LABEL}.image"}}}}',
+                                            self.created["tag"]], 60)
+            if code == 0 and out.strip() == self.name:  # built by this invocation's [B2]
+                self.sh(["docker", "image", "rm", self.created["tag"]], check=False)
         if self.created["volume"]:
             self.sh(["docker", "volume", "rm", self.created["volume"]], check=False)
         if self.args.rehearse_keep:
-            self.log(f"rehearsal: kept {self.created['bind']} and {run_dir}")
+            self.log(f"rehearsal: kept {self.created['bind']} and {self.created['private']}")
             return
         # Namespace-owned files (uid 1000 inside) are not the host user's to
-        # delete: remove them as namespace root, inside the rehearsal root only.
-        doomed = [p for p in (self.created["bind"], run_dir) if p is not None and Path(p).exists()]
+        # delete: empty them as namespace root through a helper that mounts
+        # only the directories this invocation created ($RUN is inside its own
+        # private directory). Mounting the shared scratch root instead would
+        # make every other rehearsal's bind directory look in use to its [Q2].
+        # The host user then removes the emptied directories it made.
+        doomed = [p for p in (self.created["bind"], self.created["private"]) if p is not None and p.exists()]
         if doomed and base:
+            mounts = [x for i, p in enumerate(doomed) for x in ("--mount", f"type=bind,src={p},dst=/rehearsal/{i}")]
             self.sh(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
-                     "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--label", label,
-                     "--mount", f"type=bind,src={self.root},dst=/rehearsal",
-                     "--entrypoint", "rm", base, "-rf", "--one-file-system",
-                     *[f"/rehearsal/{Path(p).relative_to(self.root)}" for p in doomed]], check=False)
+                     "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--label", label, *mounts,
+                     "--entrypoint", "find", base, *[f"/rehearsal/{i}" for i in range(len(doomed))],
+                     "-xdev", "-mindepth", "1", "-delete"], check=False)
+        for path in doomed:
+            try:
+                path.rmdir()
+            except OSError as error:
+                self.log(f"rehearsal: could not remove {path}: {error}")
 
     def run(self):
         root = self.root
@@ -1878,9 +1968,10 @@ class Rehearsal:
             self.log("refused: --private must be an absolute path")
             return EXIT_REFUSED
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.stamp = re.sub(r"[^0-9tz]", "", datetime.datetime.now(datetime.timezone.utc)
-                            .strftime("%Y%m%dt%H%M%Sz"))
+        second = re.sub(r"[^0-9tz]", "", datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dt%H%M%Sz"))
+        self.stamp = f"{second}-{secrets.token_hex(4)}"
         self.name = f"flock-swap-rehearsal-{self.stamp}"
+        self.tag = f"flock-swap-rehearsal:{self.stamp}"
         units = {f"{self.name}-mail.timer": "active", f"{self.name}-mail.service": "inactive"}
         self.system = self.system or RehearsalSystem(units)
         self.log(f"rootless_swap: REHEARSAL {self.name} ({self.args.rehearse_mib} MiB synthetic, "
@@ -1890,7 +1981,7 @@ class Rehearsal:
             base = self.base_image()
             fixture = self.setup(base)
             pins = {} if self.args.rehearse_fault == "unpinned-fixture" else fixture["pins"]
-            self.created["tag"] = f"flock-swap-rehearsal:{self.stamp}"
+            self.created["tag"] = self.tag  # removed only if its image carries this run's label
             swap = RehearsalSwap(self.swap_args(base, pins), system=self.system, out=self.out)
             try:
                 code = swap.run_main()
@@ -1898,9 +1989,13 @@ class Rehearsal:
                 if swap.lock_handle is not None:
                     swap.lock_handle.close()
             if self.args.rehearse_fault == "unpinned-fixture":
-                caught = code == EXIT_REFUSED and swap.state.get("current") == "R1"
-                self.log(f"rehearsal: fault unpinned-fixture {'caught in the R1 preflight' if caught else 'NOT caught'}")
-                return EXIT_OK if caught else EXIT_ROLLED_BACK
+                problems = self.fault_verdict(swap, code, fixture)
+                if problems:
+                    self.log("rehearsal: fault unpinned-fixture NOT caught: " + "; ".join(problems))
+                    return EXIT_ROLLED_BACK
+                self.log(f"rehearsal: fault unpinned-fixture caught in the R1 preflight: the survey refused on "
+                         f"exactly {sorted(fixture['pins'])}, nothing changed")
+                return EXIT_OK
             if code != EXIT_OK:
                 self.log(f"rehearsal: FAILED, driver exit {code}")
                 return code
@@ -1914,9 +2009,7 @@ class Rehearsal:
             self.log(f"rehearsal: setup FAILED: {error}")
             return EXIT_ESCALATE
         finally:
-            run_dir = swap.state.get("run_dir") if swap is not None else None
-            self.cleanup(base, run_dir)
-
+            self.cleanup(base)
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

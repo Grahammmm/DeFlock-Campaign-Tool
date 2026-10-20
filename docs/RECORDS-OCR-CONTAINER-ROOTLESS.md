@@ -518,10 +518,19 @@ python3 container/flock-ocr/rootless_swap.py --rehearse --private "$SCRATCH" \
 ```
 
 `--private` is the rehearsal's own scratch root, outside Git. The rehearsal
-never takes a container, unit, tag, pin or reuse argument; it makes its own:
+never takes a container, unit, tag, pin or reuse argument; it makes its own.
+Each invocation has its own owner identity `<stamp>`, the UTC second plus 32
+random bits (`20261020t160000z-0a1b2c3d`), so two rehearsals started in the
+same second on one daemon never share a name, label, tag or directory:
 
-1. A volume `flock-swap-rehearsal-<stamp>-data` and a bind directory under the
-   scratch root, filled by `rehearsal_fixture.py` in a helper: ~1 GiB of bulk
+1. Its own private directory `flock-swap-rehearsal-<stamp>-private` (the
+   driver's `--private`, holding `$RUN`), a volume
+   `flock-swap-rehearsal-<stamp>-data` and a bind directory
+   `flock-swap-rehearsal-<stamp>-bind` under the scratch root. Each is created
+   exclusively: an existing directory or volume of that name is refused, never
+   adopted, and the new volume must carry this invocation's label (`docker
+   volume create` silently reuses an existing name). The volume and bind are
+   filled by `rehearsal_fixture.py` in a helper: ~1 GiB of bulk
    files (`--rehearse-mib`), a WAL database with its sidecars, a hash-pinned
    corrupt test fixture, a left-behind Unix socket, a symlink, 0600/0640 modes
    and a file owned by namespace uid 1000.
@@ -539,16 +548,22 @@ never takes a container, unit, tag, pin or reuse argument; it makes its own:
 4. A check that the replacement runs the new image under the name, the old
    container is kept stopped as `<name>-pre-ocr`, the timer was released and
    the run completed at [A5].
-5. Cleanup: every container with the rehearsal label (`docker rm -f -v`), the
-   tag, the volume, then the bind directory and run directory, removed as
-   namespace root by a helper confined to the scratch root. `--rehearse-keep`
-   keeps the data and run directory.
+5. Cleanup, of only what this invocation proved it created: once its volume
+   exists, every container carrying its own label value (`docker rm -f -v`);
+   the tag only if the image's `deflock.flock-swap.rehearsal.image` label names
+   this target (built by its [B2]); its volume; then its bind and private
+   directories, removed as namespace root by a helper confined to the scratch
+   root. A setup failure on a name collision removes nothing it did not
+   create. `--rehearse-keep` keeps the data and private directory.
 
-`--rehearse-fault unpinned-fixture` withholds the fixture's pin; the
-rehearsal passes only if the preflight refuses at [R1] with nothing changed.
+`--rehearse-fault unpinned-fixture` withholds the fixture's pin. The rehearsal
+passes only if the driver refuses inside [R1] (exit 2, no step done, the
+simulated pause unit untouched, the target still running unchanged) and the
+preflight survey's own findings name exactly the fixture's withheld paths and
+nothing else. Any other refusal (not rootless, target missing, a leftover
+`dist/`, an unrelated survey finding) fails the fault rehearsal.
 
 The workflow `.github/workflows/flock-swap-rehearsal.yml` runs both on rootless
 Docker in CI. Never run `--rehearse` on a host while a live swap is running on
 the same daemon: a rehearsal container that disappears between a live run's
 `docker ps` and its `docker inspect` would fail that run's mount-user check.
-

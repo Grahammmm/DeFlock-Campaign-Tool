@@ -8,6 +8,7 @@ No Docker daemon, systemd unit, network or real data is touched.
 """
 import contextlib
 import copy
+import datetime
 import importlib.util
 import io
 import json
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPE = ROOT / "container" / "flock-ocr"
@@ -1860,6 +1862,274 @@ class RehearsalModeTests(unittest.TestCase):
             self.assertGreater(a["bytes"] + evidence.survey(dirs[1])["bytes"], 2 << 20)
             self.assertEqual(evidence.survey(dirs[0])["sqlite"]["fixtures/db-mutation/ledger.sqlite"]["status"],
                              "malformed")
+
+
+class FrozenSecond(datetime.datetime):
+    """Every invocation starts in the same UTC second."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 10, 20, 16, 0, 0, tzinfo=tz)
+
+
+SECOND = "20261020t160000z"
+
+
+class RehearsalFaultModeTests(RunMixin, unittest.TestCase):
+    """Fault mode passes only on the injected fixture's own survey refusal (Sol review #1).
+
+    The throwaway target is the fake's TARGET renamed to the rehearsal's name;
+    setup and cleanup are replaced (no Docker), the swap itself is the real
+    RehearsalSwap.run_main against FakeSystem.
+    """
+
+    FIXTURE = "fixtures/db-mutation/ledger.sqlite"
+
+    def setUp(self):
+        super().setUp()
+        self.token = "0a1b2c3d"
+        self.name = f"flock-swap-rehearsal-{SECOND}-{self.token}"
+        self.fake.find(TARGET)["Name"] = "/" + self.name
+        self.fake.units = {f"{self.name}-mail.timer": "active", f"{self.name}-mail.service": "inactive"}
+        self.fixture_path = self.fake.bind / self.FIXTURE
+        malformed_sqlite(self.fixture_path)
+        self.fixture = {"pins": {self.FIXTURE: swap.sha256_file(self.fixture_path)}}
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+
+    def rehearse(self):
+        args = swap.parse_args(["--rehearse", "--private", str(self.tmp / "scratch"),
+                                "--rehearse-fault", "unpinned-fixture"])
+        out = io.StringIO()
+        with mock.patch.object(swap.datetime, "datetime", FrozenSecond), \
+                mock.patch.object(swap.secrets, "token_hex", return_value=self.token), \
+                mock.patch.object(swap.Rehearsal, "base_image", return_value=OLD_IMAGE), \
+                mock.patch.object(swap.Rehearsal, "setup", return_value=self.fixture), \
+                mock.patch.object(swap.Rehearsal, "cleanup"):
+            code = swap.Rehearsal(args, system=self.fake, out=out).run()
+        return code, out.getvalue()
+
+    def assert_not_caught(self, code, out, reason):
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("rehearsal: fault unpinned-fixture NOT caught: ", out)
+        self.assertIn(reason, out)
+        self.assertNotIn("caught in the R1 preflight", out)
+
+    def test_control_the_injected_fixture_is_caught_by_the_survey(self):
+        code, out = self.rehearse()
+        self.assertEqual(code, swap.EXIT_OK, out)
+        self.assertIn("are not pinned (S2 would fail): ['fixtures/db-mutation/ledger.sqlite']", out)
+        self.assertIn("rehearsal: fault unpinned-fixture caught in the R1 preflight: the survey refused on "
+                      "exactly ['fixtures/db-mutation/ledger.sqlite'], nothing changed", out)
+        self.assertEqual(lifecycle(self.fake), [])
+        self.assertTrue(self.fake.find(self.name)["State"]["Running"])
+        self.assert_live_unchanged()
+
+    def test_unrelated_r1_refusal_not_rootless_is_not_reported_as_caught(self):
+        self.fake.rootless = False
+        code, out = self.rehearse()
+        self.assertIn("FAIL at [R1]: the Docker daemon is not rootless", out)
+        self.assert_not_caught(code, out, "the refusal came before the preflight survey ran")
+
+    def test_unrelated_r1_refusal_missing_target_is_not_reported_as_caught(self):
+        self.fake.find(self.name)["Name"] = "/someone-else"
+        code, out = self.rehearse()
+        self.assertIn(f"FAIL at [R1]: container {self.name} not found", out)
+        self.assert_not_caught(code, out, "the refusal came before the preflight survey ran")
+
+    def test_unrelated_preflight_refusal_leftover_dist_is_not_reported_as_caught(self):
+        self.dist.mkdir()
+        (self.dist / "left.whl").write_bytes(b"x")
+        code, out = self.rehearse()
+        self.assertIn("must be absent or empty", out)
+        self.assert_not_caught(code, out, "the refusal came before the preflight survey ran")
+
+    def test_a_different_malformed_database_is_not_the_injected_fixture(self):
+        (self.fake.bind / "other").mkdir()
+        os.replace(self.fixture_path, self.fake.bind / "other" / "broken.sqlite")
+        code, out = self.rehearse()
+        self.assertIn("are not pinned (S2 would fail): ['other/broken.sqlite']", out)
+        self.assert_not_caught(code, out, "the survey refused on unpinned ['other/broken.sqlite'], not on the "
+                                          "injected fixture ['fixtures/db-mutation/ledger.sqlite']")
+
+    def test_an_extra_unrelated_survey_finding_is_not_reported_as_caught(self):
+        report = evidence.survey(self.fake.bind)
+        report["overflow_owned"] = ["receipt.json"]
+        self.fake.faults["survey /live/m01"] = (0, json.dumps(report), "")
+        code, out = self.rehearse()
+        self.assertIn("owned by the overflow ID 65534", out)
+        self.assert_not_caught(code, out, "the survey also refused on unrelated findings")
+
+
+class DockerLedger:
+    """Minimal rootless Docker for setup/cleanup ownership tests. Records every call.
+
+    volumes / containers map a name or ID to the owner value of its rehearsal
+    label. `docker create` of the throwaway target fails, standing in for any
+    setup failure after the volume and bind directory exist.
+    """
+
+    def __init__(self, volumes=None, containers=None, relabel=None):
+        self.calls = []
+        self.volumes = dict(volumes or {})
+        self.containers = dict(containers or {})
+        self.relabel = relabel  # name -> owner a racing rehearsal gives it at create time
+
+    def run(self, argv, timeout):
+        argv = [str(a) for a in argv]
+        self.calls.append(argv)
+        verb = argv[1:3]
+        if verb == ["image", "inspect"]:
+            return (0, OLD_IMAGE + "\n", "") if argv[-1] == "python:3.12-slim-bookworm" else (1, "", "no such image")
+        if verb == ["volume", "inspect"]:
+            name = argv[-1]
+            return (0, self.volumes[name] + "\n", "") if name in self.volumes else (1, "", "no such volume")
+        if verb == ["volume", "create"]:
+            name, owner = argv[-1], argv[argv.index("--label") + 1].split("=", 1)[1]
+            if self.relabel and name in self.relabel:  # created by someone else in between
+                self.volumes[name] = self.relabel[name]
+            self.volumes.setdefault(name, owner)  # an existing volume is reused, never relabelled
+            return 0, name + "\n", ""
+        if verb == ["volume", "rm"]:
+            self.volumes.pop(argv[-1], None)
+            return 0, "", ""
+        if argv[1] == "ps":
+            owner = argv[argv.index("--filter") + 1].split("=", 2)[2]
+            return 0, "".join(i + "\n" for i, o in self.containers.items() if o == owner), ""
+        if argv[1] == "rm":
+            self.containers.pop(argv[-1], None)
+            return 0, "", ""
+        if argv[1] == "run" and "rehearsal_fixture.py" in " ".join(argv):
+            return 0, json.dumps({"pins": {"fixtures/db-mutation/ledger.sqlite": "0" * 64}}), ""
+        if argv[1] == "create":
+            return 1, "", "synthetic setup failure"
+        return 0, "", ""
+
+    def destructive(self):
+        return [c for c in self.calls if c[1] in ("rm",) or c[1:3] in (["volume", "rm"], ["image", "rm"])
+                or (c[1] == "run" and c[c.index("--entrypoint") + 1] == "find")]
+
+    @staticmethod
+    def mount_sources(call):
+        return [call[i + 1].split(",")[1].removeprefix("src=") for i, x in enumerate(call) if x == "--mount"]
+
+
+class RehearsalOwnershipTests(unittest.TestCase):
+    """Same-second rehearsals never share, adopt or clean up each other's resources (Sol review #2)."""
+
+    OTHER = f"{SECOND}-ffffffff"  # a rehearsal already running, started in this same second
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="flock-rehearsal-own-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.other_name = f"flock-swap-rehearsal-{self.OTHER}"
+        for kind in ("bind", "private"):
+            (self.tmp / f"{self.other_name}-{kind}").mkdir()
+            (self.tmp / f"{self.other_name}-{kind}" / "keep").write_text("other rehearsal\n")
+
+    def ledger(self, **extra):
+        return DockerLedger(volumes={f"{self.other_name}-data": self.OTHER},
+                            containers={"c0ffee" * 10 + "abcd": self.OTHER}, **extra)
+
+    def rehearse(self, system, token=None):
+        args = swap.parse_args(["--rehearse", "--private", str(self.tmp)])
+        out = io.StringIO()
+        token_patch = (mock.patch.object(swap.secrets, "token_hex", return_value=token) if token
+                       else contextlib.nullcontext())
+        with mock.patch.object(swap.datetime, "datetime", FrozenSecond), token_patch:
+            rehearsal = swap.Rehearsal(args, system=system, out=out)
+            code = rehearsal.run()
+        return rehearsal, code, out.getvalue()
+
+    def assert_other_untouched(self, system):
+        self.assertEqual(system.volumes.get(f"{self.other_name}-data"), self.OTHER)
+        self.assertIn("c0ffee" * 10 + "abcd", system.containers)
+        for kind in ("bind", "private"):
+            self.assertEqual((self.tmp / f"{self.other_name}-{kind}" / "keep").read_text(), "other rehearsal\n")
+        for call in system.destructive():
+            self.assertNotIn(self.other_name + "-", " ".join(call))
+            self.assertNotIn("c0ffee", " ".join(call))
+
+    def test_same_second_invocations_get_distinct_owner_identities(self):
+        a, _, _ = self.rehearse(DockerLedger())
+        b, _, _ = self.rehearse(DockerLedger())
+        self.assertTrue(a.stamp.startswith(SECOND + "-") and b.stamp.startswith(SECOND + "-"))
+        self.assertRegex(a.stamp, r"^\d{8}t\d{6}z-[0-9a-f]{8}$")
+        for attr in ("stamp", "name", "tag", "label"):
+            self.assertNotEqual(getattr(a, attr), getattr(b, attr), attr)
+        self.assertTrue(swap.TAG_RE.fullmatch(a.tag) and swap.NAME_RE.fullmatch(a.name))
+
+    def test_same_second_setup_failure_cleans_up_only_its_own_resources(self):
+        system = self.ledger()
+        rehearsal, code, out = self.rehearse(system)
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn("rehearsal: setup FAILED", out)
+        self.assertIn(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={rehearsal.label}"], system.calls)
+        self.assertIn(["docker", "volume", "rm", f"{rehearsal.name}-data"], system.calls)
+        rm_dirs = [c for c in system.destructive() if c[1] == "run"]
+        self.assertEqual(len(rm_dirs), 1)
+        # The helper mounts only this invocation's own directories, never the
+        # shared scratch root (that would put the other run's bind in use).
+        self.assertEqual(system.mount_sources(rm_dirs[0]),
+                         [str(self.tmp / f"{rehearsal.name}-bind"), str(self.tmp / f"{rehearsal.name}-private")])
+        self.assertEqual(rm_dirs[0][-6:], ["/rehearsal/0", "/rehearsal/1", "-xdev", "-mindepth", "1", "-delete"])
+        self.assertFalse((self.tmp / f"{rehearsal.name}-bind").exists())
+        self.assertFalse((self.tmp / f"{rehearsal.name}-private").exists())
+        self.assert_other_untouched(system)
+
+    def test_identical_identity_refuses_an_existing_directory_and_removes_nothing(self):
+        system = self.ledger()
+        rehearsal, code, out = self.rehearse(system, token="ffffffff")
+        self.assertEqual(rehearsal.name, self.other_name)
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn("already exists; the rehearsal never adopts a resource it did not create", out)
+        self.assertEqual(rehearsal.created, {"volume": None, "bind": None, "private": None, "tag": None})
+        self.assertEqual(system.destructive(), [])
+        self.assertFalse(any(c[1:3] == ["volume", "create"] for c in system.calls))
+        self.assert_other_untouched(system)
+
+    def test_identical_identity_refuses_an_existing_volume_and_removes_nothing(self):
+        for kind in ("bind", "private"):  # the other run's directories are gone; its volume is not
+            shutil.rmtree(self.tmp / f"{self.other_name}-{kind}")
+        system = self.ledger()
+        rehearsal, code, out = self.rehearse(system, token="ffffffff")
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn(f"volume {self.other_name}-data already exists", out)
+        self.assertFalse(any(c[1:3] == ["volume", "create"] for c in system.calls))
+        self.assertIsNone(rehearsal.created["volume"])
+        # Only its own private directory (just created) is removed.
+        rm_dirs = [c for c in system.destructive() if c[1] == "run"]
+        self.assertEqual([system.mount_sources(c) for c in rm_dirs], [[str(self.tmp / f"{self.other_name}-private")]])
+        self.assertFalse((self.tmp / f"{self.other_name}-private").exists())  # its own, just created
+        self.assertFalse([c for c in system.destructive() if c[1] != "run"])
+        self.assertEqual(system.volumes[f"{self.other_name}-data"], self.OTHER)
+        self.assertIn("c0ffee" * 10 + "abcd", system.containers)
+
+    def test_a_volume_created_by_someone_else_in_between_is_not_adopted(self):
+        token = "12345678"
+        name = f"flock-swap-rehearsal-{SECOND}-{token}"
+        system = self.ledger(relabel={f"{name}-data": self.OTHER})
+        rehearsal, code, out = self.rehearse(system, token=token)
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn(f"is labelled for rehearsal {self.OTHER!r}, not {rehearsal.stamp!r}; left untouched", out)
+        self.assertIsNone(rehearsal.created["volume"])
+        self.assertNotIn(["docker", "volume", "rm", f"{name}-data"], system.calls)
+        self.assertEqual(system.volumes[f"{name}-data"], self.OTHER)
+        self.assert_other_untouched(system)
+
+    def test_cleanup_removes_the_tag_only_when_this_invocation_built_it(self):
+        for built_by, removed in ((None, False), ("someone-else", False), ("self", True)):
+            with self.subTest(built_by=built_by):
+                system = DockerLedger()
+                rehearsal = swap.Rehearsal(swap.parse_args(["--rehearse", "--private", str(self.tmp)]),
+                                           system=system, out=io.StringIO())
+                rehearsal.stamp, rehearsal.name = f"{SECOND}-00000001", f"flock-swap-rehearsal-{SECOND}-00000001"
+                rehearsal.created["tag"] = f"flock-swap-rehearsal:{SECOND}-00000001"
+                owner = rehearsal.name if built_by == "self" else built_by
+                original = system.run
+                system.run = lambda argv, timeout, o=owner, f=original: (
+                    (0 if o else 1, f"{o}\n" if o else "", "") if argv[1:3] == ["image", "inspect"] else f(argv, timeout))
+                rehearsal.cleanup(None)
+                self.assertEqual(["docker", "image", "rm", rehearsal.created["tag"]] in system.calls, removed)
 
 
 if __name__ == "__main__":
