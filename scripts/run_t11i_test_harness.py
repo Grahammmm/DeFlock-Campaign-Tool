@@ -36,6 +36,13 @@ advancement (``EXTRACTED`` > 0) or drops a document (outcomes must sum to the
 input), when ``PARSER_MISSING`` appears while native parsers are required (the
 default), and when any required fault was not exercised and detected.
 
+Fault runs are just as strict (T12s review): each fault scenario has an explicit
+set of expected stage results (``FAULT_SCENARIOS``: the injected fault plus any
+documented persistent earlier fault), every other work stage must be ok or an
+expected-gap warning, and the fault runs get the same integrity, report,
+extract-accounting and parser checks as the baseline runs. A detected fault
+never excuses an unrelated warning or failure in the same run.
+
 Exit codes: 0 every assertion held, 1 an assertion failed, 2 setup refused.
 """
 import argparse
@@ -98,6 +105,27 @@ DEFAULT_ALLOWED_WARNINGS = (("adoption", "ADOPTION_CODED_GAPS"),
 PARSER_MISSING_CODES = ("PARSER_MISSING", "EXTRACT_NATIVE_PARSER_MISSING")
 DOCKER_DOWN_EXIT = 75
 ADOPTION_BLOCKED_EXIT = 10 + WORK_STAGES.index("adoption")  # run_orchestrator: 10 + first failed stage
+# Per-scenario stage results (T12s review fix). Each fault run must show EXACTLY these
+# (status, error_code) on the named work stages; every other work stage must be ok or warn
+# with a code in the run's expected-gap set (the same set as the baseline runs). Anything
+# else, including an unrelated warning next to a detected fault, fails the harness.
+# The faults run in this order on one sandbox, so a fault that persists by design is part
+# of every later scenario:
+#   duplicate_receipt: the adopter is fail-closed (ADOPTION_BLOCKED, exit names adoption)
+#     and delta reports the same receipt conflict. The duplicate is moved out afterwards,
+#     so neither persists.
+#   portal_404: the real portal stage reports the blocked item as PORTAL_HTTP_404.
+#   corrupt_pdf: extract codes the damaged document (EXTRACT_DOCUMENT_FAILURES). The item
+#     blocked by portal_404 stays blocked until resolved, so portal still warns
+#     PORTAL_HTTP_404 (persistent prior fault).
+FAULT_SCENARIOS = {
+    "duplicate_receipt": {"exit": ADOPTION_BLOCKED_EXIT,
+                          "stages": {"delta": ("warn", "DELTA_BLOCKING_CONFLICTS"),
+                                     "adoption": ("fail", "ADOPTION_BLOCKED")}},
+    "portal_404": {"exit": 0, "stages": {"portal": ("warn", "PORTAL_HTTP_404")}},
+    "corrupt_pdf": {"exit": 0, "stages": {"portal": ("warn", "PORTAL_HTTP_404"),
+                                          "extract": ("warn", "EXTRACT_DOCUMENT_FAILURES")}},
+}
 
 
 def sh(argv, **kw):
@@ -187,12 +215,22 @@ def _outcomes(run, name="extract"):
     return outcomes if isinstance(outcomes, dict) else {}
 
 
-def _clean_run(run, allowed):
-    """exit 0, a valid report, every work stage ok/warn and every warning expected."""
-    if run.get("exit") != 0 or not run.get("report_present") or not run.get("report_valid"):
+def _clean_run(run, allowed, expected_stages=None, exit_code=0):
+    """The expected exit, a valid report, and every work stage as expected.
+
+    A stage named in ``expected_stages`` must show exactly that (status, error_code).
+    Every other work stage must be ok, or warn with a (stage, code) in ``allowed``.
+    """
+    expected_stages = expected_stages or {}
+    if run.get("exit") != exit_code or not run.get("report_present") or not run.get("report_valid"):
         return False
     for name in WORK_STAGES:
         stage = _stage(run, name)
+        result = (stage.get("status"), stage.get("error_code"))
+        if name in expected_stages:
+            if result != tuple(expected_stages[name]):
+                return False
+            continue
         if stage.get("status") == "ok":
             continue
         if stage.get("status") != "warn" or (name, stage.get("error_code")) not in allowed:
@@ -204,10 +242,34 @@ def _ran(run, *names):
     return all(_stage(run, name).get("status") in ("ok", "warn") for name in names)
 
 
+def _extract_accounted(run):
+    """Every pending document has exactly one outcome; AWAITING_OCR matches its needs-G item."""
+    counts = _counts(run, "extract")
+    return bool(counts is not None and sum(_outcomes(run).values()) == counts["input"]
+                and _outcomes(run).get("AWAITING_OCR", 0) == _needs(run, "AWAITING_OCR", "extract"))
+
+
+def _adopts_nothing(run, last_ledger, injected_messages):
+    """A fault run with no new mail adopts nothing and fails nothing; the ledger's mail grows
+    only by the messages the injector itself ingested (corrupt_pdf goes through the intake)."""
+    adoption = _counts(run, "adoption")
+    return bool(adoption is not None and adoption["output"] == 0 and adoption["failed"] == 0
+                and type(injected_messages) is int and injected_messages >= 0
+                and type(last_ledger.get("mail_messages")) is int
+                and (run.get("ledger_after") or {}).get("mail_messages")
+                == last_ledger["mail_messages"] + injected_messages)
+
+
 def _fault_checks(faults, runs, allowed, required):
     checks = {}
     last = runs[-1] if runs else {}
     last_ledger = last.get("ledger_after") or {}
+    # Strict per-scenario stage results: a detected fault never excuses an unrelated
+    # warning or failure elsewhere in the same run (FAULT_SCENARIOS).
+    for fault, scenario in FAULT_SCENARIOS.items():
+        if fault in required:
+            checks[f"fault_{fault}_only_expected_results"] = _clean_run(
+                faults.get(fault) or {}, allowed, scenario["stages"], scenario["exit"])
     if "telegram_down" in required:
         # Notify points at a closed port on every run: the notify stage fails, the exit does not.
         checks["fault_telegram_down"] = bool(runs) and all(
@@ -239,6 +301,7 @@ def _fault_checks(faults, runs, allowed, required):
             and run.get("exit") == 0 and run.get("report_valid")
             and portal.get("status") == "warn" and portal.get("error_code") == "PORTAL_HTTP_404"
             and _needs(run, "PORTAL_HTTP_404", "portal") >= 1
+            and _adopts_nothing(run, last_ledger, 0)
             and _ran(run, "extract", "digest_gates", "outputs"))
     if "corrupt_pdf" in required:
         run = faults.get("corrupt_pdf") or {}
@@ -252,6 +315,7 @@ def _fault_checks(faults, runs, allowed, required):
             and _outcomes(run).get("CORRUPT_DOCUMENT", 0) >= 1
             and extract.get("status") == "warn" and extract.get("error_code") == "EXTRACT_DOCUMENT_FAILURES"
             and _needs(run, "EXTRACT_CORRUPT_DOCUMENT", "extract") >= 1
+            and _adopts_nothing(run, last_ledger, injection.get("messages"))
             and _ran(run, "digest_gates", "outputs"))
     if "docker_down" in required:
         down = faults.get("docker_down") or {}
@@ -311,22 +375,23 @@ def evaluate(receipt, *, required_faults=REQUIRED_FAULTS, isolation=True):
     checks["ledger_stable_after_first_run"] = bool(runs) and ledger1.get("mail_messages") is not None and all(
         (run.get("ledger_after") or {}).get(key) == ledger1.get(key)
         for run in runs[1:] for key in ("mail_messages", "originals"))
+    # The fault runs that executed stages (not docker_down) get the same integrity, extract
+    # accounting and parser checks as the baseline runs.
+    fault_runs = [faults[name] for name in FAULT_SCENARIOS
+                  if isinstance(faults.get(name), dict) and faults[name].get("stages")]
+    every = runs + fault_runs
     checks["integrity_ok"] = bool(runs) and all(
         (run.get("ledger_after") or {}).get("quick_check") == "ok"
         and (run.get("ledger_after") or {}).get("foreign_key_violations") == 0
-        and (run.get("ledger_after") or {}).get("portal_quick_check") == "ok" for run in runs)
-    checks["run_reports_valid"] = bool(runs) and all(run.get("report_valid") is True for run in runs)
+        and (run.get("ledger_after") or {}).get("portal_quick_check") == "ok" for run in every)
+    checks["run_reports_valid"] = bool(runs) and all(run.get("report_valid") is True for run in every)
 
     # Advancement (T11k outcomes): the first run extracts native text; every run accounts for
     # every pending document with exactly one outcome code (AWAITING_OCR counted, never dropped).
-    extract_counts = [_counts(run, "extract") for run in runs]
     checks["extract_advanced"] = bool(runs) and _outcomes(first).get("EXTRACTED", 0) > 0 and (
         (first.get("new_data") or {}).get("extracted_units", 0) > 0)
     checks["extract_outcomes_account_for_every_document"] = bool(runs) and all(
-        counts is not None and sum(_outcomes(run).values()) == counts["input"]
-        and _outcomes(run).get("AWAITING_OCR", 0) == _needs(run, "AWAITING_OCR", "extract")
-        for run, counts in zip(runs, extract_counts))
-    every = runs + [run for run in faults.values() if isinstance(run, dict) and run.get("stages")]
+        _extract_accounted(run) for run in every)
     checks["native_parsers_present"] = (require_parsers is False) or (
         require_parsers is True and not any(
             _outcomes(run).get("PARSER_MISSING", 0)
@@ -535,11 +600,13 @@ def main(argv=None):
     # synthetic item on an allowlisted host; the real portal stage must report it.
     injection = inject(args.docker, base, "portal-404", "--approval-file", base["CONTAINER_APPROVAL_FILE"])
     code, report = run_once(runtime, target_dir)
-    receipt["faults"]["portal_404"] = {"injection": injection, **summarize(report, code)}
+    receipt["faults"]["portal_404"] = {"injection": injection, **summarize(report, code),
+                                       "ledger_after": ledger_counts(args.docker, container_project)}
     # Fault: corrupt PDF -- a damaged PDF through the engine's intake; extract must code it.
     injection = inject(args.docker, base, "corrupt-pdf")
     code, report = run_once(runtime, target_dir)
-    receipt["faults"]["corrupt_pdf"] = {"injection": injection, **summarize(report, code)}
+    receipt["faults"]["corrupt_pdf"] = {"injection": injection, **summarize(report, code),
+                                        "ledger_after": ledger_counts(args.docker, container_project)}
     # Fault: docker down -- the wrapper's docker is a shim that always fails.
     shim_dir = scratch / "docker-down"
     shim_dir.mkdir(exist_ok=True)

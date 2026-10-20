@@ -6,7 +6,9 @@ Three parts:
   receipt that looks like the restored TEST baseline (36 adopted, 115 coded
   gaps), plus adversarial receipts. Three failed runs, missing adoption counts,
   no advancement, PARSER_MISSING, a dropped document, an unexpected warning and
-  a missing or undetected fault must each fail.
+  a missing or undetected fault must each fail. So must a fault run that shows
+  any stage result outside its explicit scenario (``FAULT_SCENARIOS``), even
+  when the fault itself was detected.
 * ``FaultInjectorTests``: ``scripts/t12_fault_inject.py`` refuses anything that
   is not a marked sandbox. Its portal 404 goes through the engine's own intake
   and fetch state machine, with no network, and the real portal stage adapter
@@ -125,7 +127,8 @@ def good_receipt():
                                          {"AWAITING_OCR": 4, "CORRUPT_DOCUMENT": 1, "EXTRACTED": 1})
     corrupt["needs_g"].append({"code": "EXTRACT_CORRUPT_DOCUMENT", "stage": "extract", "severity": "action",
                                "count": 1})
-    corrupt["injection"] = {"fault": "corrupt_pdf", "status": "injected", "documents": 2}
+    corrupt["injection"] = {"fault": "corrupt_pdf", "status": "injected", "documents": 2, "messages": 1}
+    corrupt["ledger_after"]["mail_messages"] += 1  # the injector ingests one message via the intake
     for fault in (dup, portal, corrupt):
         fault.pop("run")
     test_counts = {"mail_messages": 39, "originals": 160}
@@ -329,6 +332,101 @@ class EvaluateTests(unittest.TestCase):
                 receipt = good_receipt()
                 mutate(receipt["faults"][fault])
                 self.assertFailsWith(receipt, "fault_" + fault)
+
+    def test_fault_scenarios_reject_unrelated_warnings_and_failures(self):
+        """A detected fault never excuses an unrelated stage result in the same run (T12s review)."""
+        unrelated = {
+            "sync warn": ("sync", stage("warn", "SYNC_STATUS_UNREADABLE", (4, 4, 0, 0))),
+            "delta fail": ("delta", stage("fail", "DELTA_SCAN_FAILED", (4, 0, 1, 0))),
+            "portal refused": ("portal", stage("warn", "PORTAL_HOST_REFUSED", (3, 2, 0, 1))),
+            "gates skipped": ("digest_gates", stage("skipped", "UPSTREAM_FAILED")),
+            "outputs warn": ("outputs", stage("warn", "OUTPUTS_PARTIAL", (1, 0, 0, 1))),
+        }
+        for fault, scenario in harness.FAULT_SCENARIOS.items():
+            for label, (name, result) in unrelated.items():
+                if name in scenario["stages"]:
+                    continue  # that stage's expected result is covered below
+                with self.subTest(fault=fault, unrelated=label):
+                    receipt = good_receipt()
+                    receipt["faults"][fault]["stages"][name] = copy.deepcopy(result)
+                    self.assertFailsWith(receipt, f"fault_{fault}_only_expected_results")
+            with self.subTest(fault=fault, unrelated="extract failure"):
+                if "extract" not in scenario["stages"]:
+                    receipt = good_receipt()
+                    receipt["faults"][fault]["stages"]["extract"] = stage(
+                        "warn", "EXTRACT_DOCUMENT_FAILURES", (5, 0, 1, 4), {"AWAITING_OCR": 4, "EXTRACT_ERROR": 1})
+                    self.assertFailsWith(receipt, f"fault_{fault}_only_expected_results")
+            with self.subTest(fault=fault, unrelated="exit"):
+                receipt = good_receipt()
+                receipt["faults"][fault]["exit"] = 13
+                self.assertFailsWith(receipt, f"fault_{fault}_only_expected_results")
+            with self.subTest(fault=fault, unrelated="invalid report"):
+                receipt = good_receipt()
+                receipt["faults"][fault]["report_valid"] = False
+                self.assertFailsWith(receipt, f"fault_{fault}_only_expected_results", "run_reports_valid")
+
+    def test_each_scenario_requires_exactly_its_expected_stage_results(self):
+        for fault, scenario in harness.FAULT_SCENARIOS.items():
+            for name, (status, code) in scenario["stages"].items():
+                for label, result in (("ok", stage(counts=(1, 1, 0, 0))),
+                                      ("other code", stage(status, "SOMETHING_ELSE", (1, 0, 1, 0))),
+                                      ("other status", stage("fail" if status == "warn" else "warn", code,
+                                                             (1, 0, 1, 0)))):
+                    with self.subTest(fault=fault, stage=name, result=label):
+                        receipt = good_receipt()
+                        if name == "extract":  # keep the outcome accounting valid
+                            result["outcomes"] = {"AWAITING_OCR": 4}
+                            result["counts"]["input"] = 4
+                        receipt["faults"][fault]["stages"][name] = result
+                        self.assertFailsWith(receipt, f"fault_{fault}_only_expected_results")
+
+    def test_baseline_expected_gaps_stay_allowed_in_fault_runs(self):
+        receipt = good_receipt()
+        for fault in ("duplicate_receipt", "portal_404"):
+            receipt["faults"][fault]["stages"]["extract"] = stage(
+                "warn", "EXTRACT_WORKBOOK_POLICY_REQUIRED", (5, 0, 0, 5),
+                {"AWAITING_OCR": 4, "WORKBOOK_POLICY_REQUIRED": 1})
+        self.assertEqual(self.failures(receipt), [])
+
+    def test_persistent_prior_faults_are_explicit(self):
+        # The portal item blocked by portal_404 is still blocked in the corrupt_pdf run ...
+        self.assertEqual(harness.FAULT_SCENARIOS["corrupt_pdf"]["stages"]["portal"], ("warn", "PORTAL_HTTP_404"))
+        receipt = good_receipt()
+        receipt["faults"]["corrupt_pdf"]["stages"]["portal"] = stage(counts=(2, 2, 0, 0))
+        self.assertFailsWith(receipt, "fault_corrupt_pdf_only_expected_results")
+        # ... but a corrupt document showing up in the portal_404 run is not expected there.
+        receipt = good_receipt()
+        receipt["faults"]["portal_404"]["stages"]["extract"] = copy.deepcopy(
+            receipt["faults"]["corrupt_pdf"]["stages"]["extract"])
+        receipt["faults"]["portal_404"]["needs_g"] = copy.deepcopy(receipt["faults"]["corrupt_pdf"]["needs_g"])
+        self.assertFailsWith(receipt, "fault_portal_404_only_expected_results")
+        # And the duplicate's delta conflict must not linger into a later scenario.
+        receipt = good_receipt()
+        receipt["faults"]["portal_404"]["stages"]["delta"] = stage("warn", "DELTA_BLOCKING_CONFLICTS",
+                                                                   (154, 0, 0, 154))
+        self.assertFailsWith(receipt, "fault_portal_404_only_expected_results")
+
+    def test_fault_runs_keep_accounting_integrity_and_idempotency(self):
+        cases = {
+            "dropped document": ("corrupt_pdf", lambda f: f["stages"]["extract"]["outcomes"].update(AWAITING_OCR=3),
+                                 "extract_outcomes_account_for_every_document"),
+            "extract counts missing": ("portal_404", lambda f: f["stages"]["extract"].pop("counts"),
+                                       "extract_outcomes_account_for_every_document"),
+            "integrity": ("duplicate_receipt", lambda f: f["ledger_after"].update(foreign_key_violations=1),
+                          "integrity_ok"),
+            "portal ledger missing": ("portal_404", lambda f: f.pop("ledger_after"), "integrity_ok"),
+            "portal run adopts": ("portal_404", lambda f: f["stages"]["adoption"]["counts"].update(output=1),
+                                  "fault_portal_404"),
+            "corrupt run ledger grows": ("corrupt_pdf", lambda f: f["ledger_after"].update(mail_messages=41),
+                                         "fault_corrupt_pdf"),
+            "corrupt injection count missing": ("corrupt_pdf", lambda f: f["injection"].pop("messages"),
+                                                "fault_corrupt_pdf"),
+        }
+        for label, (fault, mutate, check) in cases.items():
+            with self.subTest(label):
+                receipt = good_receipt()
+                mutate(receipt["faults"][fault])
+                self.assertFailsWith(receipt, check)
 
     def test_telegram_down_must_fail_notify_on_every_run(self):
         receipt = good_receipt()
@@ -612,6 +710,13 @@ class RealAdapterHarnessTests(unittest.TestCase):
         receipt["faults"]["portal_404"] = {"injection": injection, **cls.run_once()}
         _, injection = run_injector("corrupt-pdf", "--project", str(cls.project))
         receipt["faults"]["corrupt_pdf"] = {"injection": injection, **cls.run_once()}
+        # Not part of the receipt: one more real run with an unreadable SYNC-STATUS.json, the
+        # unrelated real-adapter problem the T12s review used to show a fault run passing.
+        status = cls.project / "mail-history" / "SYNC-STATUS.json"
+        original = status.read_bytes()
+        write_private(status, b"{not json\n")
+        cls.unreadable_sync_run = cls.run_once()
+        write_private(status, original)
         return receipt
 
     def test_real_adapter_receipt_passes_the_strict_evaluation(self):
@@ -676,6 +781,42 @@ class RealAdapterHarnessTests(unittest.TestCase):
         self.assertEqual(on_fail["extract"], "stop")  # a coded document is not a stage failure
         for name in ("digest_gates", "outputs"):
             self.assertIn(run["stages"][name]["status"], ("ok", "warn"), name)
+
+    def test_an_unrelated_real_adapter_warning_fails_a_fault_scenario(self):
+        """Sol's T12s reproduction: a real run with an unreadable SYNC-STATUS.json, after the
+        injected faults, must not pass as the portal_404 or corrupt_pdf scenario."""
+        run = self.unreadable_sync_run
+        self.assertEqual((run["exit"], run["report_valid"]), (0, True))
+        self.assertEqual((run["stages"]["sync"]["status"], run["stages"]["sync"]["error_code"]),
+                         ("warn", "SYNC_STATUS_UNREADABLE"))
+        # The earlier faults persist in this run: portal 404 and the corrupt document.
+        self.assertEqual(run["stages"]["portal"]["error_code"], "PORTAL_HTTP_404")
+        self.assertEqual(run["stages"]["extract"]["error_code"], "EXTRACT_DOCUMENT_FAILURES")
+        for fault in ("portal_404", "corrupt_pdf"):
+            with self.subTest(fault):
+                receipt = copy.deepcopy(self.receipt)
+                receipt["faults"][fault] = {"injection": receipt["faults"][fault]["injection"],
+                                            **copy.deepcopy(run)}
+                failures = harness.evaluate(receipt, required_faults=WRAPPER_FAULTS, isolation=False)[1]
+                self.assertIn(f"fault_{fault}_only_expected_results", failures)
+        # The only thing wrong with it as the corrupt_pdf run is the sync warning.
+        receipt = copy.deepcopy(self.receipt)
+        receipt["faults"]["corrupt_pdf"] = {"injection": receipt["faults"]["corrupt_pdf"]["injection"],
+                                            **copy.deepcopy(run)}
+        self.assertEqual(harness.evaluate(receipt, required_faults=WRAPPER_FAULTS, isolation=False)[1],
+                         ["fault_corrupt_pdf_only_expected_results"])
+        receipt["faults"]["corrupt_pdf"]["stages"]["sync"] = copy.deepcopy(
+            self.receipt["faults"]["corrupt_pdf"]["stages"]["sync"])
+        self.assertEqual(harness.evaluate(receipt, required_faults=WRAPPER_FAULTS, isolation=False)[1], [])
+
+    def test_real_fault_runs_match_their_scenarios_exactly(self):
+        for fault, scenario in harness.FAULT_SCENARIOS.items():
+            with self.subTest(fault):
+                run = self.receipt["faults"][fault]
+                for name, expected in scenario["stages"].items():
+                    self.assertEqual((run["stages"][name]["status"], run["stages"][name]["error_code"]),
+                                     expected, name)
+                self.assertIs(self.checks[f"fault_{fault}_only_expected_results"], True)
 
     def test_the_same_runs_fail_when_the_expectations_are_wrong(self):
         for key, value, check in (("adopted", 4, "adoption_matches_expected"),
