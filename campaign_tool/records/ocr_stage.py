@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 import errno
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -233,10 +234,36 @@ class OcrmypdfBackend:
         return pages
 
 
-def loopback_endpoint(endpoint: str) -> str:
-    """Accept only ``http://<loopback>:<port>/path`` (no credentials, no query)."""
+def checked_host_gateway(value) -> str:
+    """Validate ``vision.host_gateway``: one literal private IPv4 address, canonical form.
+
+    Meant for the rootless-Docker slirp4netns gateway (e.g. ``10.0.2.2``) that
+    reaches the host's loopback vision server. Loopback, multicast,
+    unspecified, link-local, reserved, public and IPv6 values are refused, as
+    are hostnames (no DNS) and non-canonical spellings.
+    """
+    if not isinstance(value, str):
+        raise ValueError("vision host_gateway must be a private IPv4 address")
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError("vision host_gateway must be a private IPv4 address") from None
+    if (address.version != 4 or str(address) != value or not address.is_private
+            or address.is_loopback or address.is_multicast or address.is_unspecified
+            or address.is_link_local or address.is_reserved):
+        raise ValueError("vision host_gateway must be a private IPv4 address")
+    return value
+
+
+def loopback_endpoint(endpoint: str, extra_hosts: frozenset = frozenset()) -> str:
+    """Accept only ``http://<loopback>:<port>/path`` (no credentials, no query).
+
+    ``extra_hosts`` admits the owner-configured ``vision.host_gateway`` beside
+    loopback; the default admits loopback only.
+    """
     parts = urllib.parse.urlsplit(endpoint or "")
-    if parts.scheme != "http" or parts.hostname not in LOOPBACK_HOSTS:
+    if parts.scheme != "http" or (parts.hostname not in LOOPBACK_HOSTS
+                                  and parts.hostname not in extra_hosts):
         raise ValueError("vision endpoint must be http on a loopback host")
     if parts.username or parts.password or parts.query or parts.fragment or parts.port is None:
         raise ValueError("vision endpoint must name a port and carry no credentials or query")
@@ -273,8 +300,10 @@ class QwenVisionBackend:
 
     def __init__(self, endpoint: str = DEFAULT_VISION_ENDPOINT, model: str = DEFAULT_VISION_MODEL,
                  pdftoppm: str = DEFAULT_PDFTOPPM, dpi: int = 200, timeout: int = 300,
-                 max_tokens: int = 4096, transport=urllib_transport, runner=run_group):
-        self.endpoint = loopback_endpoint(endpoint)
+                 max_tokens: int = 4096, transport=urllib_transport, runner=run_group,
+                 host_gateway: str | None = None):
+        extra_hosts = frozenset({checked_host_gateway(host_gateway)}) if host_gateway is not None else frozenset()
+        self.endpoint = loopback_endpoint(endpoint, extra_hosts)
         if not isinstance(model, str) or not 0 < len(model) <= 128:
             raise ValueError("vision model must be a 1-128 character name")
         if not 72 <= int(dpi) <= 400:
@@ -879,8 +908,11 @@ def load_config(path: str | None) -> dict:
         raise ValueError("config has unknown keys or schema")
     vision = config.get("vision")
     if vision is not None and (not isinstance(vision, dict)
-                               or set(vision) - {"endpoint", "model", "dpi", "timeout", "max_tokens"}):
+                               or set(vision) - {"endpoint", "model", "dpi", "timeout", "max_tokens",
+                                                 "host_gateway"}):
         raise ValueError("vision config has unknown keys")
+    if vision is not None and "host_gateway" in vision:
+        checked_host_gateway(vision["host_gateway"])
     return config
 
 
@@ -893,7 +925,8 @@ def vision_backend(config: dict, runner=run_group, transport=urllib_transport):
                              vision.get("model", DEFAULT_VISION_MODEL),
                              config.get("pdftoppm", DEFAULT_PDFTOPPM), vision.get("dpi", 200),
                              vision.get("timeout", 300), vision.get("max_tokens", 4096),
-                             transport=transport, runner=runner)
+                             transport=transport, runner=runner,
+                             host_gateway=vision.get("host_gateway"))
 
 
 def build_stage(out_root: str, config: dict, runner=run_group, transport=urllib_transport) -> OcrStage:

@@ -52,6 +52,24 @@ defaults are the image tool paths with no vision):
      "vision": {"endpoint": "http://127.0.0.1:8003/v1/chat/completions",
                 "model": "qwen3.8:27b-thinkingcap-q6", "dpi": 200, "timeout": 300, "max_tokens": 4096}}
 
+### Rootless Docker: reaching the host vision server
+
+By default the vision endpoint must be on a loopback host (`127.0.0.1`,
+`::1`, `localhost`). Inside a rootless-Docker container that is the container
+itself. The owner-only config may name exactly one extra host with
+`vision.host_gateway`: a literal private IPv4 address, normally the
+slirp4netns gateway, and the endpoint host must equal it:
+
+    "vision": {"endpoint": "http://10.0.2.2:8003/v1/chat/completions", "host_gateway": "10.0.2.2", ...}
+
+Loopback, public, link-local, multicast, unspecified, reserved and IPv6
+values, hostnames and non-canonical spellings are rejected
+(`OCR_CONFIG_INVALID`; `transcribe-png` exits 1). The usual endpoint rules
+still apply: `http`, an explicit port, no credentials, query or fragment, and
+requests never use a proxy. A literal IP needs no DNS lookup. Nothing is
+auto-detected or read from the environment. Making the gateway reach the host's
+loopback (RootlessKit host-loopback) is an operator setting outside the engine.
+
 CLI:
 
     python3 -m campaign_tool.records.ocr_stage --queue Q.jsonl --source-root DIR \
