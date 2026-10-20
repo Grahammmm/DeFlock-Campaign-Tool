@@ -39,6 +39,10 @@ jobs:
         with:
           rootless: true
           set-host: true
+          # No systemd --user session on the runner: the systemd cgroup driver
+          # cannot create the container scope (docker run exit 125).
+          daemon-config: |
+            {"exec-opts": ["native.cgroupdriver=cgroupfs"]}
       - name: Rootless daemon and rehearsal image
         run: |
           docker info --format '{{json .SecurityOptions}}' | tee /dev/stderr | grep -q name=rootless
