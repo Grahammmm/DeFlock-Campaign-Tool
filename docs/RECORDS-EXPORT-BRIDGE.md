@@ -59,12 +59,56 @@ they do not grant HTTP/credential permission. Omitted hosts leave links explicit
 unapproved rather than silently complete. Scope changes do not refresh exhausted
 attempts. Unresolved retrieval keeps `completed_with_gaps` and exit code 3.
 
-`--unattended` rejects these flags. Ordinary inbox/IMAP discovery, unattended
-export accounting, real provider parsing/acquisition and installed adoption are
-separate open work. Synthetic CLI/adapter checks in
+`--unattended` additionally requires `--export-manifest-sha256`, binding the
+explicit selection to the offline snapshot described below. Partial groups still
+reject before runtime/root creation. Ordinary inbox/IMAP discovery, real provider
+parsing/acquisition and installed adoption remain separate work. Synthetic CLI/adapter checks in
 `tests.records.test_export_selection_cli` do not qualify a functional ledger,
 native extraction, model route or private input. Existing library callers and
 their explicit mappings retain their interface.
+
+## Offline unattended export selection
+
+The container host's `export-manifest` command hashes only 1–60 named receipts
+and their declared originals/attachments. It reuses the existing receipt schema
+validator and source-path containment; no directory scan or MIME parsing occurs.
+The manifest binds receipt **byte hashes**, distinct from receipt identifiers,
+original namespace/UIDVALIDITY/UID, all declared part paths/sizes/hashes and the
+immutable collection scope. Shared source objects count once toward the 256 MiB
+selected-input cap; their individual receipt/part occurrences are retained.
+Existing smaller per-file/count bounds also apply. That cap is not an output quota.
+
+```sh
+python -m campaign_tool.records.container_host export-manifest \
+  --root /approved/private/canonical --export-root /approved/read-only/exports \
+  --export-receipt receipts/selected-message.json \
+  --collection-host archive.example.invalid
+```
+
+After separate runtime/private-input approval, the same selection may be supplied
+to `records run --unattended` with its exact `--export-manifest-sha256`. Receipt
+and object files must be regular, one-link, owner0600, below owner0700 directories
+with trusted non-writable ancestors and no symlinks. Unattended use requires an
+actual read-only input filesystem; it rechecks pinned names/inodes around each
+enrollment, and the unchanged importer validates original bytes again. A trusted
+host can still mutate a bind source; these checks do not create an atomic snapshot.
+
+The existing root lock encloses one inventory lifecycle and one backend start /
+finalize for the batch. Each receipt, including replay, consumes an existing
+RunSafety intake attempt before enrollment. Exhaustion records the exact deferred
+remainder. Failures preserve existing sanitized codes and holds; interrupted
+attempts are not silently completed or retried. The constructed queue closes on
+success or failure. No canonical schema or retry policy changes are introduced.
+
+Actual false collection readiness or deferred receipts keeps exit3 when the run
+is otherwise active; stopped/held states retain exit2. Explicit permitted host
+exclusions keep their existing readiness semantics. Retrieval status never
+implies digestion, independent review or publication authorization.
+
+`tests.records.test_selected_export_container_routing` uses small synthetic files
+and captured backend, safety persistence, ledger, Docker, runtime and stage calls.
+Read-only flags are simulated for branch checks. It does not establish installed
+ledger acceptance, real read-only mounts, native OCR or kernel containment.
 
 ## Expectations before retrieval
 

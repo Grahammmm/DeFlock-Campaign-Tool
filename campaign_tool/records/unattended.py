@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 
@@ -257,6 +258,82 @@ class UnattendedPipeline(manual.Pipeline):
                                {"messages": len(report["preserved"]), "failures": len(report["failures"])})
         return report
 
+    def ingest_exports(self, exports, expected):
+        """One backend batch with existing per-receipt safety and bridge contracts."""
+        from .export_bridge import enroll_export
+        from .intake import export_snapshot
+        manual.require_root_lock(self.root.path)
+        if (set(exports) != {"root", "receipts", "inventory"}
+                or exports["inventory"].queue.root != self.root.path / "portal"):
+            raise manual.RunError("invalid_export_selection")
+        root, inventory = exports["root"], exports["inventory"]
+        snapshot = export_snapshot.snapshot(root, receipts=exports["receipts"], scope=inventory.scope,
+            logical_root=root, output=self.root.intake, expected=expected, readonly=True)
+        report = {"input_mode": "exports", "manifest_sha256": snapshot["sha256"],
+                  "messages": snapshot["messages"], "preserved": [], "replayed": [],
+                  "failures": [], "events": [], "deferred": 0}
+        backend = CanonicalMailBackend(root, self.root.intake, self.root.ledger)
+        identity = self._identity()
+        identity["run_id"] = "export-" + self.run_id
+        backend.start_run(identity)
+        outcome = "failed"
+        try:
+            for position, entry in enumerate(snapshot["receipts"]):
+                binding = digest(["selected-export", snapshot["sha256"], entry["path"], entry["sha256"]])
+                if not self.safety.begin("intake", binding):
+                    report["deferred"] = snapshot["messages"] - position
+                    break
+                checking_input = True
+                try:
+                    export_snapshot.verify(root, snapshot, readonly=True)
+                    checking_input = False
+                    account, mailbox, validity, uid = entry["identity"]
+                    seen = self._query("SELECT id FROM mail_messages WHERE account=? AND folder=? AND uidvalidity=? AND uid=?",
+                                       (account, mailbox, int(validity), int(uid)))
+                    receipt = Path(root) / entry["path"]
+                    value = enroll_export(receipt, export_root=root, backend=backend, inventory=inventory)
+                    held = self._unsupported(receipt)
+                    event = inventory.readiness(value.message_id)
+                    checking_input = True
+                    export_snapshot.verify(root, snapshot, readonly=True)
+                except Exception as error:
+                    if not checking_input:
+                        # Enrollment/decoder/readiness failures can preempt the
+                        # normal postcheck. Integrity still takes precedence over
+                        # an ordinary fault that the rate policy may let continue.
+                        try:
+                            export_snapshot.verify(root, snapshot, readonly=True)
+                        except Exception:
+                            checking_input = True
+                    code = "retention_integrity_failed" if checking_input else fixed_code(error)
+                    self.safety.finish("held" if code in EXPECTED_HELDS else "fault", code,
+                                       (entry["parts"][0]["sha256"],))
+                    if checking_input:
+                        self.safety.stop(code)
+                    report["failures"].append({"identity_sha256": binding, "code": code,
+                                               "kind": "held" if code in EXPECTED_HELDS else "fault"})
+                else:
+                    report["events"].append(event)
+                    report["replayed" if seen else "preserved"].append(
+                        {"event": value.message_id, "eml_sha256": value.eml_sha256,
+                         "documents": list(value.documents)})
+                    if held:
+                        self.safety.finish("held", "decoder_needed", held)
+                        report["failures"].append({"identity_sha256": binding,
+                                                   "code": "decoder_needed", "kind": "held"})
+                    else:
+                        self.safety.finish()
+                if self.safety.stopped:
+                    report["deferred"] = snapshot["messages"] - position - 1
+                    break
+            gaps = report["failures"] or report["deferred"] or any(
+                not event["retrieval_complete"] for event in report["events"])
+            outcome = "completed_with_gaps" if gaps else "slice_completed"
+        finally:
+            backend.finish_run(identity, outcome, {"messages": snapshot["messages"],
+                "failures": len(report["failures"]), "deferred": report["deferred"]})
+        return report
+
     def _advance_resume(self):
         path = self.root.sub("reports") / "unattended-advance-resume.json"
         empty = {"schema": "records-advance-resume-v1", "cursor": None, "frontier": None}
@@ -450,9 +527,17 @@ class UnattendedPipeline(manual.Pipeline):
             self._save_advance_resume(path, resume)
         return report
 
-    def run(self, inbox=None, mail_config=None, client_factory=None, *, documents=None, document_manifest_sha256=None):
+    def run(self, inbox=None, mail_config=None, client_factory=None, *, documents=None, document_manifest_sha256=None,
+            exports=None, export_manifest_sha256=None):
         if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
             raise manual.RunError('invalid_input_selection')
+        from .export_selection import ExportSelection
+        if ((exports is None) != (export_manifest_sha256 is None) or exports is not None and (
+                type(exports) is not ExportSelection or inbox is not None or mail_config is not None
+                or documents is not None or document_manifest_sha256 is not None
+                or type(export_manifest_sha256) is not str
+                or not re.fullmatch(r"[0-9a-f]{64}", export_manifest_sha256))):
+            raise manual.RunError('invalid_export_selection')
         with manual.root_lock(self.root.path):
             self._start_review_retirement()
             started = manual.now()
@@ -466,6 +551,9 @@ class UnattendedPipeline(manual.Pipeline):
                 self._arm_review_retirement()
                 if self.model is not None or self.challenge is not None:
                     self.safety.stop("model_configuration_forbidden")
+                if self.safety.check() and exports is not None:
+                    with exports.open(self.root.path) as selected:
+                        intake = self.ingest_exports(selected, export_manifest_sha256)
                 if self.safety.check() and documents:
                     intake = self.ingest_documents(documents, document_manifest_sha256)
                 if self.safety.check() and inbox:
@@ -483,6 +571,9 @@ class UnattendedPipeline(manual.Pipeline):
             held = self.safety.state["hold"] in EXPECTED_HELDS
             gaps = bool(self.review_holds_retained) or any(p["failed"] or p["held"] or p["review_required"] for p in self.safety.phases.values())
             gaps = gaps or bool(mailbox and mailbox["failures"]) or bool(intake and intake["failures"])
+            if exports is not None and intake is not None:
+                gaps = gaps or bool(intake["deferred"]) or any(
+                    not event["retrieval_complete"] for event in intake["events"])
             gaps = gaps or self.review_retirement["state"] == "pending"
             status = "interrupted" if interrupted else "held" if held else "failed" if self.safety.stopped else "completed_with_gaps" if gaps else "completed"
             summary = manual.stages.counts(self.root.ledger)
@@ -536,6 +627,11 @@ def main(argv=None):
     parser.add_argument("--mail-config")
     parser.add_argument("--documents")
     parser.add_argument("--document-manifest-sha256")
+    parser.add_argument("--export-root")
+    parser.add_argument("--export-receipt", action="append")
+    parser.add_argument("--export-manifest-sha256")
+    parser.add_argument("--collection-host", action="append")
+    parser.add_argument("--collection-exclude-host", action="append")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date")
@@ -546,6 +642,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
         parser.error('invalid_input_selection')
+    from .export_selection import from_cli
+    try:
+        exports = from_cli(args)
+        if ((exports is None) != (args.export_manifest_sha256 is None)
+                or exports is not None and not re.fullmatch(r"[0-9a-f]{64}", args.export_manifest_sha256)):
+            raise ValueError("invalid_export_selection")
+    except ValueError:
+        parser.error('invalid_export_selection')
     from .runtime import require
     if not require(args.root):
         return 2
@@ -563,7 +667,9 @@ def main(argv=None):
                 safety = RunSafety(pipeline.root.ledger, policy)
                 safety.stop("model_configuration_forbidden" if forbidden_model else "ocr_runtime_unavailable")
         report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
-                              document_manifest_sha256=args.document_manifest_sha256)
+                              document_manifest_sha256=args.document_manifest_sha256,
+                              **({"exports": exports, "export_manifest_sha256": args.export_manifest_sha256}
+                                 if exports is not None else {}))
     except Exception:
         print(json.dumps({"status": "failed", "exit_code": 2, "failure_code": "unattended_setup_failed"}))
         return 2

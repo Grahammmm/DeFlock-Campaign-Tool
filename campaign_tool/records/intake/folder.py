@@ -64,7 +64,18 @@ def fmt(name, head=b"", container=None):
         keys=set(k.lower() for k in re.findall(br"(?m)^([A-Za-z][A-Za-z0-9-]{0,40}):",header))
         if len(keys & {b"from",b"to",b"subject",b"date",b"message-id",b"mime-version",b"received"})>=3 and keys & {b"from",b"received"}: return "eml"
     return ext or "unknown"
+# macOS 11+ O_NOFOLLOW_ANY (os.O_NOFOLLOW_ANY on macOS since Python 3.10): the kernel refuses a symlink in ANY path
+# component within the single open, atomically, without a read open of any ancestor directory (#137). Chosen once at
+# import from the platform, never after a refusal; where it is absent the descriptor walk below is used unchanged.
+# XNU rejects O_NOFOLLOW_ANY combined with O_NOFOLLOW (EINVAL), so the atomic open uses O_NOFOLLOW_ANY alone.
+NOFOLLOW_ANY = getattr(os, "O_NOFOLLOW_ANY", 0)
 def secure_open(path):
+    if NOFOLLOW_ANY:
+        f = os.open(os.path.abspath(path), os.O_RDONLY|NOFOLLOW_ANY)
+        try:
+            if not stat.S_ISREG(os.fstat(f).st_mode): raise ValueError("not a regular file")
+            return os.fdopen(f, "rb")
+        except BaseException: os.close(f); raise
     parts = pathlib.Path(os.path.abspath(path)).parts; fd = os.open("/", os.O_RDONLY|os.O_DIRECTORY)
     try:
         for part in parts[1:-1]:
