@@ -227,6 +227,49 @@ without recording an outcome, the wrapper records the outcome itself with
 directly. The Telegram API base may only be overridden to loopback, and only
 for tests.
 
+Every message names the report mode after the run id, for example
+`records run <run_id> (scheduled) completed.`, including preflight refusals.
+Every message except a preflight refusal (`DOCKER_UNAVAILABLE`,
+`IMAGE_MISMATCH`, `TARGET_CONFIG_INVALID`) ends with the coverage line below
+on its own line. The T17 cutover message is the notify message of the first
+`mode: scheduled` live run; there is no separate composer.
+
+Coverage line
+
+Format, from `campaign_tool.records.run_coverage`:
+
+    Coverage: adopted A (+a this run), coded-gap C, awaiting_ocr O, portal-held P
+
+A count that is `None` renders as `unknown`; `(+a this run)` is omitted when
+adopted is unknown; ` [stub]` is appended when the run used the stub stage
+backend. Operators can print the same line from a report by hand:
+
+    python3 -m campaign_tool.records.run_coverage --report run-report.json
+
+It validates the report with `run_report.validate_run_report` and exits 0, or
+exits 2 on an unreadable or invalid report. Fixture:
+`examples/run-report/coverage-projection.synthetic.json` (synthetic cases with
+exact expected counts and lines; FL-1b pins its sha256).
+
+COVERAGE CONTRACT v1 (decided by fable-2nd-look; do not reinterpret). Source = the run report v1 only. S(x) = the stage entry named x; n(x, CODE) = `count` of the needs_g item with stage x and that code, 0 when absent (the engine drops zero counts: run_stages.py:115-118).
+
+- adopted (unit: mail messages, cumulative over the mail export after this run) = S(adoption).counts.output + S(adoption).counts.skipped - n(adoption, ADOPTION_CODED_GAPS). Evidence: run_stages.py:585-588 (output = adopted_messages + resumed_messages; skipped = already_adopted + coded_gap_messages), :293-297 (item count = coded_gap_messages), mail_adoption.py:660-680 (already_adopted = receipts `complete` before this run's writes; resumed receipts were `incomplete`, so no double count). adopted_this_run = S(adoption).counts.output.
+- coded_gap (unit: mail messages, cumulative: the export is re-classified every run) = n(adoption, ADOPTION_CODED_GAPS). Receipts the canonical backend refuses under its contract (legacy originals / T4B); never dropped.
+- awaiting_ocr (unit: documents, cumulative backlog) = n(extract, AWAITING_OCR). Held documents are re-counted on every run without re-parsing (native_extract.py:22-30 and :325-327), so this is the current backlog, not a per-run delta. Equals the extract stage `outcomes` AWAITING_OCR count when present.
+- portal_held (unit: approved portal document links enrolled in the queue and not yet received) = n(portal, PORTAL_FETCH_DRY_RUN_ONLY) + n(portal, PORTAL_HTTP_404) + n(portal, PORTAL_FETCH_BLOCKED). Disjoint by construction: run_stages.py:714-723 (pending excludes queue states received/blocked; blocked links are counted by fetch_blocked; the PORTAL_FETCH_BLOCKED item is blocked - http_404). Deduplication is the queue's own (duplicate notices are `skipped`, never enrolled). NOT included: PORTAL_HOST_NOT_ALLOWLISTED (distinct hosts, a different unit) and PORTAL_NOTICE_UNREADABLE (notices). Document, do not change, the `pending or totals["enrolled"]` fallback at run_stages.py:723.
+- Availability rule: a count is None ("unknown") unless its source stage status is `ok` or `warn`; None is never rendered as 0. adopted is also None when the subtraction is negative.
+- stub = any needs_g item with code STUB_STAGE_BACKEND. mode = report["mode"].
+
+Note on the `pending or totals["enrolled"]` fallback (run_stages.py:723,
+documented, not changed): when no enrolled link is pending in the dry fetch,
+`PORTAL_FETCH_DRY_RUN_ONLY` falls back to the number of links enrolled by this
+run, so portal-held can count this run's new enrolments even when the dry
+fetch lists none of them as pending.
+
+Line numbers above refer to the engine at main 6028144. Line references
+are evidence pointers only; the projection reads the report, never engine
+code.
+
 Placeholders
 
 `@RELEASE_COMMIT@` `@ENGINE_DIR@` `@DOCKER@` `@TIMEOUT@` `@FLOCK@`
