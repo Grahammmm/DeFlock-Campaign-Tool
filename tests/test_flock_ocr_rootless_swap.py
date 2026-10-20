@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -406,7 +407,8 @@ class RootlessRunbookOrderTests(unittest.TestCase):
 
     def test_doc_names_rootless_controls(self):
         for needle in ("docker run --rm", "--numeric-owner", "readonly", "systemctl --user stop",
-                       "never `docker rm`", "65534", "--dry-run", "--apply", "chmod 700", "docker inspect"):
+                       "never `docker rm`", "65534", "--dry-run", "--apply", "chmod 700", "docker inspect",
+                       "non_archivable", "socket ignored"):
             self.assertIn(needle, DOC)
 
 
@@ -1004,6 +1006,178 @@ class RollbackPreservationTests(RunMixin, unittest.TestCase):
         self.assertIn("live already preserved in $RUN/rollback/m00/attempt-001; not re-archived", out)
         self.assertEqual([p.name for p in (run / "rollback" / "m00").iterdir()], ["attempt-001"])
         self.assert_live_unchanged()
+
+
+def make_socket(directory, name):
+    """Bind a synthetic Unix socket file at directory/name (relative bind: no path-length limit)."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    cwd = os.getcwd()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        os.chdir(directory)
+        sock.bind(name)
+    finally:
+        os.chdir(cwd)
+        sock.close()
+    os.chmod(directory / name, 0o600)
+    return directory / name
+
+
+class NonArchivableSpecialFileTests(RunMixin, unittest.TestCase):
+    """Sockets and other special files are recorded, named and excluded, never silently dropped."""
+
+    CODEX = ".codex/app-server-control/app-server-control.sock"
+    LIFECYCLE = "tmp/host-rehearsal/control-v1/lifecycle/" + "ab" * 8 + "/control.sock"
+    FIFO = "tmp/host-rehearsal/control-v1/events.fifo"
+
+    def setUp(self):
+        super().setUp()
+        make_socket(self.fake.volume / Path(self.CODEX).parent, Path(self.CODEX).name)
+        make_socket(self.fake.bind / Path(self.LIFECYCLE).parent, Path(self.LIFECYCLE).name)
+        os.mkfifo(self.fake.bind / self.FIFO, 0o600)
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+        self.expected = {"m00": {self.CODEX: "socket"},
+                         "m01": {self.FIFO: "fifo", self.LIFECYCLE: "socket"}}
+
+    def assert_live_archivable_unchanged(self):
+        for key, root in (("vol", self.fake.volume), ("bind", self.fake.bind)):
+            diff, _ = evidence.compare_archivable(self.live_before[key], evidence.manifest(root))
+            self.assertEqual(diff, [], key)
+
+    def test_manifest_records_special_files_as_non_archivable(self):
+        vol, bind = self.live_before["vol"], self.live_before["bind"]
+        self.assertEqual(vol["non_archivable"], self.expected["m00"])
+        self.assertEqual(bind["non_archivable"], self.expected["m01"])
+        self.assertEqual(vol["entries"][self.CODEX]["type"], "other")
+        self.assertEqual(vol["entries"][self.CODEX]["special"], "socket")
+        self.assertEqual(vol["entries"][self.CODEX]["mode"], "0600")
+        self.assertEqual(evidence.non_archivable(bind), self.expected["m01"])
+        empty = self.tmp / "empty"
+        (empty / "d").mkdir(parents=True)
+        (empty / "d" / "f.txt").write_text("x\n")
+        self.assertEqual(evidence.manifest(empty)["non_archivable"], {})
+
+    def test_compare_archivable_excludes_only_special_files(self):
+        base = self.live_before["vol"]
+        missing = copy.deepcopy(base)
+        del missing["entries"][self.CODEX]
+        missing["non_archivable"] = {}
+        self.assertEqual(evidence.compare(base, missing), [self.CODEX])  # strict compare unchanged
+        self.assertEqual(evidence.compare_archivable(base, missing), ([], [self.CODEX]))
+        # A special file replaced by a regular file, directory or symlink is a difference.
+        for replacement in ({"type": "f", "owner": "1000:1000", "mode": "0600", "sha256": "0" * 64, "size": 0},
+                            {"type": "d", "owner": "1000:1000", "mode": "0700"},
+                            {"type": "l", "owner": "1000:1000", "mode": "0777", "target": "elsewhere"}):
+            with self.subTest(replacement=replacement["type"]):
+                other = copy.deepcopy(base)
+                other["entries"][self.CODEX] = replacement
+                self.assertEqual(evidence.compare_archivable(base, other)[0], [self.CODEX])
+                self.assertEqual(evidence.compare_archivable(other, base)[0], [self.CODEX])
+        # Regular file, directory and symlink differences still count.
+        edited = copy.deepcopy(base)
+        edited["entries"]["state/notes.txt"]["sha256"] = "1" * 64
+        edited["entries"]["state"]["mode"] = "0777"
+        self.assertEqual(evidence.compare_archivable(base, edited)[0], ["state", "state/notes.txt"])
+        # A manifest written before "special" existed (type "other" only) reads the same.
+        legacy = copy.deepcopy(base)
+        legacy["entries"][self.CODEX].pop("special")
+        legacy.pop("non_archivable")
+        self.assertEqual(evidence.non_archivable(legacy), {self.CODEX: "other"})
+        self.assertEqual(evidence.compare_archivable(legacy, missing), ([], [self.CODEX]))
+        # Devices are classified as special too (synthetic entries: no mknod in tests).
+        for kind in ("char_device", "block_device", "unknown"):
+            dev = copy.deepcopy(missing)
+            dev["entries"]["dev/node"] = {"type": "other", "special": kind, "owner": "0:0", "mode": "0600"}
+            self.assertEqual(evidence.compare_archivable(dev, missing), ([], ["dev/node"]))
+
+    def test_apply_completes_and_names_every_excluded_path(self):
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.state()["phase"], "complete")
+        run = self.run_dir()
+        # Recorded in every manifest the run wrote...
+        for name in ("s1/m00.baseline.json", "s1/m00.after-tar.json", "s3/m00.live-after.json",
+                     "a2/m00.baseline.json"):
+            self.assertEqual(json.loads((run / name).read_text())["non_archivable"], self.expected["m00"], name)
+        self.assertEqual(json.loads((run / "s1" / "m01.baseline.json").read_text())["non_archivable"],
+                         self.expected["m01"])
+        # ...absent from the archive and the fresh restore (the S3 failure of attempt 2)...
+        self.assertNotIn(self.CODEX, self.tar_listing(run / "s1" / "m00.tar"))
+        self.assertNotIn(self.LIFECYCLE, self.tar_listing(run / "s1" / "m01.tar"))
+        restored = json.loads((run / "s3" / "m00.restored.json").read_text())
+        self.assertNotIn(self.CODEX, restored["entries"])
+        self.assertEqual(evidence.compare(json.loads((run / "s1" / "m00.baseline.json").read_text()), restored),
+                         [self.CODEX])
+        # ...and listed by path in the receipt and the run log.
+        receipt = json.loads((run / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["non_archivable"], self.expected)
+        self.assertEqual(self.state()["non_archivable"]["s1"], self.expected)
+        self.assertIn(f"m00: 1 non-archivable special file(s), recorded in the manifest but not restored "
+                      f"from the archive; excluded from every equality check: {self.CODEX} (socket)", out)
+        self.assertIn(f"{self.FIFO} (fifo), {self.LIFECYCLE} (socket)", out)
+        self.assertIn(f"m00 fresh restore vs baseline: 1 non-archivable special file(s) excluded from the "
+                      f"comparison: {self.CODEX}", out)
+        self.assertNotIn("difference(s)", out)
+        self.assert_live_unchanged()  # strict: the live sockets were never touched
+        self.assert_safe_helpers()
+
+    def test_regular_file_difference_still_fails_s3(self):
+        restore = self.private  # resolved after the run dir exists
+
+        def extra():
+            target = next(restore.glob("run-*")) / "s3" / "restore-test" / "m00" / "state" / "extra.txt"
+            target.write_text("not in the baseline\n")
+        self.fake.hooks["manifest /private/s3/restore-test/m00"] = extra
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S3]: m00 fresh restore vs baseline: 1 difference(s): state/extra.txt", out)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+        self.assertNotIn("build flock-ocr:synthetic", lifecycle(self.fake))
+        self.assert_live_unchanged()
+
+    def test_special_file_replaced_by_a_regular_file_still_fails(self):
+        def swap_type():
+            target = next(self.private.glob("run-*")) / "s3" / "restore-test" / "m00" / self.CODEX
+            target.write_text("a regular file where the socket was\n")
+        self.fake.hooks["manifest /private/s3/restore-test/m00"] = swap_type
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn(f"FAIL at [S3]: m00 fresh restore vs baseline: 1 difference(s): {self.CODEX}", out)
+        self.assert_live_unchanged()
+
+    def test_new_socket_from_the_replacement_does_not_hold_a2(self):
+        def replacement():
+            if not os.path.lexists(self.fake.volume / "state" / "replacement.sock"):
+                make_socket(self.fake.volume / "state", "replacement.sock")
+        self.fake.hooks["start:" + "9" * 64] = replacement
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads((self.run_dir() / "a2" / "diff.json").read_text()), {})
+        self.assertIn("m00: 2 non-archivable special file(s) excluded from the S1 comparison: "
+                      f"{self.CODEX}, state/replacement.sock", out)
+
+    def test_rollback_restores_archivable_data_and_names_cleared_sockets(self):
+        def replacement():
+            (self.fake.volume / "state" / "new.txt").write_text("replacement-only work\n")
+        self.fake.hooks["start:" + "9" * 64] = replacement
+        self.assertEqual(self.run_swap(self.args())[0], swap.EXIT_HELD)
+        self.fake.hooks.clear()
+        run = self.run_dir()
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("mounts differing from S1: ['m00']", out)
+        self.assertIn(f"m00: 1 non-archivable special file(s) were cleared with the mount; S1 does not "
+                      f"restore sockets: {self.CODEX} (socket)", out)
+        self.assertIn("[RB-C5] validate_data", out)
+        self.assertIn("m00: live equals the S1 baseline", out[out.index("[RB-C5]"):])
+        receipt = json.loads((run / "rollback" / "m00" / "attempt-001" / "receipt.json").read_text())
+        self.assertEqual(receipt["non_archivable"], {self.CODEX: "socket"})
+        self.assertFalse((self.fake.volume / "state" / "new.txt").exists())
+        self.assertFalse(os.path.lexists(self.fake.volume / self.CODEX))
+        self.assert_live_archivable_unchanged()
+        self.assertTrue(self.fake.find(TARGET)["State"]["Running"])
+        self.assertEqual(self.state()["phase"], "rolled_back")
 
 
 if __name__ == "__main__":

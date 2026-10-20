@@ -110,6 +110,12 @@ def overflow_owners(manifest):
     return sorted(p for p, e in manifest["entries"].items() if OVERFLOW_ID in e["owner"].split(":"))
 
 
+def describe_non_archivable(paths, kinds=None):
+    """One log fragment naming every excluded special file by path."""
+    kinds = kinds or {}
+    return ", ".join(f"{p} ({kinds[p]})" if p in kinds else p for p in paths)
+
+
 # ---- container settings: create body and inspect diff (pure functions) ----
 
 def _own_ids(inspect):
@@ -445,12 +451,28 @@ class Swap:
         return None if self.dry else json.loads(out)
 
     def require_equal(self, left, right, what):
+        """Archivable entries must be equal; special files are named, not compared.
+
+        GNU tar cannot archive a socket (and the helper cannot recreate a
+        device), so a restored tree never holds them. They are excluded from
+        the equality check and listed by path in the log; any regular file,
+        directory or symlink difference still fails.
+        """
         if self.dry:
             return
-        diff = snapshot_evidence.compare(left, right)
+        diff, excluded = self.compare(left, right)
         if diff:
-            self.fail(f"{what}: {len(diff)} difference(s)")
+            shown = ", ".join(diff[:5]) + (", ..." if len(diff) > 5 else "")
+            self.fail(f"{what}: {len(diff)} difference(s): {shown}")
         self.log(f"    {what}: manifests equal")
+        if excluded:
+            self.log(f"    {what}: {len(excluded)} non-archivable special file(s) excluded from the "
+                     f"comparison: {describe_non_archivable(excluded)}")
+
+    @staticmethod
+    def compare(left, right):
+        """(differing archivable paths, excluded special-file paths)."""
+        return snapshot_evidence.compare_archivable(left, right)
 
     # -- quiescence --
 
@@ -534,6 +556,12 @@ class Swap:
             baseline = self.live_manifest(label)
             self.write_json(f"{prefix}/{label}.baseline.json", baseline)
             if baseline is not None:
+                special = snapshot_evidence.non_archivable(baseline)
+                self.state.setdefault("non_archivable", {}).setdefault(prefix, {})[label] = special
+                if special:
+                    self.log(f"    {label}: {len(special)} non-archivable special file(s), recorded in the "
+                             "manifest but not restored from the archive; excluded from every "
+                             f"equality check: {describe_non_archivable(sorted(special), special)}")
                 unmapped = overflow_owners(baseline)
                 if unmapped:
                     self.fail(f"{label}: {len(unmapped)} entr(y/ies) owned by an ID outside the "
@@ -824,13 +852,15 @@ class Swap:
         missing = [s for s in ("S1", "S2", "S3") if s not in self.state["done"]]
         if missing and not self.dry:
             self.fail(f"snapshot steps not passed: {missing}")
-        archives = {}
+        archives, special = {}, {}
         if not self.dry:
             for mount in self.state["mounts"]:
                 archives[mount["label"]] = sha256_file(self.run_dir / "s1" / f"{mount['label']}.tar")
+                special[mount["label"]] = snapshot_evidence.non_archivable(self.baseline(mount["label"]))
         receipt = {"snapshot_ok": True, "variant": "rootless", "completed_at": self.system.now(),
                    "archives_sha256": archives, "sqlite_backups_sha256": self.state.get("sqlite_backups", {}),
                    "sqlite_accepted_malformed_sha256": self.state.get("sqlite_accepted_malformed", {}),
+                   "non_archivable": special,
                    "old_container_id": self.state["old_id"], "old_image": self.state["old_image"]}
         self.write_json("snapshot-receipt.json", receipt)
         self.state["archives_sha256"] = archives
@@ -935,11 +965,16 @@ class Swap:
         if self.dry:
             self.log("    would compare each a2 baseline with the s1 baseline; any difference holds for review")
             return
-        diff = {}
+        diff, excluded = {}, {}
         for mount in self.state["mounts"]:
-            changed = snapshot_evidence.compare(self.baseline(mount["label"]), baselines[mount["label"]])
+            changed, special = self.compare(self.baseline(mount["label"]), baselines[mount["label"]])
             if changed:
                 diff[mount["label"]] = changed
+            if special:
+                excluded[mount["label"]] = special
+        for label, special in sorted(excluded.items()):
+            self.log(f"    {label}: {len(special)} non-archivable special file(s) excluded from the S1 "
+                     f"comparison: {describe_non_archivable(special)}")
         self.write_json("a2/diff.json", diff)
         if diff:
             digest = sha256_file(self.run_dir / "a2" / "diff.json")
@@ -991,7 +1026,7 @@ class Swap:
         for mount in mounts:
             label = mount["label"]
             live = self.live_manifest(label)
-            if not snapshot_evidence.compare(self.baseline(label), live):
+            if not self.compare(self.baseline(label), live)[0]:
                 self.log(f"    {label}: live equals the S1 baseline")
                 continue
             if path == "RB-C":
@@ -1047,9 +1082,12 @@ class Swap:
         self.rbc_differs = []
         for mount in self.state["mounts"]:
             label = mount["label"]
-            diff = snapshot_evidence.compare(self.baseline(label), self.live_manifest(label))
+            diff, excluded = self.compare(self.baseline(label), self.live_manifest(label))
             if diff:
                 self.rbc_differs.append(label)
+            if excluded:
+                self.log(f"    {label}: {len(excluded)} non-archivable special file(s) excluded from the "
+                         f"comparison: {describe_non_archivable(excluded)}")
         self.write_json("rollback/compare.json", {"differs": self.rbc_differs})
         self.log(f"    mounts differing from S1: {self.rbc_differs or 'none'}")
 
@@ -1129,6 +1167,7 @@ class Swap:
         receipt = {"label": label, "attempt": name, "created": self.system.now(),
                    "archive_sha256": sha256_file(path / "current.tar"),
                    "manifest_sha256": sha256_file(path / "current.json"),
+                   "non_archivable": snapshot_evidence.non_archivable(current),
                    "verified": "extracted to an isolated directory; manifest equal to live"}
         tmp = path / "receipt.json.tmp"
         tmp.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n")
@@ -1152,7 +1191,7 @@ class Swap:
         previous = self.validated_preservations(label)
         current = self.live_manifest(label)
         match = next((p for p, _ in reversed(previous)
-                      if not snapshot_evidence.compare(json.loads((p / "current.json").read_text()), current)),
+                      if not self.compare(json.loads((p / "current.json").read_text()), current)[0]),
                      None)
         if match is not None:
             self.log(f"    {label}: live already preserved in $RUN/rollback/{label}/{match.name}; not re-archived")
@@ -1169,6 +1208,10 @@ class Swap:
         kept = [p.name for p, _ in previous if p.name != match.name]
         self.log(f"    {label}: S1 restored; preserved states in $RUN/rollback/{label}/: "
                  f"{', '.join(kept + [match.name])}")
+        cleared = snapshot_evidence.non_archivable(current)
+        if cleared:
+            self.log(f"    {label}: {len(cleared)} non-archivable special file(s) were cleared with the mount; "
+                     f"S1 does not restore sockets: {describe_non_archivable(sorted(cleared), cleared)}")
 
     # -- runners --
 
