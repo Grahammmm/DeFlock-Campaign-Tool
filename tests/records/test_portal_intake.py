@@ -100,6 +100,23 @@ class PortalIntakeTests(unittest.TestCase):
         self.assertEqual(result, {"enrolled": 0, "refused": 0, "skipped": 1})
         self.assertEqual(self.refusals(), [])
 
+    def test_bad_document_item_ids_skip_not_abort(self):
+        # DOCUMENT_LINK must be a strict subset of store.identifier(): a
+        # /documents/ link whose item id starts with '-' or '_' or exceeds 160
+        # chars is skipped, never handed to queue.inventory() where it would
+        # raise invalid_identity and abort the rest of the batch.
+        notices = [
+            notice(URL),
+            notice(f"https://{HOST}/documents/-x/download?token=synthetic-only"),
+            notice(f"https://{HOST}/documents/_x/download?token=synthetic-only"),
+            notice(f"https://{HOST}/documents/{'a' * 200}/download?token=synthetic-only"),
+            notice(f"https://{HOST}/documents/43/download?token=synthetic-only"),
+        ]
+        result = self.run_intake(notices)
+        self.assertEqual(result, {"enrolled": 2, "refused": 0, "skipped": 3})
+        self.assertEqual(len(self.queue.status()["items"]), 2)
+        self.assertEqual(self.queue.status()["refusals"], [])
+
     def test_missing_allowlist_fails_closed(self):
         def missing():
             raise PortalError("approval_missing_or_unsafe")
