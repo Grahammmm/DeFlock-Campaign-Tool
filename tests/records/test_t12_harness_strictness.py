@@ -585,6 +585,73 @@ class DeclaredExtractFailureTests(unittest.TestCase):
                 mutate(receipt["extract_failure_manifest"])
                 self.assertIn("extract_failures_itemized", self.failures(receipt))
 
+    # T13 review (Sol #2): the full map of extract-failure needs-G items is compared.
+
+    def stray_item(self, code="EXTRACT_ERROR", stage="extract", count=1):
+        return {"code": code, "stage": stage, "severity": "action", "count": count}
+
+    def test_an_undeclared_needs_item_fails_the_baseline_runs(self):
+        for index in (0, 1, 2):
+            for code in sorted(set(harness.EXTRACT_FAILURE_NEEDS.values()) - {"EXTRACT_CORRUPT_DOCUMENT"}):
+                with self.subTest(run=index + 1, code=code):
+                    receipt = declared_receipt()
+                    receipt["runs"][index]["needs_g"].append(self.stray_item(code))
+                    self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_an_undeclared_needs_item_fails_every_fault_scenario(self):
+        for fault in harness.FAULT_SCENARIOS:
+            with self.subTest(fault):
+                receipt = declared_receipt()
+                receipt["faults"][fault]["needs_g"].append(self.stray_item())
+                failures = self.failures(receipt)
+                self.assertIn(f"fault_{fault}_only_expected_results", failures)
+                if fault == "corrupt_pdf":
+                    self.assertIn("fault_corrupt_pdf", failures)
+
+    def test_an_undeclared_needs_item_fails_without_any_declaration(self):
+        receipt = good_receipt()
+        self.assertEqual(self.failures(receipt), [])
+        for target in ("baseline", *harness.FAULT_SCENARIOS):
+            with self.subTest(target):
+                receipt = good_receipt()
+                run = receipt["runs"][0] if target == "baseline" else receipt["faults"][target]
+                run["needs_g"].append(self.stray_item())
+                name = ("three_successful_runs" if target == "baseline"
+                        else f"fault_{target}_only_expected_results")
+                self.assertIn(name, self.failures(receipt))
+
+    def test_corrupt_pdf_needs_items_are_exactly_declared_plus_one(self):
+        for label, extra in (("one more", 1), ("one fewer", -1)):
+            with self.subTest(label):
+                receipt = declared_receipt()
+                for item in receipt["faults"]["corrupt_pdf"]["needs_g"]:
+                    if item["code"] == "EXTRACT_CORRUPT_DOCUMENT":
+                        item["count"] += extra
+                failures = self.failures(receipt)
+                self.assertIn("fault_corrupt_pdf", failures)
+                self.assertIn("fault_corrupt_pdf_only_expected_results", failures)
+
+    def test_a_failure_needs_item_on_another_stage_or_malformed_fails(self):
+        for label, item in {"other stage": self.stray_item("EXTRACT_CORRUPT_DOCUMENT", stage="outputs", count=20),
+                            "negative": self.stray_item("EXTRACT_ERROR", count=-1),
+                            "string count": {**self.stray_item("EXTRACT_ERROR"), "count": "1"}}.items():
+            with self.subTest(label):
+                receipt = declared_receipt()
+                receipt["runs"][1]["needs_g"].append(item)
+                self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_the_manifest_carries_the_reacquisition_metadata(self):
+        for label, mutate in {"mail removed": lambda d: d.pop("mail"),
+                              "mail null": lambda d: d.update(mail=None),
+                              "form removed": lambda d: d.pop("form"),
+                              "class removed": lambda d: d["mail"].pop("sender_domain_class"),
+                              "date removed": lambda d: d["mail"].pop("date_utc"),
+                              "uid removed": lambda d: d["mail"].pop("uid")}.items():
+            with self.subTest(label):
+                receipt = declared_receipt()
+                mutate(receipt["extract_failure_manifest"]["documents"][3])
+                self.assertIn("extract_failures_itemized", self.failures(receipt))
+
     def test_codes_match_the_engine(self):
         from campaign_tool.records import run_stages
         self.assertEqual(set(harness.EXTRACT_FAILURE_NEEDS), native_extract.FAILED)

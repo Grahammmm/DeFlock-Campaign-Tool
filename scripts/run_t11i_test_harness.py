@@ -246,13 +246,30 @@ def _failure_outcomes(run):
     return {code: count for code, count in _outcomes(run).items() if code in EXTRACT_FAILURE_NEEDS and count}
 
 
+def _failure_needs(run):
+    """The run's extract-failure needs-G items as {outcome code: count}, zero counts dropped.
+
+    Every EXTRACT_FAILURE_NEEDS code is counted, declared or not, on any stage: an
+    undeclared failure item (or one filed under another stage) can never hide next to the
+    declared ones (T13 review, Sol #2)."""
+    failure_codes = {needs: code for code, needs in EXTRACT_FAILURE_NEEDS.items()}
+    found = {}
+    for item in run.get("needs_g") or []:
+        if isinstance(item, dict) and item.get("code") in failure_codes:
+            code, count = failure_codes[item["code"]], item.get("count")
+            if item.get("stage") != "extract" or type(count) is not int or count < 0:
+                return {"invalid_needs_item": 1}  # never equal to a declaration
+            found[code] = found.get(code, 0) + count
+    return {code: count for code, count in found.items() if count}
+
+
 def _extract_failures_exact(run, expected):
-    """Extract failure outcomes, the failed count and their needs-G items equal ``expected``."""
+    """The full maps of extract failure outcomes and of their needs-G items both equal
+    ``expected`` (an absent code is zero), and so does the failed count."""
     counts = _counts(run, "extract")
     return bool(counts is not None and _failure_outcomes(run) == expected
                 and counts["failed"] == sum(expected.values())
-                and all(_needs(run, EXTRACT_FAILURE_NEEDS[code], "extract") == count
-                        for code, count in expected.items()))
+                and _failure_needs(run) == expected)
 
 
 def declared_extract_failures(expect):
@@ -384,7 +401,7 @@ def _fault_checks(faults, runs, allowed, required, declared=None):
             and run.get("exit") == 0 and run.get("report_valid")
             and _outcomes(run).get("CORRUPT_DOCUMENT", 0) == corrupt
             and extract.get("status") == "warn" and extract.get("error_code") == "EXTRACT_DOCUMENT_FAILURES"
-            and _needs(run, "EXTRACT_CORRUPT_DOCUMENT", "extract") == corrupt
+            and _failure_needs(run) == _plus_one_corrupt(declared)
             and _adopts_nothing(run, last_ledger, injection.get("messages"))
             and _ran(run, "digest_gates", "outputs"))
     if "docker_down" in required:
@@ -398,6 +415,11 @@ def _itemized(manifest, declared):
         return False
     documents = manifest.get("documents")
     if not isinstance(documents, list) or not all(isinstance(doc, dict) for doc in documents):
+        return False
+    # The re-acquisition metadata G asked for is present on every document (stable mail id,
+    # UTC date and sender-domain class); values may be null when the ledger has none.
+    if not all("form" in doc and isinstance(doc.get("mail"), dict)
+               and {"uid", "date_utc", "sender_domain_class"} <= set(doc["mail"]) for doc in documents):
         return False
     hashes = [doc.get("original_sha256") for doc in documents]
     codes = {}

@@ -184,6 +184,67 @@ class SandboxBaselineTests(unittest.TestCase):
         self.assertRefused("from_root_invalid", from_roots=[str(self.sandbox)])
         self.assertRefused("from_root_missing", from_roots=[])
 
+    # T13 review (Sol #1): no write may follow a symlink out of the marked sandbox.
+
+    def assertContained(self, code="sandbox_path_not_contained", **kw):
+        sandbox_before, backup_before = tree_digest(self.sandbox), tree_digest(self.backup)
+        test_ledger = sha256_file(self.test / "processing-v1" / "ledger.sqlite")
+        self.assertRefused(code, **kw)  # TEST (target of every link below) unchanged
+        self.assertEqual(sha256_file(self.test / "processing-v1" / "ledger.sqlite"), test_ledger)
+        self.assertEqual(tree_digest(self.backup), backup_before)
+        self.assertEqual(tree_digest(self.sandbox), sandbox_before)
+
+    def link_to_test(self, rel):
+        shutil.rmtree(self.sandbox / rel)
+        (self.sandbox / rel).symlink_to(self.test / rel, target_is_directory=True)
+
+    def test_a_symlinked_processing_dir_is_refused(self):
+        self.link_to_test("processing-v1")
+        self.assertContained()
+
+    def test_a_symlinked_intake_dir_is_refused(self):
+        self.link_to_test("processing-v1/intake")
+        self.assertContained()
+
+    def test_a_symlinked_database_is_refused(self):
+        for name, rel in baseline.DATABASES:
+            with self.subTest(name):
+                target = self.sandbox / rel
+                saved = target.with_name(target.name + ".saved")
+                target.rename(saved)
+                target.symlink_to(self.test / rel)
+                try:
+                    self.assertContained()
+                finally:
+                    target.unlink()
+                    saved.rename(target)
+
+    def test_a_symlinked_sidecar_is_refused(self):
+        wal = self.sandbox / "processing-v1" / "ledger.sqlite-wal"
+        if os.path.lexists(wal):
+            wal.unlink()
+        wal.symlink_to(self.test / "processing-v1" / "ledger.sqlite")
+        self.assertContained("sidecar_not_empty")
+
+    def test_a_symlinked_project_is_refused(self):
+        link = self.sandbox.parent.parent / "sandbox-link"
+        link.symlink_to(self.sandbox, target_is_directory=True)
+        self.assertContained(project=link)
+
+    def test_a_project_reached_through_a_symlinked_ancestor_is_refused(self):
+        link = self.sandbox.parent.parent / "sandbox-parent-link"
+        link.symlink_to(self.sandbox.parent, target_is_directory=True)
+        self.assertContained(project=link / self.sandbox.name)
+
+    def test_a_relocation_target_behind_a_symlink_is_refused(self):
+        # The blobs the relocated originals point at must resolve inside the sandbox, too.
+        self.link_to_test("processing-v1/intake/blobs")
+        before = tree_digest(self.test)
+        with self.assertRaises(baseline.Refused) as caught:
+            self.seed()
+        self.assertEqual(str(caught.exception), "original_target_unexpected")
+        self.assertEqual(tree_digest(self.test), before)
+
 
 def make_manifest_project(base, documents, mails, occurrences):
     project = base / "records-project"

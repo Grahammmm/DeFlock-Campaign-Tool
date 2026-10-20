@@ -26,6 +26,12 @@ different. So the harness:
 Runs inside the Flock container as the ledger owner (``docker exec -u coder``), or
 locally in synthetic tests. Prints exactly one JSON line of counts, hashes and fixed
 codes (no paths, no record text). Exit 0 when seeded, 1 when refused.
+
+Containment (T13 review): the project must be its own resolved path (no symlink to it or
+through an ancestor). ``processing-v1``, ``processing-v1/intake``, the databases, their
+temporaries and sidecars are reached without following any symlink, and every relocation
+target must resolve inside the sandbox, all checked before the first write; anything
+else is refused as ``sandbox_path_not_contained``.
 """
 import argparse
 import hashlib
@@ -60,6 +66,34 @@ def regular(path):
     except OSError:
         return False
     return stat.S_ISREG(info.st_mode)
+
+
+def contained_dir(project, rel):
+    """``project/rel`` as a real directory reached without following any symlink.
+
+    Every component from the project down is lstat-ed (a symlinked ``processing-v1`` or
+    ``intake`` could point at TEST), and the resolved path must equal the lexical one,
+    so a write there can only land inside the sandbox (T13 review, Sol #1)."""
+    path = project
+    for part in Path(rel).parts:
+        path = path / part
+        try:
+            info = os.lstat(path)
+        except OSError:
+            raise Refused("sandbox_path_missing") from None
+        if not stat.S_ISDIR(info.st_mode):
+            raise Refused("sandbox_path_not_contained")
+    if os.path.realpath(path) != str(path):
+        raise Refused("sandbox_path_not_contained")
+    return path
+
+
+def contained_file(project, rel):
+    """``project/rel`` in a contained directory, itself absent or a regular file (no symlink)."""
+    target = contained_dir(project, Path(rel).parent) / Path(rel).name
+    if os.path.lexists(target) and not regular(target):
+        raise Refused("sandbox_path_not_contained")
+    return target
 
 
 def check_sidecars(db, *, clean):
@@ -137,7 +171,7 @@ def relocate(ledger, sandbox, from_roots):
                 raise Refused("originals_not_bound_to_occurrences")
             for row in originals:
                 new = sandbox + row["storage_path"][len(root):]
-                if new != f"{sandbox}/processing-v1/intake/blobs/{row['sha256']}":
+                if new != f"{sandbox}/processing-v1/intake/blobs/{row['sha256']}" or os.path.realpath(new) != new:
                     raise Refused("original_target_unexpected")
                 if not regular(new) or os.path.getsize(new) != row["bytes"] or sha256_file(new) != row["sha256"]:
                     raise Refused("original_target_bytes_mismatch")
@@ -151,9 +185,12 @@ def relocate(ledger, sandbox, from_roots):
                     raise Refused("evidence_change_unexpected")
                 receipt = after.get("verification_receipt_path")
                 if receipt != f"{sandbox}/processing-v1/intake/verification-receipts/{before.get('receipt_sha256')}" \
+                        or os.path.realpath(receipt) != receipt \
                         or not regular(receipt) or sha256_file(receipt) != before.get("receipt_sha256"):
                     raise Refused("verification_receipt_target_mismatch")
-                if not isinstance(after.get("export_receipt_path"), str) or not regular(after["export_receipt_path"]):
+                export = after.get("export_receipt_path")
+                if not isinstance(export, str) or not regular(export) or os.path.realpath(export) != export \
+                        or not export.startswith(sandbox + "/"):
                     raise Refused("export_receipt_target_missing")
                 plan_occ.append((new, row["id"], old))
         con.execute("BEGIN IMMEDIATE")
@@ -197,6 +234,10 @@ def relocate(ledger, sandbox, from_roots):
 
 def seed(project, backup, ledger_sha256, from_roots):
     project = check_sandbox(project)
+    # The sandbox itself, not a symlink to it or through one: every write below must
+    # resolve inside it (T13 review, Sol #1).
+    if os.path.islink(project) or os.path.realpath(project) != str(project):
+        raise Refused("sandbox_path_not_contained")
     sandbox = str(project)
     backup = Path(os.path.abspath(backup))
     if not re.fullmatch(r"[0-9a-f]{64}", ledger_sha256 or ""):
@@ -212,21 +253,25 @@ def seed(project, backup, ledger_sha256, from_roots):
     if os.path.islink(backup) or not backup.is_dir() or str(backup).startswith(sandbox + "/"):
         raise Refused("baseline_backup_invalid")
     sources = {}
+    targets = {}
     for name, rel in DATABASES:
         source = backup / name
-        if not regular(source) or not (project / rel).parent.is_dir():
+        if not regular(source):
             raise Refused("baseline_backup_incomplete")
+        targets[name] = contained_file(project, rel)  # before any write: every target contained
         check_sidecars(source, clean=False)
         sources[name] = (source, sha256_file(source))
     if sources["ledger.sqlite"][1] != ledger_sha256:
         raise Refused("baseline_ledger_hash_mismatch")
     for name, rel in DATABASES:
-        target = project / rel
+        target = contained_file(project, rel)  # re-checked right before this write
+        if target != targets[name]:
+            raise Refused("sandbox_path_not_contained")
         check_sidecars(target, clean=True)
         install_private_copy(sources[name][0], target)
         if sha256_file(target) != sources[name][1]:
             raise Refused("baseline_copy_hash_mismatch")
-    result = relocate(project / DATABASES[0][1], sandbox, roots)
+    result = relocate(contained_file(project, DATABASES[0][1]), sandbox, roots)
     if result["foreign_root_refs_after"] or result["integrity"] != "ok" or result["foreign_key_violations"] \
             or not result["immutability_trigger_enforced"]:
         raise Refused("baseline_not_consistent")
