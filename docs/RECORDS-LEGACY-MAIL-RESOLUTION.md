@@ -11,6 +11,14 @@ binding per distinct original (repeated parts inside a receipt and originals
 shared across receipts, sections 4-6 and 8.2). It also restates the TEST
 acceptance sets against a measured baseline (section 11.H).
 
+Revision 3 answers the second Sol review of 8bdfc62. Every policy original
+now has one state (`resolved`, `open` or `blocked`) that does not depend on
+receipt state. The receipt-set drift check runs for resolved originals too,
+and dependencies are satisfied by originals that are already resolved, so
+reruns and partial-run recovery work (sections 4, 6, 8.1-8.3, tests 31 and
+37a-37e). The TEST acceptance compares a pinned baseline set of `originals`
+keys instead of the whole table (section 11.H, test 40).
+
 Code references are to Grahammmm/DeFlock-Campaign-Tool#148 at exact head
 `039900bb55e023e67c1121663802280a15b1b1ad`, which is stacked on #142
 (`records adopt-mail`). Main does not yet contain `mail_adoption.py`.
@@ -235,6 +243,15 @@ Rules:
 - The engine checks the artifact's hash and exact schema. It does not check that
   the owner's approval is genuine. That remains the existing owner-authorization
   process. Deciding on the inventory is G's call (section 9).
+- Successor policies. A resolution row is permanent, so a later policy never
+  re-decides it. When an original already has a mail-export resolution row
+  and appears in a discovered receipt, the census lists it (section 8.1) and
+  any later policy must carry it in `originals` with the same binding
+  receipt, `binding_occurrence_id` and `legacy_binding_sha256` as the row.
+  Only `dependent_receipts` may grow, and only for receipts the new census
+  lists and G approves. Such an original may never be in `held`. A policy
+  that breaks this blocks the whole apply (section 8.2, steps 1-2). The row
+  keeps the `policy_sha256` of the policy that created it.
 
 ## 5. Eligibility (all must hold, per distinct original)
 
@@ -296,8 +313,13 @@ Inside the existing `BEGIN IMMEDIATE` in `preserve`:
    `binding_occurrence_id` is one of this receipt's record ids for that sha.
    An unresolved original for which this receipt is not the binding receipt
    (for example a dependent receipt whose binding receipt has not committed
-   yet) fails here. Any failure raises `canonical_original_binding_conflict`
-   exactly as today, so the backend's failure surface does not change.
+   yet) fails here. A sha that already has a mail-export resolution row is
+   not planned again. While a policy is configured, this receipt must then be
+   that row's binding receipt or be listed in the policy entry's
+   `dependent_receipts`. That is a defence-in-depth copy of the adopt-mail
+   receipt-set check (section 8.2, step 2) at the only writer. Any failure
+   raises `canonical_original_binding_conflict` exactly as today, so the
+   backend's failure surface does not change.
 2. Run the existing record loop over every record, duplicates included. For
    planned originals the `canonical_original_binding_conflict` check uses the
    planned effective binding (in_scope at the CAS path) instead of the stored
@@ -381,10 +403,16 @@ choice is left to the implementation review. It uses the same snapshot read as
 adopt-mail (`immutable=1`, fails closed on a non-empty WAL, sidecar identities
 unchanged), so it writes nothing to the ledger, intake catalog or export.
 
-The inventory set I is every distinct original that is declared
-`scope='unresolved'` and appears in at least one discovered `new` receipt,
-whatever that receipt's current gap code (so the `unsupported_rfc822_part`
-receipt is included). For each original in I, the census lists:
+The inventory set I is the union of two parts, each limited to originals that
+appear in at least one discovered receipt in any state, whatever that
+receipt's gap code (so the `unsupported_rfc822_part` receipt is included):
+
+- I_u: originals declared `scope='unresolved'` with no resolution row.
+- I_r: originals that already have a mail-export resolution row, listed with
+  their fixed binding from the row (section 4, successor policies). On the
+  first census no such row exists, so I_r is empty.
+
+For each original in I, the census lists:
 
 - sha, bytes, legacy_format, kind, and the legacy binding hash;
 - every discovered receipt that contains it: receipt digest (computed from the
@@ -402,76 +430,139 @@ only: receipts, |I|, originals shared by more than one receipt, originals
 repeated inside one receipt, proposed bindings, and proposed held by code. G
 reviews the inventory locally. Its sha becomes `inventory_sha256`. The policy
 G approves must cover I exactly: `originals` plus `held` equals I, with no
-overlap.
+overlap, and every original in I_r is in `originals` with its row's binding.
 
 ### 8.2 Resolution plan (one pure function, shared by dry run and apply)
 
-The plan is computed read-only from the ledger snapshot, the discovered
-receipts and the loaded policy. Its output depends only on receipt digests,
-shas and occurrence ids, never on discovery order or file names. A dry run
-reports the plan. Apply recomputes it under the writer lock from the same
-inputs and runs exactly that plan.
+The plan is computed read-only from the ledger snapshot, every discovered
+receipt in any state (`new`, `incomplete`, `complete` or `identity_*`) with
+its distinct originals and occurrence ids, and the loaded policy. `discover`
+already parses `item["originals"]` for every receipt, whatever its state
+(mail_adoption.py at 039900b), so nothing extra is read. The output depends
+only on receipt digests, shas and occurrence ids, never on discovery order or
+file names. A dry run reports the plan. Apply recomputes it under the writer
+lock from the same inputs and runs exactly that plan.
 
-1. Per-receipt checks. For every `new` receipt that passes the MIME precheck
-   (which still runs first), take each distinct unresolved original O:
-   - O in `held`: the receipt keeps today's accepted gap
-     `original_scope_unresolved`.
-   - O in neither `originals` nor `held`: blocking `resolution_not_in_policy`
-     (the inventory has drifted).
-   - O in `originals`, but the set of discovered receipts in any state that
-     contain O is
-     not exactly the binding receipt plus `dependent_receipts`: blocking
-     `resolution_policy_receipt_set_mismatch` on every receipt that contains O.
-     That covers a new or missing export of the same bytes.
-   - The receipt is O's binding receipt: checks 1-5 and 7 (read-only). A
-     failure gives a blocking specific code:
-     `resolution_policy_receipt_mismatch`,
-     `resolution_requires_unaccepted_original` or
-     `resolution_import_binding_mismatch`.
-   - The receipt is in O's `dependent_receipts`: record a dependency edge from
-     the binding receipt to this receipt. The receipt never resolves O itself.
-2. Binding receipts that cannot run. Suppose a binding receipt for a policy
-   original is gapped for any other reason, such as a held original, the MIME
-   precheck or another failing check. Then that policy original cannot resolve
-   in this plan, and the receipt gets blocking `resolution_binding_receipt_blocked`.
-   An approved binding that cannot apply means the inventory has drifted, so
-   it must block.
-3. Dependency closure. A dependent receipt whose binding receipt is not
-   resolvable gets blocking `resolution_dependency_blocked`. This is repeated
-   until nothing changes, because a dependent can itself be the binding
-   receipt for another original. Receipts on a dependency cycle (strongly
-   connected, possible only in a hand-edited policy) get blocking
-   `resolution_dependency_cycle`, and their dependents are blocked in turn.
-4. Result. A receipt is `resolvable` when its only gap reason was
-   `original_scope_unresolved` and every distinct unresolved original passed
-   step 1 as binding or dependent and survived steps 2-3. It is a binding
-   receipt if it resolves at least one original, and dependent-only otherwise.
-   The plan's resolvable originals E_r are the policy originals whose binding
-   receipt is resolvable. Policy originals whose binding receipt is not
-   resolvable are counted separately and never resolve in this run.
-5. Order. Today's pending receipts (eligible new and incomplete) go first, in
+Let C(O) be the set of discovered receipts, in any state, that contain O.
+
+1. Policy-original state. Every O in `originals` gets exactly one state. The
+   state depends on the ledger and the policy only, not on the state of any
+   receipt:
+   - `resolved`: `original_resolutions` has a row for O, `effective_original`
+     validates it (section 7), its schema is
+     `original_resolution_mail_export_v1`, and its `capture_receipt_sha256`,
+     `capture_occurrence_id` and payload `legacy_binding_sha256` equal the
+     entry's binding receipt, `binding_occurrence_id` and
+     `legacy_binding_sha256`. The row's `policy_sha256` may name an earlier
+     approved policy (a successor policy, section 4). The existing row is the
+     binding. It is never appended again, re-planned or rewritten.
+   - `open`: no row for O, and checks 1-3 of section 5 hold.
+   - `blocked`, with a code: a row exists that is a v1 local-capture row or a
+     mail row with a different binding (`resolution_existing_binding_mismatch`);
+     or there is no row and checks 1-3 fail
+     (`resolution_requires_unaccepted_original`,
+     `resolution_import_binding_mismatch`). If `effective_original` itself
+     raises on the row, the command fails closed with the reader's code, as
+     every reader does today.
+2. Policy drift checks. These run for every policy original in every state,
+   `resolved` ones included, whatever state its receipts are in:
+   - Receipt set: C(O) must equal the binding receipt plus
+     `dependent_receipts`, exactly. Otherwise
+     `resolution_policy_receipt_set_mismatch`. That covers a later export of
+     the same bytes (including one that appears after O was resolved), a
+     missing receipt, and a policy original that no discovered receipt
+     contains.
+   - Coverage: an original contained in any discovered receipt that is
+     declared `unresolved` without a resolution row, or that has a
+     mail-export resolution row, must be in `originals` or `held`. Otherwise
+     `resolution_not_in_policy`.
+   - Held: a `held` original that has any resolution row gives
+     `resolution_held_original_resolved`.
+   - Cycle: a strongly connected set of receipts in the step-4 dependency
+     graph (possible only in a hand-edited policy) gives
+     `resolution_dependency_cycle`.
+   Each finding is counted once per original (once per cycle) in
+   `resolution_drift`, and its code is set on every receipt in C(O) that is
+   not `complete`. A `complete` receipt stays `complete`, so the existing
+   receipt invariant still holds, but the drift counter alone blocks the
+   plan (step 6).
+3. Binding receipts. For each `open` O with binding receipt B:
+   - B must be `new`, pass the MIME precheck and have no other gap reason.
+     Every other distinct original of B must be today-eligible (absent, or
+     in_scope at `<output>/blobs/<sha>`), or a policy original that is
+     `resolved`, or `open` with B as its binding receipt, or `open` with B in
+     its `dependent_receipts` (a dependency, step 4). Checks 5 and 7 must
+     hold for O at the entry's `binding_occurrence_id`.
+   - Otherwise B gets blocking `resolution_binding_receipt_blocked` (or the
+     specific check code `resolution_policy_receipt_mismatch`) and O moves to
+     `blocked`. A held original inside B, a MIME failure in B, or B already
+     enrolled while O is still unresolved all land here. An approved binding
+     that cannot apply means the inventory has drifted, so it must block.
+4. Dependencies. For each `new` receipt R and each distinct O in R with R in
+   O's `dependent_receipts`:
+   - O `resolved`: satisfied, no edge. This holds whatever state the binding
+     receipt is in. A `complete` binding receipt is finished. An `incomplete`
+     binding receipt committed the resolution row in the same transaction as
+     its mail row (section 6), so it resumes on today's incomplete path and
+     never appends again (section 6, step 1 finds O already in_scope).
+   - O `open` and its binding receipt resolvable: satisfied by ordering. Add
+     the edge binding receipt -> R.
+   - O `open` with a binding receipt that is not resolvable, or O `blocked`:
+     R gets blocking `resolution_dependency_blocked`.
+   Steps 3 and 4 repeat until nothing changes, because a dependent can itself
+   be the binding receipt for another original. When an `open` O's binding
+   receipt becomes blocked, O moves to `blocked`.
+5. Result. P (the policy `originals`) splits into three disjoint sets: P_res
+   (`resolved`), E_r (`open` with a resolvable binding receipt) and P_blk
+   (everything else). |P| = |P_res| + |E_r| + |P_blk| always holds. A `new`
+   receipt is then exactly one of:
+   - eligible new (today's rule): none of its originals is `open`. A
+     dependent receipt whose policy originals are all `resolved` lands here,
+     for example after a partial run. Step 2 has already checked it.
+   - resolvable: it binds at least one O in E_r (binding receipt) or only
+     depends on such originals (dependent-only receipt), and has no other
+     gap.
+   - coded gap: the MIME precheck code first, as today. Then a drift code
+     from step 2, then `resolution_binding_receipt_blocked`, then
+     `resolution_dependency_blocked`. Otherwise, when its only unresolved
+     originals are `held`, today's accepted `original_scope_unresolved`.
+6. Blocked plan. A plan with any `resolution_drift` finding or any blocking
+   resolution code (P_blk not empty) is blocked
+   (`resolution_plan.state = blocked`). A dry run reports it and exits 3.
+   Apply recomputes the plan under the writer lock before recovering runs or
+   starting a run. If the plan is blocked, apply is refused with
+   `resolution_plan_blocked` and writes nothing at all, including for
+   eligible receipts unrelated to the drift. Today's other unaccepted coded
+   gaps keep today's per-receipt behaviour. The owner can always unpin the
+   policy (v1 config or `null`) to get today's T4 behaviour back.
+7. Order. Today's pending receipts (eligible new and incomplete) go first, in
    today's order. Resolvable receipts follow in topological order of the
-   dependency graph, with ties broken by ascending receipt digest. With a
+   step-4 edges, with ties broken by ascending receipt digest. With a
    census-proposed policy every edge runs from a smaller digest to a larger
    one, so this is ascending digest order. A receipt that is both binding and
-   dependent is placed after all of its binding receipts.
-6. Apply-time failures. When the backend refuses a binding receipt during
-   apply (a fault, or a policy change caught under the lock), adopt-mail does
-   not call `preserve` for any receipt that depends on it, directly or
+   dependent is placed after all of its open predecessors.
+8. Apply-time failures. When the backend refuses a resolvable receipt during
+   apply (a fault, or a change caught under the lock), adopt-mail does not
+   call `preserve` for any receipt that depends on it, directly or
    transitively. Those are counted as failure `resolution_dependency_failed`
    and nothing is written for them. If such a receipt were called anyway, the
-   backend would refuse it too (section 6, step 1), so this rule only prevents
-   noise. A later rerun recomputes the plan and picks them up.
+   backend would refuse it too (section 6, step 1), so this rule only
+   prevents noise. A later run recomputes the plan from the committed state:
+   originals resolved before the fault are `resolved` there and satisfy their
+   dependents (step 4).
 
-After resolution, O is an ordinary `in_scope` original at its CAS path. While
-the policy stays pinned, the step-1 receipt-set check keeps running, so a
-later export of the same bytes that the entry does not name blocks as drift
-instead of quietly binding. Once the owner unpins the policy, O is governed
-by the existing T4 rule for adopted `in_scope` originals, the same as any
-other adopted original. This design does not widen that rule.
+After resolution, O is an ordinary `in_scope` original at its CAS path, and
+its row is the immutable binding. While the policy stays pinned, step 2 keeps
+checking C(O) for every policy original, so a later export of the same bytes
+that the entry does not name blocks the whole apply as drift instead of
+quietly binding. Approving such an export needs a new census and a successor
+policy that carries O forward with the same binding (section 4). Once the
+owner unpins the policy, O is governed by the existing T4 rule for adopted
+`in_scope` originals, the same as any other adopted original. This design
+does not widen that rule.
 
 Without a policy, today's `original_scope_unresolved` (accepted) is unchanged,
-and steps 1-6 do not run.
+and steps 1-8 do not run.
 
 Open point for the reviewer: should a configured-but-unmatched receipt fall
 back to the accepted `original_scope_unresolved`, so it does not block?
@@ -484,10 +575,12 @@ New report counters (counts and hashes only):
 
 - `resolvable_messages`, split into `resolvable_binding_messages` and
   `resolvable_dependent_messages`, plus `resolvable_attachments`
-- `resolvable_originals` = |E_r| (dry run and apply, from the plan)
-- `policy_originals_blocked` = policy originals whose binding receipt is not
-  resolvable
+- `policy_originals` = |P|, split into `policy_originals_resolved` = |P_res|,
+  `resolvable_originals` = |E_r| and `policy_originals_blocked` = |P_blk|
+  (dry run and apply, from the plan before any write; section 8.2 step 5)
 - `held_originals` = policy `held` entries present in discovered receipts
+- `resolution_drift` = `{code: count}` from section 8.2 step 2
+- `resolution_plan` = `{state: none|ok|blocked}`
 - `resolution_baseline` = `{rows, sha256}` of `original_resolutions` before
   any write, where sha256 is the digest of the sorted
   `(original_sha256, binding_sha256)` pairs
@@ -495,16 +588,26 @@ New report counters (counts and hashes only):
   `append_mail_export` inserted a new row in a committed transaction
 - `resolution_after` = `{rows, sha256}` after the run, under the writer lock
 - `resolution_policy` = `{state: none|loaded|mismatch, sha256}`
-- `after.resolvable_messages`
+- `after.resolvable_messages`, `after.policy_originals_resolved`,
+  `after.resolvable_originals`, `after.policy_originals_blocked`,
+  `after.resolution_drift`
 
 The invariant becomes
 `receipts == already_adopted + pending_messages + coded_gap_messages + sum(identity_conflicts)`,
 where `pending_messages` now also counts resolvable receipts and
 `new_messages = eligible_new_messages + resolvable_messages + coded_gap_messages`.
-For a successful apply with no failures there are three more:
+`policy_originals == policy_originals_resolved + resolvable_originals + policy_originals_blocked`
+holds in every dry run, apply and `after` report.
+For a successful apply with no failures there are more:
 `resolved_originals == resolvable_originals`,
-`resolution_after.rows == resolution_baseline.rows + resolved_originals`, and
-`adopted_messages == eligible_new_messages + resolvable_messages`.
+`resolution_after.rows == resolution_baseline.rows + resolved_originals`,
+`after.policy_originals_resolved == policy_originals_resolved + resolved_originals`,
+`after.resolvable_originals == 0`, and
+`adopted_messages + resumed_messages == pending_messages` (eligible new,
+incomplete and resolvable receipts together).
+`blocking` (CLI exit 3) also becomes true for a non-empty `resolution_drift`,
+a `blocked` `resolution_plan` or a non-zero `policy_originals_blocked`, in the
+report or in `after`.
 
 Gate. Apply requires the existing open gate, and also a policy whose file hash
 equals the pinned hash. Otherwise apply is refused with `resolution_policy_mismatch` and
@@ -513,10 +616,21 @@ changed, apply is refused with `resolution_policy_changed`. A dry run with a
 pinned but missing policy reports `resolution_policy.state = mismatch` and
 exits 3.
 
-Rerun. Binding and dependent receipts both classify as `complete` through the
+Rerun. After a successful apply every policy original is `resolved`, and
+binding and dependent receipts both classify as `complete` through the
 existing binding checks (`identity_original_*` uses `effective_original`). A
-rerun therefore adopts 0, resolves 0 and writes nothing, and the
-`resolution_after` digest does not change.
+full rerun therefore reports `policy_originals_resolved = |P|`,
+`resolvable_originals = 0`, `policy_originals_blocked = 0`,
+`resolution_drift = {}` and `resolution_plan.state = ok`. It adopts 0,
+resolves 0, writes nothing, leaves the `resolution_after` digest unchanged and
+exits 0.
+
+Partial runs. After an apply-time fault or a crash, the next run plans only
+the originals that are still `open`. Originals resolved earlier are
+`resolved`: they are never appended again, and they satisfy their dependents
+(section 8.2, steps 4 and 8). A binding receipt that crashed after its commit
+and before the preservation stage is `incomplete`. It is resumed first, on
+today's incomplete path, with no append (section 6, step 1).
 
 ## 9. Owner decisions and safety
 
@@ -649,7 +763,9 @@ E. adopt-mail plan and CLI (`test_mail_adoption_resolution.py`)
 25. A dry run with a policy predicts exactly the apply outcome: every counter
     in section 8.3 is equal, including `resolvable_messages` against the
     adopted count, `resolvable_originals` against `resolved_originals`, and
-    the per-code counts.
+    the per-code counts. When the dry run reports a blocked
+    `resolution_plan`, apply on the same inputs is refused with
+    `resolution_plan_blocked` and writes nothing.
 26. A dry run writes nothing. The ledger, intake catalog and every sidecar
     identity are unchanged.
 27. Counter invariants (section 8.3) hold in dry run, apply and `after`.
@@ -663,9 +779,12 @@ E. adopt-mail plan and CLI (`test_mail_adoption_resolution.py`)
     exit 0.
 30. A v1 config is accepted and means no resolution. A v2 config with `null`
     behaves the same. A pinned but missing policy gives `mismatch` and exit 3.
-31. A rerun after apply adopts 0 and resolves 0. Every binding and dependent
-    receipt is `complete`, nothing is written, and the `resolution_after`
-    digest is unchanged.
+31. A full rerun after apply adopts 0 and resolves 0. Every binding and
+    dependent receipt is `complete`, and the report has
+    `policy_originals_resolved = |P|`, `resolvable_originals = 0`,
+    `policy_originals_blocked = 0`, `resolution_drift = {}` and
+    `resolution_plan.state = ok`. Nothing is written, the `resolution_after`
+    digest is unchanged, and the exit code is 0 (dry run and apply).
 32. Under a concurrent root writer, apply waits or is refused under the
     existing lock, with no partial state.
 33. Census: I includes unresolved originals that appear only in the rfc822
@@ -687,20 +806,66 @@ E. adopt-mail plan and CLI (`test_mail_adoption_resolution.py`)
     chosen so that discovery order is R1,R2 once and R2,R1 once. Both runs
     give the same reports (ignoring run ids and timestamps), a byte-identical
     resolution row and identical occurrence rows.
-36. Shared-original negatives:
+36. Shared-original negatives. Each fixture also holds an unrelated eligible
+    new receipt Ra. Whenever the plan is blocked, apply is refused with
+    `resolution_plan_blocked` and writes nothing at all, Ra included (ledger,
+    intake catalog and sidecar identities unchanged, no run row):
     (a) R3 also contains O but is not named in the policy:
-    `resolution_policy_receipt_set_mismatch` on R1, R2 and R3, nothing
+    `resolution_policy_receipt_set_mismatch` on R1, R2 and R3,
+    `resolution_drift={resolution_policy_receipt_set_mismatch: 1}`, nothing
     resolved, exit 3.
     (b) R1 also contains a held original: `resolution_binding_receipt_blocked`
-    on R1, `resolution_dependency_blocked` on R2, nothing written for either.
+    on R1, `resolution_dependency_blocked` on R2, `policy_originals_blocked=1`,
+    exit 3, nothing written.
     (c) A hand-edited cycle (R1 binds O1 and depends on O2, R2 binds O2 and
-    depends on O1): `resolution_dependency_cycle` on both.
+    depends on O1): `resolution_dependency_cycle` on both, exit 3.
     (d) A fault injected into `preserve(R1)` during apply: R2 is never called,
-    failure `resolution_dependency_failed`, nothing written for either. The
-    rerun adopts both and resolves O.
+    failure `resolution_dependency_failed`, nothing written for R1 or R2 (Ra
+    is adopted, because the plan itself was not blocked). The rerun adopts
+    both and resolves O.
 37. Chain: R2 is a dependent for O1 (bound to R1) and the binding receipt for
     O2, with dependent R3. Apply order is R1, R2, R3, there are 2 resolution
     rows, and the dry run equals the apply.
+37a. Partial chain after a fault (the 37 fixture). A fault is injected into
+    `preserve(R2)` during the first apply. R1 commits, R2 writes nothing, and
+    R3 gets `resolution_dependency_failed`. The next dry run reports O1
+    `resolved` and O2 `open`: `policy_originals_resolved=1`,
+    `resolvable_originals=1`, `policy_originals_blocked=0`, R1 `complete`,
+    R2 resolvable binding (its O1 dependency is satisfied because O1 is
+    resolved), R3 resolvable dependent, and exit 0. Apply adopts R2 then R3,
+    `resolved_originals=1`, and the O1 row is byte-identical. A further rerun
+    gives the full-rerun result of test 31.
+37b. Post-commit, pre-stage recovery in a chain (the 37 fixture). The process
+    is killed after R1's transaction commits and before its preservation
+    stage. The next dry run reports R1 `incomplete`, O1 `resolved`, O2 `open`,
+    `resolvable_originals=1`, `policy_originals_blocked=0`, and exit 3 only
+    for the existing dry-run `incomplete_messages`/`unfinalized_runs` rule.
+    Apply recovers the dead run through `recover_run`, resumes R1 first with
+    no second append for O1 (`resumed_messages=1`), then adopts R2 and R3 and
+    resolves O2. `resolution_after.rows = baseline + 2` across both runs, and
+    the dry-run prediction equals the apply counters.
+37c. Unlisted receipt after successful resolution. After a full successful
+    apply of the test 35 fixture, a new receipt R3 that contains O, and is not
+    in O's entry, is added to the export along with an unrelated eligible
+    receipt Ra. The dry run reports R3 with
+    `resolution_policy_receipt_set_mismatch`, R1 and R2 still `complete`,
+    `policy_originals_resolved=1`, `resolution_drift={...: 1}`,
+    `resolution_plan.state=blocked`, and exit 3. Apply is refused with
+    `resolution_plan_blocked`. It writes nothing (Ra is not adopted, the
+    ledger, intake catalog and sidecar identities are unchanged), and the O
+    row is byte-identical. The backend copy of the check (section 6, step 1)
+    refuses a direct `preserve(R3)` with `canonical_original_binding_conflict`.
+37d. Successor policy. After the test 35 apply, a successor policy pins O
+    with the same binding and adds R3 to `dependent_receipts`: R3 is eligible
+    new, it is adopted, there is no new resolution row, and the O row still
+    names the first policy hash. Variants that block the whole apply with no
+    writes: the successor names a different binding receipt or occurrence
+    (`resolution_existing_binding_mismatch`), it omits O
+    (`resolution_not_in_policy`), or it lists O in `held`
+    (`resolution_held_original_resolved`).
+37e. A policy original that a v1 local-capture row resolved after the census:
+    state `blocked` with `resolution_existing_binding_mismatch`, blocked
+    plan, nothing written, and the v1 row is unchanged.
 
 F. Regression
 
@@ -715,16 +880,24 @@ G. Synthetic acceptance (`test_mail_adoption_resolution_acceptance.py`, in CI)
 40. A single synthetic fixture that mirrors the TEST acceptance shape:
     - A pre-existing v1 local-capture resolution for an unrelated original L,
       so `resolution_baseline.rows = 1`.
-    - Ra: an eligible new receipt with no unresolved originals.
+    - Ra: an eligible new receipt with no unresolved originals. Its EML E_a
+      is absent from `originals` before adoption.
     - Rb: the binding receipt for O1, and for O2, which appears in two parts.
-    - Rc: a dependent for O1.
+      Rb also has an attachment X that is absent from `originals` before
+      adoption. Its EML E_b is absent too.
+    - Rc: a dependent for O1, with an absent EML E_c.
     - Rd: a receipt whose only unresolved original O3 is `held`.
     - Re: an rfc822 receipt that is a dependent for O1.
     - Policy: `originals={O1, O2}`, `held=[O3]`.
 
+    Before the dry run, record K0 (the sorted `originals` keys), the digest
+    of the K0 rows, and full-table digests of `legacy_rows`,
+    `occurrence_projection_rows` and the `captured_legacy_*` occurrences.
+
     Dry run: `eligible_new_messages=1`, `resolvable_messages=2` (binding 1,
-    dependent 1), `resolvable_originals=2`, `held_originals=1`,
-    `policy_originals_blocked=0`,
+    dependent 1), `policy_originals=2`, `policy_originals_resolved=0`,
+    `resolvable_originals=2`, `policy_originals_blocked=0`,
+    `held_originals=1`, `resolution_drift={}`,
     `coded_gaps={original_scope_unresolved: 1, unsupported_rfc822_part: 1}`,
     `unaccepted_coded_gaps={}`, exit 0.
     Apply: `adopted_messages=3`, `resolved_originals=2`,
@@ -732,7 +905,17 @@ G. Synthetic acceptance (`test_mail_adoption_resolution_acceptance.py`, in CI)
     The new rows are exactly {O1, O2}, each with the mail-export schema, the
     pinned policy hash, and the policy's binding receipt and occurrence.
     There is no row for O3. Rd and Re are unchanged coded gaps.
-    Rerun: adopted 0, resolved 0, `resolution_after` digest unchanged, exit 0.
+    Originals: every K0 row (L, O1, O2, O3 and the rest) is byte-identical,
+    so the K0 digest is unchanged, and O1 and O2 keep `role = scope =
+    'unresolved'` in storage. The rows not in K0 are exactly
+    {E_a, E_b, E_c, X}, each `original`/`in_scope` at
+    `<output>/blobs/<sha>` with `verified_export_receipt` provenance and at
+    least one `verified_mail_export` occurrence. The three legacy digests are
+    unchanged.
+    Rerun: adopted 0, resolved 0, `policy_originals_resolved=2`,
+    `resolvable_originals=0`, `policy_originals_blocked=0`,
+    `resolution_after` digest unchanged, `originals` keys still
+    K0 ∪ {E_a, E_b, E_c, X}, exit 0.
 
 H. TEST acceptance (only after the implementation is reviewed by a different
 model and G has approved the TEST policy)
@@ -756,8 +939,17 @@ If anything differs, stop. Then record, privately:
 - B_mail: the `mail_messages` row count.
 - R0: `resolution_baseline` `{rows, sha256}`, plus a private copy of every R0
   row.
-- D0: the digest of all `originals` rows, `legacy_rows`,
-  `occurrence_projection_rows` and `captured_legacy_*` occurrences.
+- K0: the sorted list of `originals` keys (`sha256`) before adoption, with
+  its count and list digest. D0_orig: the digest of the `originals` rows
+  whose key is in K0, in key order. This pins the baseline rows by key. It
+  does not forbid the new `originals` rows that adoption is allowed to
+  insert (section 5, rule 8(b), and the existing insert in section 6).
+- D0_legacy: full-table digests of `legacy_rows`,
+  `occurrence_projection_rows` and the occurrences whose
+  `acquisition_method` starts with `captured_legacy_`. Adoption never inserts
+  or changes any of these (canonical_mail.py at 039900b inserts only
+  `originals`, `stage_state`, `verified_mail_export` occurrences and
+  `mail_messages`), so the whole set must stay identical.
 
 Sets. Equality of sets is checked privately by comparing sorted sha lists.
 Only counts and list digests are reported.
@@ -765,19 +957,26 @@ Only counts and list digests are reported.
 - I: the census inventory (section 8.1).
 - P: the policy `originals`. Hd: the policy `held`. P ∪ Hd = I, and
   P ∩ Hd = ∅.
-- E_r ⊆ P: the plan's resolvable originals. P \ E_r is
-  `policy_originals_blocked` and must be 0, otherwise the run blocks.
+- E_r ⊆ P: the plan's resolvable originals. P splits into P_res, E_r and
+  P_blk (section 8.2, step 5). On this historical baseline no mail-export
+  row exists yet, so I_r = ∅ and P_res = ∅. P_blk
+  (`policy_originals_blocked`) must be 0, otherwise the plan blocks. So
+  E_r = P on a clean first apply.
 - N = N_b + N_d: the resolvable binding and dependent receipts.
 - S: the shas of `original_resolutions` rows that are not in R0 after apply.
   These are the originals newly resolved by committed receipt transactions.
+- A_new: the `originals` keys after apply that are not in K0. These are the
+  originals that adoption inserted.
 
 Steps:
 
 41. Census: report |I|, the shared and repeated counts, and proposed held by
     code. G approves. The policy is written privately with |P| + |Hd| = |I|.
 42. Dry run with the policy: `receipts=154`, `eligible_new_messages=36`,
-    `resolvable_messages=N` (= N_b + N_d), `resolvable_originals=|E_r|`,
-    `policy_originals_blocked=0`, and
+    `resolvable_messages=N` (= N_b + N_d), `policy_originals=|P|`,
+    `policy_originals_resolved=0`, `resolvable_originals=|E_r|`,
+    `policy_originals_blocked=0`, `resolution_drift={}`,
+    `resolution_plan.state=ok`, and
     `coded_gaps={original_scope_unresolved: 114 - N, unsupported_rfc822_part: 1}`.
     The remaining `original_scope_unresolved` receipts are the ones that
     contain held originals. `unaccepted_coded_gaps={}` and
@@ -792,9 +991,22 @@ Steps:
     hash, `capture_receipt_sha256` equal to the policy's binding receipt, and
     `capture_occurrence_id` equal to the policy's `binding_occurrence_id`.
     Nothing is asserted about rows in R0 except that they are unchanged.
-45. Rerun: adopted 0, resolved 0, `resolution_after` unchanged, exit 0.
+45. Rerun: adopted 0, resolved 0, `policy_originals_resolved = |P|`,
+    `resolvable_originals = 0`, `policy_originals_blocked = 0`,
+    `resolution_drift = {}`, `resolution_after` unchanged, `originals` keys
+    unchanged, exit 0.
 46. `quick_check` ok, FK violations 0.
-47. D0 unchanged.
+47. Originals and legacy state:
+    - Every K0 key is still present, and the digest of the rows with keys in
+      K0 equals D0_orig. So every baseline row, including every legacy
+      unresolved declaration in I and in S, is byte-identical.
+    - D0_legacy is unchanged.
+    - A_new ∩ I = ∅: resolution never inserts an `originals` row. Every row
+      in A_new has `role='original'`, `scope='in_scope'`, `storage_path` at
+      `<intake output>/blobs/<sha>`, `verified_export_receipt` provenance,
+      and at least one `verified_mail_export` occurrence that belongs to a
+      receipt adopted in step 43. Report |K0|, |A_new| and the A_new list
+      digest only. The `originals` count after apply is |K0| + |A_new|.
 
 ## 12. Implementation slicing (after T17)
 
