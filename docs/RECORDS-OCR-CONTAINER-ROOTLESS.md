@@ -34,9 +34,14 @@ extraction or review acceptance.
   into a new `run-<UTC time>` subdirectory, also mode 0700. Archives,
   manifests, SQLite evidence, the saved `docker inspect` and the driver state
   go only there.
-- `--new-tag NAME:TAG`: a new image tag. It must not exist yet.
+- `--new-tag NAME:TAG`: a new image tag. It must not exist yet, unless
+  `--reuse-image` names the run that built it.
 - `--build-python PY`: an interpreter that already has the pinned wheel build
-  tools (see `docs/RECORDS-RELEASE.md`).
+  tools (see `docs/RECORDS-RELEASE.md`). Not needed with `--reuse-image`.
+- `--reuse-image PREV_RUN_DIR`: optional. Reuse the `--new-tag` image that an
+  earlier run in the same `--private` directory built and passed [V1] with,
+  instead of building it again. See "Reusing a built and verified image"
+  below.
 - `--helper-image REF`: optional image ID or digest for the helpers. The
   default is the old image ID. It must provide `tar` with ACL/xattr support,
   `python3` and the `sqlite3` module. [R1] probes for all three.
@@ -110,7 +115,8 @@ same namespace, so the same numbers map back to the same host IDs.
 - the private path is relative, inside a Git checkout, or not a directory
   owned by this user;
 - `<name>-pre-ocr` or `<name>-ocr-failed` already exists;
-- the new tag already exists;
+- the new tag already exists and `--reuse-image` is not given;
+- `--reuse-image` is given and any of its checks fails (see below);
 - a pause unit is not a loaded user unit (there is no sudo path);
 - the target has an anonymous volume, a volume subpath, a mount type other
   than volume, bind or tmpfs, a bind source that is a regular file, or two
@@ -200,15 +206,18 @@ container check is the primary control.
 
 8. [B1] `build_wheel.py --build-python "$BUILD_PY" --provenance-out
    "$RUN/wheel-provenance.json"`. The driver takes `WHEEL_SHA256` from its
-   last line.
+   last line. With `--reuse-image` it builds nothing and takes the wheel
+   SHA-256 recorded by the earlier run.
 
 9. [B2] `preflight.py` against the old image ID. Then the
    `docker build --pull=false` command that `preflight.build_command` produces.
-   Then resolve the new image ID.
+   Then resolve the new image ID. With `--reuse-image` it builds nothing: the
+   tag must still resolve to the image ID checked at [R1].
 
 10. [V1] `verify.py --image <new image ID>` must report `verify: OK`. The
     `/opt/campaign-tool` listing must hold only `ENGINE_COMMIT`,
-    `requirements.lock`, `venv/...` and `dist/<the pinned wheel>`.
+    `requirements.lock`, `venv/...` and `dist/<the pinned wheel>`. A reused
+    image is verified again here, against the current `pins.json`.
 
 ### Recreate
 
@@ -219,8 +228,9 @@ container check is the primary control.
     `POST /containers/create` over the rootless socket. The body is the saved
     `Config`, `HostConfig` and network endpoints, with only `Image` changed.
     Diff its `docker inspect` against `inspect-before.json`. Only image, ID,
-    creation, state and per-container paths may differ. Env and labels may gain
-    only keys that the new image itself adds.
+    creation, state, per-container paths and the image's manifest descriptor
+    may differ, after the API defaults are applied (see "[C2] settings diff"
+    below). Env and labels may gain only keys that the new image itself adds.
 
 13. [C3] `docker start` the replacement only. It must stay running and, if it
     has a health check, report healthy.
@@ -375,6 +385,85 @@ by tar but are excluded the same way. A device node would be archived but
 the helper cannot recreate it (no `CAP_MKNOD`), so its extract fails and the
 step stops safely. `snapshot_evidence.py compare` (the CLI) stays strict and
 still reports special files.
+
+## [C2] settings diff
+
+[C2] creates the replacement from the saved inspect and fails on any setting
+that comes back different. Swap attempt 3 (2026-10-19) stopped there safely,
+with RB-B clean, on two benign differences:
+
+- `ImageManifestDescriptor`: the digest and size of the image's manifest.
+  The daemon derives it from the image, and the swap changes the image on
+  purpose.
+- `HostConfig.OomKillDisable`: `null` in the saved inspect (stored by an
+  older daemon), `false` after the create.
+
+Grahammmm/DeFlock-Campaign-Tool#153 fixed exactly those two:
+`ImageManifestDescriptor` joins the ignored top-level fields (like `Image`
+and `Config.Image`), and `HOSTCONFIG_NULL_IS_FALSE` treats a null or absent
+`OomKillDisable` as `false`. The top-level `Platform` is still compared. Env
+and labels keep the existing rule: only keys that the new image adds.
+
+To find what else the create endpoint rewrites, a create-only probe ran
+against rootless Docker 29.6.2 (API 1.55): throwaway containers from the old
+image, no mounts, `NetworkMode=none`, never started, removed right after
+their inspect. It sent the saved `HostConfig` and variants with fields set to
+null, empty or zero. The diff maps both sides through the pairs it found
+(`HOSTCONFIG_NULL_IS_FALSE` plus `HOSTCONFIG_EQUIVALENT`) before comparing.
+Each pair is one setting written two ways; the create body is not changed.
+
+| Field | Treated as equal |
+|---|---|
+| `OomKillDisable` | `null` = absent = `false` (#153) |
+| `MemorySwappiness` | `-1` = `null` |
+| `PidsLimit` | `0` = `-1` = `null` (unlimited) |
+| `ConsoleSize` | `null` = `[0, 0]` |
+| `Mounts`, `Links` | `[]` = `null` = absent |
+| `Tmpfs`, `Sysctls`, `StorageOpt`, `Annotations` | `{}` = `null` = absent |
+
+[C2] logs each pair it applied as `API default, treated as equal: ...`.
+
+Everything else is compared exactly as stored. Some values are filled in by
+the daemon when unset: `MaskedPaths` and `ReadonlyPaths` (`null` means the
+default masks; `[]` means none), `IpcMode`, `CgroupnsMode`, `Runtime`,
+`ShmSize`, `LogConfig` and `RestartPolicy`. The saved inspect always carries
+their explicit values, and the probe returned those values unchanged. So a
+difference in one of them is a real change, or a changed daemon default, and
+still fails. The same holds for mounts, binds, env, networks and aliases,
+user, entrypoint and command, volumes, capabilities, security options,
+read-only root, resource limits other than the table above, and restart
+policy. The tests cover each case
+(`tests/test_flock_ocr_rootless_swap.py`, `PROBED_EQUAL` and
+`PROBED_STRICT`).
+
+## Reusing a built and verified image
+
+A run that fails after [V1] has already built and verified the image. Take
+`--reuse-image "$PRIVATE/run-..."` with the same `--new-tag` and the next
+attempt does not build it again. [R1] accepts the existing tag only if all of
+these hold, and otherwise refuses with nothing changed:
+
+- the directory is a run directly under `--private`, its `state.json`
+  belongs to it, and it is not the current run;
+- that run built the same `--new-tag` and recorded `V1` as passed, a valid
+  image ID and the wheel SHA-256;
+- it was built on the target's current image (its recorded `old_image`);
+- the tag still resolves to the recorded image ID;
+- the image's layers extend the target image's layers.
+
+[B1] and [B2] then build nothing. [B2] resolves the tag again and fails
+(RB-A) if it has moved. [V1] always runs again on the image ID, against the
+current `pins.json`. Every snapshot step runs as usual. `state.json` and the
+[G1] `snapshot-receipt.json` record the reuse (`reuse` / `reused_image`: run
+directory, image ID, wheel SHA-256).
+
+Before the next attempt the owner deals with what the failed run left.
+RB-B renames a created, never-started replacement to `<name>-ocr-failed`,
+and [R1] refuses while that name exists. After the owner signs off, remove
+it (it was never started and holds no data), then run `--dry-run` with
+`--reuse-image` and read its `reusing ...` line before `--apply`.
+
+Alternatively, choose a new `--new-tag` and let the run build again.
 
 ## Known limits
 
