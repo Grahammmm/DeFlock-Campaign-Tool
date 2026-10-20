@@ -22,13 +22,20 @@ the run report.
   step and are never done here.
 * ``extract``: Phase 1 (G 2026-10-19) native text only. Reports the extract
   backlog from the ledger; documents that need OCR are counted as
-  ``awaiting_ocr`` (never dropped). When the running image lacks the native
-  parsers (pypdf/openpyxl) the backlog is reported with a needs-G action
-  instead of pretending to extract.
+  ``awaiting_ocr`` (never dropped). When the running interpreter lacks the
+  native parsers (pypdf/openpyxl) the backlog is reported with a needs-G action
+  instead of pretending to extract. The pinned flock-ocr image carries them in
+  its parser venv (``/opt/campaign-tool/venv``), which the stage plan selects
+  as ``CONTAINER_PYTHON`` when present.
 * ``digest_gates``: ledger stage-state roll-up for the gated stages; anything
   past privacy needs the owner, so it is review-required, never accepted.
 * ``outputs``: writes a counts-only snapshot under ``DIR/run-outputs/``.
   Nothing is published or sent.
+
+``extract``, ``digest_gates`` and ``outputs`` read the ledger (and portal
+queue) with ``immutable=1``, like ``adopt-mail``'s dry run, so counting never
+creates ``-wal``/``-shm`` sidecars. A non-empty WAL or rollback journal (an
+active or crashed writer) is reported as ``*_LEDGER_BUSY`` and not read.
 
 Every stage runs under its own container-side deadline (``--timeout``): killing
 a ``docker exec`` client does not stop work inside the container, so the
@@ -39,6 +46,7 @@ addresses or record text. A machine-valid result is review-required, not
 semantic acceptance of the run.
 """
 import argparse
+import contextlib
 from email import policy as email_policy
 from email.parser import BytesParser
 import hashlib
@@ -49,6 +57,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 
 STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs")
 GATED = ("catalog", "detect", "review", "compare", "privacy")
@@ -77,28 +86,53 @@ def needs(*items):
             for code, severity, count in items if count and count > 0]
 
 
+MAX_CHILD_STDOUT = 16 * 1024 * 1024
+
+
+def _kill_group(pgid):
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def run_child(argv, timeout):
     """Run a child in its own session; on timeout kill the whole group.
 
     stdout is captured for parsing only (never logged); stderr is discarded.
+    The deadline is on the child's own exit, not on stdout EOF: a descendant
+    left running with the inherited stdout would otherwise hold the stage open
+    until the deadline. After the child exits (or times out) its whole process
+    group is killed, which also closes any inherited copy of the pipe.
     """
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             stdin=subprocess.DEVNULL, start_new_session=True)
+    chunks, size = [], 0
+
+    def pump():
+        nonlocal size
+        while True:
+            data = proc.stdout.read1(65536)
+            if not data:
+                return
+            if size < MAX_CHILD_STDOUT:
+                chunks.append(data[:MAX_CHILD_STDOUT - size])
+                size += len(chunks[-1])
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
     try:
-        out, _ = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
+        _kill_group(proc.pid)
+        proc.wait()
         raise StageTimeout() from None
     finally:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)  # no descendant outlives the stage
-        except (ProcessLookupError, PermissionError):
-            pass
-    return proc.returncode, out
+        _kill_group(proc.pid)  # no descendant outlives the stage
+        reader.join(5)
+        if not reader.is_alive():
+            proc.stdout.close()
+    return proc.returncode, b"".join(chunks)
 
 
 def last_json(raw):
@@ -125,8 +159,55 @@ def paths(project):
     return project / "mail-history", project / "processing-v1", project / "portal-queue-v1"
 
 
+class LedgerBusy(Exception):
+    """A non-empty WAL or a rollback journal: a writer is active or crashed."""
+
+
+def _sidecars(path):
+    keys = []
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            info = os.lstat(str(path) + suffix)
+            keys.append((info.st_ino, info.st_size, info.st_mtime_ns))
+        except FileNotFoundError:
+            keys.append(None)
+    return keys
+
+
+@contextlib.contextmanager
+def snapshot_ro(path):
+    """Count-only read that never creates, changes or removes a file.
+
+    Same contract as ``mail_adoption._snapshot_db``: ``mode=ro`` alone creates
+    ``-shm`` (and replays a crashed writer's WAL), so a cleanly checkpointed
+    database is read with ``immutable=1``, touching no sidecar. A non-empty WAL
+    or a rollback journal raises ``LedgerBusy`` before anything is opened, and
+    a sidecar or file identity that changes during the read raises it after.
+    The adoption stage (a writer under the records-root lock) settles the WAL
+    before these stages run. A missing file is an error, never created.
+    """
+    path = Path(path)
+    before = _sidecars(path)
+    if before[0] is None:
+        raise sqlite3.OperationalError("database_missing")
+    if (before[1] is not None and before[1][1] > 0) or before[3] is not None:
+        raise LedgerBusy()
+    con = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=5)
+    try:
+        con.execute("PRAGMA query_only=ON")
+        yield con
+    finally:
+        con.close()
+    if _sidecars(path) != before:
+        raise LedgerBusy()
+
+
 def ledger_ro(processing):
-    return sqlite3.connect(f"file:{processing / 'ledger.sqlite'}?mode=ro", uri=True, timeout=30)
+    return snapshot_ro(processing / "ledger.sqlite")
+
+
+def busy(code):
+    return result("warn", {"skipped": 1}, code, needs_g=needs(("LEDGER_WAL_PENDING", "info", 1))), 0
 
 
 # --- sync -------------------------------------------------------------------
@@ -355,12 +436,11 @@ def awaiting_ocr(db):
 def stage_extract(args):
     _, processing, _ = paths(args.project)
     try:
-        db = ledger_ro(processing)
-        try:
+        with ledger_ro(processing) as db:
             extract = stage_counts(db).get("extract", {})
             ocr = awaiting_ocr(db)
-        finally:
-            db.close()
+    except LedgerBusy:
+        return busy("EXTRACT_LEDGER_BUSY")
     except sqlite3.Error:
         return result("fail", {"failed": 1}, "EXTRACT_LEDGER_UNREADABLE"), 1
     pending, blocked, done = extract.get("pending", 0), extract.get("blocked", 0), extract.get("done", 0)
@@ -381,12 +461,11 @@ def stage_extract(args):
 def stage_digest_gates(args):
     _, processing, _ = paths(args.project)
     try:
-        db = ledger_ro(processing)
-        try:
+        with ledger_ro(processing) as db:
             counts = stage_counts(db)
             proposals = db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
-        finally:
-            db.close()
+    except LedgerBusy:
+        return busy("GATES_LEDGER_BUSY")
     except sqlite3.Error:
         return result("fail", {"failed": 1}, "GATES_LEDGER_UNREADABLE"), 1
     pending = sum(counts.get(stage, {}).get("pending", 0) for stage in GATED)
@@ -403,22 +482,18 @@ def stage_digest_gates(args):
 def stage_outputs(args):
     mail, processing, portal = paths(args.project)
     try:
-        db = ledger_ro(processing)
-        try:
+        with ledger_ro(processing) as db:
             snapshot = {"snapshot_version": 1, "run_id": args.run_id,
                         "stage_state": stage_counts(db),
                         "mail_messages": db.execute("SELECT COUNT(*) FROM mail_messages").fetchone()[0],
                         "originals": db.execute("SELECT COUNT(*) FROM originals").fetchone()[0]}
-        finally:
-            db.close()
-        pdb = sqlite3.connect(f"file:{portal / 'portal.sqlite'}?mode=ro", uri=True, timeout=30)
-        try:
+        with snapshot_ro(portal / "portal.sqlite") as pdb:
             snapshot["portal_items"] = pdb.execute("SELECT COUNT(*) FROM portal_items").fetchone()[0]
             tables = {row[0] for row in pdb.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             snapshot["portal_refusals"] = (pdb.execute("SELECT COUNT(*) FROM portal_refusals").fetchone()[0]
                                            if "portal_refusals" in tables else 0)
-        finally:
-            pdb.close()
+    except LedgerBusy:
+        return busy("OUTPUTS_LEDGER_BUSY")
     except sqlite3.Error:
         return result("fail", {"failed": 1}, "OUTPUTS_LEDGER_UNREADABLE"), 1
     directory = Path(args.project) / "run-outputs"
