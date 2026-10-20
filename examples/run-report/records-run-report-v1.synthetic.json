@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "report_kind": "flock-records-run-report",
+  "run_id": "run_20260101T060000Z_0a1b2c3d",
+  "mode": "test",
+  "started_at": "2026-01-01T06:00:00Z",
+  "finished_at": "2026-01-01T06:07:30Z",
+  "duration_seconds": 450,
+  "overall_status": "warn",
+  "stages": [
+    {"name": "sync", "status": "ok", "counts": {"input": 3, "output": 3, "failed": 0, "skipped": 0}, "duration_seconds": 12.5, "error_code": null},
+    {"name": "delta", "status": "ok", "counts": {"input": 120, "output": 4, "failed": 0, "skipped": 116}, "duration_seconds": 3.1, "error_code": null},
+    {"name": "adoption", "status": "ok", "counts": {"input": 4, "output": 4, "failed": 0, "skipped": 0}, "duration_seconds": 1.8, "error_code": null},
+    {"name": "portal", "status": "warn", "counts": {"input": 2, "output": 1, "failed": 1, "skipped": 0}, "duration_seconds": 95.0, "error_code": "PORTAL_RATE_LIMITED"},
+    {"name": "extract", "status": "ok", "counts": {"input": 5, "output": 5, "failed": 0, "skipped": 0}, "duration_seconds": 290.2, "error_code": null},
+    {"name": "digest_gates", "status": "warn", "counts": {"input": 5, "output": 3, "failed": 0, "skipped": 0}, "duration_seconds": 40.0, "error_code": "GATE_REVIEW_REQUIRED"},
+    {"name": "outputs", "status": "ok", "counts": {"input": 3, "output": 3, "failed": 0, "skipped": 0}, "duration_seconds": 6.4, "error_code": null},
+    {"name": "notify", "status": "ok", "counts": {"input": 1, "output": 1, "failed": 0, "skipped": 0}, "duration_seconds": 0.9, "error_code": null}
+  ],
+  "new_data": {
+    "documents": 5,
+    "pages": 37,
+    "extracted_units": 212,
+    "portal_releases": 1,
+    "request_status_changes": 2
+  },
+  "review_required_count": 2,
+  "notify_failed": false,
+  "needs_g": [
+    {"code": "GATE_REVIEW_REQUIRED", "stage": "digest_gates", "severity": "action", "count": 2},
+    {"code": "PORTAL_RETRY_EXHAUSTED", "stage": "portal", "severity": "info", "count": 1}
+  ]
+}
