@@ -284,7 +284,7 @@ def write_awaiting_ocr(root, lines):
 
 def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
         document_timeout=DEFAULT_DOCUMENT_TIMEOUT, clock=time.monotonic, pipeline_factory=None,
-        native_workbook_policy=None):
+        native_workbook_policy=None, ocr=None):
     """Advance pending extraction under the root lock; return the outcome summary.
 
     ``deadline`` is a ``clock()`` value. No document starts unless it can get at
@@ -295,6 +295,10 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
     the budget or ``max_documents`` runs out are coded ``DEFERRED_RUN_BUDGET``.
     ``native_workbook_policy`` is a ``workbook_policy.NativeWorkbookPolicy`` from
     trusted startup (``load_native_workbook_policy``), else XLSX stays held.
+    ``ocr`` (Phase 2, T6) is ``{"tools", "tool_signature", "vision"}`` from the operator stage
+    plan: image-only PDF pages then go through per-page Tesseract and, when ``vision`` names a
+    local adapter (``extract.vision``), empty or low-confidence pages through it. Without it
+    those documents stay ``AWAITING_OCR`` exactly as in Phase 1.
     Raises ``RootNotInitialized`` (nothing created) and ``run.RunError``
     (``root_locked``).
     """
@@ -304,7 +308,10 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
     if not (root / "ledger.sqlite").is_file() or not (root / "intake" / "intake.sqlite").is_file():
         raise RootNotInitialized()
     if pipeline_factory is None:
-        pipeline = records_run.Pipeline(root, native_workbook_policy=native_workbook_policy)
+        ocr = ocr or {}
+        pipeline = records_run.Pipeline(root, native_workbook_policy=native_workbook_policy,
+                                        ocr_tools=ocr.get("tools"), ocr_tool_signature=ocr.get("tool_signature"),
+                                        ocr_vision=ocr.get("vision"))
     else:
         pipeline = pipeline_factory(root)
     missing = missing_parsers()

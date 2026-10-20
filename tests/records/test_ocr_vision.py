@@ -4,10 +4,13 @@ Everything is synthetic: injected OCR and vision runners, fictional PDFs, no rea
 """
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 from campaign_tool.records import extraction_ledger as enrollment
 from campaign_tool.records import extraction_routes as routes
@@ -248,6 +251,92 @@ class VisionFallbackTests(unittest.TestCase):
                                             result["original_sha256"], 2, entry["receipt_id"])
         self.assertTrue(ocr_closure.vision_artifact_name("vision_asset:" + "a" * 64 + ":sidecar.txt"))
         self.assertFalse(ocr_closure.vision_artifact_name("vision_asset:" + "a" * 64 + ":confidence.tsv"))
+
+
+class VisionConfigAndStageWiringTests(unittest.TestCase):
+    def setUp(self):
+        os.umask(0o077)
+        self.temp = tempfile.TemporaryDirectory(prefix="vision-config-")
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def config(self, body=None, mode=0o600, name="vision.json"):
+        path = self.dir / name
+        body = {"schema": vision.CONFIG_SCHEMA, "argv": list(VISION["argv"]), "engine": "qwen",
+                "model": VISION["model"], "signature": VISION["signature"]} if body is None else body
+        path.write_text(json.dumps(body))
+        path.chmod(mode)
+        return path
+
+    def test_load_config_accepts_owner_only_exact_schema(self):
+        self.assertEqual(vision.load_config(self.config()), VISION)
+
+    def test_load_config_refuses_unsafe_or_malformed_files(self):
+        good = self.config()
+        link = self.dir / "link.json"
+        link.symlink_to(good)
+        cases = {"group_readable": self.config(mode=0o640, name="open.json"), "symlink": link,
+                 "absent": self.dir / "absent.json",
+                 "extra_key": self.config(dict(json.loads(good.read_text()), endpoint="http://x"), name="extra.json"),
+                 "relative_argv": self.config(dict(json.loads(good.read_text()), argv=["qwen"]), name="rel.json"),
+                 "tesseract_engine": self.config(dict(json.loads(good.read_text()), engine="tesseract"), name="t.json")}
+        for label, path in cases.items():
+            with self.subTest(label), self.assertRaises(ValueError):
+                vision.load_config(path)
+
+    def stage(self, *extra, tools=("tools", "sig")):
+        from campaign_tool.records import native_extract, run_stages
+        args = run_stages.parser().parse_args(["extract", "--project", str(self.dir), *extra])
+        seen = {}
+
+        def fake_run(processing, **kwargs):
+            seen.update(kwargs)
+            return "summary"
+        with mock.patch.object(run_stages, "paths", return_value=(None, self.dir, None)), \
+                mock.patch.object(native_extract, "run", side_effect=fake_run), \
+                mock.patch.object(run_stages, "extract_result", return_value=({"status": "ok"}, 0)), \
+                mock.patch("campaign_tool.records.run.local_ocr_tools", return_value=tools):
+            outcome = run_stages.stage_extract(args)
+        return outcome, seen
+
+    def test_extract_stage_is_native_only_by_default(self):
+        (result, code), seen = self.stage()
+        self.assertEqual(code, 0)
+        self.assertIsNone(seen["ocr"])
+
+    def test_extract_stage_passes_ocr_and_vision_from_the_stage_plan(self):
+        (_, code), seen = self.stage("--ocr", "--ocr-vision-config", str(self.config()))
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["ocr"], {"tools": "tools", "tool_signature": "sig", "vision": VISION})
+        (_, code), seen = self.stage("--ocr")
+        self.assertEqual(seen["ocr"]["vision"], None)
+
+    def test_extract_stage_fails_visibly_on_bad_ocr_configuration(self):
+        cases = ((("--ocr",), (None, None), "EXTRACT_OCR_UNAVAILABLE"),
+                 (("--ocr", "--ocr-vision-config", str(self.dir / "absent.json")), ("t", "s"),
+                  "EXTRACT_OCR_VISION_CONFIG_INVALID"),
+                 (("--ocr-vision-config", str(self.config())), ("t", "s"), "STAGE_CONFIG_INVALID"))
+        for extra, tools, expected in cases:
+            with self.subTest(expected):
+                (result, code), seen = self.stage(*extra, tools=tools)
+                self.assertEqual((code, result["status"], result["error_code"]), (1, "fail", expected))
+                self.assertEqual(seen, {}, "nothing ran")
+                self.assertNotIn(self.temp.name, json.dumps(result))
+
+    def test_pipeline_hands_the_vision_adapter_to_extraction(self):
+        from campaign_tool.records import run as records_run
+        with self.assertRaisesRegex(ValueError, "ocr_vision_requires_ocr_tools"):
+            records_run.Pipeline(self.dir / "root", ocr_vision=VISION)
+        pipeline = records_run.Pipeline(self.dir / "root", ocr_tools=ocr_fixtures.TOOLS, ocr_tool_signature="stub-v1",
+                                        ocr_vision=VISION)
+        self.assertEqual(pipeline.config["ocr_vision"], {"engine": "qwen", "model": VISION["model"],
+                                                         "signature": VISION["signature"]})
+        with mock.patch.object(pipeline, "_original", return_value={"storage_path": "/x"}), \
+                mock.patch.object(pipeline, "_form", return_value="pdf"), \
+                mock.patch.object(records_run.extraction_routes, "extract", side_effect=RuntimeError("stop")) as call:
+            with self.assertRaises(RuntimeError):
+                pipeline.stage_extract("a" * 64, None)
+        self.assertEqual(call.call_args.kwargs["ocr_vision"], VISION)
 
 
 if __name__ == "__main__":
