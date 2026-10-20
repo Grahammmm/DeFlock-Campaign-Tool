@@ -18,28 +18,26 @@ RELEASE = "602814408e255b3e0649d4c303570f465a6f2aad"  # pragma: allowlist secret
 
 
 def load_evidence():
-    """Expand JSON commit prefixes from the frozen, unquoted full-ID table."""
-    commits = {}
-    for oid in (HERE / "commits.txt").read_text().splitlines():
+    """Expand zero-based JSON indexes into the frozen, unquoted full-ID table."""
+    commits = (HERE / "commits.txt").read_text().splitlines()
+    for oid in commits:
         if not re.fullmatch(r"[0-9a-f]{40}", oid):
             raise ValueError("Invalid full commit ID")
-        prefix = oid[:12]
-        if prefix in commits:
-            raise ValueError("Duplicate or ambiguous commit prefix")
-        commits[prefix] = oid
+    if len(set(commits)) != len(commits):
+        raise ValueError("Duplicate commit ID")
     used = set()
 
     def expand(row):
         for key in row.keys() & {"release", "headRefOid", "merge_base", "oid"}:
-            prefix = row[key]
-            if not isinstance(prefix, str) or not re.fullmatch(r"[0-9a-f]{12}", prefix):
-                raise ValueError("Invalid commit prefix")
-            row[key] = commits[prefix]
-            used.add(prefix)
+            index = row[key]
+            if type(index) is not int or not 0 <= index < len(commits):
+                raise ValueError("Invalid commit index")
+            row[key] = commits[index]
+            used.add(index)
         return row
 
     data = json.loads((HERE / "evidence.json").read_text(), object_hook=expand)
-    if used != commits.keys():
+    if used != set(range(len(commits))):
         raise ValueError("Unreferenced commit IDs")
     return data
 

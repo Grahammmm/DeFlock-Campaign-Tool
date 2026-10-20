@@ -16,9 +16,10 @@ All 14 cohort PRs were still OPEN. “Draft/ready” below is GitHub's draft fla
 not readiness for merge. Full head/base IDs, paths, blob-equality partitions,
 integration commit IDs and captured checks are in [evidence.json](evidence.json)
 with full commit IDs in [commits.txt](commits.txt). The JSON commit fields use
-12-character keys into that frozen, unquoted full-ID table; `verify.py` rejects
-missing, duplicate or ambiguous keys before expanding them. This encoding avoids
-credential-scanner false positives without changing scanner policy.
+zero-based integer line indexes into that frozen, unquoted full-ID table;
+preserve its order. `verify.py` rejects invalid indexes, duplicate IDs and unused
+entries before expanding them. This encoding avoids credential-scanner false
+positives without changing scanner policy.
 
 ## Method and verdict meanings
 
