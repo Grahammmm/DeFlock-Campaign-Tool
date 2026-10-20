@@ -47,6 +47,8 @@ OTHER_IMAGE = "sha256:" + "e3" * 32
 TARGET, SIDECAR, UNRELATED = "flock-target", "flock-sidecar", "unrelated"
 UNIT = "synthetic-mail"
 WHEEL_SHA = "ab" * 32
+HEAD = "5e" * 20
+PROBE_ID = "8" * 64
 
 _WAL_WRITER = (
     "import os, sqlite3, sys\n"
@@ -114,6 +116,9 @@ class FakeSystem:
         other = dict(vol, Name="other", Source=str(self.other_volume))
         self.add(_container("3" * 64, UNRELATED, OTHER_IMAGE, True, [other], ["other:/data"], [], {}))
         self.units = {f"{UNIT}.timer": "active", f"{UNIT}.service": "inactive"}
+        # The checkout running the driver: main at origin/main, clean (preflight).
+        self.git = {"branch": "main", "head": HEAD, "origin": HEAD, "dirty": "", "untracked": ""}
+        self.free = 1 << 40
 
     def record_event(self, argv):
         if argv[0] == "docker" and argv[1] in ("stop", "start", "rename", "build", "rm"):
@@ -121,7 +126,8 @@ class FakeSystem:
             if argv[1] == "build":
                 ref = argv[argv.index("-t") + 1]
             info = self.find(ref)
-            label = {"1" * 64: "old", "2" * 64: "sidecar", "3" * 64: "unrelated", "9" * 64: "new"}.get(
+            label = {"1" * 64: "old", "2" * 64: "sidecar", "3" * 64: "unrelated", "9" * 64: "new",
+                     "8" * 64: "probe"}.get(
                 info["Id"] if info else "", ref)
             self.events.append(f"{argv[1]} {label}" + (f" -> {argv[3]}" if argv[1] == "rename" else ""))
         elif argv[0] == "systemctl" and argv[2] in ("stop", "start"):
@@ -146,7 +152,7 @@ class FakeSystem:
         return f"2026-10-19T20:00:{self.clock:02d}Z"
 
     def disk_free(self, path):
-        return 1 << 40
+        return self.free(path) if callable(self.free) else self.free
 
     def open_files_under(self, roots):
         return list(self.open_files)
@@ -161,7 +167,7 @@ class FakeSystem:
         env = dict(e.split("=", 1) for e in image.get("Env") or [])
         env.update(dict(e.split("=", 1) for e in body.get("Env") or []))
         labels = dict(image.get("Labels") or {}, **(body.get("Labels") or {}))
-        ident = "9" * 64
+        ident = "8" * 64 if name.endswith(swap.PROBE_SUFFIX) else "9" * 64
         config = {k: v for k, v in body.items() if k not in ("HostConfig", "NetworkingConfig")}
         config.update(Env=[f"{k}={v}" for k, v in env.items()], Labels=labels)
         host = copy.deepcopy(body["HostConfig"])
@@ -187,6 +193,8 @@ class FakeSystem:
                 return response
         if argv[0] == "systemctl":
             return self._systemctl(argv)
+        if argv[0] == "git":
+            return self._git(argv)
         if argv[0] == sys.executable:
             script = Path(argv[2]).name
             if script == "build_wheel.py":
@@ -210,6 +218,27 @@ class FakeSystem:
             self.units[unit] = "inactive" if verb == "stop" else "active"
             return 0, "", ""
         return 1, "", "bad verb"
+
+    def _git(self, argv):
+        args, g = argv[3:], self.git
+        if args[:1] == ["symbolic-ref"]:
+            return (0, g["branch"] + "\n", "") if g["branch"] else (1, "", "")
+        if args[:3] == ["rev-parse", "--verify", "HEAD"]:
+            return 0, g["head"] + "\n", ""
+        if args[:1] == ["rev-parse"]:
+            return (0, g["origin"] + "\n", "") if g["origin"] else (1, "", "")
+        if args[:1] == ["status"]:
+            return 0, g["untracked"] if "--untracked-files=all" in args else g["dirty"], ""
+        return 1, "", "unknown git command"
+
+    def _rm(self, argv):
+        info = self.find(argv[-1])
+        if info is None:
+            return 1, "", "Error: No such container"
+        if info["State"]["Running"]:
+            return 1, "", "Error: container is running"
+        del self.containers[info["Id"]]
+        return 0, argv[-1] + "\n", ""
 
     def _info(self, argv):
         options = ["name=seccomp,profile=builtin"] + (["name=rootless"] if self.rootless else [])
@@ -300,8 +329,22 @@ class FakeSystem:
 
 
 def lifecycle(fake):
-    """Ordered state-changing events (no helpers, no reads), labelled at call time."""
-    return list(fake.events)
+    """Ordered state-changing events (no helpers, no reads), labelled at call time.
+
+    The preflight's create-only [C2] probe removal is left out here; the
+    preflight tests check it on its own.
+    """
+    return [e for e in fake.events if e != "rm probe"]
+
+
+def real_creates(fake):
+    """Engine API creates other than the preflight's create-only [C2] probe."""
+    return [c for c in fake.api_calls if not c[1].endswith(swap.PROBE_SUFFIX)]
+
+
+def data_helpers(fake):
+    """Helper runs other than the preflight's read-only survey."""
+    return [r for r in fake.helper_runs if "survey" not in r["command"]]
 
 
 def malformed_sqlite(path):
@@ -370,7 +413,8 @@ class RunMixin:
                 self.assertTrue(run["command"][-1].startswith("/private/"), run["command"])
             if "sqlite-evidence" in run["command"]:
                 self.assertTrue(run["command"][5].startswith("/private/"), run["command"])
-        self.assertFalse(any(a[0] == "docker" and a[1] == "rm" for a in self.fake.calls), "docker rm used")
+        removed = [a[-1] for a in self.fake.calls if a[0] == "docker" and a[1] == "rm"]
+        self.assertTrue(all(ref == PROBE_ID for ref in removed), f"docker rm used beyond the [C2] probe: {removed}")
 
 
 class RootlessRunbookOrderTests(unittest.TestCase):
@@ -601,6 +645,8 @@ class RootlessDryRunTests(RunMixin, unittest.TestCase):
                 self.assertIn(argv[1], {"info", "inspect", "ps", "image", "top"}, argv)
             elif argv[0] == "systemctl":
                 self.assertEqual(argv[2], "show", argv)
+            elif argv[0] == "git":
+                self.assertIn(argv[3], {"symbolic-ref", "rev-parse", "status"}, argv)
             else:
                 self.fail(f"dry-run ran {argv}")
         self.assertEqual(self.fake.api_calls, [])
@@ -685,7 +731,7 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
             self.assertEqual(backup.execute("select count(*) from synthetic").fetchone()[0], 42)
         finally:
             backup.close()
-        body = self.fake.api_calls[0][2]
+        body = self.fake.api_calls[-1][2]
         self.assertEqual(body["Image"], NEW_IMAGE)
         self.assertEqual(body["HostConfig"], json.loads((self.run_dir() / "inspect-before.json")
                                                         .read_text())["HostConfig"])
@@ -700,7 +746,7 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
             "systemctl stop synthetic-mail.timer", "systemctl stop synthetic-mail.service",
             "stop old", "stop sidecar", "start old", "start sidecar", "systemctl start synthetic-mail.timer"])
         self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
-        self.assertEqual(self.fake.api_calls, [])
+        self.assertEqual(real_creates(self.fake), [])
         self.assertEqual(self.state()["phase"], "rolled_back")
         self.assert_live_unchanged()
         self.assert_safe_helpers()
@@ -716,53 +762,49 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
                                                      "systemctl start synthetic-mail.timer"])
         self.assert_live_unchanged()
 
-    def test_b1_parks_a_previous_attempts_wheel_out_of_the_build_context(self):
+    def test_b1_dist_left_by_an_earlier_attempt_is_refused_in_preflight(self):
         # attempt 4 (2026-10-19) failed at B1 because attempt 3 had left its wheel in dist/
         self.dist.mkdir()
-        stale = "deflock_campaign_tool-0.0.0-py3-none-any.whl"
-        (self.dist / stale).write_bytes(b"stale wheel from the previous attempt")
-        code, out = self.run_swap(self.args())
-        self.assertEqual(code, 0, out)
-        self.assertIn(f"moved stale {self.dist} ({stale}) to", out)
-        self.assertFalse(self.dist.exists())
-        parked = self.run_dir() / "b1" / "stale-dist" / stale
-        self.assertEqual(parked.read_bytes(), b"stale wheel from the previous attempt")
-        self.assertEqual(stat.S_IMODE(os.stat(parked.parent.parent).st_mode), 0o700)
-        self.assertEqual(self.state()["stale_dist_parked"], [stale])
-        self.assertEqual(lifecycle(self.fake), self.MAIN_EVENTS)
-
-    def test_b1_leaves_an_empty_or_absent_dist_alone(self):
+        for entries in (["deflock_campaign_tool-0.0.0-py3-none-any.whl"],
+                        ["deflock_campaign_tool-0.0.0-py3-none-any.whl", "notes.txt"]):
+            with self.subTest(entries=entries):
+                for name in entries:
+                    (self.dist / name).write_bytes(b"left by an earlier attempt")
+                code, out = self.run_swap(self.args())
+                self.assertEqual(code, swap.EXIT_REFUSED, out)
+                self.assertIn(f"FAIL at [R1]: preflight: {self.dist} must be absent or empty (holds {entries})", out)
+                self.assertEqual(lifecycle(self.fake), [])
+                self.assertFalse(any("build_wheel.py" in " ".join(a) for a in self.fake.calls), "build ran")
+                self.assertEqual(sorted(p.name for p in self.dist.iterdir()), entries)
+                self.assert_live_unchanged()
+                shutil.rmtree(self.private)
+    def test_b1_and_b2_build_inside_the_run_dir_and_leave_the_recipe_alone(self):
         self.dist.mkdir()
         code, out = self.run_swap(self.args())
         self.assertEqual(code, 0, out)
-        self.assertNotIn("moved stale", out)
-        self.assertTrue(self.dist.is_dir())
-        self.assertNotIn("stale_dist_parked", self.state())
+        build = self.run_dir() / "build"
+        wheel = next(a for a in self.fake.calls if "build_wheel.py" in " ".join(a))
+        self.assertEqual(wheel[wheel.index("--dist") + 1], str(build / "dist"))
+        check = next(a for a in self.fake.calls if "preflight.py" in " ".join(a))
+        self.assertEqual(check[check.index("--context") + 1], str(build))
+        docker_build = next(a for a in self.fake.calls if a[:2] == ["docker", "build"])
+        self.assertEqual(docker_build[-1], str(build))
+        self.assertEqual(docker_build[docker_build.index("-f") + 1], str(RECIPE / "Dockerfile"))
+        for name in ("requirements.lock", ".dockerignore"):
+            self.assertEqual((build / name).read_bytes(), (RECIPE / name).read_bytes())
+        self.assertEqual(stat.S_IMODE(os.stat(build).st_mode), 0o700)
+        self.assertEqual(list(self.dist.iterdir()), [])
+        self.assertIn("recipe dist/ absent or empty; B1/B2 build in $RUN/build", out)
 
-    def test_b1_stops_before_the_build_when_dist_holds_more_than_engine_wheels(self):
-        self.dist.mkdir()
-        (self.dist / "deflock_campaign_tool-0.0.0-py3-none-any.whl").write_bytes(b"wheel")
-        (self.dist / "notes.txt").write_text("hand-made\n")
-        code, out = self.run_swap(self.args())
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        self.assertIn("FAIL at [B1]", out)
-        self.assertIn("not engine wheels: ['notes.txt']", out)
-        self.assertNotIn("build flock-ocr:synthetic", lifecycle(self.fake))
-        self.assertFalse(any("build_wheel.py" in " ".join(a) for a in self.fake.calls), "build ran")
-        self.assertEqual(sorted(p.name for p in self.dist.iterdir()),
-                         ["deflock_campaign_tool-0.0.0-py3-none-any.whl", "notes.txt"])
-        self.assertEqual(self.state()["phase"], "rolled_back")
-        self.assert_live_unchanged()
-
-    def test_dry_run_only_reports_a_stale_dist(self):
+    def test_dry_run_refuses_a_stale_dist_and_changes_nothing(self):
         self.dist.mkdir()
         stale = "deflock_campaign_tool-0.0.0-py3-none-any.whl"
         (self.dist / stale).write_bytes(b"wheel")
         code, out = self.run_swap(self.args("--dry-run"))
-        self.assertEqual(code, 0, out)
-        self.assertIn(f"would move stale {self.dist} ({stale}) to", out)
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn("must be absent or empty", out)
         self.assertTrue((self.dist / stale).exists())
-
+        self.assertFalse(self.private.exists())
     def test_live_change_before_the_gate_escalates_without_restore_or_start(self):
         def writer():
             (self.fake.volume / "state" / "notes.txt").write_text("changed by an unknown writer\n")
@@ -785,7 +827,7 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertNotIn("systemctl stop synthetic-mail.service", lifecycle(self.fake))
         self.assertEqual(lifecycle(self.fake)[-1], "systemctl start synthetic-mail.timer")
         self.assertEqual(self.fake.helper_runs[0]["mounts"], [("/private", False), ("/recipe", True)])
-        self.assertFalse(any("/live/" in " ".join(r["command"]) for r in self.fake.helper_runs))
+        self.assertFalse(any("/live/" in " ".join(r["command"]) for r in data_helpers(self.fake)))
 
     def test_open_file_under_a_mount_fails_quiescence(self):
         self.fake.open_files = ["pid 4242 (synthetic-queue)"]
@@ -796,14 +838,15 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertEqual(lifecycle(self.fake), [
             "systemctl stop synthetic-mail.timer", "systemctl stop synthetic-mail.service",
             "stop old", "stop sidecar", "start old", "start sidecar", "systemctl start synthetic-mail.timer"])
-        self.assertFalse(any("/live/" in " ".join(r["command"]) for r in self.fake.helper_runs))
+        self.assertFalse(any("/live/" in " ".join(r["command"]) for r in data_helpers(self.fake)))
 
     def test_create_diff_takes_rb_b_and_restores_old_name(self):
         original = self.fake.docker_api
 
         def drifting(method, path, body):
             status, response = original(method, path, body)
-            self.fake.find("9" * 64)["HostConfig"]["Privileged"] = True
+            if not path.endswith(swap.PROBE_SUFFIX):
+                self.fake.find("9" * 64)["HostConfig"]["Privileged"] = True
             return status, response
         self.fake.docker_api = drifting
         code, out = self.run_swap(self.args())
@@ -920,18 +963,38 @@ class AcceptMalformedSqliteTests(RunMixin, unittest.TestCase):
     def evidence_runs(self):
         return [r["command"] for r in self.fake.helper_runs if "sqlite-evidence" in r["command"]]
 
-    def test_default_still_refuses_a_malformed_database(self):
+    def test_unpinned_malformed_fixture_is_refused_in_preflight(self):
+        # attempt 1 (2026-10-19) snapshotted everything, then failed at S2 on this
         code, out = self.run_swap(self.args())
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"FAIL at [R1]: preflight: m01: 1 SQLite database(s) fail integrity_check read-only and "
+                      f"are not pinned (S2 would fail): ['{self.FIXTURE}']", out)
+        self.assertEqual(lifecycle(self.fake), [])
+        self.assertFalse((self.run_dir() / "s1").exists())
+        survey = json.loads((self.run_dir() / "preflight" / "m01.survey.json").read_text())
+        self.assertEqual(survey["sqlite"][self.FIXTURE]["status"], "malformed")
+        self.assertEqual(real_creates(self.fake), [])
+        self.assertEqual(self.evidence_runs(), [])
+        self.assert_live_unchanged()
+        self.assert_safe_helpers()
+
+    def test_s2_still_refuses_a_malformed_database_the_preflight_did_not_see(self):
+        broken = (self.fake.bind / self.FIXTURE).read_bytes()
+        (self.fake.bind / self.FIXTURE).unlink()
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+
+        def appear():  # written after the survey, before the S1 baseline manifest
+            (self.fake.bind / self.FIXTURE).write_bytes(broken)
+        self.fake.hooks["manifest /live/m01"] = appear
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ESCALATE if "ESCALATE" in out else swap.EXIT_ROLLED_BACK, out)
         self.assertIn("FAIL at [S2]", out)
         self.assertIn(f"SQLite evidence failed for {self.FIXTURE}: database disk image is malformed", out)
         failure = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence-failure.json").read_text())
         self.assertEqual(failure["exit"], 2)
         self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
-        self.assertEqual(self.fake.api_calls, [])
+        self.assertEqual(real_creates(self.fake), [])
         self.assertFalse(any("--accept-malformed" in c for c in self.evidence_runs()))
-        self.assert_live_unchanged()
-
     def test_pinned_fixture_is_archived_restore_tested_and_hash_matched(self):
         code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}"))
         self.assertEqual(code, 0, out)
@@ -961,42 +1024,38 @@ class AcceptMalformedSqliteTests(RunMixin, unittest.TestCase):
         self.assert_live_unchanged()
         self.assert_safe_helpers()
 
-    def test_pin_with_another_hash_fails_at_s2(self):
+    def test_pin_with_another_hash_is_refused_in_preflight(self):
         code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={'0' * 64}"))
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        self.assertIn("FAIL at [S2]", out)
-        self.assertIn("no snapshotted mount holds that path with the pinned sha256", out)
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"--accept-malformed-sqlite {self.FIXTURE}: no mount holds it at sha256 {'0' * 64} "
+                      "(per mount: {'m00': 'absent', 'm01': 'hash_differs'}); S2 would fail", out)
+        self.assertEqual(lifecycle(self.fake), [])
         self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
         self.assert_live_unchanged()
-
-    def test_pin_for_a_path_that_does_not_exist_fails_at_s2(self):
+    def test_pin_for_a_path_that_does_not_exist_is_refused_in_preflight(self):
         code, out = self.run_swap(self.pinned(f"fixtures/absent/ledger.sqlite={self.digest}"))
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        self.assertIn("FAIL at [S2]", out)
-        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
-
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn("--accept-malformed-sqlite fixtures/absent/ledger.sqlite: no mount holds it", out)
+        self.assertIn("{'m00': 'absent', 'm01': 'absent'}", out)
+        self.assertEqual(lifecycle(self.fake), [])
     def test_pin_exempts_only_its_own_path_and_every_failure_is_named(self):
         (self.fake.bind / self.COPY).parent.mkdir(parents=True)
         shutil.copyfile(self.fake.bind / self.FIXTURE, self.fake.bind / self.COPY)
         code, out = self.run_swap(self.args())
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        failure = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence-failure.json").read_text())
-        named = [line for line in failure["stderr"] if line.startswith("FAIL SQLite evidence failed")]
-        self.assertEqual(len(named), 2, failure)
-        self.assertTrue(any(self.FIXTURE in line for line in named))
-        self.assertTrue(any(self.COPY in line for line in named))
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"2 SQLite database(s) fail integrity_check read-only and are not pinned (S2 would fail): "
+                      f"['{self.FIXTURE}', '{self.COPY}']", out)
         shutil.rmtree(self.private)
         code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}"))
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        self.assertIn(f"SQLite evidence failed for {self.COPY}", out)
-        self.assertNotIn(f"SQLite evidence failed for {self.FIXTURE}", out)
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"not pinned (S2 would fail): ['{self.COPY}']", out)
         shutil.rmtree(self.private)
         code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}", f"{self.COPY}={self.digest}"))
         self.assertEqual(code, 0, out)
+        self.assertEqual(lifecycle(self.fake), RootlessApplyTests.MAIN_EVENTS)
         receipt = json.loads((self.run_dir() / "snapshot-receipt.json").read_text())
         self.assertEqual(receipt["sqlite_accepted_malformed_sha256"],
                          {f"m01/{self.FIXTURE}": self.digest, f"m01/{self.COPY}": self.digest})
-
     def test_dry_run_names_the_exemption_and_changes_nothing(self):
         code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}", mode="--dry-run"))
         self.assertEqual(code, 0, out)
@@ -1369,10 +1428,10 @@ class C2DefaultsAndReuseImageTests(RunMixin, unittest.TestCase):
 
         def create(method, path, body):
             status, response = original(method, path, body)
-            new = self.fake.find("9" * 64)
+            new = self.fake.find(response["Id"])
             new["HostConfig"]["OomKillDisable"] = False
             new["ImageManifestDescriptor"] = dict(self.DESCRIPTOR, digest=body["Image"], size=4915)
-            if extra:
+            if extra and not path.endswith(swap.PROBE_SUFFIX):
                 extra(new)
             return status, response
         self.fake.docker_api = create
@@ -1429,8 +1488,8 @@ class C2DefaultsAndReuseImageTests(RunMixin, unittest.TestCase):
         self.assertIn("verify.py", scripts)
         self.assertIn([sys.executable, "-B", str(RECIPE / "verify.py"), "--image", NEW_IMAGE], new_calls)
         self.assertFalse(any(a[:2] == ["docker", "build"] for a in new_calls))
-        self.assertEqual(self.fake.events[events:], [e for e in RootlessApplyTests.MAIN_EVENTS
-                                                     if not e.startswith("build")])
+        self.assertEqual([e for e in self.fake.events[events:] if e != "rm probe"],
+                         [e for e in RootlessApplyTests.MAIN_EVENTS if not e.startswith("build")])
         self.assertIn("not rebuilt: reusing wheel sha256 " + WHEEL_SHA, out)
         self.assertIn(f"not rebuilt: {self.TAG} = {NEW_IMAGE}", out)
         state = json.loads((self.new_run(prev) / "state.json").read_text())
@@ -1451,8 +1510,10 @@ class C2DefaultsAndReuseImageTests(RunMixin, unittest.TestCase):
         self.assertIn("not rebuilt", out)
         self.assertNotRegex(out, r"would run: .*(build_wheel\.py|preflight\.py|docker build)")
         for argv in self.fake.calls[calls:]:
-            self.assertIn(argv[0], ("docker", "systemctl"), argv)
-            if argv[0] == "docker":
+            self.assertIn(argv[0], ("docker", "systemctl", "git"), argv)
+            if argv[0] == "git":
+                self.assertIn(argv[3], {"symbolic-ref", "rev-parse", "status"}, argv)
+            elif argv[0] == "docker":
                 self.assertIn(argv[1], {"info", "inspect", "ps", "image", "top"}, argv)
             else:
                 self.assertEqual(argv[2], "show", argv)
@@ -1499,13 +1560,13 @@ class C2DefaultsAndReuseImageTests(RunMixin, unittest.TestCase):
 
     def test_tag_moved_after_r1_fails_b2_before_any_container_change(self):
         prev = self.failed_first_run()
-        api = len(self.fake.api_calls)
+        api = len(real_creates(self.fake))
         self.fake.hooks["sqlite-evidence"] = lambda: self.fake.tags.update({self.TAG: OTHER_IMAGE})
         code, out = self.run_swap(self.args(reuse_image=str(prev)))
         self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
         self.assertIn(f"FAIL at [B2]: {self.TAG} now resolves to {OTHER_IMAGE}", out)
         self.assertIn("ROLLBACK RB-A", out)
-        self.assertEqual(len(self.fake.api_calls), api)
+        self.assertEqual(len(real_creates(self.fake)), api)
         self.assertNotIn("verify.py", " ".join(" ".join(a) for a in self.fake.calls[-20:]))
 
     def test_reuse_arguments(self):
@@ -1517,6 +1578,287 @@ class C2DefaultsAndReuseImageTests(RunMixin, unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
             swap.parse_args(["--resume", "/p/run-1", "--reuse-image", "/p/run-0"])
         self.assertIn("--reuse-image is fixed at --apply", err.getvalue())
+
+
+class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
+    """FL-3: each failure attempts 1-6 met after S1 is refused in the [R1] preflight.
+
+    Every refusal here exits 2 with no lifecycle event: nothing was stopped,
+    snapshotted, built, renamed or created (the create-only probe is removed).
+    """
+
+    def assert_refused_before_any_change(self, code, out, needle):
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn("FAIL at [R1]: preflight: ", out)
+        self.assertIn(needle, out)
+        self.assertNotIn("[Q1] ", out)
+        self.assertEqual(lifecycle(self.fake), [])
+        self.assertEqual(real_creates(self.fake), [])
+        self.assertIsNone(self.fake.find(TARGET + swap.PROBE_SUFFIX))
+        self.assertFalse(any((d / "s1").exists() for d in self.private.glob("run-*")))
+        self.assertTrue(self.fake.find(TARGET)["State"]["Running"])
+        self.assertEqual(self.fake.units[f"{UNIT}.timer"], "active")
+        self.assert_live_unchanged()
+        self.assert_safe_helpers()
+
+    def test_preflight_runs_inside_r1_before_anything_is_stopped(self):
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        q1 = out.index("[Q1] ")
+        for line in ("preflight: checkout is main at origin/main", "preflight: recipe dist/ absent or empty",
+                     "SQLite database(s) pass integrity_check read-only", "preflight: C2 probe settings equal",
+                     "preflight: space "):
+            self.assertLess(out.index(line), q1, line)
+        self.assertEqual(self.fake.events[0], "rm probe")
+        report = json.loads((self.run_dir() / "preflight.json").read_text())
+        self.assertEqual(report["checkout"], {"commit": HEAD, "problems": []})
+        self.assertEqual(report["c2_probe_diff"], [])
+        self.assertEqual(self.state()["recipe_commit"], HEAD)
+        probe = self.fake.api_calls[0]
+        self.assertTrue(probe[1].endswith("name=" + TARGET + swap.PROBE_SUFFIX))
+        self.assertEqual(probe[2]["Image"], OLD_IMAGE)
+        self.assertFalse({"Binds", "Mounts", "VolumesFrom"} & set(probe[2]["HostConfig"]))
+        surveys = [r for r in self.fake.helper_runs if "survey" in r["command"]]
+        self.assertEqual(len(surveys), 2)
+        self.assertTrue(all(ro for r in surveys for d, ro in r["mounts"] if d.startswith("/live/")))
+
+    def test_s2_unpinned_malformed_fixture(self):
+        # attempt 1: snapshotted ~130 GB, then failed at S2 on a mutation-test fixture
+        malformed_sqlite(self.fake.bind / "fixtures/db-mutation/ledger.sqlite")
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+        code, out = self.run_swap(self.args())
+        self.assert_refused_before_any_change(code, out, "SQLite database(s) fail integrity_check read-only and "
+                                              "are not pinned (S2 would fail): ['fixtures/db-mutation/ledger.sqlite']")
+
+    def test_s3_socket_is_named_in_preflight_and_excluded_from_equality(self):
+        # attempt 3: a socket tar cannot archive made S3's fresh restore differ from the baseline
+        make_socket(self.fake.volume / ".codex", "app-server.sock")
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        line = "preflight: m00: 1 non-archivable special file(s) (S3/A2 exclude them from every equality check"
+        self.assertLess(out.index(line), out.index("[Q1] "))
+        self.assertIn(".codex/app-server.sock (socket)", out[out.index(line):out.index("[Q1] ")])
+        survey = json.loads((self.run_dir() / "preflight" / "m00.survey.json").read_text())
+        self.assertEqual(survey["non_archivable"], {".codex/app-server.sock": "socket"})
+        self.assertEqual(self.state()["phase"], "complete")
+
+    def test_overflow_owned_entries_are_refused_in_preflight(self):
+        original = evidence.survey
+
+        def survey_with_overflow(root, accepted=None):
+            report = original(root, accepted)
+            if str(root) == str(self.fake.bind):
+                report["overflow_owned"] = ["receipt.json"]
+            return report
+        self.fake.faults = {}
+        report = survey_with_overflow(self.fake.bind)
+        self.fake.faults["survey /live/m01"] = (0, json.dumps(report), "")
+        code, out = self.run_swap(self.args())
+        self.assert_refused_before_any_change(code, out, "m01: 1 entr(y/ies) owned by the overflow ID 65534")
+
+    def test_c2_api_default_difference_is_caught_by_the_create_only_probe(self):
+        # attempt 3: C2 diffs from fields the daemon stores in another form
+        original = self.fake.docker_api
+
+        def daemon(method, path, body):
+            status, response = original(method, path, body)
+            self.fake.find(response["Id"])["HostConfig"]["CpuShares"] = 1024  # saved: absent
+            return status, response
+        self.fake.docker_api = daemon
+        code, out = self.run_swap(self.args())
+        self.assert_refused_before_any_change(
+            code, out, "C2 would fail: a create-only probe with the saved settings differs: ['HostConfig.CpuShares']")
+        self.assertEqual(self.fake.events, ["rm probe"])
+        diff = json.loads((self.run_dir() / "preflight" / "c2-probe-diff.json").read_text())
+        self.assertEqual(diff, ["HostConfig.CpuShares"])
+
+    def test_c2_probe_that_cannot_be_created_or_already_exists_is_refused(self):
+        self.fake.docker_api = lambda method, path, body: (400, {"message": "conflicting options"})
+        code, out = self.run_swap(self.args())
+        self.assert_refused_before_any_change(code, out, "C2 probe create failed: 400 conflicting options")
+        shutil.rmtree(self.private)
+        self.fake = FakeSystem(self.tmp / "again")
+        self.fake.add(dict(_container("7" * 64, TARGET + swap.PROBE_SUFFIX, OLD_IMAGE, False, [], [], [], {})))
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"a container named {TARGET}{swap.PROBE_SUFFIX} already exists", out)
+        self.assertEqual(self.fake.api_calls, [])
+
+    def test_b1_leftover_dist(self):
+        # attempt 4: a wheel left in the recipe dist/ by attempt 3 failed B1 after the snapshot
+        self.dist.mkdir()
+        (self.dist / "deflock_campaign_tool-0.0.0-py3-none-any.whl").write_bytes(b"attempt 3")
+        code, out = self.run_swap(self.args())
+        self.assert_refused_before_any_change(code, out, f"{self.dist} must be absent or empty")
+        self.assertEqual(self.fake.api_calls, [])
+
+    def test_off_main_or_stale_checkout(self):
+        # attempts 4 and 5 ran stale code from a canonical checkout left on a task branch
+        cases = {
+            "checkout is on 'flock/t_task-branch', not main": {"branch": "flock/t_task-branch"},
+            "checkout is on 'a detached HEAD', not main": {"branch": ""},
+            f"HEAD {'7a' * 6} is not origin/main {HEAD[:12]}": {"head": "7a" * 20},
+            "refs/remotes/origin/main is missing": {"origin": ""},
+            "tracked files are modified: [' M container/flock-ocr/rootless_swap.py']":
+                {"dirty": " M container/flock-ocr/rootless_swap.py\n"},
+            "untracked files in the recipe directory: ['container/flock-ocr/extra.py']":
+                {"untracked": "?? container/flock-ocr/extra.py\n"},
+        }
+        for needle, change in cases.items():
+            with self.subTest(case=needle):
+                self.fake = FakeSystem(self.tmp / re.sub(r"\W+", "_", needle)[:40])
+                self.private = self.fake.tmp / "private"
+                self.live_before = {"vol": evidence.manifest(self.fake.volume),
+                                    "bind": evidence.manifest(self.fake.bind)}
+                self.fake.git.update(change)
+                code, out = self.run_swap(self.args())
+                self.assert_refused_before_any_change(code, out, needle)
+                self.assertEqual(self.fake.helper_runs[-1]["command"][0], "sh")  # no survey ran
+                self.assertEqual(self.fake.api_calls, [])
+                code, out = self.run_swap(self.args("--dry-run"))
+                self.assertEqual(code, swap.EXIT_REFUSED, out)
+                self.assertIn(needle, out)
+
+    def expected_need(self):
+        surveys = [evidence.survey(self.fake.volume), evidence.survey(self.fake.bind)]
+        return swap.space_budget(sum(s["tar_bytes"] for s in surveys), max(s["extract_bytes"] for s in surveys),
+                                 sum(s["sqlite_bytes"] for s in surveys))
+
+    def test_a2_space_is_budgeted_up_front(self):
+        # attempt 6: S1 checked 3x + 512 MiB, A2 re-checked 3x after S1 had used 1x: 146 MB short
+        parts, need = self.expected_need()
+        self.assertEqual(set(parts), {"s1_archives", "s2_sqlite_backups", "a2_archives", "a2_sqlite_backups",
+                                      "restore_preservation", "largest_extract", "margin"})
+        self.assertEqual(parts["margin"], 512 << 20)
+        self.assertEqual(parts["s1_archives"], parts["a2_archives"])
+        self.fake.free = need - 1
+        code, out = self.run_swap(self.args())
+        self.assert_refused_before_any_change(
+            code, out, f"private dir has {need - 1} bytes free, the run needs {need} (s1_archives ")
+        self.assertIn("free 1 bytes first", out)
+
+    def test_a2_gate_is_one_archive_set_plus_512_mib(self):
+        _, need = self.expected_need()
+        tar = sum(evidence.space_estimate(evidence.manifest(d)["entries"])["tar_bytes"]
+                  for d in (self.fake.volume, self.fake.bind))
+        seen = []
+
+        def free(path):
+            seen.append(path)
+            # preflight and S1 see the full budget; A2 sees only one archive set + margin,
+            # far below the 3x + 512 MiB the old A2 check demanded
+            return need if len(seen) <= 2 else tar + (512 << 20)
+        self.fake.free = free
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(seen), 3)
+        self.assertIn(f"space: {tar + (512 << 20)} bytes free, {tar + (512 << 20)} needed for the A2 archives "
+                      "(1x + 512 MiB)", out)
+        self.assertLess(tar + (512 << 20), 3 * tar + (512 << 20))
+        shutil.rmtree(self.private)
+        self.fake = FakeSystem(self.tmp / "short")
+        self.private = self.fake.tmp / "private"
+        seen.clear()
+        self.fake.free = lambda path: (seen.append(path), need if len(seen) <= 2 else tar + (512 << 20) - 1)[1]
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn(f"FAIL at [A2]: private dir has {tar + (512 << 20) - 1} bytes free, needs "
+                      f"{tar + (512 << 20)} for the A2 archives (1x + 512 MiB)", out)
+
+
+class SurveyAndBudgetTests(unittest.TestCase):
+    def test_survey_is_read_only_and_reports_what_the_preflight_needs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "m"
+            (root / "db").mkdir(parents=True)
+            subprocess.run([sys.executable, "-B", "-c", _WAL_WRITER, str(root / "db" / "live.db")], check=True)
+            digest = malformed_sqlite(root / "fx" / "ledger.sqlite")
+            (root / "blob.bin").write_bytes(b"x" * 5000)
+            make_socket(root / "run", "s.sock")
+            before = evidence.manifest(root)
+            report = evidence.survey(root, {"fx/ledger.sqlite": digest, "missing.sqlite": "0" * 64})
+            self.assertEqual(evidence.manifest(root), before)  # no -shm/-wal created, nothing touched
+            self.assertEqual(report["sqlite"]["fx/ledger.sqlite"]["status"], "accepted_malformed")
+            self.assertEqual(report["sqlite"]["db/live.db"]["status"], "ok")
+            self.assertEqual(report["pins"], {"fx/ledger.sqlite": "accepted", "missing.sqlite": "absent"})
+            self.assertEqual(report["non_archivable"], {"run/s.sock": "socket"})
+            self.assertEqual(report["bytes"], sum(e.get("size", 0) for e in before["entries"].values()))
+            self.assertGreaterEqual(report["sqlite_bytes"], before["entries"]["db/live.db"]["size"])
+            unpinned = evidence.survey(root)
+            self.assertEqual(unpinned["sqlite"]["fx/ledger.sqlite"]["status"], "malformed")
+            other = evidence.survey(root, {"fx/ledger.sqlite": "1" * 64})
+            self.assertEqual(other["pins"], {"fx/ledger.sqlite": "hash_differs"})
+            self.assertEqual(other["sqlite"]["fx/ledger.sqlite"]["status"], "malformed")
+
+    def test_space_estimate_bounds_a_real_tar_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "m"
+            (root / ("d" * 120)).mkdir(parents=True)
+            for n in range(30):
+                (root / ("d" * 120) / f"f{n}").write_bytes(os.urandom(n * 700))
+            (root / "empty").write_bytes(b"")
+            os.symlink("empty", root / "link")
+            os.symlink("t" * 150, root / "long-link")
+            archive = Path(tmp) / "m.tar"
+            subprocess.run(["tar", "--numeric-owner", "-cpf", str(archive), "-C", str(root), "."], check=True)
+            estimate = evidence.space_estimate(evidence.manifest(root)["entries"])
+            self.assertGreaterEqual(estimate["tar_bytes"], archive.stat().st_size)
+            self.assertLess(estimate["tar_bytes"], archive.stat().st_size + 64 * 1024)
+
+    def test_budget_is_three_archive_sets_two_backup_sets_one_extract_and_the_margin(self):
+        parts, need = swap.space_budget(100, 7, 3)
+        self.assertEqual(need, 3 * 100 + 2 * 3 + 7 + (512 << 20))
+
+
+class RehearsalModeTests(unittest.TestCase):
+    def test_rehearse_takes_only_its_scratch_root(self):
+        args = swap.parse_args(["--rehearse", "--private", "/scratch/r", "--rehearse-mib", "16"])
+        self.assertEqual((args.mode, args.rehearse_mib, args.rehearse_fault), ("rehearse", 16, None))
+        for extra in (["--container", "x"], ["--pause-unit", "u"], ["--new-tag", "a:b"],
+                      ["--accept-malformed-sqlite", "a.sqlite=" + "0" * 64], ["--reuse-image", "/r"]):
+            with self.subTest(extra=extra):
+                with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                    swap.parse_args(["--rehearse", "--private", "/scratch/r", *extra])
+                self.assertIn("--rehearse makes its own", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            swap.parse_args(["--rehearse"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            swap.parse_args(["--dry-run", "--rehearse-fault", "unpinned-fixture"])
+
+    def test_rehearsal_system_simulates_only_its_own_units(self):
+        system = swap.RehearsalSystem({"r-mail.timer": "active", "r-mail.service": "inactive"})
+        self.assertEqual(system.run(["systemctl", "--user", "show", "--property=LoadState,ActiveState",
+                                     "r-mail.timer"], 5), (0, "LoadState=loaded\nActiveState=active\n", ""))
+        self.assertEqual(system.run(["systemctl", "--user", "stop", "r-mail.timer"], 5)[0], 0)
+        self.assertEqual(system.units["r-mail.timer"], "inactive")
+        self.assertEqual(system.unit_log, ["stop r-mail.timer"])
+        code, _, _ = system.run([sys.executable, "-c", "pass"], 30)  # anything else runs for real
+        self.assertEqual(code, 0)
+
+    def test_rehearsal_swap_replaces_only_the_engine_build_steps(self):
+        overridden = {name for name in vars(swap.RehearsalSwap) if not name.startswith("__")}
+        self.assertEqual(overridden, {"preflight_checkout", "b1_wheel", "b2_image", "_wheel_hash_in",
+                                      "v1_verify_image", "a4_reverify"})
+        self.assertEqual(swap.RehearsalSwap.__mro__[1:], swap.Swap.__mro__)
+
+    def test_fixture_generator_writes_the_historical_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dirs = [Path(tmp) / "a", Path(tmp) / "b"]
+            for d in dirs:
+                d.mkdir()
+            result = subprocess.run([sys.executable, "-B", str(RECIPE / "rehearsal_fixture.py"), "--mib", "2",
+                                     *map(str, dirs)], capture_output=True, text=True, check=True)
+            pins = json.loads(result.stdout)["pins"]
+            self.assertEqual(list(pins), ["fixtures/db-mutation/ledger.sqlite"])
+            a = evidence.survey(dirs[0], pins)
+            self.assertEqual(a["pins"], {"fixtures/db-mutation/ledger.sqlite": "accepted"})
+            self.assertEqual(a["non_archivable"], {"tmp/app.sock": "socket"})
+            self.assertTrue(os.path.exists(dirs[0] / "state" / "flock.db-wal"))
+            self.assertGreater(a["bytes"] + evidence.survey(dirs[1])["bytes"], 2 << 20)
+            self.assertEqual(evidence.survey(dirs[0])["sqlite"]["fixtures/db-mutation/ledger.sqlite"]["status"],
+                             "malformed")
 
 
 if __name__ == "__main__":

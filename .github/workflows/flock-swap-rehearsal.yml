@@ -1,0 +1,60 @@
+name: flock-swap-rehearsal
+
+# FL-3 (Fable audit 2026-10-20, F1): run the rootless OCR swap driver's real
+# R1 preflight -> A5 sequence against a throwaway container with ~1 GiB of
+# synthetic mounts on rootless Docker, and prove the preflight refuses an
+# unpinned malformed fixture before anything is stopped. Synthetic data only;
+# nothing leaves the runner.
+
+on:
+  pull_request:
+    paths:
+      - "container/flock-ocr/**"
+      - "tests/test_flock_ocr_rootless_swap.py"
+      - "docs/RECORDS-OCR-CONTAINER-ROOTLESS.md"
+      - ".github/workflows/flock-swap-rehearsal.yml"
+  push:
+    branches: [main]
+    paths:
+      - "container/flock-ocr/**"
+      - ".github/workflows/flock-swap-rehearsal.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Allow unprivileged user namespaces (rootlesskit)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo apt-get update -q && sudo apt-get install -y -q uidmap
+          grep -q "^$(id -un):" /etc/subuid || echo "$(id -un):100000:65536" | sudo tee -a /etc/subuid
+          grep -q "^$(id -un):" /etc/subgid || echo "$(id -un):100000:65536" | sudo tee -a /etc/subgid
+      - uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
+        with:
+          rootless: true
+          set-host: true
+      - name: Rootless daemon and rehearsal image
+        run: |
+          docker info --format '{{json .SecurityOptions}}' | tee /dev/stderr | grep -q name=rootless
+          docker pull python:3.12-slim-bookworm
+      - name: Rehearse R1 preflight -> A5 (1 GiB synthetic mounts)
+        run: |
+          python3 -B container/flock-ocr/rootless_swap.py --rehearse \
+            --private "$RUNNER_TEMP/flock-swap-rehearsal" --rehearse-mib 1024
+      - name: Rehearse a historical failure (unpinned S2 fixture) caught in preflight
+        run: |
+          python3 -B container/flock-ocr/rootless_swap.py --rehearse \
+            --private "$RUNNER_TEMP/flock-swap-rehearsal-fault" --rehearse-mib 16 \
+            --rehearse-fault unpinned-fixture
+      - name: Nothing left behind
+        if: always()
+        run: |
+          docker ps -a --filter label=deflock.flock-swap.rehearsal --format '{{.Names}}' | tee left.txt
+          docker volume ls --filter label=deflock.flock-swap.rehearsal --format '{{.Name}}' | tee -a left.txt
+          test ! -s left.txt

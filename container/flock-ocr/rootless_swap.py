@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rootless driver for the OCR container swap (docs/RECORDS-OCR-CONTAINER-ROOTLESS.md).
 
-One script, four modes:
+One script, five modes:
 
   --dry-run   Read-only. Runs R1 discovery (docker info/inspect/ps, systemctl
               --user show) and prints every later command without running it.
@@ -13,6 +13,18 @@ One script, four modes:
               snapshot) after the owner reviewed the diff: --accept-a2 SHA256.
   --rollback  Runs the rollback path for the step a held or interrupted run
               stopped at.
+  --rehearse  Creates a throwaway container with synthetic volume and bind
+              mounts (default 1 GiB), runs the same preflight and [R1]..[A5]
+              against it with stand-ins only for the engine build ([B1], [B2],
+              [V1], [A4]) and a simulated pause unit, checks the result and
+              removes everything it created. CI runs it on rootless Docker.
+
+[R1] ends with a preflight that refuses the run, before anything is stopped,
+on each failure an earlier attempt met late: an off-main or stale checkout, a
+leftover recipe dist/, an unpinned malformed SQLite database or a stale pin,
+overflow-owned entries, a create-only [C2] probe whose settings differ, and
+too little free space for S1 + S2/S3 extraction + A2 + a restore. [B1]/[B2]
+build in $RUN/build.
 
 No sudo. Data steps run in throwaway helper containers (`docker run --rm`) as
 root of the rootless daemon's user namespace, which is the host user plus its
@@ -88,6 +100,13 @@ TAG_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*")
 IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 HEX64_RE = re.compile(r"[0-9a-f]{64}")
 ATTEMPT_RE = re.compile(r"attempt-(\d{3,})")
+MARGIN = 512 << 20  # free-space margin on top of every budget
+PROBE_SUFFIX = "-swap-probe"
+# HostConfig fields the create-only [C2] probe leaves out: the probe must never
+# mount live data. Real [C2] still compares them.
+PROBE_STRIPPED = ("Binds", "Mounts", "VolumesFrom")
+REHEARSAL_LABEL = "deflock.flock-swap.rehearsal"
+REHEARSAL_WHEEL = "flock_swap_rehearsal-0.0.0-py3-none-any.whl"
 _MISSING = object()
 
 
@@ -252,6 +271,45 @@ def anonymous_volumes(inspect):
                   if m.get("Type") == "volume" and m.get("Destination") not in named)
 
 
+def probe_body(before):
+    """[C2] create body for the preflight probe: old image, same settings, no mounts."""
+    body = create_body(before, before["Image"])
+    for key in PROBE_STRIPPED:
+        body["HostConfig"].pop(key, None)
+    return body
+
+
+def _probe_view(inspect):
+    view = json.loads(json.dumps(inspect))
+    view.pop("Name", None)
+    view["Mounts"] = []
+    host = view.get("HostConfig") or {}
+    for key in PROBE_STRIPPED:
+        host.pop(key, None)
+    view["HostConfig"] = host
+    return view
+
+
+def probe_diff(before, probe, image_config):
+    """inspect_diff of the probe against the saved inspect, mounts and name left out."""
+    return inspect_diff(_probe_view(before), _probe_view(probe), image_config, image_config)
+
+
+def space_budget(tar_bytes, largest_extract, sqlite_bytes):
+    """Peak private-dir bytes from [S1] to the end of an [RB-C] restore after [A2].
+
+    At that moment the run dir holds the S1 archives and S2 backups, the A2
+    archives and backups, and one preserved current-state archive per
+    restored mount (worst case: all of them) plus its verify extract. Extracts
+    (S2, S3, A2, restore verify) run one mount at a time and are deleted
+    before the next, so only the largest counts, once.
+    """
+    parts = {"s1_archives": tar_bytes, "s2_sqlite_backups": sqlite_bytes,
+             "a2_archives": tar_bytes, "a2_sqlite_backups": sqlite_bytes,
+             "restore_preservation": tar_bytes, "largest_extract": largest_extract, "margin": MARGIN}
+    return parts, sum(parts.values())
+
+
 # ---- side effects (replaced by a fake in tests) ----
 
 class _UnixConnection(http.client.HTTPConnection):
@@ -394,6 +452,11 @@ class Swap:
     @property
     def run_dir(self):
         return Path(self.state["run_dir"])
+
+    @property
+    def build_dir(self):
+        """[B1]/[B2] build context: requirements.lock, .dockerignore and dist/ inside $RUN."""
+        return Path(self.state["run_dir"]) / "build"
 
     def mkdir(self, rel):
         if self.dry:
@@ -621,10 +684,22 @@ class Swap:
                 total += sum(e.get("size", 0) for e in baseline["entries"].values())
             baselines[label] = baseline
         if not self.dry:
-            need = 3 * total + (512 << 20)
+            estimates = [snapshot_evidence.space_estimate(b["entries"]) for b in baselines.values()]
+            tar = sum(e["tar_bytes"] for e in estimates)
+            if prefix == "s1":
+                # The whole run from here on, as budgeted by the preflight in [R1].
+                sqlite = int((self.state.get("preflight") or {}).get("sqlite_bytes", 0))
+                _, need = space_budget(tar, max(e["extract_bytes"] for e in estimates), sqlite)
+                what = "S1 through a rollback after A2 (the R1 preflight budget)"
+            else:
+                # A2 only archives for comparison; its extracts, backups and a
+                # rollback's preservation were budgeted at [R1] and [S1].
+                need = tar + MARGIN
+                what = "the A2 archives (1x + 512 MiB)"
             free = self.system.disk_free(self.run_dir)
             if free < need:
-                self.fail(f"private dir has {free} bytes free, needs {need}")
+                self.fail(f"private dir has {free} bytes free, needs {need} for {what}")
+            self.log(f"    space: {free} bytes free, {need} needed for {what} ({total} bytes of data)")
         self.mkdir(prefix)
         for mount in self.state["mounts"]:
             label = mount["label"]
@@ -908,7 +983,178 @@ class Swap:
             self.write_json("processes-before.json", {"docker_top": top.splitlines()})
         self.helper(["sh", "-c", "command -v tar >/dev/null && python3 -c 'import sqlite3' && "
                      "tar --acls --xattrs -cf /dev/null --files-from /dev/null"], live=None, timeout=300)
+        self.preflight(before)
         self.save_state()
+
+    # -- preflight (inside [R1]: every check runs before anything is stopped) --
+
+    def preflight(self, before):
+        """Catch, before [Q1], every failure an earlier attempt met late.
+
+        Attempts 1-6 (2026-10-19/20) failed at S2 (malformed test fixture), S3
+        (sockets), C2 (API defaults in the inspect diff), B1 (a leftover
+        dist/), stale or off-main checkouts and A2 (free space). Each has a
+        check here; any finding refuses the run with nothing changed.
+        """
+        self.log("    preflight: checks for every failure an earlier attempt met after S1")
+        st = self.state
+        st["preflight"] = {}
+        self.preflight_checkout()
+        self.preflight_recipe_dist()
+        surveys = self.preflight_survey()
+        self.preflight_c2_probe(before)
+        self.preflight_budget(surveys)
+        self.write_json("preflight.json", st["preflight"])
+
+    def git(self, *args):
+        code, out, err = self.sh(["git", "-C", str(RECIPE.parents[1]), *args], check=False)
+        return code, out.rstrip(), err.strip()  # keep porcelain's leading status column
+
+    def checkout_problems(self):
+        """Why the checkout running this driver is not main at origin/main, clean."""
+        problems = []
+        _, branch, _ = self.git("symbolic-ref", "--quiet", "--short", "HEAD")
+        code, head, err = self.git("rev-parse", "--verify", "HEAD")
+        if code != 0:
+            return None, [f"not a git checkout ({err[-200:]})"]
+        _, origin, _ = self.git("rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+        if branch != "main":
+            problems.append(f"checkout is on {branch or 'a detached HEAD'!r}, not main")
+        if not origin:
+            problems.append("refs/remotes/origin/main is missing (git fetch origin first)")
+        elif head != origin:
+            problems.append(f"HEAD {head[:12]} is not origin/main {origin[:12]} "
+                            "(git fetch origin && git merge --ff-only origin/main)")
+        _, dirty, _ = self.git("status", "--porcelain", "--untracked-files=no")
+        if dirty:
+            problems.append(f"tracked files are modified: {dirty.splitlines()[:5]}")
+        _, untracked, _ = self.git("status", "--porcelain", "--untracked-files=all", "--",
+                                   str(RECIPE.relative_to(RECIPE.parents[1])))
+        extra = [line[3:] for line in untracked.splitlines() if line.startswith("??")]
+        if extra:
+            problems.append(f"untracked files in the recipe directory: {extra[:5]}")
+        return head, problems
+
+    def preflight_checkout(self):
+        """Off-main / stale checkout (attempts 4 and 5 silently ran stale code)."""
+        head, problems = self.checkout_problems()
+        self.state["recipe_commit"] = head
+        self.state["preflight"]["checkout"] = {"commit": head, "problems": problems}
+        if problems:
+            self.fail("preflight: the driver checkout is not main at origin/main: " + "; ".join(problems))
+        self.log(f"    preflight: checkout is main at origin/main {head[:12]}, tracked files clean")
+
+    def preflight_recipe_dist(self):
+        """A leftover recipe dist/ (attempt 4 failed at B1 on it).
+
+        [B1]/[B2] now build in $RUN/build, so no run writes the recipe's dist/;
+        anything there is left by an older driver or by hand and is refused
+        rather than moved or deleted.
+        """
+        dist = Path(DIST)
+        if dist.is_symlink() or (dist.exists() and not dist.is_dir()) or (dist.is_dir() and any(dist.iterdir())):
+            entries = sorted(p.name for p in dist.iterdir()) if dist.is_dir() and not dist.is_symlink() else []
+            self.fail(f"preflight: {dist} must be absent or empty (holds {entries or 'a non-directory'}); "
+                      "this driver builds in $RUN/build; move it aside by hand into --private")
+        self.log("    preflight: recipe dist/ absent or empty; B1/B2 build in $RUN/build")
+
+    def preflight_survey(self):
+        """Read-only survey of each live mount: S2 fixtures, S3 special files, IDs, sizes."""
+        pins = self.state.get("accepted_malformed_sqlite") or {}
+        pin_args = [x for rel, digest in sorted(pins.items()) for x in ("--accept-malformed", f"{rel}={digest}")]
+        surveys = {}
+        for mount in self.state["mounts"]:
+            label = mount["label"]
+            code, out, err = self.helper(self.evidence_cmd("survey", f"{LIVE}/{label}", *pin_args),
+                                         only=[label], check=False)
+            if self.dry:
+                continue
+            if code != 0:
+                self.fail(f"preflight: {label}: survey exit {code}: {err.strip()[-300:]}")
+            surveys[label] = json.loads(out)
+            self.write_json(f"preflight/{label}.survey.json", surveys[label])
+        if self.dry:
+            self.log("    would refuse on: overflow-owned entries, an unpinned malformed SQLite database, a pin "
+                     "no mount holds at its hash; would name every special file")
+            return surveys
+        problems = []
+        for label, report in surveys.items():
+            if report["overflow_owned"]:
+                problems.append(f"{label}: {len(report['overflow_owned'])} entr(y/ies) owned by the overflow ID "
+                                f"65534 (outside the rootless namespace; S1 would refuse): "
+                                f"{report['overflow_owned'][:5]}")
+            bad = sorted(rel for rel, item in report["sqlite"].items() if item["status"] == "malformed")
+            if bad:
+                problems.append(f"{label}: {len(bad)} SQLite database(s) fail integrity_check read-only and are "
+                                f"not pinned (S2 would fail): {bad[:5]}; confirm read-only that each is an "
+                                "intentional fixture, then pin it with --accept-malformed-sqlite RELPATH=SHA256, "
+                                "or re-run if it was being written")
+            special = report["non_archivable"]
+            if special:
+                self.log(f"    preflight: {label}: {len(special)} non-archivable special file(s) (S3/A2 exclude "
+                         f"them from every equality check; the archive cannot restore them): "
+                         f"{describe_non_archivable(sorted(special), special)}")
+        for rel, digest in sorted(pins.items()):
+            statuses = {label: r["pins"].get(rel) for label, r in surveys.items()}
+            if "accepted" not in statuses.values():
+                problems.append(f"--accept-malformed-sqlite {rel}: no mount holds it at sha256 {digest} "
+                                f"(per mount: {statuses}); S2 would fail")
+        if problems:
+            self.fail("preflight: " + " | ".join(problems))
+        dbs = sum(len(r["sqlite"]) for r in surveys.values())
+        self.log(f"    preflight: {dbs} SQLite database(s) pass integrity_check read-only or match their pin; "
+                 "no overflow-owned entries")
+        return surveys
+
+    def preflight_c2_probe(self, before):
+        """Create (never start) a probe from the old image and diff it like [C2] (attempt 3)."""
+        st = self.state
+        name = st["container"] + PROBE_SUFFIX
+        body = probe_body(before)
+        path = "/containers/create?name=" + urllib.parse.quote(name)
+        if self.dry:
+            self.log(f"    would POST {path} (saved settings, old image, no mounts), diff it the way C2 does, "
+                     "then docker rm -v it")
+            return
+        if self.inspect(name) is not None:
+            self.fail(f"preflight: a container named {name} already exists; remove it by hand")
+        status, response = self.system.docker_api("POST", path, body)
+        self.log(f"    preflight: POST {path} -> {status}")
+        if status != 201 or not response.get("Id"):
+            self.fail(f"preflight: C2 probe create failed: {status} {str(response.get('message', ''))[:300]}")
+        try:
+            probe = self.inspect(response["Id"])
+            if probe is None:
+                self.fail("preflight: the C2 probe vanished before it could be inspected")
+            if probe["State"]["Running"]:
+                self.fail("preflight: the C2 probe is running")
+            diff = probe_diff(before, probe, self.image_config(before["Image"]))
+        finally:
+            self.sh(["docker", "rm", "-v", response["Id"]], effect=True)
+        self.write_json("preflight/c2-probe-diff.json", diff)
+        st["preflight"]["c2_probe_diff"] = diff
+        for line in default_normalisations(before, probe):
+            self.log(f"    preflight: API default, treated as equal: {line}")
+        if diff:
+            self.fail(f"preflight: C2 would fail: a create-only probe with the saved settings differs: {diff}")
+        self.log("    preflight: C2 probe settings equal apart from image, ID, creation, state and mounts")
+
+    def preflight_budget(self, surveys):
+        """Space for S1 + S2/S3 extraction + A2 + an RB-C restore, up front (attempt 6 failed at A2)."""
+        if self.dry:
+            self.log("    would require free space for S1 archives + S2/S3 extract + A2 + restore + 512 MiB")
+            return
+        tar = sum(r["tar_bytes"] for r in surveys.values())
+        extract = max(r["extract_bytes"] for r in surveys.values())
+        sqlite = sum(r["sqlite_bytes"] for r in surveys.values())
+        parts, need = space_budget(tar, extract, sqlite)
+        free = self.system.disk_free(self.run_dir)
+        self.state["preflight"].update({"budget": parts, "need": need, "free": free, "sqlite_bytes": sqlite})
+        shown = ", ".join(f"{k} {v}" for k, v in parts.items())
+        if free < need:
+            self.fail(f"preflight: private dir has {free} bytes free, the run needs {need} ({shown}); free "
+                      f"{need - free} bytes first (superseded run dirs under --private are the operator's)")
+        self.log(f"    preflight: space {free} bytes free >= {need} needed ({shown})")
 
     def q1_pause(self):
         self.stop_pause_units()
@@ -956,36 +1202,6 @@ class Swap:
         self.write_json("snapshot-receipt.json", receipt)
         self.state["archives_sha256"] = archives
 
-    def park_stale_dist(self):
-        """Move a previous attempt's wheel out of the build context (never delete).
-
-        build_wheel.py refuses a non-empty dist/ and the Dockerfile context must
-        hold exactly one wheel, so any attempt that failed after B1 left a dist/
-        that made the next attempt fail at B1 (attempt 4, 2026-10-19).  Only a
-        directory holding nothing but engine wheels is parked; anything else is
-        a hand-made state and stops the run before the build.
-        """
-        dist = Path(DIST)
-        if dist.is_symlink() or (dist.exists() and not dist.is_dir()):
-            self.fail(f"{dist} must be absent or a real directory")
-        if not dist.exists():
-            return
-        entries = sorted(p.name for p in dist.iterdir())
-        if not entries:
-            return
-        unexpected = [e for e in entries if not (e.startswith("deflock_campaign_tool-") and e.endswith(".whl"))
-                      or (dist / e).is_symlink() or not (dist / e).is_file()]
-        if unexpected:
-            self.fail(f"{dist} holds entries that are not engine wheels: {unexpected}; move them aside by hand")
-        target = self.run_dir / "b1" / "stale-dist"
-        if self.dry:
-            self.log(f"    would move stale {dist} ({', '.join(entries)}) to {target}")
-            return
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        shutil.move(str(dist), str(target))
-        self.state["stale_dist_parked"] = entries
-        self.log(f"    moved stale {dist} ({', '.join(entries)}) to {target}")
-
     def b1_wheel(self):
         self.require_gate()
         reuse = self.state.get("reuse")
@@ -993,9 +1209,11 @@ class Swap:
             self.state["wheel_sha256"] = reuse["wheel_sha256"]
             self.log(f"    not rebuilt: reusing wheel sha256 {reuse['wheel_sha256']} recorded by {reuse['run_dir']}")
             return
-        self.park_stale_dist()
+        # Build output lives in this run's directory, never in the recipe's
+        # dist/: a failed run can no longer break the next one at [B1].
+        self.mkdir("build")
         _, out, _ = self.sh([sys.executable, "-B", RECIPE / "build_wheel.py", "--build-python",
-                             self.state["build_python"], "--provenance-out",
+                             self.state["build_python"], "--dist", self.build_dir / "dist", "--provenance-out",
                              Path(self.state["run_dir"]) / "wheel-provenance.json"], effect=True, timeout=3600)
         if self.dry:
             self.state["wheel_sha256"] = "<WHEEL_SHA256>"
@@ -1018,12 +1236,18 @@ class Swap:
             self.log(f"    not rebuilt: {st['new_tag']} = {current} (checked at [R1] and again now)")
             return
         commit = self.pins["engine"]["commit"]
+        context = self.build_dir
+        for name in ("requirements.lock", ".dockerignore"):
+            if self.dry:
+                self.log(f"    would copy {RECIPE / name} into the build context $RUN/build")
+            else:
+                shutil.copy2(RECIPE / name, context / name)
         self.sh([sys.executable, "-B", RECIPE / "preflight.py", "--base-image", st["old_image"],
-                 "--engine-commit", commit, "--wheel-sha256", st["wheel_sha256"], "--tag", st["new_tag"]],
-                effect=True, timeout=300)
+                 "--engine-commit", commit, "--wheel-sha256", st["wheel_sha256"], "--tag", st["new_tag"],
+                 "--context", context], effect=True, timeout=300)
         command = preflight.build_command(argparse.Namespace(
             base_image=st["old_image"], engine_commit=commit, wheel_sha256=st["wheel_sha256"],
-            engine_manifest_sha256=self.pins["engine"]["manifest_sha256"], tag=st["new_tag"]))
+            engine_manifest_sha256=self.pins["engine"]["manifest_sha256"], tag=st["new_tag"], context=context))
         self.sh(command, effect=True, timeout=7200)
         _, out, _ = self.sh(["docker", "image", "inspect", "--format", "{{.Id}}", st["new_tag"]], effect=True)
         st["new_image_id"] = "<NEW_IMAGE_ID>" if self.dry else out.strip()
@@ -1456,11 +1680,252 @@ class Swap:
         return self.rollback(step["on_fail"])
 
 
+# ---- rehearsal: the real sequence against a throwaway target ----
+
+class RehearsalSystem(System):
+    """Real Docker; the rehearsal's own pause unit is simulated in memory.
+
+    CI runners have no systemd --user session, and the rehearsal must never
+    touch a real unit. Only systemctl calls naming one of `units` are
+    answered here; any other systemctl call still runs for real.
+    """
+
+    def __init__(self, units):
+        self.units = dict(units)
+        self.unit_log = []
+
+    def run(self, argv, timeout):
+        argv = [str(a) for a in argv]
+        if argv[:2] == ["systemctl", "--user"] and argv[-1] in self.units:
+            verb, unit = argv[2], argv[-1]
+            if verb == "show":
+                return 0, f"LoadState=loaded\nActiveState={self.units[unit]}\n", ""
+            if verb in ("stop", "start"):
+                self.units[unit] = "inactive" if verb == "stop" else "active"
+                self.unit_log.append(f"{verb} {unit}")
+                return 0, "", ""
+            return 1, "", f"rehearsal: unsupported systemctl verb {verb}"
+        return super().run(argv, timeout)
+
+
+class RehearsalSwap(Swap):
+    """Swap with stand-ins for the steps that need the pinned engine build.
+
+    [B1] writes a synthetic wheel into $RUN/build/dist, [B2] layers it onto
+    the throwaway target's image with docker build, [V1] and [A4] check that
+    wheel by hash in the image and in the running replacement. Every other
+    step, the preflight included, is the code --apply runs; only the checkout
+    check reports instead of refusing (CI rehearses pull-request heads).
+    """
+
+    def preflight_checkout(self):
+        head, problems = self.checkout_problems()
+        self.state["recipe_commit"] = head
+        self.state["preflight"]["checkout"] = {"commit": head, "problems": problems, "rehearsal": True}
+        if problems:
+            self.log("    preflight: rehearsal only, --apply would refuse this checkout: " + "; ".join(problems))
+        else:
+            self.log(f"    preflight: checkout is main at origin/main {head[:12]}")
+
+    def b1_wheel(self):
+        self.require_gate()
+        import zipfile
+        dist = self.build_dir / "dist"
+        dist.mkdir(parents=True, mode=0o700)
+        wheel = dist / REHEARSAL_WHEEL
+        with zipfile.ZipFile(wheel, "w") as archive:
+            info = zipfile.ZipInfo("flock_swap_rehearsal/__init__.py", date_time=(2026, 10, 20, 0, 0, 0))
+            archive.writestr(info, f"REHEARSAL = {self.state['container']!r}\n")
+        self.state["wheel_sha256"] = sha256_file(wheel)
+        self.log(f"    rehearsal: synthetic wheel {REHEARSAL_WHEEL} sha256 {self.state['wheel_sha256']} "
+                 "in $RUN/build/dist")
+
+    def b2_image(self):
+        self.require_gate()
+        st = self.state
+        dockerfile = self.build_dir / "Dockerfile.rehearsal"
+        dockerfile.write_text(f"FROM {st['old_image']}\nCOPY dist/ /opt/flock-swap-rehearsal/dist/\n"
+                              f"LABEL {REHEARSAL_LABEL}.image=\"{st['container']}\"\n")
+        self.sh(["docker", "build", "--pull=false", "-f", dockerfile, "-t", st["new_tag"], self.build_dir],
+                effect=True, timeout=1800)
+        st["new_image_id"] = self.image_id(st["new_tag"])
+        if not st["new_image_id"] or not IMAGE_ID_RE.fullmatch(st["new_image_id"]):
+            self.fail("could not resolve the rehearsal image ID")
+
+    def _wheel_hash_in(self, argv):
+        _, out, _ = self.sh([*argv, f"/opt/flock-swap-rehearsal/dist/{REHEARSAL_WHEEL}"], effect=True, timeout=300)
+        if out.split()[:1] != [self.state["wheel_sha256"]]:
+            self.fail(f"rehearsal wheel hash differs: {out.strip()[:120]}")
+
+    def v1_verify_image(self):
+        self.require_gate()
+        image = self.state["new_image_id"]
+        old = (self.image_inspect(self.state["old_image"]).get("RootFS") or {}).get("Layers") or []
+        new = (self.image_inspect(image).get("RootFS") or {}).get("Layers") or []
+        if not old or len(new) <= len(old) or new[:len(old)] != old:
+            self.fail("the rehearsal image's layers do not extend the target's image layers")
+        self._wheel_hash_in(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sha256sum", image])
+
+    def a4_reverify(self):
+        self._wheel_hash_in(["docker", "exec", self.state["container"], "sha256sum"])
+
+
+class Rehearsal:
+    """`--rehearse`: build a throwaway target, run [R1]..[A5], check, clean up."""
+
+    def __init__(self, args, system=None, out=None):
+        self.args, self.out = args, out or sys.stdout
+        self.root = Path(os.path.expanduser(args.private))
+        self.stamp = None
+        self.system = system
+        self.created = {"volume": None, "bind": None, "tag": None}
+
+    def log(self, message):
+        print(message, file=self.out, flush=True)
+
+    def sh(self, argv, timeout=600, check=True):
+        argv = [str(a) for a in argv]
+        code, out, err = self.system.run(argv, timeout)
+        self.log("    rehearsal ran: " + shlex.join(argv) + f"  -> exit {code}")
+        if check and code != 0:
+            raise StepFailed(f"{shlex.join(argv[:4])} ... exit {code}: {(err or out).strip()[-400:]}")
+        return code, out, err
+
+    def base_image(self):
+        code, out, _ = self.sh(["docker", "image", "inspect", "--format", "{{.Id}}", self.args.rehearse_image],
+                               check=False)
+        if code != 0 or not IMAGE_ID_RE.fullmatch(out.strip()):
+            raise StepFailed(f"rehearsal image {self.args.rehearse_image} is not local; docker pull it first "
+                             "(the rehearsal never pulls)")
+        return out.strip()
+
+    def setup(self, base):
+        name = self.name
+        label = f"{REHEARSAL_LABEL}={self.stamp}"
+        volume, bind = f"{name}-data", self.root / f"{name}-bind"
+        self.sh(["docker", "volume", "create", "--label", label, volume])
+        self.created["volume"] = volume
+        bind.mkdir(mode=0o700)
+        self.created["bind"] = bind
+        _, out, _ = self.sh(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
+                             "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+                             "--label", label,
+                             "--mount", f"type=volume,src={volume},dst=/fx/data",
+                             "--mount", f"type=bind,src={bind},dst=/fx/records",
+                             "--mount", f"type=bind,src={RECIPE},dst={REC},readonly",
+                             "--entrypoint", "python3", base, "-B", "-I", f"{REC}/rehearsal_fixture.py",
+                             "--mib", str(self.args.rehearse_mib), "/fx/data", "/fx/records"], timeout=1800)
+        fixture = json.loads(out)
+        self.sh(["docker", "create", "--name", name, "--label", label, "--restart", "unless-stopped",
+                 "--init", "--network", "none", "--env", "FLOCK_SWAP_REHEARSAL=1",
+                 "--mount", f"type=volume,src={volume},dst=/data",
+                 "--mount", f"type=bind,src={bind},dst=/records",
+                 "--tmpfs", "/scratch",
+                 "--health-cmd", "test -d /data/state", "--health-interval", "2s", "--health-retries", "3",
+                 "--entrypoint", "sleep", base, "infinity"])
+        self.sh(["docker", "start", name])
+        return fixture
+
+    def swap_args(self, base, pins):
+        return argparse.Namespace(
+            mode="apply", rehearse=True, container=self.name, pause_unit=[f"{self.name}-mail"],
+            private=str(self.root / "private"), new_tag=f"flock-swap-rehearsal:{self.stamp}",
+            reuse_image=None, build_python=None, helper_image=base, accept_a2=None,
+            mail_wait=60, stop_timeout=20, health_wait=120, helper_timeout=3600,
+            accepted_malformed_sqlite=dict(pins))
+
+    def verify_result(self, swap):
+        st = swap.state
+        new = swap.inspect(self.name)
+        old = swap.inspect(self.name + "-pre-ocr")
+        problems = []
+        if not new or new["Image"] != st.get("new_image_id") or not new["State"]["Running"]:
+            problems.append("the replacement is not running the rehearsal image under the target name")
+        if not old or old["Id"] != st["old_id"] or old["State"]["Running"]:
+            problems.append("the old container is not kept, stopped, as <name>-pre-ocr")
+        if self.system.units.get(f"{self.name}-mail.timer") != "active":
+            problems.append("the simulated pause timer was not released")
+        if st.get("phase") != "complete" or st.get("done", [])[-1:] != ["A5"]:
+            problems.append(f"run phase {st.get('phase')!r}, last step {st.get('done', [])[-1:]}")
+        return problems
+
+    def cleanup(self, base, run_dir):
+        label = f"{REHEARSAL_LABEL}={self.stamp}"
+        _, out, _ = self.sh(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={label}"], check=False)
+        for ident in out.split():
+            self.sh(["docker", "rm", "-f", "-v", ident], check=False)
+        if self.created["tag"] and self.system.run(["docker", "image", "inspect", "--format", "{{.Id}}",
+                                                    self.created["tag"]], 60)[0] == 0:
+            self.sh(["docker", "image", "rm", self.created["tag"]], check=False)
+        if self.created["volume"]:
+            self.sh(["docker", "volume", "rm", self.created["volume"]], check=False)
+        if self.args.rehearse_keep:
+            self.log(f"rehearsal: kept {self.created['bind']} and {run_dir}")
+            return
+        # Namespace-owned files (uid 1000 inside) are not the host user's to
+        # delete: remove them as namespace root, inside the rehearsal root only.
+        doomed = [p for p in (self.created["bind"], run_dir) if p is not None and Path(p).exists()]
+        if doomed and base:
+            self.sh(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
+                     "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--label", label,
+                     "--mount", f"type=bind,src={self.root},dst=/rehearsal",
+                     "--entrypoint", "rm", base, "-rf", "--one-file-system",
+                     *[f"/rehearsal/{Path(p).relative_to(self.root)}" for p in doomed]], check=False)
+
+    def run(self):
+        root = self.root
+        if not root.is_absolute():
+            self.log("refused: --private must be an absolute path")
+            return EXIT_REFUSED
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.stamp = re.sub(r"[^0-9tz]", "", datetime.datetime.now(datetime.timezone.utc)
+                            .strftime("%Y%m%dt%H%M%Sz"))
+        self.name = f"flock-swap-rehearsal-{self.stamp}"
+        units = {f"{self.name}-mail.timer": "active", f"{self.name}-mail.service": "inactive"}
+        self.system = self.system or RehearsalSystem(units)
+        self.log(f"rootless_swap: REHEARSAL {self.name} ({self.args.rehearse_mib} MiB synthetic, "
+                 f"image {self.args.rehearse_image}); nothing outside this rehearsal is touched")
+        base, swap, code = None, None, EXIT_ESCALATE
+        try:
+            base = self.base_image()
+            fixture = self.setup(base)
+            pins = {} if self.args.rehearse_fault == "unpinned-fixture" else fixture["pins"]
+            self.created["tag"] = f"flock-swap-rehearsal:{self.stamp}"
+            swap = RehearsalSwap(self.swap_args(base, pins), system=self.system, out=self.out)
+            try:
+                code = swap.run_main()
+            finally:
+                if swap.lock_handle is not None:
+                    swap.lock_handle.close()
+            if self.args.rehearse_fault == "unpinned-fixture":
+                caught = code == EXIT_REFUSED and swap.state.get("current") == "R1"
+                self.log(f"rehearsal: fault unpinned-fixture {'caught in the R1 preflight' if caught else 'NOT caught'}")
+                return EXIT_OK if caught else EXIT_ROLLED_BACK
+            if code != EXIT_OK:
+                self.log(f"rehearsal: FAILED, driver exit {code}")
+                return code
+            problems = self.verify_result(swap)
+            if problems:
+                self.log("rehearsal: FAILED after A5: " + "; ".join(problems))
+                return EXIT_ROLLED_BACK
+            self.log("rehearsal: OK, the R1 preflight through A5 passed against the throwaway target")
+            return EXIT_OK
+        except StepFailed as error:
+            self.log(f"rehearsal: setup FAILED: {error}")
+            return EXIT_ESCALATE
+        finally:
+            run_dir = swap.state.get("run_dir") if swap is not None else None
+            self.cleanup(base, run_dir)
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", dest="mode", action="store_const", const="dry-run")
     mode.add_argument("--apply", dest="mode", action="store_const", const="apply")
+    mode.add_argument("--rehearse", dest="mode", action="store_const", const="rehearse",
+                      help="run the preflight and [R1]..[A5] against a throwaway container with synthetic mounts "
+                           "it creates and removes itself (--private is the rehearsal's own scratch root)")
     mode.add_argument("--resume", metavar="RUN_DIR", help="continue a run held at A2")
     mode.add_argument("--rollback", metavar="RUN_DIR", help="roll back a held or interrupted run")
     parser.add_argument("--container", help="target container name")
@@ -1480,6 +1945,13 @@ def parse_args(argv):
     parser.add_argument("--stop-timeout", type=int, default=120, help="docker stop --time")
     parser.add_argument("--health-wait", type=int, default=300, help="seconds to wait for a health check")
     parser.add_argument("--helper-timeout", type=int, default=7200, help="seconds per helper command (tar, manifest)")
+    parser.add_argument("--rehearse-image", default="python:3.12-slim-bookworm",
+                        help="local image for the throwaway target and helpers (needs GNU tar, python3, sqlite3; "
+                             "never pulled)")
+    parser.add_argument("--rehearse-mib", type=int, default=1024, help="synthetic mount data in MiB (default 1024)")
+    parser.add_argument("--rehearse-fault", choices=("unpinned-fixture",),
+                        help="inject a historical failure; the rehearsal passes only if the preflight refuses it")
+    parser.add_argument("--rehearse-keep", action="store_true", help="keep the synthetic data and run dir")
     parser.add_argument("--accept-malformed-sqlite", action="append", default=[], metavar="RELPATH=SHA256",
                         help="exempt one known, intentionally corrupt database from the SQLite integrity "
                              "requirement only; RELPATH is relative to its mount, SHA256 pins its bytes "
@@ -1489,6 +1961,20 @@ def parse_args(argv):
         args.accepted_malformed_sqlite = snapshot_evidence.parse_accepted(args.accept_malformed_sqlite)
     except ValueError as error:
         parser.error(str(error).replace("--accept-malformed ", "--accept-malformed-sqlite ", 1))
+    if args.mode == "rehearse":
+        given = [f"--{n.replace('_', '-')}" for n in ("container", "new_tag", "reuse_image", "build_python",
+                                                       "helper_image", "accept_a2") if getattr(args, n)]
+        given += ["--pause-unit"] * bool(args.pause_unit) + ["--accept-malformed-sqlite"] * bool(
+            args.accepted_malformed_sqlite)
+        if given:
+            parser.error(f"--rehearse makes its own target, unit, tag and pins; not allowed: {', '.join(given)}")
+        if not args.private:
+            parser.error("required: --private (the rehearsal's scratch root, outside Git)")
+        if args.rehearse_mib < 1:
+            parser.error("--rehearse-mib must be at least 1")
+        return args
+    if args.rehearse_fault or args.rehearse_keep:
+        parser.error("--rehearse-fault/--rehearse-keep need --rehearse")
     if args.resume or args.rollback:
         if args.accept_malformed_sqlite:
             parser.error("--accept-malformed-sqlite is fixed at --apply; the run's state.json keeps it")
@@ -1526,6 +2012,8 @@ def _lock(private):
 
 def main(argv=None, system=None, out=None):
     args = parse_args(argv)
+    if args.mode == "rehearse":
+        return Rehearsal(args, system=system, out=out).run()
     swap = Swap(args, system=system, out=out)
     if args.mode in ("resume", "rollback"):
         run_dir = Path(args.run_dir).resolve()
