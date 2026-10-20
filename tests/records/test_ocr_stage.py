@@ -671,5 +671,97 @@ class RealToolSmokeTest(unittest.TestCase):
         self.assertEqual(report.stat().st_mode & 0o077, 0)
 
 
+class HostGatewayTest(unittest.TestCase):
+    """T6-NET A: ``vision.host_gateway`` admits one private IPv4 beside loopback (owner-only config)."""
+
+    GATEWAY = "10.0.2.2"
+    ENDPOINT = "http://10.0.2.2:8003/v1/chat/completions"
+
+    def setUp(self):
+        self.ws = Workspace(self)
+        self.ocrmypdf = str(fake_ocrmypdf(self.ws.tmp))
+
+    def config(self, **vision):
+        return self.ws.config(ocrmypdf=self.ocrmypdf, vision=vision)
+
+    def test_gateway_endpoint_accepted_and_identity_carries_it(self):
+        self.assertEqual(stage.loopback_endpoint(self.ENDPOINT, frozenset({self.GATEWAY})), self.ENDPOINT)
+        backend = stage.QwenVisionBackend(self.ENDPOINT, host_gateway=self.GATEWAY)
+        self.assertEqual(backend.identity()["endpoint"], self.ENDPOINT)
+        config = stage.load_config(self.config(endpoint=self.ENDPOINT, host_gateway=self.GATEWAY))
+        self.assertEqual(stage.vision_backend(config).identity()["endpoint"], self.ENDPOINT)
+
+    def test_default_stays_loopback_only(self):
+        self.assertEqual(stage.LOOPBACK_HOSTS, frozenset({"127.0.0.1", "::1", "localhost"}))
+        self.assertEqual(stage.DEFAULT_VISION_ENDPOINT, "http://127.0.0.1:8003/v1/chat/completions")
+        with self.assertRaises(ValueError):
+            stage.loopback_endpoint(self.ENDPOINT)
+        with self.assertRaises(ValueError):
+            stage.QwenVisionBackend(self.ENDPOINT)
+        ws_config = self.config(endpoint=self.ENDPOINT)
+        self.ws.write_queue()
+        self.assertEqual(stage.run(self.ws.args(ws_config))[0]["error_code"], "OCR_CONFIG_INVALID")
+
+    def test_endpoint_host_must_equal_the_gateway(self):
+        with self.assertRaises(ValueError):
+            stage.loopback_endpoint("http://10.0.2.3:8003/v1/chat/completions", frozenset({self.GATEWAY}))
+        config = self.config(endpoint="http://10.0.2.3:8003/v1/chat/completions", host_gateway=self.GATEWAY)
+        self.ws.write_queue()
+        self.assertEqual(stage.run(self.ws.args(config))[0]["error_code"], "OCR_CONFIG_INVALID")
+
+    def test_endpoint_shape_checks_still_apply_to_the_gateway(self):
+        hosts = frozenset({self.GATEWAY})
+        for endpoint in ("https://10.0.2.2:8003/v1/chat/completions",
+                         "http://10.0.2.2/v1/chat/completions",
+                         "http://user:pw@10.0.2.2:8003/v1/chat/completions",
+                         "http://10.0.2.2:8003/v1/chat/completions?x=1",
+                         "http://10.0.2.2:8003/v1/chat/completions#f"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                stage.loopback_endpoint(endpoint, hosts)
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                stage.QwenVisionBackend(endpoint, host_gateway=self.GATEWAY)
+
+    def test_gateway_values_other_than_one_private_ipv4_rejected(self):
+        for value in ("gateway.example", "localhost", "127.0.0.1", "8.8.8.8", "169.254.1.1",
+                      "224.0.0.1", "0.0.0.0", "240.0.0.1", "255.255.255.255", "::1", "fe80::1",
+                      "fd00::2", "10.0.2.2/32", "010.0.2.2", " 10.0.2.2", "", 167772674,
+                      ["10.0.2.2"], None):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    stage.checked_host_gateway(value)
+                config = self.config(endpoint=self.ENDPOINT, host_gateway=value)
+                with self.assertRaises(ValueError):
+                    stage.load_config(config)
+                self.ws.write_queue()
+                self.assertEqual(stage.run(self.ws.args(config))[0]["error_code"], "OCR_CONFIG_INVALID")
+        for value in ("10.0.2.2", "172.17.0.1", "192.168.1.1"):
+            with self.subTest(value=value):
+                self.assertEqual(stage.checked_host_gateway(value), value)
+
+    def test_gateway_is_used_only_by_the_transport_with_the_configured_endpoint(self):
+        vision = FakeVision()
+        config = stage.load_config(self.config(endpoint=self.ENDPOINT, host_gateway=self.GATEWAY))
+        backend = stage.vision_backend(config, transport=vision)
+        backend.transport(backend.endpoint, backend.request_body(b"\x89PNG\r\n\x1a\nsynthetic"), backend.timeout)
+        self.assertEqual([endpoint for endpoint, _ in vision.requests], [self.ENDPOINT])
+
+    def test_transcribe_png_honours_the_gateway(self):
+        import contextlib
+        import io
+        png = self.ws.tmp / "page.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
+        vision = FakeVision(text="Gateway text")
+        config = self.config(endpoint=self.ENDPOINT, host_gateway=self.GATEWAY)
+        out = io.BytesIO()
+        with contextlib.redirect_stdout(io.TextIOWrapper(out, encoding="utf-8")) as wrapper:
+            code = stage.transcribe_png_main(["--config", config, str(png)], transport=vision)
+            wrapper.flush()
+        self.assertEqual((code, out.getvalue()), (0, b"Gateway text"))
+        self.assertEqual(vision.requests[0][0], self.ENDPOINT)
+        without = self.config(endpoint=self.ENDPOINT)
+        self.assertEqual(stage.transcribe_png_main(["--config", without, str(png)], transport=vision), 1)
+        self.assertEqual(len(vision.requests), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
