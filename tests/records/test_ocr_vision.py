@@ -307,9 +307,14 @@ class VisionConfigAndStageWiringTests(unittest.TestCase):
     def test_extract_stage_passes_ocr_and_vision_from_the_stage_plan(self):
         (_, code), seen = self.stage("--ocr", "--ocr-vision-config", str(self.config()))
         self.assertEqual(code, 0)
-        self.assertEqual(seen["ocr"], {"tools": "tools", "tool_signature": "sig", "vision": VISION})
+        self.assertEqual(seen["ocr"], {"tools": "tools", "tool_signature": "sig", "vision": VISION,
+                                       "page_timeout": 180, "vision_timeout": 300})
+        (_, code), seen = self.stage("--ocr", "--ocr-vision-config", str(self.config()),
+                                     "--ocr-page-timeout", "240", "--ocr-vision-timeout", "420")
+        self.assertEqual((seen["ocr"]["page_timeout"], seen["ocr"]["vision_timeout"]), (240, 420))
         (_, code), seen = self.stage("--ocr")
         self.assertEqual(seen["ocr"]["vision"], None)
+        self.assertEqual((seen["ocr"]["page_timeout"], seen["ocr"]["vision_timeout"]), (180, None))
 
     def test_extract_stage_fails_visibly_on_bad_ocr_configuration(self):
         cases = ((("--ocr",), (None, None), "EXTRACT_OCR_UNAVAILABLE"),
@@ -383,7 +388,8 @@ class Phase1ToOCRStageTests(stage_fixtures.ExtractStageCase):
             return original(*args, **kwargs)
         with mock.patch.object(routes, "extract", side_effect=with_runner), \
                 mock.patch("campaign_tool.records.run.local_ocr_tools", return_value=(ocr_fixtures.TOOLS, "stub-v1")):
-            return self.stage(*extra)
+            # The OCR plans' stage deadline and a per-document budget that fits a vision page.
+            return self.stage("--document-timeout", "1200", *extra, timeout="1490")
 
     def status(self, subject):
         return self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'", (subject,))[0][0]
@@ -454,44 +460,246 @@ class Phase1ToOCRStageTests(stage_fixtures.ExtractStageCase):
         return code, parsed, raw, parses, reparses
 
     def test_document_timeout_bounds_every_ocr_child_on_the_ocr_path(self):
-        """T6-plan D4: the live-ocr-vision limit (600 s) reaches the parser, Tesseract and vision."""
+        """T6-timeout D1-D3: the budget bounds the document, the pinned limits bound each child."""
         runner = TimedRunner(text="~ ,; i1 l\n", confidence="23")  # low confidence -> vision fallback
-        code, parsed, raw, parses, reparses = self.timed_ocr_stage(runner, "600", "--ocr-vision-config",
-                                                                   str(self.vision_config))
+        code, parsed, raw, parses, reparses = self.timed_ocr_stage(
+            runner, "1200", "--ocr-page-timeout", "180", "--ocr-vision-config", str(self.vision_config),
+            "--ocr-vision-timeout", "300")
         self.assertContract(code, parsed, raw)
         self.assertEqual(self.status(self.scan), "done")
         self.assertEqual(runner.calls, ["pdftoppm", "tesseract", "qwen-vision"])
-        self.assertEqual(runner.timeouts, [600, 600, 600])
+        self.assertEqual(runner.timeouts, [180, 180, 300])
+        # The native parse child gets min(budget, 600) (extraction_routes keeps its 1..600 bound).
         self.assertEqual(set(parses), {600})
         # The validator re-parses with its own fixed bounds, independent of --document-timeout.
         self.assertLessEqual(set(reparses), {20, 60})
-        # FINDING (follow-up card, not fixed here): --document-timeout bounds each child command,
-        # not the document. One image-only page already allows parse + pdftoppm + tesseract +
-        # vision = 4 x 600 s, each further image-only page adds 3 x 600 s, plus the validator
-        # re-parses. Only the stage deadline (--timeout / the host stage timeout) caps a document.
 
     def test_document_timeout_bounds_tesseract_only_ocr(self):
-        """T6-plan D4: the live-ocr (Tesseract only) limit: 300 s, no vision call."""
+        """T6-timeout D6: Tesseract only: each page child gets --ocr-page-timeout, no vision call."""
         runner = TimedRunner()
-        code, parsed, raw, parses, reparses = self.timed_ocr_stage(runner, "300")
+        code, parsed, raw, parses, reparses = self.timed_ocr_stage(runner, "1200", "--ocr-page-timeout", "180")
         self.assertContract(code, parsed, raw)
         self.assertEqual(self.status(self.scan), "done")
         self.assertEqual(runner.calls, ["pdftoppm", "tesseract"])
-        self.assertEqual(runner.timeouts, [300, 300])
-        self.assertEqual(set(parses), {300})
+        self.assertEqual(runner.timeouts, [180, 180])
+        self.assertEqual(set(parses), {600})
         self.assertLessEqual(set(reparses), {20, 60})
 
 
 class TimedRunner(Runner):
     """Runner that also records the timeout each OCR or vision child was given."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, clock=None, step=0, **kwargs):
         super().__init__(**kwargs)
         self.timeouts = []
+        self.clock, self.step = clock, step
 
     def __call__(self, command, **kwargs):
         self.timeouts.append(kwargs.get("timeout"))
+        if self.clock is not None:
+            self.clock.now += self.step  # each child "takes" ``step`` seconds of the document budget
         return super().__call__(command, **kwargs)
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def scan_pdf(image_pages, native_text="Synthetic native cover page"):
+    """Synthetic PDF: page 1 has native text, then ``image_pages`` image-only (blank) pages."""
+    from pypdf import PdfReader, PdfWriter
+    import io
+    writer = PdfWriter()
+    for page in PdfReader(io.BytesIO(ocr_fixtures.mixed_pdf(native_text))).pages[:1]:
+        writer.add_page(page)
+    for _ in range(image_pages):
+        writer.add_blank_page(width=72, height=72)
+    stream = io.BytesIO()
+    writer.write(stream)
+    return stream.getvalue()
+
+
+@unittest.skipUnless(stage_fixtures.HAVE_PARSERS and sys.platform.startswith("linux"),
+                     "UNSUPPORTED_RUNTIME: pypdf/openpyxl not in this interpreter")
+class DocumentBudgetStageTests(stage_fixtures.ExtractStageCase):
+    """T6-timeout D4/D5 through run_stages extract: a document budget, never a shrunk child."""
+
+    # pages 2-4 need OCR (built with pypdf, so only when the optional parsers are importable)
+    attachments = (("multi.pdf", scan_pdf(3)),) if stage_fixtures.HAVE_PARSERS else ()
+
+    def setUp(self):
+        super().setUp()
+        self.multi = hashlib.sha256(self.payloads["multi.pdf"]).hexdigest()
+        self.clock = FakeClock()
+        self.limits = []
+
+    def budget_stage(self, runner, document_timeout, run_id):
+        original = routes.extract
+
+        def with_runner(*args, **kwargs):
+            if kwargs.get("ocr_output_root") is not None:  # the pipeline's own parse, not a validator re-parse
+                self.limits.append((kwargs["timeout"], kwargs["document_budget"]))
+            kwargs.update(ocr_runner=runner, clock=self.clock)
+            return original(*args, **kwargs)
+        with mock.patch.object(routes, "extract", side_effect=with_runner), \
+                mock.patch("campaign_tool.records.run.local_ocr_tools", return_value=(ocr_fixtures.TOOLS, "stub-v1")):
+            code, parsed, raw = stage_fixtures.run_main([
+                "extract", "--project", str(self.project), "--timeout", "1490", "--run-id", run_id,
+                "--document-timeout", document_timeout, "--ocr", "--ocr-page-timeout", "180"])
+        self.assertContract(code, parsed, raw)
+        listed = json.loads((self.processing / "runs" / f"extract-{run_id}.json").read_text())
+        [entry] = [d for d in listed["documents"] if d["original_sha256"] == self.multi]
+        return parsed, entry
+
+    def alerts(self):
+        return self.query("SELECT key,count,state FROM alerts WHERE key LIKE ?", ("extract:" + self.multi + ":%",))
+
+    def status(self):
+        return self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'",
+                          (self.multi,))[0][0]
+
+    def test_budget_exhausted_after_one_page_defers_then_converges(self):
+        # Each child takes 450 s: page 2 (allowance 2 x 180) fits 1200 s, then 300 s are left < 360.
+        runner = TimedRunner(clock=self.clock, step=450)
+        parsed, entry = self.budget_stage(runner, "1200", "run-1")
+        self.assertEqual(self.outcomes(parsed), {"EXTRACTED": 1, "DEFERRED_RUN_BUDGET": 1})  # email + the PDF
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_BACKLOG_DEFERRED"))
+        self.assertIn({"code": "EXTRACT_DEFERRED", "severity": "info", "count": 1}, parsed["needs_g"])
+        self.assertEqual((entry["outcome"], entry["ocr_pages_done"], entry["ocr_pages_pending"]),
+                         ("DEFERRED_RUN_BUDGET", 1, [3, 4]))
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract"])
+        self.assertEqual(self.status(), "pending")
+        self.assertEqual(self.alerts(), [], "progress is no failed attempt: nothing counted")
+        # Run 2: page 2 loads from its published receipt (no child, no allowance); page 3 runs.
+        parsed, entry = self.budget_stage(runner, "1200", "run-2")
+        self.assertEqual(self.outcomes(parsed), {"DEFERRED_RUN_BUDGET": 1})
+        self.assertEqual((entry["ocr_pages_done"], entry["ocr_pages_pending"]), (1, [4]))
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract"] * 2)
+        # Run 3: the last page; the document is extracted from all three page receipts.
+        parsed, entry = self.budget_stage(runner, "1200", "run-3")
+        self.assertEqual(self.outcomes(parsed), {"EXTRACTED": 1})
+        self.assertNotIn("ocr_pages_pending", entry)
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract"] * 3)
+        self.assertEqual(self.status(), "done")
+        self.assertEqual(self.alerts(), [])
+        # D4: every child got the full pinned limit, whatever budget was left.
+        self.assertEqual(set(runner.timeouts), {180})
+
+    def test_zero_progress_is_a_counted_timeout(self):
+        # 300 s budget < one page's allowance (2 x 180 s): no page can start.
+        runner = TimedRunner(clock=self.clock, step=10)
+        for run, count in (("run-1", 1), ("run-2", 2)):
+            parsed, entry = self.budget_stage(runner, "300", run)
+            self.assertEqual(self.outcomes(parsed).get("EXTRACT_TIMEOUT"), 1)
+            self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_DOCUMENT_FAILURES"))
+            self.assertEqual((entry["outcome"], entry["ocr_pages_done"], entry["ocr_pages_pending"]),
+                             ("EXTRACT_TIMEOUT", 0, [2, 3, 4]))
+            # Counted like any other timeout (key = the sorted issue codes, incl. the native blank-page gap).
+            self.assertEqual(self.alerts(), [("extract:" + self.multi + ":extraction_timeout,ocr_needed_or_blank_page",
+                                              count, "open")])
+        self.assertEqual(runner.calls, [], "no page child started")
+        self.assertEqual(self.status(), "pending")
+        # D2: a budget under 600 s is also the native parse child's limit.
+        self.assertEqual(set(self.limits), {(300, 300)})
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "native extraction isolation requires Linux")
+class DocumentBudgetRouteTests(unittest.TestCase):
+    """extraction_routes.extract page admission under ``document_budget`` (fake clock, fake children)."""
+
+    def setUp(self):
+        fixtures.ExtractionValidationTests.setUpClass()
+        self.h = fixtures.ExtractionValidationTests("runTest")
+        self.h.setUp()
+        self.addCleanup(self.h.doCleanups)
+        self.ocr_root = self.h.root / "page-ocr"
+        self.ocr_root.mkdir(mode=0o700)
+        try:
+            raw = scan_pdf(3)
+        except ImportError:
+            self.skipTest("pypdf optional parser unavailable")
+        self.source = self.h.root / "scan.pdf"
+        self.source.write_bytes(raw)
+        self.source.chmod(0o400)
+        self.sha = hashlib.sha256(raw).hexdigest()
+        self.clock = FakeClock()
+        self.count = 0
+
+    def extract(self, runner, budget, *, ocr_vision=VISION, page=180, vision_timeout=300, timeout=30):
+        self.count += 1
+        out = self.h.root / f"derived-{self.count}"
+        out.mkdir(mode=0o700)
+        return routes.extract(self.source, self.sha, out, "pdf", timeout=timeout, ocr_output_root=str(self.ocr_root),
+                              ocr_tools=ocr_fixtures.TOOLS, tool_signature="stub-v1", ocr_runner=runner,
+                              ocr_vision=ocr_vision, document_budget=budget, ocr_page_timeout=page,
+                              ocr_vision_timeout=vision_timeout, clock=self.clock)
+
+    def timeout_issue(self, result):
+        return [i for i in result["issues"] if i["code"] == "extraction_timeout"]
+
+    def test_pages_start_only_with_their_full_allowance_and_children_keep_their_limits(self):
+        # Allowance 2 x 180 + 300 = 660 s; each child takes 100 s (300 s per page).
+        runner = TimedRunner(text="", confidence="0", clock=self.clock, step=100)
+        result = self.extract(runner, 1000)
+        # Page 2 starts with 1000 s, page 3 with 700 s (>= 660), page 4 would start with 400 s.
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(self.timeout_issue(result), [{"code": "extraction_timeout", "owner": "runtime",
+                                                      "ocr_pages_done": 2, "ocr_pages_pending": [4]}])
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract", "qwen-vision"] * 2)
+        self.assertEqual(runner.timeouts, [180, 180, 300] * 2, "no child limit is cut to the budget left")
+        self.assertNotIn("ocr_receipts", result)
+        # Next call: pages 2-3 load from disk at no cost; page 4 runs; the document completes.
+        result = self.extract(runner, 1000)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual([r["page"] for r in result["ocr_receipts"]], [2, 3, 4])
+        self.assertEqual([r["page"] for r in result["vision_receipts"]], [2, 3, 4])
+        self.assertEqual(self.timeout_issue(result), [])
+        self.assertEqual(len(runner.calls), 9)
+        # Published receipts need no allowance: even a budget below one page's allowance completes.
+        result = self.extract(runner, 30)
+        self.assertEqual((result["status"], [r["page"] for r in result["ocr_receipts"]]), ("partial", [2, 3, 4]))
+        self.assertEqual(len(runner.calls), 9, "no child ran")
+
+    def test_no_page_fits_the_budget(self):
+        runner = TimedRunner(clock=self.clock, step=100)
+        result = self.extract(runner, 600, ocr_vision=VISION)  # 600 s < 660 s allowance
+        self.assertEqual((result["status"], self.timeout_issue(result)[0]["ocr_pages_done"],
+                          self.timeout_issue(result)[0]["ocr_pages_pending"]), ("blocked", 0, [2, 3, 4]))
+        self.assertEqual(runner.calls, [])
+        # Tesseract only: the allowance is 2 x 180 s, so the same budget admits pages.
+        result = self.extract(runner, 600, ocr_vision=None)
+        self.assertEqual(self.timeout_issue(result)[0]["ocr_pages_done"], 2)  # 600 -> 400 -> 200 s left
+        self.assertEqual(self.timeout_issue(result)[0]["ocr_pages_pending"], [4])
+
+    def test_published_tesseract_page_still_needs_vision_allowance(self):
+        runner = TimedRunner(text="", confidence="0", clock=self.clock, step=100)
+        self.extract(runner, 1400, ocr_vision=None)  # Tesseract receipts for pages 2-4, no vision
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract"] * 3)
+        result = self.extract(runner, 250)  # 250 s < one vision child (300 s)
+        self.assertEqual(self.timeout_issue(result)[0]["ocr_pages_done"], 0)
+        self.assertEqual(self.timeout_issue(result)[0]["ocr_pages_pending"], [2, 3, 4])
+        self.assertEqual(runner.calls.count("qwen-vision"), 0)
+        result = self.extract(runner, 650)  # 650 -> 550 -> 450: room for one vision child each time
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(runner.calls.count("qwen-vision"), 3)
+        self.assertEqual(runner.timeouts[-3:], [300, 300, 300])
+
+    def test_without_a_budget_children_get_their_own_limits(self):
+        runner = TimedRunner(text="", confidence="0")
+        result = self.extract(runner, None, page=120, vision_timeout=240)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(runner.timeouts, [120] * 6 + [240] * 3)  # one Tesseract batch, then vision
+
+    def test_budget_and_limits_are_bounded(self):
+        for kwargs in ({"budget": 20, "timeout": 30}, {"budget": 0}, {"budget": 100, "page": 601},
+                       {"budget": 100, "vision_timeout": 0}, {"budget": 100.0}):
+            budget = kwargs.pop("budget")
+            with self.subTest(budget=budget, **kwargs), self.assertRaises(ValueError):
+                self.extract(TimedRunner(), budget, **kwargs)
 
 
 if __name__ == "__main__":
