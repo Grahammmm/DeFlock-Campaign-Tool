@@ -29,7 +29,10 @@ FLOOR = 64 * MIB
 REAL_DF = shutil.which("df")
 
 FAKE_DF = r"""#!/bin/sh
-# Synthetic df. Mode in $STATE/df-mode: real | avail:<KiB> | fail | garbage | hang
+# Synthetic df. Mode in $STATE/df-mode:
+#   real | avail:<KiB> | fail | garbage | hang | okfail | okhang
+# okfail/okhang print a valid, roomy reading and then fail or hang, so a
+# wrapper that only parses stdout (and drops df's status) would admit the run.
 STATE=@STATE@
 echo "$*" >>"$STATE/df-calls"
 mode=$(cat "$STATE/df-mode" 2>/dev/null || echo real)
@@ -43,6 +46,11 @@ case "$mode" in
   fail) echo "df: synthetic failure" >&2; exit 1;;
   garbage) printf '%s\n' "Filesystem" "not a df line"; exit 0;;
   hang) exec sleep 60;;
+  okfail|okhang)
+    printf '%s\n' "Filesystem 1024-blocks Used Available Capacity Mounted on"
+    printf '%s\n' "synthetic 999999999 1 999999998 1% /synthetic"
+    [ "$mode" = okfail ] && exit 1
+    exec sleep 60;;
 esac
 exit 2
 """
@@ -137,6 +145,23 @@ class DiskPreflightTests(RuntimeHarness):
         elapsed = time.monotonic() - started
         self.assert_refused(result, "DISK_SPACE_UNKNOWN")
         # DF_TIMEOUT 10 s + kill grace 2 s, plus orchestrator/notify overhead.
+        self.assertLess(elapsed, 40)
+
+    def test_valid_reading_then_nonzero_exit_refuses_unknown(self):
+        # Review finding: df's exit status must not be masked by the parser.
+        self.df_mode("okfail")
+        self.assert_refused(self.run_script(), "DISK_SPACE_UNKNOWN")
+        self.assertIn("could not measure free space", self.log())
+        self.assertNotIn("disk ok:", self.log())
+
+    def test_valid_reading_then_timeout_refuses_unknown(self):
+        self.df_mode("okhang")
+        started = time.monotonic()
+        result = self.run_script(timeout=60)
+        elapsed = time.monotonic() - started
+        self.assert_refused(result, "DISK_SPACE_UNKNOWN")
+        self.assertIn("could not measure free space", self.log())
+        self.assertNotIn("disk ok:", self.log())
         self.assertLess(elapsed, 40)
 
     # --- a really full disk still exits 78 ----------------------------------

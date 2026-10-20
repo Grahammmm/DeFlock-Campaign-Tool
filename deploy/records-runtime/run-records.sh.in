@@ -210,11 +210,14 @@ wait_for_docker() {
 # this (non-root) user on the filesystem holding $1, or nothing when that
 # cannot be measured. POSIX `df -P -k`: Available is the field before the
 # Capacity (NN%) field, which tolerates spaces in the device name. df runs
-# under its own deadline so a hung filesystem cannot stall the slot.
+# under its own deadline so a hung filesystem cannot stall the slot. The probe
+# output is captured on its own (not piped) so a df failure or timeout is seen
+# even when it printed a plausible line first; any nonzero status is unknown.
 available_bytes() {
-  kib=$("$TIMEOUT" -k "$KILL_AFTER" "$DF_TIMEOUT" df -P -k "$1" </dev/null 2>/dev/null |
-    awk 'NR == 2 { for (i = 5; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit } }') ||
-    kib=
+  df_out=$("$TIMEOUT" -k "$KILL_AFTER" "$DF_TIMEOUT" df -P -k "$1" </dev/null 2>/dev/null) ||
+    return 0
+  kib=$(printf '%s\n' "$df_out" |
+    awk 'NR == 2 { for (i = 5; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit } }')
   case "$kib" in ""|*[!0-9]*) return 0;; esac
   # Strip leading zeros so shell arithmetic never reads the value as octal.
   while [ "${#kib}" -gt 1 ] && [ "${kib#0}" != "$kib" ]; do kib=${kib#0}; done
