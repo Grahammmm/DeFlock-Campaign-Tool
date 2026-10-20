@@ -33,7 +33,8 @@
         "pages": {"$ref": "#/$defs/count"},
         "extracted_units": {"$ref": "#/$defs/count"},
         "portal_releases": {"$ref": "#/$defs/count"},
-        "request_status_changes": {"$ref": "#/$defs/count"}
+        "request_status_changes": {"$ref": "#/$defs/count"},
+        "backup_bytes": {"$ref": "#/$defs/count"}
       }
     },
     "review_required": {"$ref": "#/$defs/count"},
