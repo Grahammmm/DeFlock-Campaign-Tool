@@ -324,6 +324,9 @@ class RunMixin:
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.fake = FakeSystem(self.tmp)
         self.private = self.tmp / "private"
+        self.dist = self.tmp / "checkout-dist"
+        self._orig_dist, swap.DIST = swap.DIST, self.dist
+        self.addCleanup(setattr, swap, "DIST", self._orig_dist)
         self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
 
     def args(self, mode="--apply", **extra):
@@ -712,6 +715,53 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertEqual(lifecycle(self.fake)[-3:], ["start old", "start sidecar",
                                                      "systemctl start synthetic-mail.timer"])
         self.assert_live_unchanged()
+
+    def test_b1_parks_a_previous_attempts_wheel_out_of_the_build_context(self):
+        # attempt 4 (2026-10-19) failed at B1 because attempt 3 had left its wheel in dist/
+        self.dist.mkdir()
+        stale = "deflock_campaign_tool-0.0.0-py3-none-any.whl"
+        (self.dist / stale).write_bytes(b"stale wheel from the previous attempt")
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"moved stale {self.dist} ({stale}) to", out)
+        self.assertFalse(self.dist.exists())
+        parked = self.run_dir() / "b1" / "stale-dist" / stale
+        self.assertEqual(parked.read_bytes(), b"stale wheel from the previous attempt")
+        self.assertEqual(stat.S_IMODE(os.stat(parked.parent.parent).st_mode), 0o700)
+        self.assertEqual(self.state()["stale_dist_parked"], [stale])
+        self.assertEqual(lifecycle(self.fake), self.MAIN_EVENTS)
+
+    def test_b1_leaves_an_empty_or_absent_dist_alone(self):
+        self.dist.mkdir()
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("moved stale", out)
+        self.assertTrue(self.dist.is_dir())
+        self.assertNotIn("stale_dist_parked", self.state())
+
+    def test_b1_stops_before_the_build_when_dist_holds_more_than_engine_wheels(self):
+        self.dist.mkdir()
+        (self.dist / "deflock_campaign_tool-0.0.0-py3-none-any.whl").write_bytes(b"wheel")
+        (self.dist / "notes.txt").write_text("hand-made\n")
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [B1]", out)
+        self.assertIn("not engine wheels: ['notes.txt']", out)
+        self.assertNotIn("build flock-ocr:synthetic", lifecycle(self.fake))
+        self.assertFalse(any("build_wheel.py" in " ".join(a) for a in self.fake.calls), "build ran")
+        self.assertEqual(sorted(p.name for p in self.dist.iterdir()),
+                         ["deflock_campaign_tool-0.0.0-py3-none-any.whl", "notes.txt"])
+        self.assertEqual(self.state()["phase"], "rolled_back")
+        self.assert_live_unchanged()
+
+    def test_dry_run_only_reports_a_stale_dist(self):
+        self.dist.mkdir()
+        stale = "deflock_campaign_tool-0.0.0-py3-none-any.whl"
+        (self.dist / stale).write_bytes(b"wheel")
+        code, out = self.run_swap(self.args("--dry-run"))
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"would move stale {self.dist} ({stale}) to", out)
+        self.assertTrue((self.dist / stale).exists())
 
     def test_live_change_before_the_gate_escalates_without_restore_or_start(self):
         def writer():
