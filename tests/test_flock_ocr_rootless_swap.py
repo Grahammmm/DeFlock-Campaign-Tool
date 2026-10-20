@@ -95,8 +95,10 @@ class FakeSystem:
         self.other_volume.mkdir(parents=True)
         self.volumes = {"flock-data": self.volume, "other": self.other_volume}
         self.images = {
-            OLD_IMAGE: {"Id": OLD_IMAGE, "Config": {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}},
-            OTHER_IMAGE: {"Id": OTHER_IMAGE, "Config": {"Env": [], "Labels": {}}}}
+            OLD_IMAGE: {"Id": OLD_IMAGE, "Config": {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}},
+                        "RootFS": {"Type": "layers", "Layers": ["sha256:" + "0a" * 32]}},
+            OTHER_IMAGE: {"Id": OTHER_IMAGE, "Config": {"Env": [], "Labels": {}},
+                          "RootFS": {"Type": "layers", "Layers": ["sha256:" + "0e" * 32]}}}
         self.tags = {}
         vol = {"Type": "volume", "Name": "flock-data", "Source": str(self.volume), "Destination": "/data",
                "RW": True, "Driver": "local", "Mode": "z", "Propagation": ""}
@@ -260,7 +262,8 @@ class FakeSystem:
     def _build(self, argv):
         tag = argv[argv.index("-t") + 1]
         self.images[NEW_IMAGE] = {"Id": NEW_IMAGE, "Config": {
-            "Env": ["PATH=/usr/bin", "PIP_NO_CACHE_DIR=1"], "Labels": {"base": "1", "title": "ocr"}}}
+            "Env": ["PATH=/usr/bin", "PIP_NO_CACHE_DIR=1"], "Labels": {"base": "1", "title": "ocr"}},
+            "RootFS": {"Type": "layers", "Layers": ["sha256:" + "0a" * 32, "sha256:" + "0c" * 32]}}
         self.tags[tag] = NEW_IMAGE
         return 0, "", ""
 
@@ -481,6 +484,103 @@ class PureFunctionTests(unittest.TestCase):
                 after = copy.deepcopy(before)
                 change(after)
                 self.assertIn(expected, swap.inspect_diff(before, after, old_img, new_img))
+
+    # Create-only probe of rootless Docker 29.6.2 / API 1.55 (old image, no mounts,
+    # network none, removed right after): HostConfig value sent -> value stored.
+    PROBED_EQUAL = [("OomKillDisable", None, False), ("MemorySwappiness", -1, None),
+                    ("PidsLimit", 0, None), ("PidsLimit", -1, None), ("ConsoleSize", None, [0, 0]),
+                    ("Mounts", [], "<absent>"), ("Mounts", None, "<absent>"),
+                    ("Links", [], None), ("Tmpfs", {}, "<absent>"), ("Sysctls", {}, "<absent>"),
+                    ("StorageOpt", {}, "<absent>"), ("Annotations", {}, "<absent>"),
+                    ("Init", None, "<absent>")]
+    # Same probe: the daemon fills its own default for an unset value. The saved
+    # inspect always carries the explicit value, so a difference here is a real
+    # change (or a changed daemon default) and must still fail.
+    PROBED_STRICT = [("MaskedPaths", ["/proc/kcore"], None), ("MaskedPaths", None, []),
+                     ("ReadonlyPaths", ["/proc/sys"], None), ("IpcMode", "private", ""),
+                     ("CgroupnsMode", "private", "host"), ("Runtime", "runc", ""),
+                     ("ShmSize", 67108864, 0), ("LogConfig", {"Type": "json-file", "Config": {}}, {}),
+                     ("RestartPolicy", {"Name": "unless-stopped", "MaximumRetryCount": 0},
+                      {"Name": "no", "MaximumRetryCount": 0}),
+                     ("OomKillDisable", None, True), ("OomKillDisable", False, True),
+                     ("PidsLimit", 768, None), ("MemorySwappiness", 60, None), ("ConsoleSize", None, [24, 80]),
+                     ("Tmpfs", {"/tmp": "size=2g"}, {}), ("Sysctls", {"net.ipv6.conf.all.disable_ipv6": "1"}, {}),
+                     ("Mounts", [{"Type": "volume", "Source": "v", "Target": "/home"}], [])]
+
+    @staticmethod
+    def _set(host, key, value):
+        if value == "<absent>":
+            host.pop(key, None)
+        else:
+            host[key] = value
+
+    def attempt3(self):
+        """Synthetic before/after pair with the shape of the attempt-3 [C2] failure."""
+        before = self.base()
+        before["HostConfig"].update(OomKillDisable=None, PidsLimit=768, MemorySwappiness=None,
+                                    CapAdd=["CAP_CHOWN"], CapDrop=["ALL"], SecurityOpt=["no-new-privileges:true"],
+                                    MaskedPaths=["/proc/kcore"], ReadonlyPaths=["/proc/sys"], ReadonlyRootfs=True,
+                                    Tmpfs={"/tmp": "rw,size=2g"}, ConsoleSize=[0, 0])
+        before["Platform"] = "linux"
+        before["ImageManifestDescriptor"] = {"digest": OLD_IMAGE, "size": 4034,
+                                             "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                             "platform": {"architecture": "amd64", "os": "linux"}}
+        after = copy.deepcopy(before)
+        after.update(Id="9" * 64, Image=NEW_IMAGE, Created="later", State={"Running": False})
+        after["Config"].update(Image=NEW_IMAGE, Labels=dict(before["Config"]["Labels"], title="ocr"))
+        after["HostConfig"]["OomKillDisable"] = False
+        after["ImageManifestDescriptor"] = dict(before["ImageManifestDescriptor"], digest=NEW_IMAGE, size=4915)
+        old_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}
+        new_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1", "title": "ocr"}}
+        return before, after, old_img, new_img
+
+    def test_attempt3_image_descriptor_and_oom_kill_default_are_not_differences(self):
+        before, after, old_img, new_img = self.attempt3()
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+        self.assertEqual(swap.default_normalisations(before, after), ["HostConfig.OomKillDisable: null == false"])
+        # An older daemon without the descriptor on the saved side is not a difference either.
+        del before["ImageManifestDescriptor"]
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+
+    def test_inspect_diff_treats_probed_api_defaults_as_equal(self):
+        for key, sent, stored in self.PROBED_EQUAL:
+            for left, right in ((sent, stored), (stored, sent)):
+                with self.subTest(key=key, left=left, right=right):
+                    before, after, old_img, new_img = self.attempt3()
+                    self._set(before["HostConfig"], key, left)
+                    self._set(after["HostConfig"], key, right)
+                    self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+
+    def test_inspect_diff_still_fails_on_real_changes_and_daemon_filled_defaults(self):
+        for key, saved, created in self.PROBED_STRICT:
+            with self.subTest(key=key, saved=saved, created=created):
+                before, after, old_img, new_img = self.attempt3()
+                self._set(before["HostConfig"], key, saved)
+                self._set(after["HostConfig"], key, created)
+                self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [f"HostConfig.{key}"])
+
+    def test_inspect_diff_still_fails_on_mounts_env_network_user_caps_security(self):
+        cases = {
+            "HostConfig.CapAdd": lambda a: a["HostConfig"].update(CapAdd=["CAP_CHOWN", "CAP_SYS_ADMIN"]),
+            "HostConfig.CapDrop": lambda a: a["HostConfig"].update(CapDrop=None),
+            "HostConfig.SecurityOpt": lambda a: a["HostConfig"].update(SecurityOpt=[]),
+            "HostConfig.ReadonlyRootfs": lambda a: a["HostConfig"].update(ReadonlyRootfs=False),
+            "HostConfig.NetworkMode": lambda a: a["HostConfig"].update(NetworkMode="host"),
+            "HostConfig.Binds": lambda a: a["HostConfig"].update(Binds=[]),
+            "Mounts": lambda a: a.update(Mounts=[{"Type": "bind", "Source": "/x", "Destination": "/data"}]),
+            "Networks": lambda a: a["NetworkSettings"]["Networks"].update(other={"Aliases": ["x"]}),
+            "Config.User": lambda a: a["Config"].update(User="0"),
+            "Config.Entrypoint": lambda a: a["Config"].update(Entrypoint=[]),
+            "Config.Volumes": lambda a: a["Config"].update(Volumes={"/anon": {}}),
+            "Config.Env.APP": lambda a: a["Config"].update(Env=["PATH=/usr/bin"]),
+            "Config.Labels.app": lambda a: a["Config"]["Labels"].update(app="other"),
+            "Platform": lambda a: a.update(Platform="windows"),
+        }
+        for expected, change in cases.items():
+            with self.subTest(expected=expected):
+                before, after, old_img, new_img = self.attempt3()
+                change(after)
+                self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [expected])
 
     def test_anonymous_volumes_and_overflow_owners_are_detected(self):
         info = self.base()
@@ -1252,6 +1352,171 @@ class NonArchivableSpecialFileTests(RunMixin, unittest.TestCase):
         self.assert_live_archivable_unchanged()
         self.assertTrue(self.fake.find(TARGET)["State"]["Running"])
         self.assertEqual(self.state()["phase"], "rolled_back")
+
+
+class C2DefaultsAndReuseImageTests(RunMixin, unittest.TestCase):
+    """SWAP-FIX4: the attempt-3 [C2] shape passes; --reuse-image skips [B1]/[B2] only."""
+    TAG = "flock-ocr:synthetic"
+    DESCRIPTOR = {"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                  "platform": {"architecture": "amd64", "os": "linux"}}
+
+    def daemon_like_create(self, extra=None):
+        """Saved inspect as an older daemon stored it; create stores API defaults and a new descriptor."""
+        target = self.fake.find(TARGET)
+        target["HostConfig"]["OomKillDisable"] = None
+        target["ImageManifestDescriptor"] = dict(self.DESCRIPTOR, digest=OLD_IMAGE, size=4034)
+        original = self.fake.docker_api
+
+        def create(method, path, body):
+            status, response = original(method, path, body)
+            new = self.fake.find("9" * 64)
+            new["HostConfig"]["OomKillDisable"] = False
+            new["ImageManifestDescriptor"] = dict(self.DESCRIPTOR, digest=body["Image"], size=4915)
+            if extra:
+                extra(new)
+            return status, response
+        self.fake.docker_api = create
+        return original
+
+    def test_c2_passes_with_the_oom_kill_default_and_a_new_manifest_descriptor(self):
+        self.daemon_like_create()
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertIn("API default, treated as equal: HostConfig.OomKillDisable: null == false", out)
+        self.assertEqual(json.loads((self.run_dir() / "create-diff.json").read_text()), [])
+        self.assertEqual(self.state()["phase"], "complete")
+
+    def test_c2_still_rolls_back_on_a_real_change_next_to_the_defaults(self):
+        self.daemon_like_create(extra=lambda new: new["HostConfig"].update(CapAdd=["CAP_SYS_ADMIN"]))
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [C2]: replacement settings differ from the saved ones: ['HostConfig.CapAdd']", out)
+        self.assertIn("ROLLBACK RB-B", out)
+        self.assertNotIn("start new", lifecycle(self.fake))
+
+    # -- --reuse-image --
+
+    def failed_first_run(self):
+        """An attempt that built and verified the tag, then failed at [C2] and rolled back."""
+        original = self.daemon_like_create(extra=lambda new: new["HostConfig"].update(Privileged=True))
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [C2]", out)
+        self.fake.docker_api = original
+        prev = self.run_dir()
+        # Owner cleanup before the next attempt: the never-started replacement is removed.
+        failed = self.fake.find(TARGET + "-ocr-failed")
+        del self.fake.containers[failed["Id"]]
+        return prev
+
+    def new_run(self, prev):
+        runs = [p for p in sorted(self.private.glob("run-*")) if p != prev]
+        self.assertEqual(len(runs), 1)
+        return runs[0]
+
+    def test_reuse_skips_the_rebuild_reruns_v1_and_completes(self):
+        prev = self.failed_first_run()
+        self.daemon_like_create()
+        calls, events = len(self.fake.calls), len(self.fake.events)
+        argv = self.args(reuse_image=str(prev))
+        del argv[argv.index("--build-python"):argv.index("--build-python") + 2]
+        code, out = self.run_swap(argv)
+        self.assertEqual(code, 0, out)
+        new_calls = self.fake.calls[calls:]
+        scripts = [Path(a[2]).name for a in new_calls if a[0] == sys.executable]
+        self.assertNotIn("build_wheel.py", scripts)
+        self.assertNotIn("preflight.py", scripts)
+        self.assertIn("verify.py", scripts)
+        self.assertIn([sys.executable, "-B", str(RECIPE / "verify.py"), "--image", NEW_IMAGE], new_calls)
+        self.assertFalse(any(a[:2] == ["docker", "build"] for a in new_calls))
+        self.assertEqual(self.fake.events[events:], [e for e in RootlessApplyTests.MAIN_EVENTS
+                                                     if not e.startswith("build")])
+        self.assertIn("not rebuilt: reusing wheel sha256 " + WHEEL_SHA, out)
+        self.assertIn(f"not rebuilt: {self.TAG} = {NEW_IMAGE}", out)
+        state = json.loads((self.new_run(prev) / "state.json").read_text())
+        self.assertEqual(state["reuse"], {"run_dir": str(prev.resolve()), "new_image_id": NEW_IMAGE,
+                                          "wheel_sha256": WHEEL_SHA})
+        self.assertEqual((state["new_image_id"], state["wheel_sha256"], state["phase"]),
+                         (NEW_IMAGE, WHEEL_SHA, "complete"))
+        receipt = json.loads((self.new_run(prev) / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["reused_image"], state["reuse"])
+        self.assertEqual(self.fake.find(TARGET)["Image"], NEW_IMAGE)
+
+    def test_reuse_dry_run_checks_the_receipt_and_changes_nothing(self):
+        prev = self.failed_first_run()
+        calls = len(self.fake.calls)
+        code, out = self.run_swap(self.args("--dry-run", reuse_image=str(prev)))
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"reusing {self.TAG} = {NEW_IMAGE} built and V1-verified by", out)
+        self.assertIn("not rebuilt", out)
+        self.assertNotRegex(out, r"would run: .*(build_wheel\.py|preflight\.py|docker build)")
+        for argv in self.fake.calls[calls:]:
+            self.assertIn(argv[0], ("docker", "systemctl"), argv)
+            if argv[0] == "docker":
+                self.assertIn(argv[1], {"info", "inspect", "ps", "image", "top"}, argv)
+            else:
+                self.assertEqual(argv[2], "show", argv)
+        self.assertEqual(sorted(self.private.glob("run-*")), [prev])
+
+    def test_reuse_refusals_change_nothing(self):
+        tag = self.TAG
+
+        def rewrite(prev, **changes):
+            state = json.loads((prev / "state.json").read_text())
+            state.update(changes)
+            (prev / "state.json").write_text(json.dumps(state))
+
+        def outside(case):
+            copy_dir = case.tmp / "elsewhere" / case.prev.name
+            shutil.copytree(case.prev, copy_dir)
+            rewrite(copy_dir, run_dir=str(copy_dir))
+            return copy_dir
+        cases = {
+            "did not pass [V1]": lambda c: rewrite(c.prev, done=["R1", "Q1", "Q2", "S1", "S2", "S3", "G1", "B1"]),
+            "not --new-tag": lambda c: rewrite(c.prev, new_tag="flock-ocr:other"),
+            "another base image": lambda c: rewrite(c.prev, old_image=OTHER_IMAGE),
+            "no valid image ID": lambda c: rewrite(c.prev, new_image_id="<NEW_IMAGE_ID>"),
+            "belongs to another run": lambda c: rewrite(c.prev, run_dir=str(c.tmp / "x")),
+            "resolves to": lambda c: c.fake.tags.update({tag: OTHER_IMAGE}),
+            "do not extend": lambda c: c.fake.images[NEW_IMAGE]["RootFS"].update(Layers=["sha256:" + "0c" * 32]),
+            "cannot read": lambda c: (c.prev / "state.json").unlink(),
+            "directly under --private": outside,
+        }
+        for needle, change in cases.items():
+            with self.subTest(case=needle):
+                case_dir = self.tmp / re.sub(r"\W+", "_", needle)
+                self.fake = FakeSystem(case_dir)
+                self.private = case_dir / "private"
+                prev = self.failed_first_run()
+                reuse = change(type("Case", (), {"prev": prev, "fake": self.fake, "tmp": case_dir})) or prev
+                events, helpers = len(self.fake.events), len(self.fake.helper_runs)
+                code, out = self.run_swap(self.args(reuse_image=str(reuse)))
+                self.assertEqual(code, swap.EXIT_REFUSED, out)
+                self.assertIn("FAIL at [R1]", out)
+                self.assertIn(needle, out)
+                self.assertEqual(self.fake.events[events:], [])
+                self.assertEqual(len(self.fake.helper_runs), helpers)
+
+    def test_tag_moved_after_r1_fails_b2_before_any_container_change(self):
+        prev = self.failed_first_run()
+        api = len(self.fake.api_calls)
+        self.fake.hooks["sqlite-evidence"] = lambda: self.fake.tags.update({self.TAG: OTHER_IMAGE})
+        code, out = self.run_swap(self.args(reuse_image=str(prev)))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn(f"FAIL at [B2]: {self.TAG} now resolves to {OTHER_IMAGE}", out)
+        self.assertIn("ROLLBACK RB-A", out)
+        self.assertEqual(len(self.fake.api_calls), api)
+        self.assertNotIn("verify.py", " ".join(" ".join(a) for a in self.fake.calls[-20:]))
+
+    def test_reuse_arguments(self):
+        base = ["--apply", "--container", TARGET, "--pause-unit", UNIT, "--private", "/p", "--new-tag", self.TAG]
+        self.assertEqual(swap.parse_args(base + ["--reuse-image", "/p/run-1"]).reuse_image, "/p/run-1")
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            swap.parse_args(base)
+        self.assertIn("--build-python", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            swap.parse_args(["--resume", "/p/run-1", "--reuse-image", "/p/run-0"])
+        self.assertIn("--reuse-image is fixed at --apply", err.getvalue())
 
 
 if __name__ == "__main__":
