@@ -141,7 +141,8 @@ class ExtractStageCase(unittest.TestCase):
         inbox = base / "inbox"
         inbox.mkdir(mode=0o700)
         self.names = {}
-        for index, (name, payload) in enumerate(self.attachments):
+        self.payloads = dict(self.attachments)  # generated once: XLSX bytes carry a timestamp
+        for index, (name, payload) in enumerate(self.payloads.items()):
             raw = synthetic_email(attachment=payload, filename=name,
                                   message_id=f"<t11k-{index}@agency.example.invalid>")
             (inbox / f"{index:02d}.eml").write_bytes(raw)
@@ -185,7 +186,7 @@ class NativeExtractionTests(ExtractStageCase):
                 ("broken.pdf", corrupt_pdf()))
 
     def subject(self, name):
-        payload = dict(self.attachments)[name]
+        payload = self.payloads[name]
         subject = hashlib.sha256(payload).hexdigest()
         self.assertEqual(self.query("SELECT COUNT(*) FROM originals WHERE sha256=?", (subject,)), [(1,)], name)
         return subject
