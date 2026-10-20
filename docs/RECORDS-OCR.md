@@ -1,6 +1,10 @@
 # M2 local OCR slice
 
-Per-page OCR in this module is the **only OCR path** in the engine. WP4's
+Per-page OCR in this module is the **only OCR path** in the engine's WP4
+extraction (`extraction_routes`). The separate Phase 2 queue stage for
+documents held as `awaiting_ocr` (OCRmyPDF first, local Qwen vision fallback)
+is described in `docs/RECORDS-OCR-STAGE.md`; it writes only its own output
+root and is not wired into WP4. WP4's
 `extraction_routes.extract()` no longer runs whole-document OCRmyPDF or writes
 an `ocr.pdf` derivative; for PDF pages that are not natively `ok` it calls
 `extract_image_only_pages` and binds each page row to that page's immutable

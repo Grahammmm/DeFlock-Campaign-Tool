@@ -6,6 +6,7 @@ container paths (/live, /private, /recipe) mapped onto temporary directories,
 so the real tar and snapshot_evidence.py run against a synthetic WAL database.
 No Docker daemon, systemd unit, network or real data is touched.
 """
+import contextlib
 import copy
 import importlib.util
 import io
@@ -13,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -93,8 +95,10 @@ class FakeSystem:
         self.other_volume.mkdir(parents=True)
         self.volumes = {"flock-data": self.volume, "other": self.other_volume}
         self.images = {
-            OLD_IMAGE: {"Id": OLD_IMAGE, "Config": {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}},
-            OTHER_IMAGE: {"Id": OTHER_IMAGE, "Config": {"Env": [], "Labels": {}}}}
+            OLD_IMAGE: {"Id": OLD_IMAGE, "Config": {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}},
+                        "RootFS": {"Type": "layers", "Layers": ["sha256:" + "0a" * 32]}},
+            OTHER_IMAGE: {"Id": OTHER_IMAGE, "Config": {"Env": [], "Labels": {}},
+                          "RootFS": {"Type": "layers", "Layers": ["sha256:" + "0e" * 32]}}}
         self.tags = {}
         vol = {"Type": "volume", "Name": "flock-data", "Source": str(self.volume), "Destination": "/data",
                "RW": True, "Driver": "local", "Mode": "z", "Propagation": ""}
@@ -258,7 +262,8 @@ class FakeSystem:
     def _build(self, argv):
         tag = argv[argv.index("-t") + 1]
         self.images[NEW_IMAGE] = {"Id": NEW_IMAGE, "Config": {
-            "Env": ["PATH=/usr/bin", "PIP_NO_CACHE_DIR=1"], "Labels": {"base": "1", "title": "ocr"}}}
+            "Env": ["PATH=/usr/bin", "PIP_NO_CACHE_DIR=1"], "Labels": {"base": "1", "title": "ocr"}},
+            "RootFS": {"Type": "layers", "Layers": ["sha256:" + "0a" * 32, "sha256:" + "0c" * 32]}}
         self.tags[tag] = NEW_IMAGE
         return 0, "", ""
 
@@ -297,6 +302,20 @@ class FakeSystem:
 def lifecycle(fake):
     """Ordered state-changing events (no helpers, no reads), labelled at call time."""
     return list(fake.events)
+
+
+def malformed_sqlite(path):
+    """Write a synthetic SQLite file whose schema page is deliberately corrupt."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("create table synthetic(value)")
+    conn.executemany("insert into synthetic values (?)", [(n,) for n in range(20)])
+    conn.commit()
+    conn.close()
+    data = bytearray(path.read_bytes())
+    data[100] = 0xFF  # page-1 b-tree type byte: "database disk image is malformed"
+    path.write_bytes(bytes(data))
+    return swap.sha256_file(path)
 
 
 class RunMixin:
@@ -391,7 +410,8 @@ class RootlessRunbookOrderTests(unittest.TestCase):
 
     def test_doc_names_rootless_controls(self):
         for needle in ("docker run --rm", "--numeric-owner", "readonly", "systemctl --user stop",
-                       "never `docker rm`", "65534", "--dry-run", "--apply", "chmod 700", "docker inspect"):
+                       "never `docker rm`", "65534", "--dry-run", "--apply", "chmod 700", "docker inspect",
+                       "non_archivable", "socket ignored"):
             self.assertIn(needle, DOC)
 
 
@@ -420,6 +440,30 @@ class PureFunctionTests(unittest.TestCase):
         new_img = {"Env": ["PATH=/usr/bin", "PIP_NO_CACHE_DIR=1"], "Labels": {"base": "1", "title": "ocr"}}
         self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
 
+    def test_inspect_diff_ignores_daemon_canonical_null_and_image_manifest_descriptor(self):
+        # Swap attempt 3 (2026-10-19, dockerd 29.6 / API 1.55) failed at C2 on exactly these
+        # two keys: the saved container (older daemon) stored OomKillDisable null, the
+        # replacement created from the same body reported false; and the new API field
+        # ImageManifestDescriptor carries the image ID, which changes by design.
+        before = self.base()
+        before["HostConfig"]["OomKillDisable"] = None
+        before["ImageManifestDescriptor"] = {"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                             "digest": OLD_IMAGE, "size": 4034}
+        after = copy.deepcopy(before)
+        after.update(Id="9" * 64, Image=NEW_IMAGE)
+        after["Config"]["Image"] = NEW_IMAGE
+        after["HostConfig"]["OomKillDisable"] = False
+        after["ImageManifestDescriptor"] = {"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                            "digest": NEW_IMAGE, "size": 4915}
+        old_img = new_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+        # absent on the saved side is the same as null
+        del before["HostConfig"]["OomKillDisable"]
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+        # a real change of the setting is still a difference
+        after["HostConfig"]["OomKillDisable"] = True
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), ["HostConfig.OomKillDisable"])
+
     def test_inspect_diff_rejects_setting_changes(self):
         before = self.base()
         old_img = new_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}
@@ -437,6 +481,103 @@ class PureFunctionTests(unittest.TestCase):
                 after = copy.deepcopy(before)
                 change(after)
                 self.assertIn(expected, swap.inspect_diff(before, after, old_img, new_img))
+
+    # Create-only probe of rootless Docker 29.6.2 / API 1.55 (old image, no mounts,
+    # network none, removed right after): HostConfig value sent -> value stored.
+    PROBED_EQUAL = [("OomKillDisable", None, False), ("MemorySwappiness", -1, None),
+                    ("PidsLimit", 0, None), ("PidsLimit", -1, None), ("ConsoleSize", None, [0, 0]),
+                    ("Mounts", [], "<absent>"), ("Mounts", None, "<absent>"),
+                    ("Links", [], None), ("Tmpfs", {}, "<absent>"), ("Sysctls", {}, "<absent>"),
+                    ("StorageOpt", {}, "<absent>"), ("Annotations", {}, "<absent>"),
+                    ("Init", None, "<absent>")]
+    # Same probe: the daemon fills its own default for an unset value. The saved
+    # inspect always carries the explicit value, so a difference here is a real
+    # change (or a changed daemon default) and must still fail.
+    PROBED_STRICT = [("MaskedPaths", ["/proc/kcore"], None), ("MaskedPaths", None, []),
+                     ("ReadonlyPaths", ["/proc/sys"], None), ("IpcMode", "private", ""),
+                     ("CgroupnsMode", "private", "host"), ("Runtime", "runc", ""),
+                     ("ShmSize", 67108864, 0), ("LogConfig", {"Type": "json-file", "Config": {}}, {}),
+                     ("RestartPolicy", {"Name": "unless-stopped", "MaximumRetryCount": 0},
+                      {"Name": "no", "MaximumRetryCount": 0}),
+                     ("OomKillDisable", None, True), ("OomKillDisable", False, True),
+                     ("PidsLimit", 768, None), ("MemorySwappiness", 60, None), ("ConsoleSize", None, [24, 80]),
+                     ("Tmpfs", {"/tmp": "size=2g"}, {}), ("Sysctls", {"net.ipv6.conf.all.disable_ipv6": "1"}, {}),
+                     ("Mounts", [{"Type": "volume", "Source": "v", "Target": "/home"}], [])]
+
+    @staticmethod
+    def _set(host, key, value):
+        if value == "<absent>":
+            host.pop(key, None)
+        else:
+            host[key] = value
+
+    def attempt3(self):
+        """Synthetic before/after pair with the shape of the attempt-3 [C2] failure."""
+        before = self.base()
+        before["HostConfig"].update(OomKillDisable=None, PidsLimit=768, MemorySwappiness=None,
+                                    CapAdd=["CAP_CHOWN"], CapDrop=["ALL"], SecurityOpt=["no-new-privileges:true"],
+                                    MaskedPaths=["/proc/kcore"], ReadonlyPaths=["/proc/sys"], ReadonlyRootfs=True,
+                                    Tmpfs={"/tmp": "rw,size=2g"}, ConsoleSize=[0, 0])
+        before["Platform"] = "linux"
+        before["ImageManifestDescriptor"] = {"digest": OLD_IMAGE, "size": 4034,
+                                             "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                             "platform": {"architecture": "amd64", "os": "linux"}}
+        after = copy.deepcopy(before)
+        after.update(Id="9" * 64, Image=NEW_IMAGE, Created="later", State={"Running": False})
+        after["Config"].update(Image=NEW_IMAGE, Labels=dict(before["Config"]["Labels"], title="ocr"))
+        after["HostConfig"]["OomKillDisable"] = False
+        after["ImageManifestDescriptor"] = dict(before["ImageManifestDescriptor"], digest=NEW_IMAGE, size=4915)
+        old_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1"}}
+        new_img = {"Env": ["PATH=/usr/bin"], "Labels": {"base": "1", "title": "ocr"}}
+        return before, after, old_img, new_img
+
+    def test_attempt3_image_descriptor_and_oom_kill_default_are_not_differences(self):
+        before, after, old_img, new_img = self.attempt3()
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+        self.assertEqual(swap.default_normalisations(before, after), ["HostConfig.OomKillDisable: null == false"])
+        # An older daemon without the descriptor on the saved side is not a difference either.
+        del before["ImageManifestDescriptor"]
+        self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+
+    def test_inspect_diff_treats_probed_api_defaults_as_equal(self):
+        for key, sent, stored in self.PROBED_EQUAL:
+            for left, right in ((sent, stored), (stored, sent)):
+                with self.subTest(key=key, left=left, right=right):
+                    before, after, old_img, new_img = self.attempt3()
+                    self._set(before["HostConfig"], key, left)
+                    self._set(after["HostConfig"], key, right)
+                    self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [])
+
+    def test_inspect_diff_still_fails_on_real_changes_and_daemon_filled_defaults(self):
+        for key, saved, created in self.PROBED_STRICT:
+            with self.subTest(key=key, saved=saved, created=created):
+                before, after, old_img, new_img = self.attempt3()
+                self._set(before["HostConfig"], key, saved)
+                self._set(after["HostConfig"], key, created)
+                self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [f"HostConfig.{key}"])
+
+    def test_inspect_diff_still_fails_on_mounts_env_network_user_caps_security(self):
+        cases = {
+            "HostConfig.CapAdd": lambda a: a["HostConfig"].update(CapAdd=["CAP_CHOWN", "CAP_SYS_ADMIN"]),
+            "HostConfig.CapDrop": lambda a: a["HostConfig"].update(CapDrop=None),
+            "HostConfig.SecurityOpt": lambda a: a["HostConfig"].update(SecurityOpt=[]),
+            "HostConfig.ReadonlyRootfs": lambda a: a["HostConfig"].update(ReadonlyRootfs=False),
+            "HostConfig.NetworkMode": lambda a: a["HostConfig"].update(NetworkMode="host"),
+            "HostConfig.Binds": lambda a: a["HostConfig"].update(Binds=[]),
+            "Mounts": lambda a: a.update(Mounts=[{"Type": "bind", "Source": "/x", "Destination": "/data"}]),
+            "Networks": lambda a: a["NetworkSettings"]["Networks"].update(other={"Aliases": ["x"]}),
+            "Config.User": lambda a: a["Config"].update(User="0"),
+            "Config.Entrypoint": lambda a: a["Config"].update(Entrypoint=[]),
+            "Config.Volumes": lambda a: a["Config"].update(Volumes={"/anon": {}}),
+            "Config.Env.APP": lambda a: a["Config"].update(Env=["PATH=/usr/bin"]),
+            "Config.Labels.app": lambda a: a["Config"]["Labels"].update(app="other"),
+            "Platform": lambda a: a.update(Platform="windows"),
+        }
+        for expected, change in cases.items():
+            with self.subTest(expected=expected):
+                before, after, old_img, new_img = self.attempt3()
+                change(after)
+                self.assertEqual(swap.inspect_diff(before, after, old_img, new_img), [expected])
 
     def test_anonymous_volumes_and_overflow_owners_are_detected(self):
         info = self.base()
@@ -709,6 +850,130 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertEqual(code, swap.EXIT_REFUSED, out)
 
 
+class AcceptMalformedSqliteTests(RunMixin, unittest.TestCase):
+    """A hash-pinned, intentionally corrupt fixture is exempt from integrity only."""
+
+    FIXTURE = "fixtures/regressions-v1/db-mutation/ledger.sqlite"
+    COPY = "fixtures/regressions-v2/db-mutation/ledger.sqlite"
+
+    def setUp(self):
+        super().setUp()
+        self.digest = malformed_sqlite(self.fake.bind / self.FIXTURE)
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+
+    def pinned(self, *pins, mode="--apply"):
+        argv = self.args(mode)
+        for pin in pins:
+            argv += ["--accept-malformed-sqlite", pin]
+        return argv
+
+    def evidence_runs(self):
+        return [r["command"] for r in self.fake.helper_runs if "sqlite-evidence" in r["command"]]
+
+    def test_default_still_refuses_a_malformed_database(self):
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S2]", out)
+        self.assertIn(f"SQLite evidence failed for {self.FIXTURE}: database disk image is malformed", out)
+        failure = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence-failure.json").read_text())
+        self.assertEqual(failure["exit"], 2)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+        self.assertEqual(self.fake.api_calls, [])
+        self.assertFalse(any("--accept-malformed" in c for c in self.evidence_runs()))
+        self.assert_live_unchanged()
+
+    def test_pinned_fixture_is_archived_restore_tested_and_hash_matched(self):
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.state()["done"], [s["id"] for s in PLAN["main"]])
+        receipt = json.loads((self.run_dir() / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["sqlite_accepted_malformed_sha256"], {f"m01/{self.FIXTURE}": self.digest})
+        self.assertEqual(list(receipt["sqlite_backups_sha256"]), ["m00/state/flock.db"])
+        report = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence.json").read_text())
+        self.assertEqual(report["databases"], {self.FIXTURE: {"accepted_malformed": True, "sha256": self.digest,
+                                                              "integrity_check": None, "ok": True}})
+        self.assertFalse((self.run_dir() / "s2" / "sqlite" / "m01" / (self.FIXTURE + ".backup")).exists())
+        # Archived: the S1 tar holds it. Restore-tested and hash-matched: S3
+        # and A2 compare full manifests, which include its sha256.
+        self.assertIn(f"./{self.FIXTURE}", self.tar_listing(self.run_dir() / "s1" / "m01.tar"))
+        baseline = json.loads((self.run_dir() / "s1" / "m01.baseline.json").read_text())
+        self.assertEqual(baseline["entries"][self.FIXTURE]["sha256"], self.digest)
+        restored = json.loads((self.run_dir() / "s3" / "m01.restored.json").read_text())
+        self.assertEqual(restored["entries"][self.FIXTURE]["sha256"], self.digest)
+        self.assertIn("1 hash-pinned malformed exempted", out)
+        runs = self.evidence_runs()
+        self.assertEqual(len(runs), 4)  # S2 and A2, two mounts each
+        for cmd in runs:
+            pinned = "--accept-malformed" in cmd
+            self.assertEqual(pinned, "/private/s2/inspect/m01" in cmd or "/private/a2/inspect/m01" in cmd, cmd)
+            if pinned:
+                self.assertEqual(cmd[cmd.index("--accept-malformed") + 1], f"{self.FIXTURE}={self.digest}")
+        self.assert_live_unchanged()
+        self.assert_safe_helpers()
+
+    def test_pin_with_another_hash_fails_at_s2(self):
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={'0' * 64}"))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S2]", out)
+        self.assertIn("no snapshotted mount holds that path with the pinned sha256", out)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+        self.assert_live_unchanged()
+
+    def test_pin_for_a_path_that_does_not_exist_fails_at_s2(self):
+        code, out = self.run_swap(self.pinned(f"fixtures/absent/ledger.sqlite={self.digest}"))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S2]", out)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+
+    def test_pin_exempts_only_its_own_path_and_every_failure_is_named(self):
+        (self.fake.bind / self.COPY).parent.mkdir(parents=True)
+        shutil.copyfile(self.fake.bind / self.FIXTURE, self.fake.bind / self.COPY)
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        failure = json.loads((self.run_dir() / "s2" / "m01.sqlite-evidence-failure.json").read_text())
+        named = [line for line in failure["stderr"] if line.startswith("FAIL SQLite evidence failed")]
+        self.assertEqual(len(named), 2, failure)
+        self.assertTrue(any(self.FIXTURE in line for line in named))
+        self.assertTrue(any(self.COPY in line for line in named))
+        shutil.rmtree(self.private)
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}"))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn(f"SQLite evidence failed for {self.COPY}", out)
+        self.assertNotIn(f"SQLite evidence failed for {self.FIXTURE}", out)
+        shutil.rmtree(self.private)
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}", f"{self.COPY}={self.digest}"))
+        self.assertEqual(code, 0, out)
+        receipt = json.loads((self.run_dir() / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["sqlite_accepted_malformed_sha256"],
+                         {f"m01/{self.FIXTURE}": self.digest, f"m01/{self.COPY}": self.digest})
+
+    def test_dry_run_names_the_exemption_and_changes_nothing(self):
+        code, out = self.run_swap(self.pinned(f"{self.FIXTURE}={self.digest}", mode="--dry-run"))
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"would exempt from the SQLite integrity requirement only: {self.FIXTURE} "
+                      f"(sha256 {self.digest})", out)
+        self.assertFalse(self.private.exists())
+        self.assert_live_unchanged()
+
+    def test_malformed_pins_are_refused_before_anything_runs(self):
+        good = f"{self.FIXTURE}={self.digest}"
+        for pin in (self.FIXTURE, f"{self.FIXTURE}={'A' * 64}", f"{self.FIXTURE}={self.digest[:-1]}",
+                    f"/{self.FIXTURE}={self.digest}", f"fixtures/../{self.FIXTURE}={self.digest}",
+                    f"./{self.FIXTURE}={self.digest}", f"={self.digest}"):
+            with self.subTest(pin=pin):
+                with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as raised:
+                    swap.parse_args(self.pinned(pin))
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--accept-malformed-sqlite", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            swap.parse_args(self.pinned(good, good))
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            swap.parse_args(["--resume", str(self.tmp), "--accept-malformed-sqlite", good])
+        self.assertIn("fixed at --apply", err.getvalue())
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(swap.parse_args(self.args()).accepted_malformed_sqlite, {})
+
+
 class RollbackPreservationTests(RunMixin, unittest.TestCase):
     """Rollback retries never replace an earlier preserved current state."""
 
@@ -865,6 +1130,343 @@ class RollbackPreservationTests(RunMixin, unittest.TestCase):
         self.assertIn("live already preserved in $RUN/rollback/m00/attempt-001; not re-archived", out)
         self.assertEqual([p.name for p in (run / "rollback" / "m00").iterdir()], ["attempt-001"])
         self.assert_live_unchanged()
+
+
+def make_socket(directory, name):
+    """Bind a synthetic Unix socket file at directory/name (relative bind: no path-length limit)."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    cwd = os.getcwd()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        os.chdir(directory)
+        sock.bind(name)
+    finally:
+        os.chdir(cwd)
+        sock.close()
+    os.chmod(directory / name, 0o600)
+    return directory / name
+
+
+class NonArchivableSpecialFileTests(RunMixin, unittest.TestCase):
+    """Sockets and other special files are recorded, named and excluded, never silently dropped."""
+
+    CODEX = ".codex/app-server-control/app-server-control.sock"
+    LIFECYCLE = "tmp/host-rehearsal/control-v1/lifecycle/" + "ab" * 8 + "/control.sock"
+    FIFO = "tmp/host-rehearsal/control-v1/events.fifo"
+
+    def setUp(self):
+        super().setUp()
+        make_socket(self.fake.volume / Path(self.CODEX).parent, Path(self.CODEX).name)
+        make_socket(self.fake.bind / Path(self.LIFECYCLE).parent, Path(self.LIFECYCLE).name)
+        os.mkfifo(self.fake.bind / self.FIFO, 0o600)
+        self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
+        self.expected = {"m00": {self.CODEX: "socket"},
+                         "m01": {self.FIFO: "fifo", self.LIFECYCLE: "socket"}}
+
+    def assert_live_archivable_unchanged(self):
+        for key, root in (("vol", self.fake.volume), ("bind", self.fake.bind)):
+            diff, _ = evidence.compare_archivable(self.live_before[key], evidence.manifest(root))
+            self.assertEqual(diff, [], key)
+
+    def test_manifest_records_special_files_as_non_archivable(self):
+        vol, bind = self.live_before["vol"], self.live_before["bind"]
+        self.assertEqual(vol["non_archivable"], self.expected["m00"])
+        self.assertEqual(bind["non_archivable"], self.expected["m01"])
+        self.assertEqual(vol["entries"][self.CODEX]["type"], "other")
+        self.assertEqual(vol["entries"][self.CODEX]["special"], "socket")
+        self.assertEqual(vol["entries"][self.CODEX]["mode"], "0600")
+        self.assertEqual(evidence.non_archivable(bind), self.expected["m01"])
+        empty = self.tmp / "empty"
+        (empty / "d").mkdir(parents=True)
+        (empty / "d" / "f.txt").write_text("x\n")
+        self.assertEqual(evidence.manifest(empty)["non_archivable"], {})
+
+    def test_compare_archivable_excludes_only_special_files(self):
+        base = self.live_before["vol"]
+        missing = copy.deepcopy(base)
+        del missing["entries"][self.CODEX]
+        missing["non_archivable"] = {}
+        self.assertEqual(evidence.compare(base, missing), [self.CODEX])  # strict compare unchanged
+        self.assertEqual(evidence.compare_archivable(base, missing), ([], [self.CODEX]))
+        # A special file replaced by a regular file, directory or symlink is a difference.
+        for replacement in ({"type": "f", "owner": "1000:1000", "mode": "0600", "sha256": "0" * 64, "size": 0},
+                            {"type": "d", "owner": "1000:1000", "mode": "0700"},
+                            {"type": "l", "owner": "1000:1000", "mode": "0777", "target": "elsewhere"}):
+            with self.subTest(replacement=replacement["type"]):
+                other = copy.deepcopy(base)
+                other["entries"][self.CODEX] = replacement
+                self.assertEqual(evidence.compare_archivable(base, other)[0], [self.CODEX])
+                self.assertEqual(evidence.compare_archivable(other, base)[0], [self.CODEX])
+        # Regular file, directory and symlink differences still count.
+        edited = copy.deepcopy(base)
+        edited["entries"]["state/notes.txt"]["sha256"] = "1" * 64
+        edited["entries"]["state"]["mode"] = "0777"
+        self.assertEqual(evidence.compare_archivable(base, edited)[0], ["state", "state/notes.txt"])
+        # A manifest written before "special" existed (type "other" only) reads the same.
+        legacy = copy.deepcopy(base)
+        legacy["entries"][self.CODEX].pop("special")
+        legacy.pop("non_archivable")
+        self.assertEqual(evidence.non_archivable(legacy), {self.CODEX: "other"})
+        self.assertEqual(evidence.compare_archivable(legacy, missing), ([], [self.CODEX]))
+        # Devices are classified as special too (synthetic entries: no mknod in tests).
+        for kind in ("char_device", "block_device", "unknown"):
+            dev = copy.deepcopy(missing)
+            dev["entries"]["dev/node"] = {"type": "other", "special": kind, "owner": "0:0", "mode": "0600"}
+            self.assertEqual(evidence.compare_archivable(dev, missing), ([], ["dev/node"]))
+
+    def test_apply_completes_and_names_every_excluded_path(self):
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.state()["phase"], "complete")
+        run = self.run_dir()
+        # Recorded in every manifest the run wrote...
+        for name in ("s1/m00.baseline.json", "s1/m00.after-tar.json", "s3/m00.live-after.json",
+                     "a2/m00.baseline.json"):
+            self.assertEqual(json.loads((run / name).read_text())["non_archivable"], self.expected["m00"], name)
+        self.assertEqual(json.loads((run / "s1" / "m01.baseline.json").read_text())["non_archivable"],
+                         self.expected["m01"])
+        # ...absent from the archive and the fresh restore (the S3 failure of attempt 2)...
+        self.assertNotIn(self.CODEX, self.tar_listing(run / "s1" / "m00.tar"))
+        self.assertNotIn(self.LIFECYCLE, self.tar_listing(run / "s1" / "m01.tar"))
+        restored = json.loads((run / "s3" / "m00.restored.json").read_text())
+        self.assertNotIn(self.CODEX, restored["entries"])
+        self.assertEqual(evidence.compare(json.loads((run / "s1" / "m00.baseline.json").read_text()), restored),
+                         [self.CODEX])
+        # ...and listed by path in the receipt and the run log.
+        receipt = json.loads((run / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["non_archivable"], self.expected)
+        self.assertEqual(self.state()["non_archivable"]["s1"], self.expected)
+        self.assertIn(f"m00: 1 non-archivable special file(s), recorded in the manifest but not restored "
+                      f"from the archive; excluded from every equality check: {self.CODEX} (socket)", out)
+        self.assertIn(f"{self.FIFO} (fifo), {self.LIFECYCLE} (socket)", out)
+        self.assertIn(f"m00 fresh restore vs baseline: 1 non-archivable special file(s) excluded from the "
+                      f"comparison: {self.CODEX}", out)
+        self.assertNotIn("difference(s)", out)
+        self.assert_live_unchanged()  # strict: the live sockets were never touched
+        self.assert_safe_helpers()
+
+    def test_regular_file_difference_still_fails_s3(self):
+        restore = self.private  # resolved after the run dir exists
+
+        def extra():
+            target = next(restore.glob("run-*")) / "s3" / "restore-test" / "m00" / "state" / "extra.txt"
+            target.write_text("not in the baseline\n")
+        self.fake.hooks["manifest /private/s3/restore-test/m00"] = extra
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [S3]: m00 fresh restore vs baseline: 1 difference(s): state/extra.txt", out)
+        self.assertFalse((self.run_dir() / "snapshot-receipt.json").exists())
+        self.assertNotIn("build flock-ocr:synthetic", lifecycle(self.fake))
+        self.assert_live_unchanged()
+
+    def test_special_file_replaced_by_a_regular_file_still_fails(self):
+        def swap_type():
+            target = next(self.private.glob("run-*")) / "s3" / "restore-test" / "m00" / self.CODEX
+            target.write_text("a regular file where the socket was\n")
+        self.fake.hooks["manifest /private/s3/restore-test/m00"] = swap_type
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn(f"FAIL at [S3]: m00 fresh restore vs baseline: 1 difference(s): {self.CODEX}", out)
+        self.assert_live_unchanged()
+
+    def test_new_socket_from_the_replacement_does_not_hold_a2(self):
+        def replacement():
+            if not os.path.lexists(self.fake.volume / "state" / "replacement.sock"):
+                make_socket(self.fake.volume / "state", "replacement.sock")
+        self.fake.hooks["start:" + "9" * 64] = replacement
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads((self.run_dir() / "a2" / "diff.json").read_text()), {})
+        self.assertIn("m00: 2 non-archivable special file(s) excluded from the S1 comparison: "
+                      f"{self.CODEX}, state/replacement.sock", out)
+
+    def test_rollback_restores_archivable_data_and_names_cleared_sockets(self):
+        def replacement():
+            (self.fake.volume / "state" / "new.txt").write_text("replacement-only work\n")
+        self.fake.hooks["start:" + "9" * 64] = replacement
+        self.assertEqual(self.run_swap(self.args())[0], swap.EXIT_HELD)
+        self.fake.hooks.clear()
+        run = self.run_dir()
+        code, out = self.run_swap(["--rollback", str(run)])
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("mounts differing from S1: ['m00']", out)
+        self.assertIn(f"m00: 1 non-archivable special file(s) were cleared with the mount; S1 does not "
+                      f"restore sockets: {self.CODEX} (socket)", out)
+        self.assertIn("[RB-C5] validate_data", out)
+        self.assertIn("m00: live equals the S1 baseline", out[out.index("[RB-C5]"):])
+        receipt = json.loads((run / "rollback" / "m00" / "attempt-001" / "receipt.json").read_text())
+        self.assertEqual(receipt["non_archivable"], {self.CODEX: "socket"})
+        self.assertFalse((self.fake.volume / "state" / "new.txt").exists())
+        self.assertFalse(os.path.lexists(self.fake.volume / self.CODEX))
+        self.assert_live_archivable_unchanged()
+        self.assertTrue(self.fake.find(TARGET)["State"]["Running"])
+        self.assertEqual(self.state()["phase"], "rolled_back")
+
+
+class C2DefaultsAndReuseImageTests(RunMixin, unittest.TestCase):
+    """SWAP-FIX4: the attempt-3 [C2] shape passes; --reuse-image skips [B1]/[B2] only."""
+    TAG = "flock-ocr:synthetic"
+    DESCRIPTOR = {"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                  "platform": {"architecture": "amd64", "os": "linux"}}
+
+    def daemon_like_create(self, extra=None):
+        """Saved inspect as an older daemon stored it; create stores API defaults and a new descriptor."""
+        target = self.fake.find(TARGET)
+        target["HostConfig"]["OomKillDisable"] = None
+        target["ImageManifestDescriptor"] = dict(self.DESCRIPTOR, digest=OLD_IMAGE, size=4034)
+        original = self.fake.docker_api
+
+        def create(method, path, body):
+            status, response = original(method, path, body)
+            new = self.fake.find("9" * 64)
+            new["HostConfig"]["OomKillDisable"] = False
+            new["ImageManifestDescriptor"] = dict(self.DESCRIPTOR, digest=body["Image"], size=4915)
+            if extra:
+                extra(new)
+            return status, response
+        self.fake.docker_api = create
+        return original
+
+    def test_c2_passes_with_the_oom_kill_default_and_a_new_manifest_descriptor(self):
+        self.daemon_like_create()
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, 0, out)
+        self.assertIn("API default, treated as equal: HostConfig.OomKillDisable: null == false", out)
+        self.assertEqual(json.loads((self.run_dir() / "create-diff.json").read_text()), [])
+        self.assertEqual(self.state()["phase"], "complete")
+
+    def test_c2_still_rolls_back_on_a_real_change_next_to_the_defaults(self):
+        self.daemon_like_create(extra=lambda new: new["HostConfig"].update(CapAdd=["CAP_SYS_ADMIN"]))
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [C2]: replacement settings differ from the saved ones: ['HostConfig.CapAdd']", out)
+        self.assertIn("ROLLBACK RB-B", out)
+        self.assertNotIn("start new", lifecycle(self.fake))
+
+    # -- --reuse-image --
+
+    def failed_first_run(self):
+        """An attempt that built and verified the tag, then failed at [C2] and rolled back."""
+        original = self.daemon_like_create(extra=lambda new: new["HostConfig"].update(Privileged=True))
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("FAIL at [C2]", out)
+        self.fake.docker_api = original
+        prev = self.run_dir()
+        # Owner cleanup before the next attempt: the never-started replacement is removed.
+        failed = self.fake.find(TARGET + "-ocr-failed")
+        del self.fake.containers[failed["Id"]]
+        return prev
+
+    def new_run(self, prev):
+        runs = [p for p in sorted(self.private.glob("run-*")) if p != prev]
+        self.assertEqual(len(runs), 1)
+        return runs[0]
+
+    def test_reuse_skips_the_rebuild_reruns_v1_and_completes(self):
+        prev = self.failed_first_run()
+        self.daemon_like_create()
+        calls, events = len(self.fake.calls), len(self.fake.events)
+        argv = self.args(reuse_image=str(prev))
+        del argv[argv.index("--build-python"):argv.index("--build-python") + 2]
+        code, out = self.run_swap(argv)
+        self.assertEqual(code, 0, out)
+        new_calls = self.fake.calls[calls:]
+        scripts = [Path(a[2]).name for a in new_calls if a[0] == sys.executable]
+        self.assertNotIn("build_wheel.py", scripts)
+        self.assertNotIn("preflight.py", scripts)
+        self.assertIn("verify.py", scripts)
+        self.assertIn([sys.executable, "-B", str(RECIPE / "verify.py"), "--image", NEW_IMAGE], new_calls)
+        self.assertFalse(any(a[:2] == ["docker", "build"] for a in new_calls))
+        self.assertEqual(self.fake.events[events:], [e for e in RootlessApplyTests.MAIN_EVENTS
+                                                     if not e.startswith("build")])
+        self.assertIn("not rebuilt: reusing wheel sha256 " + WHEEL_SHA, out)
+        self.assertIn(f"not rebuilt: {self.TAG} = {NEW_IMAGE}", out)
+        state = json.loads((self.new_run(prev) / "state.json").read_text())
+        self.assertEqual(state["reuse"], {"run_dir": str(prev.resolve()), "new_image_id": NEW_IMAGE,
+                                          "wheel_sha256": WHEEL_SHA})
+        self.assertEqual((state["new_image_id"], state["wheel_sha256"], state["phase"]),
+                         (NEW_IMAGE, WHEEL_SHA, "complete"))
+        receipt = json.loads((self.new_run(prev) / "snapshot-receipt.json").read_text())
+        self.assertEqual(receipt["reused_image"], state["reuse"])
+        self.assertEqual(self.fake.find(TARGET)["Image"], NEW_IMAGE)
+
+    def test_reuse_dry_run_checks_the_receipt_and_changes_nothing(self):
+        prev = self.failed_first_run()
+        calls = len(self.fake.calls)
+        code, out = self.run_swap(self.args("--dry-run", reuse_image=str(prev)))
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"reusing {self.TAG} = {NEW_IMAGE} built and V1-verified by", out)
+        self.assertIn("not rebuilt", out)
+        self.assertNotRegex(out, r"would run: .*(build_wheel\.py|preflight\.py|docker build)")
+        for argv in self.fake.calls[calls:]:
+            self.assertIn(argv[0], ("docker", "systemctl"), argv)
+            if argv[0] == "docker":
+                self.assertIn(argv[1], {"info", "inspect", "ps", "image", "top"}, argv)
+            else:
+                self.assertEqual(argv[2], "show", argv)
+        self.assertEqual(sorted(self.private.glob("run-*")), [prev])
+
+    def test_reuse_refusals_change_nothing(self):
+        tag = self.TAG
+
+        def rewrite(prev, **changes):
+            state = json.loads((prev / "state.json").read_text())
+            state.update(changes)
+            (prev / "state.json").write_text(json.dumps(state))
+
+        def outside(case):
+            copy_dir = case.tmp / "elsewhere" / case.prev.name
+            shutil.copytree(case.prev, copy_dir)
+            rewrite(copy_dir, run_dir=str(copy_dir))
+            return copy_dir
+        cases = {
+            "did not pass [V1]": lambda c: rewrite(c.prev, done=["R1", "Q1", "Q2", "S1", "S2", "S3", "G1", "B1"]),
+            "not --new-tag": lambda c: rewrite(c.prev, new_tag="flock-ocr:other"),
+            "another base image": lambda c: rewrite(c.prev, old_image=OTHER_IMAGE),
+            "no valid image ID": lambda c: rewrite(c.prev, new_image_id="<NEW_IMAGE_ID>"),
+            "belongs to another run": lambda c: rewrite(c.prev, run_dir=str(c.tmp / "x")),
+            "resolves to": lambda c: c.fake.tags.update({tag: OTHER_IMAGE}),
+            "do not extend": lambda c: c.fake.images[NEW_IMAGE]["RootFS"].update(Layers=["sha256:" + "0c" * 32]),
+            "cannot read": lambda c: (c.prev / "state.json").unlink(),
+            "directly under --private": outside,
+        }
+        for needle, change in cases.items():
+            with self.subTest(case=needle):
+                case_dir = self.tmp / re.sub(r"\W+", "_", needle)
+                self.fake = FakeSystem(case_dir)
+                self.private = case_dir / "private"
+                prev = self.failed_first_run()
+                reuse = change(type("Case", (), {"prev": prev, "fake": self.fake, "tmp": case_dir})) or prev
+                events, helpers = len(self.fake.events), len(self.fake.helper_runs)
+                code, out = self.run_swap(self.args(reuse_image=str(reuse)))
+                self.assertEqual(code, swap.EXIT_REFUSED, out)
+                self.assertIn("FAIL at [R1]", out)
+                self.assertIn(needle, out)
+                self.assertEqual(self.fake.events[events:], [])
+                self.assertEqual(len(self.fake.helper_runs), helpers)
+
+    def test_tag_moved_after_r1_fails_b2_before_any_container_change(self):
+        prev = self.failed_first_run()
+        api = len(self.fake.api_calls)
+        self.fake.hooks["sqlite-evidence"] = lambda: self.fake.tags.update({self.TAG: OTHER_IMAGE})
+        code, out = self.run_swap(self.args(reuse_image=str(prev)))
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn(f"FAIL at [B2]: {self.TAG} now resolves to {OTHER_IMAGE}", out)
+        self.assertIn("ROLLBACK RB-A", out)
+        self.assertEqual(len(self.fake.api_calls), api)
+        self.assertNotIn("verify.py", " ".join(" ".join(a) for a in self.fake.calls[-20:]))
+
+    def test_reuse_arguments(self):
+        base = ["--apply", "--container", TARGET, "--pause-unit", UNIT, "--private", "/p", "--new-tag", self.TAG]
+        self.assertEqual(swap.parse_args(base + ["--reuse-image", "/p/run-1"]).reuse_image, "/p/run-1")
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            swap.parse_args(base)
+        self.assertIn("--build-python", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            swap.parse_args(["--resume", "/p/run-1", "--reuse-image", "/p/run-0"])
+        self.assertIn("--reuse-image is fixed at --apply", err.getvalue())
 
 
 if __name__ == "__main__":

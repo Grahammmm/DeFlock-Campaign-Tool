@@ -4,7 +4,8 @@
     "Reviewed pins for container/flock-ocr. Change only in a reviewed PR.",
     "engine.* was produced by running `python3 -B -m campaign_tool.records version --json` in a clean detached checkout of engine.commit (2026-10-19). It is the source inventory the installed wheel must reproduce.",
     "wheel_sha256 is recorded by the operator from build_wheel.py output (two independent builds must agree byte-for-byte) and passed to preflight.py; it is not invented here.",
-    "expected_versions are matched against the first output line of each command (pdftotext -v prints on stderr)."
+    "expected_versions are matched against the first output line of each command (pdftotext -v prints on stderr).",
+    "engine.package_file_count is len(package_files) of that manifest: the committed files under campaign_tool/ at engine.commit minus the generated manifest members (171 at 0ab6804). It is not the wheel member count; tests/test_flock_ocr_container.py derives it from the pinned commit's tree."
   ],
   "engine": {
     "commit": "0ab680433b7fe9a1593c19ad64ae2ed27dd045f3",
@@ -16,7 +17,7 @@
     "wheel_filename": "deflock_campaign_tool-0.1.0-py3-none-any.whl",
     "manifest_sha256": "302d0f314b0c653876ebd42387898b96520874f64f0b0da68d72b00a558fe59e",
     "dependency_lock_sha256": "8699276a235c5cbe5a091aaf76f9673ff193c91af6b490bdcc9d265a220b8f54",
-    "package_file_count": 173,
+    "package_file_count": 171,
     "ledger_schema_version": 1
   },
   "wheel_build": {

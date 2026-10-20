@@ -12,6 +12,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from campaign_tool.records import run_report
+
 from tests.records.flock_e2e_harness import (
     Harness,
     StageOutcome,
@@ -171,6 +173,234 @@ class HarnessTests(unittest.TestCase):
         # It is still counted in the report and tracked in the ledger.
         self.assertEqual(report["new_data"]["documents"], 3)
         self.assertEqual(outcome.ledger.count("documents"), 3)
+        # Deferral is durable: the document is queued awaiting_ocr, not done.
+        self.assertEqual(outcome.ledger.document_state("doc-1"), "awaiting_ocr")
+        self.assertEqual(outcome.ledger.document_state("doc-2"), "done")
+        self.assertEqual(outcome.ledger.document_state("doc-3"), "done")
+        self.assertEqual(outcome.ledger.document_state_counts().get("awaiting_ocr"), 1)
+
+    # ------------------------------------------------------------------ #
+    # durable deferred/failed work survives a close/reopen (T12f)
+    # ------------------------------------------------------------------ #
+    def test_reopen_replay_deferred_document_stays_visible(self):
+        scenario = {"needs_ocr_documents": ["doc-1"]}
+        h1 = Harness(self.base, scenario=scenario)
+        r1 = self.report_of(h1.run())
+        self.assertEqual(self.stage(r1, "extract")["counts"]["skipped"], 1)
+        self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
+        h1.ledger.close()  # simulate close/reopen of the ledger
+
+        h2 = Harness(self.base, scenario=scenario)
+        r2 = self.report_of(h2.run())
+        extract = self.stage(r2, "extract")
+        # doc-1 is re-selected (visible), still deferred, never dropped.
+        self.assertEqual(extract["counts"], {"input": 1, "output": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(extract["status"], "ok")
+        self.assertEqual(h2.ledger.document_state("doc-1"), "awaiting_ocr")
+        self.assertEqual(h2.ledger.document_state("doc-2"), "done")
+        self.assertEqual(h2.ledger.document_state("doc-3"), "done")
+        self.assertEqual(h2.ledger.document_state_counts().get("awaiting_ocr"), 1)
+
+    def test_deferred_document_recovers_when_backend_healthy(self):
+        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        r1 = self.report_of(h1.run())
+        self.assertEqual(self.stage(r1, "extract")["counts"]["skipped"], 1)
+        h1.ledger.close()
+
+        # OCR becomes available: reopen with the default healthy backend.
+        h2 = Harness(self.base)
+        r2 = self.report_of(h2.run())
+        extract = self.stage(r2, "extract")
+        # doc-1 is recovered and processed exactly once.
+        self.assertEqual(extract["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 0})
+        self.assertEqual(h2.ledger.document_state("doc-1"), "done")
+        self.assertEqual(r2["new_data"]["pages"], 2)
+        self.assertEqual(r2["new_data"]["extracted_units"], 2)
+        self.assertEqual(r2["review_required_count"], 1)
+        # No double counting: each document is extracted exactly once across runs.
+        self.assertEqual(h2.ledger.document_state_counts().get("done"), 3)
+        self.assertEqual(h2.ledger.count("documents"), 3)
+
+    def test_corrupt_document_persists_across_reopen(self):
+        h1 = Harness(self.base)
+        r1 = self.report_of(h1.run([corrupt_pdf()]))
+        self.assertEqual(self.stage(r1, "extract")["counts"]["failed"], 1)
+        self.assertEqual(h1.ledger.document_state("doc-2"), "failed")
+        h1.ledger.close()
+
+        h2 = Harness(self.base)
+        r2 = self.report_of(h2.run([corrupt_pdf()]))
+        extract = self.stage(r2, "extract")
+        # doc-2 is re-selected (visible) and still corrupt; never dropped.
+        self.assertEqual(extract["counts"], {"input": 1, "output": 0, "failed": 1, "skipped": 0})
+        self.assertEqual(extract["status"], "warn")
+        self.assertEqual(r2["overall_status"], "warn")
+        self.assertEqual(h2.ledger.document_state("doc-2"), "failed")
+        self.assertEqual(h2.ledger.document_state_counts().get("failed"), 1)
+
+    def test_corrupt_document_recovers_when_backend_healthy(self):
+        h1 = Harness(self.base)
+        r1 = self.report_of(h1.run([corrupt_pdf()]))
+        self.assertEqual(self.stage(r1, "extract")["counts"]["failed"], 1)
+        h1.ledger.close()
+
+        h2 = Harness(self.base)  # healthy backend
+        r2 = self.report_of(h2.run())
+        extract = self.stage(r2, "extract")
+        # doc-2 is recovered and processed exactly once.
+        self.assertEqual(extract["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 0})
+        self.assertEqual(h2.ledger.document_state("doc-2"), "done")
+        self.assertEqual(r2["new_data"]["pages"], 2)
+        self.assertEqual(r2["new_data"]["extracted_units"], 2)
+        self.assertEqual(r2["review_required_count"], 1)
+        self.assertEqual(h2.ledger.document_state_counts().get("done"), 3)
+
+    # -- unresolved work is selected from the durable ledger, not the sync batch
+    def test_deferred_document_visible_across_reopen_with_empty_batch(self):
+        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        r1 = self.report_of(h1.run())
+        self.assertEqual(self.stage(r1, "extract")["counts"]["skipped"], 1)
+        self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
+        h1.ledger.close()
+
+        # Reopen with an EMPTY sync batch, OCR still unavailable: the deferred
+        # document must be re-selected from the durable ledger, not dropped.
+        h2 = Harness(self.base, scenario={
+            "documents": [], "receipts": [], "portal_links": [],
+            "needs_ocr_documents": ["doc-1"],
+        })
+        r2 = self.report_of(h2.run())
+        extract = self.stage(r2, "extract")
+        self.assertEqual(extract["counts"], {"input": 1, "output": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(extract["status"], "ok")
+        self.assertEqual(h2.ledger.document_state("doc-1"), "awaiting_ocr")
+        self.assertEqual(h2.ledger.document_state_counts().get("awaiting_ocr"), 1)
+        self.assertEqual(h2.ledger.document_state_counts().get("done"), 2)
+
+    def test_deferred_document_visible_across_reopen_with_disjoint_batch(self):
+        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        self.report_of(h1.run())
+        self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
+        h1.ledger.close()
+
+        # Reopen with a DISJOINT batch (a new document, OCR still unavailable):
+        # doc-1 must be re-selected alongside the new document.
+        h2 = Harness(self.base, scenario={
+            "documents": ["doc-9"], "receipts": [], "portal_links": [],
+            "needs_ocr_documents": ["doc-1"],
+        })
+        r2 = self.report_of(h2.run())
+        extract = self.stage(r2, "extract")
+        # doc-1 (re-selected, still deferred) + doc-9 (new, extracted).
+        self.assertEqual(extract["counts"], {"input": 2, "output": 1, "failed": 0, "skipped": 1})
+        self.assertEqual(h2.ledger.document_state("doc-1"), "awaiting_ocr")
+        self.assertEqual(h2.ledger.document_state("doc-9"), "done")
+        self.assertEqual(h2.ledger.document_state_counts().get("awaiting_ocr"), 1)
+        self.assertEqual(h2.ledger.document_state_counts().get("done"), 3)  # doc-2, doc-3, doc-9
+
+    def test_deferred_document_recovers_after_empty_batch_and_no_double_count(self):
+        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        self.report_of(h1.run())
+        self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
+        h1.ledger.close()
+
+        # OCR becomes available; the next sync batch is empty, but the deferred
+        # document is recovered from the durable ledger and processed exactly once.
+        h2 = Harness(self.base, scenario={"documents": [], "receipts": [], "portal_links": []})
+        r2 = self.report_of(h2.run())
+        extract = self.stage(r2, "extract")
+        self.assertEqual(extract["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 0})
+        self.assertEqual(h2.ledger.document_state("doc-1"), "done")
+        self.assertEqual(r2["new_data"]["pages"], 2)
+        self.assertEqual(r2["new_data"]["extracted_units"], 2)
+        self.assertEqual(r2["review_required_count"], 1)
+
+        # Replay with another empty batch: nothing left unresolved, no double count.
+        r3 = self.report_of(h2.run())
+        self.assertEqual(self.stage(r3, "extract")["counts"],
+                         {"input": 0, "output": 0, "failed": 0, "skipped": 0})
+        self.assertEqual(h2.ledger.document_state_counts().get("done"), 3)
+        self.assertEqual(h2.ledger.count("documents"), 3)
+
+    def test_corrupt_document_visible_across_reopen_with_empty_batch(self):
+        h1 = Harness(self.base)
+        r1 = self.report_of(h1.run([corrupt_pdf()]))
+        self.assertEqual(self.stage(r1, "extract")["counts"]["failed"], 1)
+        self.assertEqual(h1.ledger.document_state("doc-2"), "failed")
+        h1.ledger.close()
+
+        # Reopen with an EMPTY batch; the corrupt document must remain visible.
+        h2 = Harness(self.base, scenario={"documents": [], "receipts": [], "portal_links": []})
+        r2 = self.report_of(h2.run([corrupt_pdf()]))
+        extract = self.stage(r2, "extract")
+        self.assertEqual(extract["counts"], {"input": 1, "output": 0, "failed": 1, "skipped": 0})
+        self.assertEqual(extract["status"], "warn")
+        self.assertEqual(r2["overall_status"], "warn")
+        self.assertEqual(h2.ledger.document_state("doc-2"), "failed")
+        self.assertEqual(h2.ledger.document_state_counts().get("failed"), 1)
+
+    def test_corrupt_document_recovers_after_disjoint_batch_and_no_double_count(self):
+        h1 = Harness(self.base)
+        self.report_of(h1.run([corrupt_pdf()]))
+        self.assertEqual(h1.ledger.document_state("doc-2"), "failed")
+        h1.ledger.close()
+
+        # Reopen with a DISJOINT healthy batch: the corrupt document is recovered
+        # from the ledger and processed exactly once alongside the new document.
+        h2 = Harness(self.base, scenario={"documents": ["doc-9"], "receipts": [], "portal_links": []})
+        r2 = self.report_of(h2.run())
+        extract = self.stage(r2, "extract")
+        self.assertEqual(extract["counts"], {"input": 2, "output": 2, "failed": 0, "skipped": 0})
+        self.assertEqual(h2.ledger.document_state("doc-2"), "done")
+        self.assertEqual(h2.ledger.document_state("doc-9"), "done")
+        self.assertEqual(r2["new_data"]["pages"], 4)  # doc-2 + doc-9
+        self.assertEqual(r2["new_data"]["extracted_units"], 4)
+        self.assertEqual(r2["review_required_count"], 2)
+
+        # Replay: nothing unresolved, no duplicate extraction.
+        r3 = self.report_of(h2.run())
+        self.assertEqual(self.stage(r3, "extract")["counts"],
+                         {"input": 0, "output": 0, "failed": 0, "skipped": 0})
+        self.assertEqual(h2.ledger.document_state_counts().get("done"), 4)  # doc-1,2,3,9
+        self.assertEqual(h2.ledger.count("documents"), 4)
+
+    # ------------------------------------------------------------------ #
+    # notify receives a non-null, schema-valid pre-delivery payload (T12f)
+    # ------------------------------------------------------------------ #
+    def test_notify_receives_schema_valid_report_payload(self):
+        captured = []
+
+        def spy(report):
+            captured.append(report)
+            return True
+
+        outcome = self.harness().run(notify=spy)
+        self.assertEqual(outcome.exit_code, EXIT_COMPLETED)
+        self.assertEqual(len(captured), 1)
+        payload = captured[0]
+        self.assertIsNotNone(payload)
+        self.assertIsInstance(payload, dict)
+        # The payload is a sanitized, schema-valid pre-delivery report.
+        self.assertIs(run_report.validate_run_report(payload), payload)
+        self.assertEqual(payload["run_id"], self.report_of(outcome)["run_id"])
+        self.assertFalse(payload["notify_failed"])  # pre-delivery: not yet known
+
+    def test_notify_receives_payload_on_delivery_failure(self):
+        captured = []
+
+        def spy(report):
+            captured.append(report)
+            return False
+
+        outcome = self.harness().run(notify=spy)
+        self.assertEqual(outcome.exit_code, EXIT_COMPLETED)  # notify is non-fatal
+        self.assertEqual(len(captured), 1)
+        self.assertIsNotNone(captured[0])
+        self.assertIs(run_report.validate_run_report(captured[0]), captured[0])
+        report = self.report_of(outcome)
+        self.assertTrue(report["notify_failed"])
+        self.assertEqual(self.stage(report, "notify")["error_code"], "NOTIFY_SEND_FAILED")
+
 
     # ------------------------------------------------------------------ #
     # duplicate receipt

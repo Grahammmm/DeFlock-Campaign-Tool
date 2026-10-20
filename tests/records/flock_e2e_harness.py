@@ -25,15 +25,24 @@ Contracts honoured:
   ``already_adopted``/``pending`` and is idempotent by receipt identity. The
   harness models that same identity-deduplication contract and asserts it.
 * Extraction as a pluggable stage (Phase 1): native-text extraction only; a
-  document with no native text is queued ``awaiting_ocr`` and counted (never
-  dropped), a corrupt document is a bounded gap. The harness ships a
-  deterministic fake backend, so no real OCR, model or network is needed.
+  document with no native text is queued ``awaiting_ocr`` (durably, in the
+  synthetic ledger) and counted (never dropped), a corrupt document is a
+  bounded gap. The harness ships a deterministic fake backend, so no real OCR,
+  model or network is needed.
 
 The Phase 1 go-live pipeline (G decision 2026-10-19) is: inbox sync -> delta ->
 ledger adoption -> portal intake -> native-text extraction -> digest/audit gates
 -> outputs -> run summary, 3x/day. Documents that need OCR are queued
 ``awaiting_ocr`` and counted in the report; OCR itself lands in Phase 2 after
 the container swap. This harness models that shape; T11i wires the real stages.
+
+Durable work (T12f): per-document extraction state is persisted in the synthetic
+ledger as ``pending`` / ``awaiting_ocr`` / ``failed`` / ``done``. Unresolved
+work (anything not ``done``) is re-selected on every run, so a document deferred
+or corrupt on one run stays visible on later runs and is retried -- recovered
+work is counted exactly once (a ``done`` document is never re-extracted), and a
+document that still cannot be processed remains visible as unresolved instead of
+silently disappearing.
 """
 
 from __future__ import annotations
@@ -147,10 +156,18 @@ class SyntheticLedger:
     """A minimal private ledger that records the counts the harness asserts.
 
     Tables mirror the *count* semantics of the real records ledger, not its
-    schema: runs, per-run per-stage counts, adopted receipt identities and
-    first-seen document identities. Idempotent re-runs add nothing new, which is
-    exactly what the harness asserts.
+    schema: runs, per-run per-stage counts, adopted receipt identities,
+    first-seen document identities, and durable per-document extraction state
+    (``pending`` / ``awaiting_ocr`` / ``failed`` / ``done``). Idempotent re-runs
+    add nothing new, which is exactly what the harness asserts.
     """
+
+    # Durable extraction states. ``done`` is terminal; the others are unresolved
+    # and are re-selected on every subsequent run.
+    STATE_PENDING = "pending"
+    STATE_AWAITING_OCR = "awaiting_ocr"
+    STATE_FAILED = "failed"
+    STATE_DONE = "done"
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -170,6 +187,8 @@ class SyntheticLedger:
                 identity TEXT PRIMARY KEY, run_id TEXT);
             CREATE TABLE IF NOT EXISTS releases (
                 identity TEXT PRIMARY KEY, run_id TEXT);
+            CREATE TABLE IF NOT EXISTS document_state (
+                identity TEXT PRIMARY KEY, state TEXT NOT NULL, run_id TEXT NOT NULL);
             """
         )
         self.con.commit()
@@ -199,9 +218,17 @@ class SyntheticLedger:
             return False
 
     def see_document(self, identity, run_id) -> bool:
-        """Record a document identity as first-seen; return True only the first time."""
+        """Record a document identity as first-seen; return True only the first time.
+
+        On first sight the document also enters the durable extraction queue in
+        the ``pending`` state. A document already seen leaves its extraction
+        state untouched, so unresolved work survives a close/reopen.
+        """
         try:
             self.con.execute("INSERT INTO documents VALUES(?,?)", (identity, run_id))
+            self.con.execute(
+                "INSERT INTO document_state VALUES(?,?,?)",
+                (identity, self.STATE_PENDING, run_id))
             self.con.commit()
             return True
         except sqlite3.IntegrityError:
@@ -215,6 +242,39 @@ class SyntheticLedger:
             return True
         except sqlite3.IntegrityError:
             return False
+
+    def document_state(self, identity) -> str | None:
+        """Return the durable extraction state for ``identity`` (None if unseen)."""
+        row = self.con.execute(
+            "SELECT state FROM document_state WHERE identity=?", (identity,)).fetchone()
+        return row[0] if row else None
+
+    def set_document_state(self, identity, state, run_id):
+        """Upsert the durable extraction state for ``identity``."""
+        self.con.execute(
+            "INSERT INTO document_state VALUES(?,?,?) "
+            "ON CONFLICT(identity) DO UPDATE SET state=excluded.state, run_id=excluded.run_id",
+            (identity, state, run_id))
+        self.con.commit()
+
+    def document_state_counts(self):
+        """Return a mapping of durable extraction state -> number of documents."""
+        rows = self.con.execute(
+            "SELECT state, count(*) FROM document_state GROUP BY state").fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def unresolved_documents(self):
+        """Return identities whose extraction is not yet ``done``, in stable order.
+
+        This is the durable source of unresolved work: a document deferred or
+        failed on an earlier run stays in this set until it is recovered, so
+        outstanding work survives a close/reopen and is never tied to the
+        current sync batch.
+        """
+        rows = self.con.execute(
+            "SELECT identity FROM document_state WHERE state != ? ORDER BY identity",
+            (self.STATE_DONE,)).fetchall()
+        return [row[0] for row in rows]
 
     def count(self, table):
         return self.con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
@@ -248,10 +308,11 @@ class FakeExtractBackend:
     """Deterministic extraction stub (Phase 1: native-text only).
 
     Clean documents yield fixed text; a corrupt one raises ``CorruptPdf`` and a
-    document with no native text raises ``NeedsOcr`` (queued, never dropped).
-    T11i swaps this for the real extraction/OCR stage; the harness only cares
-    that extraction is a swappable stage and that a per-document failure or OCR
-    deferral becomes a bounded, counted outcome -- never a run crash or a drop.
+    document with no native text raises ``NeedsOcr`` (queued durably as
+    ``awaiting_ocr``, never dropped). T11i swaps this for the real
+    extraction/OCR stage; the harness only cares that extraction is a swappable
+    stage and that a per-document failure or OCR deferral becomes a bounded,
+    counted, durable outcome -- never a run crash or a drop.
     """
 
     def __init__(self, units_per_document=2, corrupt: set[str] | None = None,
@@ -341,7 +402,8 @@ class Orchestrator:
 
     Seams are plain callables so the harness (and later T11i) can substitute the
     real stages. Every stage is idempotent against the ledger: re-running a
-    clean scenario produces no new data.
+    clean scenario produces no new data, and unresolved extraction work (not yet
+    ``done``) is retried on each run rather than dropped.
     """
 
     def __init__(self, ledger: SyntheticLedger, *, mode="test", scenario=None,
@@ -407,23 +469,33 @@ class Orchestrator:
                             output=fetched, failed=failed, skipped=skipped,
                             error_code="PORTAL_HTTP_404" if failed else None)
 
-    def _stage_extract(self, new_docs):
+    def _unresolved_documents(self):
+        """Documents not yet ``done``, read from the durable ledger rather than
+        the current sync batch, so unresolved work stays visible across
+        close/reopen and recovered work is processed exactly once."""
+        return self.ledger.unresolved_documents()
+
+    def _stage_extract(self):
         extracted = failed = skipped = 0
         pages = units = 0
-        for doc in new_docs:
+        unresolved = self._unresolved_documents()
+        for doc in unresolved:
             try:
                 result = self.extract.extract(doc)
             except NeedsOcr:
-                skipped += 1  # queued awaiting_ocr, never dropped
+                skipped += 1  # queued awaiting_ocr durably, never dropped
+                self.ledger.set_document_state(doc, SyntheticLedger.STATE_AWAITING_OCR, self._current_run)
                 continue
             except CorruptPdf:
                 failed += 1
+                self.ledger.set_document_state(doc, SyntheticLedger.STATE_FAILED, self._current_run)
                 continue
             extracted += 1
             pages += result["pages"]
             units += result["units"]
+            self.ledger.set_document_state(doc, SyntheticLedger.STATE_DONE, self._current_run)
         status = "warn" if failed else "ok"
-        return StageOutcome("extract", status, input=len(new_docs),
+        return StageOutcome("extract", status, input=len(unresolved),
                             output=extracted, failed=failed, skipped=skipped,
                             error_code="EXTRACT_CORRUPT_PDF" if failed else None,
                             ), {"pages": pages, "units": units, "awaiting_ocr": skipped}
@@ -435,17 +507,9 @@ class Orchestrator:
     def _stage_outputs(self, gated):
         return StageOutcome("outputs", "ok", input=gated, output=gated)
 
-    def _stage_notify(self):
-        ok = self.notify(self._report_ref)
-        if ok:
-            return StageOutcome("notify", "ok", input=1, output=1)
-        return StageOutcome("notify", "fail", input=1, output=0, failed=1,
-                            error_code="NOTIFY_SEND_FAILED")
-
     # -- full run ---------------------------------------------------------- #
     def run(self) -> RunOutcome:
         self._current_run = _run_id()
-        self._report_ref = None
         try:
             attempts = self.wait_for_docker()
         except _DockerUnavailable:
@@ -472,9 +536,7 @@ class Orchestrator:
         outcomes.append(portal)
         new_data["portal_releases"] = portal.output
 
-        # Extract only documents first seen in *this* run.
-        first_seen = [d for d in self.documents if self._seen_this_run(d)]
-        extract, extraction = self._stage_extract(first_seen)
+        extract, extraction = self._stage_extract()
         outcomes.append(extract)
         new_data["pages"] = extraction["pages"]
         new_data["extracted_units"] = extraction["units"]
@@ -485,7 +547,25 @@ class Orchestrator:
         outputs = self._stage_outputs(gates.output)
         outcomes.append(outputs)
 
-        notify = self._stage_notify()
+        # Build a provisional, schema-valid report (notify optimistically "ok")
+        # and hand it to notify as an explicit pre-delivery snapshot, so the
+        # callback always receives a non-null, sanitized, schema-valid payload.
+        provisional_notify = StageOutcome("notify", "ok", input=1, output=1)
+        pre_delivery = build_run_report(
+            self._current_run, self.mode, started_at, _utcnow(),
+            outcomes + [provisional_notify],
+            new_data=new_data, review_required_count=review_required,
+            notify_failed=False)
+        delivered = self.notify(pre_delivery)
+
+        # Finalize the notify stage and the final report consistently: delivery
+        # success keeps the provisional "ok"; delivery failure is recorded as a
+        # non-fatal fail (the run still completes).
+        if delivered:
+            notify = provisional_notify
+        else:
+            notify = StageOutcome("notify", "fail", input=1, output=0, failed=1,
+                                  error_code="NOTIFY_SEND_FAILED")
         outcomes.append(notify)
 
         finished_at = _utcnow()
@@ -506,10 +586,6 @@ class Orchestrator:
         return RunOutcome(exit_code, "completed_with_gaps" if pipeline_gaps else "completed",
                           report, attempts, self._current_run, self.ledger)
 
-    def _seen_this_run(self, doc):
-        rows = self.ledger.con.execute("SELECT run_id FROM documents WHERE identity=?", (doc,)).fetchall()
-        return bool(rows) and rows[0][0] == self._current_run
-
 
 class _DockerUnavailable(Exception):
     def __init__(self, attempts):
@@ -526,8 +602,8 @@ class Harness:
         self.ledger_path = base / "ledger.sqlite"
         self.ledger = SyntheticLedger(self.ledger_path)
 
-    def run(self, faults=()) -> RunOutcome:
-        orchestrator = Orchestrator(self.ledger, scenario=self.scenario)
+    def run(self, faults=(), notify=None) -> RunOutcome:
+        orchestrator = Orchestrator(self.ledger, scenario=self.scenario, notify=notify)
         for fault in faults:
             fault.apply(orchestrator)
         return orchestrator.run()
