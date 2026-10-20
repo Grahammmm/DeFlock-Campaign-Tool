@@ -22,7 +22,9 @@
 #          (nothing attempted, skip receipt written, no queueing)
 #   75     Docker daemon or records container not ready within the bounded
 #          readiness deadline (including hung docker commands)
-#   78     configuration, identity, image or stage plan check failed
+#   78     configuration, identity, image or stage plan check failed, or
+#          the runtime filesystem has less than MIN_FREE_BYTES available
+#          (or its free space could not be measured)
 # A notification failure NEVER changes the exit status. It is logged, an
 # alert file is written and the run report carries "notify_failed": true.
 # That holds even when the notify helper itself cannot run, hangs, or exits
@@ -50,9 +52,12 @@ DOCKER_CMD_TIMEOUT=@DOCKER_CMD_TIMEOUT@
 DOCKER_WAIT_DEADLINE=@DOCKER_WAIT_DEADLINE@
 NOTIFY_TIMEOUT=@NOTIFY_TIMEOUT@
 RUN_BUDGET_SECONDS=@RUN_BUDGET_SECONDS@
+MIN_FREE_BYTES=@MIN_FREE_BYTES@
 TARGET=@DEFAULT_TARGET@
 # Grace between TERM and KILL for a timed-out command.
 KILL_AFTER=2
+# Deadline for the free-space probe (df), so a hung filesystem cannot stall.
+DF_TIMEOUT=10
 # Extra time the orchestrator gets past its own deadline before the
 # backstop timeout signals it (it then writes RUN_INTERRUPTED and exits).
 BACKSTOP_GRACE=15
@@ -90,9 +95,13 @@ case "$RELEASE_COMMIT" in *[!0-9a-f]*|"") refuse RELEASE_COMMIT_INVALID;; esac
 [ "${#RELEASE_COMMIT}" -eq 40 ] || refuse RELEASE_COMMIT_INVALID
 [ "$(id -u)" -eq "$RUN_UID" ] || refuse RUN_UID_MISMATCH
 for n in "$DOCKER_WAIT_ATTEMPTS" "$DOCKER_WAIT_DELAY" "$DOCKER_WAIT_MAX_DELAY" \
-    "$DOCKER_CMD_TIMEOUT" "$DOCKER_WAIT_DEADLINE" "$NOTIFY_TIMEOUT" "$RUN_BUDGET_SECONDS"; do
+    "$DOCKER_CMD_TIMEOUT" "$DOCKER_WAIT_DEADLINE" "$NOTIFY_TIMEOUT" "$RUN_BUDGET_SECONDS" \
+    "$MIN_FREE_BYTES"; do
   case "$n" in *[!0-9]*|"") refuse NUMBER_INVALID;; esac
 done
+# Canonical decimal only (no leading zero) and never 0: the check cannot be
+# disabled by a value that reads as "off".
+case "$MIN_FREE_BYTES" in 0*) refuse NUMBER_INVALID;; esac
 [ "$DOCKER_WAIT_ATTEMPTS" -ge 1 ] || refuse NUMBER_INVALID
 [ "$DOCKER_CMD_TIMEOUT" -ge 1 ] || refuse NUMBER_INVALID
 [ "$DOCKER_WAIT_DEADLINE" -ge 1 ] || refuse NUMBER_INVALID
@@ -112,8 +121,9 @@ orch() {
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "dry-run target=$TARGET: nothing is executed, locked or written"
   printf '%s\n' "preflight 1 lock: $RUNTIME_DIR/run-records.lock (held by another run: skip, exit 73)"
-  printf '%s\n' "preflight 2 docker: wait up to $DOCKER_WAIT_ATTEMPTS attempts / ${DOCKER_WAIT_DEADLINE}s for daemon and container (else exit 75)"
-  printf '%s\n' "preflight 3 image: container image must equal the pinned image (else exit 78)"
+  printf '%s\n' "preflight 2 disk: $RUNTIME_DIR filesystem needs at least $MIN_FREE_BYTES bytes available (else exit 78)"
+  printf '%s\n' "preflight 3 docker: wait up to $DOCKER_WAIT_ATTEMPTS attempts / ${DOCKER_WAIT_DEADLINE}s for daemon and container (else exit 75)"
+  printf '%s\n' "preflight 4 image: container image must equal the pinned image (else exit 78)"
   printf '%s\n' "budget: ${RUN_BUDGET_SECONDS}s from start for all work stages; notify ${NOTIFY_TIMEOUT}s"
   orch plan --target-config "$TARGET_CONFIG"
   exit $?
@@ -130,8 +140,10 @@ SCHED_FLAG=
 [ "$SCHEDULED" -eq 0 ] || SCHED_FLAG=--scheduled
 
 log() {
+  # The file append is never fatal: on a full disk it can fail, and the run
+  # must still reach its own exit code (78 for the free-space preflight).
   line="$(date -u +%Y-%m-%dT%H:%M:%SZ) run=$RUN_ID $*"
-  printf '%s\n' "$line" >>"$LOG"
+  printf '%s\n' "$line" >>"$LOG" 2>/dev/null || :
   printf '%s\n' "$line" >&2
 }
 
@@ -192,6 +204,23 @@ wait_for_docker() {
     delay=$((delay * 2))
     [ "$delay" -le "$DOCKER_WAIT_MAX_DELAY" ] || delay="$DOCKER_WAIT_MAX_DELAY"
   done
+}
+
+# Free-space preflight (Fable audit F4(a)). Prints the bytes available to
+# this (non-root) user on the filesystem holding $1, or nothing when that
+# cannot be measured. POSIX `df -P -k`: Available is the field before the
+# Capacity (NN%) field, which tolerates spaces in the device name. df runs
+# under its own deadline so a hung filesystem cannot stall the slot.
+available_bytes() {
+  kib=$("$TIMEOUT" -k "$KILL_AFTER" "$DF_TIMEOUT" df -P -k "$1" </dev/null 2>/dev/null |
+    awk 'NR == 2 { for (i = 5; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit } }') ||
+    kib=
+  case "$kib" in ""|*[!0-9]*) return 0;; esac
+  # Strip leading zeros so shell arithmetic never reads the value as octal.
+  while [ "${#kib}" -gt 1 ] && [ "${kib#0}" != "$kib" ]; do kib=${kib#0}; done
+  # More than 15 digits (about 1 EiB) is not a real reading; refuse to guess.
+  [ "${#kib}" -le 15 ] || return 0
+  printf '%s\n' "$((kib * 1024))"
 }
 
 RUN_EXIT=0
@@ -269,6 +298,20 @@ if [ "$crc" -ne 0 ]; then
   abort_report TARGET_CONFIG_INVALID
   finish 78
 fi
+# Free-space preflight: refuse before any records work (and before the
+# per-run backup) rather than fail every slot half-way on a full disk.
+FREE_BYTES=$(available_bytes "$RUNTIME_DIR")
+if [ -z "$FREE_BYTES" ]; then
+  log "ERROR: could not measure free space on the runtime filesystem; no records work was attempted"
+  abort_report DISK_SPACE_UNKNOWN
+  finish 78
+fi
+if [ "$FREE_BYTES" -lt "$MIN_FREE_BYTES" ]; then
+  log "ERROR: runtime filesystem has $FREE_BYTES bytes available, below MIN_FREE_BYTES=$MIN_FREE_BYTES; no records work was attempted"
+  abort_report DISK_SPACE_LOW
+  finish 78
+fi
+log "disk ok: $FREE_BYTES bytes available (minimum $MIN_FREE_BYTES)"
 if ! wait_for_docker; then
   log "ERROR: Docker daemon or container '$CONTAINER' not ready after $DOCKER_ATTEMPTS_USED/$DOCKER_WAIT_ATTEMPTS attempts (deadline ${DOCKER_WAIT_DEADLINE}s, per-command ${DOCKER_CMD_TIMEOUT}s); no records work was attempted"
   abort_report DOCKER_UNAVAILABLE

@@ -44,6 +44,10 @@ PREFLIGHT_MESSAGES = {
                       "check failed). No records work was attempted.",
     "TARGET_CONFIG_INVALID": "{label}: records run {run_id} refused to start (target stage plan "
                              "invalid). No records work was attempted.",
+    "DISK_SPACE_LOW": "{label}: records run {run_id} refused to start (runtime disk space below "
+                      "the configured minimum). No records work was attempted.",
+    "DISK_SPACE_UNKNOWN": "{label}: records run {run_id} refused to start (runtime disk space "
+                          "could not be measured). No records work was attempted.",
 }
 
 

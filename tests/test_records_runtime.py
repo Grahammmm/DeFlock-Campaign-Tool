@@ -129,6 +129,8 @@ class RuntimeHarness(unittest.TestCase):
             "RUN_BUDGET_SECONDS": "600", "DEFAULT_TARGET": "TEST",
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": str(self.runtime / "run-records.sh"),
             "STUB_FIXTURE": str(self.fixture_path),
+            # 64 MiB floor: any CI or dev host has that much free scratch space.
+            "MIN_FREE_BYTES": str(64 * 1024 ** 2),
         }
         self.render()
 
@@ -223,7 +225,8 @@ class OrchestratedRunTests(RuntimeHarness):
         for index, name in enumerate(STAGES[:-1]):
             self.assertIn(f"stage {index + 1}/8 {name}: exit-on-fail={10 + index}", result.stdout)
         self.assertIn("preflight 1 lock", result.stdout)
-        self.assertIn("preflight 2 docker", result.stdout)
+        self.assertIn("preflight 2 disk", result.stdout)
+        self.assertIn("preflight 3 docker", result.stdout)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.target_dir.exists())
         self.assertFalse((self.runtime / "run-records.lock").exists())
@@ -704,7 +707,7 @@ class RendererTests(unittest.TestCase):
             "DOCKER_WAIT_DEADLINE": "600", "NOTIFY_TIMEOUT": "60",
             "RUN_BUDGET_SECONDS": "2640", "DEFAULT_TARGET": "TEST",
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": "/srv/runtime/run-records.sh",
-            "STUB_FIXTURE": "/srv/fixture.json",
+            "STUB_FIXTURE": "/srv/fixture.json", "MIN_FREE_BYTES": "2147483648",
         }
         self.targets = [("TEST", str(STUB_TEMPLATE))]
 

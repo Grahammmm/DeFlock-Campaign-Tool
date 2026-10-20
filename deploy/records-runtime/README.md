@@ -39,6 +39,11 @@ renderer refuses:
 - a leftover placeholder or an invalid stage plan
 - a timer that is not the three Pacific slots
 - a budget that does not fit `TimeoutStartSec=47min`
+- a `MIN_FREE_BYTES` that is not a canonical decimal byte count between
+  64 MiB (67108864) and 1 PiB, or a wrapper template that lost the
+  placeholder. The value is required: an older `VALUES.json` without it no
+  longer renders. Size it to at least twice the latest per-run ledger+intake
+  backup plus headroom; 2147483648 (2 GiB) is a reasonable starting point.
 - a `DEFAULT_TARGET` or `SCHEDULED_TARGET` with no rendered plan
 - an output directory that is non-empty or inside a Git checkout
 
@@ -98,18 +103,27 @@ Order of one run
    exits 73. The running run is never interrupted.
 3. Stage plan check. On failure it writes the report (`sync`
    `TARGET_CONFIG_INVALID`), then notifies and exits 78.
-4. Bounded Docker wait (plan T10, Oct 17 regression). On failure: report
+4. Free-space preflight (Fable audit F4(a)). `df -P -k RUNTIME_DIR` under a
+   10 s deadline must show at least `MIN_FREE_BYTES` available to the run
+   user. Below it: log line, report `sync` `DISK_SPACE_LOW` plus a blocking
+   needs-G item, notify, exit 78. If free space cannot be measured (df
+   fails, hangs or prints something unparseable) the run fails closed the
+   same way with `DISK_SPACE_UNKNOWN`. Nothing is attempted: no Docker call,
+   no backup, no stage. The probe covers the filesystem holding
+   `RUNTIME_DIR`; keep the records project (ledger, intake and the per-run
+   backups) on that filesystem, or the check does not cover them.
+5. Bounded Docker wait (plan T10, Oct 17 regression). On failure: report
    `sync` `DOCKER_UNAVAILABLE` plus a blocking needs-G item, notify, exit 75.
-5. Image pin check. On mismatch: `IMAGE_MISMATCH`, exit 78.
-6. Stage orchestrator. It runs sync, delta, adoption, portal, extract,
+6. Image pin check. On mismatch: `IMAGE_MISMATCH`, exit 78.
+7. Stage orchestrator. It runs sync, delta, adoption, portal, extract,
    digest_gates and outputs in order, each under its own timeout. All stages
    share one deadline: `RUN_BUDGET_SECONDS` counted from wrapper start, so
    it includes the Docker wait. A GNU timeout backstop sends TERM 15 s after
    the deadline. On TERM the orchestrator kills the stage's process group,
    records `RUN_INTERRUPTED` and still writes the report.
-7. Notify (plan T10, Oct 16 regression). It never changes the exit code; see
+8. Notify (plan T10, Oct 16 regression). It never changes the exit code; see
    below.
-8. Publish `run-report.json`.
+9. Publish `run-report.json`.
 
 Exit codes
 
@@ -120,7 +134,8 @@ Exit codes
 - 70: internal orchestrator error
 - 73: lock held, slot skipped
 - 75: Docker not ready
-- 78: configuration, identity, image or stage plan refused
+- 78: configuration, identity, image or stage plan refused, or free space
+  below `MIN_FREE_BYTES` (or not measurable)
 
 Stage contract (pluggable stages)
 
