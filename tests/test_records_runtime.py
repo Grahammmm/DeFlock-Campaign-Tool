@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +83,46 @@ def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+COVERAGE_FIXTURE = ROOT / "examples" / "run-report" / "coverage-projection.synthetic.json"
+STUB_COVERAGE_LINE = ("Coverage: adopted 4 (+4 this run), coded-gap 0, awaiting_ocr 2, "
+                      "portal-held 0 [stub]")
+# Every lower-case word the notify templates may use. Anything else is free text.
+MESSAGE_VOCABULARY = set("""
+records run scheduled manual test completed with warnings details are in the private report
+needs g item s failed at stage exit runtime attention no replies were sent
+coverage adopted this coded gap awaiting_ocr portal held unknown stub
+could not start because docker or container was ready work attempted refused to
+configuration image check target plan invalid
+sync delta adoption extract digest_gates outputs notify synthetic
+""".split())
+
+
+def sent_text(call):
+    """The ``text`` field of one fake Telegram sendMessage call."""
+    return urllib.parse.parse_qs(call[1])["text"][0]
+
+
+def report_codes(report):
+    codes = {stage["error_code"] for stage in report["stages"] if stage["error_code"]}
+    codes.update(item["code"] for item in report["needs_g"])
+    for stage in report["stages"]:
+        codes.update(item["code"] for item in stage.get("outcomes", []))
+    return codes
+
+
+def assert_metadata_only(case, text, report):
+    """No path, URL, email or free text: only template words, counts, enums and report codes."""
+    for marker in ("/", "\\", "@", "://", "http", ".json", ".eml", ".pdf", "~"):
+        case.assertNotIn(marker, text)
+    rest = text.replace(report["run_id"], " ")
+    codes = set(re.findall(r"\b[A-Z][A-Z0-9_]{2,63}\b", rest))
+    case.assertLessEqual(codes, report_codes(report), text)
+    for code in codes:
+        rest = re.sub(rf"\b{code}\b", " ", rest)
+    words = set(re.findall(r"[a-z_]+", rest.lower()))
+    case.assertLessEqual(words, MESSAGE_VOCABULARY, text)
 
 
 class RuntimeHarness(unittest.TestCase):
@@ -259,6 +300,10 @@ class OrchestratedRunTests(RuntimeHarness):
         message = FakeTelegram.calls[0][1]
         self.assertIn("completed+with+warnings", message)
         self.assertNotIn("failed", message)
+        text = sent_text(FakeTelegram.calls[0])
+        self.assertIn(f"records run {report['run_id']} (test) completed with warnings", text)
+        self.assertTrue(text.endswith("\n" + STUB_COVERAGE_LINE), text)
+        assert_metadata_only(self, text, report)
         self.assertEqual(self.alerts(), [])
         self.assertIn("docker ready after 1/3 attempts", self.log())
 
@@ -410,6 +455,10 @@ class RobustnessTests(RuntimeHarness):
         self.assertEqual(report["needs_g"], [{"code": "DOCKER_UNAVAILABLE", "stage": "sync",
                                               "severity": "blocking", "count": 1}])
         self.assertIn("Docker", FakeTelegram.calls[0][1])
+        text = sent_text(FakeTelegram.calls[0])
+        self.assertIn(f"records run {report['run_id']} ({report['mode']}) could not start", text)
+        self.assertNotIn("Coverage:", text)
+        assert_metadata_only(self, text, report)
         self.assertEqual(self.log().count("retrying"), 2)
 
     def test_docker_comes_up_within_bound(self):
@@ -683,6 +732,81 @@ class StageProcessGroupTests(unittest.TestCase):
         delta = next(stage for stage in report["stages"] if stage["name"] == "delta")
         self.assertEqual(delta["error_code"], "RUN_INTERRUPTED")
         self.assertEqual(report["stages"][-1]["error_code"], "NOTIFY_PENDING")
+
+
+class ComposeTests(unittest.TestCase):
+    """notify.compose(): mode after the run id, coverage line on non-preflight messages."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("records_runtime_notify",
+                                                      RUNTIME / "notify.py")
+        cls.notify = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.notify)
+        cls.cases = {case["name"]: case
+                     for case in json.loads(COVERAGE_FIXTURE.read_text(encoding="utf-8"))}
+
+    def compose(self, name, exit_code=0):
+        case = self.cases[name]
+        report = case["report"]
+        run_report.validate_run_report(report)
+        text = self.notify.compose(report, "Synthetic", exit_code)
+        assert_metadata_only(self, text, report)
+        return report, text, case["expected"]["line"]
+
+    def test_completed_message_has_mode_and_coverage_line(self):
+        report, text, line = self.compose("b_adoption_skipped_not_configured")
+        self.assertEqual(report["overall_status"], "ok")
+        self.assertEqual(text, f"Synthetic: records run {report['run_id']} (manual) completed. "
+                               f"Details are in the private run report. Needs G: 2 item(s).\n"
+                               f"{line}")
+
+    def test_warned_message_has_mode_and_coverage_line(self):
+        report, text, line = self.compose("a_live_shaped_scheduled_run")
+        self.assertEqual(report["overall_status"], "warn")
+        self.assertTrue(text.startswith(f"Synthetic: records run {report['run_id']} (scheduled) "
+                                        f"completed with warnings (portal PORTAL_HTTP_404)."), text)
+        self.assertTrue(text.endswith("\n" + line), text)
+        self.assertEqual(text.count("Coverage:"), 1)
+
+    def test_failed_message_has_mode_and_coverage_line(self):
+        report, text, line = self.compose("c_portal_and_extract_fail", exit_code=13)
+        self.assertEqual(report["overall_status"], "fail")
+        self.assertTrue(text.startswith(f"Synthetic: records run {report['run_id']} (scheduled) "
+                                        f"failed at stage portal (PORTAL_INTAKE_FAILED, exit 13)."),
+                        text)
+        self.assertTrue(text.endswith("\n" + line), text)
+
+    def test_stub_message_marks_stub(self):
+        _, text, line = self.compose("d_stub_run")
+        self.assertEqual(line, STUB_COVERAGE_LINE)
+        self.assertTrue(text.endswith("\n" + STUB_COVERAGE_LINE), text)
+
+    def test_preflight_refusals_carry_mode_but_no_coverage_line(self):
+        base = self.cases["a_live_shaped_scheduled_run"]["report"]
+        for code in self.notify.PREFLIGHT_MESSAGES:
+            for mode in ("scheduled", "manual", "test"):
+                with self.subTest(code=code, mode=mode):
+                    report = json.loads(json.dumps(base))
+                    report["mode"] = mode
+                    report["overall_status"] = "fail"
+                    for stage in report["stages"][:-1]:
+                        stage.update(status="skipped", counts={"input": 0, "output": 0,
+                                                               "failed": 0, "skipped": 0},
+                                     duration_seconds=None, error_code="UPSTREAM_FAILED")
+                        stage.pop("outcomes", None)
+                    report["stages"][0].update(status="fail", duration_seconds=1.0,
+                                               error_code=code,
+                                               counts={"input": 0, "output": 0, "failed": 1,
+                                                       "skipped": 0})
+                    report["needs_g"] = [{"code": code, "stage": "sync",
+                                          "severity": "blocking", "count": 1}]
+                    run_report.validate_run_report(report)
+                    text = self.notify.compose(report, "Synthetic", 75)
+                    self.assertIn(f"records run {report['run_id']} ({mode}) ", text)
+                    self.assertNotIn("Coverage:", text)
+                    self.assertNotIn("\n", text)
+                    assert_metadata_only(self, text, report)
 
 
 class RendererTests(unittest.TestCase):
