@@ -703,19 +703,55 @@ def load_config(path: str | None) -> dict:
     return config
 
 
+def vision_backend(config: dict, runner=run_group, transport=urllib_transport):
+    """The configured Qwen vision backend, or None when no ``vision`` block is set."""
+    vision = config.get("vision")
+    if vision is None:
+        return None
+    return QwenVisionBackend(vision.get("endpoint", DEFAULT_VISION_ENDPOINT),
+                             vision.get("model", DEFAULT_VISION_MODEL),
+                             config.get("pdftoppm", DEFAULT_PDFTOPPM), vision.get("dpi", 200),
+                             vision.get("timeout", 300), vision.get("max_tokens", 4096),
+                             transport=transport, runner=runner)
+
+
 def build_stage(out_root: str, config: dict, runner=run_group, transport=urllib_transport) -> OcrStage:
     primary = OcrmypdfBackend(config.get("ocrmypdf", DEFAULT_OCRMYPDF), config.get("language", "eng"),
                               config.get("ocrmypdf_timeout", 900), runner=runner)
-    fallback = None
-    vision = config.get("vision")
-    if vision is not None:
-        fallback = QwenVisionBackend(vision.get("endpoint", DEFAULT_VISION_ENDPOINT),
-                                     vision.get("model", DEFAULT_VISION_MODEL),
-                                     config.get("pdftoppm", DEFAULT_PDFTOPPM), vision.get("dpi", 200),
-                                     vision.get("timeout", 300), vision.get("max_tokens", 4096),
-                                     transport=transport, runner=runner)
+    fallback = vision_backend(config, runner=runner, transport=transport)
     quality = Quality(int(config.get("min_chars", 20)), float(config.get("min_alnum_ratio", 0.6)))
     return OcrStage(out_root, primary, fallback, quality)
+
+
+def transcribe_png_main(argv, transport=urllib_transport) -> int:
+    """``transcribe-png --config C PAGE.png``: the T6 ``extract.vision`` command adapter.
+
+    WP4's Tesseract-first path (``extract.vision.run_fallback``) hands a verified
+    page raster to an operator-configured command as ``argv + [page.png]`` and
+    reads UTF-8 text from stdout. This entry point makes that command the same
+    loopback-only Qwen client the queue stage uses, so there is one vision
+    client. Exit 0 prints only the transcription; any failure exits non-zero
+    with nothing on stdout (the caller records a blocked receipt).
+    """
+    p = argparse.ArgumentParser(prog="ocr_stage transcribe-png",
+                                description="Print the Qwen vision transcription of one PNG page.")
+    p.add_argument("--config", required=True, help="owner-only ocr-stage-config-v1 JSON with a vision block")
+    p.add_argument("png")
+    args = p.parse_args(argv)
+    try:
+        backend = vision_backend(load_config(args.config), transport=transport)
+        if backend is None:
+            return 2
+        with open(args.png, "rb") as stream:
+            image = stream.read(MAX_IMAGE_BYTES + 1)
+        if len(image) > MAX_IMAGE_BYTES or not image.startswith(b"\x89PNG\r\n\x1a\n"):
+            return 1
+        text = backend.parse(backend.transport(backend.endpoint, backend.request_body(image), backend.timeout))
+    except (BackendError, OSError, ValueError, TypeError):
+        return 1
+    sys.stdout.buffer.write(text.encode("utf-8"))
+    sys.stdout.flush()
+    return 0
 
 
 def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, list]:
@@ -762,6 +798,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     os.umask(0o077)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["transcribe-png"]:
+        return transcribe_png_main(argv[1:])
     args = parser().parse_args(argv)
     if not 1 <= args.timeout <= 7200 or not 1 <= args.max_documents <= 10000:
         print(json.dumps(fail("STAGE_CONFIG_INVALID")[0], sort_keys=True))

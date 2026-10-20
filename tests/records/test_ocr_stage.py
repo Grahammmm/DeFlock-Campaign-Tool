@@ -280,7 +280,7 @@ class BackendUnitTest(unittest.TestCase):
         while time.monotonic() < deadline:
             try:
                 state = Path(f"/proc/{grandchild}/stat").read_text().split(")")[-1].split()[0]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 break
             if state == "Z":
                 break
@@ -340,6 +340,63 @@ class BackendUnitTest(unittest.TestCase):
         with self.assertRaises(stage.BackendError) as caught:
             stage.urllib_transport("http://127.0.0.1:9/x", b"{}", 2)
         self.assertEqual(caught.exception.code, "vision_unavailable")
+
+
+class TranscribePngAdapterTest(unittest.TestCase):
+    """The WP4 ``extract.vision`` command adapter is the same Qwen client."""
+
+    def setUp(self):
+        replies = self.replies = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                replies.append(request)
+                body = json.dumps({"choices": [{"message": {"content": "<think>x</think>Adapter text"}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.ws = Workspace(self)
+        self.png = self.ws.tmp / "page.png"
+        self.png.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
+
+    def argv(self, config):
+        import sys
+        return [sys.executable, "-B", "-m", "campaign_tool.records.ocr_stage", "transcribe-png", "--config", config]
+
+    def test_adapter_prints_only_the_transcription(self):
+        import subprocess
+        from campaign_tool.records.extract import vision
+        config = self.ws.config(vision={"endpoint": f"http://127.0.0.1:{self.server.server_port}/v1/chat/completions"})
+        argv = self.argv(config)
+        vision.adapter(argv, "qwen", stage.DEFAULT_VISION_MODEL, "ocr-stage-v1")  # accepted by WP4's validator
+        root = str(Path(stage.__file__).resolve().parents[2])
+        done = subprocess.run(argv + [str(self.png)], capture_output=True, timeout=60, cwd=root)
+        self.assertEqual((done.returncode, done.stdout), (0, b"Adapter text"))
+        self.assertTrue(self.replies[0]["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png"))
+
+    def test_adapter_failures_exit_nonzero_with_empty_stdout(self):
+        import contextlib
+        import io
+        config = self.ws.config(vision={"endpoint": "http://127.0.0.1:9/v1/chat/completions"})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(stage.main(["transcribe-png", "--config", config, str(self.png)]), 1)
+            not_png = self.ws.tmp / "x.png"
+            not_png.write_bytes(b"GIF89a")
+            self.assertEqual(stage.main(["transcribe-png", "--config", config, str(not_png)]), 1)
+            no_vision = self.ws.config()  # same path, rewritten without a vision block
+            self.assertEqual(stage.main(["transcribe-png", "--config", no_vision, str(self.png)]), 2)
+        self.assertEqual(out.getvalue(), "")
 
 
 @unittest.skipUnless(os.access(stage.DEFAULT_OCRMYPDF, os.X_OK) and os.access(stage.DEFAULT_PDFTOPPM, os.X_OK),
