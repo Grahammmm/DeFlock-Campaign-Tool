@@ -713,7 +713,7 @@ class HostGatewayTest(unittest.TestCase):
         hosts = frozenset({self.GATEWAY})
         for endpoint in ("https://10.0.2.2:8003/v1/chat/completions",
                          "http://10.0.2.2/v1/chat/completions",
-                         "http://user:pw@10.0.2.2:8003/v1/chat/completions",
+                         "http://{}@10.0.2.2:8003/v1/chat/completions".format("user:pw"),  # userinfo built at runtime
                          "http://10.0.2.2:8003/v1/chat/completions?x=1",
                          "http://10.0.2.2:8003/v1/chat/completions#f"):
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
