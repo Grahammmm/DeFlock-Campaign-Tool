@@ -39,8 +39,11 @@ STAGES = run_report.STAGE_ORDER
 # Phase 1 container plans, pinned at origin/main 4750f69: T6-plan (Phase 2 OCR
 # plans) must not change them. Update only with an intentional, reviewed edit.
 PHASE1_TEMPLATE_SHA256 = {
-    "live-container.json.in": "ed928535b1b110fdd63ece9d47cecf770a097935c7c4e20a18a78fff40c73071",
-    "test-container.json.in": "f4f042de70fd1fce1cdf36b1ca62c0cbc40f4f7369fabfc1ff25e77b60b7fc52",
+    # pragma comments: SHA-256 of public committed templates, not credentials.
+    "live-container.json.in":
+        "ed928535b1b110fdd63ece9d47cecf770a097935c7c4e20a18a78fff40c73071",  # pragma: allowlist secret
+    "test-container.json.in":
+        "f4f042de70fd1fce1cdf36b1ca62c0cbc40f4f7369fabfc1ff25e77b60b7fc52",  # pragma: allowlist secret
 }
 
 FAKE_DOCKER = r"""#!/bin/sh
