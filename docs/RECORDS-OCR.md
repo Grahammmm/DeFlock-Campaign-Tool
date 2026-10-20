@@ -144,6 +144,17 @@ vision file fails as `EXTRACT_OCR_VISION_CONFIG_INVALID`, and a vision file
 without `--ocr` fails as `STAGE_CONFIG_INVALID`. None of these falls back
 silently.
 
+In the stage, `--ocr-page-timeout` bounds each pdftoppm and Tesseract child
+and `--ocr-vision-timeout` (only with a vision file) each vision child; both
+take 10-600 s and are refused without their flag. `--document-timeout` is the
+per-document wall-clock budget (10-1400 s, at most the stage `--timeout` minus
+15 s). Pages run one at a time, and a page without a published receipt starts
+only when its full allowance (2 x page timeout, plus the vision timeout) still
+fits the budget. A document whose budget runs out after at least one new page
+receipt is `DEFERRED_RUN_BUDGET` (progress, resumed next run); with no new
+receipt it is `EXTRACT_TIMEOUT`. The OCR LIVE plans pin 1200 s budget, 180 s
+page and 300 s vision timeouts (see `deploy/records-runtime/README.md`).
+
 A PDF that a native-only (Phase 1) run held as `AWAITING_OCR` keeps an open
 `extract:<sha256>:...ocr_runtime_unconfigured...` alert. On a stage run with
 `--ocr` and valid tools, an alert like that stops holding the document when its

@@ -942,11 +942,12 @@ class RendererTests(unittest.TestCase):
         # The Phase 1 LIVE plan rendered with the same values: every non-extract stage matches it.
         phase1 = {stage["name"]: stage for stage in self.render_ocr_plan(
             "live-container.json.in", self.ocr_container_values(), out=self.tmp / "out-phase1")["stages"]}
-        cases = (("live-ocr-container.json.in", {}, "300", ["--ocr"]),
+        # T6-timeout B: document budget 1200 s, page children 180 s, vision children 300 s.
+        cases = (("live-ocr-container.json.in", {}, ["--ocr"]),
                  ("live-ocr-vision-container.json.in",
-                  {"CONTAINER_OCR_VISION_CONFIG": "/srv/flock-live/vision.json"}, "600",
-                  ["--ocr", "--ocr-vision-config", "/srv/flock-live/vision.json"]))
-        for index, (template, extra, document_timeout, ocr_flags) in enumerate(cases):
+                  {"CONTAINER_OCR_VISION_CONFIG": "/srv/flock-live/vision.json"},
+                  ["--ocr-vision-timeout", "300", "--ocr", "--ocr-vision-config", "/srv/flock-live/vision.json"]))
+        for index, (template, extra, ocr_flags) in enumerate(cases):
             with self.subTest(template):
                 plan = self.render_ocr_plan(template, self.ocr_container_values(**extra),
                                             out=self.tmp / f"out-{index}")
@@ -959,7 +960,7 @@ class RendererTests(unittest.TestCase):
                 self.assertEqual(extract["argv"], phase1["extract"]["argv"][:11] + [
                     "extract", "--project", "/srv/flock-live", "--timeout", "1490",
                     "--run-id", "{run_id}", "--max-documents", "20",
-                    "--document-timeout", document_timeout, *ocr_flags])
+                    "--document-timeout", "1200", "--ocr-page-timeout", "180", *ocr_flags])
                 self.assertEqual((extract["timeout_seconds"], extract["on_fail"]), (1500, "stop"))
                 for name, stage in stages.items():
                     self.assertEqual(stage, phase1[name], name)
@@ -980,6 +981,13 @@ class RendererTests(unittest.TestCase):
                                         CONTAINER_OCR_VISION_CONFIG="/srv/flock-live/vision.json"),
                                     out=self.tmp / "out-vision")
         argv = next(s["argv"] for s in plan["stages"] if s["name"] == "extract")
+        # T6-timeout B: the rendered limits pass run_stages' argument validation as pinned.
+        from campaign_tool.records import run_stages  # noqa: PLC0415
+        args = run_stages.parser().parse_args(argv[argv.index("campaign_tool.records.run_stages") + 1:])
+        self.assertFalse(run_stages.config_invalid(args))
+        self.assertEqual((args.timeout, args.document_timeout, args.ocr_page_timeout, args.ocr_vision_timeout,
+                          args.ocr, args.ocr_vision_config),
+                         (1490, 1200, 180, 300, True, "/srv/flock-live/vision.json"))
         code, line = self.run_rendered_extract(argv, ({"tesseract": "/x"}, "sig"))
         self.assertEqual((code, line["error_code"]), (1, "EXTRACT_OCR_VISION_CONFIG_INVALID"))
         # The vision flag without --ocr stays a stage configuration error.

@@ -148,9 +148,13 @@ engine counts.
   `argv = ["/opt/campaign-tool/venv/bin/python", "-I", "-m", "campaign_tool.records.ocr_stage", "transcribe-png", "--config", "<owner-only config>"]`
   and engine `qwen`. The command prints only the transcription and exits
   non-zero with empty stdout on any failure, which WP4 records as a blocked
-  vision receipt. Each Tesseract and vision call is bounded by the stage's
-  per-document `--document-timeout` (10-600 s), so a 27B vision model needs a
-  larger value in the stage plan than Phase 1 uses.
+  vision receipt. In the stage, `--ocr-page-timeout` bounds each pdftoppm and
+  Tesseract call, `--ocr-vision-timeout` each vision call, and
+  `--document-timeout` is the per-document wall-clock budget (10-1400 s, at
+  most the stage `--timeout` minus 15 s). The `live-ocr-vision` plan pins
+  1200 / 180 / 300 s, which admits one uncached page with a 27B vision call
+  (2 x 180 + 300 = 660 s); see "Phase 2 OCR plans" in
+  `deploy/records-runtime/README.md`.
 - The pinned image provides `/usr/bin/ocrmypdf` 14.0.1, `/usr/bin/pdftoppm`
   22.12.0 and `/opt/campaign-tool/venv/bin/python`. The 14.0.1 sidecar and
   `--skip-text` behaviour was checked in the container on synthetic PDFs
