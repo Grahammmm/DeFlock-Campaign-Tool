@@ -37,8 +37,14 @@ PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
             "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE",
-            # Container stage plans (targets/test-container.json.in and
-            # targets/live-container.json.in).
+            # Container stage plans (targets/test-container.json.in,
+            # targets/live-container.json.in and the Phase 2 OCR plans
+            # targets/live-ocr-container.json.in and
+            # targets/live-ocr-vision-container.json.in).
+            # CONTAINER_OCR_VISION_CONFIG is the owner-only local-vision-config-v1
+            # inside the container; only the live-ocr-vision plan uses (and so
+            # requires) it.
+            "CONTAINER_OCR_VISION_CONFIG",
             "CONTAINER_ENGINE_DIR", "CONTAINER_PROJECT_DIR", "CONTAINER_APPROVAL_FILE",
             "CONTAINER_PYTHON", "ADOPTION_CONFIG"}
 INTEGERS = {"RUN_UID", "DOCKER_WAIT_ATTEMPTS", "DOCKER_WAIT_DELAY", "DOCKER_WAIT_MAX_DELAY",

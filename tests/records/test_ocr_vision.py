@@ -434,6 +434,65 @@ class Phase1ToOCRStageTests(stage_fixtures.ExtractStageCase):
                                     (self.scan,)), imports)
         self.assertEqual(self.alerts(self.scan), [(codes, "resolved")])
 
+    def timed_ocr_stage(self, runner, document_timeout, *extra):
+        """OCR stage run with the OCR plans' stage deadline, recording each extract call's timeout.
+
+        Returns the timeouts of the pipeline's own parse calls (the ones that carry the OCR
+        configuration) and, separately, of the installed-extraction validator's re-parses.
+        """
+        original_extract = routes.extract
+        parses, reparses = [], []
+
+        def with_runner(*args, **kwargs):
+            (parses if kwargs.get("ocr_output_root") is not None else reparses).append(kwargs.get("timeout"))
+            kwargs["ocr_runner"] = runner
+            return original_extract(*args, **kwargs)
+        with mock.patch.object(routes, "extract", side_effect=with_runner), \
+                mock.patch("campaign_tool.records.run.local_ocr_tools", return_value=(ocr_fixtures.TOOLS, "stub-v1")):
+            code, parsed, raw = self.stage("--max-documents", "20", "--document-timeout", document_timeout,
+                                           "--ocr", *extra, timeout="1490")
+        return code, parsed, raw, parses, reparses
+
+    def test_document_timeout_bounds_every_ocr_child_on_the_ocr_path(self):
+        """T6-plan D4: the live-ocr-vision limit (600 s) reaches the parser, Tesseract and vision."""
+        runner = TimedRunner(text="~ ,; i1 l\n", confidence="23")  # low confidence -> vision fallback
+        code, parsed, raw, parses, reparses = self.timed_ocr_stage(runner, "600", "--ocr-vision-config",
+                                                                   str(self.vision_config))
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(self.status(self.scan), "done")
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract", "qwen-vision"])
+        self.assertEqual(runner.timeouts, [600, 600, 600])
+        self.assertEqual(set(parses), {600})
+        # The validator re-parses with its own fixed bounds, independent of --document-timeout.
+        self.assertLessEqual(set(reparses), {20, 60})
+        # FINDING (follow-up card, not fixed here): --document-timeout bounds each child command,
+        # not the document. One image-only page already allows parse + pdftoppm + tesseract +
+        # vision = 4 x 600 s, each further image-only page adds 3 x 600 s, plus the validator
+        # re-parses. Only the stage deadline (--timeout / the host stage timeout) caps a document.
+
+    def test_document_timeout_bounds_tesseract_only_ocr(self):
+        """T6-plan D4: the live-ocr (Tesseract only) limit: 300 s, no vision call."""
+        runner = TimedRunner()
+        code, parsed, raw, parses, reparses = self.timed_ocr_stage(runner, "300")
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(self.status(self.scan), "done")
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract"])
+        self.assertEqual(runner.timeouts, [300, 300])
+        self.assertEqual(set(parses), {300})
+        self.assertLessEqual(set(reparses), {20, 60})
+
+
+class TimedRunner(Runner):
+    """Runner that also records the timeout each OCR or vision child was given."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.timeouts = []
+
+    def __call__(self, command, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return super().__call__(command, **kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()

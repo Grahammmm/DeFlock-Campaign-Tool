@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
-"""Write the TEST and LIVE container stage plans (T11i, T16) from one argv table.
+"""Write the TEST, LIVE and OCR-enabled LIVE container stage plans from one argv table.
 
-Generates ``deploy/records-runtime/targets/test-container.json.in`` (mode
-``test``) and ``deploy/records-runtime/targets/live-container.json.in`` (mode
-``live``). The two plans are identical apart from ``mode``: the same argv
-table, placeholders and stage timeouts drive a sandbox copy of TEST and the
-real records project alike. Each stage is
+Generates, in ``deploy/records-runtime/targets/``:
+
+- ``test-container.json.in`` (mode ``test``, T11i) and ``live-container.json.in``
+  (mode ``live``, T16). The two plans are identical apart from ``mode``: the
+  same argv table, placeholders and stage timeouts drive a sandbox copy of TEST
+  and the real records project alike.
+- ``live-ocr-container.json.in`` and ``live-ocr-vision-container.json.in``
+  (mode ``live``, Phase 2 / T6). Identical to ``live-container.json.in`` except
+  the extract stage: it gains ``--ocr`` (per-page Tesseract) and, in the vision
+  plan, ``--ocr-vision-config @CONTAINER_OCR_VISION_CONFIG@`` (local vision
+  fallback for empty or low-confidence pages), with the limits in
+  ``OCR_EXTRACT``.
+
+Each stage is
 ``docker exec -u CONTAINER_USER CONTAINER env PYTHONPATH=ENGINE
 CONTAINER_PYTHON -m campaign_tool.records.run_stages STAGE --project PROJECT
 ...``.
@@ -17,7 +26,7 @@ carries the hash-locked pypdf/openpyxl bundle) when present, else the system
 adapter enforces its own
 container-side deadline (``--timeout``, 10 s inside the host timeout) because
 killing the ``docker exec`` client does not stop work in the container.
-``tests/test_records_run_stages.py`` checks both committed templates are
+``tests/test_records_run_stages.py`` checks all committed templates are
 current.
 """
 import json
@@ -43,22 +52,45 @@ STAGES = (
 
 MODES = {"test", "live"}
 
+# Phase 2 (T6) extract stage of the OCR-enabled LIVE plans, by variant:
+# (timeout, on_fail, extra adapter arguments). A 27B vision page can take
+# minutes, so the vision plan gets a 600 s document timeout and Tesseract-only
+# 300 s. The run stays bounded by RUN_BUDGET_SECONDS and the 47 min unit
+# (render.py check_budget); OCR publishes per-page immutable receipts, so a run
+# cut short (RUN_INTERRUPTED) resumes on the next slot.
+OCR_EXTRACT = {
+    "ocr": (1500, "stop", ["--max-documents", "20", "--document-timeout", "300", "--ocr"]),
+    "ocr-vision": (1500, "stop", ["--max-documents", "20", "--document-timeout", "600", "--ocr",
+                                  "--ocr-vision-config", "@CONTAINER_OCR_VISION_CONFIG@"]),
+}
+# Committed template file name -> (mode, OCR variant or None).
+TEMPLATES = {
+    "test-container.json.in": ("test", None),
+    "live-container.json.in": ("live", None),
+    "live-ocr-container.json.in": ("live", "ocr"),
+    "live-ocr-vision-container.json.in": ("live", "ocr-vision"),
+}
 
-def plan(mode="test"):
+
+def plan(mode="test", ocr=None):
     if mode not in MODES:
         raise ValueError(f"mode: expected one of {sorted(MODES)}")
+    if ocr is not None and (ocr not in OCR_EXTRACT or mode != "live"):
+        raise ValueError(f"ocr: expected one of {sorted(OCR_EXTRACT)} on a live plan")
     stages = []
     for name, timeout, on_fail, extra in STAGES:
+        if name == "extract" and ocr is not None:
+            timeout, on_fail, extra = OCR_EXTRACT[ocr]
         argv = EXEC + [name, "--project", "@CONTAINER_PROJECT_DIR@", "--timeout", str(timeout - 10),
                        "--run-id", "{run_id}", *extra]
         stages.append({"name": name, "argv": argv, "timeout_seconds": timeout, "on_fail": on_fail})
     return {"target_config_version": 1, "target": "@TARGET_NAME@", "mode": mode, "stages": stages}
 
 
-def render_text(mode="test"):
-    return json.dumps(plan(mode), indent=1) + "\n"
+def render_text(mode="test", ocr=None):
+    return json.dumps(plan(mode, ocr), indent=1) + "\n"
 
 
 if __name__ == "__main__":
-    (HERE / "test-container.json.in").write_text(render_text("test"), encoding="utf-8")
-    (HERE / "live-container.json.in").write_text(render_text("live"), encoding="utf-8")
+    for filename, (mode, ocr) in TEMPLATES.items():
+        (HERE / filename).write_text(render_text(mode, ocr), encoding="utf-8")
