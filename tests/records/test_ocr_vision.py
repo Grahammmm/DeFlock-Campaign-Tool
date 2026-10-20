@@ -339,5 +339,101 @@ class VisionConfigAndStageWiringTests(unittest.TestCase):
         self.assertEqual(call.call_args.kwargs["ocr_vision"], VISION)
 
 
+from tests.records import test_native_extract as stage_fixtures  # noqa: E402 - after the classes it reuses
+
+
+class Phase1HoldReleaseUnitTests(unittest.TestCase):
+    def test_only_ocr_runtime_holds_are_released(self):
+        from campaign_tool.records import native_extract as ne
+        released = ({"ocr_runtime_unconfigured"}, {"ocr_runtime_unconfigured", "ocr_needed_or_blank_page"})
+        kept = ({"ocr_needed_or_blank_page"}, {"ocr_runtime_unconfigured", "workbook_policy_refused"},
+                {"ocr_runtime_unconfigured", "extraction_timeout"}, {"ocr_runtime_unconfigured", "decoder_needed"},
+                {"ocr_runtime_unconfigured", "extraction_error"}, {"extraction_check_refused"},
+                {"extraction_stage_error"}, {"decoder_unavailable_or_failed"})
+        for codes in released:
+            self.assertTrue(ne.ocr_released(codes), codes)
+        for codes in kept:
+            self.assertFalse(ne.ocr_released(codes), codes)
+
+
+@unittest.skipUnless(stage_fixtures.HAVE_PARSERS and sys.platform.startswith("linux"),
+                     "UNSUPPORTED_RUNTIME: pypdf/openpyxl not in this interpreter")
+class Phase1ToOCRStageTests(stage_fixtures.ExtractStageCase):
+    """A PDF held AWAITING_OCR by a native-only (Phase 1) run is extracted once OCR is enabled."""
+
+    attachments = (("policy.pdf", stage_fixtures.tiny_pdf(stage_fixtures.PDF_TEXT)),
+                   ("scan.pdf", stage_fixtures.scanned_pdf()),
+                   ("broken.pdf", stage_fixtures.corrupt_pdf()))
+
+    def setUp(self):
+        super().setUp()
+        self.vision_config = Path(self.temp.name) / "vision.json"
+        self.vision_config.write_text(json.dumps({"schema": vision.CONFIG_SCHEMA, "argv": list(VISION["argv"]),
+                                                  "engine": "qwen", "model": VISION["model"],
+                                                  "signature": VISION["signature"]}))
+        self.vision_config.chmod(0o600)
+        self.scan = hashlib.sha256(self.payloads["scan.pdf"]).hexdigest()
+        self.broken = hashlib.sha256(self.payloads["broken.pdf"]).hexdigest()
+
+    def ocr_stage(self, runner, *extra):
+        original = routes.extract
+
+        def with_runner(*args, **kwargs):
+            kwargs["ocr_runner"] = runner
+            return original(*args, **kwargs)
+        with mock.patch.object(routes, "extract", side_effect=with_runner), \
+                mock.patch("campaign_tool.records.run.local_ocr_tools", return_value=(ocr_fixtures.TOOLS, "stub-v1")):
+            return self.stage(*extra)
+
+    def status(self, subject):
+        return self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'", (subject,))[0][0]
+
+    def alerts(self, subject):
+        return sorted((key.rsplit(":", 1)[-1], state) for key, state in self.query(
+            "SELECT key,state FROM alerts WHERE key LIKE ?", ("extract:" + subject + ":%",)))
+
+    def test_phase1_awaiting_ocr_pdf_is_extracted_on_the_first_ocr_run_then_idempotent(self):
+        runner = Runner(text="~ ,; i1 l\n", confidence="23")  # low confidence -> vision fallback
+        # Run 1: native only (Phase 1). The scan is held AWAITING_OCR with its runtime alert.
+        code, parsed, raw = self.ocr_stage(runner)
+        self.assertContract(code, parsed, raw)
+        # Three synthetic emails (each an original) plus policy.pdf extract natively.
+        self.assertEqual(self.outcomes(parsed), {"EXTRACTED": 4, "AWAITING_OCR": 1, "CORRUPT_DOCUMENT": 1})
+        self.assertEqual(runner.calls, [], "no OCR without --ocr")
+        self.assertEqual(self.status(self.scan), "pending")
+        [(codes, state)] = self.alerts(self.scan)
+        self.assertIn("ocr_runtime_unconfigured", codes.split(","))
+        self.assertEqual(state, "open")
+        # Run 1b: still native only: the hold is unchanged (flags-off behavior).
+        code, parsed, raw = self.ocr_stage(runner)
+        self.assertEqual(self.outcomes(parsed), {"AWAITING_OCR": 1, "CORRUPT_DOCUMENT": 1})
+        self.assertEqual(runner.calls, [])
+        # Run 2: OCR + vision enabled. The scan is released and extracted; the corrupt hold stays.
+        code, parsed, raw = self.ocr_stage(runner, "--ocr", "--ocr-vision-config", str(self.vision_config))
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(self.outcomes(parsed), {"EXTRACTED": 1, "CORRUPT_DOCUMENT": 1})
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract", "qwen-vision"])
+        self.assertEqual(self.status(self.scan), "done")
+        self.assertEqual(self.alerts(self.scan), [(codes, "resolved")])
+        self.assertEqual(self.status(self.broken), "pending")
+        self.assertTrue(all(state == "open" for _, state in self.alerts(self.broken)))
+        pages = [json.loads(row[0]) for row in self.query(
+            "SELECT p.page_json FROM extraction_adapter_pages p JOIN extraction_adapter_imports i "
+            "ON i.id=p.import_id WHERE i.original_sha256=? ORDER BY p.page_no", (self.scan,))]
+        self.assertEqual([(page["page_no"], page["engine"]) for page in pages], [(1, "qwen")])
+        self.assertTrue(pages[0]["vision_receipt_id"])
+        imports = self.query("SELECT COUNT(*) FROM extraction_adapter_imports WHERE original_sha256=?", (self.scan,))
+        queue = (self.processing / "awaiting-ocr.jsonl").read_text()
+        self.assertEqual(queue, "", "nothing left awaiting OCR")
+        # Run 3: same flags. Nothing pending for the scan: no tool calls, no second import.
+        code, parsed, raw = self.ocr_stage(runner, "--ocr", "--ocr-vision-config", str(self.vision_config))
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(self.outcomes(parsed), {"CORRUPT_DOCUMENT": 1})
+        self.assertEqual(runner.calls, ["pdftoppm", "tesseract", "qwen-vision"])
+        self.assertEqual(self.query("SELECT COUNT(*) FROM extraction_adapter_imports WHERE original_sha256=?",
+                                    (self.scan,)), imports)
+        self.assertEqual(self.alerts(self.scan), [(codes, "resolved")])
+
+
 if __name__ == "__main__":
     unittest.main()

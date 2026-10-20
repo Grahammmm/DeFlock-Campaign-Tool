@@ -144,6 +144,14 @@ vision file fails as `EXTRACT_OCR_VISION_CONFIG_INVALID`, and a vision file
 without `--ocr` fails as `STAGE_CONFIG_INVALID`. None of these falls back
 silently.
 
+A PDF that a native-only (Phase 1) run held as `AWAITING_OCR` keeps an open
+`extract:<sha256>:...ocr_runtime_unconfigured...` alert. On a stage run with
+`--ocr` and valid tools, an alert like that stops holding the document when its
+codes name no other hold (workbook, timeout, decoder, corrupt, refused, error).
+The document is then extracted with OCR, and once it is `EXTRACTED` the alert is
+marked `resolved`. Every other alert still holds, and retry caps are unchanged.
+Without `--ocr`, the hold works exactly as in Phase 1.
+
 Vision text replaces the page's Tesseract text only when the vision receipt
 produced text. Every OCR page row and unit records
 `engine=tesseract|<vision engine>`. When a vision receipt exists, the row also

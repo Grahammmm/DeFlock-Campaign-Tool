@@ -336,6 +336,12 @@ class Pipeline:
                         (sha(key.encode())[:32], key, stamp, stamp, owner))
             con.commit()
 
+    def _resolve_alert(self, key):
+        """Mark one open keyed alert resolved (a later repeat reopens it via ``_alert``)."""
+        with store.ledger(self.root.ledger) as con:
+            con.execute("UPDATE alerts SET state='resolved',last_seen=? WHERE key=? AND state='open'", (now(), key))
+            con.commit()
+
     def subjects(self):
         return [row["sha256"] for row in self._query("SELECT sha256 FROM originals WHERE scope!='out_of_scope' ORDER BY first_seen_at,sha256")]
 
