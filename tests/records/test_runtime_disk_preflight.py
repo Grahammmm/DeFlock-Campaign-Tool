@@ -295,15 +295,19 @@ class DiskPreflightNotifyTests(unittest.TestCase):
         notify = importlib.util.module_from_spec(spec)
         sys.path.insert(0, str(ROOT))
         spec.loader.exec_module(notify)
+        from campaign_tool.records import run_orchestrator, run_report
+        run_id = "run_20260101T000000Z_0123abcd"
         for code, words in (("DISK_SPACE_LOW", "below the configured minimum"),
                             ("DISK_SPACE_UNKNOWN", "could not be measured")):
-            report = {"run_id": "run_x", "needs_g": [{"code": code}],
-                      "stages": [{"name": "sync", "status": "fail", "error_code": code},
-                                 {"name": "notify", "status": "fail",
-                                  "error_code": "NOTIFY_PENDING"}]}
+            # The same builder `orch abort` uses for the wrapper's report.
+            report = run_orchestrator.abort_report(run_id, "test", "2026-01-01T00:00:00Z", code)
+            run_report.validate_run_report(report)
             text = notify.compose(report, "Synthetic", 78)
+            self.assertIn(f"records run {run_id} (test) refused to start", text)
             self.assertIn(words, text)
             self.assertIn("No records work was attempted", text)
+            self.assertIn("Needs G: 1 item(s).", text)
+            self.assertNotIn("Coverage:", text)
 
 
 if __name__ == "__main__":
