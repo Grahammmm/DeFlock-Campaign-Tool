@@ -773,12 +773,16 @@ def stage_extract(args):
                 vision = page_vision.load_config(args.ocr_vision_config)
             except ValueError:
                 return result("fail", {"failed": 1}, "EXTRACT_OCR_VISION_CONFIG_INVALID"), 1
-        ocr = {"tools": tools, "tool_signature": signature, "vision": vision}
+        ocr = {"tools": tools, "tool_signature": signature, "vision": vision,
+               # Operator-pinned per-child limits; the document budget never shortens them.
+               "page_timeout": args.ocr_page_timeout or ne.DEFAULT_OCR_PAGE_TIMEOUT,
+               "vision_timeout": (args.ocr_vision_timeout or ne.DEFAULT_OCR_VISION_TIMEOUT) if vision else None}
     elif args.ocr_vision_config:
         return result("fail", {"failed": 1}, "STAGE_CONFIG_INVALID"), 1
     try:
+        document_timeout = ne.DEFAULT_DOCUMENT_TIMEOUT if args.document_timeout is None else args.document_timeout
         summary = ne.run(processing, run_id=args.run_id, deadline=deadline,
-                         max_documents=args.max_documents, document_timeout=args.document_timeout,
+                         max_documents=args.max_documents, document_timeout=document_timeout,
                          native_workbook_policy=policy, ocr=ocr)
     except ne.RootNotInitialized:
         return result("fail", {"failed": 1}, "EXTRACT_ROOT_NOT_INITIALIZED"), 1
@@ -913,22 +917,44 @@ def parser():
     p.add_argument("--approval-file", help="portal: root-owned allowlist (read only)")
     p.add_argument("--max-documents", type=int, default=200,
                    help="extract: documents attempted per run; the rest are counted as deferred")
-    p.add_argument("--document-timeout", type=int, default=120,
-                   help="extract: per-document parser deadline (seconds)")
+    p.add_argument("--document-timeout", type=int, default=None,
+                   help="extract: per-document wall-clock budget in seconds (10..1400, at most "
+                        "--timeout minus the 15 s deadline margin; default 120, clamped to the stage time left)")
     p.add_argument("--workbook-policy",
                    help="extract: pinned native workbook policy component (operator stage plan only)")
     p.add_argument("--ocr", action="store_true",
                    help="extract: Phase 2 per-page Tesseract OCR for image-only PDF pages (operator stage plan only)")
     p.add_argument("--ocr-vision-config",
                    help="extract: with --ocr, owner-only local-vision-config-v1 for empty/low-confidence pages")
+    p.add_argument("--ocr-page-timeout", type=int, default=None,
+                   help="extract: with --ocr, timeout of each pdftoppm and tesseract child (10..600, default 180)")
+    p.add_argument("--ocr-vision-timeout", type=int, default=None,
+                   help="extract: with --ocr-vision-config, timeout of each vision child (10..600, default 300)")
     return p
+
+
+def config_invalid(args):
+    """True when the limits are out of bounds or contradict each other (STAGE_CONFIG_INVALID)."""
+    from . import native_extract as ne
+
+    if not 1 <= args.timeout <= 2700 or not 1 <= args.max_documents <= 5000:
+        return True
+    if args.document_timeout is not None and (
+            not 10 <= args.document_timeout <= ne.MAX_DOCUMENT_TIMEOUT
+            # an operator-pinned budget the stage deadline can never honour; unpinned, the
+            # default budget is clamped to the stage time left by native_extract.run
+            or args.document_timeout > args.timeout - ne.DEADLINE_MARGIN):
+        return True
+    if args.ocr_page_timeout is not None and (not args.ocr or not 10 <= args.ocr_page_timeout <= 600):
+        return True
+    return args.ocr_vision_timeout is not None and (
+        not args.ocr_vision_config or not 10 <= args.ocr_vision_timeout <= 600)
 
 
 def main(argv=None):
     os.umask(0o077)
     args = parser().parse_args(argv)
-    if (not 1 <= args.timeout <= 2700 or not 1 <= args.max_documents <= 5000
-            or not 10 <= args.document_timeout <= 600):
+    if config_invalid(args):
         print(json.dumps(result("fail", {"failed": 1}, "STAGE_CONFIG_INVALID")))
         return 1
     if args.stage == "portal" and not args.approval_file:
