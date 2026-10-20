@@ -499,6 +499,47 @@ class AdoptionBackupTests(StageTestCase):
         run_stages._backup_under_lock(self.processing, "run-1")
         self.assertTrue(self.run_dir("run-1").is_dir())
 
+    def test_rotate_backups_refuses_symlinked_dir(self):
+        # A symlinked backups/ must never be followed by rotation: the target
+        # directory and its files are left exactly as they were.
+        target = self.project / "elsewhere"
+        target.mkdir()
+        victim = target / "victim_00"
+        victim.mkdir()
+        keep = victim / "precious.txt"
+        keep.write_bytes(b"keep-me")
+        os.symlink(target, self.backups_dir())
+        run_stages._rotate_backups(self.backups_dir())
+        self.assertTrue(keep.exists(), "rotation must refuse a symlinked backups dir")
+        self.assertEqual(keep.read_bytes(), b"keep-me")
+
+    def test_symlinked_backups_dir_fails_closed(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        # A sibling directory holding more than BACKUP_KEEP run dirs, each with a
+        # precious file that neither backup nor rotation may touch through the link.
+        target = self.project / "elsewhere"
+        target.mkdir()
+        precious = []
+        for index in range(12):
+            victim = target / ("victim_%02d" % index)
+            victim.mkdir()
+            keep = victim / "precious.txt"
+            keep.write_bytes(b"keep-me")
+            precious.append(keep)
+        os.symlink(target, self.backups_dir())
+        before = sorted(p.read_bytes() for p in precious)
+        child, calls = self.adopt_child(ADOPT_DRY_REPORT, ADOPT_REPORT)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "ADOPT_BACKUP_FAILED"))
+        self.assertEqual(len(calls), 1, "apply never attempted for a symlinked backups dir")
+        self.assertNotIn("--apply", calls[0])
+        self.assertEqual(sorted(p.read_bytes() for p in precious), before,
+                         "symlink target must be untouched")
+        self.assertTrue(self.ledger.exists(), "ledger untouched")
+
 
 def synthetic_approval(*_args, **_kwargs):
     return parse_approval(json.dumps(policy_data()), uid=0, mode=stat.S_IFREG | 0o644,

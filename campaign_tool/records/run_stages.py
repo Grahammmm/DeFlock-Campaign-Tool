@@ -388,8 +388,17 @@ def _remove_backup_dir(path, backups_dir):
 
 def _rotate_backups(backups_dir, keep=BACKUP_KEEP):
     """Keep only the newest ``keep`` run-backup directories directly under
-    ``backups_dir``; remove the rest one directory at a time."""
-    if not backups_dir.is_dir():
+    ``backups_dir``; remove the rest one directory at a time.
+
+    Refuses to act unless ``backups_dir`` is a real directory (``lstat``, so a
+    symlink is not followed), so rotation can never follow a link outside the
+    backup root. A missing or non-directory ``backups_dir`` is left untouched.
+    """
+    try:
+        info = os.lstat(backups_dir)
+    except (FileNotFoundError, OSError):
+        return
+    if not stat.S_ISDIR(info.st_mode):
         return
     candidates = []
     for entry in os.scandir(backups_dir):
@@ -402,6 +411,30 @@ def _rotate_backups(backups_dir, keep=BACKUP_KEEP):
     candidates.sort(key=lambda item: item[:2], reverse=True)
     for _, _, path in candidates[keep:]:
         _remove_backup_dir(path, backups_dir)
+
+
+def _prepare_backups_dir(backups_dir):
+    """Return the backups directory, creating it (0700) only when it is absent.
+
+    The directory is resolved with ``lstat``, so an existing symlink (or any
+    non-directory) is refused with ``BackupFailure`` rather than followed --
+    neither the backup writes nor rotation may act through a link outside the
+    records root. Creation is a single (non-parents) ``mkdir`` on the already
+    resolved processing root, so an unchecked intermediate path is never walked.
+    """
+    try:
+        info = os.lstat(backups_dir)
+    except FileNotFoundError:
+        try:
+            os.mkdir(backups_dir, mode=0o700)
+        except OSError as error:
+            raise BackupFailure("backups_dir_create_failed") from error
+        return Path(backups_dir)
+    except OSError as error:
+        raise BackupFailure("backups_dir_unreadable") from error
+    if not stat.S_ISDIR(info.st_mode):
+        raise BackupFailure("backups_dir_not_directory")
+    return Path(backups_dir)
 
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -430,7 +463,7 @@ def backup_adoption_dbs(processing, run_id):
     missing/corrupt source, a copy or I/O failure, or a failed integrity check.
     """
     name = _safe_run_dir_name(run_id)
-    backups_dir = Path(processing) / BACKUP_DIR_NAME
+    backups_dir = _prepare_backups_dir(Path(processing) / BACKUP_DIR_NAME)
     run_dir = backups_dir / name
     # Defense in depth: the run directory must sit directly under backups/.
     if run_dir.parent != backups_dir or run_dir.name in (".", ".."):
@@ -440,7 +473,7 @@ def backup_adoption_dbs(processing, run_id):
         try:
             if run_dir.exists():
                 _remove_backup_dir(run_dir, backups_dir)
-            run_dir.mkdir(parents=True, mode=0o700)
+            run_dir.mkdir(mode=0o700)
             os.chmod(run_dir, 0o700)
             files, total = [], 0
             for source_name, relative in BACKUP_SOURCES:
