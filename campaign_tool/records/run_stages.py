@@ -16,6 +16,12 @@ the run report.
 * ``adoption``: ``records adopt-mail --apply`` with the owner-only config.
   Coded gaps (G option c) are counted, never dropped; identity conflicts and
   unaccepted gaps fail the stage (the adopter is fail-closed per identity).
+  Before any apply that could write, the canonical ledger and intake catalog
+  are backed up (SQLite backup API) into ``processing-v1/backups/<run_id>/``
+  with a hash manifest, rotated to the newest 9 runs. A backup failure fails
+  the stage as ``ADOPT_BACKUP_FAILED`` and the apply is never attempted; when
+  adoption is disabled or nothing is pending the backup is skipped as
+  ``ADOPT_BACKUP_SKIPPED``.
 * ``portal``: builds mail-delta notices from preserved messages in memory,
   runs T8 allowlist-gated intake into ``portal-queue-v1`` and then a fetch
   *dry run*. The allowlist is only read. Downloads are a separate, explicit
@@ -53,6 +59,7 @@ semantic acceptance of the run.
 """
 import argparse
 import contextlib
+from datetime import datetime, timezone
 from email import policy as email_policy
 from email.parser import BytesParser
 import hashlib
@@ -61,6 +68,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -70,6 +78,12 @@ STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "out
 GATED = ("catalog", "detect", "review", "compare", "privacy")
 MAX_EML_BYTES = 64 * 1024 * 1024
 MAX_NOTICE_BODY = 2 * 1024 * 1024
+BACKUP_KEEP = 9
+BACKUP_DIR_NAME = "backups"
+BACKUP_MANIFEST = "manifest.json"
+# (backup file name, source path relative to the processing root)
+BACKUP_SOURCES = (("ledger.sqlite", "ledger.sqlite"),
+                  ("intake.sqlite", os.path.join("intake", "intake.sqlite")))
 
 
 class StageTimeout(Exception):
@@ -246,12 +260,14 @@ def stage_sync(args):
 
 # --- delta / adoption -------------------------------------------------------
 
-def adopt_mail(args, apply):
+def adopt_mail(args, apply, *, config=False):
     mail, processing, _ = paths(args.project)
     argv = [sys.executable, "-B", "-m", "campaign_tool.records", "adopt-mail",
             "--root", str(processing), "--mail-history", str(mail)]
+    if config or apply:
+        argv += ["--config", args.config]
     if apply:
-        argv += ["--config", args.config, "--apply"]
+        argv += ["--apply"]
     code, out = run_child(argv, args.child_timeout)
     return code, last_json(out)
 
@@ -279,20 +295,181 @@ def stage_delta(args):
     return result(status, counts, error, needs_g=items), 0
 
 
+# --- adoption backup --------------------------------------------------------
+
+class BackupFailure(Exception):
+    """A pre-adoption backup could not be completed or verified."""
+
+
+def _backup_database(source, target):
+    """Copy one live SQLite database with the backup API, then verify the copy.
+
+    The source is opened read-write (so a WAL left by a crashed writer is
+    recovered into the copy), copied with ``Connection.backup`` (never a file
+    copy of a live database), and the copy is integrity-checked. Returns
+    ``(sha256_hex, byte_count)``. Raises ``BackupFailure`` on a missing or
+    non-regular source, a copy error, or an integrity check other than ``ok``.
+    """
+    source, target = Path(source), Path(target)
+    try:
+        info = source.lstat()
+    except FileNotFoundError:
+        raise BackupFailure("source_missing") from None
+    except OSError as error:
+        raise BackupFailure("source_unreadable") from error
+    if not stat.S_ISREG(info.st_mode):
+        raise BackupFailure("source_not_regular")
+    src = sqlite3.connect(str(source), timeout=5)
+    try:
+        dst = sqlite3.connect(str(target))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    check = sqlite3.connect("file:%s?mode=ro" % target, uri=True)
+    try:
+        row = check.execute("PRAGMA integrity_check").fetchone()
+    finally:
+        check.close()
+    if row is None or row[0] != "ok":
+        raise BackupFailure("integrity_check_failed")
+    digest, size = hashlib.sha256(), 0
+    with target.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+            size += len(block)
+    return digest.hexdigest(), size
+
+
+def _remove_backup_dir(path):
+    """Unlink the regular files and symlinks directly in ``path``, then rmdir.
+
+    Never recurses, never follows a symlink (neither on ``path`` itself nor on
+    any entry inside it), and never removes a non-directory. This is the only
+    removal path, so rotation can never delete outside ``backups/``.
+    """
+    try:
+        info = os.lstat(path)
+    except (FileNotFoundError, OSError):
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                    os.unlink(entry.path)
+    except OSError:
+        return
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
+def _rotate_backups(backups_dir, keep=BACKUP_KEEP):
+    """Keep only the newest ``keep`` run-backup directories directly under
+    ``backups_dir``; remove the rest one directory at a time."""
+    if not backups_dir.is_dir():
+        return
+    candidates = []
+    for entry in os.scandir(backups_dir):
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            candidates.append((info.st_mtime_ns, info.st_ino, entry.path))
+    candidates.sort(key=lambda item: item[:2], reverse=True)
+    for _, _, path in candidates[keep:]:
+        _remove_backup_dir(path)
+
+
+def backup_adoption_dbs(processing, run_id):
+    """Back up the canonical ledger and intake catalog before an adoption apply.
+
+    Copies ``ledger.sqlite`` and ``intake/intake.sqlite`` into
+    ``<processing>/backups/<run_id>/`` (directory 0700, files 0600) and writes
+    a manifest ``{run_id, utc, files:[{name, sha256, bytes}]}``. Rotates the
+    backup directory to the newest ``BACKUP_KEEP`` runs. Returns the total
+    backup byte count. Raises ``BackupFailure`` when a source is missing or a
+    copy fails its integrity check.
+    """
+    name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"
+    backups_dir = Path(processing) / BACKUP_DIR_NAME
+    run_dir = backups_dir / name
+    old = os.umask(0o077)
+    try:
+        if run_dir.exists():
+            _remove_backup_dir(run_dir)
+        run_dir.mkdir(parents=True, mode=0o700)
+        os.chmod(run_dir, 0o700)
+        files, total = [], 0
+        for source_name, relative in BACKUP_SOURCES:
+            target = run_dir / source_name
+            digest, size = _backup_database(Path(processing) / relative, target)
+            os.chmod(target, 0o600)
+            files.append({"name": source_name, "sha256": digest, "bytes": size})
+            total += size
+        manifest = {"run_id": run_id,
+                    "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "files": files}
+        manifest_path = run_dir / BACKUP_MANIFEST
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(manifest_path, 0o600)
+    except BaseException:
+        _remove_backup_dir(run_dir)
+        raise
+    finally:
+        os.umask(old)
+    _rotate_backups(backups_dir)
+    return total
+
+
 def stage_adoption(args):
     if not args.config:
         return result("skipped", {}, "ADOPTION_NOT_CONFIGURED",
                       needs_g=needs(("ADOPTION_NOT_CONFIGURED", "action", 1))), 0
+    _, processing, _ = paths(args.project)
+    # A read-only dry-run with the owner config tells us whether apply could
+    # write anything: the gate must be open and messages must be pending. When
+    # it cannot, no backup is needed (nothing can be written).
+    backup_bytes, skipped = 0, None
+    _, dry_report = adopt_mail(args, apply=False, config=True)
+    writable = (dry_report is not None and dry_report.get("status") != "refused"
+                and "receipts" in dry_report
+                and dry_report.get("gate", {}).get("open")
+                and dry_report.get("pending_messages"))
+    if writable:
+        try:
+            backup_bytes = backup_adoption_dbs(processing, args.run_id)
+        except BackupFailure:
+            return result("fail", {"failed": 1}, "ADOPT_BACKUP_FAILED"), 1
+    else:
+        skipped = "ADOPT_BACKUP_SKIPPED"
     code, report = adopt_mail(args, apply=True)
+    skip_items = needs((skipped, "info", 1)) if skipped else []
     if report is None or report.get("status") == "refused" or "receipts" not in report:
-        return result("fail", {"failed": 1}, "ADOPTION_REFUSED"), 1
+        return result("fail", {"failed": 1}, "ADOPTION_REFUSED", needs_g=skip_items), 1
     conflicts, unaccepted, items = _adoption_needs(report)
     adopted = int(report.get("adopted_messages", 0)) + int(report.get("resumed_messages", 0))
     failures = sum((report.get("failures") or {}).values())
     counts = {"input": report["receipts"], "output": adopted,
               "skipped": report.get("already_adopted", 0) + report.get("coded_gap_messages", 0),
               "failed": conflicts + unaccepted + failures}
-    new_data = {"documents": adopted} if adopted else None
+    new_data = {}
+    if adopted:
+        new_data["documents"] = adopted
+    if backup_bytes:
+        new_data["backup_bytes"] = backup_bytes
+    items += skip_items
+    new_data = new_data or None
     if code == 3:
         return result("fail", counts, "ADOPTION_BLOCKED", new_data=new_data, needs_g=items), 1
     if code != 0:

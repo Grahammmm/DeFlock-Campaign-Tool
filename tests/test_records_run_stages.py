@@ -109,6 +109,19 @@ class StageTestCase(unittest.TestCase):
                                     "sha256": sha or hashlib.sha256(raw).hexdigest()}}
         (self.mail / "receipts" / f"{name}.json").write_text(json.dumps(receipt), encoding="utf-8")
 
+    def adopt_child(self, dry_report, apply_report, dry_code=0, apply_code=0):
+        """A fake ``run_child`` returning a dry-run report then an apply report."""
+        calls = []
+
+        def child(argv, timeout):
+            calls.append(argv)
+            apply = "--apply" in argv
+            report = apply_report if apply else dry_report
+            code = apply_code if apply else dry_code
+            noise = b"progress line /private/x\n"
+            return code, noise + (json.dumps(report).encode() if report is not None else b"")
+        return child, calls
+
 
 class SyncStageTests(StageTestCase):
     def test_offline_snapshot_counts_receipts(self):
@@ -149,6 +162,12 @@ class SyncStageTests(StageTestCase):
 ADOPT_REPORT = {"receipts": 154, "eligible_new_messages": 36, "already_adopted": 3,
                 "coded_gap_messages": 115, "identity_conflicts": {}, "unaccepted_coded_gaps": {},
                 "adopted_messages": 36, "resumed_messages": 0, "failures": {}}
+
+# A dry-run report with the owner config present: gate open, adoption work pending.
+ADOPT_DRY_REPORT = {"receipts": 154, "eligible_new_messages": 36, "already_adopted": 3,
+                    "coded_gap_messages": 115, "identity_conflicts": {},
+                    "unaccepted_coded_gaps": {}, "pending_messages": 36,
+                    "gate": {"open": True, "state": "enabled"}}
 
 
 class AdoptionStageTests(StageTestCase):
@@ -195,33 +214,183 @@ class AdoptionStageTests(StageTestCase):
         self.assertEqual((parsed["status"], parsed["error_code"]), ("skipped", "ADOPTION_NOT_CONFIGURED"))
 
     def test_adoption_apply_counts_coded_gaps(self):
-        child, calls = self.fake_child(0, ADOPT_REPORT)
-        with mock.patch.object(run_stages, "run_child", child):
+        child, calls = self.adopt_child(ADOPT_DRY_REPORT, ADOPT_REPORT)
+        with mock.patch.object(run_stages, "backup_adoption_dbs", return_value=4096), \
+                mock.patch.object(run_stages, "run_child", child):
             code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
         self.assertContract(code, parsed, raw)
-        self.assertIn("--apply", calls[0])
-        self.assertEqual(calls[0][calls[0].index("--config") + 1], "/cfg.json")
+        self.assertEqual(len(calls), 2, "one dry-run then one apply")
+        self.assertNotIn("--apply", calls[0])
+        self.assertIn("--apply", calls[1])
+        self.assertEqual(calls[1][calls[1].index("--config") + 1], "/cfg.json")
         self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "ADOPTION_CODED_GAPS"))
-        self.assertEqual(parsed["new_data"], {"documents": 36})
+        self.assertEqual(parsed["new_data"], {"documents": 36, "backup_bytes": 4096})
         self.assertEqual(parsed["counts"], {"input": 154, "output": 36, "skipped": 118, "failed": 0})
         self.assertIn({"code": "ADOPTION_CODED_GAPS", "severity": "info", "count": 115}, parsed["needs_g"])
 
     def test_adoption_rerun_adopts_zero(self):
-        child, _ = self.fake_child(0, {**ADOPT_REPORT, "adopted_messages": 0, "already_adopted": 39})
+        dry = {**ADOPT_DRY_REPORT, "pending_messages": 0, "eligible_new_messages": 0}
+        apply = {**ADOPT_REPORT, "adopted_messages": 0, "already_adopted": 39}
+        child, _ = self.adopt_child(dry, apply)
         with mock.patch.object(run_stages, "run_child", child):
             code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
         self.assertContract(code, parsed, raw)
         self.assertEqual(parsed["counts"]["output"], 0)
         self.assertNotIn("new_data", parsed)
+        self.assertIn({"code": "ADOPT_BACKUP_SKIPPED", "severity": "info", "count": 1}, parsed["needs_g"])
 
     def test_adoption_blocked_fails(self):
         report = {**ADOPT_REPORT, "unaccepted_coded_gaps": {"other_code": 2}}
-        child, _ = self.fake_child(3, report)
-        with mock.patch.object(run_stages, "run_child", child):
+        child, _ = self.adopt_child(ADOPT_DRY_REPORT, report, apply_code=3)
+        with mock.patch.object(run_stages, "backup_adoption_dbs", return_value=4096), \
+                mock.patch.object(run_stages, "run_child", child):
             code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
         self.assertContract(code, parsed, raw)
         self.assertEqual(parsed["error_code"], "ADOPTION_BLOCKED")
         self.assertIn({"code": "ADOPTION_UNACCEPTED_GAP", "severity": "blocking", "count": 2}, parsed["needs_g"])
+
+
+class AdoptionBackupTests(StageTestCase):
+    """Synthetic tests for the per-run pre-adoption ledger/intake backup."""
+
+    def synthetic_intake(self):
+        path = self.processing / "intake" / "intake.sqlite"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE runs(id TEXT)")
+        con.execute("INSERT INTO runs VALUES('baseline')")
+        con.commit()
+        con.close()
+        path.chmod(0o600)
+        return path
+
+    def backups_dir(self):
+        return self.processing / "backups"
+
+    def run_dir(self, run_id="run-1"):
+        return self.backups_dir() / run_id
+
+    def read_manifest(self, run_id="run-1"):
+        return json.loads((self.run_dir(run_id) / run_stages.BACKUP_MANIFEST).read_text(encoding="utf-8"))
+
+    def test_backup_taken_and_integrity_ok_before_apply(self):
+        synthetic_ledger(self.ledger, mail_messages=5)
+        self.synthetic_intake()
+        seen = {}
+
+        def child(argv, timeout):
+            apply = "--apply" in argv
+            if apply:
+                # The backup must already exist before the apply child runs.
+                seen["backup_exists_before_apply"] = (self.run_dir() / "ledger.sqlite").is_file()
+                report, code = ADOPT_REPORT, 0
+            else:
+                report, code = ADOPT_DRY_REPORT, 0
+            noise = b"progress /private/x\n"
+            return code, noise + json.dumps(report).encode()
+
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertTrue(seen["backup_exists_before_apply"], "backup precedes apply")
+        self.assertGreater(parsed["new_data"]["backup_bytes"], 0)
+        # Both copies are present, integrity-check ok, and hash to their manifest.
+        manifest = self.read_manifest()
+        self.assertEqual(manifest["run_id"], "run-1")
+        self.assertEqual({entry["name"] for entry in manifest["files"]},
+                         {"ledger.sqlite", "intake.sqlite"})
+        for entry in manifest["files"]:
+            target = self.run_dir() / entry["name"]
+            self.assertEqual(target.stat().st_size, entry["bytes"])
+            self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), entry["sha256"])
+            with sqlite3.connect("file:%s?mode=ro" % target, uri=True) as db:
+                self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+
+    def test_skip_when_nothing_pending(self):
+        dry = {**ADOPT_DRY_REPORT, "pending_messages": 0, "eligible_new_messages": 0}
+        apply = {**ADOPT_REPORT, "adopted_messages": 0, "already_adopted": 39}
+        child, _ = self.adopt_child(dry, apply)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertIn({"code": "ADOPT_BACKUP_SKIPPED", "severity": "info", "count": 1}, parsed["needs_g"])
+        self.assertFalse(self.backups_dir().exists(), "no backup written when nothing pending")
+
+    def test_skip_when_adoption_disabled(self):
+        dry = {**ADOPT_DRY_REPORT, "gate": {"open": False, "state": "disabled_by_config"}}
+        refused = {"status": "refused", "code": "adoption_gate_closed:disabled_by_config"}
+        child, _ = self.adopt_child(dry, refused, apply_code=2)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(parsed["error_code"], "ADOPTION_REFUSED")
+        self.assertIn({"code": "ADOPT_BACKUP_SKIPPED", "severity": "info", "count": 1}, parsed["needs_g"])
+        self.assertFalse(self.backups_dir().exists())
+
+    def test_backup_failure_blocks_apply(self):
+        synthetic_ledger(self.ledger, mail_messages=3)
+        self.synthetic_intake()
+        before = self.ledger.read_bytes()
+        child, calls = self.adopt_child(ADOPT_DRY_REPORT, ADOPT_REPORT)
+        with mock.patch.object(run_stages, "backup_adoption_dbs",
+                               side_effect=run_stages.BackupFailure("integrity_check_failed")), \
+                mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "ADOPT_BACKUP_FAILED"))
+        self.assertEqual(len(calls), 1, "only the dry-run ran; apply never attempted")
+        self.assertNotIn("--apply", calls[0])
+        self.assertEqual(self.ledger.read_bytes(), before, "ledger unchanged on backup failure")
+
+    def test_permissions(self):
+        synthetic_ledger(self.ledger, mail_messages=1)
+        self.synthetic_intake()
+        run_stages.backup_adoption_dbs(self.processing, "run-1")
+        self.assertEqual(stat.S_IMODE(self.backups_dir().stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.run_dir().stat().st_mode), 0o700)
+        for name in ("ledger.sqlite", "intake.sqlite", run_stages.BACKUP_MANIFEST):
+            self.assertEqual(stat.S_IMODE((self.run_dir() / name).stat().st_mode), 0o600)
+
+    def test_rotation_keeps_newest_nine(self):
+        synthetic_ledger(self.ledger, mail_messages=1)
+        self.synthetic_intake()
+        for index in range(11):
+            run_stages.backup_adoption_dbs(self.processing, "run-%d" % index)
+            # Pin a deterministic, increasing mtime so rotation order is exact.
+            os.utime(self.run_dir("run-%d" % index), ns=(index, index))
+        remaining = sorted((entry.name for entry in self.backups_dir().iterdir()),
+                           key=lambda name: int(name.split("-")[1]))
+        self.assertEqual(remaining, ["run-2", "run-3", "run-4", "run-5", "run-6",
+                                     "run-7", "run-8", "run-9", "run-10"])
+
+    def test_rotation_never_removes_outside_backups(self):
+        synthetic_ledger(self.ledger, mail_messages=1)
+        self.synthetic_intake()
+        sentinel = self.processing / "sentinel.sqlite"
+        sentinel.write_bytes(b"not-a-backup")
+        for index in range(11):
+            run_stages.backup_adoption_dbs(self.processing, "run-%d" % index)
+            os.utime(self.run_dir("run-%d" % index), ns=(index, index))
+        self.assertTrue(sentinel.exists(), "rotation only touches backups/")
+
+    def test_rerun_idempotent(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        first = run_stages.backup_adoption_dbs(self.processing, "run-1")
+        first_manifest = self.read_manifest()
+        second = run_stages.backup_adoption_dbs(self.processing, "run-1")
+        self.assertEqual(first, second)
+        self.assertEqual(self.read_manifest()["run_id"], "run-1")
+        self.assertEqual([entry["sha256"] for entry in self.read_manifest()["files"]],
+                         [entry["sha256"] for entry in first_manifest["files"]])
+        self.assertEqual([entry.name for entry in self.backups_dir().iterdir()], ["run-1"])
+
+    def test_missing_source_fails_closed(self):
+        synthetic_ledger(self.ledger, mail_messages=1)
+        # No intake.sqlite: the backup must fail rather than silently omit it.
+        with self.assertRaises(run_stages.BackupFailure):
+            run_stages.backup_adoption_dbs(self.processing, "run-1")
+        self.assertEqual(list(self.backups_dir().iterdir()), [], "failed backup leaves no directory")
 
 
 def synthetic_approval(*_args, **_kwargs):
