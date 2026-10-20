@@ -6,7 +6,12 @@ Host-side driver. It never touches the live records project or TEST itself:
 1. Copies TEST (mail-history, processing-v1, portal-queue-v1 and the TEST
    adoption config) into a fresh sandbox directory, inside the Flock container
    as the ledger owner, and marks the copy with the sandbox marker that
-   ``scripts/t12_fault_inject.py`` requires.
+   ``scripts/t12_fault_inject.py`` requires. With ``--baseline-backup`` (and its
+   pinned ``--baseline-ledger-sha256``) the copy's ledger and intake database
+   are then replaced by that reviewed backup inside TEST (only read) and its
+   identity paths are relocated to the sandbox root
+   (``scripts/t11i_sandbox_baseline.py``), so a post-apply TEST still yields the
+   restored baseline (36 adopted / 115 coded gaps) in the sandbox.
 2. Renders the runtime templates with ``targets/test-container.json.in``:
    every stage is a ``docker exec`` of the stage adapter in the Flock
    container against the sandbox copy (``docker run`` is not available to
@@ -50,6 +55,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -401,6 +407,18 @@ def evaluate(receipt, *, required_faults=REQUIRED_FAULTS, isolation=True):
     checks.update(_fault_checks(faults, runs, allowed, required_faults))
     for fault in required_faults:
         checks.setdefault("fault_" + fault, False)  # an unknown required fault cannot pass
+    if expect.get("baseline_ledger_sha256") is not None:
+        # Seeded baseline (G D3-A): the pinned backup, fully relocated to the sandbox root,
+        # consistent, and the very ledger the first run starts from.
+        seeded = receipt.get("baseline") or {}
+        checks["sandbox_baseline_seeded"] = bool(
+            seeded.get("mode") == "seeded_backup" and seeded.get("status") == "seeded"
+            and seeded.get("baseline_ledger_sha256") == expect["baseline_ledger_sha256"]
+            and seeded.get("foreign_root_refs_after") == 0 and seeded.get("integrity") == "ok"
+            and seeded.get("foreign_key_violations") == 0 and seeded.get("triggers_identical") is True
+            and seeded.get("immutability_trigger_enforced") is True
+            and type(seeded.get("mail_messages")) is int
+            and seeded.get("mail_messages") == before.get("mail_messages"))
     if isolation:
         checks["live_tree_unchanged"] = receipt.get("live_tree_unchanged") is True
         checks["test_tree_unchanged"] = receipt.get("test_tree_unchanged") is True
@@ -484,6 +502,36 @@ def non_negative(text):
     return value
 
 
+def baseline_name(text):
+    """A backup directory name directly inside TEST (no path separators, hidden by convention)."""
+    if not re.fullmatch(r"\.[A-Za-z0-9][A-Za-z0-9._-]{0,127}", text) or ".." in text:
+        raise argparse.ArgumentTypeError("expected a hidden backup directory name inside TEST")
+    return text
+
+
+def sha256_hex(text):
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise argparse.ArgumentTypeError("expected a lowercase hex SHA-256")
+    return text
+
+
+def seed_baseline(docker_bin, base, container_project, backup_name, ledger_sha256):
+    """Run t11i_sandbox_baseline.py on the sandbox in the container; its JSON line or a refusal."""
+    script = f"{base['CONTAINER_ENGINE_DIR']}/scripts/t11i_sandbox_baseline.py"
+    proc = subprocess.run([docker_bin, "exec", "-u", "coder", CONTAINER, base["CONTAINER_PYTHON"], "-B", script,
+                           "--project", container_project, "--backup", f"{TEST_DIR}/{backup_name}",
+                           "--ledger-sha256", ledger_sha256, "--from-root", LIVE_DIR, "--from-root", TEST_DIR],
+                          capture_output=True, text=True, timeout=600)
+    for line in reversed(proc.stdout.splitlines()):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {"status": "refused", "code": "baseline_no_result"}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--engine", required=True, help="host path of the pinned engine tree (git archive)")
@@ -506,10 +554,19 @@ def main(argv=None):
     p.add_argument("--allow-warn", type=allowed_warning, action="append", default=[], metavar="STAGE:CODE",
                    help="add an expected warning to the defaults " + ", ".join(
                        f"{stage}:{code}" for stage, code in DEFAULT_ALLOWED_WARNINGS))
+    p.add_argument("--baseline-backup", type=baseline_name, metavar="NAME",
+                   help="seed the sandbox from this reviewed backup dir inside TEST (ledger.sqlite + "
+                        "intake.sqlite; e.g. the T4 pre-apply backup) and relocate its identity paths "
+                        "to the sandbox root (scripts/t11i_sandbox_baseline.py); TEST is only read")
+    p.add_argument("--baseline-ledger-sha256", type=sha256_hex, metavar="HEX",
+                   help="pinned SHA-256 of the backup's ledger.sqlite (required with --baseline-backup)")
     args = p.parse_args(argv)
     allowed = sorted(set(DEFAULT_ALLOWED_WARNINGS) | set(args.allow_warn))
     if args.runs < 3:
         print(json.dumps({"status": "refused", "code": "runs_below_three"}))
+        return 2
+    if (args.baseline_backup is None) != (args.baseline_ledger_sha256 is None):
+        print(json.dumps({"status": "refused", "code": "baseline_arguments_incomplete"}))
         return 2
     if args.require_native_parsers and any(code in PARSER_MISSING_CODES for _, code in allowed):
         print(json.dumps({"status": "refused", "code": "parser_missing_cannot_be_expected"}))
@@ -530,15 +587,31 @@ def main(argv=None):
     sandbox_rel = f".t11i-sandbox-{stamp}"
     container_project = f"{CONTAINER_WORK}/{sandbox_rel}/records-project"
     # 1. Sandbox copy of TEST, made inside the container as the ledger owner, plus the marker.
+    # Modes are explicit (mkdir -m 700, chmod 600): the host-work default ACL makes the kernel
+    # ignore the umask, and the injector refuses a marker with group bits.
     copy = " ".join(f"'{TEST_DIR}/{item}'" for item in COPY_ITEMS)
+    sandbox_dir = f"{CONTAINER_WORK}/{sandbox_rel}"
     docker(["exec", "-u", "coder", CONTAINER, "sh", "-c",
-            f"umask 077 && mkdir -p '{container_project}' && cp -a {copy} '{container_project}/' && "
-            f"printf '%s\\n' '{{\"sandbox_marker_version\":1}}' > '{container_project}/{SANDBOX_MARKER}'"],
+            f"umask 077 && mkdir -m 700 '{sandbox_dir}' && mkdir -m 700 '{container_project}' && "
+            f"cp -a {copy} '{container_project}/' && "
+            f"printf '%s\\n' '{{\"sandbox_marker_version\":1}}' > '{container_project}/{SANDBOX_MARKER}' && "
+            f"chmod 600 '{container_project}/{SANDBOX_MARKER}'"],
            args.docker)
+    container_python = args.container_python or container_interpreter(args.docker)
+    base = {"CONTAINER_ENGINE_DIR": f"{CONTAINER_WORK}/{engine.name}", "CONTAINER_PYTHON": container_python}
+    # 1b. Optional reviewed baseline (G D3-A): the sandbox ledger + intake come from the pinned
+    # backup and its identity paths move to the sandbox root, inside the copy only.
+    baseline = {"mode": "test_copy"}
+    if args.baseline_backup:
+        baseline = {"mode": "seeded_backup", **seed_baseline(args.docker, base, container_project,
+                                                             args.baseline_backup, args.baseline_ledger_sha256)}
+        if baseline.get("status") != "seeded":
+            print(json.dumps({"status": "refused", "code": "baseline_seed_refused",
+                              "detail": baseline.get("code")}))
+            return 2
     test_before = ledger_counts(args.docker, TEST_DIR)
     sandbox_before = ledger_counts(args.docker, container_project)
     image = docker(["inspect", "--format", "{{.Image}}", CONTAINER], args.docker).strip()
-    container_python = args.container_python or container_interpreter(args.docker)
     scratch.mkdir(parents=True, exist_ok=True)
     env_file = scratch / "fake-telegram.env"
     env_file.write_text("TELEGRAM_BOT_TOKEN=000000:SYNTHETIC_NOT_A_TOKEN\nTELEGRAM_HOME_CHANNEL=-100\n")
@@ -568,7 +641,9 @@ def main(argv=None):
                "expect": {"adopted": args.expect_adopted, "coded_gaps": args.expect_coded_gaps,
                           "require_native_parsers": args.require_native_parsers, "runs": args.runs,
                           "allowed_warnings": [list(pair) for pair in allowed],
-                          "required_faults": list(REQUIRED_FAULTS)},
+                          "required_faults": list(REQUIRED_FAULTS),
+                          "baseline_ledger_sha256": args.baseline_ledger_sha256},
+               "baseline": baseline,
                "test_before": test_before, "sandbox_before": sandbox_before,
                "runs": [], "faults": {}, "checks": {}}
     target_dir = runtime / "TEST"

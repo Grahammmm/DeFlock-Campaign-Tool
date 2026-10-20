@@ -39,6 +39,7 @@ from email.policy import SMTP
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -661,11 +662,15 @@ class FaultInjectorTests(unittest.TestCase):
 class RealAdapterHarnessTests(unittest.TestCase):
     """Three bounded runs and three faults through the real orchestrator + run_stages adapters."""
 
+    group_inheriting = False  # see RealAdapterHarnessUnderDefaultAclTests
+
     @classmethod
     def setUpClass(cls):
         os.umask(0o077)
         cls.temp = tempfile.TemporaryDirectory(prefix="t12s-e2e-")
         base = Path(cls.temp.name)
+        if cls.group_inheriting:
+            cls.inheritance = inherit_group_bits(base)
         cls.project = make_project(base)
         cls.work = base / "work"
         cls.work.mkdir(mode=0o700)
@@ -677,6 +682,7 @@ class RealAdapterHarnessTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        os.umask(0o077)
         cls.temp.cleanup()
 
     @classmethod
@@ -841,6 +847,57 @@ class RealAdapterHarnessTests(unittest.TestCase):
         report["overall_status"] = "ok" if report["overall_status"] != "ok" else "fail"
         self.assertFalse(harness.report_is_valid(report))
         self.assertFalse(harness.report_is_valid({}))
+
+
+def inherit_group_bits(base):
+    """Make new files under ``base`` keep the group bits they are created with, umask or not.
+
+    That is the rootless Flock host-work (T13 receipt attempt 1, cause 4): its default ACL
+    (``default:user:<container coder>:rwx``, ``default:mask::rwx``) makes the kernel ignore
+    the process umask, so ``open(..., "w")`` gives 0660 even under ``umask 077``. Uses a
+    real default ACL when ``setfacl`` works here; otherwise umask 007, which gives new
+    files the same mode bits. Returns which one is in force.
+    """
+    setfacl = shutil.which("setfacl")
+    if setfacl:
+        proc = subprocess.run([setfacl, "-d", "-m", f"u:{os.geteuid()}:rwx,g::---,m::rwx,o::---", str(base)],
+                              capture_output=True)
+        if proc.returncode == 0:
+            probe = base / ".acl-probe"
+            with open(probe, "w"):  # requested 0666; the umask (077 here) must not apply
+                pass
+            inherited = os.stat(probe).st_mode & 0o070 == 0o060
+            probe.unlink()
+            if inherited:
+                return "default_acl"
+            subprocess.run([setfacl, "-k", str(base)], capture_output=True)
+    os.umask(0o007)
+    return "umask_007"
+
+
+class RealAdapterHarnessUnderDefaultAclTests(RealAdapterHarnessTests):
+    """The same real-adapter runs where new files inherit group bits (``inherit_group_bits``).
+
+    The owner-only checks (sandbox marker, extraction artifacts) stay strict. The engine has
+    to create its private files 0600 and its private directories 0700 explicitly instead of
+    relying on the umask, or the receipt fails as it did on the swapped runtime.
+    """
+    group_inheriting = True
+
+    def test_group_bits_really_are_inherited(self):
+        self.assertIn(self.inheritance, ("default_acl", "umask_007"))
+        probe = self.project.parent / ".mode-probe"
+        with open(probe, "w"):
+            pass
+        self.addCleanup(probe.unlink)
+        self.assertEqual(os.stat(probe).st_mode & 0o070, 0o060)
+
+    def test_extraction_artifacts_are_owner_only(self):
+        extract = self.project / "processing-v1" / "extract"
+        artifacts = [p for p in extract.rglob("*") if p.is_file() and not p.is_symlink()]
+        self.assertTrue(any(p.name == "digest.json" for p in artifacts))
+        loose = sorted(str(p.relative_to(extract)) for p in artifacts if p.stat().st_mode & 0o077)
+        self.assertEqual(loose, [])
 
 
 if __name__ == "__main__":
