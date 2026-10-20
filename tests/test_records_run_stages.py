@@ -225,8 +225,18 @@ class AdoptionStageTests(StageTestCase):
 
     def test_receipt_gap_block_has_a_visible_reason(self):
         report = {**ADOPT_REPORT, "adopted_messages": 0, "gaps": {"duplicate_receipt_identity": 1}}
-        child, _ = self.fake_child(3, report)
-        with mock.patch.object(run_stages, "run_child", child):
+        # Only the apply is blocked; a read-only dry-run before it (T17-prep's
+        # pre-adoption backup decision, #158) sees a clean report. The backup
+        # helper is mocked with create=True so this test holds with and without
+        # that stage composed in.
+        dry = {**report, "gaps": {}, "pending_messages": 1, "gate": {"open": True, "state": "enabled"}}
+
+        def child(argv, timeout):
+            apply = "--apply" in argv
+            return (3 if apply else 0), json.dumps(report if apply else dry).encode()
+
+        with mock.patch.object(run_stages, "backup_adoption_dbs", return_value=4096, create=True), \
+                mock.patch.object(run_stages, "run_child", child):
             code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
         self.assertContract(code, parsed, raw)
         self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "ADOPTION_BLOCKED"))
