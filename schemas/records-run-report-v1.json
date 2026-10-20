@@ -107,7 +107,21 @@
           "description": "Required (non-null) when status is warn or fail; null when ok.",
           "type": ["string", "null"],
           "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+        },
+        "outcomes": {
+          "type": "array",
+          "description": "Optional per-document outcome codes (extract stage). Each document counted in counts.input has exactly one code, so the counts sum to counts.input. Codes are unique. Codes only, never document identities.",
+          "items": {"$ref": "#/$defs/outcome"}
         }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count"],
+      "properties": {
+        "code": {"$ref": "#/$defs/code"},
+        "count": {"type": "integer", "minimum": 1}
       }
     },
     "needs_g_item": {

@@ -37,6 +37,11 @@
       }
     },
     "review_required": {"$ref": "#/$defs/count"},
+    "outcomes": {
+      "type": "array",
+      "description": "Optional per-document outcome codes for the units in counts.input: each document has exactly one code, so the counts sum to counts.input. Codes are unique. Used by the extract stage (EXTRACTED, AWAITING_OCR, CORRUPT_DOCUMENT, ...).",
+      "items": {"$ref": "#/$defs/outcome"}
+    },
     "needs_g": {
       "type": "array",
       "items": {
@@ -52,6 +57,15 @@
     }
   },
   "$defs": {
-    "count": {"type": "integer", "minimum": 0}
+    "count": {"type": "integer", "minimum": 0},
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$"},
+        "count": {"type": "integer", "minimum": 1}
+      }
+    }
   }
 }

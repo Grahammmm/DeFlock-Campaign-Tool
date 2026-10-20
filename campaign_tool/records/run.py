@@ -500,9 +500,10 @@ class Pipeline:
                                            ocr_tools=self.ocr_tools, tool_signature=self.ocr_tool_signature)
         receipt = Path(result["run_path"]) / "extraction.json"
         codes = [i.get("code", "?") for i in result.get("issues", [])]
-        if result["status"] == "blocked" or (result["status"] == "partial" and not result.get("ocr_receipts")):
-            # Not acceptable yet (no decoder, timeout, or image-only pages with no OCR runtime).
-            # Record a keyed alert so the gap is visible in `records status`; nothing is faked.
+        if result["status"] != "complete" and not (result["status"] == "partial" and result.get("ocr_receipts")):
+            # Not acceptable yet (no decoder, a parser failure on a damaged file, timeout, or
+            # image-only pages with no OCR runtime). Record a keyed alert so the gap is visible
+            # in `records status`; nothing is faked and nothing unacceptable is enrolled.
             reason = "extraction_" + result["status"] + ":" + ",".join(codes)
             self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
             return {"status": "blocked", "reason": reason,
