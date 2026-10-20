@@ -1,0 +1,480 @@
+"""Container-side stage adapters for the records run (T11i, Phase 1).
+
+``python3 -m campaign_tool.records.run_stages STAGE --project DIR ...`` runs one
+real work stage inside the Flock container (or an isolated TEST sandbox
+container) and prints exactly one ``records-stage-result-v1`` JSON line last on
+stdout. The host-side orchestrator (``run_orchestrator``) folds that line into
+the run report.
+
+``DIR`` is a records project: ``mail-history/``, ``processing-v1/`` and
+``portal-queue-v1/``. Stages:
+
+* ``sync``: inventory of the mail-history export. With ``--sync-script`` the
+  existing Flock mail sync runs first, bounded; without it (TEST) the frozen
+  export is only counted. No network is opened by this module.
+* ``delta``: ``records adopt-mail`` dry run: what adoption would change.
+* ``adoption``: ``records adopt-mail --apply`` with the owner-only config.
+  Coded gaps (G option c) are counted, never dropped; identity conflicts and
+  unaccepted gaps fail the stage (the adopter is fail-closed per identity).
+* ``portal``: builds mail-delta notices from preserved messages in memory,
+  runs T8 allowlist-gated intake into ``portal-queue-v1`` and then a fetch
+  *dry run*. The allowlist is only read. Downloads are a separate, explicit
+  step and are never done here.
+* ``extract``: Phase 1 (G 2026-10-19) native text only. Reports the extract
+  backlog from the ledger; documents that need OCR are counted as
+  ``awaiting_ocr`` (never dropped). When the running image lacks the native
+  parsers (pypdf/openpyxl) the backlog is reported with a needs-G action
+  instead of pretending to extract.
+* ``digest_gates``: ledger stage-state roll-up for the gated stages; anything
+  past privacy needs the owner, so it is review-required, never accepted.
+* ``outputs``: writes a counts-only snapshot under ``DIR/run-outputs/``.
+  Nothing is published or sent.
+
+Every stage runs under its own container-side deadline (``--timeout``): killing
+a ``docker exec`` client does not stop work inside the container, so the
+adapter enforces its own limit and kills its children's process group.
+
+The result line carries only enums, counts and fixed codes: no paths, URLs,
+addresses or record text. A machine-valid result is review-required, not
+semantic acceptance of the run.
+"""
+import argparse
+from email import policy as email_policy
+from email.parser import BytesParser
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import sqlite3
+import subprocess
+import sys
+
+STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs")
+GATED = ("catalog", "detect", "review", "compare", "privacy")
+MAX_EML_BYTES = 64 * 1024 * 1024
+MAX_NOTICE_BODY = 2 * 1024 * 1024
+OCR_REASONS = ("ocr_needed_or_blank",)
+
+
+class StageTimeout(Exception):
+    pass
+
+
+def result(status, counts, error_code=None, **extra):
+    out = {"stage_result_version": 1, "status": status,
+           "counts": {key: int(counts.get(key, 0)) for key in ("input", "output", "failed", "skipped")},
+           "error_code": error_code}
+    for key in ("new_data", "review_required", "needs_g"):
+        if extra.get(key):
+            out[key] = extra[key]
+    return out
+
+
+def needs(*items):
+    """``needs(("CODE", "action", n), ...)`` keeping only positive counts."""
+    return [{"code": code, "severity": severity, "count": int(count)}
+            for code, severity, count in items if count and count > 0]
+
+
+def run_child(argv, timeout):
+    """Run a child in its own session; on timeout kill the whole group.
+
+    stdout is captured for parsing only (never logged); stderr is discarded.
+    """
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        raise StageTimeout() from None
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # no descendant outlives the stage
+        except (ProcessLookupError, PermissionError):
+            pass
+    return proc.returncode, out
+
+
+def last_json(raw):
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError:
+        return None
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except ValueError:
+        pass
+    for line in reversed([line for line in text.splitlines() if line.strip()]):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        return value if isinstance(value, dict) else None
+    return None
+
+
+def paths(project):
+    project = Path(project)
+    return project / "mail-history", project / "processing-v1", project / "portal-queue-v1"
+
+
+def ledger_ro(processing):
+    return sqlite3.connect(f"file:{processing / 'ledger.sqlite'}?mode=ro", uri=True, timeout=30)
+
+
+# --- sync -------------------------------------------------------------------
+
+def stage_sync(args):
+    mail, _, _ = paths(args.project)
+    synced = None
+    if args.sync_script:
+        code, _ = run_child([sys.executable, "-B", args.sync_script], args.child_timeout)
+        if code != 0:
+            return result("fail", {"failed": 1}, "SYNC_FAILED"), 1
+        synced = True
+    receipts = mail / "receipts"
+    if not receipts.is_dir():
+        return result("fail", {"failed": 1}, "SYNC_EXPORT_MISSING"), 1
+    count = sum(1 for path in receipts.iterdir() if path.suffix == ".json")
+    status_ok = True
+    try:
+        json.loads((mail / "SYNC-STATUS.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status_ok = False
+    if not status_ok:
+        return result("warn", {"input": count, "output": count}, "SYNC_STATUS_UNREADABLE"), 0
+    if synced is None:
+        # Offline TEST copy: nothing was fetched; the frozen export is counted only.
+        return result("ok", {"input": count, "output": count},
+                      needs_g=needs(("SYNC_OFFLINE_SNAPSHOT", "info", 1))), 0
+    return result("ok", {"input": count, "output": count}), 0
+
+
+# --- delta / adoption -------------------------------------------------------
+
+def adopt_mail(args, apply):
+    mail, processing, _ = paths(args.project)
+    argv = [sys.executable, "-B", "-m", "campaign_tool.records", "adopt-mail",
+            "--root", str(processing), "--mail-history", str(mail)]
+    if apply:
+        argv += ["--config", args.config, "--apply"]
+    code, out = run_child(argv, args.child_timeout)
+    return code, last_json(out)
+
+
+def _adoption_needs(report):
+    conflicts = sum((report.get("identity_conflicts") or {}).values())
+    unaccepted = sum((report.get("unaccepted_coded_gaps") or {}).values())
+    return conflicts, unaccepted, needs(
+        ("ADOPTION_CODED_GAPS", "info", report.get("coded_gap_messages", 0)),
+        ("ADOPTION_IDENTITY_CONFLICT", "blocking", conflicts),
+        ("ADOPTION_UNACCEPTED_GAP", "blocking", unaccepted))
+
+
+def stage_delta(args):
+    code, report = adopt_mail(args, apply=False)
+    if report is None or report.get("status") == "refused" or "receipts" not in report:
+        return result("fail", {"failed": 1}, "DELTA_REFUSED"), 1
+    conflicts, unaccepted, items = _adoption_needs(report)
+    counts = {"input": report["receipts"], "output": report.get("eligible_new_messages", 0),
+              "skipped": report.get("already_adopted", 0) + report.get("coded_gap_messages", 0),
+              "failed": conflicts + unaccepted}
+    if code not in (0, 3):
+        return result("fail", counts, "DELTA_FAILED", needs_g=items), 1
+    status, error = ("warn", "DELTA_BLOCKING_CONFLICTS") if code == 3 else ("ok", None)
+    return result(status, counts, error, needs_g=items), 0
+
+
+def stage_adoption(args):
+    if not args.config:
+        return result("skipped", {}, "ADOPTION_NOT_CONFIGURED",
+                      needs_g=needs(("ADOPTION_NOT_CONFIGURED", "action", 1))), 0
+    code, report = adopt_mail(args, apply=True)
+    if report is None or report.get("status") == "refused" or "receipts" not in report:
+        return result("fail", {"failed": 1}, "ADOPTION_REFUSED"), 1
+    conflicts, unaccepted, items = _adoption_needs(report)
+    adopted = int(report.get("adopted_messages", 0)) + int(report.get("resumed_messages", 0))
+    failures = sum((report.get("failures") or {}).values())
+    counts = {"input": report["receipts"], "output": adopted,
+              "skipped": report.get("already_adopted", 0) + report.get("coded_gap_messages", 0),
+              "failed": conflicts + unaccepted + failures}
+    new_data = {"documents": adopted} if adopted else None
+    if code == 3:
+        return result("fail", counts, "ADOPTION_BLOCKED", new_data=new_data, needs_g=items), 1
+    if code != 0:
+        return result("fail", counts, "ADOPTION_FAILED", new_data=new_data, needs_g=items), 1
+    status, error = ("warn", "ADOPTION_CODED_GAPS") if report.get("coded_gap_messages") else ("ok", None)
+    return result(status, counts, error, new_data=new_data, needs_g=items), 0
+
+
+# --- portal -----------------------------------------------------------------
+
+def _resolve(mail, literal):
+    if not isinstance(literal, str) or not literal or "\x00" in literal:
+        return None
+    path = Path(literal) if literal.startswith("/") else mail / literal
+    path = Path(os.path.abspath(path))
+    if os.path.commonpath((str(mail), str(path))) != str(mail):
+        return None
+    return path
+
+
+def notice_bodies(raw):
+    message = BytesParser(policy=email_policy.default).parsebytes(raw)
+    parts = []
+    for part in message.walk():
+        if part.get_content_maintype() == "multipart" or part.get_filename():
+            continue
+        if part.get_content_type() in ("text/html", "text/plain"):
+            try:
+                parts.append(part.get_content())
+            except (LookupError, ValueError):
+                continue
+    return "\n".join(text for text in parts if isinstance(text, str))
+
+
+def iter_notices(mail):
+    """Yield ``(notice, error)`` from each preserved message; ``notice`` is kept in memory only."""
+    for receipt_path in sorted((mail / "receipts").glob("*.json")):
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            original = receipt.get("original_eml") or {}
+            path = _resolve(mail, original.get("path"))
+            expected = original.get("sha256")
+            if path is None or not isinstance(expected, str):
+                yield None, "notice_source_unresolved"
+                continue
+            with path.open("rb") as stream:
+                raw = stream.read(MAX_EML_BYTES + 1)
+            if len(raw) > MAX_EML_BYTES or hashlib.sha256(raw).hexdigest() != expected:
+                yield None, "notice_source_mismatch"
+                continue
+            body = notice_bodies(raw)
+        except (OSError, ValueError, UnicodeError, AttributeError):
+            yield None, "notice_source_unreadable"
+            continue
+        if len(body.encode("utf-8")) > MAX_NOTICE_BODY:
+            yield None, "notice_oversize"
+            continue
+        yield {"body": body, "request_id": "mail:" + expected[:32], "source_sha256": expected}, None
+
+
+def stage_portal(args):
+    from .portal.engine import fetch_queue
+    from .portal.intake import intake_notices
+    from .portal.policy import PortalError, load_approval
+    from .portal.store import Queue
+
+    mail, _, portal = paths(args.project)
+    notices, errors = [], 0
+    for notice, error in iter_notices(mail):
+        if error:
+            errors += 1
+        elif notice and "/documents/" in notice["body"]:
+            notices.append(notice)
+    loader = lambda: load_approval(args.approval_file)  # read-only allowlist
+    queue = None
+    try:
+        queue = Queue(str(portal))
+        totals = {"enrolled": 0, "refused": 0, "skipped": 0}
+        for start in range(0, len(notices), 200):
+            outcome = intake_notices(queue, notices=notices[start:start + 200], approval_loader=loader)
+            for key in totals:
+                totals[key] += outcome[key]
+        dry = fetch_queue(queue, apply=False, approval_loader=loader)
+        refused_hosts = queue.db.execute("SELECT COUNT(DISTINCT host) FROM portal_refusals").fetchone()[0]
+    except (PortalError, OSError, ValueError, sqlite3.Error):
+        return result("fail", {"input": len(notices), "failed": 1}, "PORTAL_INTAKE_FAILED"), 1
+    finally:
+        if queue is not None:
+            queue.close()
+    pending = sum(1 for item in dry.get("items", []) if item.get("state") != "received")
+    counts = {"input": totals["enrolled"] + totals["refused"] + totals["skipped"],
+              "output": totals["enrolled"], "skipped": totals["skipped"] + totals["refused"],
+              "failed": errors}
+    items = needs(("PORTAL_HOST_NOT_ALLOWLISTED", "action", refused_hosts),
+                  ("PORTAL_NOTICE_UNREADABLE", "action", errors),
+                  ("PORTAL_FETCH_DRY_RUN_ONLY", "info", pending or totals["enrolled"]))
+    if totals["refused"] or errors:
+        code = "PORTAL_HOST_REFUSED" if totals["refused"] else "PORTAL_NOTICE_UNREADABLE"
+        return result("warn", counts, code, needs_g=items), 0
+    return result("ok", counts, needs_g=items), 0
+
+
+# --- extract / digest_gates / outputs ----------------------------------------
+
+def native_parsers():
+    missing = []
+    for module in ("pypdf", "openpyxl"):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(module)
+    return missing
+
+
+def stage_counts(db):
+    rows = db.execute("SELECT stage, status, COUNT(*) FROM stage_state GROUP BY stage, status").fetchall()
+    counts = {}
+    for stage, status, n in rows:
+        counts.setdefault(stage, {})[status] = n
+    return counts
+
+
+def awaiting_ocr(db):
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "extraction_adapter_pages" not in tables:
+        return 0
+    # Documents (current extraction imports) with at least one page held for OCR.
+    waiting = set()
+    for import_id, page_json in db.execute("SELECT import_id, page_json FROM extraction_adapter_pages"):
+        try:
+            page = json.loads(page_json)
+        except ValueError:
+            continue
+        if isinstance(page, dict) and page.get("reason") in OCR_REASONS:
+            waiting.add(import_id)
+    return len(waiting)
+
+
+def stage_extract(args):
+    _, processing, _ = paths(args.project)
+    try:
+        db = ledger_ro(processing)
+        try:
+            extract = stage_counts(db).get("extract", {})
+            ocr = awaiting_ocr(db)
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return result("fail", {"failed": 1}, "EXTRACT_LEDGER_UNREADABLE"), 1
+    pending, blocked, done = extract.get("pending", 0), extract.get("blocked", 0), extract.get("done", 0)
+    counts = {"input": pending + blocked + done, "output": done, "failed": blocked,
+              "skipped": pending + ocr}
+    items = needs(("AWAITING_OCR", "info", ocr))
+    missing = native_parsers()
+    if missing and pending:
+        # The running image cannot extract native text; report the backlog, extract nothing.
+        items += needs(("EXTRACT_NATIVE_PARSER_MISSING", "action", pending))
+        return result("warn", counts, "EXTRACT_NATIVE_PARSER_MISSING", needs_g=items), 0
+    if pending:
+        items += needs(("EXTRACT_BACKLOG", "info", pending))
+        return result("warn", counts, "EXTRACT_BACKLOG_PENDING", needs_g=items), 0
+    return result("ok", counts, needs_g=items), 0
+
+
+def stage_digest_gates(args):
+    _, processing, _ = paths(args.project)
+    try:
+        db = ledger_ro(processing)
+        try:
+            counts = stage_counts(db)
+            proposals = db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return result("fail", {"failed": 1}, "GATES_LEDGER_UNREADABLE"), 1
+    pending = sum(counts.get(stage, {}).get("pending", 0) for stage in GATED)
+    blocked = sum(counts.get(stage, {}).get("blocked", 0) for stage in GATED)
+    done = sum(counts.get(stage, {}).get("done", 0) for stage in GATED)
+    out = {"input": pending + blocked + done, "output": done, "failed": blocked, "skipped": pending}
+    # Every proposal past privacy needs the owner: review-required, never accepted here.
+    items = needs(("GATE_BLOCKED", "action", blocked))
+    if proposals or blocked:
+        return result("warn", out, "GATE_REVIEW_REQUIRED", review_required=proposals, needs_g=items), 0
+    return result("ok", out, needs_g=items), 0
+
+
+def stage_outputs(args):
+    mail, processing, portal = paths(args.project)
+    try:
+        db = ledger_ro(processing)
+        try:
+            snapshot = {"snapshot_version": 1, "run_id": args.run_id,
+                        "stage_state": stage_counts(db),
+                        "mail_messages": db.execute("SELECT COUNT(*) FROM mail_messages").fetchone()[0],
+                        "originals": db.execute("SELECT COUNT(*) FROM originals").fetchone()[0]}
+        finally:
+            db.close()
+        pdb = sqlite3.connect(f"file:{portal / 'portal.sqlite'}?mode=ro", uri=True, timeout=30)
+        try:
+            snapshot["portal_items"] = pdb.execute("SELECT COUNT(*) FROM portal_items").fetchone()[0]
+            tables = {row[0] for row in pdb.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            snapshot["portal_refusals"] = (pdb.execute("SELECT COUNT(*) FROM portal_refusals").fetchone()[0]
+                                           if "portal_refusals" in tables else 0)
+        finally:
+            pdb.close()
+    except sqlite3.Error:
+        return result("fail", {"failed": 1}, "OUTPUTS_LEDGER_UNREADABLE"), 1
+    directory = Path(args.project) / "run-outputs"
+    old = os.umask(0o077)
+    try:
+        directory.mkdir(mode=0o700, exist_ok=True)
+        name = "".join(ch for ch in args.run_id if ch.isalnum() or ch in "-_.") or "run"
+        target = directory / f"{name}.json"
+        temporary = directory / f".{name}.json.tmp"
+        temporary.write_text(json.dumps(snapshot, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
+    finally:
+        os.umask(old)
+    return result("ok", {"input": 1, "output": 1}), 0
+
+
+HANDLERS = {"sync": stage_sync, "delta": stage_delta, "adoption": stage_adoption,
+            "portal": stage_portal, "extract": stage_extract,
+            "digest_gates": stage_digest_gates, "outputs": stage_outputs}
+
+
+def parser():
+    p = argparse.ArgumentParser(prog="run_stages", description="Records run stage adapter (one JSON result line).")
+    p.add_argument("stage", choices=STAGES)
+    p.add_argument("--project", required=True, help="records project directory")
+    p.add_argument("--timeout", type=int, default=600, help="container-side stage deadline (seconds)")
+    p.add_argument("--run-id", default="run")
+    p.add_argument("--sync-script", help="sync: existing mail sync script to run first (live only)")
+    p.add_argument("--config", help="adoption: owner-only mail-history-adoption-v1 config")
+    p.add_argument("--approval-file", help="portal: root-owned allowlist (read only)")
+    return p
+
+
+def main(argv=None):
+    os.umask(0o077)
+    args = parser().parse_args(argv)
+    if not 1 <= args.timeout <= 2700:
+        print(json.dumps(result("fail", {"failed": 1}, "STAGE_CONFIG_INVALID")))
+        return 1
+    if args.stage == "portal" and not args.approval_file:
+        print(json.dumps(result("fail", {"failed": 1}, "PORTAL_ALLOWLIST_MISSING")))
+        return 1
+    args.project = os.path.abspath(args.project)
+    # Children get the remaining budget minus a small margin; the alarm is the hard stop.
+    args.child_timeout = max(1, args.timeout - 5)
+
+    def on_alarm(signum, frame):
+        raise StageTimeout()
+
+    signal.signal(signal.SIGALRM, on_alarm)
+    signal.alarm(args.timeout)
+    try:
+        line, code = HANDLERS[args.stage](args)
+    except StageTimeout:
+        line, code = result("fail", {"failed": 1}, "STAGE_CONTAINER_TIMEOUT"), 1
+    except Exception:  # noqa: BLE001 - never print exception text (may hold private values)
+        line, code = result("fail", {"failed": 1}, "STAGE_INTERNAL_ERROR"), 1
+    finally:
+        signal.alarm(0)
+    print(json.dumps(line, sort_keys=True))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
