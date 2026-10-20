@@ -19,9 +19,11 @@ the run report.
   Before any apply that could write, the canonical ledger and intake catalog
   are backed up (SQLite backup API) into ``processing-v1/backups/<run_id>/``
   with a hash manifest, rotated to the newest 9 runs. A backup failure fails
-  the stage as ``ADOPT_BACKUP_FAILED`` and the apply is never attempted; when
-  adoption is disabled or nothing is pending the backup is skipped as
-  ``ADOPT_BACKUP_SKIPPED``.
+  the stage as ``ADOPT_BACKUP_FAILED`` and the apply is never attempted. Only
+  positive proof that apply can write nothing (the gate closed, or nothing
+  pending / unfinalized / incomplete) skips the backup as
+  ``ADOPT_BACKUP_SKIPPED``; an indeterminate dry-run takes the backup
+  (fail closed). The backup is taken under the records-root writer lock.
 * ``portal``: builds mail-delta notices from preserved messages in memory,
   runs T8 allowlist-gated intake into ``portal-queue-v1`` and then a fetch
   *dry run*. The allowlist is only read. Downloads are a separate, explicit
@@ -66,6 +68,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import sqlite3
 import stat
@@ -308,7 +311,8 @@ def _backup_database(source, target):
     recovered into the copy), copied with ``Connection.backup`` (never a file
     copy of a live database), and the copy is integrity-checked. Returns
     ``(sha256_hex, byte_count)``. Raises ``BackupFailure`` on a missing or
-    non-regular source, a copy error, or an integrity check other than ``ok``.
+    non-regular source, on any copy/read error (a corrupt source, a full disk,
+    an I/O failure), or on an integrity check other than ``ok``.
     """
     source, target = Path(source), Path(target)
     try:
@@ -319,37 +323,46 @@ def _backup_database(source, target):
         raise BackupFailure("source_unreadable") from error
     if not stat.S_ISREG(info.st_mode):
         raise BackupFailure("source_not_regular")
-    src = sqlite3.connect(str(source), timeout=5)
     try:
-        dst = sqlite3.connect(str(target))
+        src = sqlite3.connect(str(source), timeout=5)
         try:
-            src.backup(dst)
+            dst = sqlite3.connect(str(target))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
         finally:
-            dst.close()
-    finally:
-        src.close()
-    check = sqlite3.connect("file:%s?mode=ro" % target, uri=True)
-    try:
-        row = check.execute("PRAGMA integrity_check").fetchone()
-    finally:
-        check.close()
-    if row is None or row[0] != "ok":
-        raise BackupFailure("integrity_check_failed")
-    digest, size = hashlib.sha256(), 0
-    with target.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-            size += len(block)
-    return digest.hexdigest(), size
+            src.close()
+        check = sqlite3.connect("file:%s?mode=ro" % target, uri=True)
+        try:
+            row = check.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            check.close()
+        if row is None or row[0] != "ok":
+            raise BackupFailure("integrity_check_failed")
+        digest, size = hashlib.sha256(), 0
+        with target.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+                size += len(block)
+        return digest.hexdigest(), size
+    except BackupFailure:
+        raise
+    except (sqlite3.Error, OSError) as error:
+        raise BackupFailure("backup_copy_failed") from error
 
 
-def _remove_backup_dir(path):
+def _remove_backup_dir(path, backups_dir):
     """Unlink the regular files and symlinks directly in ``path``, then rmdir.
 
     Never recurses, never follows a symlink (neither on ``path`` itself nor on
-    any entry inside it), and never removes a non-directory. This is the only
-    removal path, so rotation can never delete outside ``backups/``.
+    any entry inside it), and never removes a non-directory. ``path`` must sit
+    directly under ``backups_dir``; any other path is refused untouched. This
+    is the only removal path, so rotation can never delete outside ``backups/``.
     """
+    path = Path(path)
+    if path.parent != Path(backups_dir) or path.name in (".", ".."):
+        return
     try:
         info = os.lstat(path)
     except (FileNotFoundError, OSError):
@@ -388,7 +401,22 @@ def _rotate_backups(backups_dir, keep=BACKUP_KEEP):
             candidates.append((info.st_mtime_ns, info.st_ino, entry.path))
     candidates.sort(key=lambda item: item[:2], reverse=True)
     for _, _, path in candidates[keep:]:
-        _remove_backup_dir(path)
+        _remove_backup_dir(path, backups_dir)
+
+
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _safe_run_dir_name(run_id):
+    """Accept only a strict run-id token; never ``.``, ``..``, empty or dot-leading.
+
+    The token becomes a single directory name directly under ``backups/``, so
+    anything else is rejected (never silently sanitised into a different name)
+    with ``BackupFailure`` rather than risk resolving outside the backup root.
+    """
+    if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
+        raise BackupFailure("invalid_run_id")
+    return run_id
 
 
 def backup_adoption_dbs(processing, run_id):
@@ -398,38 +426,91 @@ def backup_adoption_dbs(processing, run_id):
     ``<processing>/backups/<run_id>/`` (directory 0700, files 0600) and writes
     a manifest ``{run_id, utc, files:[{name, sha256, bytes}]}``. Rotates the
     backup directory to the newest ``BACKUP_KEEP`` runs. Returns the total
-    backup byte count. Raises ``BackupFailure`` when a source is missing or a
-    copy fails its integrity check.
+    backup byte count. Raises ``BackupFailure`` for an invalid run-id, a
+    missing/corrupt source, a copy or I/O failure, or a failed integrity check.
     """
-    name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"
+    name = _safe_run_dir_name(run_id)
     backups_dir = Path(processing) / BACKUP_DIR_NAME
     run_dir = backups_dir / name
+    # Defense in depth: the run directory must sit directly under backups/.
+    if run_dir.parent != backups_dir or run_dir.name in (".", ".."):
+        raise BackupFailure("invalid_run_id")
     old = os.umask(0o077)
     try:
-        if run_dir.exists():
-            _remove_backup_dir(run_dir)
-        run_dir.mkdir(parents=True, mode=0o700)
-        os.chmod(run_dir, 0o700)
-        files, total = [], 0
-        for source_name, relative in BACKUP_SOURCES:
-            target = run_dir / source_name
-            digest, size = _backup_database(Path(processing) / relative, target)
-            os.chmod(target, 0o600)
-            files.append({"name": source_name, "sha256": digest, "bytes": size})
-            total += size
-        manifest = {"run_id": run_id,
-                    "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "files": files}
-        manifest_path = run_dir / BACKUP_MANIFEST
-        manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-        os.chmod(manifest_path, 0o600)
+        try:
+            if run_dir.exists():
+                _remove_backup_dir(run_dir, backups_dir)
+            run_dir.mkdir(parents=True, mode=0o700)
+            os.chmod(run_dir, 0o700)
+            files, total = [], 0
+            for source_name, relative in BACKUP_SOURCES:
+                target = run_dir / source_name
+                digest, size = _backup_database(Path(processing) / relative, target)
+                os.chmod(target, 0o600)
+                files.append({"name": source_name, "sha256": digest, "bytes": size})
+                total += size
+            manifest = {"run_id": run_id,
+                        "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "files": files}
+            manifest_path = run_dir / BACKUP_MANIFEST
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+            os.chmod(manifest_path, 0o600)
+        except BackupFailure:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise BackupFailure("backup_io_failed") from error
     except BaseException:
-        _remove_backup_dir(run_dir)
+        _remove_backup_dir(run_dir, backups_dir)
         raise
     finally:
         os.umask(old)
     _rotate_backups(backups_dir)
     return total
+
+
+def _backup_under_lock(processing, run_id):
+    """Take the pre-adoption backup while holding the records-root writer lock.
+
+    ``_backup_database`` opens the canonical ledger read-write so a crashed
+    writer's WAL is recovered into the copy; that recovery belongs only to a
+    writer holding the root lock. Apply re-acquires the lock in its child
+    process after release, so holding it here is safe. A contended lock is a
+    ``BackupFailure`` so the apply is not attempted without a backup.
+    """
+    from .run import RunError, root_lock
+    try:
+        with root_lock(processing):
+            return backup_adoption_dbs(processing, run_id)
+    except RunError as error:
+        if error.args == ("root_locked",):
+            raise BackupFailure("root_locked") from None
+        raise
+    except OSError as error:
+        raise BackupFailure("root_lock_unavailable") from error
+
+
+def _adoption_needs_backup(dry_report):
+    """True unless the dry-run positively proves the apply will write nothing.
+
+    A valid parsed dry-run report (has ``receipts``) with the gate explicitly
+    closed, or with the gate open but zero pending / unfinalized / incomplete
+    work, is positive proof that apply can write nothing, so the backup may be
+    skipped. Anything else -- a timeout, an unparseable or refused child output,
+    a missing report -- is indeterminate and must take the backup (fail closed).
+    """
+    if not (isinstance(dry_report, dict) and "receipts" in dry_report):
+        return True
+    gate = dry_report.get("gate")
+    if not isinstance(gate, dict):
+        return True
+    if gate.get("open") is False:
+        return False
+    if gate.get("open") is not True:
+        return True
+    # Gate open: apply writes unless nothing is pending, incomplete or unfinalized.
+    return bool(dry_report.get("pending_messages")
+                or dry_report.get("unfinalized_runs")
+                or dry_report.get("incomplete_messages"))
 
 
 def stage_adoption(args):
@@ -438,18 +519,15 @@ def stage_adoption(args):
                       needs_g=needs(("ADOPTION_NOT_CONFIGURED", "action", 1))), 0
     _, processing, _ = paths(args.project)
     # A read-only dry-run with the owner config tells us whether apply could
-    # write anything: the gate must be open and messages must be pending. When
-    # it cannot, no backup is needed (nothing can be written).
+    # write anything. Only skip the backup on positive proof that apply can
+    # write nothing (gate closed, or nothing pending / unfinalized); any
+    # indeterminate dry-run takes the backup so a ledger write is never unbacked.
     backup_bytes, skipped = 0, None
     _, dry_report = adopt_mail(args, apply=False, config=True)
-    writable = (dry_report is not None and dry_report.get("status") != "refused"
-                and "receipts" in dry_report
-                and dry_report.get("gate", {}).get("open")
-                and dry_report.get("pending_messages"))
-    if writable:
+    if _adoption_needs_backup(dry_report):
         try:
-            backup_bytes = backup_adoption_dbs(processing, args.run_id)
-        except BackupFailure:
+            backup_bytes = _backup_under_lock(processing, args.run_id)
+        except (BackupFailure, OSError, sqlite3.Error):
             return result("fail", {"failed": 1}, "ADOPT_BACKUP_FAILED"), 1
     else:
         skipped = "ADOPT_BACKUP_SKIPPED"

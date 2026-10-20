@@ -392,6 +392,113 @@ class AdoptionBackupTests(StageTestCase):
             run_stages.backup_adoption_dbs(self.processing, "run-1")
         self.assertEqual(list(self.backups_dir().iterdir()), [], "failed backup leaves no directory")
 
+    # --- review round 1 regressions (fail-closed on indeterminate dry-run,
+    #     corrupt source, path-traversal run-id, and writer-lock) ------------
+
+    def test_dry_run_none_still_takes_backup(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        child, calls = self.adopt_child(None, ADOPT_REPORT)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertTrue(self.run_dir().is_dir(), "indeterminate dry-run must still back up")
+        self.assertNotIn({"code": "ADOPT_BACKUP_SKIPPED", "severity": "info", "count": 1}, parsed["needs_g"])
+        self.assertTrue(any("--apply" in c for c in calls), "apply still runs after the backup")
+        self.assertIn("backup_bytes", parsed["new_data"])
+
+    def test_dry_run_refused_still_takes_backup(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        refused = {"source": "x", "status": "refused", "code": "ledger_wal_not_checkpointed"}
+        child, calls = self.adopt_child(refused, ADOPT_REPORT, dry_code=2)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertTrue(self.run_dir().is_dir(), "refused dry-run must still back up")
+        self.assertIn("backup_bytes", parsed["new_data"])
+
+    def test_unfinalized_runs_still_takes_backup(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        dry = {**ADOPT_DRY_REPORT, "pending_messages": 0, "eligible_new_messages": 0,
+               "unfinalized_runs": 1}
+        apply = {**ADOPT_REPORT, "adopted_messages": 0, "recovered_runs": {"interrupted": 1}}
+        child, calls = self.adopt_child(dry, apply)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertTrue(self.run_dir().is_dir(), "unfinalized runs write to the ledger, so back up")
+        self.assertIn("backup_bytes", parsed["new_data"])
+
+    def test_incomplete_messages_still_takes_backup(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        dry = {**ADOPT_DRY_REPORT, "pending_messages": 0, "eligible_new_messages": 0,
+               "incomplete_messages": 1}
+        apply = {**ADOPT_REPORT, "adopted_messages": 0, "resumed_messages": 1}
+        child, calls = self.adopt_child(dry, apply)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertTrue(self.run_dir().is_dir(), "incomplete messages resume and write, so back up")
+        self.assertIn("backup_bytes", parsed["new_data"])
+
+    def test_corrupt_source_maps_to_backup_failed(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        intake = self.processing / "intake" / "intake.sqlite"
+        intake.parent.mkdir(parents=True, exist_ok=True)
+        intake.write_bytes(b"not a sqlite database at all" * 200)
+        intake.chmod(0o600)
+        before = self.ledger.read_bytes()
+        child, calls = self.adopt_child(ADOPT_DRY_REPORT, ADOPT_REPORT)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "ADOPT_BACKUP_FAILED"))
+        self.assertEqual(len(calls), 1, "only the dry-run ran; apply never attempted")
+        self.assertNotIn("--apply", calls[0])
+        self.assertEqual(self.ledger.read_bytes(), before, "ledger unchanged on corrupt source")
+        self.assertFalse(self.run_dir().exists(), "failed backup leaves no run directory")
+
+    def test_invalid_run_id_rejected_ledger_untouched(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        sentinel = self.processing / "sentinel.sqlite"
+        sentinel.write_bytes(b"keep-me")
+        for run_id in ("..", ".", "", ".hidden", "a/b"):
+            with self.subTest(run_id=run_id):
+                with self.assertRaises(run_stages.BackupFailure):
+                    run_stages.backup_adoption_dbs(self.processing, run_id)
+                self.assertTrue(self.ledger.exists(), "ledger must survive a bad run-id")
+                self.assertTrue(sentinel.exists(), "sentinel must survive a bad run-id")
+
+    def test_stage_run_id_dotdot_fails_closed(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        sentinel = self.processing / "sentinel.sqlite"
+        sentinel.write_bytes(b"keep-me")
+        child, calls = self.adopt_child(ADOPT_DRY_REPORT, ADOPT_REPORT)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = run_main(["adoption", "--project", str(self.project),
+                                          "--timeout", "60", "--run-id", "..",
+                                          "--config", "/cfg.json"])
+        self.assertContract(code, parsed, raw)
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "ADOPT_BACKUP_FAILED"))
+        self.assertEqual(len(calls), 1, "apply never attempted for a bad run-id")
+        self.assertTrue(self.ledger.exists(), "ledger untouched")
+        self.assertTrue(sentinel.exists(), "sentinel untouched")
+
+    def test_backup_requires_root_lock(self):
+        synthetic_ledger(self.ledger, mail_messages=2)
+        self.synthetic_intake()
+        with records_run.root_lock(self.processing):
+            with self.assertRaises(run_stages.BackupFailure) as ctx:
+                run_stages._backup_under_lock(self.processing, "run-1")
+            self.assertEqual(ctx.exception.args, ("root_locked",))
+        run_stages._backup_under_lock(self.processing, "run-1")
+        self.assertTrue(self.run_dir("run-1").is_dir())
+
 
 def synthetic_approval(*_args, **_kwargs):
     return parse_approval(json.dumps(policy_data()), uid=0, mode=stat.S_IFREG | 0o644,
