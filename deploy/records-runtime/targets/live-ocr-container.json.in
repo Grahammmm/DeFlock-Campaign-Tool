@@ -131,7 +131,9 @@
     "--max-documents",
     "20",
     "--document-timeout",
-    "300",
+    "1200",
+    "--ocr-page-timeout",
+    "180",
     "--ocr"
    ],
    "timeout_seconds": 1500,

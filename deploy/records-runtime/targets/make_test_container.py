@@ -53,14 +53,19 @@ STAGES = (
 MODES = {"test", "live"}
 
 # Phase 2 (T6) extract stage of the OCR-enabled LIVE plans, by variant:
-# (timeout, on_fail, extra adapter arguments). A 27B vision page can take
-# minutes, so the vision plan gets a 600 s document timeout and Tesseract-only
-# 300 s. The run stays bounded by RUN_BUDGET_SECONDS and the 47 min unit
-# (render.py check_budget); OCR publishes per-page immutable receipts, so a run
-# cut short (RUN_INTERRUPTED) resumes on the next slot.
+# (timeout, on_fail, extra adapter arguments). --document-timeout is the
+# per-document wall-clock budget (T6-timeout A); --ocr-page-timeout bounds each
+# pdftoppm / tesseract child and --ocr-vision-timeout each vision child. A page
+# without a published receipt starts only when its whole allowance fits the
+# budget left (2 x 180 s, plus 300 s with vision), so 1200 s admits an uncached
+# 27B vision page. 1200 <= 1490 - DEADLINE_MARGIN (15) leaves ~275 s of the
+# stage for the validator's re-parses and ledger work. The run stays bounded by
+# RUN_BUDGET_SECONDS and the 47 min unit (render.py check_budget); OCR publishes
+# per-page immutable receipts, so a run cut short resumes on the next slot.
+OCR_LIMITS = ["--max-documents", "20", "--document-timeout", "1200", "--ocr-page-timeout", "180"]
 OCR_EXTRACT = {
-    "ocr": (1500, "stop", ["--max-documents", "20", "--document-timeout", "300", "--ocr"]),
-    "ocr-vision": (1500, "stop", ["--max-documents", "20", "--document-timeout", "600", "--ocr",
+    "ocr": (1500, "stop", [*OCR_LIMITS, "--ocr"]),
+    "ocr-vision": (1500, "stop", [*OCR_LIMITS, "--ocr-vision-timeout", "300", "--ocr",
                                   "--ocr-vision-config", "@CONTAINER_OCR_VISION_CONFIG@"]),
 }
 # Committed template file name -> (mode, OCR variant or None).

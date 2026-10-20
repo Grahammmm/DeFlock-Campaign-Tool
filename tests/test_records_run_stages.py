@@ -915,8 +915,10 @@ class TemplateTests(unittest.TestCase):
             "live-ocr-container.json.in": ("live", "ocr"),
             "live-ocr-vision-container.json.in": ("live", "ocr-vision")})
         live_plan = self._check_template(module, directory, "live-container.json.in", "live")
-        tail = {"ocr": ["--max-documents", "20", "--document-timeout", "300", "--ocr"],
-                "ocr-vision": ["--max-documents", "20", "--document-timeout", "600", "--ocr",
+        # T6-timeout B: per-document budget 1200 s, page children 180 s, vision children 300 s.
+        limits = ["--max-documents", "20", "--document-timeout", "1200", "--ocr-page-timeout", "180"]
+        tail = {"ocr": [*limits, "--ocr"],
+                "ocr-vision": [*limits, "--ocr-vision-timeout", "300", "--ocr",
                                "--ocr-vision-config", "@CONTAINER_OCR_VISION_CONFIG@"]}
         for filename, variant in (("live-ocr-container.json.in", "ocr"),
                                   ("live-ocr-vision-container.json.in", "ocr-vision")):
@@ -942,6 +944,13 @@ class TemplateTests(unittest.TestCase):
                     self.assertTrue(1 <= args.timeout <= 2700 and 1 <= args.max_documents <= 5000
                                     and 10 <= args.document_timeout <= 1400)
                     self.assertTrue(args.ocr)
+                    self.assertEqual((args.document_timeout, args.ocr_page_timeout, args.ocr_vision_timeout),
+                                     (1200, 180, 300 if variant == "ocr-vision" else None))
+                    # The pinned budget fits the stage deadline and admits one uncached page.
+                    self.assertLessEqual(args.document_timeout,
+                                         args.timeout - native_extract.DEADLINE_MARGIN)
+                    self.assertGreaterEqual(args.document_timeout, 2 * args.ocr_page_timeout
+                                            + (args.ocr_vision_timeout or 0))
                     self.assertEqual(args.ocr_vision_config,
                                      "@CONTAINER_OCR_VISION_CONFIG@" if variant == "ocr-vision" else None)
         for bad in (("test", "ocr"), ("live", "tesseract")):

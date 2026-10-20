@@ -131,7 +131,11 @@
     "--max-documents",
     "20",
     "--document-timeout",
-    "600",
+    "1200",
+    "--ocr-page-timeout",
+    "180",
+    "--ocr-vision-timeout",
+    "300",
     "--ocr",
     "--ocr-vision-config",
     "@CONTAINER_OCR_VISION_CONFIG@"

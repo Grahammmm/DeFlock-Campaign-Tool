@@ -107,12 +107,13 @@ byte-identical. Render one of them as the LIVE target in place of
         --target LIVE=deploy/records-runtime/targets/live-ocr-vision-container.json.in
 
 - `live-ocr-container.json.in`: per-page Tesseract only. Extract argv adds
-  `--ocr`, with `--max-documents 20 --document-timeout 300`.
+  `--ocr`, with `--max-documents 20 --document-timeout 1200
+  --ocr-page-timeout 180`.
 - `live-ocr-vision-container.json.in`: Tesseract, then the local vision
   fallback for empty or low-confidence pages. Extract argv adds `--ocr
   --ocr-vision-config @CONTAINER_OCR_VISION_CONFIG@`, with
-  `--max-documents 20 --document-timeout 600` (a 27B vision page can take
-  minutes).
+  `--max-documents 20 --document-timeout 1200 --ocr-page-timeout 180
+  --ocr-vision-timeout 300` (a 27B vision page can take minutes).
 
 In both, extract has `--timeout 1490`, `timeout_seconds: 1500` and `on_fail:
 stop`; every other stage is the Phase 1 LIVE stage. The stage caps then sum
@@ -127,14 +128,37 @@ other paths it must be absolute and shell-safe. Example value only:
 `/srv/flock-live/vision.json`; the real path belongs in the private
 `VALUES.json`, never in this repo.
 
-`--document-timeout` bounds each child command on the OCR path: the native
-parse, then per image-only page `pdftoppm`, `tesseract` and, if used, the
-vision adapter. It does not bound the document as a whole: each image-only
-page can add 2 timeouts (Tesseract only) or 3 (with vision) to the parse,
-so one page with vision may take 4 x 600 s. The installed-extraction
+Extract has three limits on the OCR path:
+
+- `--document-timeout` is each document's wall-clock budget, clamped to the
+  stage time left. The native parse child gets at most 600 s of it.
+- `--ocr-page-timeout` bounds each `pdftoppm` and each `tesseract` child.
+- `--ocr-vision-timeout` (vision plan only) bounds each vision adapter child.
+
+| Plan | `--document-timeout` | `--ocr-page-timeout` | `--ocr-vision-timeout` |
+| --- | --- | --- | --- |
+| `live-ocr-container.json.in` | 1200 s | 180 s | not used |
+| `live-ocr-vision-container.json.in` | 1200 s | 180 s | 300 s |
+
+Child timeouts are never shortened to fit the budget, because a timed-out
+page receipt is cached permanently. Instead, image-only pages run one at a
+time. A page without a published receipt starts only if its full allowance
+still fits in the document budget: 2 x 180 s = 360 s with Tesseract only,
+660 s with vision. A page whose Tesseract receipt is already published costs
+nothing, or 300 s if it still needs a vision receipt. 1200 s therefore admits
+at least one uncached page in either plan.
+
+When the budget runs out before every page has a receipt, the document is
+coded `DEFERRED_RUN_BUDGET` if this run published at least one new page
+receipt. That counts as progress, not as a failed attempt, and the next run
+resumes from the published receipts. If no page got a receipt, it is coded
+`EXTRACT_TIMEOUT`, which is retryable and held after the attempt limit.
+
+The budget must be at most `--timeout` minus 15 s (`run_stages` refuses it
+otherwise). With `--timeout 1490`, 1200 s leaves about 275 s of the stage for
+the validator's re-parses and ledger work. The installed-extraction
 validator's re-parses keep their own fixed bounds (20 s for PDF, 60 s for
-re-parsed workbook and container forms). Within a run only the extract
-stage deadline caps a document.
+re-parsed workbook and container forms).
 
 Order of one run
 
