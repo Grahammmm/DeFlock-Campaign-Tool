@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Write the TEST container stage plan (T11i) from one argv table.
+"""Write the TEST and LIVE container stage plans (T11i, T16) from one argv table.
 
-Generates ``deploy/records-runtime/targets/test-container.json.in``. Each stage
-is ``docker exec -u CONTAINER_USER CONTAINER env PYTHONPATH=ENGINE
+Generates ``deploy/records-runtime/targets/test-container.json.in`` (mode
+``test``) and ``deploy/records-runtime/targets/live-container.json.in`` (mode
+``live``). The two plans are identical apart from ``mode``: the same argv
+table, placeholders and stage timeouts drive a sandbox copy of TEST and the
+real records project alike. Each stage is
+``docker exec -u CONTAINER_USER CONTAINER env PYTHONPATH=ENGINE
 CONTAINER_PYTHON -m campaign_tool.records.run_stages STAGE --project PROJECT
-...`` against a sandbox copy of TEST inside the Flock container.
+...``.
 ``CONTAINER_PYTHON`` is the image's parser environment
 (``/opt/campaign-tool/venv/bin/python`` in the pinned flock-ocr image, which
 carries the hash-locked pypdf/openpyxl bundle) when present, else the system
@@ -13,7 +17,8 @@ carries the hash-locked pypdf/openpyxl bundle) when present, else the system
 adapter enforces its own
 container-side deadline (``--timeout``, 10 s inside the host timeout) because
 killing the ``docker exec`` client does not stop work in the container.
-``tests/test_records_run_stages.py`` checks the committed template is current.
+``tests/test_records_run_stages.py`` checks both committed templates are
+current.
 """
 import json
 from pathlib import Path
@@ -36,19 +41,24 @@ STAGES = (
     ("outputs", 120, "stop", []),
 )
 
+MODES = {"test", "live"}
 
-def plan():
+
+def plan(mode="test"):
+    if mode not in MODES:
+        raise ValueError(f"mode: expected one of {sorted(MODES)}")
     stages = []
     for name, timeout, on_fail, extra in STAGES:
         argv = EXEC + [name, "--project", "@CONTAINER_PROJECT_DIR@", "--timeout", str(timeout - 10),
                        "--run-id", "{run_id}", *extra]
         stages.append({"name": name, "argv": argv, "timeout_seconds": timeout, "on_fail": on_fail})
-    return {"target_config_version": 1, "target": "@TARGET_NAME@", "mode": "test", "stages": stages}
+    return {"target_config_version": 1, "target": "@TARGET_NAME@", "mode": mode, "stages": stages}
 
 
-def render_text():
-    return json.dumps(plan(), indent=1) + "\n"
+def render_text(mode="test"):
+    return json.dumps(plan(mode), indent=1) + "\n"
 
 
 if __name__ == "__main__":
-    (HERE / "test-container.json.in").write_text(render_text(), encoding="utf-8")
+    (HERE / "test-container.json.in").write_text(render_text("test"), encoding="utf-8")
+    (HERE / "live-container.json.in").write_text(render_text("live"), encoding="utf-8")

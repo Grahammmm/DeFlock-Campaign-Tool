@@ -729,6 +729,32 @@ class RendererTests(unittest.TestCase):
             if path.is_file():
                 self.assertIsNone(re.search(r"@[A-Z_]+@", path.read_text()), path.name)
 
+    def test_render_test_and_live_container_targets(self):
+        container_values = {
+            **{k: v for k, v in self.values.items() if k != "STUB_FIXTURE"},
+            "CONTAINER_USER": "0",
+            "CONTAINER_ENGINE_DIR": "/opt/flock-engine",
+            "CONTAINER_PYTHON": "/opt/campaign-tool/venv/bin/python",
+            "CONTAINER_PROJECT_DIR": "/srv/flock-live",
+            "CONTAINER_APPROVAL_FILE": "/srv/flock-live/approval.json",
+            "ADOPTION_CONFIG": "/srv/flock-live/adoption.json",
+            "SCHEDULED_TARGET": "LIVE",
+        }
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(RUNTIME / "targets" / "live-container.json.in"))]
+        written = self.do_render(values=container_values, targets=targets)
+        self.assertIn("targets/TEST.json", written)
+        self.assertIn("targets/LIVE.json", written)
+        out = self.tmp / "out"
+        test = json.loads((out / "targets" / "TEST.json").read_text())
+        live = json.loads((out / "targets" / "LIVE.json").read_text())
+        self.assertEqual((test["target"], test["mode"]), ("TEST", "test"))
+        self.assertEqual((live["target"], live["mode"]), ("LIVE", "live"))
+        self.assertEqual(test["stages"], live["stages"])
+        for name in ("TEST", "LIVE"):
+            self.assertIsNone(re.search(r"@[A-Z_]+@",
+                                        (out / "targets" / f"{name}.json").read_text()), name)
+
     def assert_refused(self, fragment, **kwargs):
         with self.assertRaises(ValueError) as caught:
             self.do_render(**kwargs)
@@ -798,6 +824,23 @@ class StageContractTests(unittest.TestCase):
         self.assert_invalid(lambda c: c.update(mode="live"), "refused in a live target")
         self.assert_invalid(lambda c: c.update(target="test"), "upper-case")
         self.assert_invalid(lambda c: c.update(extra=1), "exactly fields")
+
+    def test_report_mode_maps_test_and_live_plans(self):
+        def load(template, target):
+            text = template.read_text(encoding="utf-8")
+            return json.loads(text.replace("@TARGET_NAME@", target)
+                                  .replace("@DOCKER@", "/usr/bin/docker"))
+        live = load(RUNTIME / "targets" / "live-container.json.in", "LIVE")
+        test = load(RUNTIME / "targets" / "test-container.json.in", "TEST")
+        self.orch.validate_target_config(live)
+        self.orch.validate_target_config(test)
+        self.assertEqual((test["mode"], live["mode"]), ("test", "live"))
+        # A TEST plan always reports test, scheduled or not.
+        self.assertEqual(self.orch.report_mode(test, False), "test")
+        self.assertEqual(self.orch.report_mode(test, True), "test")
+        # A LIVE plan reports manual for a manual run and scheduled for --scheduled.
+        self.assertEqual(self.orch.report_mode(live, False), "manual")
+        self.assertEqual(self.orch.report_mode(live, True), "scheduled")
 
     def test_disabled_stage_needs_no_argv(self):
         config = json.loads(json.dumps(self.config))
