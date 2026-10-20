@@ -96,6 +96,7 @@ coverage adopted this coded gap awaiting_ocr portal held unknown stub
 could not start because docker or container was ready work attempted refused to
 configuration image check target plan invalid
 sync delta adoption extract digest_gates outputs notify synthetic
+disk space below configured minimum be measured
 """.split())
 
 
