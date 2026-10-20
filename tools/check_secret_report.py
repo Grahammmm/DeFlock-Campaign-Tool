@@ -38,10 +38,10 @@ HASH_LINE = re.compile(r'\s*"(?:source_sha256|engine_sha256|schema_sha256)": "([
 # update of this digest.
 APPROVED_PIN_FILES = {
     'container/flock-ocr/pins.json': (
-        '00c94359867bba2e'  # pragma: allowlist secret
-        'ffbe8c812e4bf975'  # pragma: allowlist secret
-        'a902384ad2df4fda'  # pragma: allowlist secret
-        'a45db5db9073224a'  # pragma: allowlist secret
+        '02723ddca319da0f'  # pragma: allowlist secret
+        'ef5d5e41aa3aa148'  # pragma: allowlist secret
+        '286dcdbc80824dc0'  # pragma: allowlist secret
+        '687d9f1a2409c442'  # pragma: allowlist secret
     ),
 }
 
