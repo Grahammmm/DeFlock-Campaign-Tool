@@ -263,6 +263,19 @@ class SyntheticLedger:
             "SELECT state, count(*) FROM document_state GROUP BY state").fetchall()
         return {row[0]: row[1] for row in rows}
 
+    def unresolved_documents(self):
+        """Return identities whose extraction is not yet ``done``, in stable order.
+
+        This is the durable source of unresolved work: a document deferred or
+        failed on an earlier run stays in this set until it is recovered, so
+        outstanding work survives a close/reopen and is never tied to the
+        current sync batch.
+        """
+        rows = self.con.execute(
+            "SELECT identity FROM document_state WHERE state != ? ORDER BY identity",
+            (self.STATE_DONE,)).fetchall()
+        return [row[0] for row in rows]
+
     def count(self, table):
         return self.con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
@@ -457,9 +470,10 @@ class Orchestrator:
                             error_code="PORTAL_HTTP_404" if failed else None)
 
     def _unresolved_documents(self):
-        """Documents not yet ``done`` -- retried on every run so unresolved work
-        stays visible and recovered work is processed exactly once."""
-        return [d for d in self.documents if self.ledger.document_state(d) != SyntheticLedger.STATE_DONE]
+        """Documents not yet ``done``, read from the durable ledger rather than
+        the current sync batch, so unresolved work stays visible across
+        close/reopen and recovered work is processed exactly once."""
+        return self.ledger.unresolved_documents()
 
     def _stage_extract(self):
         extracted = failed = skipped = 0
