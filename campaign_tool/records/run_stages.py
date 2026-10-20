@@ -280,6 +280,14 @@ def stage_portal(args):
         elif notice and "/documents/" in notice["body"]:
             notices.append(notice)
     loader = lambda: load_approval(args.approval_file)  # read-only allowlist
+    try:
+        loader()
+    except PortalError as error:
+        # Fail closed: an allowlist the engine cannot load enrolls nothing. Never edited here.
+        code = {"approval_expired": "PORTAL_ALLOWLIST_EXPIRED",
+                "approval_invalid": "PORTAL_ALLOWLIST_INVALID"}.get(str(error), "PORTAL_ALLOWLIST_UNSAFE")
+        return result("fail", {"input": len(notices), "skipped": len(notices), "failed": errors}, code,
+                      needs_g=needs((code, "blocking", 1))), 1
     queue = None
     try:
         queue = Queue(str(portal))
