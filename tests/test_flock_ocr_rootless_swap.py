@@ -145,7 +145,7 @@ class FakeSystem:
         self.clock += 1
         return f"2026-10-19T20:00:{self.clock:02d}Z"
 
-    def disk_free(self, path):
+    def disk_free(self, path) -> int:
         return 1 << 40
 
     def open_files_under(self, roots):
@@ -190,6 +190,10 @@ class FakeSystem:
         if argv[0] == sys.executable:
             script = Path(argv[2]).name
             if script == "build_wheel.py":
+                dist = Path(argv[argv.index("--dist") + 1])
+                dist.mkdir()
+                wheel = json.loads((RECIPE / "pins.json").read_text())["engine"]["wheel_filename"]
+                (dist / wheel).write_bytes(b"synthetic wheel")
                 return 0, "{}\nWHEEL_SHA256=" + WHEEL_SHA + "\n", ""
             if script in ("preflight.py", "verify.py"):
                 return 0, ("preflight: OK\n" if script == "preflight.py" else "PASS x\nverify: OK\n"), ""
@@ -325,8 +329,6 @@ class RunMixin:
         self.fake = FakeSystem(self.tmp)
         self.private = self.tmp / "private"
         self.dist = self.tmp / "checkout-dist"
-        self._orig_dist, swap.DIST = swap.DIST, self.dist
-        self.addCleanup(setattr, swap, "DIST", self._orig_dist)
         self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
 
     def args(self, mode="--apply", **extra):
@@ -716,19 +718,20 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
                                                      "systemctl start synthetic-mail.timer"])
         self.assert_live_unchanged()
 
-    def test_b1_parks_a_previous_attempts_wheel_out_of_the_build_context(self):
-        # attempt 4 (2026-10-19) failed at B1 because attempt 3 had left its wheel in dist/
+    def test_b1_owns_its_build_context_and_leaves_old_dist_untouched(self):
         self.dist.mkdir()
         stale = "deflock_campaign_tool-0.0.0-py3-none-any.whl"
         (self.dist / stale).write_bytes(b"stale wheel from the previous attempt")
         code, out = self.run_swap(self.args())
         self.assertEqual(code, 0, out)
-        self.assertIn(f"moved stale {self.dist} ({stale}) to", out)
-        self.assertFalse(self.dist.exists())
-        parked = self.run_dir() / "b1" / "stale-dist" / stale
-        self.assertEqual(parked.read_bytes(), b"stale wheel from the previous attempt")
-        self.assertEqual(stat.S_IMODE(os.stat(parked.parent.parent).st_mode), 0o700)
-        self.assertEqual(self.state()["stale_dist_parked"], [stale])
+        self.assertEqual((self.dist / stale).read_bytes(), b"stale wheel from the previous attempt")
+        context = self.run_dir() / "b1" / "context"
+        self.assertEqual(stat.S_IMODE(context.stat().st_mode), 0o700)
+        self.assertEqual(len(list((context / "dist").glob("*.whl"))), 1)
+        command = next(a for a in self.fake.calls if a[:2] == ["docker", "build"])
+        self.assertEqual(command[-1], str(context))
+        preflight_cmd = next(a for a in self.fake.calls if "preflight.py" in " ".join(a))
+        self.assertEqual(preflight_cmd[preflight_cmd.index("--context") + 1], str(context))
         self.assertEqual(lifecycle(self.fake), self.MAIN_EVENTS)
 
     def test_b1_leaves_an_empty_or_absent_dist_alone(self):
@@ -739,28 +742,26 @@ class RootlessApplyTests(RunMixin, unittest.TestCase):
         self.assertTrue(self.dist.is_dir())
         self.assertNotIn("stale_dist_parked", self.state())
 
-    def test_b1_stops_before_the_build_when_dist_holds_more_than_engine_wheels(self):
+    def test_b1_ignores_unrelated_legacy_dist_contents(self):
         self.dist.mkdir()
         (self.dist / "deflock_campaign_tool-0.0.0-py3-none-any.whl").write_bytes(b"wheel")
         (self.dist / "notes.txt").write_text("hand-made\n")
         code, out = self.run_swap(self.args())
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        self.assertIn("FAIL at [B1]", out)
-        self.assertIn("not engine wheels: ['notes.txt']", out)
-        self.assertNotIn("build flock-ocr:synthetic", lifecycle(self.fake))
-        self.assertFalse(any("build_wheel.py" in " ".join(a) for a in self.fake.calls), "build ran")
+        self.assertEqual(code, 0, out)
+        self.assertIn("build flock-ocr:synthetic", lifecycle(self.fake))
         self.assertEqual(sorted(p.name for p in self.dist.iterdir()),
                          ["deflock_campaign_tool-0.0.0-py3-none-any.whl", "notes.txt"])
-        self.assertEqual(self.state()["phase"], "rolled_back")
+        self.assertEqual(self.state()["phase"], "complete")
         self.assert_live_unchanged()
 
-    def test_dry_run_only_reports_a_stale_dist(self):
+    def test_dry_run_reports_run_owned_context_without_writes(self):
         self.dist.mkdir()
         stale = "deflock_campaign_tool-0.0.0-py3-none-any.whl"
         (self.dist / stale).write_bytes(b"wheel")
         code, out = self.run_swap(self.args("--dry-run"))
         self.assertEqual(code, 0, out)
-        self.assertIn(f"would move stale {self.dist} ({stale}) to", out)
+        self.assertIn("would create isolated build context", out)
+        self.assertFalse(self.private.exists())
         self.assertTrue((self.dist / stale).exists())
 
     def test_live_change_before_the_gate_escalates_without_restore_or_start(self):

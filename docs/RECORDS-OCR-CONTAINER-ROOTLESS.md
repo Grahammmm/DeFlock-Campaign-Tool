@@ -85,6 +85,51 @@ owner has reviewed that diff. To roll it back instead, use
 run: it takes the rollback path of the step recorded in `state.json`. Only one
 run at a time can hold the lock in `$PRIVATE`.
 
+## Pruning superseded runs (separate operator action)
+
+Pruning is never automatic on rollback. First review the dry-run listing:
+
+    python3 "$S" prune --private "$PRIVATE"
+    python3 "$S" prune --private "$PRIVATE" --reuse-image "$KEEP_FOR_NEXT_RUN"
+
+Only after confirming the listed evidence is no longer needed, repeat with
+`--apply` (and the same `--reuse-image` protections). Explicit `--dry-run` is
+also accepted. `--reuse-image` is repeatable here and protects a run planned
+for a future swap; existing references in every run's `state.json` are always
+protected automatically, even if the referring run is also a prune candidate.
+
+The newest timestamp-named run is always kept. Only older runs whose phase is
+`complete`, `rolled_back` or `refused` are eligible. Held, running, escalated,
+interrupted rollback and unknown phases stay untouched. Invalid/missing state,
+foreign identities, symlinked runs/state, unknown run names, or broken reuse
+references refuse the whole selection rather than guessing. The private path
+must already be a real, owner-owned mode-0700 directory outside Git.
+
+Apply holds the same lock as swap/resume/rollback and refuses a non-rootless
+daemon. Before deleting anything it checks all helper images locally (no pull),
+all containers including stopped ones for overlapping mounts, and own-user
+process use. Each eligible run's recorded immutable helper image is used;
+`--helper-image <image ID or digest>` can override it if the old image is gone.
+The helper needs Python 3.11+ with fd-safe `shutil.rmtree`.
+
+Each cleanup helper has the existing namespace-root user, capabilities and
+network isolation. It mounts only the selected run writable at `/private` and
+the recipe readonly: no live mount and no writable private parent or sibling.
+It rejects nested mounts and unlinks symlinks without following them, removes
+the run's contents including subuid-owned remnants, and leaves `state.json`
+until last. The host then removes the empty directory and verifies absence.
+It never removes an image/container or changes a service/timer. Dry-run starts
+no helper and creates no file; it checks an existing lock read-only.
+
+Deletion is irreversible and not transactional across runs. A helper failure
+stops further deletion with exit 2; earlier successfully pruned runs stay gone.
+If interrupted after state removal but before directory removal, the next
+preview refuses the unrecognized remnant for operator investigation. Ordinary
+host-root files outside the daemon's namespace may still fail cleanup; do not
+add privileges or bypass that denial. Exit 0 means preview/apply finished,
+not that any retained evidence received semantic review. Never prune while an
+operator's live attempt or evidence review still needs these directories.
+
 ## Helper containers
 
 Every helper is
@@ -131,8 +176,23 @@ appears as (for example, a file created by host root). A rootless archive
 cannot restore such a file to its real owner, so the run stops before any
 archive is taken.
 
-The disk-space check needs three times the mount data plus 512 MiB free in the
-private directory.
+Before writing the first archive, [S1] budgets the whole run's private-storage
+peak, not just the initial snapshot: seven estimated copies plus 512 MiB free.
+The copies cover S1 archive + SQLite backups (2), A2 archive + SQLite backups
+(2), one evidence/restore-test extract that can remain after a failure (1),
+and rollback current-state preservation + verification extract (2). Each copy
+estimate rounds entry sizes up to 4 KiB and adds 4 KiB per entry for tar/PAX
+and filesystem metadata. [A2] remeasures the current mounts and requires five
+copies plus 512 MiB of *remaining free space*: S1 is already on disk and must
+not be charged twice. Insufficient space fails before that phase's archive.
+Both checks write `$RUN/{s1,a2}/space-budget.json` with the components, required
+bytes and available bytes. Dry-run prints the policy without scanning mounts.
+
+This is a conservative data-storage estimate, not a reservation or a promise
+against unlimited growth, unusually large xattrs, another disk user or repeated
+interrupted rollbacks. Wheel/image builds also need their own space (possibly on
+another filesystem); the 512 MiB margin does not bound Docker's build cache.
+Do not remove S1 to make A2 fit. Preview pruning old runs instead.
 
 ## Rootless owner runbook
 
@@ -204,12 +264,19 @@ container check is the primary control.
 
 ### Build and verify (mounts stay quiescent)
 
-8. [B1] `build_wheel.py --build-python "$BUILD_PY" --provenance-out
-   "$RUN/wheel-provenance.json"`. The driver takes `WHEEL_SHA256` from its
-   last line. With `--reuse-image` it builds nothing and takes the wheel
-   SHA-256 recorded by the earlier run.
+8. [B1] Create `$RUN/b1/context` with just the recipe's `.dockerignore` and
+   `requirements.lock`. Run `build_wheel.py --build-python "$BUILD_PY" --dist
+   "$RUN/b1/context/dist" --provenance-out "$RUN/wheel-provenance.json"`.
+   The driver takes `WHEEL_SHA256` from its last line. Every run owns its output,
+   including a failed or interrupted build; no new wheel goes into the shared
+   `container/flock-ocr/dist`, and any legacy contents there are left untouched.
+   The next run uses a fresh context and cannot be blocked by an old wheel.
+   With `--reuse-image` it creates no context and takes the wheel SHA-256
+   recorded by the earlier run.
 
-9. [B2] `preflight.py` against the old image ID. Then the
+9. [B2] `preflight.py --context "$RUN/b1/context"` against the old image ID.
+   Context validation still requires exactly the lock plus one hashed wheel.
+   The Dockerfile stays in the recipe; only the isolated context is sent. Then the
    `docker build --pull=false` command that `preflight.build_command` produces.
    Then resolve the new image ID. With `--reuse-image` it builds nothing: the
    tag must still resolve to the image ID checked at [R1].
