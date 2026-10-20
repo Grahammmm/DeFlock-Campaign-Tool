@@ -119,8 +119,8 @@ class PruneTests(RunMixin, unittest.TestCase):
         super().setUp()
         self.private.mkdir(mode=0o700)
 
-    def make_run(self, number, phase="rolled_back", reuse=None):
-        path = self.private / f"run-20261019T2000{number:02d}Z"
+    def make_run(self, number, phase="rolled_back", reuse=None, name=None):
+        path = self.private / (name or f"run-20261019T2000{number:02d}Z")
         path.mkdir(mode=0o700)
         state: dict = {"run_dir": str(path), "private": str(self.private), "phase": phase,
                  "helper_image": OLD_IMAGE}
@@ -133,6 +133,102 @@ class PruneTests(RunMixin, unittest.TestCase):
 
     def prune(self, *args):
         return self.run_swap(["prune", "--private", str(self.private), *args])
+
+    def make_orphan(self, number, step: str | None = "s2", name=None):
+        path = self.private / (name or f"run-20261019T2000{number:02d}Z")
+        path.mkdir(mode=0o700)
+        if step is not None:
+            (path / step / "extract").mkdir(parents=True)
+            (path / step / "extract/leftover").write_bytes(b"synthetic remnant")
+        return path
+
+    def test_attempt_one_two_orphan_layout_preview_and_opt_in_apply(self):
+        first = self.make_orphan(1, "s2", "run-20261019T223755Z")
+        second = self.make_orphan(2, "s3", "run-20261020T005344Z")
+        newest = self.make_run(3, name="run-20261020T010000Z")
+        before = evidence.manifest(self.private)
+        code, out = self.prune()
+        self.assertEqual(code, 0, out)
+        for path in (first, second):
+            self.assertIn(f"KEEP {path}: orphan remnant (missing state.json)", out)
+        self.assertIn("requires --include-orphans", out)
+        self.assertIn("requires immutable --helper-image", out)
+        self.assertEqual(evidence.manifest(self.private), before)
+        code, out = self.prune("--include-orphans", "--helper-image", OLD_IMAGE)
+        self.assertEqual(code, 0, out)
+        for path in (first, second):
+            self.assertIn(f"PRUNE {path}: orphan remnant (missing state.json)", out)
+        self.assertEqual(evidence.manifest(self.private), before)
+        self.assertEqual(self.fake.calls, [])
+        code, out = self.prune("--apply", "--include-orphans", "--helper-image", OLD_IMAGE)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+        self.assertTrue(newest.exists())
+        self.assertEqual(len(self.fake.helper_runs), 2)
+        for helper in self.fake.helper_runs:
+            self.assertEqual(helper["mounts"], [("/private", False), ("/recipe", True)])
+
+    def test_orphan_requires_both_opt_in_and_immutable_helper(self):
+        orphan = self.make_orphan(1)
+        self.make_run(2)
+        for args in ((), ("--include-orphans",), ("--helper-image", OLD_IMAGE),
+                     ("--include-orphans", "--helper-image", "mutable:latest")):
+            with self.subTest(args=args):
+                code, out = self.prune("--apply", *args)
+                self.assertEqual(code, 0, out)
+                self.assertIn(f"KEEP {orphan}", out)
+                self.assertTrue((orphan / "s2/extract/leftover").exists())
+        self.assertEqual(self.fake.calls, [])
+
+    def test_orphan_newest_and_all_reuse_references_remain_protected(self):
+        recorded = self.make_orphan(1)
+        explicit = self.make_orphan(2)
+        referrer = self.make_run(3, reuse=recorded)
+        newest = self.make_orphan(4)
+        code, out = self.prune("--apply", "--include-orphans", "--helper-image", OLD_IMAGE,
+                               "--reuse-image", str(explicit))
+        self.assertEqual(code, 0, out)
+        for path in (recorded, explicit, newest):
+            self.assertTrue(path.exists())
+            self.assertIn(f"KEEP {path}", out)
+        self.assertFalse(referrer.exists())
+        self.assertIn("newest run", out)
+        self.assertIn("referenced by --reuse-image", out)
+
+    def test_orphan_unknown_entry_file_or_symlink_is_not_eligible(self):
+        unknown = self.make_orphan(1, "unknown")
+        file_entry = self.make_orphan(2, None)
+        (file_entry / "s1").write_text("not a directory")
+        link_entry = self.make_orphan(3, None)
+        (link_entry / "s3").symlink_to(self.fake.volume, target_is_directory=True)
+        self.make_run(4)
+        code, out = self.prune("--apply", "--include-orphans", "--helper-image", OLD_IMAGE)
+        self.assertEqual(code, 0, out)
+        for path in (unknown, file_entry, link_entry):
+            self.assertTrue(path.exists())
+            self.assertIn(f"KEEP {path}", out)
+        self.assertIn("top level must contain only known step directories", out)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_empty_orphan_after_state_removal_can_be_pruned(self):
+        orphan = self.make_orphan(1, None)
+        self.make_run(2)
+        code, out = self.prune("--apply", "--include-orphans", "--helper-image", OLD_IMAGE)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(orphan.exists())
+
+    def test_latest_complete_rollback_point_survives_later_refusal(self):
+        superseded = self.make_run(1, "complete")
+        rollback_point = self.make_run(2, "complete")
+        refused = self.make_run(3, "refused")
+        before = evidence.manifest(rollback_point)
+        code, out = self.prune("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"KEEP {rollback_point}: latest completed swap rollback point", out)
+        self.assertEqual(evidence.manifest(rollback_point), before)
+        self.assertTrue(refused.exists())
+        self.assertFalse(superseded.exists())
 
     def test_default_dry_run_is_byte_preserving_and_creates_no_lock(self):
         old, newest = self.make_run(1), self.make_run(2)
@@ -208,12 +304,45 @@ class PruneTests(RunMixin, unittest.TestCase):
         self.assertTrue(old.exists())
         self.assertEqual(self.fake.calls, [])
 
-    def test_missing_recorded_reuse_reference_refuses_all_candidates(self):
+    def test_missing_recorded_reuse_reference_is_logged_and_ignored(self):
         old = self.make_run(1)
-        self.make_run(2, reuse=self.private / "run-20261019T200000Z")
+        absent = self.private / "run-20261019T200000Z"
+        newest = self.make_run(2, reuse=absent)
+        before = evidence.manifest(self.private)
+        code, out = self.prune()
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"reference target already absent: {absent}", out)
+        self.assertIn(f"PRUNE {old}", out)
+        self.assertEqual(evidence.manifest(self.private), before)
+        code, out = self.prune("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"reference target already absent: {absent}", out)
+        self.assertFalse(old.exists())
+        self.assertTrue(newest.exists())
+
+    def test_missing_explicit_reuse_reference_still_refuses(self):
+        old = self.make_run(1)
+        self.make_run(2)
+        code, out = self.prune("--apply", "--reuse-image", str(self.private / "run-20261019T200000Z"))
+        self.assertEqual(code, 2, out)
+        self.assertIn("not a known direct run", out)
+        self.assertTrue(old.exists())
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_recorded_reference_outside_private_still_refuses(self):
+        old = self.make_run(1)
+        self.make_run(2, reuse=self.tmp / "run-20261019T200000Z")
         code, out = self.prune("--apply")
         self.assertEqual(code, 2, out)
         self.assertIn("not a known direct run", out)
+        self.assertTrue(old.exists())
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_recorded_reference_with_unknown_name_still_refuses(self):
+        old = self.make_run(1)
+        self.make_run(2, reuse=self.private / "unknown")
+        code, out = self.prune("--apply")
+        self.assertEqual(code, 2, out)
         self.assertTrue(old.exists())
         self.assertEqual(self.fake.calls, [])
 

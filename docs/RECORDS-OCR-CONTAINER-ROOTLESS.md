@@ -95,15 +95,32 @@ Pruning is never automatic on rollback. First review the dry-run listing:
 Only after confirming the listed evidence is no longer needed, repeat with
 `--apply` (and the same `--reuse-image` protections). Explicit `--dry-run` is
 also accepted. `--reuse-image` is repeatable here and protects a run planned
-for a future swap; existing references in every run's `state.json` are always
+for a future swap; existing reference targets in every run's `state.json` are
 protected automatically, even if the referring run is also a prune candidate.
+A persisted reference to an already absent, correctly named direct run under
+`--private` is logged as `reference target already absent` and ignored. Missing
+explicit `--reuse-image` targets and references outside `--private` still refuse.
 
-The newest timestamp-named run is always kept. Only older runs whose phase is
-`complete`, `rolled_back` or `refused` are eligible. Held, running, escalated,
-interrupted rollback and unknown phases stay untouched. Invalid/missing state,
-foreign identities, symlinked runs/state, unknown run names, or broken reuse
-references refuse the whole selection rather than guessing. The private path
+The newest timestamp-named run is always kept. The newest `complete` run is also
+always kept as the `latest completed swap rollback point`, even when a later run
+was refused. Other older runs whose phase is `complete`, `rolled_back` or
+`refused` are eligible. Held, running, escalated, interrupted rollback and unknown
+phases stay untouched. Invalid state, foreign identities, symlinked runs/state,
+unknown run names, or invalid reuse references refuse the whole selection rather
+than guessing. The private path
 must already be a real, owner-owned mode-0700 directory outside Git.
+
+A correctly named run without `state.json` is listed as an `orphan remnant` and
+kept by default. This covers early failed attempts that left only `s2/` or `s3/`
+contents. To opt in, preview with both flags before repeating with `--apply`:
+
+    python3 "$S" prune --private "$PRIVATE" --include-orphans --helper-image "$HELPER_IMAGE"
+
+`$HELPER_IMAGE` must be an immutable image ID or digest reference. An orphan is
+eligible only if it is not newest, has no reuse references, and its top level
+contains only real directories named `s1`, `s2`, `s3`, `a2`, `b1` or `rollback`
+(an empty run is also eligible). Unexpected entries, files or symlinks at that
+level keep the orphan protected. No state or helper identity is inferred.
 
 Apply holds the same lock as swap/resume/rollback and refuses a non-rootless
 daemon. Before deleting anything it checks all helper images locally (no pull),
@@ -124,8 +141,8 @@ no helper and creates no file; it checks an existing lock read-only.
 Deletion is irreversible and not transactional across runs. A helper failure
 stops further deletion with exit 2; earlier successfully pruned runs stay gone.
 If interrupted after state removal but before directory removal, the next
-preview refuses the unrecognized remnant for operator investigation. Ordinary
-host-root files outside the daemon's namespace may still fail cleanup; do not
+preview lists the empty orphan; the same explicit orphan opt-in can remove it.
+Ordinary host-root files outside the daemon's namespace may still fail cleanup; do not
 add privileges or bypass that denial. Exit 0 means preview/apply finished,
 not that any retained evidence received semantic review. Never prune while an
 operator's live attempt or evidence review still needs these directories.

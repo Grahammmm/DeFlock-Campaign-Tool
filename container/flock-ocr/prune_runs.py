@@ -19,6 +19,7 @@ from pathlib import Path
 RUN_RE = re.compile(r"run-[0-9]{8}T[0-9]{6}Z")
 IMAGE_RE = re.compile(r"(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64})")
 TERMINAL = {"complete", "rolled_back", "refused"}
+STEP_DIRS = {"s1", "s2", "s3", "a2", "b1", "rollback"}
 
 
 def real_directory(path):
@@ -27,7 +28,7 @@ def real_directory(path):
         raise ValueError(f"not a real absolute directory: {path}")
 
 
-def inventory(private, explicit_reuse):
+def inventory(private, explicit_reuse, *, include_orphans=False, helper_image=None, log=None):
     """Fail closed on unknown state; protect references from ALL runs, not just survivors."""
     real_directory(private)
     info = private.stat()
@@ -43,25 +44,54 @@ def inventory(private, explicit_reuse):
             raise ValueError(f"unrecognized run directory: {path.name}")
         real_directory(path)
         state_path = path / "state.json"
-        if not stat.S_ISREG(state_path.lstat().st_mode):
+        try:
+            mode = state_path.lstat().st_mode
+        except FileNotFoundError:
+            states[path] = None  # Missing state is distinct from malformed state.
+            continue
+        if not stat.S_ISREG(mode):
             raise ValueError(f"not a regular state.json: {path.name}")
         state = json.loads(state_path.read_text())
         if not isinstance(state, dict) or state.get("run_dir") != str(path) or state.get("private") != str(private):
             raise ValueError(f"state.json identity mismatch: {path.name}")
         states[path] = state
     protected = {max(states): ["newest run"]} if states else {}
-    references = list(explicit_reuse)
+    completed = [p for p, state in states.items() if state and state.get("phase") == "complete"]
+    if completed:
+        protected.setdefault(max(completed), []).append("latest completed swap rollback point")
+    references = [(reference, True) for reference in explicit_reuse]
     for path, state in states.items():
+        if state is None:
+            reasons = []
+            if any(child.name not in STEP_DIRS or not stat.S_ISDIR(child.lstat().st_mode)
+                   for child in path.iterdir()):
+                reasons.append("top level must contain only known step directories")
+            if not include_orphans:
+                reasons.append("requires --include-orphans")
+            if not isinstance(helper_image, str) or not IMAGE_RE.fullmatch(helper_image):
+                reasons.append("requires immutable --helper-image")
+            if reasons:
+                protected.setdefault(path, []).extend(reasons)
+            continue
         if state.get("phase") not in TERMINAL:
             protected.setdefault(path, []).append("unfinished or unknown phase")
         reuse = state.get("reuse")
         if reuse is not None:
             if not isinstance(reuse, dict) or not isinstance(reuse.get("run_dir"), str):
                 raise ValueError(f"invalid reuse reference in {path.name}")
-            references.append(reuse["run_dir"])
-    for reference in references:
+            references.append((reuse["run_dir"], False))
+    for reference, explicit in references:
         path = Path(os.path.expanduser(reference))
-        if path not in states or path != path.resolve():
+        if path.parent != private or not RUN_RE.fullmatch(path.name) or path != path.resolve():
+            raise ValueError(f"reuse reference is not a known direct run: {reference}")
+        if path not in states:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                if not explicit:
+                    if log:
+                        log(f"reference target already absent: {reference}")
+                    continue
             raise ValueError(f"reuse reference is not a known direct run: {reference}")
         protected.setdefault(path, []).append("referenced by --reuse-image")
     return states, protected
@@ -111,16 +141,23 @@ def main(argv, *, system, out, swap_class, lock):
     parser.add_argument("--reuse-image", action="append", default=[], metavar="RUN_DIR",
                         help="also protect a run intended for a future --reuse-image (repeatable)")
     parser.add_argument("--helper-image", help="immutable helper image override; otherwise each run's helper image")
+    parser.add_argument("--include-orphans", action="store_true",
+                        help="allow missing-state remnants with only known step directories; requires --helper-image")
     parser.add_argument("--helper-timeout", type=int, default=7200)
     args = parser.parse_args(argv)
     args.mode = "apply" if args.apply else "dry-run"
     swap = swap_class(args, system=system, out=out)
     private = Path(os.path.expanduser(args.private))
     handle = None
+
+    def scan(*, report=False):
+        return inventory(private, args.reuse_image, include_orphans=args.include_orphans,
+                         helper_image=args.helper_image, log=swap.log if report else None)
+
     try:
         # Validate before opening anything writable. Dry-run never creates a
         # lock file; it takes the existing lock read-only if there is one.
-        inventory(private, args.reuse_image)
+        scan()
         lock_path = private / ".flock-swap.lock"
         if lock_path.is_symlink():
             raise ValueError("swap lock must not be a symlink")
@@ -132,11 +169,14 @@ def main(argv, *, system, out, swap_class, lock):
         elif lock_path.exists():
             handle = lock_path.open("r")
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        states, protected = inventory(private, args.reuse_image)
+        states, protected = scan(report=True)
         candidates = [p for p in states if p not in protected]
         for path in states:
+            classification = "orphan remnant (missing state.json); " if states[path] is None else ""
             swap.log(f"{'KEEP' if path in protected else 'PRUNE'} {path}: " +
-                     (", ".join(protected[path]) if path in protected else "superseded terminal run"))
+                     classification + (", ".join(protected[path]) if path in protected else
+                                       "superseded orphan remnant" if states[path] is None else
+                                       "superseded terminal run"))
         if not args.apply:
             swap.log(f"prune: dry-run; {len(candidates)} eligible run(s); nothing changed. Use --apply to delete.")
             return 0
@@ -149,7 +189,7 @@ def main(argv, *, system, out, swap_class, lock):
         # Resolve and validate every helper before any deletion. Never pull.
         images = {}
         for path in candidates:
-            image = args.helper_image or states[path].get("helper_image", "")
+            image = args.helper_image or (states[path] or {}).get("helper_image", "")
             if not isinstance(image, str) or not IMAGE_RE.fullmatch(image):
                 raise ValueError(f"no immutable helper image for {path.name}; use --helper-image")
             images[path] = swap.image_inspect(image)["Id"]
@@ -172,7 +212,7 @@ def main(argv, *, system, out, swap_class, lock):
                 raise ValueError(f"a process uses {path.name}")
         for path in candidates:
             # Recheck the graph under the shared swap lock before each helper.
-            current, kept = inventory(private, args.reuse_image)
+            current, kept = scan()
             if path not in current or path in kept or current[path] != states[path]:
                 raise ValueError("prune selection changed; retry dry-run")
             swap.state = {"run_dir": str(path), "helper_image": images[path], "mounts": []}
