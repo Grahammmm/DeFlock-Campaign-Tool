@@ -39,6 +39,7 @@ from email.policy import SMTP
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -458,6 +459,206 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(set(failures), set(checks))
 
 
+def with_failures(run, failures):
+    """Give ``run``'s extract stage these failure outcomes (on top of its other outcomes)."""
+    extract = run["stages"]["extract"]
+    outcomes = {code: count for code, count in extract["outcomes"].items()
+                if code not in harness.EXTRACT_FAILURE_NEEDS}
+    outcomes.update(failures)
+    total = sum(failures.values())
+    counts = extract["counts"]
+    run["stages"]["extract"] = stage("warn" if total else "ok", "EXTRACT_DOCUMENT_FAILURES" if total else None,
+                                     (sum(outcomes.values()), counts["output"], total,
+                                      sum(outcomes.values()) - counts["output"] - total), outcomes)
+    run["needs_g"] = [item for item in run["needs_g"] if item["stage"] != "extract"
+                      or item["code"] not in harness.EXTRACT_FAILURE_NEEDS.values()]
+    run["needs_g"] += [{"code": harness.EXTRACT_FAILURE_NEEDS[code], "stage": "extract", "severity": "action",
+                        "count": count} for code, count in failures.items()]
+
+
+def declared_receipt(corrupt=20):
+    """good_receipt() with ``corrupt`` declared CORRUPT_DOCUMENT gaps (G D4-A, TEST shape)."""
+    receipt = good_receipt()
+    declared = {"CORRUPT_DOCUMENT": corrupt}
+    receipt["expect"]["extract_failures"] = dict(declared)
+    for run in receipt["runs"] + [receipt["faults"]["duplicate_receipt"], receipt["faults"]["portal_404"]]:
+        with_failures(run, declared)
+    with_failures(receipt["faults"]["corrupt_pdf"], {"CORRUPT_DOCUMENT": corrupt + 1})
+    receipt["extract_failure_manifest"] = {
+        "status": "ok", "by_code": dict(declared),
+        "documents": [{"original_sha256": f"{index:064x}", "code": "CORRUPT_DOCUMENT", "form": None,
+                       "mail": {"uid": index, "date_utc": "2026-09-30", "sender_domain_class": "records_portal"}}
+                      for index in range(corrupt)]}
+    return receipt
+
+
+class DeclaredExtractFailureTests(unittest.TestCase):
+    """G D4-A: declared extraction gaps are exact on every run, never a blanket allowance."""
+
+    def failures(self, receipt):
+        return harness.evaluate(receipt)[1]
+
+    def test_the_declared_test_shape_passes(self):
+        checks, failures = harness.evaluate(declared_receipt())
+        self.assertEqual(failures, [])
+        self.assertIs(checks["extract_failures_itemized"], True)
+
+    def test_undeclared_extract_failures_fail_every_run_kind(self):
+        receipt = declared_receipt()
+        del receipt["expect"]["extract_failures"]
+        failures = self.failures(receipt)
+        for name in ("three_successful_runs", "fault_duplicate_receipt_only_expected_results",
+                     "fault_portal_404_only_expected_results", "fault_corrupt_pdf",
+                     "fault_corrupt_pdf_only_expected_results"):
+            self.assertIn(name, failures)
+
+    def test_counts_must_be_exact_on_every_baseline_run(self):
+        for index in (0, 1, 2):
+            for label, failures in (("one fewer", {"CORRUPT_DOCUMENT": 19}), ("one more", {"CORRUPT_DOCUMENT": 21}),
+                                    ("other code", {"CORRUPT_DOCUMENT": 20, "EXTRACT_ERROR": 1}),
+                                    ("none", {})):
+                with self.subTest(run=index + 1, case=label):
+                    receipt = declared_receipt()
+                    with_failures(receipt["runs"][index], failures)
+                    self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_failed_count_and_needs_items_must_agree(self):
+        receipt = declared_receipt()
+        receipt["runs"][1]["stages"]["extract"]["counts"]["failed"] = 21
+        self.assertIn("three_successful_runs", self.failures(receipt))
+        receipt = declared_receipt()
+        for item in receipt["runs"][2]["needs_g"]:
+            if item["code"] == "EXTRACT_CORRUPT_DOCUMENT":
+                item["count"] = 19
+        self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_declared_gaps_persist_exactly_in_the_fault_runs(self):
+        for fault in ("duplicate_receipt", "portal_404"):
+            with self.subTest(fault):
+                receipt = declared_receipt()
+                with_failures(receipt["faults"][fault], {"CORRUPT_DOCUMENT": 21})
+                self.assertIn(f"fault_{fault}_only_expected_results", self.failures(receipt))
+
+    def test_corrupt_pdf_must_add_exactly_one_corrupt_document(self):
+        for count in (20, 22):
+            with self.subTest(count):
+                receipt = declared_receipt()
+                with_failures(receipt["faults"]["corrupt_pdf"], {"CORRUPT_DOCUMENT": count})
+                failures = self.failures(receipt)
+                self.assertIn("fault_corrupt_pdf", failures)
+                self.assertIn("fault_corrupt_pdf_only_expected_results", failures)
+        # Without declared gaps the corrupt_pdf run must show exactly one, too.
+        receipt = good_receipt()
+        with_failures(receipt["faults"]["corrupt_pdf"], {"CORRUPT_DOCUMENT": 2})
+        self.assertIn("fault_corrupt_pdf", self.failures(receipt))
+
+    def test_a_blanket_allowance_is_not_an_expectation(self):
+        receipt = declared_receipt()
+        del receipt["expect"]["extract_failures"]
+        receipt["expect"]["allowed_warnings"].append(list(harness.EXTRACT_FAILURES_WARNING))
+        self.assertIn("expectations_explicit", self.failures(receipt))
+        receipt = declared_receipt()
+        receipt["expect"]["allowed_warnings"].append(list(harness.EXTRACT_FAILURES_WARNING))
+        self.assertIn("expectations_explicit", self.failures(receipt))
+
+    def test_invalid_declarations_fail(self):
+        for value in ({"CORRUPT": 20}, {"CORRUPT_DOCUMENT": 0}, {"CORRUPT_DOCUMENT": "20"},
+                      {"AWAITING_OCR": 2}, {"PARSER_MISSING": 1}, ["CORRUPT_DOCUMENT", 20]):
+            with self.subTest(value=value):
+                receipt = declared_receipt()
+                receipt["expect"]["extract_failures"] = value
+                self.assertIn("expectations_explicit", self.failures(receipt))
+
+    def test_the_declared_gaps_must_be_itemized(self):
+        cases = {
+            "missing": lambda m: m.clear(),
+            "refused": lambda m: m.update(status="refused"),
+            "one short": lambda m: m["documents"].pop(),
+            "by_code differs": lambda m: m.update(by_code={"CORRUPT_DOCUMENT": 19}),
+            "duplicate document": lambda m: m["documents"].__setitem__(1, dict(m["documents"][0])),
+            "not a hash": lambda m: m["documents"][0].update(original_sha256="x"),
+            "other code": lambda m: m["documents"][0].update(code="EXTRACT_ERROR"),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label):
+                receipt = declared_receipt()
+                mutate(receipt["extract_failure_manifest"])
+                self.assertIn("extract_failures_itemized", self.failures(receipt))
+
+    # T13 review (Sol #2): the full map of extract-failure needs-G items is compared.
+
+    def stray_item(self, code="EXTRACT_ERROR", stage="extract", count=1):
+        return {"code": code, "stage": stage, "severity": "action", "count": count}
+
+    def test_an_undeclared_needs_item_fails_the_baseline_runs(self):
+        for index in (0, 1, 2):
+            for code in sorted(set(harness.EXTRACT_FAILURE_NEEDS.values()) - {"EXTRACT_CORRUPT_DOCUMENT"}):
+                with self.subTest(run=index + 1, code=code):
+                    receipt = declared_receipt()
+                    receipt["runs"][index]["needs_g"].append(self.stray_item(code))
+                    self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_an_undeclared_needs_item_fails_every_fault_scenario(self):
+        for fault in harness.FAULT_SCENARIOS:
+            with self.subTest(fault):
+                receipt = declared_receipt()
+                receipt["faults"][fault]["needs_g"].append(self.stray_item())
+                failures = self.failures(receipt)
+                self.assertIn(f"fault_{fault}_only_expected_results", failures)
+                if fault == "corrupt_pdf":
+                    self.assertIn("fault_corrupt_pdf", failures)
+
+    def test_an_undeclared_needs_item_fails_without_any_declaration(self):
+        receipt = good_receipt()
+        self.assertEqual(self.failures(receipt), [])
+        for target in ("baseline", *harness.FAULT_SCENARIOS):
+            with self.subTest(target):
+                receipt = good_receipt()
+                run = receipt["runs"][0] if target == "baseline" else receipt["faults"][target]
+                run["needs_g"].append(self.stray_item())
+                name = ("three_successful_runs" if target == "baseline"
+                        else f"fault_{target}_only_expected_results")
+                self.assertIn(name, self.failures(receipt))
+
+    def test_corrupt_pdf_needs_items_are_exactly_declared_plus_one(self):
+        for label, extra in (("one more", 1), ("one fewer", -1)):
+            with self.subTest(label):
+                receipt = declared_receipt()
+                for item in receipt["faults"]["corrupt_pdf"]["needs_g"]:
+                    if item["code"] == "EXTRACT_CORRUPT_DOCUMENT":
+                        item["count"] += extra
+                failures = self.failures(receipt)
+                self.assertIn("fault_corrupt_pdf", failures)
+                self.assertIn("fault_corrupt_pdf_only_expected_results", failures)
+
+    def test_a_failure_needs_item_on_another_stage_or_malformed_fails(self):
+        for label, item in {"other stage": self.stray_item("EXTRACT_CORRUPT_DOCUMENT", stage="outputs", count=20),
+                            "negative": self.stray_item("EXTRACT_ERROR", count=-1),
+                            "string count": {**self.stray_item("EXTRACT_ERROR"), "count": "1"}}.items():
+            with self.subTest(label):
+                receipt = declared_receipt()
+                receipt["runs"][1]["needs_g"].append(item)
+                self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_the_manifest_carries_the_reacquisition_metadata(self):
+        for label, mutate in {"mail removed": lambda d: d.pop("mail"),
+                              "mail null": lambda d: d.update(mail=None),
+                              "form removed": lambda d: d.pop("form"),
+                              "class removed": lambda d: d["mail"].pop("sender_domain_class"),
+                              "date removed": lambda d: d["mail"].pop("date_utc"),
+                              "uid removed": lambda d: d["mail"].pop("uid")}.items():
+            with self.subTest(label):
+                receipt = declared_receipt()
+                mutate(receipt["extract_failure_manifest"]["documents"][3])
+                self.assertIn("extract_failures_itemized", self.failures(receipt))
+
+    def test_codes_match_the_engine(self):
+        from campaign_tool.records import run_stages
+        self.assertEqual(set(harness.EXTRACT_FAILURE_NEEDS), native_extract.FAILED)
+        needs = {outcome: code for outcome, code, _ in run_stages.EXTRACT_NEEDS}
+        self.assertEqual(harness.EXTRACT_FAILURE_NEEDS, {code: needs[code] for code in harness.EXTRACT_FAILURE_NEEDS})
+
+
 class HarnessCliTests(unittest.TestCase):
     BASE = ["--engine", "/nonexistent/engine", "--release-commit", "0" * 40, "--scratch", "/nonexistent/s",
             "--receipt", "/nonexistent/r.json", "--container", "c", "--container-work", "/w"]
@@ -495,6 +696,25 @@ class HarnessCliTests(unittest.TestCase):
     def test_reaches_setup_only_with_valid_expectations(self):
         code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115")
         self.assertEqual((code, json.loads(out)["code"]), (2, "engine_tree_missing"))
+        code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                              "--expect-extract-failures", "CORRUPT_DOCUMENT=20")
+        self.assertEqual((code, json.loads(out)["code"]), (2, "engine_tree_missing"))
+
+    def test_bad_extract_failure_declarations_refused(self):
+        for value in ("CORRUPT_DOCUMENT", "CORRUPT_DOCUMENT=0", "CORRUPT_DOCUMENT=-1", "CORRUPT_DOCUMENT=x",
+                      "AWAITING_OCR=2", "PARSER_MISSING=1", "=3"):
+            with self.subTest(value):
+                self.assertEqual(self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                                           "--expect-extract-failures", value)[0], 2)
+        code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                              "--expect-extract-failures", "CORRUPT_DOCUMENT=20",
+                              "--expect-extract-failures", "CORRUPT_DOCUMENT=21")
+        self.assertEqual((code, json.loads(out)["code"]), (2, "extract_failure_declared_twice"))
+
+    def test_extract_failures_cannot_be_a_blanket_allowance(self):
+        code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                              "--allow-warn", "extract:EXTRACT_DOCUMENT_FAILURES")
+        self.assertEqual((code, json.loads(out)["code"]), (2, "extract_failures_need_exact_counts"))
 
 
 # --------------------------------------------------------------------------------------------
@@ -661,11 +881,15 @@ class FaultInjectorTests(unittest.TestCase):
 class RealAdapterHarnessTests(unittest.TestCase):
     """Three bounded runs and three faults through the real orchestrator + run_stages adapters."""
 
+    group_inheriting = False  # see RealAdapterHarnessUnderDefaultAclTests
+
     @classmethod
     def setUpClass(cls):
         os.umask(0o077)
         cls.temp = tempfile.TemporaryDirectory(prefix="t12s-e2e-")
         base = Path(cls.temp.name)
+        if cls.group_inheriting:
+            cls.inheritance = inherit_group_bits(base)
         cls.project = make_project(base)
         cls.work = base / "work"
         cls.work.mkdir(mode=0o700)
@@ -677,6 +901,7 @@ class RealAdapterHarnessTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        os.umask(0o077)
         cls.temp.cleanup()
 
     @classmethod
@@ -841,6 +1066,57 @@ class RealAdapterHarnessTests(unittest.TestCase):
         report["overall_status"] = "ok" if report["overall_status"] != "ok" else "fail"
         self.assertFalse(harness.report_is_valid(report))
         self.assertFalse(harness.report_is_valid({}))
+
+
+def inherit_group_bits(base):
+    """Make new files under ``base`` keep the group bits they are created with, umask or not.
+
+    That is the rootless Flock host-work (T13 receipt attempt 1, cause 4): its default ACL
+    (``default:user:<container coder>:rwx``, ``default:mask::rwx``) makes the kernel ignore
+    the process umask, so ``open(..., "w")`` gives 0660 even under ``umask 077``. Uses a
+    real default ACL when ``setfacl`` works here; otherwise umask 007, which gives new
+    files the same mode bits. Returns which one is in force.
+    """
+    setfacl = shutil.which("setfacl")
+    if setfacl:
+        proc = subprocess.run([setfacl, "-d", "-m", f"u:{os.geteuid()}:rwx,g::---,m::rwx,o::---", str(base)],
+                              capture_output=True)
+        if proc.returncode == 0:
+            probe = base / ".acl-probe"
+            with open(probe, "w"):  # requested 0666; the umask (077 here) must not apply
+                pass
+            inherited = os.stat(probe).st_mode & 0o070 == 0o060
+            probe.unlink()
+            if inherited:
+                return "default_acl"
+            subprocess.run([setfacl, "-k", str(base)], capture_output=True)
+    os.umask(0o007)
+    return "umask_007"
+
+
+class RealAdapterHarnessUnderDefaultAclTests(RealAdapterHarnessTests):
+    """The same real-adapter runs where new files inherit group bits (``inherit_group_bits``).
+
+    The owner-only checks (sandbox marker, extraction artifacts) stay strict. The engine has
+    to create its private files 0600 and its private directories 0700 explicitly instead of
+    relying on the umask, or the receipt fails as it did on the swapped runtime.
+    """
+    group_inheriting = True
+
+    def test_group_bits_really_are_inherited(self):
+        self.assertIn(self.inheritance, ("default_acl", "umask_007"))
+        probe = self.project.parent / ".mode-probe"
+        with open(probe, "w"):
+            pass
+        self.addCleanup(probe.unlink)
+        self.assertEqual(os.stat(probe).st_mode & 0o070, 0o060)
+
+    def test_extraction_artifacts_are_owner_only(self):
+        extract = self.project / "processing-v1" / "extract"
+        artifacts = [p for p in extract.rglob("*") if p.is_file() and not p.is_symlink()]
+        self.assertTrue(any(p.name == "digest.json" for p in artifacts))
+        loose = sorted(str(p.relative_to(extract)) for p in artifacts if p.stat().st_mode & 0o077)
+        self.assertEqual(loose, [])
 
 
 if __name__ == "__main__":

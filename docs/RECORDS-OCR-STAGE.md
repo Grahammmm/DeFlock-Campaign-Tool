@@ -113,15 +113,17 @@ engine counts.
 
 ## For the T6 live wiring check
 
-- WP4's per-page path (T6 WIP `d8e76a3`, cherry-picked onto this branch:
-  `extract/vision.py` plus the `engine=tesseract|<vision engine>` field in
-  `extraction_routes`) calls a local command as `argv + [page.png]`. Point it
-  at the same Qwen client with
+- Done in T6 (engine code, synthetic tests only): WP4 binds vision receipts in
+  the ledger and validator, and the extract stage accepts
+  `--ocr --ocr-vision-config FILE` (see the "Local vision fallback" section in
+  `docs/RECORDS-OCR.md`). Point the vision file's argv at the same Qwen client
+  with
   `argv = ["/opt/campaign-tool/venv/bin/python", "-I", "-m", "campaign_tool.records.ocr_stage", "transcribe-png", "--config", "<owner-only config>"]`
   and engine `qwen`. The command prints only the transcription and exits
   non-zero with empty stdout on any failure, which WP4 records as a blocked
-  receipt. The rest of that WIP (ledger and validation binding for vision
-  receipts, CLI/run wiring) is still open; see the T6 card.
+  vision receipt. Each Tesseract and vision call is bounded by the stage's
+  per-document `--document-timeout` (10-600 s), so a 27B vision model needs a
+  larger value in the stage plan than Phase 1 uses.
 - The pinned image provides `/usr/bin/ocrmypdf` 14.0.1, `/usr/bin/pdftoppm`
   22.12.0 and `/opt/campaign-tool/venv/bin/python`. The local smoke test ran
   against host OCRmyPDF 15.2.0, so the 14.0.1 sidecar and `--skip-text`

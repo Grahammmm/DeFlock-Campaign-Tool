@@ -220,7 +220,7 @@ def _child(source,sha,form,dest,root):
             units,parser,version=_image(source,raw);children=[]
         else:
             units,parser,version,children=_msg(source,raw,root)
-        with (dest/'units.jsonl').open('x') as stream:
+        with folder.private_file(dest/'units.jsonl',exclusive=True) as stream:
             for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
         issues=[{'code':'msg_attachment_bytes_not_preserved'}] if any(u['kind']=='msg_attachment' and not u['data']['bytes_preserved'] for u in units) else []
         metadata={'stage':'partial' if issues else 'complete','counts':{'units':len(units)},
@@ -239,7 +239,8 @@ def _child(source,sha,form,dest,root):
         if dependency:metadata['parser_components'][dependency]=_version(dependency)
         metadata['parser']='legacy-intake:'+form
         metadata['parser_version']=metadata['parser_components'].get(dependency,folder.VERSION+'/'+folder.ENGINE_REVISION)
-        (dest/'digest.json').write_text(json.dumps(metadata,sort_keys=True,ensure_ascii=True)+'\n')
+        with folder.private_file(dest/'digest.json') as stream:
+            stream.write(json.dumps(metadata,sort_keys=True,ensure_ascii=True)+'\n')
 
 def run_bounded(args,timeout):
     """Private diagnostics are discarded; timeout terminates the whole child group."""
@@ -384,9 +385,8 @@ def _run_page_ocr(result,run,raw,expected_sha,metadata,config,attempt_id,timeout
     visions=vision_entries(results)
     extra={'vision_receipts':visions} if visions else {}
     derived=run/'ocr-derived';derived.mkdir(mode=0o700)
-    with (derived/'units.jsonl').open('x') as stream:
+    with folder.private_file(derived/'units.jsonl',exclusive=True) as stream:
         for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
-    os.chmod(derived/'units.jsonl',0o600)
     _write(derived/'digest.json',{**metadata,'ocr_receipts':receipts,**extra})
     result['pre_ocr']={'status':result['status'],'unit_count':len(result['units']),'page_count':len(result['pages']),'issues':list(result['issues'])}
     result.update(units=units,pages=pages,status='partial',ocr_receipts=receipts,ocr_output_root=str(config['root']),ocr_method=OCR_METHOD,**extra)

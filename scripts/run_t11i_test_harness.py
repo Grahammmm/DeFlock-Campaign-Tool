@@ -6,7 +6,12 @@ Host-side driver. It never touches the live records project or TEST itself:
 1. Copies TEST (mail-history, processing-v1, portal-queue-v1 and the TEST
    adoption config) into a fresh sandbox directory, inside the Flock container
    as the ledger owner, and marks the copy with the sandbox marker that
-   ``scripts/t12_fault_inject.py`` requires.
+   ``scripts/t12_fault_inject.py`` requires. With ``--baseline-backup`` (and its
+   pinned ``--baseline-ledger-sha256``) the copy's ledger and intake database
+   are then replaced by that reviewed backup inside TEST (only read) and its
+   identity paths are relocated to the sandbox root
+   (``scripts/t11i_sandbox_baseline.py``), so a post-apply TEST still yields the
+   restored baseline (36 adopted / 115 coded gaps) in the sandbox.
 2. Renders the runtime templates with ``targets/test-container.json.in``:
    every stage is a ``docker exec`` of the stage adapter in the Flock
    container against the sandbox copy (``docker run`` is not available to
@@ -21,7 +26,10 @@ Host-side driver. It never touches the live records project or TEST itself:
    path/size/mtime) of the live records project and of TEST before and after,
    and asserts both are unchanged.
 5. Writes a numbers-and-codes-only receipt (no paths, URLs or record text) and
-   evaluates it with ``evaluate`` (below). The receipt says what it is:
+   evaluates it with ``evaluate`` (below). With ``--expect-extract-failures`` the
+   receipt also itemizes the declared extraction gaps (``extract_failure_manifest``:
+   per document only hashes, ledger ids, mailbox uid numbers, a UTC date and a fixed
+   sender-domain class, from ``scripts/extract_failure_manifest.py``). The receipt says what it is:
    ``target_mode`` is ``TEST_SANDBOX_EVIDENCE`` and ``live_acceptance`` is
    false. A passing receipt is TEST evidence, never live acceptance, and a
    machine-valid run is review-required, not semantic acceptance.
@@ -35,6 +43,14 @@ when a rerun adopts anything, when integrity is not ok, when extract shows no
 advancement (``EXTRACTED`` > 0) or drops a document (outcomes must sum to the
 input), when ``PARSER_MISSING`` appears while native parsers are required (the
 default), and when any required fault was not exercised and detected.
+
+Declared extraction gaps (G D4-A, 2026-10-20): documents the strict parsers refuse
+in the real data (for TEST, 20 adopted EMLs with ``CORRUPT_DOCUMENT``) make every
+extract stage warn ``EXTRACT_DOCUMENT_FAILURES``. That warning cannot be allowed
+with ``--allow-warn``. It is accepted only when ``--expect-extract-failures
+CODE=N`` declares it and every baseline and fault run shows exactly those failure
+outcomes, failed count and needs-G items (corrupt_pdf: exactly one more
+``CORRUPT_DOCUMENT``), and the gaps are itemized (``extract_failures_itemized``).
 
 Fault runs are just as strict (T12s review): each fault scenario has an explicit
 set of expected stage results (``FAULT_SCENARIOS``: the injected fault plus any
@@ -50,6 +66,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -103,6 +120,15 @@ DEFAULT_ALLOWED_WARNINGS = (("adoption", "ADOPTION_CODED_GAPS"),
                             ("extract", "EXTRACT_WORKBOOK_POLICY_REQUIRED"),
                             ("digest_gates", "GATE_REVIEW_REQUIRED"))
 PARSER_MISSING_CODES = ("PARSER_MISSING", "EXTRACT_NATIVE_PARSER_MISSING")
+# Declared extraction gaps (G D4-A, 2026-10-20 07:42): extract outcome code -> its needs-G code
+# (native_extract.FAILED / run_stages.EXTRACT_NEEDS). A baseline run may warn
+# EXTRACT_DOCUMENT_FAILURES only when its failure outcomes equal --expect-extract-failures
+# exactly; the corrupt_pdf fault must show exactly one more CORRUPT_DOCUMENT. It can never be
+# allowed with --allow-warn (no exact count).
+EXTRACT_FAILURE_NEEDS = {"CORRUPT_DOCUMENT": "EXTRACT_CORRUPT_DOCUMENT", "EXTRACT_INCOMPLETE": "EXTRACT_INCOMPLETE",
+                         "EXTRACT_TIMEOUT": "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED": "EXTRACT_NOT_ACCEPTED",
+                         "EXTRACT_ERROR": "EXTRACT_ERROR"}
+EXTRACT_FAILURES_WARNING = ("extract", "EXTRACT_DOCUMENT_FAILURES")
 DOCKER_DOWN_EXIT = 75
 ADOPTION_BLOCKED_EXIT = 10 + WORK_STAGES.index("adoption")  # run_orchestrator: 10 + first failed stage
 # Per-scenario stage results (T12s review fix). Each fault run must show EXACTLY these
@@ -215,20 +241,76 @@ def _outcomes(run, name="extract"):
     return outcomes if isinstance(outcomes, dict) else {}
 
 
-def _clean_run(run, allowed, expected_stages=None, exit_code=0):
+def _failure_outcomes(run):
+    """The run's extract failure outcomes (EXTRACT_FAILURE_NEEDS codes), zero counts dropped."""
+    return {code: count for code, count in _outcomes(run).items() if code in EXTRACT_FAILURE_NEEDS and count}
+
+
+def _failure_needs(run):
+    """The run's extract-failure needs-G items as {outcome code: count}, zero counts dropped.
+
+    Every EXTRACT_FAILURE_NEEDS code is counted, declared or not, on any stage: an
+    undeclared failure item (or one filed under another stage) can never hide next to the
+    declared ones (T13 review, Sol #2)."""
+    failure_codes = {needs: code for code, needs in EXTRACT_FAILURE_NEEDS.items()}
+    found = {}
+    for item in run.get("needs_g") or []:
+        if isinstance(item, dict) and item.get("code") in failure_codes:
+            code, count = failure_codes[item["code"]], item.get("count")
+            if item.get("stage") != "extract" or type(count) is not int or count < 0:
+                return {"invalid_needs_item": 1}  # never equal to a declaration
+            found[code] = found.get(code, 0) + count
+    return {code: count for code, count in found.items() if count}
+
+
+def _extract_failures_exact(run, expected):
+    """The full maps of extract failure outcomes and of their needs-G items both equal
+    ``expected`` (an absent code is zero), and so does the failed count."""
+    counts = _counts(run, "extract")
+    return bool(counts is not None and _failure_outcomes(run) == expected
+                and counts["failed"] == sum(expected.values())
+                and _failure_needs(run) == expected)
+
+
+def declared_extract_failures(expect):
+    """``expect["extract_failures"]`` as {code: count >= 1}, ``{}`` when absent, None when invalid."""
+    declared = expect.get("extract_failures")
+    if declared is None:
+        return {}
+    if not isinstance(declared, dict) or not all(
+            code in EXTRACT_FAILURE_NEEDS and type(count) is int and count >= 1 for code, count in declared.items()):
+        return None
+    return dict(declared)
+
+
+def _plus_one_corrupt(declared):
+    return {**declared, "CORRUPT_DOCUMENT": declared.get("CORRUPT_DOCUMENT", 0) + 1}
+
+
+def _clean_run(run, allowed, expected_stages=None, exit_code=0, extract_failures=None):
     """The expected exit, a valid report, and every work stage as expected.
 
     A stage named in ``expected_stages`` must show exactly that (status, error_code).
     Every other work stage must be ok, or warn with a (stage, code) in ``allowed``.
+    ``extract_failures`` ({outcome code: count}) declares the run's exact extraction gaps:
+    when non-empty, extract must warn EXTRACT_DOCUMENT_FAILURES with exactly those failure
+    outcomes; when empty, any extract failure fails the run.
     """
     expected_stages = expected_stages or {}
+    extract_failures = extract_failures or {}
     if run.get("exit") != exit_code or not run.get("report_present") or not run.get("report_valid"):
+        return False
+    if not _extract_failures_exact(run, extract_failures):
         return False
     for name in WORK_STAGES:
         stage = _stage(run, name)
         result = (stage.get("status"), stage.get("error_code"))
         if name in expected_stages:
             if result != tuple(expected_stages[name]):
+                return False
+            continue
+        if name == "extract" and extract_failures:
+            if result != ("warn", EXTRACT_FAILURES_WARNING[1]):
                 return False
             continue
         if stage.get("status") == "ok":
@@ -260,16 +342,19 @@ def _adopts_nothing(run, last_ledger, injected_messages):
                 == last_ledger["mail_messages"] + injected_messages)
 
 
-def _fault_checks(faults, runs, allowed, required):
+def _fault_checks(faults, runs, allowed, required, declared=None):
     checks = {}
+    declared = declared or {}
     last = runs[-1] if runs else {}
     last_ledger = last.get("ledger_after") or {}
     # Strict per-scenario stage results: a detected fault never excuses an unrelated
-    # warning or failure elsewhere in the same run (FAULT_SCENARIOS).
+    # warning or failure elsewhere in the same run (FAULT_SCENARIOS). The declared extraction
+    # gaps persist in every scenario; corrupt_pdf adds exactly one CORRUPT_DOCUMENT to them.
     for fault, scenario in FAULT_SCENARIOS.items():
         if fault in required:
             checks[f"fault_{fault}_only_expected_results"] = _clean_run(
-                faults.get(fault) or {}, allowed, scenario["stages"], scenario["exit"])
+                faults.get(fault) or {}, allowed, scenario["stages"], scenario["exit"],
+                _plus_one_corrupt(declared) if fault == "corrupt_pdf" else declared)
     if "telegram_down" in required:
         # Notify points at a closed port on every run: the notify stage fails, the exit does not.
         checks["fault_telegram_down"] = bool(runs) and all(
@@ -308,19 +393,41 @@ def _fault_checks(faults, runs, allowed, required):
         injection = run.get("injection") or {}
         extract = _stage(run, "extract")
         # Extract plan policy is on_fail=stop; a corrupt document is a coded warn, not a stage
-        # failure, so digest_gates and outputs still run.
+        # failure, so digest_gates and outputs still run. Exactly one more CORRUPT_DOCUMENT
+        # than the declared extraction gaps (G D4-A).
+        corrupt = declared.get("CORRUPT_DOCUMENT", 0) + 1
         checks["fault_corrupt_pdf"] = bool(
             injection.get("status") == "injected" and injection.get("documents", 0) >= 1
             and run.get("exit") == 0 and run.get("report_valid")
-            and _outcomes(run).get("CORRUPT_DOCUMENT", 0) >= 1
+            and _outcomes(run).get("CORRUPT_DOCUMENT", 0) == corrupt
             and extract.get("status") == "warn" and extract.get("error_code") == "EXTRACT_DOCUMENT_FAILURES"
-            and _needs(run, "EXTRACT_CORRUPT_DOCUMENT", "extract") >= 1
+            and _failure_needs(run) == _plus_one_corrupt(declared)
             and _adopts_nothing(run, last_ledger, injection.get("messages"))
             and _ran(run, "digest_gates", "outputs"))
     if "docker_down" in required:
         down = faults.get("docker_down") or {}
         checks["fault_docker_down"] = down.get("exit") == DOCKER_DOWN_EXIT and down.get("ledger_unchanged") is True
     return checks
+
+
+def _itemized(manifest, declared):
+    if not isinstance(manifest, dict) or manifest.get("status") != "ok":
+        return False
+    documents = manifest.get("documents")
+    if not isinstance(documents, list) or not all(isinstance(doc, dict) for doc in documents):
+        return False
+    # The re-acquisition metadata G asked for is present on every document (stable mail id,
+    # UTC date and sender-domain class); values may be null when the ledger has none.
+    if not all("form" in doc and isinstance(doc.get("mail"), dict)
+               and {"uid", "date_utc", "sender_domain_class"} <= set(doc["mail"]) for doc in documents):
+        return False
+    hashes = [doc.get("original_sha256") for doc in documents]
+    codes = {}
+    for doc in documents:
+        codes[doc.get("code")] = codes.get(doc.get("code"), 0) + 1
+    return bool(codes == declared and manifest.get("by_code") == declared
+                and all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha) for sha in hashes)
+                and len(set(hashes)) == len(hashes))
 
 
 def evaluate(receipt, *, required_faults=REQUIRED_FAULTS, isolation=True):
@@ -337,6 +444,7 @@ def evaluate(receipt, *, required_faults=REQUIRED_FAULTS, isolation=True):
     allowed = {tuple(pair) for pair in expect.get("allowed_warnings") or ()}
     adopted, coded = expect.get("adopted"), expect.get("coded_gaps")
     require_parsers = expect.get("require_native_parsers")
+    declared = declared_extract_failures(expect)
     checks = {}
 
     checks["target_mode_is_test_evidence"] = (receipt.get("target_mode") == TARGET_MODE
@@ -344,9 +452,12 @@ def evaluate(receipt, *, required_faults=REQUIRED_FAULTS, isolation=True):
     checks["expectations_explicit"] = (
         type(adopted) is int and adopted >= 1 and type(coded) is int and coded >= 0
         and type(require_parsers) is bool and type(expect.get("runs")) is int and expect["runs"] >= 3
-        and not (require_parsers and any(code in PARSER_MISSING_CODES for _, code in allowed)))
+        and not (require_parsers and any(code in PARSER_MISSING_CODES for _, code in allowed))
+        and declared is not None and EXTRACT_FAILURES_WARNING not in allowed)
+    declared = declared or {}
     checks["three_successful_runs"] = (len(runs) >= 3 and len(runs) == expect.get("runs")
-                                       and all(_clean_run(run, allowed) for run in runs))
+                                       and all(_clean_run(run, allowed, extract_failures=declared)
+                                               for run in runs))
     checks["every_run_reported_all_stages"] = bool(runs) and all(
         set(WORK_STAGES) <= set(run.get("stages") or {}) for run in runs)
 
@@ -398,9 +509,26 @@ def evaluate(receipt, *, required_faults=REQUIRED_FAULTS, isolation=True):
             or _stage(run, "extract").get("error_code") == "EXTRACT_NATIVE_PARSER_MISSING"
             or _needs(run, "EXTRACT_NATIVE_PARSER_MISSING", "extract") for run in every))
 
-    checks.update(_fault_checks(faults, runs, allowed, required_faults))
+    checks.update(_fault_checks(faults, runs, allowed, required_faults, declared))
     for fault in required_faults:
         checks.setdefault("fault_" + fault, False)  # an unknown required fault cannot pass
+    if declared:
+        # Declared extraction gaps are itemized (G D4-A): one entry per failed document of the
+        # last baseline run, with exactly the declared codes and counts, so they can be
+        # re-acquired. Stable ids, hashes, dates and classes only (extract_failure_manifest.py).
+        checks["extract_failures_itemized"] = _itemized(receipt.get("extract_failure_manifest"), declared)
+    if expect.get("baseline_ledger_sha256") is not None:
+        # Seeded baseline (G D3-A): the pinned backup, fully relocated to the sandbox root,
+        # consistent, and the very ledger the first run starts from.
+        seeded = receipt.get("baseline") or {}
+        checks["sandbox_baseline_seeded"] = bool(
+            seeded.get("mode") == "seeded_backup" and seeded.get("status") == "seeded"
+            and seeded.get("baseline_ledger_sha256") == expect["baseline_ledger_sha256"]
+            and seeded.get("foreign_root_refs_after") == 0 and seeded.get("integrity") == "ok"
+            and seeded.get("foreign_key_violations") == 0 and seeded.get("triggers_identical") is True
+            and seeded.get("immutability_trigger_enforced") is True
+            and type(seeded.get("mail_messages")) is int
+            and seeded.get("mail_messages") == before.get("mail_messages"))
     if isolation:
         checks["live_tree_unchanged"] = receipt.get("live_tree_unchanged") is True
         checks["test_tree_unchanged"] = receipt.get("test_tree_unchanged") is True
@@ -484,6 +612,58 @@ def non_negative(text):
     return value
 
 
+def baseline_name(text):
+    """A backup directory name directly inside TEST (no path separators, hidden by convention)."""
+    if not re.fullmatch(r"\.[A-Za-z0-9][A-Za-z0-9._-]{0,127}", text) or ".." in text:
+        raise argparse.ArgumentTypeError("expected a hidden backup directory name inside TEST")
+    return text
+
+
+def sha256_hex(text):
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise argparse.ArgumentTypeError("expected a lowercase hex SHA-256")
+    return text
+
+
+def extract_failure(text):
+    code, sep, count = text.partition("=")
+    if not sep or code not in EXTRACT_FAILURE_NEEDS or not re.fullmatch(r"[1-9][0-9]{0,5}", count):
+        raise argparse.ArgumentTypeError("expected CODE=N with an extract failure outcome code and N >= 1")
+    return code, int(count)
+
+
+def failure_manifest(docker_bin, base, container_project):
+    """Run extract_failure_manifest.py (read-only) on the sandbox; its JSON line or a refusal."""
+    script = f"{base['CONTAINER_ENGINE_DIR']}/scripts/extract_failure_manifest.py"
+    proc = subprocess.run([docker_bin, "exec", "-u", "coder", CONTAINER, base["CONTAINER_PYTHON"], "-B", script,
+                           "--project", container_project], capture_output=True, text=True, timeout=600)
+    for line in reversed(proc.stdout.splitlines()):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {"status": "refused", "code": "manifest_no_result"}
+
+
+def seed_baseline(docker_bin, base, container_project, backup_name, ledger_sha256):
+    """Run t11i_sandbox_baseline.py on the sandbox in the container; its JSON line or a refusal."""
+    script = f"{base['CONTAINER_ENGINE_DIR']}/scripts/t11i_sandbox_baseline.py"
+    proc = subprocess.run([docker_bin, "exec", "-u", "coder", CONTAINER, base["CONTAINER_PYTHON"], "-B", script,
+                           "--project", container_project, "--backup", f"{TEST_DIR}/{backup_name}",
+                           "--ledger-sha256", ledger_sha256, "--from-root", LIVE_DIR, "--from-root", TEST_DIR],
+                          capture_output=True, text=True, timeout=600)
+    for line in reversed(proc.stdout.splitlines()):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {"status": "refused", "code": "baseline_no_result"}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--engine", required=True, help="host path of the pinned engine tree (git archive)")
@@ -506,10 +686,31 @@ def main(argv=None):
     p.add_argument("--allow-warn", type=allowed_warning, action="append", default=[], metavar="STAGE:CODE",
                    help="add an expected warning to the defaults " + ", ".join(
                        f"{stage}:{code}" for stage, code in DEFAULT_ALLOWED_WARNINGS))
+    p.add_argument("--baseline-backup", type=baseline_name, metavar="NAME",
+                   help="seed the sandbox from this reviewed backup dir inside TEST (ledger.sqlite + "
+                        "intake.sqlite; e.g. the T4 pre-apply backup) and relocate its identity paths "
+                        "to the sandbox root (scripts/t11i_sandbox_baseline.py); TEST is only read")
+    p.add_argument("--baseline-ledger-sha256", type=sha256_hex, metavar="HEX",
+                   help="pinned SHA-256 of the backup's ledger.sqlite (required with --baseline-backup)")
+    p.add_argument("--expect-extract-failures", type=extract_failure, action="append", default=[],
+                   metavar="CODE=N",
+                   help="declared extraction gap (G D4-A): every baseline run must show exactly N documents "
+                        "with this extract failure outcome (" + ", ".join(EXTRACT_FAILURE_NEEDS) + "); "
+                        "corrupt_pdf must show one more CORRUPT_DOCUMENT; the gaps are itemized in the receipt")
     args = p.parse_args(argv)
     allowed = sorted(set(DEFAULT_ALLOWED_WARNINGS) | set(args.allow_warn))
+    extract_failures = dict(args.expect_extract_failures)
+    if len(extract_failures) != len(args.expect_extract_failures):
+        print(json.dumps({"status": "refused", "code": "extract_failure_declared_twice"}))
+        return 2
+    if EXTRACT_FAILURES_WARNING in allowed:
+        print(json.dumps({"status": "refused", "code": "extract_failures_need_exact_counts"}))
+        return 2
     if args.runs < 3:
         print(json.dumps({"status": "refused", "code": "runs_below_three"}))
+        return 2
+    if (args.baseline_backup is None) != (args.baseline_ledger_sha256 is None):
+        print(json.dumps({"status": "refused", "code": "baseline_arguments_incomplete"}))
         return 2
     if args.require_native_parsers and any(code in PARSER_MISSING_CODES for _, code in allowed):
         print(json.dumps({"status": "refused", "code": "parser_missing_cannot_be_expected"}))
@@ -530,15 +731,31 @@ def main(argv=None):
     sandbox_rel = f".t11i-sandbox-{stamp}"
     container_project = f"{CONTAINER_WORK}/{sandbox_rel}/records-project"
     # 1. Sandbox copy of TEST, made inside the container as the ledger owner, plus the marker.
+    # Modes are explicit (mkdir -m 700, chmod 600): the host-work default ACL makes the kernel
+    # ignore the umask, and the injector refuses a marker with group bits.
     copy = " ".join(f"'{TEST_DIR}/{item}'" for item in COPY_ITEMS)
+    sandbox_dir = f"{CONTAINER_WORK}/{sandbox_rel}"
     docker(["exec", "-u", "coder", CONTAINER, "sh", "-c",
-            f"umask 077 && mkdir -p '{container_project}' && cp -a {copy} '{container_project}/' && "
-            f"printf '%s\\n' '{{\"sandbox_marker_version\":1}}' > '{container_project}/{SANDBOX_MARKER}'"],
+            f"umask 077 && mkdir -m 700 '{sandbox_dir}' && mkdir -m 700 '{container_project}' && "
+            f"cp -a {copy} '{container_project}/' && "
+            f"printf '%s\\n' '{{\"sandbox_marker_version\":1}}' > '{container_project}/{SANDBOX_MARKER}' && "
+            f"chmod 600 '{container_project}/{SANDBOX_MARKER}'"],
            args.docker)
+    container_python = args.container_python or container_interpreter(args.docker)
+    base = {"CONTAINER_ENGINE_DIR": f"{CONTAINER_WORK}/{engine.name}", "CONTAINER_PYTHON": container_python}
+    # 1b. Optional reviewed baseline (G D3-A): the sandbox ledger + intake come from the pinned
+    # backup and its identity paths move to the sandbox root, inside the copy only.
+    baseline = {"mode": "test_copy"}
+    if args.baseline_backup:
+        baseline = {"mode": "seeded_backup", **seed_baseline(args.docker, base, container_project,
+                                                             args.baseline_backup, args.baseline_ledger_sha256)}
+        if baseline.get("status") != "seeded":
+            print(json.dumps({"status": "refused", "code": "baseline_seed_refused",
+                              "detail": baseline.get("code")}))
+            return 2
     test_before = ledger_counts(args.docker, TEST_DIR)
     sandbox_before = ledger_counts(args.docker, container_project)
     image = docker(["inspect", "--format", "{{.Image}}", CONTAINER], args.docker).strip()
-    container_python = args.container_python or container_interpreter(args.docker)
     scratch.mkdir(parents=True, exist_ok=True)
     env_file = scratch / "fake-telegram.env"
     env_file.write_text("TELEGRAM_BOT_TOKEN=000000:SYNTHETIC_NOT_A_TOKEN\nTELEGRAM_HOME_CHANNEL=-100\n")
@@ -569,7 +786,10 @@ def main(argv=None):
                "expect": {"adopted": args.expect_adopted, "coded_gaps": args.expect_coded_gaps,
                           "require_native_parsers": args.require_native_parsers, "runs": args.runs,
                           "allowed_warnings": [list(pair) for pair in allowed],
-                          "required_faults": list(REQUIRED_FAULTS)},
+                          "required_faults": list(REQUIRED_FAULTS),
+                          "baseline_ledger_sha256": args.baseline_ledger_sha256,
+                          **({"extract_failures": extract_failures} if extract_failures else {})},
+               "baseline": baseline,
                "test_before": test_before, "sandbox_before": sandbox_before,
                "runs": [], "faults": {}, "checks": {}}
     target_dir = runtime / "TEST"
@@ -577,6 +797,9 @@ def main(argv=None):
         code, report = run_once(runtime, target_dir)
         receipt["runs"].append({"run": index + 1, **summarize(report, code),
                                 "ledger_after": ledger_counts(args.docker, container_project)})
+    if extract_failures:
+        # The declared extraction gaps, itemized from the last baseline run (G D4-A).
+        receipt["extract_failure_manifest"] = failure_manifest(args.docker, base, container_project)
     # Fault: duplicate receipt -- one receipt file repeated under a new name. Afterwards the
     # copy is moved out of receipts/ (kept in the sandbox) so the next faults start clean.
     dup_dir = f"{container_project}/mail-history/receipts"

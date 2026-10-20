@@ -758,10 +758,28 @@ def stage_extract(args):
             policy = load_native_workbook_policy(args.workbook_policy)
         except (ValueError, OSError):
             return result("fail", {"failed": 1}, "EXTRACT_WORKBOOK_POLICY_INVALID"), 1
+    ocr = None
+    if args.ocr:
+        # Phase 2 (T6): operator stage plan only. Missing tools or a bad vision config fail the
+        # stage visibly; nothing silently falls back to native-only.
+        from .run import local_ocr_tools
+        tools, signature = local_ocr_tools()
+        if tools is None:
+            return result("fail", {"failed": 1}, "EXTRACT_OCR_UNAVAILABLE"), 1
+        vision = None
+        if args.ocr_vision_config:
+            from .extract import vision as page_vision
+            try:
+                vision = page_vision.load_config(args.ocr_vision_config)
+            except ValueError:
+                return result("fail", {"failed": 1}, "EXTRACT_OCR_VISION_CONFIG_INVALID"), 1
+        ocr = {"tools": tools, "tool_signature": signature, "vision": vision}
+    elif args.ocr_vision_config:
+        return result("fail", {"failed": 1}, "STAGE_CONFIG_INVALID"), 1
     try:
         summary = ne.run(processing, run_id=args.run_id, deadline=deadline,
                          max_documents=args.max_documents, document_timeout=args.document_timeout,
-                         native_workbook_policy=policy)
+                         native_workbook_policy=policy, ocr=ocr)
     except ne.RootNotInitialized:
         return result("fail", {"failed": 1}, "EXTRACT_ROOT_NOT_INITIALIZED"), 1
     except RunError as error:
@@ -899,6 +917,10 @@ def parser():
                    help="extract: per-document parser deadline (seconds)")
     p.add_argument("--workbook-policy",
                    help="extract: pinned native workbook policy component (operator stage plan only)")
+    p.add_argument("--ocr", action="store_true",
+                   help="extract: Phase 2 per-page Tesseract OCR for image-only PDF pages (operator stage plan only)")
+    p.add_argument("--ocr-vision-config",
+                   help="extract: with --ocr, owner-only local-vision-config-v1 for empty/low-confidence pages")
     return p
 
 
