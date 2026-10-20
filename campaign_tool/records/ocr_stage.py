@@ -92,7 +92,15 @@ CHILD_FILE_BYTES = 1024 ** 3
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+# Anything shaped like an OCRmyPDF skip marker, and the one form it may take:
+# OCRmyPDF's merge_sidecars writes "[OCR skipped on page(s) N]" for one skipped
+# (native-text) page and "[OCR skipped on page(s) A-B]" for a run of them.
 SKIPPED_PAGE = re.compile(r"^\[OCR skipped on page\(s\) [0-9, -]+\]$")
+SKIPPED_RANGE = re.compile(r"^\[OCR skipped on page\(s\) ([1-9][0-9]{0,8})(?:-([1-9][0-9]{0,8}))?\]$")
+MAX_PAGES = 100_000
+# Bumped whenever sidecar parsing changes, so results parsed the old way are
+# never served from cache (2: skip ranges expanded, no trailing form-feed strip).
+SIDECAR_PARSER = 2
 THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
 # Page statuses a published result.json may carry.
 PAGE_STATUSES = frozenset({"native_text", "ocr_text", "ocr_empty", "ocr_low_quality"})
@@ -172,6 +180,44 @@ def _run_tool(runner, argv: list[str], workdir: Path, timeout: int, prefix: str)
     return completed.returncode
 
 
+def skipped_marker(page: int) -> str:
+    """The per-page marker ``OcrmypdfBackend.pages`` returns for native-text page ``page``."""
+    return f"[OCR skipped on page(s) {page}]"
+
+
+def split_sidecar(text: str) -> list[str]:
+    """Split an OCRmyPDF sidecar into exactly one string per PDF page.
+
+    OCRmyPDF 14 (``_pipeline.merge_sidecars``) writes a form feed only
+    *between* segments, never after the last one, so a sidecar that ends in
+    ``\\f`` ends with an empty (blank) page. Each run of consecutive skipped
+    native-text pages is collapsed into ONE segment,
+    ``[OCR skipped on page(s) A-B]`` (``... N]`` for a single page). Every such
+    range is expanded here into one ``skipped_marker(n)`` per page, so index
+    ``i`` of the result is always page ``i + 1``. The page numbers a marker
+    names must continue the count exactly; a marker-shaped segment that does
+    not, or more than ``MAX_PAGES`` pages, raises
+    ``BackendError('ocrmypdf_sidecar_inconsistent')``.
+    """
+    pages: list[str] = []
+    if text.count("\f") >= MAX_PAGES:
+        raise BackendError("ocrmypdf_sidecar_inconsistent")
+    for segment in text.split("\f"):
+        marker = segment.strip()
+        if not SKIPPED_PAGE.match(marker):
+            pages.append(segment)
+        else:
+            match = SKIPPED_RANGE.match(marker)
+            first = int(match.group(1)) if match else 0
+            last = int(match.group(2) or first) if match else 0
+            if first != len(pages) + 1 or last < first or last > MAX_PAGES:
+                raise BackendError("ocrmypdf_sidecar_inconsistent")
+            pages.extend(skipped_marker(number) for number in range(first, last + 1))
+        if len(pages) > MAX_PAGES:
+            raise BackendError("ocrmypdf_sidecar_inconsistent")
+    return pages
+
+
 def _absolute_executable(path: str, name: str) -> str:
     if not isinstance(path, str) or not os.path.isabs(path):
         raise ValueError(name + " must be an absolute path")
@@ -207,7 +253,7 @@ class OcrmypdfBackend:
                 "-l", self.language, "--sidecar", str(sidecar), str(source), str(output)]
 
     def pages(self, source: Path, workdir: Path) -> list[str]:
-        """Return one text string per page (``SKIPPED_PAGE`` text for native-text pages)."""
+        """Return one text string per PDF page (``skipped_marker(n)`` for native-text page n)."""
         sidecar, output = workdir / "sidecar.txt", workdir / "ocr.pdf"
         code = _run_tool(self.runner, self.argv(source, sidecar, output), workdir, self.timeout,
                          "ocrmypdf")
@@ -224,13 +270,9 @@ class OcrmypdfBackend:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             raise BackendError("ocrmypdf_sidecar_unreadable") from None
-        # Tesseract ends every page with a form feed; OCRmyPDF concatenates them.
-        if text.endswith("\f"):
-            text = text[:-1]
-        pages = text.split("\f")
-        if not pages:
-            raise BackendError("ocrmypdf_sidecar_empty")
-        return pages
+        # The form feed separates pages and never terminates the last one: a
+        # trailing "\f" is a blank final page, so nothing is stripped here.
+        return split_sidecar(text)
 
 
 def loopback_endpoint(endpoint: str) -> str:
@@ -610,7 +652,7 @@ class OcrStage:
         self.fallback = fallback
         self.quality = quality
         self.signature = _sha(_canonical({
-            "schema": SCHEMA, "primary": primary.identity(),
+            "schema": SCHEMA, "sidecar_parser": SIDECAR_PARSER, "primary": primary.identity(),
             "fallback": fallback.identity() if fallback is not None else None,
             "quality": {"min_chars": quality.min_chars, "min_alnum_ratio": quality.min_alnum_ratio}}))
 
@@ -753,6 +795,13 @@ class OcrStage:
             texts = self.primary.pages(source, workdir)
         except BackendError as error:
             return Outcome(item.document_id, "ocr_failed", error.code)
+        # Index i must be page i + 1: a skip marker naming any other page (an
+        # unexpanded range, say) would shift every later page and send the
+        # wrong page to vision, so the document fails closed before any call.
+        if not texts or len(texts) > MAX_PAGES or any(
+                SKIPPED_PAGE.match(text.strip()) and text.strip() != skipped_marker(number)
+                for number, text in enumerate(texts, start=1)):
+            return Outcome(item.document_id, "ocr_failed", "ocrmypdf_sidecar_inconsistent")
 
         pages, outcome, transient = [], Outcome(item.document_id, "ocr_complete"), False
         for number, text in enumerate(texts, start=1):

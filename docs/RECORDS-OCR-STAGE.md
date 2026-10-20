@@ -15,10 +15,18 @@ carry this module.
 
 1. **OCRmyPDF first.** A single run per document:
    `/usr/bin/ocrmypdf --quiet --skip-text --jobs 1 --output-type pdf -l eng --sidecar sidecar.txt source.pdf ocr.pdf`.
-   The sidecar's form-feed-separated page texts become pages with
-   `engine=tesseract`, `method=ocrmypdf`. Pages that already have a text layer
-   come back as `[OCR skipped on page(s) N]` and are recorded as `native_text`:
-   that text belongs to native extraction, not this stage.
+   The sidecar becomes exactly one page per PDF page, with
+   `engine=tesseract`, `method=ocrmypdf`. OCRmyPDF 14.0.1 (`merge_sidecars`)
+   writes a form feed only *between* pages, never after the last, so a
+   trailing form feed is a blank final page and is kept. Pages that already
+   have a text layer are skipped by `--skip-text`, and each run of consecutive
+   skipped pages comes back as ONE segment, `[OCR skipped on page(s) A-B]`
+   (`... N]` for a single page). The stage expands every range into one
+   `native_text` page per page number, so later pages keep their own numbers
+   (and the vision fallback renders the right page). That text belongs to
+   native extraction, not this stage. A marker whose page numbers do not
+   continue the count fails the document closed with
+   `ocrmypdf_sidecar_inconsistent`, before any vision call.
 2. **Triage.** Page text that is empty, has fewer than `min_chars` (20)
    alphanumeric characters, or has an alphanumeric ratio below
    `min_alnum_ratio` (0.6) is `ocr_empty` / `ocr_low_quality`. This is a triage
@@ -92,8 +100,9 @@ engine counts.
   status, engine, method, chars, text sha256, reason/vision error;
   `source_bytes`; `review_state: not_reviewed`; no text). Publication is a
   no-replace directory rename. A rerun with the same configuration makes no
-  tool or model call. A configuration change gets a new signature directory
-  and never rewrites the old one.
+  tool or model call. A configuration change, or a change to the sidecar
+  parser version (`SIDECAR_PARSER`, part of the signature), gets a new
+  signature directory and never rewrites the old one.
 - A cache hit is verified before use: the source is still reachable beneath
   the root with the recorded size, the result directories and files are
   owner-only and not symlinks (opened by descriptor with `O_NOFOLLOW`), the
@@ -125,9 +134,11 @@ engine counts.
   per-document `--document-timeout` (10-600 s), so a 27B vision model needs a
   larger value in the stage plan than Phase 1 uses.
 - The pinned image provides `/usr/bin/ocrmypdf` 14.0.1, `/usr/bin/pdftoppm`
-  22.12.0 and `/opt/campaign-tool/venv/bin/python`. The local smoke test ran
-  against host OCRmyPDF 15.2.0, so the 14.0.1 sidecar and `--skip-text`
-  behaviour still has to be confirmed in the container.
+  22.12.0 and `/opt/campaign-tool/venv/bin/python`. The 14.0.1 sidecar and
+  `--skip-text` behaviour was checked in the container on synthetic PDFs
+  (T6-check t_4913f5d3): skip ranges and the between-pages-only form feed
+  are what the parser above handles. The local tests run real host OCRmyPDF
+  15.2.0, whose `merge_sidecars` is the same.
 - `127.0.0.1:8003` inside a bridge-networked container is the container
   itself, not the host's llama.cpp server. T6 must choose how the container
   reaches it (for example host networking or a loopback-only published port);

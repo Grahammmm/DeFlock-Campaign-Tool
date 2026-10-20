@@ -14,10 +14,11 @@ import shutil
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from campaign_tool.records import ocr_stage as stage
-from tests.records.ocr_stage_fixtures import (FakeTools, FakeVision, blank_page, native_text_pdf,
-                                              noise_page, rasterize_gray, scanned_pdf)
+from tests.records.ocr_stage_fixtures import (FakeTools, FakeVision, blank_page, mixed_pdf, native_text_pdf,
+                                              noise_page, ocrmypdf_sidecar, rasterize_gray, scanned_pdf)
 
 CLEAN = "Synthetic records request response page with plenty of clearly legible words."
 HANDWRITTEN_GARBAGE = "~ _- |; ., '' :"
@@ -251,6 +252,172 @@ class FailureTest(unittest.TestCase):
         with built.locked():
             line, code, _ = stage.run(self.ws.args(self.config), runner=FakeTools(), transport=FakeVision())
         self.assertEqual((code, line["error_code"]), (0, "OCR_STAGE_BUSY"))
+
+
+class SidecarTest(unittest.TestCase):
+    """OCRmyPDF 14.0.1 sidecar shapes (t_4913f5d3 F1-F8): one result per PDF page."""
+
+    def test_real_sidecar_shapes_split_into_one_string_per_page(self):
+        m = stage.skipped_marker
+        cases = {
+            "F1 two scanned pages": ("page one\n\fpage two\n", ["page one\n", "page two\n"]),
+            "F2 two native pages": ("[OCR skipped on page(s) 1-2]", [m(1), m(2)]),
+            "F3 scan then native": ("page one\n\f[OCR skipped on page(s) 2]", ["page one\n", m(2)]),
+            "F4 one blank page": ("", [""]),
+            "F6 scan then native range": ("page one\n\f[OCR skipped on page(s) 2-3]", ["page one\n", m(2), m(3)]),
+            "F7 two blank pages": ("\f", ["", ""]),
+            "F8 text then blank back page": ("page one\n\f", ["page one\n", ""]),
+            "range at start": ("[OCR skipped on page(s) 1-2]\fpage three", [m(1), m(2), "page three"]),
+            "range in middle": ("p1\f[OCR skipped on page(s) 2-4]\fp5", ["p1", m(2), m(3), m(4), "p5"]),
+            "three blank pages": ("\f\f", ["", "", ""]),
+        }
+        for name, (sidecar, expected) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(stage.split_sidecar(sidecar), expected)
+
+    def test_fixture_sidecar_matches_ocrmypdf_merge_sidecars(self):
+        self.assertEqual(ocrmypdf_sidecar([None, None]), "[OCR skipped on page(s) 1-2]")
+        self.assertEqual(ocrmypdf_sidecar(["a", None, None, "", None]),
+                         "a\f[OCR skipped on page(s) 2-3]\f\f[OCR skipped on page(s) 5]")
+        self.assertEqual(ocrmypdf_sidecar(["a", ""]), "a\f")
+        self.assertEqual(stage.split_sidecar(ocrmypdf_sidecar(["a", None, None, "", None])),
+                         ["a", stage.skipped_marker(2), stage.skipped_marker(3), "", stage.skipped_marker(5)])
+
+    def test_markers_that_do_not_continue_the_page_count_fail_closed(self):
+        for sidecar in ("[OCR skipped on page(s) 2]",          # names the wrong page
+                        "p1\f[OCR skipped on page(s) 3-4]",     # skips page 2
+                        "[OCR skipped on page(s) 2-1]",         # reversed range
+                        "[OCR skipped on page(s) 1, 2]",        # marker-shaped, not a 14.x form
+                        "[OCR skipped on page(s) 0]",
+                        "[OCR skipped on page(s) 1-999999999]",  # beyond MAX_PAGES
+                        "\f" * stage.MAX_PAGES):
+            with self.subTest(sidecar[:40]), self.assertRaises(stage.BackendError) as caught:
+                stage.split_sidecar(sidecar)
+            self.assertEqual(caught.exception.code, "ocrmypdf_sidecar_inconsistent")
+
+    def test_sidecar_parser_version_is_part_of_the_cache_signature(self):
+        built = stage.build_stage("/nonexistent", {})
+        with mock.patch.object(stage, "SIDECAR_PARSER", 1):
+            old = stage.build_stage("/nonexistent", {})
+        self.assertNotEqual(built.signature, old.signature)
+
+
+class PageAttributionTest(unittest.TestCase):
+    """Native ranges and blank pages keep every later page on its own number."""
+
+    def setUp(self):
+        self.ws = Workspace(self)
+        self.config = self.ws.config(ocrmypdf=fake_ocrmypdf(self.ws.tmp),
+                                     vision={"endpoint": "http://127.0.0.1:8003/v1/chat/completions"})
+
+    def run_pages(self, sidecar_pages, page_count=None):
+        page_count = len(sidecar_pages) if page_count is None else page_count
+        digest = self.ws.add("doc.pdf", scanned_pdf([noise_page(40 + i) for i in range(page_count)]))
+        self.ws.write_queue()
+        tools, vision = FakeTools({digest: sidecar_pages}), FakeVision()
+        line, code, outcomes = stage.run(self.ws.args(self.config), runner=tools, transport=vision)
+        self.assertEqual(code, 0)
+        rendered = [int(argv[argv.index("-f") + 1]) for argv in tools.calls if Path(argv[0]).name == "pdftoppm"]
+        for argv in tools.calls:
+            if Path(argv[0]).name == "pdftoppm":
+                self.assertEqual(argv[argv.index("-f") + 1], argv[argv.index("-l") + 1])
+        self.assertEqual(len(vision.requests), len(rendered))
+        return digest, results(self.ws.out).get(digest), rendered, outcomes[0]
+
+    def rows(self, record):
+        self.assertEqual(record["page_count"], len(record["pages"]))
+        return [(p["page"], p["status"], p["engine"]) for p in record["pages"]]
+
+    def text_files(self, digest):
+        return sorted(path.name for path in next((self.ws.out / digest).iterdir()).glob("page-*.txt"))
+
+    def test_native_range_at_start_keeps_the_scanned_page_on_page_three(self):
+        digest, record, rendered, _ = self.run_pages([None, None, ""])
+        self.assertEqual(self.rows(record), [(1, "native_text", None), (2, "native_text", None),
+                                             (3, "ocr_text", "qwen")])
+        self.assertEqual(rendered, [3])  # the Qwen fallback renders page 3, not native page 2
+        self.assertEqual(self.text_files(digest), ["page-0003.txt"])
+
+    def test_native_range_in_the_middle(self):
+        digest, record, rendered, _ = self.run_pages([CLEAN, None, None, HANDWRITTEN_GARBAGE])
+        self.assertEqual(self.rows(record), [(1, "ocr_text", "tesseract"), (2, "native_text", None),
+                                             (3, "native_text", None), (4, "ocr_text", "qwen")])
+        self.assertEqual(rendered, [4])
+        self.assertEqual(self.text_files(digest), ["page-0001.txt", "page-0004.txt"])
+
+    def test_native_range_at_the_end_is_not_dropped(self):
+        _, record, rendered, _ = self.run_pages(["", None, None])
+        self.assertEqual(self.rows(record), [(1, "ocr_text", "qwen"), (2, "native_text", None),
+                                             (3, "native_text", None)])
+        self.assertEqual(rendered, [1])
+
+    def test_fully_native_document_has_a_row_per_page(self):
+        _, record, rendered, outcome = self.run_pages([None, None])
+        self.assertEqual(self.rows(record), [(1, "native_text", None), (2, "native_text", None)])
+        self.assertEqual((rendered, outcome.status), ([], "ocr_complete"))
+
+    def test_trailing_blank_page_is_kept_and_sent_to_vision(self):
+        digest, record, rendered, _ = self.run_pages([CLEAN, ""])
+        self.assertEqual(self.rows(record), [(1, "ocr_text", "tesseract"), (2, "ocr_text", "qwen")])
+        self.assertEqual(record["pages"][1]["tesseract_reason"], "ocr_empty")
+        self.assertEqual(rendered, [2])
+        self.assertEqual(self.text_files(digest), ["page-0001.txt", "page-0002.txt"])
+
+    def test_two_blank_pages_are_two_pages(self):
+        _, record, rendered, _ = self.run_pages(["", ""])
+        self.assertEqual(self.rows(record), [(1, "ocr_text", "qwen"), (2, "ocr_text", "qwen")])
+        self.assertEqual(rendered, [1, 2])
+
+    def test_trailing_blank_page_without_vision_stays_an_unresolved_page(self):
+        config = self.ws.config(ocrmypdf=fake_ocrmypdf(self.ws.tmp))
+        digest = self.ws.add("doc.pdf", scanned_pdf([noise_page(60), noise_page(61)]))
+        self.ws.write_queue()
+        line, _, outcomes = stage.run(self.ws.args(config), runner=FakeTools({digest: [CLEAN, ""]}),
+                                      transport=FakeVision())
+        record = results(self.ws.out)[digest]
+        self.assertEqual(self.rows(record), [(1, "ocr_text", "tesseract"), (2, "ocr_empty", "tesseract")])
+        self.assertEqual((outcomes[0].status, outcomes[0].unresolved_pages), ("ocr_partial", 1))
+        self.assertEqual(line["error_code"], "OCR_PAGES_UNRESOLVED")
+
+    def test_inconsistent_sidecar_fails_the_document_before_any_vision_call(self):
+        digest = self.ws.add("doc.pdf", scanned_pdf([noise_page(70), noise_page(71)]))
+        self.ws.write_queue()
+        tools, vision = FakeTools({digest: "p1\f[OCR skipped on page(s) 3]"}), FakeVision()
+        line, _, outcomes = stage.run(self.ws.args(self.config), runner=tools, transport=vision)
+        self.assertEqual((outcomes[0].status, outcomes[0].code), ("ocr_failed", "ocrmypdf_sidecar_inconsistent"))
+        self.assertEqual((vision.requests, tools.count("pdftoppm"), results(self.ws.out)), ([], 0, {}))
+        self.assertEqual(line["error_code"], "OCR_DOCUMENT_FAILED")
+
+    def test_backend_returning_an_unexpanded_range_fails_closed(self):
+        class Unexpanded:
+            engine, method = "tesseract", "ocrmypdf"
+
+            def identity(self):
+                return {"engine": self.engine}
+
+            def pages(self, source, workdir):
+                return ["[OCR skipped on page(s) 1-2]", ""]
+
+        digest = self.ws.add("doc.pdf", scanned_pdf([noise_page(80), noise_page(81), noise_page(82)]))
+        self.ws.write_queue()
+        calls = []
+
+        class Fallback:
+            engine, method = "qwen", "llama.cpp-vision"
+
+            def identity(self):
+                return {"engine": self.engine}
+
+            def page_text(self, source, page, workdir):
+                calls.append(page)
+                return "text"
+
+        built = stage.OcrStage(self.ws.out, Unexpanded(), Fallback())
+        item = stage.parse_queue_line(self.ws.lines[0], self.ws.sources)
+        outcome = built.process(item)
+        self.assertEqual((outcome.status, outcome.code), ("ocr_failed", "ocrmypdf_sidecar_inconsistent"))
+        self.assertEqual(calls, [])
+        self.assertFalse((self.ws.out / digest).exists())
 
 
 class BackendUnitTest(unittest.TestCase):
@@ -648,6 +815,49 @@ class RealToolSmokeTest(unittest.TestCase):
         self.assertEqual(len(vision.requests), 1)
         image = vision.requests[0][1]["messages"][1]["content"][1]["image_url"]["url"]
         self.assertTrue(image.startswith("data:image/png;base64,iVBOR"))  # a real PNG render
+
+    def test_native_ranges_and_blank_pages_keep_one_row_per_real_page(self):
+        """t_4913f5d3 F2/F6/F7/F8 shapes plus native-before-scan, through real OCRmyPDF."""
+        ws = Workspace(self)
+        typed = ws.tmp / "typed.pdf"
+        typed.write_bytes(native_text_pdf(["SYNTHETIC PUBLIC RECORDS RESPONSE", "Camera retention policy 30 days"]))
+        scan = rasterize_gray(stage.DEFAULT_PDFTOPPM, typed, ws.tmp)
+        native = ["SYNTHETIC BORN DIGITAL PAGE", "Native text layer"]
+        blank = blank_page(400, 520)
+        docs = {
+            "f2": ([native, native], ["native_text", "native_text"], []),
+            "f6": ([scan, native, native], ["ocr_text", "native_text", "native_text"], []),
+            "f7": ([blank, blank], ["ocr_text", "ocr_text"], [1, 2]),
+            "f8": ([scan, blank], ["ocr_text", "ocr_text"], [2]),
+            "native-first": ([native, native, scan, blank], ["native_text", "native_text", "ocr_text", "ocr_text"], [4]),
+        }
+        digests = {name: ws.add(name + ".pdf", mixed_pdf(pages)) for name, (pages, _, _) in docs.items()}
+        ws.write_queue()
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            return stage.run_group(argv, **kwargs)
+
+        config = ws.config(vision={"endpoint": "http://127.0.0.1:8003/v1/chat/completions"})
+        vision = FakeVision()
+        line, code, outcomes = stage.run(ws.args(config), runner=runner, transport=vision)
+        self.assertEqual(code, 0, line)
+        published = results(ws.out)
+        for name, (pages, statuses, vision_pages) in docs.items():
+            with self.subTest(name):
+                record = published[digests[name]]
+                self.assertEqual(record["page_count"], len(pages))
+                self.assertEqual([p["page"] for p in record["pages"]], list(range(1, len(pages) + 1)))
+                self.assertEqual([p["status"] for p in record["pages"]], statuses)
+                self.assertEqual([p["page"] for p in record["pages"] if p["engine"] == "qwen"], vision_pages)
+        record = published[digests["native-first"]]
+        self.assertEqual(record["pages"][2]["engine"], "tesseract")
+        text = next((ws.out / digests["native-first"]).iterdir()).joinpath("page-0003.txt").read_text().upper()
+        self.assertIn("RETENTION", text)  # the scanned page's text lands on page 3, not page 2
+        rendered = sorted(int(argv[argv.index("-f") + 1]) for argv in calls if Path(argv[0]).name == "pdftoppm")
+        self.assertEqual(rendered, sorted(sum((v for _, _, v in docs.values()), [])))
+        self.assertEqual(len(vision.requests), len(rendered))
 
     def test_cli_prints_one_stage_result_line_and_a_private_report(self):
         import contextlib
