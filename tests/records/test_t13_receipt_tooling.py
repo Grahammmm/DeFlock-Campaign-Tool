@@ -286,7 +286,7 @@ class FailureManifestTests(unittest.TestCase):
                      {"original_sha256": ok, "form": "pdf", "outcome": "EXTRACTED"},
                      {"original_sha256": "e" * 64, "form": "pdf", "outcome": "AWAITING_OCR"}]
         mails = [("mail-1", "acct", "Records/Agency", 900, 31, "<m1@portal.example.invalid>", eml,
-                  headers("Clerk <clerk@cityname.nextrequest.com>"), None, "x"),
+                  headers("Clerk <clerk@nextrequest.com>"), None, "x"),
                  ("mail-2", "acct", "INBOX", 900, 32, None, parent,
                   headers("person@gmail.com", date=None), "2026-09-30T01:02:03+00:00", "x")]
         evidence = lambda receipt: json.dumps({"receipt_sha256": receipt, "export_receipt_path": "/x"})
