@@ -200,7 +200,9 @@ class AdoptionRecoveryTests(unittest.TestCase):
         resumed = self.adopt(apply=True)
         self.assertEqual((resumed["resumed_messages"], resumed["adopted_messages"], resumed["failures"]), (2, 0, {}))
         self.assertEqual(resumed["after"], {"already_adopted": 2, "new_messages": 0, "incomplete_messages": 0,
-                                            "pending_messages": 0, "identity_conflicts": {}, "unfinalized_runs": 0})
+                                            "pending_messages": 0, "coded_gap_messages": 0, "coded_gaps": {},
+                                            "unaccepted_coded_gaps": {}, "identity_conflicts": {},
+                                            "unfinalized_runs": 0})
         self.assertFalse(mail_adoption.blocking(resumed))
         self.assertTrue(all(status == "done" for _, status in ledger_rows(self.ledger)[2]))
         before = tree(self.root)

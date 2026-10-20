@@ -166,7 +166,8 @@ writer outside the lock is live and apply refuses with `ledger_active_writer`
 
 ## Idempotency
 
-Only `new` and `incomplete` receipts are passed to `preserve`. If nothing is
+Only eligible `new` and `incomplete` receipts are passed to `preserve`; coded
+gaps (below) never are. If nothing is
 pending under the lock and no dead run needs finalizing, apply returns without
 starting a run: no `runs` row is written and the records-root tree stays
 byte-identical. Duplicate receipt identities inside the export are reported as
@@ -174,12 +175,42 @@ the gap `duplicate_receipt_identity` and are not adopted twice.
 
 Run rows use `run_id` `mail-history-<uuid4 hex>`, and
 `summary.runner_summary.source` is `mail-history`. The runner outcome is
-`completed` for a clean run, `completed_with_gaps` if any receipt failed, and
-`failed` on an unexpected abort.
+`completed` for a clean run, `completed_with_gaps` if any receipt failed or any
+coded gap was reported, and `failed` on an unexpected abort.
+`runner_summary` carries `coded_gap_messages` and `coded_gaps` in every case.
+
+## Coded gaps (G decision 2026-10-19, T4 option c)
+
+A `new` receipt that the canonical backend cannot adopt under its current
+contract is a coded gap. It is classified read-only in the backend's own order:
+
+1. legacy receipts (no `schema` key): the export EML is opened without
+   following symlinks, bounded by and hashed against its declared size and
+   digest, and parsed with the same `mail_delta.mime_candidates` check the
+   backend runs on the staged copy. A rejection gives its own code (for example
+   `unsupported_rfc822_part`); an unreadable or changed source gives
+   `source_unreadable`, `source_size_mismatch` or `source_hash_mismatch`;
+2. the original-binding precondition for every original of the receipt:
+   `original_scope_unresolved`, `original_scope_not_in_scope`,
+   `original_bytes_conflict` or `original_storage_elsewhere`. These are the
+   read-only prediction of the backend's `canonical_original_binding_conflict`.
+
+Coded gaps are never passed to `preserve`, so they cause no CAS blob, intake
+catalog row, verification receipt or ledger write. They are classified afresh
+on every run, counted in `coded_gaps` by code in every dry-run, apply, `after`
+and run summary, and never dropped: `new_messages = eligible_new_messages +
+coded_gap_messages` always holds.
+
+`ACCEPTED_GAP_CODES` holds the classes G accepted as reported gaps:
+`original_scope_unresolved` (an EML already declared as an unresolved legacy
+original) and `unsupported_rfc822_part`. They do not block (exit `0`). Any
+other code appears in `unaccepted_coded_gaps` as well and blocks (exit `3`).
+Resolving the accepted classes needs a separately reviewed contract
+(follow-up T4B); this command never rewrites a legacy declaration.
 
 ## Report counters (counts and hashes only; no paths, accounts or headers)
 
-Invariant: `receipts == already_adopted + pending_messages + sum(identity_conflicts)`.
+Invariant: `receipts == already_adopted + pending_messages + coded_gap_messages + sum(identity_conflicts)`.
 
 | key | meaning |
 |---|---|
@@ -187,12 +218,14 @@ Invariant: `receipts == already_adopted + pending_messages + sum(identity_confli
 | `source` | always `mail-history` |
 | `receipts` / `attachments` | INVENTORY: every valid receipt in the export and its attachment total, whatever its ledger state |
 | `already_adopted` | `complete` receipts |
-| `new_messages` / `new_attachments` | `new` receipts (not yet enrolled) |
-| `eligible_new_messages` | `new` minus `predicted_binding_conflicts` |
+| `new_messages` / `new_attachments` | `new` receipts (not yet enrolled) = eligible + coded gaps |
+| `eligible_new_messages` | `new` receipts with no coded gap |
+| `coded_gap_messages` / `coded_gap_attachments` | `new` receipts that are coded gaps |
+| `coded_gaps` | coded gaps by stable code |
+| `unaccepted_coded_gaps` | the subset of `coded_gaps` outside `ACCEPTED_GAP_CODES` (blocking) |
 | `incomplete_messages` | `incomplete` receipts (enrolled, preservation unfinished) |
-| `pending_messages` / `pending_attachments` | work remaining: `new` + `incomplete` |
+| `pending_messages` / `pending_attachments` | adoptable work remaining: eligible `new` + `incomplete` |
 | `identity_conflicts` | refused enrolled identities, by `identity_*` code |
-| `predicted_binding_conflicts` | `new` receipts the backend will refuse because of an existing original declaration (`original_scope_unresolved`, `original_scope_not_in_scope`, `original_bytes_conflict`, `original_storage_elsewhere`) |
 | `unfinalized_runs` | `mail-history-` runs still `running` (a dead prior apply) |
 | `gaps` | receipts that could not be loaded, by safe code |
 | `gate` | gate decision: `state`, `open`, `marker_present`, `marker_sha256` |
@@ -202,41 +235,48 @@ Invariant: `receipts == already_adopted + pending_messages + sum(identity_confli
 | `run_id` | present only when apply started a run |
 | `recovered_runs` | apply only, when dead runs existed: `{finalized|already_finalized|recovery_refused: n}` |
 | `ledger_wal_recovered` | apply only, when a non-empty WAL was recovered under the lock |
-| `after` | apply only: `already_adopted`, `new_messages`, `incomplete_messages`, `pending_messages`, `identity_conflicts`, `unfinalized_runs` re-read under the lock after the run |
+| `after` | apply only: `already_adopted`, `new_messages`, `incomplete_messages`, `pending_messages`, `coded_gap_messages`, `coded_gaps`, `unaccepted_coded_gaps`, `identity_conflicts`, `unfinalized_runs` re-read under the lock after the run |
 
-CLI exit codes: `0` clean; `2` refused (prints `{"status": "refused", "code": ...}`);
-`3` blocking: `failures`, `gaps` or `identity_conflicts` present; a dry run with
+CLI exit codes: `0` clean (accepted coded gaps may be present and are
+reported); `2` refused (prints `{"status": "refused", "code": ...}`);
+`3` blocking: `failures`, `gaps`, `identity_conflicts` or
+`unaccepted_coded_gaps` present; a dry run with
 `incomplete_messages` or `unfinalized_runs`; an apply whose `after` still has
-pending, incomplete, conflicting or unfinalized items; or `recovery_refused`.
-Zero adopted messages alone never means success.
+pending, incomplete, conflicting, unaccepted-gap or unfinalized items; or
+`recovery_refused`. Zero adopted messages alone never means success.
 
 ## Known limit
 
 `preserve` refuses a receipt whose EML or attachment is already declared in the
-ledger as an unresolved legacy original (`canonical_original_binding_conflict`).
-This command does not resolve such declarations. They are reported in advance as
-`predicted_binding_conflicts` and counted in `failures` on apply. Resolving them
-needs the separately reviewed original-resolution contract
-(`ledger/original_resolution.py`) and owner (G) approval.
+ledger as an unresolved legacy original (`canonical_original_binding_conflict`),
+and a legacy receipt whose EML contains a `message/rfc822` part
+(`unsupported_rfc822_part`). This command does not resolve either. Per G's
+decision they are accepted coded gaps (above), reported and never adopted.
+Resolving them needs a separately reviewed contract (T4B, or the
+original-resolution contract in `ledger/original_resolution.py`) and owner (G)
+approval.
 
-## TEST acceptance runbook (CONDITIONAL; NOT APPROVED)
+## TEST acceptance runbook
 
-This is the exact procedure for the local-only acceptance worker. It is NOT an
-authorization. It may only be executed after (a) this exact head has passed an
-independent different-model review, (b) G has decided the legacy-original
-policy, the unsupported `message/rfc822` receipt handling, TEST restore versus
-re-freeze, and the final gate/config state, and (c) G has explicitly re-approved
-the acceptance card. This runbook decides none of those. B1 limits are absent
-from the supplied plan; none are invented here. Rule: at most two unsuccessful
-attempts in total after the first failure, then stop and escalate through the
-prescribed route. Never hand-edit the ledger or intake catalog, never delete
-the marker, never follow or write live-root storage paths. Keep all detailed
-output local; report aggregates only.
+This is the exact procedure for the local-only acceptance worker. It may only
+be executed against an exact head that has passed an independent
+different-model review. G decided on 2026-10-19 (T4 option c): adopt everything
+adoptable; the receipts whose EMLs are already declared as unresolved legacy
+originals and the `message/rfc822` receipt are accepted coded gaps (115
+expected on TEST); TEST is restored from the pre-apply backup before the run.
+The final gate/config state still comes only from G's written decision (step
+6). B1 limits are absent from the supplied plan; none are invented here. Rule:
+at most two unsuccessful attempts in total after the first failure, then stop
+and escalate through the prescribed route. Never hand-edit the ledger or intake
+catalog, never delete the marker, never follow or write live-root storage
+paths. Keep all detailed output local; report aggregates only.
 
-Acceptance target: the TEST ledger ends with exactly `154` `mail_messages` rows,
-all of them identities from the frozen export (`receipts=154`). Only a written
-G decision naming a different total changes that target; without one, any other
-count is a stop, not a pass.
+Acceptance target: inventory `receipts=154`; every receipt is either adopted
+or an accepted coded gap; exactly `GAPS` coded gaps (115 per G's decision),
+all in `ACCEPTED_GAP_CODES`; the TEST ledger ends with exactly
+`TOTAL - GAPS` `mail_messages` rows (39 on the restored TEST), all of them
+identities from the frozen export. Only a written G decision changes `TOTAL`
+or `GAPS`; without one, any other count is a stop, not a pass.
 
 Variables (set locally; all paths must resolve inside the TEST copy):
 
@@ -248,6 +288,7 @@ Variables (set locally; all paths must resolve inside the TEST copy):
     INTAKE="$ROOT/intake/intake.sqlite"
     EV=<private local evidence dir outside $TEST, mode 0700>
     TOTAL=154                     # change ONLY on a written G decision; record its reference in $EV
+    GAPS=115                      # accepted coded gaps per G's 2026-10-19 decision (option c)
     G_GATE_STATE=<final gate.state from G's written decision>
     G_CONFIG_SHA256=<sha256 of the final config G approved, or 'none' if G decided no config>
     Q() { sqlite3 "file:$LEDGER?mode=ro&immutable=1" "$1"; }   # only valid when WAL is empty
@@ -292,18 +333,21 @@ Required dry-run values:
 - INVENTORY (every valid receipt, whatever its state): `receipts=$TOTAL` (154),
   `attachments=82`.
 - `gaps={}`, `identity_conflicts={}`, `incomplete_messages=0`,
-  `unfinalized_runs=0`, `predicted_binding_conflicts={}`. A non-empty
-  `predicted_binding_conflicts` passes only if G's written legacy-original
-  decision states that count and the matching `TOTAL`.
+  `unfinalized_runs=0`, `unaccepted_coded_gaps={}`.
+- `coded_gap_messages = $GAPS` (115) and the values of `coded_gaps` sum to it;
+  every key is in `ACCEPTED_GAP_CODES` (`original_scope_unresolved`,
+  `unsupported_rfc822_part`). Record `coded_gaps` locally.
 - `gate.open=true`, and `gate.marker_sha256` matches `$EV/marker0`.
 - NEW/ELIGIBLE counts, distinct from inventory: record `A0=already_adopted`
   and `N0=new_messages`; require `A0 + N0 = $TOTAL`,
-  `eligible_new_messages = N0` and `pending_messages = N0`.
+  `eligible_new_messages = N0 - $GAPS` and `pending_messages = N0 - $GAPS`.
+  Call `E0 = N0 - $GAPS`.
 - Require `M0 = A0`: every existing `mail_messages` row is an export identity
   whose canonical bindings were fully validated. `M0 > A0` means the ledger
   holds rows unrelated to this export; stop and escalate, never accept them
   silently. Do not assume `N0 = 154`: the original freeze already contained
-  adopted identities (three per the upstream handoff).
+  adopted identities (three per the upstream handoff; after the restore expect
+  `A0=3`, `N0=151`, `E0=36`).
 
 Any deviation: stop and escalate; do not apply.
 
@@ -314,24 +358,27 @@ Step 3 -- apply (exit must be 0):
     manifest "$TEST" > "$EV/tree2"
 
 Required in both branches: `failures={}`, `resumed_messages=0`,
-`after = {already_adopted: $TOTAL, new_messages: 0, incomplete_messages: 0,
-pending_messages: 0, identity_conflicts: {}, unfinalized_runs: 0}`, and no
-`recovered_runs` or `ledger_wal_recovered` key.
+`adopted_messages + coded_gap_messages = N0` with `coded_gap_messages = $GAPS`,
+`after = {already_adopted: $TOTAL - $GAPS, new_messages: $GAPS,
+incomplete_messages: 0, pending_messages: 0, coded_gap_messages: $GAPS,
+coded_gaps: <as in step 2>, unaccepted_coded_gaps: {}, identity_conflicts: {},
+unfinalized_runs: 0}`, and no `recovered_runs` or `ledger_wal_recovered` key.
 
-Branch on `N0`:
+Branch on `E0`:
 
-- `N0 > 0`: `adopted_messages = N0` and a `run_id` key. Expect `R1 = R0 + 1`,
+- `E0 > 0`: `adopted_messages = E0` and a `run_id` key. Expect `R1 = R0 + 1`,
   and the `mail-history-` status counts equal `runs0` plus exactly one
-  `completed`.
-- `N0 = 0`: the command does not start a run. Require `adopted_messages = 0`,
+  `completed_with_gaps` (or `completed` when `GAPS = 0`). Its
+  `runner_summary.coded_gaps` equals the step-2 `coded_gaps`.
+- `E0 = 0`: the command does not start a run. Require `adopted_messages = 0`,
   no `run_id` key, `R1 = R0`, `runs1` identical to `runs0`, and
   `cmp "$EV/tree1" "$EV/tree2"` succeeds (nothing written).
 
 SQL (both branches):
 
     test ! -s "$LEDGER-wal" && test ! -s "$INTAKE-wal"
-    Q "SELECT count(*) FROM mail_messages"            # = $TOTAL exactly (154), and = M0 + N0
-    R1=$(Q "SELECT count(*) FROM runs")               # = R0 + 1 if N0 > 0; = R0 if N0 = 0
+    Q "SELECT count(*) FROM mail_messages"            # = $TOTAL - $GAPS exactly (39), and = M0 + E0
+    R1=$(Q "SELECT count(*) FROM runs")               # = R0 + 1 if E0 > 0; = R0 if E0 = 0
     Q "SELECT status,count(*) FROM runs WHERE run_id LIKE 'mail-history-%' GROUP BY status" > "$EV/runs1"
     Q "SELECT count(*) FROM runs WHERE run_id LIKE 'mail-history-%' AND (status='running' OR ended_at IS NULL)"   # 0
     Q "SELECT count(*) FROM stage_state s WHERE s.stage='preserve' AND s.status!='done' AND s.original_sha256 IN
@@ -345,10 +392,11 @@ Step 4 -- zero-pending rerun (exit must be 0):
     manifest "$TEST" > "$EV/tree3"; cmp "$EV/tree2" "$EV/tree3"       # nothing written
 
 Required: no `run_id`, `adopted_messages=0`, `resumed_messages=0`,
-`pending_messages=0`, `incomplete_messages=0`, `already_adopted=$TOTAL`,
-`identity_conflicts={}`, `failures={}`, `gaps={}`; SQL counts identical to step
-3 (`mail_messages = $TOTAL`, `runs = R1`). Zero adopted alone does not pass:
-every step-2/3 condition must also hold.
+`pending_messages=0`, `incomplete_messages=0`, `already_adopted=$TOTAL - $GAPS`,
+`coded_gap_messages=$GAPS` (still reported, same `coded_gaps`),
+`unaccepted_coded_gaps={}`, `identity_conflicts={}`, `failures={}`, `gaps={}`;
+SQL counts identical to step 3 (`mail_messages = $TOTAL - $GAPS`, `runs = R1`).
+Zero adopted alone does not pass: every step-2/3 condition must also hold.
 
 Step 5 -- source integrity:
 
@@ -365,7 +413,8 @@ marker. Then verify with a dry run, which must not mutate anything:
         ${G_FINAL_CONFIG:+--config "$G_FINAL_CONFIG"} > "$EV/final.json"; echo "exit=$?"   # 0
     manifest "$TEST" > "$EV/tree4"; diff "$EV/tree3" "$EV/tree4"   # empty, except the config file's own lines if G placed it inside $TEST
     J "$EV/final.json" gate.state                                  # = "$G_GATE_STATE"
-    J "$EV/final.json" already_adopted; J "$EV/final.json" pending_messages   # $TOTAL; 0
+    J "$EV/final.json" already_adopted; J "$EV/final.json" pending_messages   # $TOTAL - $GAPS; 0
+    J "$EV/final.json" coded_gap_messages                          # $GAPS
     test "$(stat -c %a "$G_FINAL_CONFIG")" = 600 && sha256sum "$G_FINAL_CONFIG"   # = $G_CONFIG_SHA256 (skip if 'none')
     sha256sum "$ROOT/.adoption-disabled-v1.json" | cmp - "$EV/marker0"   # marker unchanged (or absent)
 
@@ -387,7 +436,7 @@ script inside the Flock container. It decides no policy, never writes or
 changes the config, and never runs on anything except a `*-TEST` copy:
 
     python3 -B <engine>/scripts/verify_adoption_test.py \
-        --test-root "$TEST" --config "$TEST_CONFIG" \
+        --test-root "$TEST" --config "$TEST_CONFIG" --expect-coded-gaps "$GAPS" \
         --receipt <new file outside $TEST> [--dry-run-only]
 
 - `--test-root` must name a directory ending in `-TEST`. `processing-v1/` and
@@ -395,7 +444,9 @@ changes the config, and never runs on anything except a `*-TEST` copy:
 - The effective uid must own the ledger, and the config must already exist and
   be owner-only.
 - The engine is the checkout that contains the script. `--engine` overrides it.
-- The expected totals default to 154 messages and 82 attachments.
+- The expected totals default to 154 messages and 82 attachments, and
+  `--expect-coded-gaps` defaults to 0; on TEST pass `115` per G's decision.
+  Unaccepted coded gaps always fail the dry-run checks.
 - The script stops before apply if any step-2 precondition fails, and stops
   before the rerun if any step-3 check fails.
 
@@ -427,4 +478,5 @@ Synthetic tests: `tests.records.test_verify_adoption_test_script`.
 
     python3 -B -m unittest tests.records.test_mail_adoption \
         tests.records.test_mail_adoption_regression tests.records.test_mail_adoption_recovery \
-        tests.records.test_mail_adoption_bindings
+        tests.records.test_mail_adoption_bindings tests.records.test_mail_adoption_coded_gaps \
+        tests.records.test_verify_adoption_test_script

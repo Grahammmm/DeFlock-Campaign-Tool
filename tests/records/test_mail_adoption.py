@@ -128,7 +128,9 @@ class MailAdoptionTests(unittest.TestCase):
         self.assertEqual((report["adopted_messages"], report["adopted_attachments"]), (3, 3))
         self.assertEqual(report["failures"], {})
         self.assertEqual(report["after"], {"already_adopted": 3, "new_messages": 0, "incomplete_messages": 0,
-                                           "pending_messages": 0, "identity_conflicts": {}, "unfinalized_runs": 0})
+                                           "pending_messages": 0, "coded_gap_messages": 0, "coded_gaps": {},
+                                           "unaccepted_coded_gaps": {}, "identity_conflicts": {},
+                                           "unfinalized_runs": 0})
         self.assertEqual(self.count("SELECT count(*) FROM mail_messages"), 3)
         self.assertEqual(self.count("SELECT count(*) FROM occurrences WHERE kind='attachment'"), 3)
         summary = json.loads(self.count("SELECT summary FROM runs WHERE run_id LIKE 'mail-history-%'"))
@@ -158,7 +160,7 @@ class MailAdoptionTests(unittest.TestCase):
         self.assertEqual(report["receipts"], 3)
         self.assertEqual(report["gaps"], {"incomplete_receipt": 1})
 
-    def test_legacy_unresolved_original_is_predicted_and_refused(self):
+    def test_legacy_unresolved_original_is_a_coded_gap_never_sent_to_backend(self):
         _, receipt = legacy_export(self.export, uid=50, body="A different synthetic body.\n")
         sha = receipt["original_eml"]["sha256"]
         from campaign_tool.records.ledger import store
@@ -168,12 +170,18 @@ class MailAdoptionTests(unittest.TestCase):
                          "unresolved", "unresolved", None, "captured", "eml", "{}"))
             con.commit()
         dry = self.adopt()
-        self.assertEqual(dry["predicted_binding_conflicts"], {"original_scope_unresolved": 1})
+        self.assertEqual(dry["coded_gaps"], {"original_scope_unresolved": 1})
+        self.assertEqual((dry["new_messages"], dry["eligible_new_messages"], dry["pending_messages"]), (4, 3, 3))
         report = self.adopt(apply=True, config_path=self.config())
         self.assertEqual(report["adopted_messages"], 3)
-        self.assertEqual(report["failures"], {"canonical_original_binding_conflict": 1})
+        self.assertEqual(report["failures"], {})
         self.assertEqual(report["after"], {"already_adopted": 3, "new_messages": 1, "incomplete_messages": 0,
-                                           "pending_messages": 1, "identity_conflicts": {}, "unfinalized_runs": 0})
+                                           "pending_messages": 0, "coded_gap_messages": 1,
+                                           "coded_gaps": {"original_scope_unresolved": 1},
+                                           "unaccepted_coded_gaps": {}, "identity_conflicts": {},
+                                           "unfinalized_runs": 0})
+        self.assertFalse(mail_adoption.blocking(report))
+        self.assertFalse((self.root / "intake" / "blobs" / sha).exists())
         # The legacy declaration is left untouched for its own resolution contract.
         self.assertEqual(self.count("SELECT scope FROM originals WHERE sha256='" + sha + "'"), "unresolved")
 

@@ -163,9 +163,9 @@ class VerifyAdoptionTestScriptTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.count("SELECT count(*) FROM mail_messages"), 0)
 
-    def test_unresolved_legacy_original_stops_before_apply(self):
-        # Mirrors the known blocker class: an EML already declared as an
-        # unresolved legacy original. The script must not apply around it.
+    def test_unresolved_legacy_original_stops_before_apply_unless_expected(self):
+        # Mirrors the known gap class: an EML already declared as an unresolved
+        # legacy original. Without --expect-coded-gaps the script must not apply.
         _, receipt = synthetic_receipt(self.export, uid=25, attachments=0)
         sha = receipt["original_eml"]["sha256"]
         from campaign_tool.records.ledger import store
@@ -179,12 +179,48 @@ class VerifyAdoptionTestScriptTests(unittest.TestCase):
         self.assertEqual(done.returncode, 1, done.stdout)
         receipt = json.loads((self.out / "receipt.json").read_text())
         self.assertEqual(receipt["status"], "fail_dry_run")
-        self.assertEqual(receipt["dry_run"]["predicted_binding_conflicts"], {"original_scope_unresolved": 1})
-        self.assertIn("dry_no_predicted_binding_conflicts", receipt["failed_checks"])
-        self.assertIn("dry_eligible_equals_new", receipt["failed_checks"])
+        self.assertEqual(receipt["dry_run"]["coded_gaps"], {"original_scope_unresolved": 1})
+        self.assertEqual(receipt["failed_checks"], ["dry_coded_gaps_expected", "dry_eligible_is_new_minus_coded_gaps",
+                                                    "dry_pending_is_eligible"])
         self.assertNotIn("apply", receipt)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.count("SELECT count(*) FROM mail_messages"), 0)
+
+        # G decision (T4 option c): with the gap count expected, adopt the rest.
+        done = self.run_script("accepted.json", messages=5, attachments=4, extra=("--expect-coded-gaps", "1"))
+        self.assertEqual(done.returncode, 0, done.stdout)
+        receipt = json.loads((self.out / "accepted.json").read_text())
+        self.assertEqual((receipt["status"], receipt["failed_checks"]), ("pass", []))
+        self.assertEqual(receipt["expected"]["coded_gaps"], 1)
+        self.assertEqual((receipt["apply"]["adopted_messages"], receipt["apply"]["coded_gap_messages"]), (4, 1))
+        self.assertEqual(receipt["after_apply"]["mail_messages"], 4)
+        self.assertEqual(receipt["after_apply"]["mail_history_runs_by_status"], {"completed_with_gaps": 1})
+        self.assertEqual((receipt["rerun"]["adopted_messages"], receipt["rerun"]["coded_gap_messages"]), (0, 1))
+        self.assertEqual(receipt["rerun"]["after"]["coded_gaps"], {"original_scope_unresolved": 1})
+        self.assertEqual(self.count("SELECT scope FROM originals WHERE sha256='%s'" % sha), "unresolved")
+        self.assert_numbers_only((self.out / "accepted.json").read_text(), receipt)
+
+    def test_unaccepted_coded_gap_stops_before_apply_even_when_counted(self):
+        _, receipt = synthetic_receipt(self.export, uid=26, attachments=0)
+        from campaign_tool.records.ledger import store
+        with store.ledger(self.root / "ledger.sqlite") as con:
+            con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (receipt["original_eml"]["sha256"], receipt["original_eml"]["bytes"] + 1, None,
+                         "2026-01-01T00:00:00+00:00", "unresolved", "in_scope", None, "captured", "eml", "{}"))
+            con.commit()
+        before = self.snapshot()
+        done = self.run_script(messages=5, attachments=4, extra=("--expect-coded-gaps", "1"))
+        self.assertEqual(done.returncode, 1, done.stdout)
+        receipt = json.loads((self.out / "receipt.json").read_text())
+        self.assertEqual(receipt["dry_run"]["unaccepted_coded_gaps"], {"original_bytes_conflict": 1})
+        self.assertIn("dry_exit_0", receipt["failed_checks"])
+        self.assertIn("dry_no_unaccepted_coded_gaps", receipt["failed_checks"])
+        self.assertNotIn("apply", receipt)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_expected_coded_gaps_out_of_range_is_refused(self):
+        done = self.run_script(extra=("--expect-coded-gaps", "5"))
+        self.assertEqual((done.returncode, json.loads(done.stdout)["code"]), (2, "expected_counts_invalid"))
 
     def test_closed_gate_stops_before_apply(self):
         before = self.snapshot()
@@ -265,14 +301,17 @@ class VerifyAdoptionTestScriptTests(unittest.TestCase):
                         "report": verify_script.sanitize_report({
                             "mode": "apply", "source": "mail-history", "receipts": 4, "attachments": 4,
                             "already_adopted": 0, "new_messages": 4, "adopted_messages": 1,
+                            "coded_gap_messages": 0, "coded_gaps": {}, "unaccepted_coded_gaps": {},
                             "resumed_messages": 0, "failures": {"canonical_original_binding_conflict": 3},
                             "gate": {"state": "enabled", "open": True}, "run_id": "mail-history-x",
                             "after": {"already_adopted": 1, "new_messages": 3, "incomplete_messages": 0,
-                                      "pending_messages": 3, "identity_conflicts": {}, "unfinalized_runs": 0}})}
+                                      "pending_messages": 3, "coded_gap_messages": 0, "coded_gaps": {},
+                                      "unaccepted_coded_gaps": {}, "identity_conflicts": {},
+                                      "unfinalized_runs": 0}})}
         receipt = self.stubbed_verify([None, failed_apply])
         self.assertEqual(receipt["status"], "fail_apply")
         self.assertNotIn("rerun", receipt)
-        for name in ("apply_exit_0", "apply_no_failures", "apply_adopted_equals_new", "apply_after_clean"):
+        for name in ("apply_exit_0", "apply_no_failures", "apply_adopted_equals_eligible", "apply_after_clean"):
             self.assertIn(name, receipt["failed_checks"])
         self.assertEqual(receipt["apply"]["failures"], {"canonical_original_binding_conflict": 3})
 
@@ -282,10 +321,12 @@ class VerifyAdoptionTestScriptTests(unittest.TestCase):
                      "mode": "apply", "source": "mail-history", "receipts": 4, "attachments": 4,
                      "already_adopted": 4, "new_messages": 0, "pending_messages": 0, "incomplete_messages": 0,
                      "adopted_messages": 2, "resumed_messages": 0, "failures": {}, "gaps": {},
+                     "coded_gap_messages": 0, "coded_gaps": {}, "unaccepted_coded_gaps": {},
                      "identity_conflicts": {}, "gate": {"state": "enabled", "open": True},
                      "run_id": "mail-history-y",
                      "after": {"already_adopted": 4, "new_messages": 0, "incomplete_messages": 0,
-                               "pending_messages": 0, "identity_conflicts": {}, "unfinalized_runs": 0}})}
+                               "pending_messages": 0, "coded_gap_messages": 0, "coded_gaps": {},
+                               "unaccepted_coded_gaps": {}, "identity_conflicts": {}, "unfinalized_runs": 0}})}
         receipt = self.stubbed_verify([None, None, rerun])
         self.assertEqual(receipt["status"], "fail")
         self.assertEqual(sorted(receipt["failed_checks"]), ["rerun_adopted_zero", "rerun_no_run_started"])

@@ -17,14 +17,19 @@ around the reviewed engine command and decides no policy itself:
   2. ``adopt-mail`` dry run. It must exit 0 and leave the fixture tree
      unchanged. Every runbook precondition must hold: inventory equal to the
      expected totals (154 messages / 82 attachments by default), no gaps,
-     conflicts, incomplete or predicted binding conflicts, an open gate,
-     already_adopted + new = total, and ledger rows equal to already_adopted.
+     conflicts or incomplete messages, an open gate, already_adopted + new =
+     total, and ledger rows equal to already_adopted. Coded gaps (receipts the
+     backend cannot adopt under its current contract) must number exactly
+     ``--expect-coded-gaps`` (default 0) and all be of a G-accepted class
+     (``unaccepted_coded_gaps`` empty); eligible = pending = new - coded gaps.
      If any check fails, the script stops here and never applies.
   3. ``adopt-mail --apply``. It must exit 0 with no failures, adopt exactly the
-     new messages, and leave ``mail_messages`` equal to the expected total. A
-     run row is added only if there was something to adopt.
-  4. ``adopt-mail --apply`` again. It must adopt 0, start no run, and leave the
-     tree byte-identical.
+     eligible new messages (adopted + coded gaps = new), and leave
+     ``mail_messages`` equal to the expected total minus the coded gaps. A run
+     row is added only if there was something to adopt; it is
+     ``completed_with_gaps`` when coded gaps were reported, else ``completed``.
+  4. ``adopt-mail --apply`` again. It must adopt 0, start no run, still report
+     the same number of coded gaps, and leave the tree byte-identical.
   5. the export tree and the disable marker are unchanged throughout.
 
 The receipt (``--receipt``, also printed to stdout) holds only integers,
@@ -79,10 +84,13 @@ GATE_STATES = frozenset({"disabled_no_config", "disabled_by_config", "disabled_b
                          "marker_binding_mismatch", "disable_marker_unreadable", "enabled",
                          "enabled_marker_superseded_by_config"})
 REPORT_INTS = ("receipts", "attachments", "already_adopted", "new_messages", "new_attachments",
-               "eligible_new_messages", "incomplete_messages", "pending_messages", "pending_attachments",
+               "eligible_new_messages", "coded_gap_messages", "coded_gap_attachments",
+               "incomplete_messages", "pending_messages", "pending_attachments",
                "unfinalized_runs", "adopted_messages", "adopted_attachments", "resumed_messages")
-REPORT_MAPS = ("identity_conflicts", "predicted_binding_conflicts", "gaps", "failures", "recovered_runs")
-AFTER_INTS = ("already_adopted", "new_messages", "incomplete_messages", "pending_messages", "unfinalized_runs")
+REPORT_MAPS = ("identity_conflicts", "coded_gaps", "unaccepted_coded_gaps", "gaps", "failures", "recovered_runs")
+AFTER_INTS = ("already_adopted", "new_messages", "incomplete_messages", "pending_messages", "coded_gap_messages",
+              "unfinalized_runs")
+AFTER_MAPS = ("identity_conflicts", "coded_gaps", "unaccepted_coded_gaps")
 
 
 class Refused(Exception):
@@ -231,7 +239,9 @@ def sanitize_report(report):
         for key in AFTER_INTS:
             value = after.get(key)
             out["after"][key] = value if isinstance(value, int) and not isinstance(value, bool) else None
-        out["after"]["identity_conflicts"] = safe_counts(after.get("identity_conflicts", {}))
+        for key in AFTER_MAPS:
+            if key in after:
+                out["after"][key] = safe_counts(after[key])
     return out
 
 
@@ -294,7 +304,8 @@ def guard(args, *, euid=None):
         raise Refused("engine_missing_adopt_mail")
     if os.path.commonpath((str(engine.resolve()), str(raw))) == str(raw):
         raise Refused("engine_inside_test_root")
-    if args.expect_messages < 0 or args.expect_attachments < 0:
+    if args.expect_messages < 0 or args.expect_attachments < 0 or not \
+            0 <= args.expect_coded_gaps <= args.expect_messages:
         raise Refused("expected_counts_invalid")
     return {"raw": raw, "root": root, "export": export, "ledger": ledger, "config": config,
             "receipt": receipt, "engine": engine, "module": module}
@@ -305,53 +316,67 @@ def _check(checks, name, ok):
     return bool(ok)
 
 
-def dry_run_checks(checks, dry, baseline, tree_same, total, attachments):
+def dry_run_checks(checks, dry, baseline, tree_same, total, attachments, coded):
     rep = dry["report"]
     _check(checks, "dry_exit_0", dry["exit"] == 0)
     _check(checks, "dry_parsed", rep.get("parsed") and not rep.get("refused"))
     _check(checks, "dry_tree_unchanged", tree_same)
     _check(checks, "dry_inventory_messages", rep.get("receipts") == total)
     _check(checks, "dry_inventory_attachments", rep.get("attachments") == attachments)
-    for key in ("gaps", "identity_conflicts", "predicted_binding_conflicts"):
+    for key in ("gaps", "identity_conflicts", "unaccepted_coded_gaps"):
         _check(checks, "dry_no_" + key, rep.get(key) == {})
+    _check(checks, "dry_coded_gaps_expected", rep.get("coded_gap_messages") == coded)
+    gap_map = rep.get("coded_gaps")
+    _check(checks, "dry_coded_gaps_counted", isinstance(gap_map, dict)
+           and sum(gap_map.values()) == rep.get("coded_gap_messages"))
     _check(checks, "dry_no_incomplete", rep.get("incomplete_messages") == 0)
     _check(checks, "dry_no_unfinalized_runs", rep.get("unfinalized_runs") == 0)
     _check(checks, "dry_gate_open", rep.get("gate_open"))
     a0, n0 = rep.get("already_adopted"), rep.get("new_messages")
     _check(checks, "dry_adopted_plus_new_is_total", isinstance(a0, int) and isinstance(n0, int) and a0 + n0 == total)
-    _check(checks, "dry_eligible_equals_new", rep.get("eligible_new_messages") == n0)
-    _check(checks, "dry_pending_equals_new", rep.get("pending_messages") == n0)
+    eligible = n0 - coded if isinstance(n0, int) else None
+    _check(checks, "dry_eligible_is_new_minus_coded_gaps", rep.get("eligible_new_messages") == eligible)
+    _check(checks, "dry_pending_is_eligible", rep.get("pending_messages") == eligible)
     _check(checks, "baseline_ledger_readable", baseline is not None)
     _check(checks, "baseline_rows_equal_adopted", baseline is not None and baseline["mail_messages"] == a0)
     _check(checks, "baseline_no_open_runs", baseline is not None and baseline["mail_history_runs_open"] == 0)
 
 
-def after_clean(rep, total):
+def after_clean(rep, total, coded):
     after = rep.get("after") or {}
-    return (after.get("already_adopted") == total and after.get("new_messages") == 0
+    return (after.get("already_adopted") == total - coded and after.get("new_messages") == coded
+            and after.get("coded_gap_messages") == coded and after.get("unaccepted_coded_gaps") == {}
             and after.get("incomplete_messages") == 0 and after.get("pending_messages") == 0
             and after.get("unfinalized_runs") == 0 and after.get("identity_conflicts") == {})
 
 
-def apply_checks(checks, app, n0, baseline, counts, total):
+def apply_checks(checks, app, n0, baseline, counts, total, coded):
     rep = app["report"]
+    eligible = n0 - coded
     _check(checks, "apply_exit_0", app["exit"] == 0)
     _check(checks, "apply_parsed", rep.get("parsed") and not rep.get("refused") and rep.get("mode_apply"))
     _check(checks, "apply_no_failures", rep.get("failures") == {})
-    _check(checks, "apply_adopted_equals_new", rep.get("adopted_messages") == n0)
+    _check(checks, "apply_adopted_equals_eligible", rep.get("adopted_messages") == eligible)
+    _check(checks, "apply_adopted_plus_coded_gaps_is_new",
+           isinstance(rep.get("adopted_messages"), int)
+           and rep.get("adopted_messages") + (rep.get("coded_gap_messages") or 0) == n0
+           and rep.get("coded_gap_messages") == coded)
+    _check(checks, "apply_no_unaccepted_coded_gaps", rep.get("unaccepted_coded_gaps") == {})
     _check(checks, "apply_resumed_zero", rep.get("resumed_messages") == 0)
     _check(checks, "apply_no_recovery", "recovered_runs" not in rep and not rep.get("ledger_wal_recovered"))
-    _check(checks, "apply_after_clean", after_clean(rep, total))
-    _check(checks, "apply_run_started_iff_new", rep.get("started_run") == (n0 > 0))
+    _check(checks, "apply_after_clean", after_clean(rep, total, coded))
+    _check(checks, "apply_run_started_iff_eligible", rep.get("started_run") == (eligible > 0))
     _check(checks, "apply_ledger_readable", counts is not None)
     if counts is None or baseline is None:
         return
-    _check(checks, "apply_mail_messages_is_total", counts["mail_messages"] == total)
-    _check(checks, "apply_mail_messages_is_baseline_plus_new", counts["mail_messages"] == baseline["mail_messages"] + n0)
-    _check(checks, "apply_runs_delta", counts["runs"] == baseline["runs"] + (1 if n0 > 0 else 0))
+    _check(checks, "apply_mail_messages_is_total_minus_coded_gaps", counts["mail_messages"] == total - coded)
+    _check(checks, "apply_mail_messages_is_baseline_plus_eligible",
+           counts["mail_messages"] == baseline["mail_messages"] + eligible)
+    _check(checks, "apply_runs_delta", counts["runs"] == baseline["runs"] + (1 if eligible > 0 else 0))
     expected = dict(baseline["mail_history_runs_by_status"])
-    if n0 > 0:
-        expected["completed"] = expected.get("completed", 0) + 1
+    if eligible > 0:
+        status = "completed_with_gaps" if coded else "completed"
+        expected[status] = expected.get(status, 0) + 1
     _check(checks, "apply_mail_history_run_statuses", counts["mail_history_runs_by_status"] == expected)
     _check(checks, "apply_no_open_runs", counts["mail_history_runs_open"] == 0)
     _check(checks, "apply_preserve_all_done", counts["mail_export_preserve_not_done"] == 0)
@@ -359,24 +384,26 @@ def apply_checks(checks, app, n0, baseline, counts, total):
     _check(checks, "apply_no_foreign_key_violations", counts["foreign_key_violations"] == 0)
 
 
-def rerun_checks(checks, again, counts_before, counts, tree_same, total):
+def rerun_checks(checks, again, counts_before, counts, tree_same, total, coded):
     rep = again["report"]
     _check(checks, "rerun_exit_0", again["exit"] == 0)
     _check(checks, "rerun_parsed", rep.get("parsed") and not rep.get("refused") and rep.get("mode_apply"))
     _check(checks, "rerun_adopted_zero", rep.get("adopted_messages") == 0 and rep.get("resumed_messages") == 0)
     _check(checks, "rerun_no_run_started", rep.get("started_run") is False)
     _check(checks, "rerun_nothing_pending", rep.get("pending_messages") == 0 and rep.get("incomplete_messages") == 0)
-    _check(checks, "rerun_already_adopted_is_total", rep.get("already_adopted") == total)
-    for key in ("failures", "gaps", "identity_conflicts"):
+    _check(checks, "rerun_already_adopted_is_total_minus_coded_gaps", rep.get("already_adopted") == total - coded)
+    _check(checks, "rerun_coded_gaps_still_reported", rep.get("coded_gap_messages") == coded)
+    for key in ("failures", "gaps", "identity_conflicts", "unaccepted_coded_gaps"):
         _check(checks, "rerun_no_" + key, rep.get(key) == {})
-    _check(checks, "rerun_after_clean", after_clean(rep, total))
+    _check(checks, "rerun_after_clean", after_clean(rep, total, coded))
     _check(checks, "rerun_tree_unchanged", tree_same)
     _check(checks, "rerun_counts_unchanged", counts is not None and counts == counts_before)
 
 
 def new_receipt(args):
     return {"schema": SCHEMA, "status": None, "stopped_at": "start",
-            "expected": {"messages": args.expect_messages, "attachments": args.expect_attachments},
+            "expected": {"messages": args.expect_messages, "attachments": args.expect_attachments,
+                         "coded_gaps": args.expect_coded_gaps},
             "dry_run_only": bool(args.dry_run_only), "checks": {}}
 
 
@@ -387,7 +414,7 @@ def verify(paths, args, receipt=None):
     escaping to main() is reported against the phase where it happened. Each
     phase runs only after the previous one returned normally.
     """
-    total, attachments = args.expect_messages, args.expect_attachments
+    total, attachments, coded = args.expect_messages, args.expect_attachments, args.expect_coded_gaps
     raw, root, export, ledger, config = (paths[k] for k in ("raw", "root", "export", "ledger", "config"))
     engine = paths["engine"]
     receipt = new_receipt(args) if receipt is None else receipt
@@ -423,7 +450,7 @@ def verify(paths, args, receipt=None):
     tree1 = tree_digest(raw)
     receipt["dry_run"] = {"exit": dry["exit"], "timed_out": dry["timed_out"],
                           "stderr_empty": dry["stderr_empty"], **dry["report"]}
-    dry_run_checks(checks, dry, baseline, tree1 == tree0, total, attachments)
+    dry_run_checks(checks, dry, baseline, tree1 == tree0, total, attachments, coded)
     if not all(checks.values()):
         return finish("dry_run")
     if args.dry_run_only:
@@ -437,8 +464,8 @@ def verify(paths, args, receipt=None):
     receipt["apply"] = {"exit": app["exit"], "timed_out": app["timed_out"],
                         "stderr_empty": app["stderr_empty"], **app["report"]}
     receipt["after_apply"] = counts
-    apply_checks(checks, app, n0, baseline, counts, total)
-    if n0 == 0:
+    apply_checks(checks, app, n0, baseline, counts, total, coded)
+    if n0 == coded:
         _check(checks, "apply_tree_unchanged_when_nothing_new", tree2 == tree1)
     if not all(checks.values()):
         return finish("apply")
@@ -450,7 +477,7 @@ def verify(paths, args, receipt=None):
     receipt["rerun"] = {"exit": again["exit"], "timed_out": again["timed_out"],
                         "stderr_empty": again["stderr_empty"], **again["report"]}
     receipt["after_rerun"] = counts_again
-    rerun_checks(checks, again, counts, counts_again, tree3 == tree2, total)
+    rerun_checks(checks, again, counts, counts_again, tree3 == tree2, total, coded)
     receipt["new_on_rerun"] = again["report"].get("adopted_messages")
     return finish("done")
 
@@ -493,6 +520,8 @@ def parse_args(argv=None):
     parser.add_argument("--engine", help="engine checkout containing campaign_tool (default: this script's repo)")
     parser.add_argument("--expect-messages", type=int, default=154)
     parser.add_argument("--expect-attachments", type=int, default=82)
+    parser.add_argument("--expect-coded-gaps", type=int, default=0,
+                        help="exact number of G-accepted coded gaps (T4 option c on TEST: 115)")
     parser.add_argument("--dry-run-only", action="store_true", help="stop after the dry-run checks (no apply)")
     parser.add_argument("--timeout", type=int, default=3600, help="seconds per adopt-mail invocation")
     return parser.parse_args(argv)

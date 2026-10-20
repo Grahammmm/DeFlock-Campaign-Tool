@@ -27,8 +27,21 @@ Every receipt is classified against the ledger, read-only:
   declares different bytes or evidence. It is refused, never written, and the
   earlier evidence is left untouched.
 
-Only new and incomplete receipts are passed to the backend; a run with nothing
-pending writes nothing. Reports carry counts and hashes only, no paths,
+A ``new`` receipt that cannot be adopted under the current canonical contract
+is a *coded gap*. It is classified read-only, in the backend's own order:
+first the legacy MIME check the backend runs on the export EML (for example
+``unsupported_rfc822_part``), then the original-binding precondition (for
+example ``original_scope_unresolved`` when the EML is already declared as an
+unresolved legacy original; the backend would raise
+``canonical_original_binding_conflict``). Coded gaps are never passed to the
+backend, so they cause no CAS, catalog or verification-receipt side effects.
+They are counted by stable code in every dry-run, apply and run summary and
+are never dropped. Codes in ``ACCEPTED_GAP_CODES`` are the classes G accepted
+as reported gaps (decision 2026-10-19, option c); any other coded gap blocks
+(CLI exit 3).
+
+Only eligible new and incomplete receipts are passed to the backend; a run
+with nothing pending writes nothing. Reports carry counts and hashes only, no paths,
 account names, headers or exception narratives. The export directory is only
 read; this command never connects to a mailbox or runs an exporter.
 """
@@ -52,6 +65,9 @@ DISABLE_MARKER = ".adoption-disabled-v1.json"
 RUN_PREFIX = "mail-history-"
 MAX_RECEIPTS = 10000
 MAX_SMALL_FILE = 64 * 1024
+# Coded-gap classes G accepted as reported, non-blocking gaps (2026-10-19,
+# option c). Resolving them needs a separately reviewed contract (T4B).
+ACCEPTED_GAP_CODES = frozenset({"original_scope_unresolved", "unsupported_rfc822_part"})
 
 
 class AdoptionError(RuntimeError):
@@ -172,6 +188,42 @@ def binding_conflict(con, store, blobs, sha, size):
         return "original_scope_" + ("unresolved" if original["scope"] == "unresolved" else "not_in_scope")
     if original["storage_path"] != str(blobs / sha):
         return "original_storage_elsewhere"
+    return None
+
+
+def mime_precheck(item, mail_root, output):
+    """Read-only equivalent of the backend's legacy MIME check; a safe code or None.
+
+    Only legacy receipts (no ``schema``) are checked: for them
+    LegacyIntakeBackend stages the export EML and parses it with
+    ``mail_delta.mime_candidates`` before any ledger binding, so a rejection
+    there (e.g. ``unsupported_rfc822_part``) is what apply would report. The
+    EML is opened with ``secure_open`` (no symlinks), bounded by its declared
+    size and must hash to its declared digest; nothing is staged or written.
+    Schema receipts use other adapters and are left to the backend.
+    """
+    if "schema" in item["declaration"]:
+        return None
+    eml = item["items"][0]
+    try:
+        path = mail_delta.source_path(mail_root, eml["path"], output)
+        with intake_folder.secure_open(path) as stream:
+            raw = stream.read(eml["size"] + 1)
+    except mail_delta.Rejected as error:
+        return str(error)
+    except (OSError, ValueError):
+        return "source_unreadable"
+    if len(raw) != eml["size"]:
+        return "source_size_mismatch"
+    if hashlib.sha256(raw).hexdigest() != eml["sha"]:
+        return "source_hash_mismatch"
+    try:
+        # BytesIO parsing (legacy_scalar) is what parsing the staged file does.
+        mail_delta.mime_candidates(None, raw=raw, legacy_scalar=True)
+    except mail_delta.Rejected as error:
+        return str(error)
+    except Exception:  # unexpected parser failure: a blocking code, never a crash
+        return "mime_precheck_error"
     return None
 
 
@@ -556,10 +608,12 @@ def _projection(mail_root, output, ledger_path):
 
 
 def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
-    """Read-only classification. Returns ({identity: (state, predicted)}, unfinalized runs).
+    """Read-only classification. Returns ({identity: (state, coded_gap)}, unfinalized runs).
 
     state is ``new``, ``complete``, ``incomplete`` or an ``identity_*`` code;
-    ``predicted`` is the backend binding refusal expected for a ``new`` receipt.
+    ``coded_gap`` is the safe code for a ``new`` receipt the backend would
+    refuse (legacy MIME check first when ``mail_root`` is given, then the
+    original-binding precondition, i.e. the backend's own order), else None.
     """
     from .ledger import store
     states = {}
@@ -576,12 +630,12 @@ def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
                                (message_id(item["identity"]), account, mailbox, int(validity),
                                 int(uid))).fetchall()
             if not rows:
-                predicted = None
+                gap = mime_precheck(item, mail_root, blobs.parent) if mail_root is not None else None
                 for sha, size in item["originals"]:
-                    predicted = binding_conflict(con, store, blobs, sha, size)
-                    if predicted:
+                    if gap:
                         break
-                states[item["identity"]] = ("new", predicted)
+                    gap = binding_conflict(con, store, blobs, sha, size)
+                states[item["identity"]] = ("new", gap)
                 continue
             if intake is None and intake_path.exists():
                 intake = stack.enter_context(_snapshot_db(intake_path, "intake"))
@@ -602,34 +656,41 @@ def _classify(root, mail_root):
     states, unfinalized = classify_receipts(root / "ledger.sqlite", receipts, root / "intake" / "blobs",
                                             mail_root=mail_root)
     for item in receipts:
-        item["state"], item["predicted"] = states[item["identity"]]
+        item["state"], item["coded_gap"] = states[item["identity"]]
     new = [r for r in receipts if r["state"] == "new"]
+    coded = [r for r in new if r["coded_gap"]]
+    eligible = [r for r in new if not r["coded_gap"]]
     incomplete = [r for r in receipts if r["state"] == "incomplete"]
     complete = [r for r in receipts if r["state"] == "complete"]
     conflicts = Counter(r["state"] for r in receipts if r["state"].startswith("identity_"))
-    predicted = Counter(r["predicted"] for r in new if r["predicted"])
-    pending = new + incomplete
+    gap_codes = Counter(r["coded_gap"] for r in coded)
+    pending = eligible + incomplete
     report = {"source": SOURCE,
               # Inventory: every valid receipt in the export, whatever its ledger state.
               "receipts": len(receipts),
               "attachments": sum(r["attachments"] for r in receipts),
               # Enrolled, bindings verified and every declared original preserved.
               "already_adopted": len(complete),
-              # Not enrolled yet; eligible excludes predicted backend refusals.
+              # Not enrolled yet: eligible_new + coded_gap_messages.
               "new_messages": len(new),
               "new_attachments": sum(r["attachments"] for r in new),
-              "eligible_new_messages": len(new) - sum(predicted.values()),
+              "eligible_new_messages": len(eligible),
+              # New receipts the canonical backend would refuse under its current
+              # contract, by stable code. Never passed to the backend, never dropped.
+              "coded_gap_messages": len(coded),
+              "coded_gap_attachments": sum(r["attachments"] for r in coded),
+              "coded_gaps": dict(sorted(gap_codes.items())),
+              # The subset of coded_gaps outside ACCEPTED_GAP_CODES: blocking.
+              "unaccepted_coded_gaps": dict(sorted((code, n) for code, n in gap_codes.items()
+                                                   if code not in ACCEPTED_GAP_CODES)),
               # Enrolled with matching bindings but unfinished preservation.
               "incomplete_messages": len(incomplete),
-              # Work remaining: new plus incomplete. Zero only when nothing is unfinished.
+              # Adoptable work remaining: eligible new plus incomplete.
               "pending_messages": len(pending),
               "pending_attachments": sum(r["attachments"] for r in pending),
               # Enrolled identities whose receipt now declares different bytes or
               # evidence: refused, never written.
               "identity_conflicts": dict(sorted(conflicts.items())),
-              # New receipts the canonical backend will refuse until the existing
-              # ledger declaration is resolved through its own reviewed contract.
-              "predicted_binding_conflicts": dict(sorted(predicted.items())),
               "unfinalized_runs": len(unfinalized),
               "gaps": dict(sorted(gaps.items()))}
     return report, pending, unfinalized
@@ -637,7 +698,8 @@ def _classify(root, mail_root):
 
 def _after(report):
     return {key: report[key] for key in ("already_adopted", "new_messages", "incomplete_messages",
-                                         "pending_messages", "identity_conflicts", "unfinalized_runs")}
+                                         "pending_messages", "coded_gap_messages", "coded_gaps",
+                                         "unaccepted_coded_gaps", "identity_conflicts", "unfinalized_runs")}
 
 
 def _identity(config_sha256):
@@ -738,11 +800,16 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
             summary = {"source": SOURCE, "receipts": report["receipts"], "pending": len(pending),
                        "new": report["new_messages"], "incomplete": report["incomplete_messages"],
                        "adopted": adopted, "resumed": resumed, "attachments": attachments,
-                       "failures": sum(failures.values())}
-            backend.finish_run(identity, "completed_with_gaps" if failures else "slice_completed", summary)
+                       "failures": sum(failures.values()),
+                       "coded_gap_messages": report["coded_gap_messages"],
+                       "coded_gaps": report["coded_gaps"]}
+            backend.finish_run(identity, "completed_with_gaps" if failures or report["coded_gaps"]
+                               else "slice_completed", summary)
         except BaseException:
             backend.finish_run(identity, "failed", {"source": SOURCE, "pending": len(pending),
-                                                    "adopted": adopted, "resumed": resumed})
+                                                    "adopted": adopted, "resumed": resumed,
+                                                    "coded_gap_messages": report["coded_gap_messages"],
+                                                    "coded_gaps": report["coded_gaps"]})
             raise
         report.update(run_id=identity["run_id"], adopted_messages=adopted, resumed_messages=resumed,
                       adopted_attachments=attachments, failures=dict(sorted(failures.items())))
@@ -755,14 +822,20 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
 
 
 def blocking(report):
-    """True when a report must not be read as clean success (CLI exit 3)."""
-    if report.get("failures") or report.get("gaps") or report.get("identity_conflicts"):
+    """True when a report must not be read as clean success (CLI exit 3).
+
+    Coded gaps in ACCEPTED_GAP_CODES are reported but do not block; any other
+    coded gap does.
+    """
+    if (report.get("failures") or report.get("gaps") or report.get("identity_conflicts")
+            or report.get("unaccepted_coded_gaps")):
         return True
     if report.get("mode") == "dry-run" and (report.get("incomplete_messages") or report.get("unfinalized_runs")):
         return True
     after = report.get("after")
     if after and (after["pending_messages"] or after["incomplete_messages"]
-                  or after["identity_conflicts"] or after["unfinalized_runs"]):
+                  or after["identity_conflicts"] or after["unfinalized_runs"]
+                  or after["unaccepted_coded_gaps"]):
         return True
     return bool(report.get("recovered_runs", {}).get("recovery_refused"))
 
