@@ -459,6 +459,139 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(set(failures), set(checks))
 
 
+def with_failures(run, failures):
+    """Give ``run``'s extract stage these failure outcomes (on top of its other outcomes)."""
+    extract = run["stages"]["extract"]
+    outcomes = {code: count for code, count in extract["outcomes"].items()
+                if code not in harness.EXTRACT_FAILURE_NEEDS}
+    outcomes.update(failures)
+    total = sum(failures.values())
+    counts = extract["counts"]
+    run["stages"]["extract"] = stage("warn" if total else "ok", "EXTRACT_DOCUMENT_FAILURES" if total else None,
+                                     (sum(outcomes.values()), counts["output"], total,
+                                      sum(outcomes.values()) - counts["output"] - total), outcomes)
+    run["needs_g"] = [item for item in run["needs_g"] if item["stage"] != "extract"
+                      or item["code"] not in harness.EXTRACT_FAILURE_NEEDS.values()]
+    run["needs_g"] += [{"code": harness.EXTRACT_FAILURE_NEEDS[code], "stage": "extract", "severity": "action",
+                        "count": count} for code, count in failures.items()]
+
+
+def declared_receipt(corrupt=20):
+    """good_receipt() with ``corrupt`` declared CORRUPT_DOCUMENT gaps (G D4-A, TEST shape)."""
+    receipt = good_receipt()
+    declared = {"CORRUPT_DOCUMENT": corrupt}
+    receipt["expect"]["extract_failures"] = dict(declared)
+    for run in receipt["runs"] + [receipt["faults"]["duplicate_receipt"], receipt["faults"]["portal_404"]]:
+        with_failures(run, declared)
+    with_failures(receipt["faults"]["corrupt_pdf"], {"CORRUPT_DOCUMENT": corrupt + 1})
+    receipt["extract_failure_manifest"] = {
+        "status": "ok", "by_code": dict(declared),
+        "documents": [{"original_sha256": f"{index:064x}", "code": "CORRUPT_DOCUMENT", "form": None,
+                       "mail": {"uid": index, "date_utc": "2026-09-30", "sender_domain_class": "records_portal"}}
+                      for index in range(corrupt)]}
+    return receipt
+
+
+class DeclaredExtractFailureTests(unittest.TestCase):
+    """G D4-A: declared extraction gaps are exact on every run, never a blanket allowance."""
+
+    def failures(self, receipt):
+        return harness.evaluate(receipt)[1]
+
+    def test_the_declared_test_shape_passes(self):
+        checks, failures = harness.evaluate(declared_receipt())
+        self.assertEqual(failures, [])
+        self.assertIs(checks["extract_failures_itemized"], True)
+
+    def test_undeclared_extract_failures_fail_every_run_kind(self):
+        receipt = declared_receipt()
+        del receipt["expect"]["extract_failures"]
+        failures = self.failures(receipt)
+        for name in ("three_successful_runs", "fault_duplicate_receipt_only_expected_results",
+                     "fault_portal_404_only_expected_results", "fault_corrupt_pdf",
+                     "fault_corrupt_pdf_only_expected_results"):
+            self.assertIn(name, failures)
+
+    def test_counts_must_be_exact_on_every_baseline_run(self):
+        for index in (0, 1, 2):
+            for label, failures in (("one fewer", {"CORRUPT_DOCUMENT": 19}), ("one more", {"CORRUPT_DOCUMENT": 21}),
+                                    ("other code", {"CORRUPT_DOCUMENT": 20, "EXTRACT_ERROR": 1}),
+                                    ("none", {})):
+                with self.subTest(run=index + 1, case=label):
+                    receipt = declared_receipt()
+                    with_failures(receipt["runs"][index], failures)
+                    self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_failed_count_and_needs_items_must_agree(self):
+        receipt = declared_receipt()
+        receipt["runs"][1]["stages"]["extract"]["counts"]["failed"] = 21
+        self.assertIn("three_successful_runs", self.failures(receipt))
+        receipt = declared_receipt()
+        for item in receipt["runs"][2]["needs_g"]:
+            if item["code"] == "EXTRACT_CORRUPT_DOCUMENT":
+                item["count"] = 19
+        self.assertIn("three_successful_runs", self.failures(receipt))
+
+    def test_declared_gaps_persist_exactly_in_the_fault_runs(self):
+        for fault in ("duplicate_receipt", "portal_404"):
+            with self.subTest(fault):
+                receipt = declared_receipt()
+                with_failures(receipt["faults"][fault], {"CORRUPT_DOCUMENT": 21})
+                self.assertIn(f"fault_{fault}_only_expected_results", self.failures(receipt))
+
+    def test_corrupt_pdf_must_add_exactly_one_corrupt_document(self):
+        for count in (20, 22):
+            with self.subTest(count):
+                receipt = declared_receipt()
+                with_failures(receipt["faults"]["corrupt_pdf"], {"CORRUPT_DOCUMENT": count})
+                failures = self.failures(receipt)
+                self.assertIn("fault_corrupt_pdf", failures)
+                self.assertIn("fault_corrupt_pdf_only_expected_results", failures)
+        # Without declared gaps the corrupt_pdf run must show exactly one, too.
+        receipt = good_receipt()
+        with_failures(receipt["faults"]["corrupt_pdf"], {"CORRUPT_DOCUMENT": 2})
+        self.assertIn("fault_corrupt_pdf", self.failures(receipt))
+
+    def test_a_blanket_allowance_is_not_an_expectation(self):
+        receipt = declared_receipt()
+        del receipt["expect"]["extract_failures"]
+        receipt["expect"]["allowed_warnings"].append(list(harness.EXTRACT_FAILURES_WARNING))
+        self.assertIn("expectations_explicit", self.failures(receipt))
+        receipt = declared_receipt()
+        receipt["expect"]["allowed_warnings"].append(list(harness.EXTRACT_FAILURES_WARNING))
+        self.assertIn("expectations_explicit", self.failures(receipt))
+
+    def test_invalid_declarations_fail(self):
+        for value in ({"CORRUPT": 20}, {"CORRUPT_DOCUMENT": 0}, {"CORRUPT_DOCUMENT": "20"},
+                      {"AWAITING_OCR": 2}, {"PARSER_MISSING": 1}, ["CORRUPT_DOCUMENT", 20]):
+            with self.subTest(value=value):
+                receipt = declared_receipt()
+                receipt["expect"]["extract_failures"] = value
+                self.assertIn("expectations_explicit", self.failures(receipt))
+
+    def test_the_declared_gaps_must_be_itemized(self):
+        cases = {
+            "missing": lambda m: m.clear(),
+            "refused": lambda m: m.update(status="refused"),
+            "one short": lambda m: m["documents"].pop(),
+            "by_code differs": lambda m: m.update(by_code={"CORRUPT_DOCUMENT": 19}),
+            "duplicate document": lambda m: m["documents"].__setitem__(1, dict(m["documents"][0])),
+            "not a hash": lambda m: m["documents"][0].update(original_sha256="x"),
+            "other code": lambda m: m["documents"][0].update(code="EXTRACT_ERROR"),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label):
+                receipt = declared_receipt()
+                mutate(receipt["extract_failure_manifest"])
+                self.assertIn("extract_failures_itemized", self.failures(receipt))
+
+    def test_codes_match_the_engine(self):
+        from campaign_tool.records import run_stages
+        self.assertEqual(set(harness.EXTRACT_FAILURE_NEEDS), native_extract.FAILED)
+        needs = {outcome: code for outcome, code, _ in run_stages.EXTRACT_NEEDS}
+        self.assertEqual(harness.EXTRACT_FAILURE_NEEDS, {code: needs[code] for code in harness.EXTRACT_FAILURE_NEEDS})
+
+
 class HarnessCliTests(unittest.TestCase):
     BASE = ["--engine", "/nonexistent/engine", "--release-commit", "0" * 40, "--scratch", "/nonexistent/s",
             "--receipt", "/nonexistent/r.json", "--container", "c", "--container-work", "/w"]
@@ -496,6 +629,25 @@ class HarnessCliTests(unittest.TestCase):
     def test_reaches_setup_only_with_valid_expectations(self):
         code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115")
         self.assertEqual((code, json.loads(out)["code"]), (2, "engine_tree_missing"))
+        code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                              "--expect-extract-failures", "CORRUPT_DOCUMENT=20")
+        self.assertEqual((code, json.loads(out)["code"]), (2, "engine_tree_missing"))
+
+    def test_bad_extract_failure_declarations_refused(self):
+        for value in ("CORRUPT_DOCUMENT", "CORRUPT_DOCUMENT=0", "CORRUPT_DOCUMENT=-1", "CORRUPT_DOCUMENT=x",
+                      "AWAITING_OCR=2", "PARSER_MISSING=1", "=3"):
+            with self.subTest(value):
+                self.assertEqual(self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                                           "--expect-extract-failures", value)[0], 2)
+        code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                              "--expect-extract-failures", "CORRUPT_DOCUMENT=20",
+                              "--expect-extract-failures", "CORRUPT_DOCUMENT=21")
+        self.assertEqual((code, json.loads(out)["code"]), (2, "extract_failure_declared_twice"))
+
+    def test_extract_failures_cannot_be_a_blanket_allowance(self):
+        code, out = self.main("--expect-adopted", "36", "--expect-coded-gaps", "115",
+                              "--allow-warn", "extract:EXTRACT_DOCUMENT_FAILURES")
+        self.assertEqual((code, json.loads(out)["code"]), (2, "extract_failures_need_exact_counts"))
 
 
 # --------------------------------------------------------------------------------------------
