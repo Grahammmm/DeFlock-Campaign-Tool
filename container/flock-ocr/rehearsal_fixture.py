@@ -99,7 +99,13 @@ def main(argv=None):
         os.chmod(restricted, 0o600)
         owned = root / "state" / "owned-by-1000.txt"
         owned.write_text("namespace uid 1000\n")
-        os.chown(owned, 1000, 1000)
+        try:
+            os.chown(owned, 1000, 1000)
+        except PermissionError:
+            # The rehearsal runs this as namespace root, where chown works.
+            # Unprivileged (the unit test) only the foreign owner is skipped.
+            if os.geteuid() == 0:
+                raise
         os.symlink("notes.txt", root / "state" / "notes.link")
         (root / "empty-dir").mkdir()
         if index == 0:

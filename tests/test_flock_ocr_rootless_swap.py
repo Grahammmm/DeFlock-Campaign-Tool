@@ -1849,7 +1849,8 @@ class RehearsalModeTests(unittest.TestCase):
             for d in dirs:
                 d.mkdir()
             result = subprocess.run([sys.executable, "-B", str(RECIPE / "rehearsal_fixture.py"), "--mib", "2",
-                                     *map(str, dirs)], capture_output=True, text=True, check=True)
+                                     *map(str, dirs)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
             pins = json.loads(result.stdout)["pins"]
             self.assertEqual(list(pins), ["fixtures/db-mutation/ledger.sqlite"])
             a = evidence.survey(dirs[0], pins)
