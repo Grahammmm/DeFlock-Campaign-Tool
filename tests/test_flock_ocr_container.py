@@ -753,6 +753,91 @@ class FlockOcrSnapshotEvidenceTests(unittest.TestCase):
             with self.assertRaises(snapshot_evidence.InspectionError):
                 snapshot_evidence.manifest(copy)
 
+    def malformed(self, path):
+        """A synthetic SQLite file with a deliberately corrupt schema page."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        conn.execute("create table rows(value)")
+        conn.executemany("insert into rows values (?)", [(n,) for n in range(20)])
+        conn.commit()
+        conn.close()
+        data = bytearray(path.read_bytes())
+        data[100] = 0xFF
+        path.write_bytes(bytes(data))
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def mutation_copy(self):
+        """Isolated copy: one healthy WAL database and two corrupt fixtures."""
+        copy = self.private / "inspect" / "mutation"
+        shutil.copytree(self.live, copy)
+        digest = self.malformed(copy / "fixtures" / "v1" / "db-mutation" / "ledger.sqlite")
+        (copy / "fixtures" / "v2" / "db-mutation").mkdir(parents=True)
+        shutil.copyfile(copy / "fixtures" / "v1" / "db-mutation" / "ledger.sqlite",
+                        copy / "fixtures" / "v2" / "db-mutation" / "ledger.sqlite")
+        return copy, digest
+
+    def test_cli_names_every_malformed_database_and_fails_closed_by_default(self):
+        copy, _ = self.mutation_copy()
+        result = self.cli("sqlite-evidence", str(copy), "--out", str(self.private / "out"),
+                          "--live", str(self.live))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        lines = result.stderr.splitlines()
+        self.assertEqual(lines, [
+            "FAIL SQLite evidence failed for fixtures/v1/db-mutation/ledger.sqlite: database disk image is malformed",
+            "FAIL SQLite evidence failed for fixtures/v2/db-mutation/ledger.sqlite: database disk image is malformed"])
+
+    def test_cli_hash_pinned_malformed_databases_are_exempt_from_integrity_only(self):
+        copy, digest = self.mutation_copy()
+        before = snapshot_evidence.manifest(copy)
+        out = self.private / "out"
+        pins = ["--accept-malformed", f"fixtures/v1/db-mutation/ledger.sqlite={digest}",
+                "--accept-malformed", f"fixtures/v2/db-mutation/ledger.sqlite={digest}"]
+        result = self.cli("sqlite-evidence", str(copy), "--out", str(out), "--live", str(self.live), *pins)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertIs(report["ok"], True)
+        self.assertEqual(report["files_inspected"], sum(e["type"] == "f" for e in before["entries"].values()))
+        for rel in ("fixtures/v1/db-mutation/ledger.sqlite", "fixtures/v2/db-mutation/ledger.sqlite"):
+            self.assertEqual(report["databases"][rel], {"accepted_malformed": True, "sha256": digest,
+                                                        "integrity_check": None, "ok": True})
+            self.assertFalse((out / (rel + ".backup")).exists())
+        self.assertEqual(report["databases"]["state/synthetic.db"]["integrity_check"], ["ok"])
+        # The pinned files are never opened: their bytes and directories are untouched.
+        after = snapshot_evidence.manifest(copy)
+        self.assertEqual([p for p in snapshot_evidence.compare(before, after) if p.startswith("fixtures")], [])
+
+    def test_cli_pin_must_match_bytes_path_and_type(self):
+        copy, digest = self.mutation_copy()
+        v1 = "fixtures/v1/db-mutation/ledger.sqlite"
+        v2 = "fixtures/v2/db-mutation/ledger.sqlite"
+        cases = {
+            "wrong hash": ([f"{v1}={'0' * 64}", f"{v2}={digest}"], "not the pinned"),
+            "only one pinned": ([f"{v1}={digest}"], f"SQLite evidence failed for {v2}"),
+            "missing path": ([f"{v1}={digest}", f"{v2}={digest}", f"fixtures/absent.sqlite={digest}"],
+                             "not found as SQLite files"),
+            "not sqlite": ([f"{v1}={digest}", f"{v2}={digest}", f"state/notes.txt={digest}"],
+                           "not found as SQLite files"),
+            "bad digest": ([f"{v1}={digest.upper()}"], "RELPATH=SHA256"),
+            "absolute": ([f"/{v1}={digest}"], "normalized relative path"),
+            "dot-dot": ([f"fixtures/../{v1}={digest}"], "normalized relative path"),
+            "duplicate": ([f"{v1}={digest}", f"{v1}={digest}"], "more than once"),
+        }
+        for name, (pins, message) in cases.items():
+            with self.subTest(case=name):
+                args = [x for pin in pins for x in ("--accept-malformed", pin)]
+                result = self.cli("sqlite-evidence", str(copy), "--out", str(self.private / f"out-{name}"),
+                                  "--live", str(self.live), *args)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertNotIn('"ok": true', result.stdout)
+                self.assertIn(message, result.stderr)
+        direct = snapshot_evidence.sqlite_evidence(copy, self.private / "direct", [self.live],
+                                                   accepted={v1: digest, v2: digest})
+        self.assertIs(direct["ok"], True)
+        self.assertEqual(sorted(r for r, i in direct["databases"].items() if i.get("accepted_malformed")),
+                         [v1, v2])
+        self.assertEqual(snapshot_evidence.parse_accepted([]), {})
+
     def test_doc_never_points_sqlite_at_a_live_mount(self):
         section = DOC[DOC.index("[S1]"):DOC.index("[B1]")]
         self.assertNotIn("sqlite3 <db>", DOC)

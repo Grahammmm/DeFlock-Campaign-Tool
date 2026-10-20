@@ -40,6 +40,12 @@ extraction or review acceptance.
 - `--helper-image REF`: optional image ID or digest for the helpers. The
   default is the old image ID. It must provide `tar` with ACL/xattr support,
   `python3` and the `sqlite3` module. [R1] probes for all three.
+- `--accept-malformed-sqlite RELPATH=SHA256`: optional and repeatable. It
+  exempts one known, intentionally corrupt database from the SQLite
+  integrity requirement only, for example a mutation-test fixture.
+  `RELPATH` is relative to the mount root, with no leading `/`, `.` or `..`.
+  `SHA256` pins the file's exact bytes. Without the flag the gate is
+  unchanged. See "Hash-pinned malformed SQLite fixtures" below.
 
 The driver derives mounts, mount users and image IDs at run time from
 `docker inspect` and `docker ps`. It never takes them from a file in Git.
@@ -171,15 +177,20 @@ container check is the primary control.
    `sqlite-evidence` on that copy only. It must exit 0 with `"ok": true`, and
    `files_inspected` must equal the baseline's regular-file count. The driver
    re-hashes every `.backup` on the host, then deletes the disposable copy.
+   A failing run tries every database first and names each failure on its own
+   `FAIL` line, saved in `$RUN/s2/mNN.sqlite-evidence-failure.json`. A
+   database pinned with `--accept-malformed-sqlite` is hash-checked instead
+   of opened (see below).
 
 6. [S3] Extract each S1 archive into an empty `$RUN/s3/restore-test/mNN`.
    Its manifest must equal the baseline, and a fresh live manifest must still
    equal it too.
 
 7. [G1] Write `snapshot-receipt.json` with `"snapshot_ok": true`, the
-   archive and backup SHA-256 values and the completion time, only if [S1] to
-   [S3] all passed. Every build, rename, create and start step re-reads this
-   receipt and refuses without it.
+   archive and backup SHA-256 values, any hash-pinned malformed databases
+   that were exempted (`sqlite_accepted_malformed_sha256`) and the completion
+   time, only if [S1] to [S3] all passed. Every build, rename, create and
+   start step re-reads this receipt and refuses without it.
 
 ### Build and verify (mounts stay quiescent)
 
@@ -300,6 +311,32 @@ Remove `<name>-pre-ocr`, `<name>-ocr-failed`, the old image and the run
 directory only after the owner signs off. Files under `$RUN` that came from a
 restore test or an inspect copy can carry subuid owners. Remove them with a
 helper (`rm -rf` as namespace root), not as the host user.
+
+## Hash-pinned malformed SQLite fixtures
+
+Some review trees keep deliberately corrupted databases as regression
+fixtures (for example `.../db-mutation/ledger.sqlite` next to its uncorrupted
+siblings). [S2] would correctly reject them as `database disk image is
+malformed`. Do not delete or repair such a file to get past the gate. First
+confirm read-only that it is an intentional fixture and not damage. Then
+rerun with one `--accept-malformed-sqlite RELPATH=SHA256` per file, using the
+path and `sha256` recorded in the failed run's `$RUN/s1/mNN.baseline.json`.
+
+An exempted file loses only the SQLite requirement. It is still:
+
+- archived in `$RUN/s1/mNN.tar` and `$RUN/a2/mNN.tar`;
+- hash-matched: before [S2] runs, the pin must equal the file's `sha256` in
+  that mount's baseline manifest, or the step fails. `sqlite-evidence`
+  re-hashes the extracted copy and fails on any other value;
+- restore-tested: [S3] and [A2] compare full manifests, its `sha256`
+  included.
+
+It is never opened with SQLite and gets no `.backup`. The report marks it
+`"accepted_malformed": true`. A pin for a path that is missing, is not a
+SQLite file, has another hash, or matches no snapshotted mount fails [S2].
+So does an unpinned malformed database. Pins are fixed at `--apply`, kept in
+`state.json` and reused by [A2]. `--resume` and `--rollback` do not take
+them.
 
 ## Known limits
 
