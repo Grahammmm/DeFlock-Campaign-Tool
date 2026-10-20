@@ -24,7 +24,7 @@ class RunLocatorReportingTests(unittest.TestCase):
              "detail": "OSError: /private/synthetic/error-path"}], "pages": []}
         self.pipeline = object.__new__(run.Pipeline)
         self.pipeline.root = SimpleNamespace(sub=lambda name: self.root)
-        self.pipeline.ocr_tools = self.pipeline.ocr_tool_signature = None
+        self.pipeline.ocr_tools = self.pipeline.ocr_tool_signature = self.pipeline.ocr_vision = None
         self.pipeline.extraction_timeout = 1
         self.pipeline._original = Mock(return_value={"storage_path": "/private/synthetic/original"})
         self.pipeline._form = Mock(return_value="pdf")
