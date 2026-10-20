@@ -14,9 +14,13 @@ campaign-tool parser venv in production, and CI installs
 UNSUPPORTED_RUNTIME, and the records-run workflow fails on any skip.
 
 Phase 1 acceptance as built: PDF (native text pages) and DOCX pass the installed
-extraction check, and their text lands in the ledger. The XLSX is parsed, but the
-engine accepts a workbook only under the pinned native workbook policy, so it is
-held as ``WORKBOOK_POLICY_REQUIRED`` (counted, with an owner action item).
+extraction check, and their text lands in the ledger. The engine accepts a
+workbook only under the pinned native workbook policy. Without one the XLSX is
+held as ``WORKBOOK_POLICY_REQUIRED`` (counted, with an owner action item). With
+``--workbook-policy`` (operator stage plan) it goes through the installed check
+under that policy. Those tests use a temporary synthetic helper with a patched pin,
+the same explicitly test-only pattern as ``tests/records/test_workbook_policy.py``.
+It is never the private AgentOrange component and grants no production approval.
 """
 import contextlib
 import hashlib
@@ -430,6 +434,247 @@ class StageEdgeTests(ExtractStageCase):
         for extra in (("--max-documents", "0"), ("--document-timeout", "5")):
             code, parsed, raw = self.stage(*extra)
             self.assertEqual(parsed["error_code"], "STAGE_CONFIG_INVALID")
+
+
+def tiny_png():
+    """A valid 1x1 gray PNG (an image original: Phase 1 counts it as AWAITING_OCR)."""
+    import struct
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\x00\x80")) + chunk(b"IEND", b""))
+
+
+class BudgetFairnessTests(ExtractStageCase):
+    """Sol must-fix 1: documents that need no parse never use the per-run parse budget.
+
+    Images (AWAITING_OCR), unsupported forms (DECODER_NEEDED) and missing-parser
+    documents (PARSER_MISSING) are classified and counted on every run. Before the
+    fix they took the cap slots on every run, in the same order, so a parseable
+    document behind them was deferred forever. No native parser is needed here.
+    """
+
+    attachments = (("scan-1.png", tiny_png()), ("photo-2.png", tiny_png() + b"\x00"),
+                   ("memo.rtf", b"{\\rtf1 synthetic unsupported memo}"),
+                   ("policy.pdf", tiny_pdf(PDF_TEXT)), ("note.txt", b"Synthetic plain-text retention note."))
+    # 5 synthetic messages (stdlib eml route) + note.txt are parseable; 2 PNG, 1 RTF and
+    # (with parsers masked) 1 PDF are classified without a parse.
+    PARSEABLE = 6
+
+    def run_capped(self, cap):
+        with mock.patch.object(native_extract, "missing_parsers", return_value=["pypdf", "openpyxl"]), \
+             mock.patch.object(Pipeline, "stage_extract", autospec=True,
+                               side_effect=Pipeline.stage_extract) as stage_extract:
+            code, parsed, raw = self.stage("--max-documents", str(cap))
+        self.assertContract(code, parsed, raw)
+        return parsed, stage_extract.call_count
+
+    def test_unparsed_prefixes_cannot_starve_parseable_documents(self):
+        for cap in (1, 2):
+            with self.subTest(cap=cap):
+                if cap == 2:
+                    self.setUp()  # fresh records root for the second cap
+                done = 0
+                for run in range(1, 10):
+                    parsed, parses = self.run_capped(cap)
+                    outcomes = self.outcomes(parsed)
+                    # The classified documents are counted on every run, never parsed, never deferred.
+                    self.assertEqual((outcomes.get("AWAITING_OCR"), outcomes.get("DECODER_NEEDED"),
+                                      outcomes.get("PARSER_MISSING")), (2, 1, 1), run)
+                    # Exactly `cap` parses per run while parseable work remains: bounded and advancing.
+                    expected = min(cap, self.PARSEABLE - done)
+                    self.assertEqual(parses, expected, run)
+                    self.assertEqual(outcomes.get("EXTRACTED", 0), expected, run)
+                    self.assertEqual(outcomes.get("DEFERRED_RUN_BUDGET", 0), self.PARSEABLE - done - expected, run)
+                    self.assertEqual(sum(outcomes.values()), parsed["counts"]["input"])
+                    done += expected
+                    if done == self.PARSEABLE and not expected:
+                        break
+                self.assertEqual(done, self.PARSEABLE, "every parseable document was reached")
+                self.assertEqual(self.query("SELECT COUNT(*) FROM stage_state WHERE stage='extract' "
+                                            "AND status='done'"), [(self.PARSEABLE,)])
+                # Classified documents are never dropped and never held by an alert.
+                self.assertEqual(self.query("SELECT COUNT(*) FROM stage_state WHERE stage='extract' "
+                                            "AND status='pending'"), [(4,)])
+                self.assertEqual(self.query("SELECT COUNT(*) FROM alerts WHERE key LIKE 'extract:%'"), [(0,)])
+
+    @unittest.skipUnless(HAVE_PARSERS, "UNSUPPORTED_RUNTIME: pypdf/openpyxl not in this interpreter")
+    def test_parser_missing_documents_are_eligible_once_parsers_are_installed(self):
+        for _ in range(self.PARSEABLE):
+            parsed, _ = self.run_capped(1)
+        self.assertEqual(self.outcomes(parsed).get("PARSER_MISSING"), 1)
+        code, parsed, raw = self.stage("--max-documents", "1")  # parsers present now
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(self.outcomes(parsed), {"EXTRACTED": 1, "AWAITING_OCR": 2, "DECODER_NEEDED": 1})
+        pdf = hashlib.sha256(self.payloads["policy.pdf"]).hexdigest()
+        self.assertEqual(self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'",
+                                    (pdf,)), [("done",)])
+
+
+def synthetic_workbook_component(directory):
+    """TEST-ONLY stand-in for the private pinned workbook accounting helper.
+
+    It models the documented ``inspect``/``account`` interface by recounting the
+    package with openpyxl the way the intake route serializes rows (non-empty cells
+    per row). It is written 0400 and its digest is patched into the pin for the test.
+    """
+    source = b'''"""Synthetic test-only workbook helper; never production policy."""
+import io
+import zipfile
+
+
+def _book(package):
+    from openpyxl import load_workbook
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as copy:
+        for info in package.infolist():
+            copy.writestr(info, package.read(info))
+    return load_workbook(io.BytesIO(out.getvalue()), read_only=True, data_only=False, keep_links=False)
+
+
+def inspect(package):
+    return {"contract": "plain-workbook-native-rows-v3", "package_parts": len(package.infolist()),
+            "scope": "all_native_sheet_rows_only", "gaps": [], "visual_review": False,
+            "semantic_acceptance": False}
+
+
+def account(package):
+    book = _book(package)
+    sheets = []
+    for index, sheet in enumerate(book.worksheets, 1):
+        sheet.reset_dimensions()
+        rows = cells = formulas = 0
+        for row in sheet.iter_rows():
+            values = [c for c in row if c.value is not None]
+            rows += 1
+            cells += len(values)
+            formulas += sum(c.data_type == "f" for c in values)
+        sheets.append({"name": sheet.title, "sheet_id": str(index), "part": "xl/worksheets/sheet%d.xml" % index,
+                       "state": sheet.sheet_state, "serialized_rows": rows, "serialized_cells": cells,
+                       "explicit_blank_cells": 0, "formula_cells": formulas})
+    book.close()
+    return {"schema": "workbook-native-accounting-v1",
+            "denominator": {"declared_sheets": len(sheets), "accounted_sheets": len(sheets),
+                            "serialized_rows": sum(s["serialized_rows"] for s in sheets),
+                            "serialized_cells": sum(s["serialized_cells"] for s in sheets),
+                            "formula_cells": sum(s["formula_cells"] for s in sheets)},
+            "sheets": sheets, "gaps": [], "coverage": "all_serialized_native_rows_and_cells",
+            "sparse_grid_blanks_materialized": False, "formula_execution": False,
+            "visual_review": False, "semantic_acceptance": False}
+'''
+    path = Path(directory) / "synthetic-workbook-component.py"
+    path.write_bytes(source)
+    path.chmod(0o400)
+    return path, hashlib.sha256(source).hexdigest()
+
+
+def formula_xlsx():
+    from openpyxl import Workbook
+    book = Workbook()
+    book.active.title = "calc"
+    book.active.append(["total", "=1+1"])
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+@unittest.skipUnless(HAVE_PARSERS, "UNSUPPORTED_RUNTIME: pypdf/openpyxl not in this interpreter")
+class WorkbookPolicyStageTests(ExtractStageCase):
+    """Sol must-fix 2: XLSX native text through the existing trusted workbook policy path."""
+
+    @property
+    def attachments(self):
+        return (("log.xlsx", tiny_xlsx()), ("calc.xlsx", formula_xlsx()))
+
+    def setUp(self):
+        super().setUp()
+        from campaign_tool.records import workbook_policy
+        self.component, digest = synthetic_workbook_component(self.temp.name)
+        pin = mock.patch.object(workbook_policy, "COMPONENT_SHA256", digest)
+        pin.start()
+        self.addCleanup(pin.stop)
+
+    def subject(self, name):
+        return hashlib.sha256(self.payloads[name]).hexdigest()
+
+    def with_policy(self, *extra):
+        return self.stage("--workbook-policy", str(self.component), *extra)
+
+    def test_plain_workbook_text_and_locators_persist_through_the_installed_check(self):
+        code, parsed, raw = self.with_policy()
+        self.assertContract(code, parsed, raw)
+        # 2 messages + the plain workbook extracted; the formula workbook is refused by the policy.
+        self.assertEqual(self.outcomes(parsed), {"EXTRACTED": 3, "WORKBOOK_POLICY_REQUIRED": 1})
+        xlsx = self.subject("log.xlsx")
+        self.assertEqual(self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'",
+                                    (xlsx,)), [("done",)])
+        self.assertEqual(self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='catalog'",
+                                    (xlsx,)), [("pending",)], "no promotion past extract")
+        rows = self.query("SELECT status,derived_path FROM units WHERE original_sha256=?", (xlsx,))
+        self.assertEqual({status for status, _ in rows}, {"candidate_extracted"})
+        units = [json.loads(Path(path).read_bytes()) for _, path in rows]
+        by_kind = {}
+        for unit in units:
+            by_kind.setdefault(unit["kind"], []).append(unit)
+        self.assertEqual([u["locator"] for u in by_kind["workbook_sheet"]], [{"sheet": "log"}])
+        rows_by_locator = {(u["locator"]["sheet"], u["locator"]["row"]): u["text"] for u in by_kind["workbook_row"]}
+        self.assertEqual(set(rows_by_locator), {("log", 1), ("log", 2)})
+        self.assertIn("synthetic hotlist check", rows_by_locator[("log", 2)])
+        self.assertIn("DEMO-1", rows_by_locator[("log", 2)])
+        self.assertIn("event_id", rows_by_locator[("log", 1)])
+        # The extract receipt binds the policy's review holds: no visual or semantic approval.
+        content = self.query("SELECT a.payload FROM stage_content c JOIN stage_artifacts a "
+                             "ON a.sha256=c.content_sha256 WHERE c.subject_sha256=? AND c.stage='extract'",
+                             (xlsx,))
+        self.assertEqual(len(content), 1)
+        workbook = json.loads(bytes(content[0][0]))["workbook"]
+        self.assertTrue(workbook["visual_review_pending"])
+        self.assertFalse(workbook["semantic_acceptance"])
+        # The formula workbook is enrolled at most once and held with a workbook outcome.
+        calc = self.subject("calc.xlsx")
+        self.assertEqual(self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'",
+                                    (calc,)), [("pending",)])
+        keys = [r[0] for r in self.query("SELECT key FROM alerts WHERE state='open' AND key LIKE ?",
+                                         (f"extract:{calc}:%",))]
+        self.assertEqual(keys, [f"extract:{calc}:workbook_policy_refused"])
+
+    def test_replay_does_not_reparse_or_duplicate(self):
+        self.with_policy()
+        dirs, receipts = self.extract_dirs(), self.query("SELECT COUNT(*) FROM receipts")
+        units = self.query("SELECT COUNT(*) FROM units")
+        alerts = self.query("SELECT key,count FROM alerts ORDER BY key")
+        code, parsed, raw = self.with_policy()
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(self.outcomes(parsed), {"WORKBOOK_POLICY_REQUIRED": 1})
+        self.assertEqual(self.extract_dirs(), dirs)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM receipts"), receipts)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM units"), units)
+        self.assertEqual(self.query("SELECT key,count FROM alerts ORDER BY key"), alerts)
+
+    def test_without_the_policy_workbooks_stay_held_and_are_not_enrolled(self):
+        code, parsed, raw = self.stage()
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(self.outcomes(parsed), {"EXTRACTED": 2, "WORKBOOK_POLICY_REQUIRED": 2})
+        self.assertFalse(self.query("SELECT 1 FROM units WHERE original_sha256 IN (?,?)",
+                                    (self.subject("log.xlsx"), self.subject("calc.xlsx"))))
+
+    def test_unpinned_or_writable_component_fails_the_stage_without_fallback(self):
+        other = Path(self.temp.name) / "other.py"
+        other.write_bytes(b"def inspect(p): return {}\ndef account(p): return {}\n")
+        other.chmod(0o400)
+        writable = Path(self.temp.name) / "writable.py"
+        writable.write_bytes(self.component.read_bytes())
+        writable.chmod(0o600)
+        for path in (other, writable, Path(self.temp.name) / "absent.py"):
+            with self.subTest(path=path.name):
+                code, parsed, raw = self.stage("--workbook-policy", str(path))
+                self.assertIsNotNone(parsed, raw)
+                self.assertEqual((code, parsed["status"], parsed["error_code"]),
+                                 (1, "fail", "EXTRACT_WORKBOOK_POLICY_INVALID"))
+                self.assertNotIn(self.temp.name, raw)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM stage_state WHERE stage='extract' AND status='done'"),
+                         [(0,)], "nothing ran")
 
 
 class OutcomeContractTests(unittest.TestCase):

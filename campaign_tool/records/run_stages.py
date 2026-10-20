@@ -32,7 +32,14 @@ the run report.
   ``AWAITING_OCR``, never dropped. The parsers come from the interpreter the
   stage runs under: the stage plan's ``CONTAINER_PYTHON`` is the campaign-tool
   parser venv (``/opt/campaign-tool/venv``). Without pypdf/openpyxl, PDF and
-  XLSX documents are coded ``PARSER_MISSING`` and not attempted.
+  XLSX documents are coded ``PARSER_MISSING`` and not attempted. The document
+  cap counts parse attempts only; images, unsupported forms and missing-parser
+  documents are counted on every run without using it. XLSX is accepted only
+  with ``--workbook-policy`` naming the pinned read-only native workbook
+  component (``workbook_policy.load_native_workbook_policy``); without it,
+  workbooks are held as ``WORKBOOK_POLICY_REQUIRED``. The flag comes from the
+  operator stage plan only, and the TEST plan does not set it (owner policy
+  authorization is a deployment gate, docs/NATIVE-WORKBOOK-COMPOSITION.md).
 * ``digest_gates``: ledger stage-state roll-up for the gated stages; anything
   past privacy needs the owner, so it is review-required, never accepted.
 * ``outputs``: writes a counts-only snapshot under ``DIR/run-outputs/``.
@@ -454,9 +461,19 @@ def stage_extract(args):
 
     _, processing, _ = paths(args.project)
     deadline = time.monotonic() + args.timeout - ne.DEADLINE_MARGIN
+    policy = None
+    if args.workbook_policy:
+        # Operator stage plan only (never a record-chosen path). The loader admits the exact
+        # pinned read-only component bytes; any other file fails the stage, with no fallback.
+        from .workbook_policy import load_native_workbook_policy
+        try:
+            policy = load_native_workbook_policy(args.workbook_policy)
+        except (ValueError, OSError):
+            return result("fail", {"failed": 1}, "EXTRACT_WORKBOOK_POLICY_INVALID"), 1
     try:
         summary = ne.run(processing, run_id=args.run_id, deadline=deadline,
-                         max_documents=args.max_documents, document_timeout=args.document_timeout)
+                         max_documents=args.max_documents, document_timeout=args.document_timeout,
+                         native_workbook_policy=policy)
     except ne.RootNotInitialized:
         return result("fail", {"failed": 1}, "EXTRACT_ROOT_NOT_INITIALIZED"), 1
     except RunError as error:
@@ -592,6 +609,8 @@ def parser():
                    help="extract: documents attempted per run; the rest are counted as deferred")
     p.add_argument("--document-timeout", type=int, default=120,
                    help="extract: per-document parser deadline (seconds)")
+    p.add_argument("--workbook-policy",
+                   help="extract: pinned native workbook policy component (operator stage plan only)")
     return p
 
 
