@@ -37,8 +37,9 @@ PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
             "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE",
-            # TEST sandbox stage plan (targets/test-sandbox.json.in).
-            "SANDBOX_PROJECT_DIR", "SANDBOX_ENGINE_DIR", "PORTAL_APPROVAL_FILE"}
+            # TEST container stage plan (targets/test-container.json.in).
+            "CONTAINER_ENGINE_DIR", "CONTAINER_PROJECT_DIR", "CONTAINER_APPROVAL_FILE",
+            "ADOPTION_CONFIG"}
 INTEGERS = {"RUN_UID", "DOCKER_WAIT_ATTEMPTS", "DOCKER_WAIT_DELAY", "DOCKER_WAIT_MAX_DELAY",
             "DOCKER_CMD_TIMEOUT", "DOCKER_WAIT_DEADLINE", "NOTIFY_TIMEOUT", "RUN_BUDGET_SECONDS"}
 TARGET_NAMES = {"DEFAULT_TARGET", "SCHEDULED_TARGET"}

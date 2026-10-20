@@ -6,16 +6,18 @@ Host-side driver. It never touches the live records project or TEST itself:
 1. Copies TEST (mail-history, processing-v1, portal-queue-v1 and the TEST
    adoption config) into a fresh sandbox directory, inside the Flock container
    as the ledger owner.
-2. Renders the runtime templates with ``targets/test-sandbox.json.in``. Each
-   stage runs in a throwaway container from the pinned Flock image with
-   ``--network none``; only the sandbox copy (mounted at the live project path
-   so stored absolute paths resolve into the copy), the engine tree and the
-   read-only portal allowlist are mounted.
+2. Renders the runtime templates with ``targets/test-container.json.in``:
+   every stage is a ``docker exec`` of the stage adapter in the Flock
+   container against the sandbox copy (``docker run`` is not available to
+   agents here). The portal allowlist is only read; fetch is a dry run.
 3. Runs ``run-records.sh --target TEST`` N times in a row (default 3), then
-   the docker-down and duplicate-receipt fault runs. Notify always points at a
+   the duplicate-receipt and docker-down fault runs. Notify always points at a
    closed loopback port with a fake token (telegram-down on every run), so no
    message can leave the host.
-4. Writes a numbers-and-codes-only receipt (no paths, URLs or record text).
+4. Records a metadata-only manifest (file count, bytes, hash of
+   path/size/mtime) of the live records project and of TEST before and after,
+   and asserts both are unchanged.
+5. Writes a numbers-and-codes-only receipt (no paths, URLs or record text).
 
 Exit codes: 0 every assertion held, 1 an assertion failed, 2 setup refused.
 """
@@ -31,6 +33,21 @@ import sys
 CONTAINER = "agentorange-flock"
 CONTAINER_WORK = "/workspace/flockbot/work"
 TEST_DIR = CONTAINER_WORK + "/records-project-TEST"
+LIVE_DIR = CONTAINER_WORK + "/records-project"
+MANIFEST = """
+import hashlib, os
+root = "%s"
+h = hashlib.sha256(); n = size = 0
+for base, dirs, files in sorted(os.walk(root)):
+    dirs.sort()
+    for name in sorted(files):
+        p = os.path.join(base, name)
+        try: s = os.lstat(p)
+        except OSError: continue
+        n += 1; size += s.st_size
+        h.update(("%%s\\0%%d\\0%%d\\n" %% (os.path.relpath(p, root), s.st_size, s.st_mtime_ns)).encode())
+print(n, size, h.hexdigest())
+"""
 COPY_ITEMS = ("mail-history", "processing-v1", "portal-queue-v1", ".t4-adoption-config-v1.json")
 WORK_STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs")
 LEDGER_COUNTS = """
@@ -76,7 +93,14 @@ def render(engine, runtime, values):
     values_file.write_text(json.dumps(values), encoding="utf-8")
     sh([sys.executable, "-B", str(engine / "deploy/records-runtime/render.py"), "--values", str(values_file),
         "--out", str(runtime), "--target",
-        "TEST=" + str(engine / "deploy/records-runtime/targets/test-sandbox.json.in")])
+        "TEST=" + str(engine / "deploy/records-runtime/targets/test-container.json.in")])
+
+
+def manifest(docker_bin, root):
+    out = subprocess.run([docker_bin, "exec", "-i", "-u", "coder", CONTAINER, "python3", "-B", "-"],
+                         input=MANIFEST % root, capture_output=True, text=True,
+                         check=True, timeout=600).stdout.split()
+    return {"files": int(out[0]), "bytes": int(out[1]), "sha256": out[2]}
 
 
 def run_once(runtime, target_dir):
@@ -108,7 +132,6 @@ def main(argv=None):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     sandbox_rel = f".t11i-sandbox-{stamp}"
     container_project = f"{CONTAINER_WORK}/{sandbox_rel}/records-project"
-    host_project = f"{args.host_work}/{sandbox_rel}/records-project"
     # 1. Sandbox copy of TEST, made inside the container as the ledger owner.
     copy = " ".join(f"'{TEST_DIR}/{item}'" for item in COPY_ITEMS)
     docker(["exec", "-u", "coder", CONTAINER, "sh", "-c",
@@ -119,7 +142,11 @@ def main(argv=None):
     env_file = scratch / "fake-telegram.env"
     env_file.write_text("TELEGRAM_BOT_TOKEN=000000:SYNTHETIC_NOT_A_TOKEN\nTELEGRAM_HOME_CHANNEL=-100\n")
     env_file.chmod(0o600)
-    approval = f"{args.host_work}/.flock-portal-intake/approval.json"
+    if engine.parent != Path(args.host_work).resolve():
+        print(json.dumps({"status": "refused", "code": "engine_not_under_host_work"}))
+        return 2
+    before_live = manifest(args.docker, LIVE_DIR)
+    before_test_tree = manifest(args.docker, TEST_DIR)
     base = {
         "RELEASE_COMMIT": args.release_commit, "ENGINE_DIR": str(engine), "DOCKER": args.docker,
         "TIMEOUT": shutil.which("timeout"), "FLOCK": shutil.which("flock"), "CONTAINER": CONTAINER,
@@ -128,8 +155,11 @@ def main(argv=None):
         "NOTIFY_LABEL": "T11i-TEST", "DOCKER_WAIT_ATTEMPTS": "3", "DOCKER_WAIT_DELAY": "1",
         "DOCKER_WAIT_MAX_DELAY": "2", "DOCKER_CMD_TIMEOUT": "20", "DOCKER_WAIT_DEADLINE": "60",
         "NOTIFY_TIMEOUT": "20", "RUN_BUDGET_SECONDS": "2640", "DEFAULT_TARGET": "TEST",
-        "SCHEDULED_TARGET": "TEST", "SANDBOX_USER": "1000:1000", "SANDBOX_PROJECT_DIR": host_project,
-        "SANDBOX_ENGINE_DIR": str(engine), "PORTAL_APPROVAL_FILE": approval,
+        "SCHEDULED_TARGET": "TEST", "CONTAINER_USER": "coder",
+        "CONTAINER_ENGINE_DIR": f"{CONTAINER_WORK}/{engine.name}",
+        "CONTAINER_PROJECT_DIR": container_project,
+        "CONTAINER_APPROVAL_FILE": f"{CONTAINER_WORK}/.flock-portal-intake/approval.json",
+        "ADOPTION_CONFIG": f"{container_project}/.t4-adoption-config-v1.json",
     }
     runtime = scratch / "runtime"
     render(engine, runtime, {**base, "RUNTIME_DIR": str(runtime), "RUN_RECORDS_SH": str(runtime / "run-records.sh")})
@@ -161,9 +191,13 @@ def main(argv=None):
     receipt["faults"]["docker_down"] = {**summarize(report, code), "ledger_unchanged":
                                         ledger_counts(args.docker, container_project) == before}
     receipt["test_after"] = ledger_counts(args.docker, TEST_DIR)
+    receipt["live_tree_unchanged"] = manifest(args.docker, LIVE_DIR) == before_live
+    receipt["test_tree_unchanged"] = manifest(args.docker, TEST_DIR) == before_test_tree
     # Assertions (numbers only).
     runs = receipt["runs"]
     checks = receipt["checks"]
+    checks["live_tree_unchanged"] = receipt["live_tree_unchanged"]
+    checks["test_tree_unchanged"] = receipt["test_tree_unchanged"]
     checks["test_untouched"] = receipt["test_after"] == before_test
     checks["every_run_reported_all_stages"] = all(set(WORK_STAGES) <= set(r["stages"]) for r in runs)
     checks["notify_failed_never_changes_exit"] = all(r["notify_failed"] is True for r in runs)
