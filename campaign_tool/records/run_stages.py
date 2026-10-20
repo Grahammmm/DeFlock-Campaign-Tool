@@ -19,7 +19,9 @@ the run report.
 * ``portal``: builds mail-delta notices from preserved messages in memory,
   runs T8 allowlist-gated intake into ``portal-queue-v1`` and then a fetch
   *dry run*. The allowlist is only read. Downloads are a separate, explicit
-  step and are never done here.
+  step and are never done here. Items that step left ``blocked`` (e.g. an
+  HTTP 404) are counted on every run (warn ``PORTAL_HTTP_404`` /
+  ``PORTAL_FETCH_BLOCKED``) until they are resolved.
 * ``extract``: Phase 1 (G 2026-10-19) native text only (``native_extract``).
   Every original whose ledger extract stage is pending goes through the
   engine's existing extraction, enrollment and installed extraction check
@@ -266,10 +268,14 @@ def adopt_mail(args, apply):
 def _adoption_needs(report):
     conflicts = sum((report.get("identity_conflicts") or {}).values())
     unaccepted = sum((report.get("unaccepted_coded_gaps") or {}).values())
+    # Receipts the adopter could not load (e.g. a duplicate receipt identity) block the run;
+    # count them so the block has a visible reason.
+    receipt_gaps = sum(value for value in (report.get("gaps") or {}).values() if isinstance(value, int))
     return conflicts, unaccepted, needs(
         ("ADOPTION_CODED_GAPS", "info", report.get("coded_gap_messages", 0)),
         ("ADOPTION_IDENTITY_CONFLICT", "blocking", conflicts),
-        ("ADOPTION_UNACCEPTED_GAP", "blocking", unaccepted))
+        ("ADOPTION_UNACCEPTED_GAP", "blocking", unaccepted),
+        ("ADOPTION_RECEIPT_GAPS", "blocking", receipt_gaps))
 
 
 def stage_delta(args):
@@ -360,6 +366,26 @@ def iter_notices(mail):
         yield {"body": body, "request_id": "mail:" + expected[:32], "source_sha256": expected}, None
 
 
+def fetch_blocked(queue, items):
+    """``(blocked, http_404)``: queue items the fetch step left ``blocked``, and how many of
+    those ended on an HTTP 404 (last attempt's evidence). Read only; no URL is read."""
+    blocked = http_404 = 0
+    for item in items:
+        if item.get("state") != "blocked":
+            continue
+        blocked += 1
+        row = queue.db.execute("SELECT evidence_json FROM portal_attempts WHERE item=? "
+                               "ORDER BY id DESC LIMIT 1", (item["id"],)).fetchone()
+        try:
+            evidence = json.loads(row[0]) if row else []
+        except (TypeError, ValueError):
+            evidence = []
+        if isinstance(evidence, list) and any(isinstance(entry, dict) and entry.get("http_status") == 404
+                                              for entry in evidence):
+            http_404 += 1
+    return blocked, http_404
+
+
 def stage_portal(args):
     from .portal.engine import fetch_queue
     from .portal.intake import intake_notices
@@ -392,18 +418,26 @@ def stage_portal(args):
                 totals[key] += outcome[key]
         dry = fetch_queue(queue, apply=False, approval_loader=loader)
         refused_hosts = queue.db.execute("SELECT COUNT(DISTINCT host) FROM portal_refusals").fetchone()[0]
+        blocked, http_404 = fetch_blocked(queue, dry.get("items", []))
     except (PortalError, OSError, ValueError, sqlite3.Error):
         return result("fail", {"input": len(notices), "failed": 1}, "PORTAL_INTAKE_FAILED"), 1
     finally:
         if queue is not None:
             queue.close()
-    pending = sum(1 for item in dry.get("items", []) if item.get("state") != "received")
+    pending = sum(1 for item in dry.get("items", []) if item.get("state") not in ("received", "blocked"))
     counts = {"input": totals["enrolled"] + totals["refused"] + totals["skipped"],
               "output": totals["enrolled"], "skipped": totals["skipped"] + totals["refused"],
-              "failed": errors}
-    items = needs(("PORTAL_HOST_NOT_ALLOWLISTED", "action", refused_hosts),
+              "failed": errors + blocked}
+    items = needs(("PORTAL_HTTP_404", "action", http_404),
+                  ("PORTAL_FETCH_BLOCKED", "action", blocked - http_404),
+                  ("PORTAL_HOST_NOT_ALLOWLISTED", "action", refused_hosts),
                   ("PORTAL_NOTICE_UNREADABLE", "action", errors),
                   ("PORTAL_FETCH_DRY_RUN_ONLY", "info", pending or totals["enrolled"]))
+    if blocked:
+        # An approved document link that the separate fetch step could not get (blocked, e.g.
+        # HTTP 404) is counted on every run until resolved; the run continues (warn).
+        return result("warn", counts, "PORTAL_HTTP_404" if http_404 else "PORTAL_FETCH_BLOCKED",
+                      needs_g=items), 0
     if totals["refused"] or errors:
         code = "PORTAL_HOST_REFUSED" if totals["refused"] else "PORTAL_NOTICE_UNREADABLE"
         return result("warn", counts, code, needs_g=items), 0
