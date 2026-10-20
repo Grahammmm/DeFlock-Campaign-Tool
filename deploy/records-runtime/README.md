@@ -138,6 +138,33 @@ supports `exit_code`, `sleep_seconds` and `emit: invalid|none`. Every stub
 result adds `STUB_STAGE_BACKEND` (info) to needs_g, so a stub run is never
 mistaken for real coverage.
 
+TEST harness (T12s). `scripts/run_t11i_test_harness.py` runs the real stage
+plan against a sandbox copy of TEST, never against TEST itself or live. It
+needs explicit expectations, for example `--expect-adopted 36
+--expect-coded-gaps 115` on the restored TEST baseline (option c), and it
+fails on any of these:
+
+- a run that exits non-zero;
+- a failed or skipped work stage;
+- a warning outside the expected-gap set (the defaults plus `--allow-warn
+  STAGE:CODE`);
+- adoption that does not match the expectations or is not conserved
+  (adopted + coded gaps == pending, ledger growth == adopted);
+- a rerun that adopts anything;
+- integrity that is not ok;
+- no `EXTRACTED` outcome on the first run, or extract outcomes that do not sum
+  to the input;
+- `PARSER_MISSING` while `--require-native-parsers` is on (the default);
+- a required fault that was not exercised and detected. The required faults
+  are telegram down, duplicate receipt, portal 404, corrupt PDF and docker
+  down.
+
+The portal 404 and corrupt PDF faults go in through the engine's own
+adapters (`scripts/t12_fault_inject.py`, refused without the sandbox
+marker). The real portal and extract stages then have to detect them. The
+receipt carries `target_mode: TEST_SANDBOX_EVIDENCE` and `live_acceptance:
+false`: it is TEST evidence, not live acceptance.
+
 Run report
 
 `schemas/records-run-report-v1.json`, validated by

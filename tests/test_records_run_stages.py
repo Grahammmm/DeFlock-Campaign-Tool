@@ -223,6 +223,15 @@ class AdoptionStageTests(StageTestCase):
         self.assertEqual(parsed["error_code"], "ADOPTION_BLOCKED")
         self.assertIn({"code": "ADOPTION_UNACCEPTED_GAP", "severity": "blocking", "count": 2}, parsed["needs_g"])
 
+    def test_receipt_gap_block_has_a_visible_reason(self):
+        report = {**ADOPT_REPORT, "adopted_messages": 0, "gaps": {"duplicate_receipt_identity": 1}}
+        child, _ = self.fake_child(3, report)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
+        self.assertContract(code, parsed, raw)
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "ADOPTION_BLOCKED"))
+        self.assertIn({"code": "ADOPTION_RECEIPT_GAPS", "severity": "blocking", "count": 1}, parsed["needs_g"])
+
 
 def synthetic_approval(*_args, **_kwargs):
     return parse_approval(json.dumps(policy_data()), uid=0, mode=stat.S_IFREG | 0o644,
