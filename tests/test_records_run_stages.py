@@ -911,6 +911,23 @@ class TemplateTests(unittest.TestCase):
             with self.subTest(bad), self.assertRaises(ValueError):
                 module.plan(*bad)
 
+    def test_live_mail_plan_refreshes_only_live_sync(self):
+        directory, module = self._load_generator()
+        value = json.loads((directory / module.LIVE_MAIL_TEMPLATE).read_text())
+        self.assertEqual(value, module.live_mail_plan())
+        original = module.plan("live")
+        sync = value["stages"][0]
+        self.assertEqual(sync["argv"][-2:],
+                         ["--sync-script", "@CONTAINER_SYNC_SCRIPT@"])
+        args = run_stages.parser().parse_args(
+            sync["argv"][sync["argv"].index(run_stages.__name__) + 1:])
+        self.assertEqual(args.sync_script, "@CONTAINER_SYNC_SCRIPT@")
+        self.assertEqual(args.timeout, 110)
+        self.assertEqual((sync["timeout_seconds"], sync["on_fail"]), (120, "stop"))
+        sync["argv"] = sync["argv"][:-2]
+        self.assertEqual(value, original)
+        self.assertNotIn("--sync-script", module.plan("test")["stages"][0]["argv"])
+
     def test_render_accepts_container_python(self):
         sys.path.insert(0, str(REPO / "deploy/records-runtime"))
         try:

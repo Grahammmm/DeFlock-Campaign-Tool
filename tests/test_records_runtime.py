@@ -895,6 +895,29 @@ class RendererTests(unittest.TestCase):
             self.assertIsNone(re.search(r"@[A-Z_]+@",
                                         (out / "targets" / f"{name}.json").read_text()), name)
 
+    def test_live_mail_render_requires_safe_script_and_leaves_test_offline(self):
+        template = RUNTIME / "targets" / "live-mail-container.json.in"
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(template))]
+        for label, script in (("missing", None), ("relative", "sync.py"),
+                              ("unsafe", "/srv/sync.py;false")):
+            with self.subTest(label):
+                values = self.ocr_container_values()
+                if script is not None:
+                    values["CONTAINER_SYNC_SCRIPT"] = script
+                with self.assertRaises(self.render.RenderError):
+                    self.do_render(values, targets, self.tmp / label)
+        out = self.tmp / "mail"
+        values = self.ocr_container_values(CONTAINER_SYNC_SCRIPT="/srv/mail/sync.py")
+        self.do_render(values, targets, out)
+        test = json.loads((out / "targets/TEST.json").read_text())
+        live = json.loads((out / "targets/LIVE.json").read_text())
+        self.assertNotIn("--sync-script", test["stages"][0]["argv"])
+        self.assertEqual(live["stages"][0]["argv"][-2:],
+                         ["--sync-script", "/srv/mail/sync.py"])
+        self.assertEqual(test["stages"][1:], live["stages"][1:])
+        self.assertEqual(live["stages"][0]["on_fail"], "stop")
+
     # ---- Phase 2 (T6-plan) OCR-enabled LIVE stage plans ----
 
     def ocr_container_values(self, **extra):

@@ -90,7 +90,18 @@ def plan(mode="test", ocr=None):
 def render_text(mode="test", ocr=None):
     return json.dumps(plan(mode, ocr), indent=1) + "\n"
 
+# Opt-in LIVE mail refresh for T17. Existing Phase 1/Phase 2 plans stay pinned.
+LIVE_MAIL_TEMPLATE = "live-mail-container.json.in"
+
+
+def live_mail_plan():
+    value = plan("live")
+    value["stages"][0]["argv"] += ["--sync-script", "@CONTAINER_SYNC_SCRIPT@"]
+    return value
+
 
 if __name__ == "__main__":
     for filename, (mode, ocr) in TEMPLATES.items():
         (HERE / filename).write_text(render_text(mode, ocr), encoding="utf-8")
+    (HERE / LIVE_MAIL_TEMPLATE).write_text(
+        json.dumps(live_mail_plan(), indent=1) + "\n", encoding="utf-8")
