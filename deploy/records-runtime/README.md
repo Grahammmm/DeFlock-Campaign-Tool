@@ -67,6 +67,18 @@ the live owner-only adoption config (both placeholders already exist; no
 values files, host paths, image digests or chat IDs belong in this repo).
 Set `DEFAULT_TARGET=TEST` and `SCHEDULED_TARGET=LIVE` at cutover (T17).
 
+T17 mailbox-refresh cutover uses the opt-in
+`targets/live-mail-container.json.in` as LIVE, with
+`CONTAINER_SYNC_SCRIPT` set to the existing authorized in-container mail-sync
+script. This plan adds only `--sync-script` to LIVE sync; TEST and the
+existing pinned Phase 1/OCR templates remain unchanged. The stage runs that
+script with the configured container Python, with its child timeout inside
+the 110-second stage deadline and 120-second host deadline; failure stops
+the run. Rendering and dry-run never execute the script. Verify the existing
+script's interpreter/dependencies and export destination without fetching
+mail before retiring the legacy timer. Do not use `--help` on a script that
+runs sync at module scope.
+
 Usage
 
     run-records.sh [--target NAME] [--dry-run] [--scheduled]
