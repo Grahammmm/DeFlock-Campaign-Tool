@@ -78,7 +78,7 @@ class FlockOcrContainerRecipeTests(unittest.TestCase):
             self.assertRegex(DOCKERFILE, rf"(?m)^ARG {argument}$")
         self.assertIn("sha256sum -c -", DOCKERFILE)
         self.assertIn("--require-hashes --only-binary=:all:", DOCKERFILE)
-        self.assertIn("pip install --no-deps --no-index", DOCKERFILE)
+        self.assertIn("pip install --force-reinstall --no-deps --no-index", DOCKERFILE)
         self.assertIn('r["commit"]==sys.argv[1]', DOCKERFILE)
         for smoke in ("ocrmypdf --version", "pdftotext -v", "qpdf --version",
                       "campaign_tool.records.extract.ocr --doctor"):

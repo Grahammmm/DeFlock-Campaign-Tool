@@ -66,7 +66,7 @@ RUN cd /opt/campaign-tool/dist \
  && python3 -m venv /opt/campaign-tool/venv \
  && /opt/campaign-tool/venv/bin/pip install --require-hashes --only-binary=:all: \
       -r /opt/campaign-tool/requirements.lock \
- && /opt/campaign-tool/venv/bin/pip install --no-deps --no-index \
+ && /opt/campaign-tool/venv/bin/pip install --force-reinstall --no-deps --no-index \
       /opt/campaign-tool/dist/deflock_campaign_tool-*-py3-none-any.whl \
  && printf '%s\n' "${ENGINE_COMMIT}" > /opt/campaign-tool/ENGINE_COMMIT \
  && chmod -R a+rX,go-w /opt/campaign-tool
