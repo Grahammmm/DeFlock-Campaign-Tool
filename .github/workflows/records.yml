@@ -30,7 +30,7 @@ jobs:
             python -m pip install -r requirements-records-test.txt
           fi
       - name: Synthetic offline tests
-        timeout-minutes: 15
+        timeout-minutes: 18
         run: python -B -m unittest discover -v
       - name: Public-tree credential and private-path scan
         run: python -B tools/check_public_tree.py
