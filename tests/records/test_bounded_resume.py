@@ -112,6 +112,27 @@ print(json.dumps(run_once(adapter, execute=True, seconds=2)))
         self.assertEqual(result.stderr, '')
         self.assertNotIn('synthetic-private', result.stdout)
 
+    @unittest.skipUnless(platform.system() == 'Linux', 'qualified Linux supervisor case')
+    def test_surviving_descendant_does_not_delay_leader_result(self):
+        # Synthetic violation of the no-child contract: the escaped child holds
+        # inherited descriptors open. The leader's own exit must still be seen.
+        source = '''
+import json, os, time
+from campaign_tool.records.bounded_resume import run_once
+def adapter(request):
+    if os.fork() == 0:
+        os.setsid()
+        time.sleep(3)
+        os._exit(0)
+started = time.monotonic()
+result = run_once(adapter, execute=True, seconds=2)
+print(json.dumps([result, time.monotonic() - started < 1.5]))
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', source], capture_output=True,
+                                text=True, timeout=8, check=True)
+        self.assertEqual(json.loads(result.stdout),
+                         [{'status': 'completed', 'completion_claimed': True}, True])
+
 
 if __name__ == '__main__':
     unittest.main()

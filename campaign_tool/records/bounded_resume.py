@@ -49,6 +49,14 @@ def _worker(adapter, request, deadline, connection):
         connection.close()
 
 
+def _wait(process, seconds):
+    # Process.join(timeout) waits on a sentinel pipe that any surviving
+    # descendant inherits; poll the worker's own exit status instead.
+    deadline = time.monotonic() + seconds
+    while process.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def _stop(process):
     # Only the owned worker is guaranteed to be cleaned up. Admission requires
     # separately reviewed adapters and their dependencies to spawn no children.
@@ -86,7 +94,7 @@ def run_once(adapter=None, *, execute=False, seconds=120):
     try:
         process.start()
         writer.close()
-        process.join(seconds)
+        _wait(process, seconds)
         if process.is_alive():
             _stop(process)
             return {'status': 'timed_out', 'completion_claimed': False}
