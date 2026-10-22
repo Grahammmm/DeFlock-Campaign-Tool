@@ -59,3 +59,27 @@ Tests ran in a cloud sandbox (Linux, Python 3.13); they are not host validation.
 - Left: owner decides order; then rebase/merge #164 onto #161 and re-run
   `tests.test_flock_ocr_rootless_swap`; review the new rehearsal workflow
   (`flock-swap-rehearsal.yml`: rootless Docker on a runner).
+
+## #164 Swap rehearsal mode: FIXED ON TOP OF #161 (update)
+- Branch: `claude/fix-pr164`, stacked on `claude/fix-pr161`. Not merged, no force-push.
+- Head SHA: `35804e2da477dd631311243899dccc268e469580` (merge of PR head `d406f671de4f` into `1c928c1cc17c`)
+- Conflicts: 4 files (`preflight.py`, `rootless_swap.py`, the rootless doc, the swap tests). Resolved by hand:
+  - Build context: both PRs had isolated it. Kept #161's `$RUN/b1/context`; the rehearsal uses it too.
+  - Leftover recipe `dist/`: #164 refused the run, #161 ignores it. Now only **reported** in `preflight.json`.
+    Intentional change to #164's R1 check; owner should confirm.
+  - Free space: S1 and A2 take the **larger** of #161's per-copy budget and #164's tar-aware budget.
+  - `--dry-run`, `prune`, `--rehearse` all kept.
+- Tests changed to the merged rules (4 in `test_flock_ocr_rootless_swap.py`, 1 in `test_flock_ocr_swap_hardening.py`) plus a new one for the leftover-dist report. Synthetic fixtures only.
+- Workflow `flock-swap-rehearsal.yml` reviewed: `contents: read` only, actions pinned by SHA, `pull_request` (not `_target`), no secrets. Unchanged.
+- Commands (as root):
+  - `python3 -B -m unittest tests.test_flock_ocr_rootless_swap tests.test_flock_ocr_swap_hardening`: 119 run, OK
+  - `... tests.test_public_tree tests.test_secret_report tests.test_provenance_scan tests.test_flock_ocr_container`: 83 run, 1 failure, 1 skipped. Same `test_manifest_detects_content_owner_mode_and_sidecar_changes` failure as on plain main (root sandbox).
+  - `check_runbook.py`: OK; `check_public_tree.py`: no findings; `scan-secrets.mjs --staged`: PASS
+- Not run: the full suite, CI on the new branch, any rootless-Docker rehearsal, any host.
+- Left: independent review of the merge (it edits the live swap driver); owner approval before any live use.
+
+## Merge order recommendation
+1. **#138** and **#130**: independent of each other and of the swap driver. Either first, after review.
+2. **#161**, then **#164**. #164's branch already contains #161. If #161 merges first, #164 reduces to its own changes.
+3. Merging #164 alone would also bring in #161. Merge #161 first so each gets its own review.
+4. Re-run CI on each head before merging. Nothing here is a host rehearsal.
