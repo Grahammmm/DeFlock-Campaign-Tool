@@ -164,7 +164,7 @@ class VisionFallbackTests(unittest.TestCase):
         source, receipt, result = self.bundle(Runner(text="", confidence="0", vision_text="  \n"))
         self.assertEqual(result["vision_receipts"][0]["status"], "blocked")
         self.assertEqual(result["pages"][1]["status"], "blocked")
-        self.assertEqual(result["pages"][1]["reason"], "no_text_after_vision")
+        self.assertEqual(result["pages"][1]["reason"], "vision_empty")
         self.assertIn("ocr_pages_blocked", [issue["code"] for issue in result["issues"]])
         enrolled = self.enroll(source, receipt)
         self.h.install()

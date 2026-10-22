@@ -102,7 +102,14 @@ MAX_PAGES = 100_000
 # Bumped whenever sidecar parsing changes, so results parsed the old way are
 # never served from cache (2: skip ranges expanded, no trailing form-feed strip).
 SIDECAR_PARSER = 2
-THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
+# Included in both vision cache identities: old ungated output is not reused.
+VISION_OUTPUT_GATE = 1
+THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.S | re.I)
+THINK_TAG = re.compile(r"</?think\b", re.I)
+# Conservative triage for common model refusal preambles, not semantic review.
+VISION_REFUSAL = re.compile(
+    r"^\s*(?:i['’]m sorry\b|i am sorry\b|sorry\b|as an ai\b|"
+    r"i (?:cannot\b|can['’]t\b|am unable\b)|unable to (?:read|transcribe)\b)", re.I)
 # Page statuses a published result.json may carry.
 PAGE_STATUSES = frozenset({"native_text", "ocr_text", "ocr_empty", "ocr_low_quality"})
 
@@ -393,13 +400,20 @@ class QwenVisionBackend:
     def parse(raw: bytes) -> str:
         try:
             reply = json.loads(raw.decode("utf-8"))
-            content = reply["choices"][0]["message"]["content"]
+            choice = reply["choices"][0]
+            message = choice["message"]
+            content = message["content"]
         except (UnicodeDecodeError, ValueError, KeyError, IndexError, TypeError):
             raise BackendError("vision_response_invalid") from None
+        if not isinstance(choice, dict) or not isinstance(message, dict):
+            raise BackendError("vision_response_invalid")
+        if choice.get("finish_reason") != "stop":
+            raise BackendError("vision_response_incomplete")
+        if message.get("refusal") or content is None:
+            raise BackendError("vision_empty")
         if not isinstance(content, str):
             raise BackendError("vision_response_invalid")
-        # Thinking models may inline their reasoning; only the transcription is kept.
-        return THINK_BLOCK.sub("", content, count=1)
+        return clean_vision_text(content)
 
     def page_text(self, source: Path, page: int, workdir: Path) -> str:
         image = self.render(source, page, workdir)
@@ -410,7 +424,7 @@ class QwenVisionBackend:
 
 @dataclass(frozen=True)
 class Quality:
-    """Triage thresholds for OCRmyPDF page text (not a calibrated confidence)."""
+    """Triage thresholds for OCR and vision page text (not calibrated confidence)."""
 
     min_chars: int = 20
     min_alnum_ratio: float = 0.6
@@ -424,6 +438,21 @@ class Quality:
         if alnum < self.min_chars or alnum / len(visible) < self.min_alnum_ratio:
             return "ocr_low_quality"
         return None
+
+
+def clean_vision_text(content: str) -> str:
+    """Remove closed leading reasoning; reject incomplete reasoning and refusals.
+
+    A text-only command adapter has no finish metadata; its zero exit status is
+    its completion contract. The JSON client additionally requires explicit stop.
+    Quality thresholds are applied by each caller, after this syntactic triage.
+    """
+    text = THINK_BLOCK.sub("", content, count=1)
+    if THINK_TAG.search(text):
+        raise BackendError("vision_response_incomplete")
+    if not text.strip() or VISION_REFUSAL.match(text):
+        raise BackendError("vision_empty")
+    return text
 
 
 @dataclass(frozen=True)
@@ -682,6 +711,7 @@ class OcrStage:
         self.quality = quality
         self.signature = _sha(_canonical({
             "schema": SCHEMA, "sidecar_parser": SIDECAR_PARSER, "primary": primary.identity(),
+            "vision_output_gate": VISION_OUTPUT_GATE,
             "fallback": fallback.identity() if fallback is not None else None,
             "quality": {"min_chars": quality.min_chars, "min_alnum_ratio": quality.min_alnum_ratio}}))
 
@@ -845,15 +875,16 @@ class OcrStage:
                 row["tesseract_reason"] = reason
                 outcome.vision_calls += 1
                 try:
-                    vision = self.fallback.page_text(source, number, workdir)
+                    vision = clean_vision_text(self.fallback.page_text(source, number, workdir))
                 except BackendError as error:
                     row["vision_error"] = error.code
                     transient = transient or error.code in TRANSIENT
                 else:
-                    if vision.strip():
+                    vision_reason = self.quality.check(vision)
+                    if vision_reason is None:
                         effective, engine, method, reason = vision, self.fallback.engine, self.fallback.method, None
                     else:
-                        row["vision_error"] = "vision_empty"
+                        row["vision_error"] = "vision_empty" if vision_reason == "ocr_empty" else "vision_low_quality"
             if reason is None:
                 row["status"] = "ocr_text"
             else:
@@ -1010,6 +1041,8 @@ def transcribe_png_main(argv, transport=urllib_transport) -> int:
         if len(image) > MAX_IMAGE_BYTES or not image.startswith(b"\x89PNG\r\n\x1a\n"):
             return 1
         text = backend.parse(backend.transport(backend.endpoint, backend.request_body(image), backend.timeout))
+        if Quality().check(text) is not None:
+            return 1
     except (BackendError, OSError, ValueError, TypeError):
         return 1
     sys.stdout.buffer.write(text.encode("utf-8"))

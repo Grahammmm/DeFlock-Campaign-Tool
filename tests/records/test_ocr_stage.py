@@ -471,7 +471,8 @@ class BackendUnitTest(unittest.TestCase):
         self.assertEqual(quality.check("ab cd"), "ocr_low_quality")
 
     def test_reply_parsing_drops_inline_reasoning(self):
-        raw = json.dumps({"choices": [{"message": {"content": "<think>hmm</think>\nLine one\nLine two"}}]})
+        raw = json.dumps({"choices": [{"finish_reason": "stop",
+                                       "message": {"content": "<think>hmm</think>\nLine one\nLine two"}}]})
         self.assertEqual(stage.QwenVisionBackend.parse(raw.encode()), "Line one\nLine two")
         with self.assertRaises(stage.BackendError):
             stage.QwenVisionBackend.parse(b'{"choices": []}')
@@ -482,7 +483,7 @@ class BackendUnitTest(unittest.TestCase):
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 seen.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
-                body = json.dumps({"choices": [{"message": {"content": "served text"}}]}).encode()
+                body = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": "served text"}}]}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -519,7 +520,8 @@ class TranscribePngAdapterTest(unittest.TestCase):
             def do_POST(self):
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 replies.append(request)
-                body = json.dumps({"choices": [{"message": {"content": "<think>x</think>Adapter text"}}]}).encode()
+                body = json.dumps({"choices": [{"finish_reason": "stop",
+                                                "message": {"content": "<think>x</think>" + CLEAN}}]}).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -548,7 +550,7 @@ class TranscribePngAdapterTest(unittest.TestCase):
         vision.adapter(argv, "qwen", stage.DEFAULT_VISION_MODEL, "ocr-stage-v1")  # accepted by WP4's validator
         root = str(Path(stage.__file__).resolve().parents[2])
         done = subprocess.run(argv + [str(self.png)], capture_output=True, timeout=60, cwd=root)
-        self.assertEqual((done.returncode, done.stdout), (0, b"Adapter text"))
+        self.assertEqual((done.returncode, done.stdout), (0, CLEAN.encode()))
         self.assertTrue(self.replies[0]["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png"))
 
     def test_adapter_failures_exit_nonzero_with_empty_stdout(self):
@@ -960,13 +962,13 @@ class HostGatewayTest(unittest.TestCase):
         import io
         png = self.ws.tmp / "page.png"
         png.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
-        vision = FakeVision(text="Gateway text")
+        vision = FakeVision(text=CLEAN)
         config = self.config(endpoint=self.ENDPOINT, host_gateway=self.GATEWAY)
         out = io.BytesIO()
         with contextlib.redirect_stdout(io.TextIOWrapper(out, encoding="utf-8")) as wrapper:
             code = stage.transcribe_png_main(["--config", config, str(png)], transport=vision)
             wrapper.flush()
-        self.assertEqual((code, out.getvalue()), (0, b"Gateway text"))
+        self.assertEqual((code, out.getvalue()), (0, CLEAN.encode()))
         self.assertEqual(vision.requests[0][0], self.ENDPOINT)
         without = self.config(endpoint=self.ENDPOINT)
         self.assertEqual(stage.transcribe_png_main(["--config", without, str(png)], transport=vision), 1)

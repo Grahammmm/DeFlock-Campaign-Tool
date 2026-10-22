@@ -327,6 +327,7 @@ def _ocr_receipt_published(ocr_root, pinned_sha, page, tool_signature, attempt_i
 def _vision_receipt_published(ocr_root, pinned_sha, page, loaded, vision, attempt_id):
     """True when the vision receipt bound to this Tesseract receipt is already published (``extract.vision`` identity)."""
     identity={'source_sha256':pinned_sha,'page':page,'version':page_vision.VERSION,
+              'vision_output_gate':page_vision.VISION_OUTPUT_GATE,
               'base_receipt_id':loaded['receipt']['receipt_id'],'base_receipt_sha256':loaded['receipt_sha256'],
               'engine':vision['engine'],'model':vision['model'],'adapter_signature':vision['signature'],'attempt_id':attempt_id}
     return (Path(ocr_root)/'vision'/pinned_sha/f'page-{page:06d}'/page_ocr._hash(page_ocr._json(identity))/'receipt.json').is_file()

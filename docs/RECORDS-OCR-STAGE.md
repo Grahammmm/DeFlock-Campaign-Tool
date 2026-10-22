@@ -35,8 +35,13 @@ carry this module.
    triaged page is rendered with `/usr/bin/pdftoppm -r 200 -png -singlefile`
    and sent to an OpenAI-compatible `/v1/chat/completions` endpoint (llama.cpp
    server with the Qwen vision projector) as a base64 PNG data URL. The
-   temperature is 0, and a leading `<think>...</think>` block is dropped. When
-   non-empty text comes back, the page becomes `engine=qwen`,
+   temperature is 0. A response must explicitly finish with `finish_reason=stop`;
+   missing/non-stop reasons and incomplete `<think>` output are rejected.
+   A closed leading `<think>...</think>` block is dropped. Empty responses and
+   common refusal preambles become `vision_empty`; punctuation-only or short/
+   low-quality replies become `vision_low_quality`. The same `Quality.check`
+   thresholds used for Tesseract apply after vision triage. Only usable text
+   becomes `engine=qwen`,
    `method=llama.cpp-vision`, and the original reason is kept as
    `tesseract_reason`. The endpoint must be `http://` on a loopback host
    (127.0.0.1, ::1 or localhost) with an explicit port, and no proxy is used.
@@ -119,8 +124,18 @@ engine counts.
   `source_bytes`; `review_state: not_reviewed`; no text). Publication is a
   no-replace directory rename. A rerun with the same configuration makes no
   tool or model call. A configuration change, or a change to the sidecar
-  parser version (`SIDECAR_PARSER`, part of the signature), gets a new
+  parser version (`SIDECAR_PARSER`) or vision-output gate (`VISION_OUTPUT_GATE`,
+  both part of the signature), gets a new
   signature directory and never rewrites the old one.
+  WP4 vision receipt identities also include the gate version, so a new fallback
+  does not reuse an older ungated receipt. The text-only command adapter has no
+  JSON finish metadata: exit zero is its completion contract. The bundled
+  `transcribe-png` command verifies explicit stop before printing text, and WP4
+  additionally applies refusal/thinking triage and the default quality thresholds
+  before writing a sidecar. Rejected output remains blocked, with no vision text
+  sidecar. These checks are heuristic, not proof of faithful transcription;
+  successful text remains unreviewed and still needs visual review. No vision
+  backend is enabled by this code change.
 - A cache hit is verified before use: the source is still reachable beneath
   the root with the recorded size, the result directories and files are
   owner-only and not symlinks (opened by descriptor with `O_NOFOLLOW`), the

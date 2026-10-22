@@ -22,6 +22,7 @@ import tempfile
 import time
 
 from . import ocr
+from ..ocr_stage import BackendError, Quality, VISION_OUTPUT_GATE, clean_vision_text
 
 VERSION = "local-vision-1"
 ARTIFACTS = ("page.png", "sidecar.txt")
@@ -213,6 +214,7 @@ def run_fallback(output_root: str | Path, source_sha256: str, page: int, base_re
     if not needs_fallback(base_receipt):
         raise ValueError("vision_fallback_not_eligible")
     identity = {"source_sha256": source_sha256, "page": page, "version": VERSION,
+                "vision_output_gate": VISION_OUTPUT_GATE,
                 "base_receipt_id": base_receipt_id, "base_receipt_sha256": base["receipt_sha256"],
                 "engine": checked["engine"], "model": checked["model"],
                 "adapter_signature": checked["signature"], "attempt_id": attempt_id}
@@ -271,12 +273,19 @@ def run_fallback(output_root: str | Path, source_sha256: str, page: int, base_re
                     except UnicodeError:
                         receipt["blocked_reason"] = "vision_output_encoding"
                     else:
-                        ocr._write_new(temporary / "sidecar.txt", text)
-                        artifacts["sidecar.txt"] = ocr._hash(text)
-                        if decoded.strip():
-                            receipt["status"] = TEXT_STATE
+                        try:
+                            decoded = clean_vision_text(decoded)
+                        except BackendError as error:
+                            receipt["blocked_reason"] = error.code
                         else:
-                            receipt["blocked_reason"] = "no_text_after_vision"
+                            quality_reason = Quality().check(decoded)
+                            if quality_reason is not None:
+                                receipt["blocked_reason"] = "vision_low_quality"
+                            else:
+                                text = decoded.encode("utf-8")
+                                ocr._write_new(temporary / "sidecar.txt", text)
+                                artifacts["sidecar.txt"] = ocr._hash(text)
+                                receipt["status"] = TEXT_STATE
         if ocr._prune_unrecorded(temporary, artifacts):
             artifacts.clear()
             receipt.update(status="blocked", blocked_reason="vision_derivative_unsafe")

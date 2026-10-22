@@ -193,4 +193,5 @@ class FakeVision:
             raise self.error
         if self.raw is not None:
             return self.raw
-        return json.dumps({"choices": [{"message": {"role": "assistant", "content": self.text}}]}).encode()
+        return json.dumps({"choices": [{"finish_reason": "stop",
+                                        "message": {"role": "assistant", "content": self.text}}]}).encode()
