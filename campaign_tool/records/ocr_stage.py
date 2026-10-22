@@ -451,8 +451,8 @@ def parse_queue_line(line: str, source_root: Path) -> QueueItem:
     if value.get("queue_schema", QUEUE_SCHEMA) != QUEUE_SCHEMA:
         raise BackendError("queue_item_invalid")
     document_id, digest, path = value.get("document_id"), value.get("sha256"), value.get("path")
-    if not (isinstance(document_id, str) and SAFE_ID.match(document_id)
-            and isinstance(digest, str) and SHA256.match(digest)
+    if not (isinstance(document_id, str) and SAFE_ID.fullmatch(document_id)
+            and isinstance(digest, str) and SHA256.fullmatch(digest)
             and isinstance(path, str) and os.path.isabs(path) and "\x00" not in path):
         raise BackendError("queue_item_invalid")
     # The path must already be normal: no ".", "..", "//" or trailing slash, so
