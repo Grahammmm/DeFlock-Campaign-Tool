@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/records-run-report-v1.json",
+  "title": "Flock records run report v1",
+  "description": "Sanitized per-run coordination report for the Flock records pipeline. Metadata only: counts, enum statuses and upper-snake codes. It must never carry filenames, paths, URLs, email addresses, record text, OCR text or free-form messages. Consumers (Telegram summary, dashboard) render text from codes. Machine-valid reports are review-required, not semantic acceptance. Cross-field rules (stage order, timing, status roll-up) are enforced by campaign_tool.records.run_report.validate_run_report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_kind",
+    "run_id",
+    "mode",
+    "started_at",
+    "finished_at",
+    "duration_seconds",
+    "overall_status",
+    "stages",
+    "new_data",
+    "review_required_count",
+    "notify_failed",
+    "needs_g"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_kind": {"const": "flock-records-run-report"},
+    "run_id": {
+      "type": "string",
+      "description": "Opaque run identity: run_<UTC yyyymmddThhmmssZ>_<8 hex>.",
+      "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$"
+    },
+    "mode": {"type": "string", "enum": ["scheduled", "manual", "test"]},
+    "started_at": {"$ref": "#/$defs/utc_timestamp"},
+    "finished_at": {"$ref": "#/$defs/utc_timestamp"},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "overall_status": {
+      "type": "string",
+      "description": "fail if any stage failed, else warn if any stage warned, else ok.",
+      "enum": ["ok", "warn", "fail"]
+    },
+    "stages": {
+      "type": "array",
+      "description": "Exactly one entry per stage, in pipeline order: sync, delta, adoption, portal, extract, digest_gates, outputs, notify.",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/stage"}
+    },
+    "new_data": {
+      "type": "object",
+      "description": "Counts of data first seen in this run.",
+      "additionalProperties": false,
+      "required": ["documents", "pages", "extracted_units", "portal_releases", "request_status_changes"],
+      "properties": {
+        "documents": {"$ref": "#/$defs/count"},
+        "pages": {"$ref": "#/$defs/count"},
+        "extracted_units": {"$ref": "#/$defs/count"},
+        "portal_releases": {"$ref": "#/$defs/count"},
+        "request_status_changes": {"$ref": "#/$defs/count"}
+      }
+    },
+    "review_required_count": {"$ref": "#/$defs/count"},
+    "notify_failed": {"type": "boolean"},
+    "needs_g": {
+      "type": "array",
+      "description": "Items needing an owner decision. Codes only; no free text.",
+      "items": {"$ref": "#/$defs/needs_g_item"}
+    }
+  },
+  "$defs": {
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "count": {"type": "integer", "minimum": 0},
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+    },
+    "stage_name": {
+      "type": "string",
+      "enum": ["sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs", "notify"]
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "counts", "duration_seconds", "error_code"],
+      "properties": {
+        "name": {"$ref": "#/$defs/stage_name"},
+        "status": {"type": "string", "enum": ["ok", "warn", "fail", "skipped"]},
+        "counts": {
+          "type": "object",
+          "description": "Units the stage considered (input), produced (output), failed on, or skipped.",
+          "additionalProperties": false,
+          "required": ["input", "output", "failed", "skipped"],
+          "properties": {
+            "input": {"$ref": "#/$defs/count"},
+            "output": {"$ref": "#/$defs/count"},
+            "failed": {"$ref": "#/$defs/count"},
+            "skipped": {"$ref": "#/$defs/count"}
+          }
+        },
+        "duration_seconds": {
+          "type": ["number", "null"],
+          "description": "null only when the stage did not start (status skipped).",
+          "minimum": 0
+        },
+        "error_code": {
+          "description": "Required (non-null) when status is warn or fail; null when ok.",
+          "type": ["string", "null"],
+          "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+        },
+        "outcomes": {
+          "type": "array",
+          "description": "Optional per-document outcome codes (extract stage). Each document counted in counts.input has exactly one code, so the counts sum to counts.input. Codes are unique. Codes only, never document identities.",
+          "items": {"$ref": "#/$defs/outcome"}
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count"],
+      "properties": {
+        "code": {"$ref": "#/$defs/code"},
+        "count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "needs_g_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "stage", "severity", "count"],
+      "properties": {
+        "code": {"$ref": "#/$defs/code"},
+        "stage": {"$ref": "#/$defs/stage_name"},
+        "severity": {"type": "string", "enum": ["info", "action", "blocking"]},
+        "count": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

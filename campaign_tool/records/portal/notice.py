@@ -8,6 +8,11 @@ from html.parser import HTMLParser
 from .policy import PortalError, url_parts
 from .store import check_hash, identifier
 
+# Exact provider-neutral shape for a portal document link. Kept in one place so
+# the allowlist-gated intake adapter and the plain inventory extractor cannot
+# diverge on what counts as a fetchable /documents/<item> link.
+DOCUMENT_LINK = re.compile(r"/documents/([A-Za-z0-9][A-Za-z0-9_-]{0,159})(?:/download)?")
+
 
 class Links(HTMLParser):
     def __init__(self):
@@ -38,7 +43,7 @@ def inventory_notice(queue, *, body, request_id, source_sha256, known_hosts):
     for url in urls:
         try:
             p=url_parts(url)
-            match=re.fullmatch(r"/documents/([A-Za-z0-9_-]+)(?:/download)?",p.path)
+            match=DOCUMENT_LINK.fullmatch(p.path)
             if p.hostname not in known_hosts or not match:
                 continue
         except PortalError:

@@ -51,7 +51,8 @@ jobs:
           suite = unittest.defaultTestLoader.loadTestsFromNames([
               'tests.test_records_portal', 'tests.test_records_portal_https',
               'tests.test_records_portal_repairs', 'tests.test_records_portal_runner_contract',
-              'tests.test_records_portal_wp1'])
+              'tests.test_records_portal_wp1', 'tests.records.test_portal_intake',
+              'tests.records.test_portal_legacy_approval'])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():
               raise SystemExit(1)

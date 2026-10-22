@@ -87,6 +87,16 @@ this code. Any conversion/provisioning needs a separate reviewed admin change.
 An egress file records a grant; it cannot override a browser/tool denial or a
 network restriction. Activation still requires an independently permitted path.
 
+The one deployed format the engine reads as is: the root-owned allowlist of the
+existing NextRequest coordinator (purpose `flock-nextrequest-portal-intake`,
+`portal_hosts`, `redirect_hosts`, optional identical `approved_*` mirrors and
+`expires_at`; no `version`, no `path_prefixes`). It is mapped read-only to the
+same hosts with the coordinator's own path scopes made explicit: `/documents/`
+on each portal host and `/<portal slug>/` (first host label) on each redirect
+host. Unknown keys, disagreeing mirrors, duplicate hosts or a host in both lists
+are refused (`approval_invalid`); ownership, expiry and change checks are the
+same as for version 1. The file is never edited and no host is added.
+
 Every request and redirect rechecks both gates. The engine also accepts an
 independent `egress(url)` checker. Fixture callbacks returning True are used only
 in synthetic tests. No raw record can select a policy, callable or transport.

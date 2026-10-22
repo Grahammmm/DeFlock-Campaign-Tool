@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import stat
+import time
 from pathlib import Path
 from .policy import PortalError, hostname, safe_ancestors, url_parts
 
@@ -39,6 +40,11 @@ CREATE TABLE IF NOT EXISTS portal_delivery_attempts(
  id INTEGER PRIMARY KEY, version TEXT NOT NULL REFERENCES portal_versions(id),
  result TEXT NOT NULL, reason TEXT);
 CREATE INDEX IF NOT EXISTS portal_delivery_version ON portal_delivery_attempts(version,id);
+CREATE TABLE IF NOT EXISTS portal_refusals(
+ id INTEGER PRIMARY KEY, host TEXT NOT NULL, reason TEXT NOT NULL,
+ source_sha256 TEXT NOT NULL, url_sha256 TEXT NOT NULL,
+ first_seen REAL NOT NULL, last_seen REAL NOT NULL, count INTEGER NOT NULL DEFAULT 1,
+ UNIQUE(host,reason,source_sha256,url_sha256));
 """
 
 
@@ -148,6 +154,35 @@ class Queue:
                                 (key,generation,source_sha256,url_hash,previous,reason))
         return key
 
+    def refuse(self, host, reason, url, source_sha256, *, now=None):
+        """Record a non-allowlisted notice host; never enroll it for fetching.
+
+        The full signed URL is never retained: only its hash, the host and the
+        fixed reason code are stored so an operator can report the refusal
+        without re-exposing the private link.
+        """
+        hostname(host)
+        if not isinstance(reason, str) or not re.fullmatch(r"[a-z_]{1,80}", reason):
+            raise PortalError("invalid_refusal_reason")
+        check_hash(source_sha256)
+        if url_parts(url).hostname != host:
+            raise PortalError("initial_host_mismatch")
+        url_hash = digest_bytes(url.encode())
+        stamp = float(now if now is not None else time.time())
+        with self.lock(), self.db:
+            row = self.db.execute(
+                "SELECT id,count FROM portal_refusals WHERE host=? AND reason=? AND source_sha256=? AND url_sha256=?",
+                (host, reason, source_sha256, url_hash)).fetchone()
+            if row is None:
+                self.db.execute(
+                    "INSERT INTO portal_refusals(host,reason,source_sha256,url_sha256,first_seen,last_seen,count) VALUES(?,?,?,?,?,?,1)",
+                    (host, reason, source_sha256, url_hash, stamp, stamp))
+            else:
+                self.db.execute(
+                    "UPDATE portal_refusals SET count=count+1,last_seen=? WHERE id=?",
+                    (stamp, row["id"]))
+        return url_hash
+
     def status(self):
         return {"items": [dict(row) for row in self.db.execute(
             "SELECT id,host,request_id,item_id,generation,state,reason,tries,current_sha256 FROM portal_items ORDER BY id")],
@@ -157,7 +192,10 @@ class Queue:
             "ledger_failures": [dict(row) for row in self.db.execute(
                 "SELECT a.version,a.reason,a.id AS attempt_id FROM portal_delivery_attempts a "
                 "JOIN portal_versions v ON v.id=a.version WHERE v.ledger_state='pending' AND a.result='failed' "
-                "AND a.id=(SELECT max(b.id) FROM portal_delivery_attempts b WHERE b.version=a.version) ORDER BY a.id LIMIT 1000")]}
+                "AND a.id=(SELECT max(b.id) FROM portal_delivery_attempts b WHERE b.version=a.version) ORDER BY a.id LIMIT 1000")],
+            "refused_hosts": self.db.execute("SELECT count(DISTINCT host) FROM portal_refusals").fetchone()[0],
+            "refusals": [dict(row) for row in self.db.execute(
+                "SELECT host,reason,source_sha256,url_sha256,count,first_seen,last_seen FROM portal_refusals ORDER BY host,reason,source_sha256 LIMIT 1000")]}
 
     def verify_object(self, digest, size):
         check_hash(digest)
