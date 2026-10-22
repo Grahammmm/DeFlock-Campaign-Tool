@@ -808,12 +808,18 @@ class OcrStage:
                 return outcome
             if not allow_work:
                 return None
-            work_root = _owner_dir(self.out_root / ".work")
-            workdir = Path(tempfile.mkdtemp(prefix="doc-", dir=work_root))
+            workdir = None
             try:
+                work_root = _owner_dir(self.out_root / ".work")
+                workdir = Path(tempfile.mkdtemp(prefix="doc-", dir=work_root))
                 outcome = self._process(item, fd, workdir)
+            except OSError:
+                # A derivative/output write failure belongs to this document,
+                # not to the queue reader. Keep later documents runnable.
+                outcome = Outcome(item.document_id, "ocr_failed", "publish_failed")
             finally:
-                shutil.rmtree(workdir, ignore_errors=True)
+                if workdir is not None:
+                    shutil.rmtree(workdir, ignore_errors=True)
             outcome.attempted = True
             return outcome
         finally:
@@ -879,25 +885,29 @@ class OcrStage:
 
     def _publish(self, item: QueueItem, pages, outcome: Outcome, source_bytes: int) -> None:
         staging = Path(tempfile.mkdtemp(prefix="publish-", dir=_owner_dir(self.out_root / ".work")))
-        rows = []
-        for row, text in pages:
-            if text is not None:
-                data = text.encode("utf-8")
-                name = f"page-{row['page']:04d}.txt"
-                _write_private(staging / name, data)
-                row.update(text_file=name, chars=len(text), text_sha256=_sha(data))
-            rows.append(row)
-        record = {"schema": SCHEMA, "document_id": item.document_id, "source_sha256": item.sha256,
-                  "source_bytes": source_bytes, "config_signature": self.signature,
-                  "status": outcome.status, "code": outcome.code, "page_count": len(rows),
-                  "unresolved_pages": outcome.unresolved_pages,
-                  "engines": dict(sorted(outcome.engines.items())), "review_state": "not_reviewed",
-                  "pages": rows}
-        _write_private(staging / "result.json", _canonical(record) + b"\n")
-        final = self.result_dir(item.sha256)
-        _owner_dir(final.parent)
-        if not _publish_noreplace(staging, final):
-            shutil.rmtree(staging, ignore_errors=True)  # a concurrent run published first
+        try:
+            rows = []
+            for row, text in pages:
+                if text is not None:
+                    data = text.encode("utf-8")
+                    name = f"page-{row['page']:04d}.txt"
+                    _write_private(staging / name, data)
+                    row.update(text_file=name, chars=len(text), text_sha256=_sha(data))
+                rows.append(row)
+            record = {"schema": SCHEMA, "document_id": item.document_id, "source_sha256": item.sha256,
+                      "source_bytes": source_bytes, "config_signature": self.signature,
+                      "status": outcome.status, "code": outcome.code, "page_count": len(rows),
+                      "unresolved_pages": outcome.unresolved_pages,
+                      "engines": dict(sorted(outcome.engines.items())), "review_state": "not_reviewed",
+                      "pages": rows}
+            _write_private(staging / "result.json", _canonical(record) + b"\n")
+            final = self.result_dir(item.sha256)
+            _owner_dir(final.parent)
+            _publish_noreplace(staging, final)
+        finally:
+            # If renamed this path no longer exists; otherwise no private page
+            # text survives a failed write, encode, rename or lost race.
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def stage_result(outcomes: list[Outcome], queue_errors: dict, backlog: int = 0) -> tuple[dict, int]:
