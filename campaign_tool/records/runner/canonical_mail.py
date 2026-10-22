@@ -22,8 +22,9 @@ class CanonicalMailBackend(LegacyIntakeBackend):
     Catalog and all substantive stages remain explicitly unavailable. The trusted
     caller installs/pins WP1 separately; this module never copies its schema/code.
     """
-    def __init__(self,mail_root,intake_output,database,*,stage_runner_factory=None,installed_preservation=True):
+    def __init__(self,mail_root,intake_output,database,*,stage_runner_factory=None,installed_preservation=True,resolution_policy=None):
         super().__init__(mail_root,intake_output);self.database=database
+        self.resolution_policy=resolution_policy
         try:
             self.store=import_module('campaign_tool.records.ledger.store')
             self.stages=import_module('campaign_tool.records.ledger.stages')
@@ -233,6 +234,35 @@ class CanonicalMailBackend(LegacyIntakeBackend):
             kind,evidence=self.stages._preservation_content(con,original,content)
         return {'receipt':{'subject_sha256':subject,'stage':'preserve'},'content':content,
                 'content_kind':kind,'preservation_evidence':evidence}
+    def _resolution_plan(self,c,value,records):
+        """Distinct unresolved originals this receipt may resolve; empty with no policy (T4B)."""
+        policy=self.resolution_policy
+        if policy is None:return {}
+        from ..ledger import original_resolution
+        conflict=lambda:ValueError('canonical_original_binding_conflict')
+        plan={}
+        for sha in sorted({row[1] for row in records}):
+            original=self.store.effective_original(c,sha)
+            if original is None:continue
+            entry=policy.entry(sha)
+            if original['scope']=='unresolved':
+                ids={row[0] for row in records if row[1]==sha}
+                proof=intake_folder.verify_blob(sha,self.output)
+                if (original['role']!='unresolved' or original['storage_path'] is not None or entry is None
+                        or entry['bytes']!=proof['bytes'] or entry['verification_receipt_sha256']!=value.receipt_sha256
+                        or entry['binding_occurrence_id'] not in ids):raise conflict()
+                plan[sha]=entry['binding_occurrence_id']
+            elif original.get('resolution_sha256') and original_resolution.is_mail_export(c,sha):
+                # Defence in depth for the adopt-mail receipt-set check: only the approved receipts may touch it.
+                if entry is None or value.receipt_sha256 not in [entry['verification_receipt_sha256'],*entry['dependent_receipts']]:raise conflict()
+        return plan
+    def _append_resolutions(self,c,value,planned):
+        from ..ledger import original_resolution
+        for sha in sorted(planned):
+            original_resolution.append_mail_export(c,subject=sha,policy=self.resolution_policy,
+                verification_receipt_sha256=value.receipt_sha256,occurrence_id=planned[sha],storage_path=str(self.output/'blobs'/sha))
+            effective=self.store.effective_original(c,sha)
+            if not effective or not effective.get('resolution_sha256') or effective['scope']!='in_scope':raise ValueError('canonical_original_binding_conflict')
     def preserve(self,receipt_path,account,scope,uid):
         if self.run_identity is None:raise IntegrationGap('canonical_run_identity_missing')
         value=super().preserve(receipt_path,account,scope,uid)
@@ -263,9 +293,11 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                 if len(mail_rows)>1 or (mail_rows and tuple(mail_rows[0])!=mail_values):raise ValueError('canonical_mail_identity_conflict')
                 run=c.execute('SELECT status,ended_at FROM runs WHERE run_id=?',(rid,)).fetchone()
                 if not run or (not mail_rows and (run['status']!='running' or run['ended_at'] is not None)):raise ValueError('canonical_enrollment_run_not_live')
+                planned=self._resolution_plan(c,value,records)
                 for oid,sha,kind,parent,loc in records:
                     proof=intake_folder.verify_blob(sha,self.output);path=str(self.output/'blobs'/sha)
                     original=self.store.effective_original(c,sha)
+                    if sha in planned:original=None if original is None else dict(original,scope='in_scope',storage_path=path)
                     if original and (original['bytes']!=proof['bytes'] or original['storage_path']!=path or original['scope']!='in_scope'):raise ValueError('canonical_original_binding_conflict')
                     if not original:
                         c.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',(sha,proof['bytes'],("application/vnd.ms-outlook" if kind=="mail" and value.original_format=="msg" else "message/rfc822" if kind=="mail" or loc in value.eml_parts else None),stamp,'original','in_scope',path,'captured',None,js({'method':'verified_export_receipt','receipt_sha256':value.receipt_sha256})))
@@ -283,6 +315,7 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                         # already proven above; the superseded export path may be pruned.
                         if tuple(old)[:5]!=expected[:5] or prior!=new or not isinstance(old_path,str):raise ValueError('canonical_occurrence_conflict')
                     if not old:c.execute('INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)',(oid,sha,kind,source,parent,stamp,'verified_mail_export',evidence))
+                self._append_resolutions(c,value,planned)
                 if not mail_rows:c.execute('INSERT INTO mail_messages VALUES(?,?,?,?,?,?,?,?,?,?)',mail_values)
                 c.commit()
             except BaseException:c.rollback();raise

@@ -21,9 +21,12 @@ keys instead of the whole table (section 11.H, test 40).
 
 Implementation status: slice A of section 12 exists as engine code and tests
 only (`intake/mail_resolution_policy.py`, the mail payload read path and
-`append_mail_export` in `ledger/original_resolution.py`; test groups A-C). Nothing
-calls `append_mail_export` yet: no backend, adopt-mail, config, census, report or
-runtime wiring exists, and no ledger has been changed. Slices 2-5 remain planned.
+`append_mail_export` in `ledger/original_resolution.py`; test groups A-C).
+Slice 2 adds the optional `resolution_policy` argument to `CanonicalMailBackend`
+(plan, record loop and `append_mail_export` inside the existing transaction; test
+group D, 16-23, in `test_canonical_mail_resolution.py`). Nothing passes a policy
+to the backend yet: no adopt-mail, config, census, report or runtime wiring
+exists, and no ledger has been changed. Slices 3-5 remain planned.
 
 Code references are to Grahammmm/DeFlock-Campaign-Tool#148 at exact head
 `039900bb55e023e67c1121663802280a15b1b1ad`, which is stacked on #142

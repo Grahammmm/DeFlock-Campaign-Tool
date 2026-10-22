@@ -108,6 +108,14 @@ def _require_untouched(con, subject):
             "original_resolution_proposal_exists")
 
 
+def is_mail_export(con, subject):
+    """True when `subject` has a mail-export resolution row (read-only; no verification)."""
+    if not installed(con):
+        return False
+    row = _named_row(con, "SELECT payload_json FROM original_resolutions WHERE original_sha256=?", (subject,))
+    return row is not None and json.loads(row["payload_json"]).get("schema") == MAIL_NAME
+
+
 def effective_original(con, subject):
     declaration = _named_row(con, "SELECT * FROM originals WHERE sha256=?", (subject,))
     if declaration is None:
