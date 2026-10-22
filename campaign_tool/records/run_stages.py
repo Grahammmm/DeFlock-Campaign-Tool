@@ -860,11 +860,21 @@ def stage_digest_gates(args):
     pending = sum(counts.get(stage, {}).get("pending", 0) for stage in GATED)
     blocked = sum(counts.get(stage, {}).get("blocked", 0) for stage in GATED)
     done = sum(counts.get(stage, {}).get("done", 0) for stage in GATED)
-    out = {"input": pending + blocked + done, "output": done, "failed": blocked, "skipped": pending}
+    in_progress = sum(counts.get(stage, {}).get("in_progress", 0) for stage in GATED)
+    total = sum(sum(counts.get(stage, {}).values()) for stage in GATED)
+    unknown = total - pending - blocked - done - in_progress
+    out = {"input": total, "output": done, "failed": blocked + unknown,
+           "skipped": pending + in_progress}
     # Every proposal past privacy needs the owner: review-required, never accepted here.
-    items = needs(("GATE_BLOCKED", "action", blocked))
+    items = needs(("GATE_BLOCKED", "action", blocked),
+                  ("GATE_IN_PROGRESS", "info", in_progress),
+                  ("GATE_UNKNOWN_STATUS", "action", unknown))
     if proposals or blocked:
         return result("warn", out, "GATE_REVIEW_REQUIRED", review_required=proposals, needs_g=items), 0
+    if unknown:
+        return result("warn", out, "GATE_UNKNOWN_STATUS", needs_g=items), 0
+    if in_progress:
+        return result("warn", out, "GATE_IN_PROGRESS", needs_g=items), 0
     return result("ok", out, needs_g=items), 0
 
 

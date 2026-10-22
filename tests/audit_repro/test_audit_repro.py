@@ -123,7 +123,6 @@ class InboxSymlinkAbortsRun(unittest.TestCase):
             self.assertEqual(len(report["preserved"]), 1)
 
 
-@unittest.skipUnless(ENABLED, "set AUDIT_REPRO=1 to run audit reproductions")
 class DigestGatesDropsInProgress(unittest.TestCase):
     """Medium: in_progress gated slots vanish from the denominator and the stage says ok."""
 
