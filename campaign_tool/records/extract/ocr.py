@@ -573,6 +573,8 @@ def extract_image_only_pages(
     if reader.is_encrypted and not reader.decrypt(""):
         raise ValueError("encrypted_pdf_requires_user_password")
     count = len(reader.pages)
+    if count == 0:
+        raise ValueError("pdf_has_no_pages")
     selected = tuple(range(1, count + 1)) if pages is None else tuple(pages)
     holds = set(fidelity_holds)
     if (len(set(selected)) != len(selected) or any(type(n) is not int or n < 1 or n > count for n in selected)
