@@ -40,7 +40,13 @@ are never dropped. Codes in ``ACCEPTED_GAP_CODES`` are the classes G accepted
 as reported gaps (decision 2026-10-19, option c); any other coded gap blocks
 (CLI exit 3).
 
-Only eligible new and incomplete receipts are passed to the backend; a run
+With a pinned, owner-approved legacy-resolution policy (config schema
+``mail-history-adoption-v2``, docs/RECORDS-LEGACY-MAIL-RESOLUTION.md section 8),
+a ``new`` receipt whose unresolved legacy originals the policy resolves is
+*resolvable* instead of a coded gap. One pure plan (``intake.mail_resolution_plan``)
+decides it for dry run and apply alike; the backend writes the resolution rows.
+
+Only eligible new, resolvable and incomplete receipts are passed to the backend; a run
 with nothing pending writes nothing. Reports carry counts and hashes only, no paths,
 account names, headers or exception narratives. The export directory is only
 read; this command never connects to a mailbox or runs an exporter.
@@ -61,6 +67,8 @@ from .intake import folder as intake_folder, mail_delta
 
 SOURCE = "mail-history"
 CONFIG_SCHEMA = "mail-history-adoption-v1"
+CONFIG_SCHEMA_V2 = "mail-history-adoption-v2"
+POLICY_KEY = "legacy_resolution_policy_sha256"
 DISABLE_MARKER = ".adoption-disabled-v1.json"
 RUN_PREFIX = "mail-history-"
 MAX_RECEIPTS = 10000
@@ -90,15 +98,19 @@ def load_config(path):
         config = json.loads(raw)
     except (OSError, ValueError, UnicodeError):
         raise AdoptionError("adoption_config_invalid") from None
-    if (not isinstance(config, dict) or config.get("schema") != CONFIG_SCHEMA
+    if (not isinstance(config, dict) or config.get("schema") not in (CONFIG_SCHEMA, CONFIG_SCHEMA_V2)
             or config.get("source") != SOURCE
             or config.get("adoption") not in ("enabled", "disabled")):
         raise AdoptionError("adoption_config_invalid")
-    pinned = config.get("disable_marker_sha256")
-    if pinned is not None and not (isinstance(pinned, str) and len(pinned) == 64
-                                   and all(c in "0123456789abcdef" for c in pinned)):
-        raise AdoptionError("adoption_config_invalid")
-    if set(config) - {"schema", "source", "adoption", "disable_marker_sha256"}:
+    keys = {"schema", "source", "adoption", "disable_marker_sha256"}
+    if config["schema"] == CONFIG_SCHEMA_V2:
+        keys.add(POLICY_KEY)  # v1 stays valid and means "no resolution"
+    for key in ("disable_marker_sha256", POLICY_KEY):
+        pinned = config.get(key)
+        if pinned is not None and not (isinstance(pinned, str) and len(pinned) == 64
+                                       and all(c in "0123456789abcdef" for c in pinned)):
+            raise AdoptionError("adoption_config_invalid")
+    if set(config) - keys:
         raise AdoptionError("adoption_config_invalid")
     return config, hashlib.sha256(raw).hexdigest()
 
@@ -607,15 +619,92 @@ def _projection(mail_root, output, ledger_path):
     return project
 
 
-def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
+def receipt_occurrences(item, mail_root, output):
+    """{sha: sorted occurrence ids} CanonicalMailBackend would write for a receipt, read-only.
+
+    Nothing is staged or imported: legacy receipts get their MIME locators from the same
+    candidate matching as ``mail_delta.bind_parts``; exact-wire receipts carry the part.
+    Returns None when the ids cannot be derived (the plan then blocks the binding).
+    """
+    from .runner.core import hid
+    mid = message_id(item["identity"])
+    declaration, items = item["declaration"], item["items"]
+    found = {items[0]["sha"]: [mid]}
+    try:
+        if declaration.get("schema"):
+            for entry in items[1:]:
+                found.setdefault(entry["sha"], []).append(hid(["attachment", mid, entry["part"]]))
+            if declaration.get("schema") == "mail-wire-receipt-v2":
+                for native in declaration.get("native_items") or ():
+                    found.setdefault(native["source_original_sha256"], []).append(
+                        hid(["native-msg-item", mid, native["part"]]))
+        else:
+            eml = items[0]
+            with intake_folder.secure_open(mail_delta.source_path(mail_root, eml["path"], output)) as stream:
+                raw = stream.read(eml["size"] + 1)
+            candidates = mail_delta.mime_candidates(None, raw=raw, legacy_scalar=True)
+            used = set()
+            for entry in items[1:]:
+                part = entry["part"]
+                aliases = {part} | ({"1." + part} if part.isdigit() and part[0] != "0" else set())
+                matches = [c for c in candidates if c["attachable"] and
+                           (c["walk_index"] == int(part) if entry["part_is_walk_index"] else c["locator"] in aliases)
+                           and c["sha"] == entry["sha"] and c["size"] == entry["size"] and c["locator"] not in used]
+                if len(matches) != 1:
+                    return None
+                used.add(matches[0]["locator"])
+                found.setdefault(entry["sha"], []).append(hid(["attachment", mid, matches[0]["locator"]]))
+    except (mail_delta.Rejected, OSError, ValueError, KeyError, TypeError, RecursionError):
+        return None
+    return {sha: sorted(ids) for sha, ids in found.items()}
+
+
+def _ledger_facts(con, receipts, policy, census=False):
+    """Per-original ledger facts for the resolution plan and census (read-only)."""
+    from .ledger import original_resolution
+    entries = {sha: policy.entry(sha) for sha in policy.originals()} if policy is not None else {}
+    sizes = {}
+    for item in receipts:
+        for sha, size in item["originals"]:
+            sizes.setdefault(sha, size)
+    shas = set(sizes) | set(entries) | (set(policy.held()) if policy is not None else set())
+    facts = {}
+    for sha in sorted(shas):
+        row = con.execute("SELECT scope,legacy_format FROM originals WHERE sha256=?", (sha,)).fetchone()
+        resolution = original_resolution.mail_resolution_row(con, sha)
+        if resolution is not None:
+            original_resolution.effective_original(con, sha)  # fails closed on a corrupt row
+        check = None
+        if sha in entries and resolution is None:
+            if row is None:
+                check = "resolution_requires_unaccepted_original"
+            elif row["scope"] == "unresolved":
+                check = ("resolution_policy_bytes_mismatch" if sizes.get(sha) != entries[sha]["bytes"]
+                         else original_resolution.mail_export_precondition(con, sha, entries[sha], entries[sha]["bytes"]))
+        legacy = None
+        if census:
+            legacy = original_resolution.legacy_binding_sha256(con, sha)
+            if sha not in entries and resolution is None and row is not None and row["scope"] == "unresolved":
+                check = original_resolution.mail_export_precondition(con, sha, None, sizes.get(sha))
+        facts[sha] = {"scope": row["scope"] if row else None, "format": row["legacy_format"] if row else None,
+                      "resolution": resolution, "check": check, "size": sizes.get(sha), "legacy_binding": legacy}
+    return facts
+
+
+def classify_receipts(ledger_path, receipts, blobs, mail_root=None, policy=None, census=False):
     """Read-only classification. Returns ({identity: (state, coded_gap)}, unfinalized runs).
 
     state is ``new``, ``complete``, ``incomplete`` or an ``identity_*`` code;
     ``coded_gap`` is the safe code for a ``new`` receipt the backend would
     refuse (legacy MIME check first when ``mail_root`` is given, then the
     original-binding precondition, i.e. the backend's own order), else None.
+
+    With a resolution ``policy`` a ``new`` receipt keeps its MIME code in
+    ``item["precheck_gap"]`` and today's binding code for every original that is not an
+    unresolved policy original in ``item["foreign_gap"]``; the plan decides the rest.
+    A third value carries the ledger facts and the resolution baseline.
     """
-    from .ledger import store
+    from .ledger import original_resolution, store
     states = {}
     intake_path = blobs.parent / "intake.sqlite"
     projection = _projection(mail_root, blobs.parent, ledger_path) if mail_root is not None else None
@@ -631,11 +720,21 @@ def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
                                 int(uid))).fetchall()
             if not rows:
                 gap = mime_precheck(item, mail_root, blobs.parent) if mail_root is not None else None
+                if policy is None:
+                    for sha, size in item["originals"]:
+                        if gap:
+                            break
+                        gap = binding_conflict(con, store, blobs, sha, size)
+                    states[item["identity"]] = ("new", gap)
+                    continue
+                foreign = None
                 for sha, size in item["originals"]:
-                    if gap:
-                        break
-                    gap = binding_conflict(con, store, blobs, sha, size)
-                states[item["identity"]] = ("new", gap)
+                    code = binding_conflict(con, store, blobs, sha, size)
+                    if code == "original_scope_unresolved" and sha in policy.originals():
+                        continue
+                    foreign = foreign or code
+                item["precheck_gap"], item["foreign_gap"] = gap, foreign
+                states[item["identity"]] = ("new", None)
                 continue
             if intake is None and intake_path.exists():
                 intake = stack.enter_context(_snapshot_db(intake_path, "intake"))
@@ -648,33 +747,76 @@ def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
         unfinalized = [(row["run_id"], row["summary"]) for row in con.execute(
             "SELECT run_id,summary FROM runs WHERE kind='records-runner' AND status='running' "
             "AND ended_at IS NULL AND substr(run_id,1,?)=?", (len(RUN_PREFIX), RUN_PREFIX))]
-    return states, unfinalized
+        extra = {"facts": _ledger_facts(con, receipts, policy, census) if (policy is not None or census) else {},
+                 "baseline": original_resolution.resolution_baseline(con)}
+    return states, unfinalized, extra
 
 
-def _classify(root, mail_root):
+def _resolution_plan(policy, receipts, facts, mail_root, output):
+    """Run the shared pure plan on the discovered receipts and the ledger facts."""
+    from .intake import mail_resolution_plan
+    inputs = {}
+    for item in receipts:
+        occurrences = receipt_occurrences(item, mail_root, output) or {}
+        inputs[item["receipt_sha256"]] = {
+            "state": item["state"], "gap": item.get("precheck_gap"), "foreign_gap": item.get("foreign_gap"),
+            "originals": {sha: occurrences.get(sha, []) for sha, _ in item["originals"]},
+            "mail_id": message_id(item["identity"])}
+    return mail_resolution_plan.plan(policy, inputs, facts)
+
+
+def _classify(root, mail_root, policy=None, policy_state=None):
     receipts, gaps = discover(mail_root, root / "intake")
-    states, unfinalized = classify_receipts(root / "ledger.sqlite", receipts, root / "intake" / "blobs",
-                                            mail_root=mail_root)
+    states, unfinalized, extra = classify_receipts(root / "ledger.sqlite", receipts, root / "intake" / "blobs",
+                                                   mail_root=mail_root, policy=policy)
     for item in receipts:
         item["state"], item["coded_gap"] = states[item["identity"]]
+        item["resolvable"] = False
+    plan = None
+    by_digest = {item["receipt_sha256"]: item for item in receipts}
+    if policy is not None:
+        plan = _resolution_plan(policy, receipts, extra["facts"], mail_root, root / "intake")
+        for item in receipts:
+            if item["state"] == "new":
+                item["coded_gap"] = plan["codes"].get(item["receipt_sha256"])
+        for digest in plan["resolvable"]:
+            by_digest[digest]["resolvable"] = True
     new = [r for r in receipts if r["state"] == "new"]
     coded = [r for r in new if r["coded_gap"]]
-    eligible = [r for r in new if not r["coded_gap"]]
+    resolvable = [by_digest[d] for d in (plan["resolvable"] if plan else ())]
+    eligible = [r for r in new if not r["coded_gap"] and not r["resolvable"]]
     incomplete = [r for r in receipts if r["state"] == "incomplete"]
     complete = [r for r in receipts if r["state"] == "complete"]
     conflicts = Counter(r["state"] for r in receipts if r["state"].startswith("identity_"))
     gap_codes = Counter(r["coded_gap"] for r in coded)
-    pending = eligible + incomplete
+    # Today's pending receipts first, then resolvable receipts in topological order.
+    pending = eligible + incomplete + resolvable
+    counts = plan["counts"] if plan else {"policy_originals": 0, "resolved": 0, "resolvable": 0, "blocked": 0}
+    binding = [r for r in resolvable if r["receipt_sha256"] in plan["binding"]] if plan else []
     report = {"source": SOURCE,
               # Inventory: every valid receipt in the export, whatever its ledger state.
               "receipts": len(receipts),
               "attachments": sum(r["attachments"] for r in receipts),
               # Enrolled, bindings verified and every declared original preserved.
               "already_adopted": len(complete),
-              # Not enrolled yet: eligible_new + coded_gap_messages.
+              # Not enrolled yet: eligible_new + resolvable + coded_gap_messages.
               "new_messages": len(new),
               "new_attachments": sum(r["attachments"] for r in new),
               "eligible_new_messages": len(eligible),
+              # New receipts a pinned legacy-resolution policy lets the backend resolve and adopt.
+              "resolvable_messages": len(resolvable),
+              "resolvable_binding_messages": len(binding),
+              "resolvable_dependent_messages": len(resolvable) - len(binding),
+              "resolvable_attachments": sum(r["attachments"] for r in resolvable),
+              "policy_originals": counts["policy_originals"],
+              "policy_originals_resolved": counts["resolved"],
+              "resolvable_originals": counts["resolvable"],
+              "policy_originals_blocked": counts["blocked"],
+              "held_originals": plan["held_present"] if plan else 0,
+              "resolution_drift": plan["drift"] if plan else {},
+              "resolution_plan": {"state": plan["plan_state"] if plan else "none"},
+              "resolution_baseline": extra["baseline"],
+              "resolution_policy": policy_state or {"state": "none", "sha256": None},
               # New receipts the canonical backend would refuse under its current
               # contract, by stable code. Never passed to the backend, never dropped.
               "coded_gap_messages": len(coded),
@@ -685,7 +827,7 @@ def _classify(root, mail_root):
                                                    if code not in ACCEPTED_GAP_CODES)),
               # Enrolled with matching bindings but unfinished preservation.
               "incomplete_messages": len(incomplete),
-              # Adoptable work remaining: eligible new plus incomplete.
+              # Adoptable work remaining: eligible new, resolvable and incomplete.
               "pending_messages": len(pending),
               "pending_attachments": sum(r["attachments"] for r in pending),
               # Enrolled identities whose receipt now declares different bytes or
@@ -693,13 +835,17 @@ def _classify(root, mail_root):
               "identity_conflicts": dict(sorted(conflicts.items())),
               "unfinalized_runs": len(unfinalized),
               "gaps": dict(sorted(gaps.items()))}
-    return report, pending, unfinalized
+    return report, pending, unfinalized, plan
 
 
 def _after(report):
-    return {key: report[key] for key in ("already_adopted", "new_messages", "incomplete_messages",
-                                         "pending_messages", "coded_gap_messages", "coded_gaps",
-                                         "unaccepted_coded_gaps", "identity_conflicts", "unfinalized_runs")}
+    keys = ["already_adopted", "new_messages", "incomplete_messages", "pending_messages",
+            "coded_gap_messages", "coded_gaps", "unaccepted_coded_gaps", "identity_conflicts",
+            "unfinalized_runs"]
+    if report["resolution_policy"]["state"] == "loaded":  # no policy: the report is unchanged
+        keys += ["resolvable_messages", "policy_originals_resolved", "resolvable_originals",
+                 "policy_originals_blocked", "resolution_drift"]
+    return {key: report[key] for key in keys}
 
 
 def _identity(config_sha256):
@@ -738,6 +884,18 @@ def _recover_runs(backend, unfinalized):
     return dict(sorted(recovered.items()))
 
 
+def _load_policy(root, config):
+    """(policy, state) for the config's pinned policy hash; never raises on a bad file."""
+    pinned = (config or {}).get(POLICY_KEY)
+    if not pinned:
+        return None, {"state": "none", "sha256": None}
+    from .intake import mail_resolution_policy
+    try:
+        return mail_resolution_policy.load(root, pinned), {"state": "loaded", "sha256": pinned}
+    except (ValueError, OSError):
+        return None, {"state": "mismatch", "sha256": pinned}
+
+
 def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=None):
     """Dry-run (default) or apply. Returns a count-only report."""
     root = Path(os.path.abspath(root))
@@ -748,28 +906,46 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
         raise AdoptionError("export_inside_records_root")
     config, config_sha = load_config(config_path) if config_path is not None else (None, None)
     decision = gate(root, config)
+    policy, policy_state = _load_policy(root, config)
     if not apply:
-        report = _classify(root, mail_root)[0]
+        if policy_state["state"] == "mismatch":
+            # A pinned but missing or altered policy is reported, never silently ignored.
+            report = _classify(root, mail_root)[0]
+            report["resolution_policy"] = policy_state
+        else:
+            report = _classify(root, mail_root, policy, policy_state)[0]
         report.update(mode="dry-run", gate=decision, adopted_messages=0, resumed_messages=0,
-                      adopted_attachments=0, failures={})
+                      adopted_attachments=0, resolved_originals=0, failures={})
         return report
     if not decision["open"]:
         raise AdoptionError("adoption_gate_closed:" + decision["state"])
+    if policy_state["state"] == "mismatch":
+        raise AdoptionError("resolution_policy_mismatch")
     from .run import root_lock
     from .runner.canonical_mail import CanonicalMailBackend
     from .runner.contracts import Folder
     from .runner.core import safe_code
     ledger_path = root / "ledger.sqlite"
-    factory = backend_factory or CanonicalMailBackend
+    base_factory = backend_factory or CanonicalMailBackend
+    # Only a pinned policy changes the factory call, so custom factories stay valid.
+    factory = (base_factory if policy is None else
+               lambda *args: base_factory(*args, resolution_policy=policy))
     with root_lock(root):
-        # Gate re-checked and the ledger classified only under the writer lock.
+        # Gate and policy re-checked and the ledger classified only under the writer lock.
         if not gate(root, config)["open"]:
             raise AdoptionError("adoption_gate_changed")
+        locked, locked_state = _load_policy(root, config)
+        if locked_state["state"] != policy_state["state"]:
+            raise AdoptionError("resolution_policy_changed")
+        if policy is not None and locked.raw != policy.raw:
+            raise AdoptionError("resolution_policy_changed")
         settled = _settle_ledger(ledger_path)
         _settle_intake(root / "intake" / "intake.sqlite")
-        report, pending, unfinalized = _classify(root, mail_root)
+        report, pending, unfinalized, plan = _classify(root, mail_root, policy, policy_state)
+        if report["resolution_plan"]["state"] == "blocked":
+            raise AdoptionError("resolution_plan_blocked")
         report.update(mode="apply", gate=decision, adopted_messages=0, resumed_messages=0,
-                      adopted_attachments=0, failures={})
+                      adopted_attachments=0, resolved_originals=0, failures={})
         if settled:
             report["ledger_wal_recovered"] = True
         backend = None
@@ -777,20 +953,29 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
             backend = factory(mail_root, root / "intake", ledger_path)
             report["recovered_runs"] = _recover_runs(backend, unfinalized)
         if not pending:
-            report["after"] = _after(_classify(root, mail_root)[0] if unfinalized else report)
+            report["after"] = _after(_classify(root, mail_root, policy, policy_state)[0] if unfinalized else report)
+            report["resolution_after"] = report["resolution_baseline"]
             return report
         backend = backend or factory(mail_root, root / "intake", ledger_path)
         identity = _identity(config_sha)
         backend.start_run(identity)
         failures = Counter()
         adopted = resumed = attachments = 0
+        skipped = set()
+        edges = plan["edges"] if plan else {}
         try:
             for item in pending:
                 account, mailbox, validity, uid = item["identity"]
+                if item["receipt_sha256"] in skipped:
+                    # Its binding receipt was refused; the backend would refuse this one too.
+                    failures["resolution_dependency_failed"] += 1
+                    continue
                 try:
                     value = backend.preserve(item["path"], account, Folder(mailbox, int(validity)), int(uid))
                 except Exception as error:  # one bad receipt never stops the run
                     failures[safe_code(error) if not isinstance(error, mail_delta.Rejected) else str(error)] += 1
+                    from .intake import mail_resolution_plan
+                    skipped |= mail_resolution_plan.dependents_of(edges, {item["receipt_sha256"]})
                     continue
                 if item["state"] == "incomplete":
                     resumed += 1
@@ -816,9 +1001,106 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
         # Read the post-run state while still holding the writer lock.
         _settle_ledger(ledger_path)
         _settle_intake(root / "intake" / "intake.sqlite")
-        remaining = _classify(root, mail_root)[0]
+        remaining = _classify(root, mail_root, policy, policy_state)[0]
     report["after"] = _after(remaining)
+    report["resolution_after"] = remaining["resolution_baseline"]
+    report["resolved_originals"] = remaining["resolution_baseline"]["rows"] - report["resolution_baseline"]["rows"]
     return report
+
+
+INVENTORY_SCHEMA = "legacy-resolution-inventory-v1"
+
+
+def inventory(root, mail_root):
+    """Step-0 census (design section 8.1): read-only, counts on stdout, detail in a private file.
+
+    Returns ``(document, counts)``. The set I holds originals declared unresolved without a
+    resolution row (I_u) and originals that already have a mail-export row (I_r) that appear in
+    any discovered receipt, whatever its state. The binding proposal depends only on receipt
+    digests, shas and occurrence ids, never on discovery order or file names.
+    """
+    receipts, _ = discover(mail_root, root / "intake")
+    states, _, extra = classify_receipts(root / "ledger.sqlite", receipts, root / "intake" / "blobs",
+                                         mail_root=mail_root, census=True)
+    facts = extra["facts"]
+    containing, occurrences = {}, {}
+    for item in receipts:
+        item["state"] = states[item["identity"]][0]
+        item["precheck"] = mime_precheck(item, mail_root, root / "intake") if mail_root is not None else None
+        occurrences[item["receipt_sha256"]] = receipt_occurrences(item, mail_root, root / "intake") or {}
+        for sha, _size in item["originals"]:
+            containing.setdefault(sha, set()).add(item["receipt_sha256"])
+    members = {sha for sha in containing if facts[sha]["resolution"] is not None
+               or facts[sha]["scope"] == "unresolved"}
+    by_digest = {item["receipt_sha256"]: item for item in receipts}
+    proposals, listing = {}, []
+    for sha in sorted(members):
+        fact = facts[sha]
+        mine = sorted(containing[sha])
+        row = {"sha256": sha, "bytes": fact["size"], "legacy_format": fact["format"],
+               "legacy_binding_sha256": fact["legacy_binding"], "checks": fact["check"],
+               "state": "resolved" if fact["resolution"] is not None else "unresolved",
+               "receipts": [{"receipt_sha256": d, "state": by_digest[d]["state"],
+                             "mime_precheck": by_digest[d]["precheck"],
+                             "occurrence_ids": occurrences[d].get(sha, [])} for d in mine]}
+        if fact["resolution"] is not None:
+            binding, occurrence = fact["resolution"]["receipt"], fact["resolution"]["occurrence"]
+            proposal = {"binding_receipt": binding, "binding_occurrence_id": occurrence,
+                        "dependent_receipts": [d for d in mine if d != binding], "fixed_by_existing_row": True}
+        else:
+            candidates = [d for d in mine if by_digest[d]["precheck"] is None]
+            if not candidates:
+                proposal = {"held": "resolution_no_eligible_binding_receipt"}
+            elif fact["check"]:
+                proposal = {"held": fact["check"]}
+            else:
+                binding = candidates[0]  # mine is sorted: the smallest receipt digest
+                ids = occurrences[binding].get(sha, [])
+                mid = message_id(by_digest[binding]["identity"])
+                occurrence = mid if mid in ids else (ids[0] if ids else None)
+                if occurrence is None:
+                    proposal = {"held": "resolution_no_eligible_binding_receipt"}
+                elif occurrence == mid and fact["format"] != "eml":
+                    proposal = {"held": "original_resolution_mail_kind_mismatch"}
+                else:
+                    proposal = {"binding_receipt": binding, "binding_occurrence_id": occurrence,
+                                "dependent_receipts": [d for d in mine if d != binding]}
+        row["proposal"], proposals[sha] = proposal, proposal
+        listing.append(row)
+    held = {sha for sha, proposal in proposals.items() if "held" in proposal}
+    for row in listing:
+        proposal = row["proposal"]
+        if "binding_receipt" in proposal and not proposal.get("fixed_by_existing_row"):
+            siblings = sorted(held & {sha for sha, _ in by_digest[proposal["binding_receipt"]]["originals"]})
+            if siblings:
+                row["warnings"] = [{"code": "binding_receipt_contains_held_original", "originals": siblings}]
+    document = {"schema": INVENTORY_SCHEMA, "receipts": len(receipts), "originals": listing}
+    counts = {"receipts": len(receipts), "inventory": len(listing),
+              "shared_between_receipts": sum(1 for row in listing if len(row["receipts"]) > 1),
+              "repeated_in_receipt": sum(1 for row in listing if any(len(r["occurrence_ids"]) > 1
+                                                                      for r in row["receipts"])),
+              "proposed_bindings": sum(1 for row in listing if "binding_receipt" in row["proposal"]),
+              "proposed_held": dict(sorted(Counter(p["held"] for p in proposals.values() if "held" in p).items()))}
+    return document, counts
+
+
+def write_inventory(root, mail_root, out_path):
+    """Write the census to a new owner-only file; return count-only stdout data."""
+    out_path = Path(os.path.abspath(out_path))
+    if out_path.parent.resolve() != out_path.parent or os.path.commonpath((out_path, Path(mail_root))) == str(mail_root):
+        raise AdoptionError("inventory_path_unsafe")
+    document, counts = inventory(root, mail_root)
+    raw = (json.dumps(document, sort_keys=True, indent=1) + "\n").encode()
+    try:
+        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise AdoptionError("inventory_path_unsafe") from None
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    counts["inventory_sha256"] = hashlib.sha256(raw).hexdigest()
+    return counts
 
 
 def blocking(report):
@@ -828,14 +1110,18 @@ def blocking(report):
     coded gap does.
     """
     if (report.get("failures") or report.get("gaps") or report.get("identity_conflicts")
-            or report.get("unaccepted_coded_gaps")):
+            or report.get("unaccepted_coded_gaps") or report.get("resolution_drift")
+            or report.get("policy_originals_blocked")
+            or report.get("resolution_plan", {}).get("state") == "blocked"
+            or report.get("resolution_policy", {}).get("state") == "mismatch"):
         return True
     if report.get("mode") == "dry-run" and (report.get("incomplete_messages") or report.get("unfinalized_runs")):
         return True
     after = report.get("after")
     if after and (after["pending_messages"] or after["incomplete_messages"]
                   or after["identity_conflicts"] or after["unfinalized_runs"]
-                  or after["unaccepted_coded_gaps"]):
+                  or after["unaccepted_coded_gaps"] or after.get("resolution_drift")
+                  or after.get("policy_originals_blocked")):
         return True
     return bool(report.get("recovered_runs", {}).get("recovery_refused"))
 
@@ -846,7 +1132,26 @@ def main():
     parser.add_argument("--mail-history", required=True, help="frozen export root containing receipts/")
     parser.add_argument("--config", help="owner-only mail-history-adoption-v1 config (required for --apply)")
     parser.add_argument("--apply", action="store_true", help="write to the canonical ledger (default: dry-run)")
+    parser.add_argument("--legacy-resolution-inventory", metavar="PATH",
+                        help="read-only census of legacy unresolved originals into a new owner-only JSON file")
     args = parser.parse_args()
+    if args.legacy_resolution_inventory:
+        if args.apply:
+            print(json.dumps({"source": SOURCE, "status": "refused", "code": "inventory_is_read_only"}, sort_keys=True))
+            return 2
+        try:
+            root, mail_root = Path(os.path.abspath(args.root)), Path(os.path.abspath(args.mail_history))
+            if root.resolve() != root or mail_root.resolve() != mail_root:
+                raise AdoptionError("symlinked_path")
+            print(json.dumps(write_inventory(root, mail_root, args.legacy_resolution_inventory),
+                             sort_keys=True, indent=1))
+            return 0
+        except AdoptionError as error:
+            print(json.dumps({"source": SOURCE, "status": "refused", "code": str(error)}, sort_keys=True))
+            return 2
+        except (mail_delta.Rejected, ValueError, OSError, sqlite3.Error):
+            print(json.dumps({"source": SOURCE, "status": "refused", "code": "adoption_input_rejected"}, sort_keys=True))
+            return 2
     try:
         report = adopt(args.root, args.mail_history, config_path=args.config, apply=args.apply)
     except AdoptionError as error:

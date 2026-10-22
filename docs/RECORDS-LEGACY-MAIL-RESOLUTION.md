@@ -24,9 +24,13 @@ only (`intake/mail_resolution_policy.py`, the mail payload read path and
 `append_mail_export` in `ledger/original_resolution.py`; test groups A-C).
 Slice 2 adds the optional `resolution_policy` argument to `CanonicalMailBackend`
 (plan, record loop and `append_mail_export` inside the existing transaction; test
-group D, 16-23, in `test_canonical_mail_resolution.py`). Nothing passes a policy
-to the backend yet: no adopt-mail, config, census, report or runtime wiring
-exists, and no ledger has been changed. Slices 3-5 remain planned.
+group D, 16-23, in `test_canonical_mail_resolution.py`).
+Slice 3 wires `records adopt-mail`: config v2, the shared pure plan
+(`intake/mail_resolution_plan.py`), report counters, the apply gate, the census
+(`--legacy-resolution-inventory`) and the synthetic acceptance (test groups E and G,
+with the gaps listed in docs/reviews/2026-10-22-t4b-slices.md). Backup closure
+(slice 4) and TEST acceptance (slice 5) remain planned, and no ledger has been
+changed.
 
 Code references are to Grahammmm/DeFlock-Campaign-Tool#148 at exact head
 `039900bb55e023e67c1121663802280a15b1b1ad`, which is stacked on #142

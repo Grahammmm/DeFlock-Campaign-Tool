@@ -108,6 +108,64 @@ def _require_untouched(con, subject):
             "original_resolution_proposal_exists")
 
 
+def mail_export_precondition(con, subject, entry, size):
+    """Read-only eligibility checks 1-3 for an unresolved original; a safe code or None.
+
+    Used by the adopt-mail plan and census (`entry=None` skips the policy comparison). `append_mail_export` repeats every check under
+    the writer lock, so this only predicts it.
+    """
+    row = _named_row(con, "SELECT * FROM originals WHERE sha256=?", (subject,))
+    if row is None:
+        return "resolution_requires_unaccepted_original"
+    original = dict(row)
+    if not (original["role"] == original["scope"] == "unresolved" and original["storage_path"] is None):
+        return "resolution_requires_unaccepted_original"
+    if original["bytes"] != size:
+        return "original_bytes_conflict"
+    try:
+        source = _legacy_source(con, subject, original)
+    except (ValueError, TypeError, KeyError):
+        return "resolution_import_binding_mismatch"
+    if entry is not None and source["payload_sha256"] != entry["legacy_binding_sha256"]:
+        return "resolution_import_binding_mismatch"
+    try:
+        _require_untouched(con, subject)
+    except ValueError:
+        return "resolution_requires_unaccepted_original"
+    return None
+
+
+def legacy_binding_sha256(con, subject):
+    """The legacy `docs` row payload hash of an original, or None when it has no valid binding."""
+    row = _named_row(con, "SELECT * FROM originals WHERE sha256=?", (subject,))
+    try:
+        return None if row is None else _legacy_source(con, subject, dict(row))["payload_sha256"]
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def mail_resolution_row(con, subject):
+    """The raw resolution row summary for `subject` (no verification), or None."""
+    if not installed(con):
+        return None
+    row = _named_row(con, "SELECT capture_receipt_sha256,capture_occurrence_id,payload_json "
+                          "FROM original_resolutions WHERE original_sha256=?", (subject,))
+    if row is None:
+        return None
+    payload = json.loads(row["payload_json"])
+    return {"schema": payload.get("schema"), "receipt": row["capture_receipt_sha256"],
+            "occurrence": row["capture_occurrence_id"], "legacy_binding": payload.get("legacy_binding_sha256")}
+
+
+def resolution_baseline(con):
+    """{rows, sha256} of the (original, binding) pairs; empty when the table is not installed."""
+    pairs = []
+    if installed(con):
+        pairs = sorted((row[0], row[1]) for row in con.execute(
+            "SELECT original_sha256,binding_sha256 FROM original_resolutions"))
+    return {"rows": len(pairs), "sha256": hashlib.sha256(json.dumps(pairs).encode()).hexdigest()}
+
+
 def is_mail_export(con, subject):
     """True when `subject` has a mail-export resolution row (read-only; no verification)."""
     if not installed(con):

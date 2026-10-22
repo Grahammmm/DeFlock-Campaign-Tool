@@ -206,7 +206,58 @@ coded_gap_messages` always holds.
 original) and `unsupported_rfc822_part`. They do not block (exit `0`). Any
 other code appears in `unaccepted_coded_gaps` as well and blocks (exit `3`).
 Resolving the accepted classes needs a separately reviewed contract
-(follow-up T4B); this command never rewrites a legacy declaration.
+(follow-up T4B); this command never rewrites a legacy declaration. Without a
+pinned resolution policy nothing below changes.
+
+## Legacy-original resolution (T4B, off unless a policy is pinned)
+
+Design: docs/RECORDS-LEGACY-MAIL-RESOLUTION.md. An owner-approved policy can let
+this command resolve legacy `unresolved` originals from verified export evidence
+instead of reporting `original_scope_unresolved`.
+
+Configuration. Config schema `mail-history-adoption-v2` adds one key,
+`legacy_resolution_policy_sha256` (a hash or `null`). A v1 config stays valid
+and means "no resolution". The policy file is
+`<root>/resolution-policies/<sha256>` (owner-only, regular, never a symlink,
+never in Git). No flag, receipt or callback can choose a policy.
+
+Plan. One pure function (`intake/mail_resolution_plan.py`) is shared by the dry
+run and apply. Every policy original is `resolved`, `open` or `blocked`.
+Drift (a receipt that holds an original but is not named in its entry, an
+unresolved original in neither `originals` nor `held`, a resolved `held`
+original, a dependency cycle) blocks the plan. A blocked plan exits `3` in a
+dry run, and apply is refused with `resolution_plan_blocked` before any write,
+including for unrelated eligible receipts. New receipts are either eligible,
+`resolvable` (binding or dependent) or a coded gap. Resolvable receipts run
+after today's pending ones, in dependency order, ties by receipt digest. If
+the backend refuses a binding receipt, its dependents are not called and are
+counted as failure `resolution_dependency_failed`.
+
+Gate. A pinned but missing or altered policy reports `resolution_policy` state
+`mismatch` and exits `3`. Apply is refused with `resolution_policy_mismatch`.
+The policy bytes are re-read under the writer lock; a change gives
+`resolution_policy_changed` and nothing is written.
+
+Census (step 0, read-only). `--legacy-resolution-inventory <new private file>`
+reads the same immutable snapshot as a dry run, writes an owner-only JSON
+inventory (receipts, occurrence ids, checks and the deterministic binding or
+`held` proposal per original) and prints counts and the inventory hash only. It
+cannot be combined with `--apply`. Nothing is written to the ledger, intake
+catalog or export.
+
+Extra report keys (always present; `resolution_policy.state` is `none` and the
+rest are zero without a policy): `resolvable_messages`
+(`resolvable_binding_messages` + `resolvable_dependent_messages`),
+`resolvable_attachments`, `policy_originals` (= `policy_originals_resolved` +
+`resolvable_originals` + `policy_originals_blocked`), `held_originals`,
+`resolution_drift`, `resolution_plan` (`none|ok|blocked`), `resolution_baseline`
+and, on apply, `resolved_originals` and `resolution_after` (`{rows, sha256}`).
+`new_messages = eligible_new_messages + resolvable_messages +
+coded_gap_messages`; `pending_messages` now includes resolvable receipts. The
+`after` block gains the resolution keys only when a policy is loaded.
+
+Status: the TEST acceptance (design group H) is not implemented and needs the
+owner's approval of a TEST policy. Live apply needs its own decision.
 
 ## Report counters (counts and hashes only; no paths, accounts or headers)
 

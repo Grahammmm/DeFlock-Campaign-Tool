@@ -65,6 +65,14 @@ cannot be overridden. No replacement/rebinding or silent receipt interpretation
 is implemented. A future correction requires an explicit reviewed supersession
 contract, approval revocation and controlled dependent invalidation.
 
+A second payload schema, `original_resolution_mail_export_v1`, resolves a legacy
+unresolved original from verified mail-export evidence under an owner-approved
+mail-resolution policy (docs/RECORDS-LEGACY-MAIL-RESOLUTION.md). It reuses the
+same table, triggers and schema hash. The canonical mail backend writes it inside
+its own transaction, and `records adopt-mail` plans it; the local-capture path
+above is unchanged. An older reader fails loudly with
+`original_resolution_payload_mismatch` on a mail payload.
+
 Captured legacy declarations are checked against their immutable released
 projection/input bindings. They retain their unresolved provenance and cannot
 satisfy the acquisition set of accepted preservation. Historical preservation
