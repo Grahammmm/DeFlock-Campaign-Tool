@@ -1,8 +1,7 @@
 """Audit reproductions (2026-10-22). Synthetic data only.
 
-Each test asserts the CORRECT behaviour, so on current main it FAILS and that
-failure is the proof of the defect. They are skipped by default so the normal
-offline suite stays green; run them with:
+Each test asserts the CORRECT behaviour. H1 (QuarantineOverreach) is always
+enabled after its fix; the other audit findings remain opt-in. Run all with:
 
     AUDIT_REPRO=1 python3 -B -m unittest tests.audit_repro.test_audit_repro -v
 """
@@ -45,7 +44,7 @@ class ImapTlsVerification(unittest.TestCase):
         with mock.patch.object(imap_intake.imaplib, "IMAP4_SSL", Fake):
             client = imap_intake.default_client_factory(
                 {"host": "imap.example.invalid", "port": 993, "ssl": True, "timeout": 5,
-                 "username": "synthetic", "password": "synthetic"})
+                 "username": "synthetic", "password": None})
         self.assertEqual(client.ssl_context.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(client.ssl_context.check_hostname)
 
