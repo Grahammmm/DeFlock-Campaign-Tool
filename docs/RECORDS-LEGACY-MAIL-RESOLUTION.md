@@ -19,6 +19,12 @@ reruns and partial-run recovery work (sections 4, 6, 8.1-8.3, tests 31 and
 37a-37e). The TEST acceptance compares a pinned baseline set of `originals`
 keys instead of the whole table (section 11.H, test 40).
 
+Implementation status: slice A of section 12 exists as engine code and tests
+only (`intake/mail_resolution_policy.py`, the mail payload read path and
+`append_mail_export` in `ledger/original_resolution.py`; test groups A-C). Nothing
+calls `append_mail_export` yet: no backend, adopt-mail, config, census, report or
+runtime wiring exists, and no ledger has been changed. Slices 2-5 remain planned.
+
 Code references are to Grahammmm/DeFlock-Campaign-Tool#148 at exact head
 `039900bb55e023e67c1121663802280a15b1b1ad`, which is stacked on #142
 (`records adopt-mail`). Main does not yet contain `mail_adoption.py`.
