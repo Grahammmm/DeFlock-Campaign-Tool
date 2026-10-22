@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import stat
 
 from . import eml_export, mail_delta
@@ -148,6 +149,19 @@ def _message_limit(config):
     return limit
 
 
+def _transport_settings(config):
+    """Plaintext is a literal opt-in, never an accidental falsey TLS setting."""
+    use_ssl = config.get("ssl", True)
+    allow_plaintext = config.get("allow_insecure_plaintext", False)
+    if type(use_ssl) is not bool:
+        raise IntakeError("mail_config_ssl_invalid")
+    if type(allow_plaintext) is not bool:
+        raise IntakeError("mail_config_allow_insecure_plaintext_invalid")
+    if not use_ssl and not allow_plaintext:
+        raise IntakeError("mail_config_plaintext_refused")
+    return use_ssl, allow_plaintext
+
+
 def _json_password(source, config_path):
     if (not isinstance(source, dict) or set(source) != {"type", "path", "key"}
             or source["type"] != "json"
@@ -173,6 +187,7 @@ def load_config(path):
         if not isinstance(config.get(key), str) or not config[key].strip():
             raise IntakeError("mail_config_field_required:" + key)
     limit = _message_limit(config)
+    use_ssl, allow_plaintext = _transport_settings(config)
     if "password_source" in config:
         if any(key in config for key in ("password", "password_file", "password_env")):
             raise IntakeError("mail_password_source_ambiguous")
@@ -205,7 +220,8 @@ def load_config(path):
         port, timeout = int(config.get("port", 993)), int(config.get("timeout", 60))
     except (ValueError, TypeError, OverflowError):
         raise IntakeError("mail_config_connection_invalid") from None
-    return {"host": config["host"], "port": port, "ssl": bool(config.get("ssl", True)),
+    return {"host": config["host"], "port": port, "ssl": use_ssl,
+            "allow_insecure_plaintext": allow_plaintext,
             "username": config["username"], "password": password, "account_id": config["account_id"],
             "folders": folders, "timeout": timeout, "max_messages_per_run": limit}
 
@@ -213,13 +229,15 @@ def load_config(path):
 def redacted(config):
     # Allowlist operational fields: neither credentials nor source documents/descriptors
     # (including unknown nested fields) can enter run identity.
-    fields = ("host", "port", "ssl", "username", "account_id", "folders", "timeout", "max_messages_per_run")
+    fields = ("host", "port", "ssl", "allow_insecure_plaintext", "username", "account_id", "folders", "timeout", "max_messages_per_run")
     return {key: config[key] for key in fields if key in config}
 
 
 def default_client_factory(config):
-    if config["ssl"]:
-        client = imaplib.IMAP4_SSL(config["host"], config["port"], timeout=config["timeout"])
+    use_ssl, _ = _transport_settings(config)
+    if use_ssl:
+        client = imaplib.IMAP4_SSL(config["host"], config["port"], timeout=config["timeout"],
+                                 ssl_context=ssl.create_default_context())
     else:
         client = imaplib.IMAP4(config["host"], config["port"], timeout=config["timeout"])
     client.login(config["username"], config["password"])

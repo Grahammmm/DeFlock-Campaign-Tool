@@ -49,7 +49,8 @@ def private_path(path, directory=False):
             "unsafe_output_type")
 
 
-def source_path(root, literal, out):
+def source_path(root, literal, out=None):
+    """Confine a source path; read-only consumers have no output tree to exclude."""
     require(isinstance(literal, str) and 0 < len(literal) <= 4096 and "\x00" not in literal,
             "invalid_source_path")
     require(".." not in literal.split("/") and "\\" not in literal,
@@ -58,7 +59,8 @@ def source_path(root, literal, out):
     path = Path(os.path.abspath(path))
     require(os.path.commonpath((root, path)) == str(root) and path != root,
             "source_path_escape")
-    require(os.path.commonpath((out, path)) != str(out), "source_is_output")
+    if out is not None:
+        require(os.path.commonpath((out, path)) != str(out), "source_is_output")
     return path
 
 

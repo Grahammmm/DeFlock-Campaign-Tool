@@ -40,6 +40,24 @@ Existing configs without `password_source` retain their inline-password,
 password-file, then environment-variable precedence. Legacy password files
 continue to strip surrounding whitespace.
 
+## TLS transport policy
+
+IMAP uses implicit TLS by default, with `ssl.create_default_context()`: the
+server certificate must chain to a trusted CA and match the configured hostname.
+Certificate/hostname failures occur before LOGIN; there is no unverified or
+plaintext fallback. This change does not install a CA or alter any system trust
+settings. A private CA must already be trusted by the operator's runtime.
+
+`ssl` and `allow_insecure_plaintext` must be JSON booleans when present. Setting
+`"ssl": false` alone is refused before connecting or loading a separate password
+source. A deliberately isolated plaintext test endpoint requires both
+`"ssl": false` and `"allow_insecure_plaintext": true`. This explicit override
+sends credentials without TLS; it is not appropriate for remote mailboxes.
+It never disables verification when TLS is enabled. The effective override is
+included in redacted operational config/fingerprints, not treated as a secret.
+Existing fingerprints can therefore change after this upgrade. The same policy
+applies to direct calls of the default client factory.
+
 ## Source protections and error hygiene
 
 The config and JSON source are opened with `O_NOFOLLOW` and `O_NONBLOCK`,

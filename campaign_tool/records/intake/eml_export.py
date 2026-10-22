@@ -192,21 +192,24 @@ def attachment_forms(receipt_path, *, heads=None):
     The first bytes come from the receipt's objects (``<receipt>/../../objects``). With
     ``heads`` (sha256 -> first bytes of the canonical original) only those attachments
     are mapped and no object is read: for receipts whose objects are not beside them.
+    Local probes accept only root-confined relative paths, refuse symlinks and read
+    at most 16 KiB. This is format detection, not full-file hash verification; the
+    canonical receipt importer remains responsible for verifying original bytes.
     """
     receipt, _, items = mail_delta.load_receipt(receipt_path)
-    root = receipt_path.parent.parent
+    root = Path(os.path.abspath(receipt_path.parent.parent))
 
-    def head_of(item, *, secure=True):
+    def head_of(item):
         if heads is not None:
             return heads[item["sha"]][:16384]
-        if not secure:
-            return (root / item["path"]).read_bytes()[:16384]
-        with folder.secure_open(root / item["path"]) as source:
+        mail_delta.require(not Path(item["path"]).is_absolute(), "source_path_escape")
+        path = mail_delta.source_path(root, item["path"])
+        with folder.secure_open(path) as source:
             return source.read(16384)
 
     if receipt.get("schema") == "mail-wire-receipt-v2":
         return {item["sha"]: item["source"].get("format") or folder.fmt(
-                    item["source"].get("original_filename") or item["path"], head_of(item, secure=False))
+                    item["source"].get("original_filename") or item["path"], head_of(item))
                 for item in items if heads is None or item["sha"] in heads}
     forms = {}
     for item in items[1:]:
