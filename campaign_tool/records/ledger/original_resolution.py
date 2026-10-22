@@ -10,12 +10,16 @@ import sqlite3
 from pathlib import Path
 from . import store
 from .migrations import original_resolution_v001 as migration
+from .mail_resolution_policy import ApprovedMailResolutionPolicy
+from . import original_resolution_mail as mail
 
 KEY = "extension:" + migration.NAME
 SCHEMA_HASH = hashlib.sha256(migration.SQL.encode()).hexdigest()
 FIELDS = {"schema", "original_sha256", "declaration_sha256", "policy_sha256",
           "capture_receipt_sha256", "capture_occurrence_id", "byte_length",
           "role", "scope", "storage_path"}
+MAIL_FIELDS = mail.MAIL_FIELDS
+MAIL_SCHEMA = mail.MAIL_SCHEMA
 
 
 def digest(value):
@@ -76,6 +80,8 @@ def effective_original(con, subject):
     if row is None:
         return original
     payload = json.loads(row["payload_json"])
+    if type(payload) is dict and payload.get("schema") == MAIL_SCHEMA:
+        return mail.effective(con, subject, original, row, payload)
     require(type(payload) is dict and set(payload) == FIELDS
             and payload["schema"] == migration.NAME and payload["original_sha256"] == subject,
             "original_resolution_payload_mismatch")
@@ -105,6 +111,13 @@ def effective_original(con, subject):
                     storage_path=payload["storage_path"], preservation_status="capture_validation_pending",
                     resolution_sha256=row["binding_sha256"])
     return original
+
+
+def append_mail_export(con, *, subject, policy, verification_receipt_sha256, occurrence_id, storage_path):
+    """Backend-only, inside its root-locked write transaction; never a CLI route."""
+    return mail.append(con, subject=subject, policy=policy,
+                       verification_receipt_sha256=verification_receipt_sha256,
+                       occurrence_id=occurrence_id, storage_path=storage_path)
 
 
 def append_initial(con, *, subject, policy_sha256, capture_receipt_sha256,
