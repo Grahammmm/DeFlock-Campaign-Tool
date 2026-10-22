@@ -471,7 +471,11 @@ def publish(root, proposal_id, *, staging):
 
 
 def rollback(root, proposal_id, *, staging, reason=None):
-    """Restore only a ledger-bound historical release, verified before touching output."""
+    """Withdraw staging content; historical releases never carry current authority.
+
+    Reinstatement must use the normal current approval/privacy checks in publish().
+    Immutable history is retained for inspection, not reused as permission.
+    """
     with _authority(root) as root:
         target = _staging(staging)
         with root_lock(target), store.ledger(root.ledger) as con:
@@ -482,7 +486,9 @@ def rollback(root, proposal_id, *, staging, reason=None):
             live, before_content = _live(con, target, proposal_id, current)
             require(live is not None, "nothing_published_for_proposal")
             previous = live.get("previous_version")
-            content = _history(con, target, proposal_id, previous)[1] if previous else None
+            if previous:
+                _history(con, target, proposal_id, previous)  # Verify, never re-stage old bytes.
+            content, previous = None, None
             manifest = _prepare(con, target, proposal_id, content, live["version"], "rollback", before,
                                 before_content, current, restored=previous, reason=reason)
             con.execute("BEGIN IMMEDIATE")

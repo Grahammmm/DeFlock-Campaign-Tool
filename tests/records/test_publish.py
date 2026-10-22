@@ -121,14 +121,14 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(len(self.ledger("SELECT id FROM publications")), 2)
         rolled = publish.rollback(self.root, self.policy, staging=self.staging, reason="owner request")
         self.assertEqual(rolled["rolled_back"], second["version"])
-        self.assertEqual(rolled["restored"], first["version"])
-        self.assertFalse(rolled["withdrawn"])
-        self.assertEqual((self.staging / "content" / (self.policy + ".md")).read_bytes(), first_bytes)
+        self.assertIsNone(rolled["restored"])
+        self.assertTrue(rolled["withdrawn"])
+        self.assertFalse((self.staging / "content" / (self.policy + ".md")).exists())
         self.assertEqual(self.ledger("SELECT rollback_ref FROM publications WHERE deployed_version=?", (second["version"],)),
                          [(rolled["version"],)])
-        # Rolling back the original release withdraws the item from staging entirely.
-        withdrawn = publish.rollback(self.root, self.policy, staging=self.staging)
-        self.assertTrue(withdrawn["withdrawn"])
+        # A correction rollback withdraws outright; history is not current authority.
+        with self.assertRaisesRegex(publish.PublishError, "nothing_published_for_proposal"):
+            publish.rollback(self.root, self.policy, staging=self.staging)
         self.assertFalse((self.staging / "content" / (self.policy + ".md")).exists())
         current = json.loads((self.staging / "current.json").read_bytes())
         self.assertNotIn(self.policy, current["proposals"])

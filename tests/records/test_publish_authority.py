@@ -236,7 +236,6 @@ class AuthorityRegressionTests(PublicationFixture):
             self.rollback()
         self.approve()
         self.assertEqual(self.current_bytes(), before)
-        self.assertFalse(self.rollback()["withdrawn"])
         self.assertTrue(self.rollback()["withdrawn"])
 
     def test_recovery_refuses_unexplained_output_edits(self):

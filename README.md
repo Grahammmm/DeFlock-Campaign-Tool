@@ -70,7 +70,9 @@ prints the counts, blocked items and proposals awaiting the owner. Model calls a
 Nothing is published or sent by this command. `records approve --root R --proposal ID --owner YOU`
 binds your decision to the exact public bytes; `records publish --root R --proposal ID --staging DIR`
 copies only approved bytes to a staging directory with versioned releases, and `--rollback`
-restores the previous release. There is no live target in the engine. `records reopen --root R
+withdraws the item (it never re-stages historical bytes with stale approval/privacy authority).
+Reinstatement requires the normal current approval and publication gates.
+There is no live target in the engine. `records reopen --root R
 --proposal ID --reason "..."` is the correction path: it reopens review (or an earlier stage with
 `--stage`) for that record, clears the approval, and the next `records run` regenerates the public
 content for re-approval; `publish` then records a correction against the previous release.
