@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import tempfile
 import time
 
 from campaign_tool import __version__
@@ -273,11 +274,22 @@ def _snapshot_quiescent(source, destination, deadline):
     """No-sidecar source: immutable SQLite read, never create source WAL/SHM.
 
     Immutable mode is safe only under the required independent caller boundary.
-    Existing sidecars retain the WAL-aware v1 snapshot path, not immutable mode.
+    With sidecars, run SQLite only on a byte-verified private copy. Even a
+    read-only SQLite open can change source sidecar ownership/ctime as root.
+    The independent caller boundary and full source inventory checks still apply.
     """
     _deadline(deadline)
     if any(os.path.lexists(str(source) + suffix) for suffix in ("-wal", "-shm", "-journal")):
-        result = snapshot_ledger(source, destination)
+        with tempfile.TemporaryDirectory(prefix=".sqlite-copy-", dir=Path(destination).parent) as private:
+            copied = Path(private) / "ledger.sqlite"
+            copy_exact(source, copied)
+            for suffix in ("-wal", "-journal"):
+                sidecar = Path(str(source) + suffix)
+                if os.path.lexists(sidecar):
+                    _deadline(deadline)
+                    copy_exact(sidecar, Path(str(copied) + suffix))
+            # SHM is a disposable index; SQLite rebuilds it in the private dir.
+            result = snapshot_ledger(copied, destination)
         _deadline(deadline)
         return result
     with source_fd(source) as (source_file, before), parent_fd(destination) as (parent, name):
