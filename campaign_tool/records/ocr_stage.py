@@ -693,6 +693,15 @@ class OcrStage:
     def result_dir(self, sha256: str) -> Path:
         return self.out_root / sha256 / self.signature[:16]
 
+    def clear_abandoned_work(self) -> None:
+        """Clear only the private scratch namespace while the caller holds locked()."""
+        work_root = _owner_dir(self.out_root / ".work")
+        for child in work_root.iterdir():
+            if child.is_symlink() or not child.is_dir():
+                child.unlink()
+            else:
+                shutil.rmtree(child)
+
     @contextmanager
     def locked(self):
         _owner_dir(self.out_root)
@@ -1042,6 +1051,10 @@ def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, 
     outcomes, errors, backlog, attempted = [], {}, 0, 0
     try:
         with stage.locked():
+            try:
+                stage.clear_abandoned_work()
+            except OSError:
+                return (*fail("OCR_WORK_CLEANUP_FAILED"), [])
             for item, error in read_queue(Path(args.queue), Path(args.source_root)):
                 if error:
                     errors[error] = errors.get(error, 0) + 1
