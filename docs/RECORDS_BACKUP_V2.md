@@ -67,6 +67,21 @@ Source metadata inventory is compared before/after. This catches some changes bu
 NOT a substitute for independently established all-writer quiescence. No writers are
 stopped, signalled, restarted or discovered by this library.
 
+## Mail-resolution policies in the closure (T4B)
+
+An immutable `original_resolution_mail_export_v1` row names its approved policy by
+`policy_sha256`; the policy is the private file `<root>/resolution-policies/<sha256>`
+(docs/RECORDS-LEGACY-MAIL-RESOLUTION.md). The scope walk rejects an unclassified file,
+so a profile for a root that holds `resolution-policies/` must declare it.
+`recovery.resolution_closure.add_resolution_policies(profile, root)` returns the profile
+with each policy file as a `configuration` store (its hash must equal its file name) and one
+closure query on the canonical ledger that returns every referenced policy. A referenced
+policy missing from the backup then fails with `database_reference_not_closed`. It does
+nothing when the directory is absent, and the ledger store must list `original_resolutions`
+in `required_tables`. No ledger DDL or schema pin changes (the `original_resolution_v1`
+schema hash stays as is). This is profile composition only: no CLI, no live profile and no
+backup was run. A pre-apply backup of the live closure remains an owner step.
+
 ## Allowlist, permissions and privacy
 
 The scope walk is FD-anchored, rejects symlinks, special files, hardlinks, wrong owners

@@ -28,9 +28,11 @@ group D, 16-23, in `test_canonical_mail_resolution.py`).
 Slice 3 wires `records adopt-mail`: config v2, the shared pure plan
 (`intake/mail_resolution_plan.py`), report counters, the apply gate, the census
 (`--legacy-resolution-inventory`) and the synthetic acceptance (test groups E and G,
-with the gaps listed in docs/reviews/2026-10-22-t4b-slices.md). Backup closure
-(slice 4) and TEST acceptance (slice 5) remain planned, and no ledger has been
-changed.
+with the gaps listed in docs/reviews/2026-10-22-t4b-slices.md).
+Slice 4 adds `recovery/resolution_closure.py`, which puts `resolution-policies/` into a
+`records-backup-v2` profile (docs/RECORDS_BACKUP_V2.md). TEST acceptance (slice 5) is not
+implemented: it needs the owner's approval of a TEST policy and runs against TEST data.
+No ledger has been changed.
 
 Code references are to Grahammmm/DeFlock-Campaign-Tool#148 at exact head
 `039900bb55e023e67c1121663802280a15b1b1ad`, which is stacked on #142
