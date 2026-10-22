@@ -40,9 +40,11 @@ written to ``<root>/runs/extract-<run_id>.json`` (0600). It stays in private
 storage and never goes into the report.
 """
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import time
 
 EXTRACTED = "EXTRACTED"
@@ -285,7 +287,10 @@ def extract_one(pipeline, stage, subject, *, form, timeout):
 
 def write_private_list(root, run_id, documents):
     directory = Path(root) / "runs"
-    name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"
+    # Keep the existing ordinary run names. Unsafe or oversized ids use a
+    # disjoint (~ is not safe) namespace keyed by the full original identity.
+    name = run_id if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", run_id) else (
+        "encoded~" + hashlib.sha256(run_id.encode("utf-8")).hexdigest())
     body = {"schema": "records-extract-outcomes-v1", "run_id": run_id,
             "written_at": datetime.now(timezone.utc).isoformat(), "documents": documents}
     _write_private(directory / f"extract-{name}.json", json.dumps(body, sort_keys=True) + "\n")
