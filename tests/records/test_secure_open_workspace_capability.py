@@ -119,7 +119,8 @@ class WorkspaceCapabilityTests(unittest.TestCase):
             with self.assertRaises(OSError) as caught:
                 folder.secure_open(self.message)
         self.restore()
-        self.assertEqual(caught.exception.errno, errno.ELOOP, "the descriptor walk's O_NOFOLLOW refuses the substituted component")
+        # O_DIRECTORY|O_NOFOLLOW on a symlink is ELOOP on macOS and ENOTDIR on Linux; both are refusals.
+        self.assertIn(caught.exception.errno, (errno.ELOOP, errno.ENOTDIR), "the descriptor walk's O_NOFOLLOW refuses the substituted component")
         self.assertTrue(any(dir_fd is not None for _, _, dir_fd in self.opens), "the original descriptor walk ran")
 
     def test_without_the_flag_the_capability_boundary_is_reported_not_routed_around(self):
