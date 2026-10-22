@@ -1,10 +1,37 @@
 #!/usr/bin/env python3
 """Quarantine only derived/private copies by exact source path. Never read originals."""
-import argparse, fcntl, json, os, pathlib, shutil, sqlite3
+import argparse, collections, fcntl, json, os, pathlib, shutil, sqlite3
 if __package__:
     from . import folder as intake
 else:
     import folder as intake
+
+def quarantine_hashes(named, edges):
+    """Select downward scope without taking bytes still used by another parent.
+
+    Only explicitly named hashes add their direct containers. Discovered children
+    never add parents: a shared logo must not pull unrelated archives into scope.
+    Prune outside-parent dependencies transitively, including initial seeds, so a
+    retained nested container also protects all of its descendants.
+    """
+    parents=collections.defaultdict(set); children=collections.defaultdict(set)
+    for parent,child in edges:
+        parents[child].add(parent); children[parent].add(child)
+    hashes=set(named)
+    for sha in named: hashes.update(parents[sha])
+    todo=collections.deque(hashes)
+    while todo:
+        for child in children[todo.popleft()]:
+            if child not in hashes:
+                hashes.add(child); todo.append(child)
+    todo=collections.deque(sha for sha in hashes if parents[sha]-hashes)
+    while todo:
+        sha=todo.popleft()
+        if sha in hashes:
+            hashes.remove(sha)
+            todo.extend(children[sha])
+    return hashes
+
 
 def quarantine(out, paths, config=None):
     config=config if config is not None else intake.load_config(output=str(out))
@@ -14,17 +41,17 @@ def quarantine(out, paths, config=None):
     with (out/"writer.lock").open("a") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         db=sqlite3.connect(out/"intake.sqlite"); db.row_factory=sqlite3.Row; db.executescript(intake.SCHEMA)
-        hashes=set(); stamp=intake.now()
+        named=set(); matches={}; stamp=intake.now()
         for path in paths:
             if not pathlib.Path(path).is_absolute(): raise ValueError("exact absolute source paths required")
             found={r[0] for r in db.execute("SELECT sha FROM occurrences WHERE path=?",(path,))}
-            hashes.update(found)
-            for sha in found or {""}: db.execute("INSERT OR IGNORE INTO scope_exclusions VALUES(?,?,?,?)",(path,sha,"unrelated_personal_record",stamp))
+            named.update(found); matches[path]=found
         edges=[tuple(r) for r in db.execute("SELECT parent,child FROM edges")]
-        while True:
-            extra={child for parent,child in edges if parent in hashes} | {parent for parent,child in edges if child in hashes}
-            if extra<=hashes: break
-            hashes.update(extra)
+        hashes=quarantine_hashes(named,edges)
+        for path,found in matches.items():
+            # A path can be excluded without globally excluding shared bytes.
+            for sha in (found & hashes) or {""}:
+                db.execute("INSERT OR IGNORE INTO scope_exclusions VALUES(?,?,?,?)",(path,sha,"unrelated_personal_record",stamp))
         qdir=out/"quarantine"; qdir.mkdir(exist_ok=True); os.chmod(qdir,0o700)
         q=sqlite3.connect(qdir/"restricted.sqlite"); q.executescript(intake.SCHEMA)
         units=0; derived=0; blobs=0
