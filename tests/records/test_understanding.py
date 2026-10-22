@@ -251,7 +251,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(ok["findings"][0]["classification"], "no_conflict_observed")
         self.assertEqual(ok["legal_conclusions"], 0)
         self.assertEqual(ok["findings"][0]["legal_assessment"], "NOT_ASSESSED")
-        self.assertEqual(self.compare(45)["findings"][0]["classification"], "potential_conflict")
+        self.assertEqual(self.compare(45)["findings"][0]["reason"], "fact_value_unbound")
         self.assertEqual(self.compare("n/a")["findings"][0]["classification"], "missing_evidence")
 
     def test_uncited_facts_become_gaps(self):

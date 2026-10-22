@@ -1,9 +1,27 @@
 """Cited factual reconciliation with explicit applicability and legal holds."""
 from collections import defaultdict
+import json
+import re
 from . import evidence,policy
 VERSION="records-evidence-reconciliation-v1"
 UNKNOWN={"","n/a","na","unknown","not provided","not available","null","none"}
 def unknown(v):return v is None or isinstance(v,str) and v.strip().casefold() in UNKNOWN
+def fact_value_bound(fact):
+ """Lexical/typed binding only, not semantic acceptance of a model claim."""
+ value=fact.get("value")
+ if type(value) not in (str,int,float,bool):return False
+ for cite in fact["citations"]:
+  quote=cite["quote"]
+  if cite.get("json_pointer") is not None:
+   try:actual=json.loads(quote)
+   except (ValueError,TypeError):continue
+   if type(actual) is type(value) and actual==value:return True
+  elif type(value) is str:
+   if value and value in quote:return True
+  else:
+   token=json.dumps(value,allow_nan=False)
+   if re.search(r"(?<![\w.+-])"+re.escape(token)+r"(?![\w.])",quote):return True
+ return False
 def test_value(value,test):
  op=test.get("operator");expected=test.get("expected")
  if op=="nonempty":return not unknown(value)
@@ -62,6 +80,7 @@ def compare(facts,versions,*,bundle,agency_id,jurisdiction,regulated_role,event_
      classification="applicability_unresolved";reason="rule_source_or_requirement_span_unbound"
     elif not field:classification="not_assessed";reason="record_field_mapping_not_supplied"
     elif not obs or all(unknown(f.get("value")) for f in obs):classification="missing_evidence";reason="missing_or_NA_is_not_violation"
+    elif any(not unknown(f.get("value")) and not fact_value_bound(f) for f in obs):classification="not_assessed";reason="fact_value_unbound"
     elif any(f.get("counterevidence") for f in obs):classification="contradictory_evidence";reason="counterevidence_requires_resolution"
     elif len({evidence.sha(f.get("value")) for f in obs if not unknown(f.get("value"))})>1:classification="contradictory_evidence";reason="same_event_field_disagrees"
     elif any(f.get("exception_applies") for f in obs):classification="exception_applies";reason="cited_exception_candidate_requires_review"
