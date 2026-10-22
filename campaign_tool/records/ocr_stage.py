@@ -490,7 +490,7 @@ class Outcome:
     """Per-document outcome; ``status`` and ``code`` are fixed enums."""
 
     document_id: str
-    # ocr_complete | ocr_partial | ocr_failed | source_invalid | cache_invalid | cached
+    # ocr_complete | ocr_partial | ocr_deferred | ocr_failed | source_invalid | cache_invalid | cached
     status: str
     code: str | None = None
     engines: dict = field(default_factory=dict)
@@ -867,7 +867,7 @@ class OcrStage:
             outcome.status, outcome.code = "ocr_partial", "ocr_pages_unresolved"
         if transient:
             # Not published: the vision server or a tool may be back next run.
-            outcome.code = "vision_transient"
+            outcome.status, outcome.code = "ocr_deferred", "vision_transient"
             return outcome
         self._publish(item, pages, outcome, source_bytes)
         return outcome
@@ -908,10 +908,10 @@ def stage_result(outcomes: list[Outcome], queue_errors: dict, backlog: int = 0) 
     # Outstanding coverage gaps: pages left unresolved by this run AND by
     # earlier published results that are still in the queue. A cache hit does
     # not make a partial document whole, so it keeps warning every run.
-    unresolved = sum(o.unresolved_pages for o in outcomes if o.status in ("ocr_partial", "cached"))
+    unresolved = sum(o.unresolved_pages for o in outcomes if o.status in ("ocr_partial", "ocr_deferred", "cached"))
     transient = sum(1 for o in outcomes if o.code == "vision_transient"
                     or (o.status == "ocr_failed" and o.code in TRANSIENT))
-    pages = sum(sum(o.engines.values()) for o in outcomes if not o.cached and o.status != "ocr_failed")
+    pages = sum(sum(o.engines.values()) for o in outcomes if o.status in ("ocr_complete", "ocr_partial"))
     counts = {"input": len(outcomes) + sum(queue_errors.values()) + backlog, "output": processed,
               "failed": failed, "skipped": cached + backlog}
     items = [{"code": code, "severity": severity, "count": int(n)} for code, severity, n in (
