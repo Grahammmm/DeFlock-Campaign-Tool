@@ -247,6 +247,10 @@ These are not counted as findings.
 
 ## Test runs
 
-- `python3 -B -m unittest discover -s tests/records -t .`: see the result recorded below.
+- `python3 -B -m unittest discover -s tests/records -t .` (run as root in the audit container): 2375 tests, 31 failures and 23 skipped.
+  - 30 failures are `test_worker_lifecycle` setUp asserting `Synthetic lifecycle tests require unprivileged UID`.
+  - 1 is `test_t12_harness_strictness...test_group_bits_really_are_inherited`, a default-ACL/umask precondition.
+  - All are environment preconditions, not code defects. CI runs unprivileged.
+  - The root-only `backup_v2` WAL failures (M6) were seen when the ledger reviewer ran the separate `tests/test_records_backup_v2.py` as root.
 - `AUDIT_REPRO=1 python3 -B -m unittest tests.audit_repro.test_audit_repro -v`: 6 tests, 5 failures and 1 error, all as expected on `75494fa`.
 - Without `AUDIT_REPRO`: 6 skipped, OK.
