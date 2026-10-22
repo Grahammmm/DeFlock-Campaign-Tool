@@ -607,133 +607,140 @@ def extract_image_only_pages(
                 receipts.append(receipt)
                 continue
         temporary = Path(tempfile.mkdtemp(prefix=".attempt-", dir=page_dir))
-        os.close(_managed_directory(temporary))
-        artifacts = {}
-        receipt = {"receipt_id": receipt_id, "identity": identity,
-                   "source": {"kind": "preserved_blob", "sha256": source_sha256},
-                   "locator": {"page": number}, "page_count": count,
-                   "status": "blocked", "blocked_reason": None, "confidence": None,
-                   "confidence_basis": "tesseract_word_tsv_mean", "visual_check_required": False,
-                   "visual_check_status": "not_done", "fidelity_status": "not_checked",
-                   "review_status": "not_reviewed", "artifact_sha256": artifacts,
-                   "published_at_ns": 0, "tool_versions": dict(tool_versions)}
-        try:
-            if held:
-                receipt["blocked_reason"] = "fidelity_hold_requires_visual_comparison"
-            else:
-                try:
-                    machine_text = reader.pages[number - 1].extract_text() or ""
-                except Exception:
-                    receipt["blocked_reason"] = "page_text_probe_failed"
-                else:
-                    if machine_text.strip():
-                        receipt["status"] = "skipped_machine_text"
-                    else:
-                        if _raster_pixels(reader.pages[number - 1]) > MAX_RASTER_PIXELS:
-                            raise PageFailure("page_raster_bound")
-                        page_pdf = temporary / "page.pdf"
-                        try:
-                            writer = PdfWriter()
-                            writer.add_page(reader.pages[number - 1])
-                            buffer = io.BytesIO()
-                            writer.write(buffer)
-                        except Exception as error:
-                            raise PageFailure("page_writer_failed") from error
-                        _write_new(page_pdf, buffer.getvalue())
-                        artifacts["page.pdf"] = _hash(_read(page_pdf))
-                        _run(runner, [tool_paths["pdftoppm"], "-f", "1", "-l", "1", "-singlefile",
-                                      "-r", str(RASTER_DPI), "-png", str(page_pdf),
-                                      str(temporary / "page")], timeout, child_env)
-                        image = temporary / "page.png"
-                        artifacts["page.png"] = _hash(_read(image, 128 * 1024 * 1024))
-                        # One tesseract run yields both the text and its word confidences,
-                        # so the receipt's confidence describes exactly the recorded text.
-                        _run(runner, [tool_paths["tesseract"], str(image), str(temporary / "tesseract"),
-                                      "-l", language, "txt", "tsv"], timeout, child_env)
-                        sidecar = _read(temporary / "tesseract.txt", 128 * 1024 * 1024)
-                        tsv = _read(temporary / "tesseract.tsv", 128 * 1024 * 1024)
-                        _write_new(temporary / "sidecar.txt", sidecar)
-                        _write_new(temporary / "confidence.tsv", tsv)
-                        artifacts["sidecar.txt"] = _hash(_read(temporary / "sidecar.txt", 128 * 1024 * 1024))
-                        artifacts["confidence.tsv"] = _hash(_read(temporary / "confidence.tsv", 128 * 1024 * 1024))
-                        if artifacts["sidecar.txt"] != _hash(sidecar) or artifacts["confidence.tsv"] != _hash(tsv):
-                            raise ValueError("ocr_output_copy_mismatch")
-                        receipt["confidence"] = _confidence(tsv.decode("utf-8"))
-                        if not sidecar.decode("utf-8").strip():
-                            receipt["blocked_reason"] = "no_text_after_ocr"
-                        elif receipt["confidence"] is None:
-                            receipt["blocked_reason"] = "confidence_unavailable"
-                        elif receipt["confidence"] < low_confidence:
-                            receipt["status"] = "visual_check_queued"
-                            receipt["visual_check_required"] = True
-                        else:
-                            receipt["status"] = "ocr_text_unreviewed"
-        except PageFailure as error:
-            receipt["blocked_reason"] = str(error)
-        except FileNotFoundError:
-            receipt["blocked_reason"] = "local_ocr_dependency_or_output_missing"
-        except subprocess.TimeoutExpired:
-            receipt["blocked_reason"] = "local_ocr_timeout"
-        except RuntimeError as error:
-            receipt["blocked_reason"] = str(error)
-        except (ValueError, OSError):
-            receipt["blocked_reason"] = "page_derivative_failed_or_unsafe"
-        if receipt["status"] == "blocked" and receipt["blocked_reason"] is None:
-            receipt["blocked_reason"] = "page_ocr_unresolved"
-        outcome = None
-        publication_failed = None
         cleanup_failed = False
         try:
-            with _page_lock(page_dir):
-                if _hold(page_dir, source_sha256, number, False) and not identity["fidelity_hold"]:
-                    identity = {**identity, "fidelity_hold": True}
-                    receipt["identity"] = identity
-                    receipt["receipt_id"] = _hash(_json(identity))
-                    receipt["status"] = "blocked"
+            os.close(_managed_directory(temporary))
+            artifacts = {}
+            receipt = {"receipt_id": receipt_id, "identity": identity,
+                       "source": {"kind": "preserved_blob", "sha256": source_sha256},
+                       "locator": {"page": number}, "page_count": count,
+                       "status": "blocked", "blocked_reason": None, "confidence": None,
+                       "confidence_basis": "tesseract_word_tsv_mean", "visual_check_required": False,
+                       "visual_check_status": "not_done", "fidelity_status": "not_checked",
+                       "review_status": "not_reviewed", "artifact_sha256": artifacts,
+                       "published_at_ns": 0, "tool_versions": dict(tool_versions)}
+            try:
+                if held:
                     receipt["blocked_reason"] = "fidelity_hold_requires_visual_comparison"
-                    receipt["confidence"] = None
-                    receipt["visual_check_required"] = False
-                    artifacts.clear()
-                prune_reason = _prune_unrecorded(temporary, artifacts)
-                if prune_reason and not identity["fidelity_hold"]:
-                    receipt["status"] = "blocked"
-                    receipt["visual_check_required"] = False
-                    receipt["blocked_reason"] = prune_reason
-                receipt["published_at_ns"] = time.time_ns()
-                _validate_receipt(receipt, identity, temporary)
-                receipt_bytes = _json(receipt)
-                receipt_sha = _hash(receipt_bytes)
-                manifest = {"schema_version": VERSION, "receipt_sha256": receipt_sha,
-                            "artifact_sha256": artifacts}
-                manifest_bytes = _json(manifest)
-                _write_new(temporary / "receipt.json", receipt_bytes)
-                _write_new(temporary / "manifest.json", manifest_bytes)
-                final = page_dir / receipt["receipt_id"]
-                if not _publish_directory(temporary, final):
-                    winner = _load_receipt(final, identity)
-                    if winner is None:
-                        raise ValueError("concurrent_ocr_receipt_incomplete")
-                    outcome = winner[0]
                 else:
-                    outcome = receipt
-                _reconcile_page(page_dir, source_sha256, number, output)
-        except OSError:
-            publication_failed = "page_publication_failed"
-        except ValueError:
-            publication_failed = "page_publication_rejected"
+                    try:
+                        machine_text = reader.pages[number - 1].extract_text() or ""
+                    except Exception:
+                        receipt["blocked_reason"] = "page_text_probe_failed"
+                    else:
+                        if machine_text.strip():
+                            receipt["status"] = "skipped_machine_text"
+                        else:
+                            if _raster_pixels(reader.pages[number - 1]) > MAX_RASTER_PIXELS:
+                                raise PageFailure("page_raster_bound")
+                            page_pdf = temporary / "page.pdf"
+                            try:
+                                writer = PdfWriter()
+                                writer.add_page(reader.pages[number - 1])
+                                buffer = io.BytesIO()
+                                writer.write(buffer)
+                            except Exception as error:
+                                raise PageFailure("page_writer_failed") from error
+                            _write_new(page_pdf, buffer.getvalue())
+                            artifacts["page.pdf"] = _hash(_read(page_pdf))
+                            _run(runner, [tool_paths["pdftoppm"], "-f", "1", "-l", "1", "-singlefile",
+                                          "-r", str(RASTER_DPI), "-png", str(page_pdf),
+                                          str(temporary / "page")], timeout, child_env)
+                            image = temporary / "page.png"
+                            artifacts["page.png"] = _hash(_read(image, 128 * 1024 * 1024))
+                            # One tesseract run yields both the text and its word confidences,
+                            # so the receipt's confidence describes exactly the recorded text.
+                            _run(runner, [tool_paths["tesseract"], str(image), str(temporary / "tesseract"),
+                                          "-l", language, "txt", "tsv"], timeout, child_env)
+                            sidecar = _read(temporary / "tesseract.txt", 128 * 1024 * 1024)
+                            tsv = _read(temporary / "tesseract.tsv", 128 * 1024 * 1024)
+                            _write_new(temporary / "sidecar.txt", sidecar)
+                            _write_new(temporary / "confidence.tsv", tsv)
+                            artifacts["sidecar.txt"] = _hash(_read(temporary / "sidecar.txt", 128 * 1024 * 1024))
+                            artifacts["confidence.tsv"] = _hash(_read(temporary / "confidence.tsv", 128 * 1024 * 1024))
+                            if artifacts["sidecar.txt"] != _hash(sidecar) or artifacts["confidence.tsv"] != _hash(tsv):
+                                raise ValueError("ocr_output_copy_mismatch")
+                            receipt["confidence"] = _confidence(tsv.decode("utf-8"))
+                            if not sidecar.decode("utf-8").strip():
+                                receipt["blocked_reason"] = "no_text_after_ocr"
+                            elif receipt["confidence"] is None:
+                                receipt["blocked_reason"] = "confidence_unavailable"
+                            elif receipt["confidence"] < low_confidence:
+                                receipt["status"] = "visual_check_queued"
+                                receipt["visual_check_required"] = True
+                            else:
+                                receipt["status"] = "ocr_text_unreviewed"
+            except PageFailure as error:
+                receipt["blocked_reason"] = str(error)
+            except FileNotFoundError:
+                receipt["blocked_reason"] = "local_ocr_dependency_or_output_missing"
+            except subprocess.TimeoutExpired:
+                receipt["blocked_reason"] = "local_ocr_timeout"
+            except RuntimeError as error:
+                receipt["blocked_reason"] = str(error)
+            except (ValueError, OSError):
+                receipt["blocked_reason"] = "page_derivative_failed_or_unsafe"
+            if receipt["status"] == "blocked" and receipt["blocked_reason"] is None:
+                receipt["blocked_reason"] = "page_ocr_unresolved"
+            outcome = None
+            publication_failed = None
+            cleanup_failed = False
+            try:
+                with _page_lock(page_dir):
+                    if _hold(page_dir, source_sha256, number, False) and not identity["fidelity_hold"]:
+                        identity = {**identity, "fidelity_hold": True}
+                        receipt["identity"] = identity
+                        receipt["receipt_id"] = _hash(_json(identity))
+                        receipt["status"] = "blocked"
+                        receipt["blocked_reason"] = "fidelity_hold_requires_visual_comparison"
+                        receipt["confidence"] = None
+                        receipt["visual_check_required"] = False
+                        artifacts.clear()
+                    prune_reason = _prune_unrecorded(temporary, artifacts)
+                    if prune_reason and not identity["fidelity_hold"]:
+                        receipt["status"] = "blocked"
+                        receipt["visual_check_required"] = False
+                        receipt["blocked_reason"] = prune_reason
+                    receipt["published_at_ns"] = time.time_ns()
+                    _validate_receipt(receipt, identity, temporary)
+                    receipt_bytes = _json(receipt)
+                    receipt_sha = _hash(receipt_bytes)
+                    manifest = {"schema_version": VERSION, "receipt_sha256": receipt_sha,
+                                "artifact_sha256": artifacts}
+                    manifest_bytes = _json(manifest)
+                    _write_new(temporary / "receipt.json", receipt_bytes)
+                    _write_new(temporary / "manifest.json", manifest_bytes)
+                    final = page_dir / receipt["receipt_id"]
+                    if not _publish_directory(temporary, final):
+                        winner = _load_receipt(final, identity)
+                        if winner is None:
+                            raise ValueError("concurrent_ocr_receipt_incomplete")
+                        outcome = winner[0]
+                    else:
+                        outcome = receipt
+                    _reconcile_page(page_dir, source_sha256, number, output)
+            except OSError:
+                publication_failed = "page_publication_failed"
+            except ValueError:
+                publication_failed = "page_publication_rejected"
+            finally:
+                if temporary.exists():
+                    try:
+                        shutil.rmtree(temporary)
+                    except OSError:
+                        cleanup_failed = True
+            if cleanup_failed or publication_failed:
+                with _page_lock(page_dir):
+                    outcome = _publish_blocked_disposition(
+                        page_dir, output, receipt,
+                        "attempt_cleanup_failed" if cleanup_failed else publication_failed,
+                        source_sha256, number)
+            receipts.append(outcome)
         finally:
-            if temporary.exists():
-                try:
-                    shutil.rmtree(temporary)
-                except OSError:
-                    cleanup_failed = True
-        if cleanup_failed or publication_failed:
-            with _page_lock(page_dir):
-                outcome = _publish_blocked_disposition(
-                    page_dir, output, receipt,
-                    "attempt_cleanup_failed" if cleanup_failed else publication_failed,
-                    source_sha256, number)
-        receipts.append(outcome)
+            # Also covers interrupts during setup/OCR before publication cleanup.
+            # A recorded cleanup failure keeps its existing blocked disposition.
+            if temporary.exists() and not cleanup_failed:
+                shutil.rmtree(temporary)
     return receipts
 
 
