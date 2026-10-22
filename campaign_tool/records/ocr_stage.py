@@ -681,7 +681,8 @@ class OcrStage:
         self.fallback = fallback
         self.quality = quality
         self.signature = _sha(_canonical({
-            "schema": SCHEMA, "sidecar_parser": SIDECAR_PARSER, "primary": primary.identity(),
+            "schema": SCHEMA, "sidecar_parser": SIDECAR_PARSER, "page_accounting": "pypdf-count-v1",
+            "primary": primary.identity(),
             "fallback": fallback.identity() if fallback is not None else None,
             "quality": {"min_chars": quality.min_chars, "min_alnum_ratio": quality.min_alnum_ratio}}))
 
@@ -820,6 +821,19 @@ class OcrStage:
             source_bytes = _copy_verified(fd, item.sha256, source)
         except BackendError as error:
             return Outcome(item.document_id, "source_invalid", error.code)
+        # The tool sidecar is not authoritative for the document denominator.
+        # Use the verified private original, before invoking OCR or vision.
+        try:
+            from pypdf import PdfReader
+            with source.open("rb") as stream:
+                reader = PdfReader(stream, strict=True)
+                if reader.is_encrypted:
+                    return Outcome(item.document_id, "ocr_failed", "pdf_page_count_unverified")
+                page_count = len(reader.pages)
+            if not 1 <= page_count <= MAX_PAGES:
+                return Outcome(item.document_id, "ocr_failed", "pdf_page_count_unverified")
+        except Exception:  # Parser failure or unavailable dependency: no partial denominator.
+            return Outcome(item.document_id, "ocr_failed", "pdf_page_count_unverified")
         try:
             texts = self.primary.pages(source, workdir)
         except BackendError as error:
@@ -827,7 +841,7 @@ class OcrStage:
         # Index i must be page i + 1: a skip marker naming any other page (an
         # unexpanded range, say) would shift every later page and send the
         # wrong page to vision, so the document fails closed before any call.
-        if not texts or len(texts) > MAX_PAGES or any(
+        if len(texts) != page_count or any(
                 SKIPPED_PAGE.match(text.strip()) and text.strip() != skipped_marker(number)
                 for number, text in enumerate(texts, start=1)):
             return Outcome(item.document_id, "ocr_failed", "ocrmypdf_sidecar_inconsistent")
