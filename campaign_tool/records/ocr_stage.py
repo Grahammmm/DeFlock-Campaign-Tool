@@ -239,7 +239,7 @@ class OcrmypdfBackend:
     def __init__(self, executable: str = DEFAULT_OCRMYPDF, language: str = "eng",
                  timeout: int = 900, runner=run_group):
         self.executable = _absolute_executable(executable, "ocrmypdf")
-        if not re.fullmatch(r"[a-z]{3}(\+[a-z]{3}){0,3}", language or ""):
+        if not re.fullmatch(r"[a-z]{3}(?:_[a-z]{3,4})?(?:\+[a-z]{3}(?:_[a-z]{3,4})?){0,3}", language or ""):
             raise ValueError("language must be tesseract codes like eng or eng+spa")
         self.language = language
         self.timeout = int(timeout)
