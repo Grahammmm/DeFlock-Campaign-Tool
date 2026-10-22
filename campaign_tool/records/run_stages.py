@@ -861,10 +861,13 @@ def stage_digest_gates(args):
     blocked = sum(counts.get(stage, {}).get("blocked", 0) for stage in GATED)
     done = sum(counts.get(stage, {}).get("done", 0) for stage in GATED)
     in_progress = sum(counts.get(stage, {}).get("in_progress", 0) for stage in GATED)
+    inapplicable = sum(counts.get(stage, {}).get("inapplicable", 0) for stage in GATED)
     total = sum(sum(counts.get(stage, {}).values()) for stage in GATED)
-    unknown = total - pending - blocked - done - in_progress
+    unknown = total - pending - blocked - done - in_progress - inapplicable
+    # Inapplicable is a known terminal state, not a completed review or failure.
+    # Keep it in the denominator and skipped, without a false owner-action alert.
     out = {"input": total, "output": done, "failed": blocked + unknown,
-           "skipped": pending + in_progress}
+           "skipped": pending + in_progress + inapplicable}
     # Every proposal past privacy needs the owner: review-required, never accepted here.
     items = needs(("GATE_BLOCKED", "action", blocked),
                   ("GATE_IN_PROGRESS", "info", in_progress),
