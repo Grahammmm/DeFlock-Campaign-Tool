@@ -103,9 +103,9 @@ MAX_PAGES = 100_000
 # never served from cache (2: skip ranges expanded, no trailing form-feed strip).
 SIDECAR_PARSER = 2
 # Bump when the vision response parser changes; independent of sidecar parsing.
-VISION_PARSER = 1
+VISION_PARSER = 2
 VISION_USER_PROMPT = "Transcribe this scanned page."
-THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
+THINK_BLOCK = re.compile(r"\s*<think>.*?</think>\s*", re.S | re.I)
 # Page statuses a published result.json may carry.
 PAGE_STATUSES = frozenset({"native_text", "ocr_text", "ocr_empty", "ocr_low_quality"})
 
@@ -404,7 +404,10 @@ class QwenVisionBackend:
         if not isinstance(content, str):
             raise BackendError("vision_response_invalid")
         # Thinking models may inline their reasoning; only the transcription is kept.
-        return THINK_BLOCK.sub("", content, count=1)
+        content = THINK_BLOCK.sub("", content)
+        if re.search(r"</?think\b", content, re.I):
+            raise BackendError("vision_response_invalid")
+        return content
 
     def page_text(self, source: Path, page: int, workdir: Path) -> str:
         image = self.render(source, page, workdir)
