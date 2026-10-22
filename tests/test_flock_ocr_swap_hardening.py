@@ -59,7 +59,13 @@ class BuildAndBudgetTests(RunMixin, unittest.TestCase):
 
     def test_old_three_copy_budget_refused_before_first_archive(self):
         total = self.estimated_copy()
-        self.fake.disk_free = lambda path: 3 * total + (512 << 20)
+        # Enough for the R1 preflight's tar-aware budget, far short of S1's 7 copies.
+        surveys = [evidence.survey(self.fake.volume), evidence.survey(self.fake.bind)]
+        _, r1_need = swap.space_budget(sum(x["tar_bytes"] for x in surveys),
+                                       max(x["extract_bytes"] for x in surveys),
+                                       sum(x["sqlite_bytes"] for x in surveys))
+        self.assertLess(r1_need, 7 * total + (512 << 20))
+        self.fake.disk_free = lambda path: r1_need
         code, out = self.run_swap(self.args())
         self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
         self.assertIn("FAIL at [S1]", out)
@@ -68,7 +74,8 @@ class BuildAndBudgetTests(RunMixin, unittest.TestCase):
         self.assertEqual(budget["required_free_bytes"], 7 * total + (512 << 20))
         self.assertEqual(budget["copies"], {"s1_evidence": 2, "a2_evidence": 2,
                                           "scratch_extract": 1, "rollback_preservation": 2})
-        self.assertEqual(self.fake.api_calls, [])
+        # Only the R1 create-only probe touched the API; nothing was stopped or started.
+        self.assertTrue(all(swap.PROBE_SUFFIX in repr(c) for c in self.fake.api_calls), self.fake.api_calls)
 
     def test_exact_peak_budget_passes_and_a2_excludes_existing_s1(self):
         total = self.estimated_copy()
