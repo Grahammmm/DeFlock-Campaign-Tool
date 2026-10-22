@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -191,9 +192,30 @@ def load_vision_receipt(output_root: str | Path, source_sha256: str, page: int, 
             "receipt_bytes": ocr._json(receipt), "sidecar": sidecar}
 
 
+def _run_adapter(argv, *, timeout, capture_output=True, check=False, **kwargs):
+    """Own the entire adapter process group, including wrapper grandchildren.
+
+    File-backed capture avoids waiting for inherited pipes or buffering unbounded
+    output. All exits kill the session; only a bounded prefix is read into memory.
+    """
+    with tempfile.TemporaryFile(dir=kwargs.get("cwd")) as out, \
+            tempfile.TemporaryFile(dir=kwargs.get("cwd")) as err:
+        proc = subprocess.Popen(argv, stdout=out, stderr=err, start_new_session=True, **kwargs)
+        try:
+            proc.wait(timeout=timeout)
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        out.seek(0); err.seek(0)
+        return subprocess.CompletedProcess(argv, proc.returncode, out.read(MAX_TEXT_BYTES + 1), err.read(65536))
+
+
 def run_fallback(output_root: str | Path, source_sha256: str, page: int, base_receipt_id: str, *,
                  vision_adapter: dict, attempt_id: str = "initial", timeout: int = 300,
-                 runner=subprocess.run) -> dict:
+                 runner=None) -> dict:
     """Publish one immutable vision receipt for an eligible Tesseract page receipt.
 
     Idempotent per identity: an existing valid receipt is returned without calling the adapter.
@@ -201,6 +223,8 @@ def run_fallback(output_root: str | Path, source_sha256: str, page: int, base_re
     """
     if not isinstance(vision_adapter, dict):
         raise ValueError("vision adapter must come from vision.adapter()")
+    if runner is None or runner is subprocess.run:
+        runner = _run_adapter
     checked = adapter(vision_adapter.get("argv"), vision_adapter.get("engine"),
                       vision_adapter.get("model"), vision_adapter.get("signature"))
     if not isinstance(attempt_id, str) or not ATTEMPT.fullmatch(attempt_id):
