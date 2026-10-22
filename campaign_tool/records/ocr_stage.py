@@ -826,7 +826,9 @@ class OcrStage:
         try:
             from pypdf import PdfReader
             with source.open("rb") as stream:
-                reader = PdfReader(stream, strict=True)
+                # Match intake/extraction recovery for common scanner xref defects;
+                # the independent count and exact sidecar match still fail closed.
+                reader = PdfReader(stream, strict=False)
                 if reader.is_encrypted:
                     return Outcome(item.document_id, "ocr_failed", "pdf_page_count_unverified")
                 page_count = len(reader.pages)

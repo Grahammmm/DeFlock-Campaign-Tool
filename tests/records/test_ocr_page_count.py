@@ -1,6 +1,7 @@
 """M9: tool output must account for exactly the verified PDF's pages."""
 import hashlib
 import io
+import re
 from pathlib import Path
 import unittest
 from pypdf import PdfWriter
@@ -46,6 +47,28 @@ class PageCountTests(unittest.TestCase):
         self.assertEqual(record['unresolved_pages'], 1)
         self.assertEqual(record['review_state'], 'not_reviewed')
         self.assertEqual(record['pages'][2]['status'], 'native_text')
+
+    def test_recoverable_pdf_defects_are_counted_and_processed(self):
+        raw = pdf()
+        xref = re.search(rb'startxref\s+(\d+)', raw)
+        if xref is None:
+            self.fail('synthetic PDF must contain startxref')
+        variants = [raw[:xref.start(1)] + str(int(xref[1]) + delta).encode() + raw[xref.end(1):]
+                    for delta in (-3, 3)]
+        for variant in variants:
+            with self.subTest(source=hashlib.sha256(variant).hexdigest()):
+                ws, tools, (_, _, outcomes) = self.run_case(variant, [fixtures.CLEAN] * 3)
+                self.assertEqual(outcomes[0].status, 'ocr_complete')
+                record = next(iter(fixtures.results(ws.out).values()))
+                self.assertEqual(record['page_count'], 3)
+                self.assertEqual([page['page'] for page in record['pages']], [1, 2, 3])
+                self.assertEqual(record['review_state'], 'not_reviewed')
+                self.assertGreater(len(tools.calls), 0)
+                # Lenient parsing does not bypass the independent cardinality gate.
+                ws, _, (_, _, outcomes) = self.run_case(variant, [fixtures.CLEAN] * 2)
+                self.assertEqual((outcomes[0].status, outcomes[0].code),
+                                 ('ocr_failed', 'ocrmypdf_sidecar_inconsistent'))
+                self.assertEqual(fixtures.results(ws.out), {})
 
     def test_unreadable_empty_and_encrypted_pdf_fail_before_tool(self):
         for raw in (b'%PDF-1.4\nnot a PDF', pdf(0), pdf(encrypted=True)):
