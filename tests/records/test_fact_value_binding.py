@@ -22,6 +22,39 @@ class FactBindingTests(unittest.TestCase):
                 self.assertEqual((row['classification'], row['reason']), ('not_assessed', 'fact_value_unbound'))
                 self.assertFalse(row['review_acceptance'])
 
+    def test_partial_words_cannot_ground_any_string_operator(self):
+        cite = evidence.cite_text(self.h.bundle['units'][0], 'Example Agency')
+        for operator in ('equals', 'not_equals', 'contains'):
+            self.h.versions[0]['requirements'][0]['test'].update(operator=operator, expected='Example Agency')
+            for value in ('a', 'e', 'Ex', 'ample', 'Agenc', 'gency'):
+                with self.subTest(operator=operator, value=value):
+                    row = self.compare(value, [cite])
+                    self.assertEqual((row['classification'], row['reason']),
+                                     ('not_assessed', 'fact_value_unbound'))
+
+    def test_whole_phrase_still_reaches_string_comparison(self):
+        cite = evidence.cite_text(self.h.bundle['units'][0], 'Example Agency')
+        for operator, expected, classification in (
+                ('equals', 'Example Agency', 'no_conflict_observed'),
+                ('not_equals', 'Example Agency', 'potential_conflict'),
+                ('contains', 'Agency', 'no_conflict_observed')):
+            with self.subTest(operator=operator):
+                self.h.versions[0]['requirements'][0]['test'].update(operator=operator, expected=expected)
+                row = self.compare('Example Agency', [cite])
+                self.assertEqual(row['classification'], classification)
+                self.assertEqual(row['legal_assessment'], 'NOT_ASSESSED')
+                self.assertFalse(row['review_acceptance'])
+
+    def test_string_boundaries_handle_punctuation_and_unicode_without_case_folding(self):
+        quote = 'Notice provided. (No notice); café policy, agency_name.'
+        for value in ('Not', 'otice', 'café pol', 'fé', 'agency', 'name', ' ', 'no notice'):
+            with self.subTest(unbound=value):
+                self.assertFalse(reconcile.fact_value_bound(dict(value=value, citations=[{'quote': quote}])))
+        for value in ('Notice', 'No notice', 'café policy', 'agency_name'):
+            with self.subTest(bound=value):
+                self.assertTrue(reconcile.fact_value_bound(dict(value=value, citations=[{'quote': quote}])))
+        self.assertFalse(reconcile.fact_value_bound(dict(value='No', citations=[{'quote': 'Notice provided'}])))
+
     def test_json_pointer_requires_exact_typed_value(self):
         for value in (3, 300, '30', True):
             with self.subTest(value=value):

@@ -17,7 +17,8 @@ def fact_value_bound(fact):
    except (ValueError,TypeError):continue
    if type(actual) is type(value) and actual==value:return True
   elif type(value) is str:
-   if value and value in quote:return True
+   # A cited phrase must not be a fragment of an unrelated word (No/Notice).
+   if value.strip() and re.search(r"(?<!\w)"+re.escape(value)+r"(?!\w)",quote):return True
   else:
    token=json.dumps(value,allow_nan=False)
    if re.search(r"(?<![\w.+-])"+re.escape(token)+r"(?![\w.])",quote):return True
