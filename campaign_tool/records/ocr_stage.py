@@ -102,6 +102,9 @@ MAX_PAGES = 100_000
 # Bumped whenever sidecar parsing changes, so results parsed the old way are
 # never served from cache (2: skip ranges expanded, no trailing form-feed strip).
 SIDECAR_PARSER = 2
+# Bump when the vision response parser changes; independent of sidecar parsing.
+VISION_PARSER = 1
+VISION_USER_PROMPT = "Transcribe this scanned page."
 THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
 # Page statuses a published result.json may carry.
 PAGE_STATUSES = frozenset({"native_text", "ocr_text", "ocr_empty", "ocr_low_quality"})
@@ -360,7 +363,9 @@ class QwenVisionBackend:
 
     def identity(self) -> dict:
         return {"engine": self.engine, "method": self.method, "endpoint": self.endpoint,
-                "model": self.model, "pdftoppm": self.pdftoppm, "dpi": self.dpi}
+                "model": self.model, "pdftoppm": self.pdftoppm, "dpi": self.dpi,
+                "max_tokens": self.max_tokens, "vision_parser": VISION_PARSER,
+                "prompt_sha256": _sha(_canonical([VISION_PROMPT, VISION_USER_PROMPT]))}
 
     def render(self, source: Path, page: int, workdir: Path) -> bytes:
         base = workdir / f"vision-page-{page}"
@@ -386,7 +391,7 @@ class QwenVisionBackend:
             "messages": [
                 {"role": "system", "content": VISION_PROMPT},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Transcribe this scanned page."},
+                    {"type": "text", "text": VISION_USER_PROMPT},
                     {"type": "image_url", "image_url": {"url": url}}]}]}).encode("utf-8")
 
     @staticmethod
