@@ -224,7 +224,7 @@ PrivateTmp=true
 TimeoutStartSec=2760
 TimeoutStopSec=60
 {environment}ExecStart={python} -m campaign_tool.records run --unattended --max-originals-per-run 200 --root {root}{mail}{ocr} --json
-ExecStartPost={python} -m campaign_tool.records health --root {root} --record
+ExecStopPost={python} -m campaign_tool.records health --root {root} --record
 """
 
 ACTIVATE = """#!/bin/sh

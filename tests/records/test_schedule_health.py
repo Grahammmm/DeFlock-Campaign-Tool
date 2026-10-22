@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -114,6 +115,40 @@ class HealthTests(unittest.TestCase):
         con.close()
         self.assertEqual(rows, [("schedule:missed:2026-10-01T13:00:00-07:00", 2, "open")])
 
+    def test_rendered_stop_post_records_failed_held_gapped_and_success_runs(self):
+        # Execute the rendered health command, not systemctl: candidate units only.
+        # The directive is the documented systemd failure-path guarantee; no host
+        # service is installed or started by this test.
+        cases = (("failed", "failed"), ("held", "held"),
+                 ("completed_with_gaps", "gaps"), ("completed", "ok"))
+        for index, (status, expected) in enumerate(cases):
+            with self.subTest(status=status):
+                root = Path(self.tmp.name) / ("case-" + str(index))
+                root.mkdir(mode=0o700)
+                store.initialize(root / "ledger.sqlite")
+                with store.ledger(root / "ledger.sqlite") as con:
+                    con.execute("INSERT INTO runs(run_id,kind,started_at,ended_at,status,summary,engine_version) "
+                                "VALUES(?,?,?,?,?,?,?)", ("synthetic-run", "stage-runner",
+                                "2026-10-01T13:01:00-07:00", "2026-10-01T13:02:00-07:00", status, "{}", "synthetic"))
+                    con.commit()
+                schedule.render(root, engine_root=REPO, python=sys.executable)
+                service = (root / "ops/records-run.service").read_text()
+                self.assertNotIn("ExecStartPost=", service)
+                commands = [line.split("=", 1)[1] for line in service.splitlines()
+                            if line.startswith("ExecStopPost=")]
+                self.assertEqual(len(commands), 1)
+                result = subprocess.run(shlex.split(commands[0]) +
+                        ["--now", "2026-10-01T13:10:00-07:00", "--json"],
+                        cwd=REPO, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if expected == "ok" else 1, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["status"], expected)
+                self.assertEqual(report["alerts_recorded"], 0 if expected == "ok" else 1)
+                with store.ledger(root / "ledger.sqlite", readonly=True) as con:
+                    keys = [r[0] for r in con.execute("SELECT key FROM alerts")]
+                self.assertEqual(keys, [] if expected == "ok" else
+                                 ["schedule:" + expected + ":2026-10-01T13:00:00-07:00"])
+
     def test_health_after_automated_review_reports_gaps_and_cli_exit_codes_agree(self):
         inbox = Path(self.tmp.name) / "inbox"
         inbox.mkdir(mode=0o700)
@@ -177,7 +212,9 @@ class RenderAndActivationTests(unittest.TestCase):
         self.assertIn("ExecStart=/opt/py/bin/python3 -m campaign_tool.records run --unattended --max-originals-per-run 200 --root", service)
         self.assertIn("--mail-config", service)
         self.assertIn(" --ocr --json", service)
-        self.assertIn("ExecStartPost=/opt/py/bin/python3 -m campaign_tool.records health --root", service)
+        self.assertIn("ExecStopPost=/opt/py/bin/python3 -m campaign_tool.records health --root", service)
+        self.assertNotIn("ExecStartPost=", service)
+        self.assertNotIn("SuccessExitStatus=", service)  # do not disguise the pipeline's failed exit
         self.assertIn("UMask=0077", service)
         self.assertNotIn("@", service.split("[Service]")[1])  # no unresolved placeholders
         for name in ("activate.sh", "rollback.sh"):
