@@ -144,7 +144,7 @@ def read_current_units(database,evidence_root,expected_snapshot,expected_imports
             if row["id"]!=manifest["unit_ids"][ordinal-1]:_no("unit_ordinal_mismatch")
             prov=_json(row["provenance_json"].encode(),"unit_provenance_invalid")
             digest=prov.get("payload_sha256")
-            expected_path=root/"cas"/digest[:2]/digest if type(digest)is str and HEX.fullmatch(digest) else None
+            expected_path=root/digest if type(digest)is str and HEX.fullmatch(digest) else None
             if (prov.get("extraction_import_id")!=imp or prov.get("ordinal")!=ordinal or prov.get("source_units_sha256")!=manifest.get("artifacts",{}).get("derived_units",{}).get("sha256")
                 or expected_path is None or row["derived_path"]!=str(expected_path)):_no("unit_provenance_mismatch")
             locator_text=row["locator"]
@@ -154,10 +154,8 @@ def read_current_units(database,evidence_root,expected_snapshot,expected_imports
             if locator_size>16384:_no("unit_locator_invalid")
             locator=_json(locator_text.encode(),"unit_locator_invalid")
             if _canon(locator).decode()!=locator_text:_no("unit_locator_noncanonical")
-            cas_root,_=_private(root/"cas")
-            shard,_=_private(cas_root/digest[:2])
             artifact=_path(row["derived_path"])
-            if artifact!=shard/digest:_no("unit_artifact_outside_root")
+            if artifact!=root/digest:_no("unit_artifact_outside_root")
             raw=_read(artifact,MAX_UNIT);total+=len(raw)
             if total>max_total_bytes:_no("unit_total_bytes_limit")
             if _sha(raw)!=digest:_no("unit_payload_hash_mismatch")

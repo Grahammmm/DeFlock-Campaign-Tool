@@ -86,6 +86,75 @@ class ExtractionLedgerTests(unittest.TestCase):
         fresh=self.enroll(self.bundle())
         self.assertNotEqual(fresh['import_id'],old['import_id'])
 
+    def retained_scope(self):
+        from campaign_tool.records import retained_units as retained
+        with self.store.ledger(self.database, readonly=True) as con:
+            row = con.execute("SELECT i.original_sha256,i.id,i.manifest_sha256,i.manifest_json "
+                              "FROM extraction_adapter_imports i JOIN extraction_adapter_current c "
+                              "ON c.import_id=i.id").fetchone()
+            scope = [{"original_sha256": row[0], "import_id": row[1],
+                      "manifest_sha256": row[2], "unit_ids": json.loads(row[3])["unit_ids"]}]
+            snapshot = retained.ledger_snapshot(con)
+        return retained, snapshot, scope
+
+    def test_actual_extract_enroll_retained_read_search_without_migration(self):
+        out = self.root/'retained-derived'; out.mkdir(mode=0o700)
+        result = routes.extract(self.source,self.subject,out,'txt',timeout=20)
+        enrolled = self.adapter.enroll(original_path=self.source,
+            receipt_path=Path(result['run_path'])/'extraction.json',receipt_sha256=result['receipt_sha256'])
+        retained, snapshot, scope = self.retained_scope()
+        read = retained.read_current_units(self.database,self.root/'evidence',snapshot,scope)
+        self.assertEqual(read['unit_count'], enrolled['units'])
+        self.assertEqual([u['text'] for u in read['units']], ['one','two'])
+        self.assertTrue(all(u['status']=='candidate_extracted' and not u['semantic_acceptance'] for u in read['units']))
+        with self.store.ledger(self.database, readonly=True) as con:
+            paths = [Path(r[0]) for r in con.execute('SELECT derived_path FROM units')]
+            self.assertEqual(retained.ledger_snapshot(con),snapshot)
+        self.assertTrue(all(p.parent==self.root/'evidence' for p in paths))
+        self.assertFalse((self.root/'evidence'/'cas').exists())
+        index = self.root/'search';index.mkdir(mode=0o700)
+        built = retained.build_search_index(index,read)
+        hits = retained.search_index(built['path'],snapshot,'one',expected_content_sha256=built['content_sha256'])
+        self.assertEqual([h['unit_id'] for h in hits],[read['units'][0]['unit_id']])
+
+    def test_retained_read_still_rejects_corrupted_flat_payload(self):
+        self.enroll(self.bundle())
+        retained, snapshot, scope = self.retained_scope()
+        with self.store.ledger(self.database, readonly=True) as con:
+            path = Path(con.execute('SELECT derived_path FROM units').fetchone()[0])
+        path.chmod(0o600);path.write_bytes(b'corrupted synthetic bytes')
+        with self.assertRaisesRegex(retained.RetainedUnitError,'unit_payload_hash_mismatch'):
+            retained.read_current_units(self.database,self.root/'evidence',snapshot,scope)
+
+    def test_retained_read_rejects_symlink_artifact_and_evidence_root(self):
+        self.enroll(self.bundle())
+        retained, snapshot, scope = self.retained_scope()
+        alias = self.root/'alias';alias.symlink_to(self.root/'evidence',target_is_directory=True)
+        with self.assertRaisesRegex(retained.RetainedUnitError,'symlink_path'):
+            retained.read_current_units(self.database,alias,snapshot,scope)
+        with self.store.ledger(self.database, readonly=True) as con:
+            path = Path(con.execute('SELECT derived_path FROM units').fetchone()[0])
+        saved = self.root/'saved';path.rename(saved);path.symlink_to(saved)
+        with self.assertRaisesRegex(retained.RetainedUnitError,'symlink_path'):
+            retained.read_current_units(self.database,self.root/'evidence',snapshot,scope)
+
+    def test_retained_read_rejects_substituted_layout_and_stale_import(self):
+        self.enroll(self.bundle())
+        retained, snapshot, scope = self.retained_scope()
+        with self.store.ledger(self.database) as con:
+            path = Path(con.execute('SELECT derived_path FROM units').fetchone()[0])
+            con.execute('UPDATE units SET derived_path=?',(str(path.parent/'cas'/path.name[:2]/path.name),))
+            con.commit()
+        with self.store.ledger(self.database, readonly=True) as con:
+            changed = retained.ledger_snapshot(con)
+        with self.assertRaisesRegex(retained.RetainedUnitError,'unit_provenance_mismatch'):
+            retained.read_current_units(self.database,self.root/'evidence',changed,scope)
+        # A genuinely fresh enrollment updates the pointer; old membership is not accepted.
+        self.enroll(self.bundle(text='fresh'))
+        _, changed, _ = self.retained_scope()
+        with self.assertRaisesRegex(retained.RetainedUnitError,'current_import_mismatch'):
+            retained.read_current_units(self.database,self.root/'evidence',changed,scope)
+
     def test_actual_text_route_enrolls_units_pending(self):
         out=self.root/'actual-derived';out.mkdir(mode=0o700)
         result=routes.extract(self.source,self.subject,out,'txt',timeout=20)
