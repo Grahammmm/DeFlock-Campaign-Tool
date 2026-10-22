@@ -442,6 +442,8 @@ class QueueItem:
 
 def parse_queue_line(line: str, source_root: Path) -> QueueItem:
     """Validate one ``awaiting-ocr-v1`` line; raises ``BackendError('queue_item_invalid')``."""
+    if not source_root.is_absolute():
+        raise BackendError("source_root_invalid")
     try:
         value = json.loads(line)
     except ValueError:
@@ -1043,6 +1045,9 @@ def transcribe_png_main(argv, transport=urllib_transport) -> int:
 
 def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, list]:
     try:
+        source_root = Path(args.source_root)
+        if not source_root.is_absolute():
+            return (*fail("OCR_CONFIG_INVALID"), [])
         stage = build_stage(args.out, load_config(args.config), runner=runner, transport=transport)
     except (OSError, ValueError, TypeError):
         return (*fail("OCR_CONFIG_INVALID"), [])
@@ -1055,7 +1060,7 @@ def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, 
                 stage.clear_abandoned_work()
             except OSError:
                 return (*fail("OCR_WORK_CLEANUP_FAILED"), [])
-            for item, error in read_queue(Path(args.queue), Path(args.source_root)):
+            for item, error in read_queue(Path(args.queue), source_root):
                 if error:
                     errors[error] = errors.get(error, 0) + 1
                     continue
