@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 import errno
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -92,7 +93,15 @@ CHILD_FILE_BYTES = 1024 ** 3
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+# Anything shaped like an OCRmyPDF skip marker, and the one form it may take:
+# OCRmyPDF's merge_sidecars writes "[OCR skipped on page(s) N]" for one skipped
+# (native-text) page and "[OCR skipped on page(s) A-B]" for a run of them.
 SKIPPED_PAGE = re.compile(r"^\[OCR skipped on page\(s\) [0-9, -]+\]$")
+SKIPPED_RANGE = re.compile(r"^\[OCR skipped on page\(s\) ([1-9][0-9]{0,8})(?:-([1-9][0-9]{0,8}))?\]$")
+MAX_PAGES = 100_000
+# Bumped whenever sidecar parsing changes, so results parsed the old way are
+# never served from cache (2: skip ranges expanded, no trailing form-feed strip).
+SIDECAR_PARSER = 2
 THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
 # Page statuses a published result.json may carry.
 PAGE_STATUSES = frozenset({"native_text", "ocr_text", "ocr_empty", "ocr_low_quality"})
@@ -172,6 +181,44 @@ def _run_tool(runner, argv: list[str], workdir: Path, timeout: int, prefix: str)
     return completed.returncode
 
 
+def skipped_marker(page: int) -> str:
+    """The per-page marker ``OcrmypdfBackend.pages`` returns for native-text page ``page``."""
+    return f"[OCR skipped on page(s) {page}]"
+
+
+def split_sidecar(text: str) -> list[str]:
+    """Split an OCRmyPDF sidecar into exactly one string per PDF page.
+
+    OCRmyPDF 14 (``_pipeline.merge_sidecars``) writes a form feed only
+    *between* segments, never after the last one, so a sidecar that ends in
+    ``\\f`` ends with an empty (blank) page. Each run of consecutive skipped
+    native-text pages is collapsed into ONE segment,
+    ``[OCR skipped on page(s) A-B]`` (``... N]`` for a single page). Every such
+    range is expanded here into one ``skipped_marker(n)`` per page, so index
+    ``i`` of the result is always page ``i + 1``. The page numbers a marker
+    names must continue the count exactly; a marker-shaped segment that does
+    not, or more than ``MAX_PAGES`` pages, raises
+    ``BackendError('ocrmypdf_sidecar_inconsistent')``.
+    """
+    pages: list[str] = []
+    if text.count("\f") >= MAX_PAGES:
+        raise BackendError("ocrmypdf_sidecar_inconsistent")
+    for segment in text.split("\f"):
+        marker = segment.strip()
+        if not SKIPPED_PAGE.match(marker):
+            pages.append(segment)
+        else:
+            match = SKIPPED_RANGE.match(marker)
+            first = int(match.group(1)) if match else 0
+            last = int(match.group(2) or first) if match else 0
+            if first != len(pages) + 1 or last < first or last > MAX_PAGES:
+                raise BackendError("ocrmypdf_sidecar_inconsistent")
+            pages.extend(skipped_marker(number) for number in range(first, last + 1))
+        if len(pages) > MAX_PAGES:
+            raise BackendError("ocrmypdf_sidecar_inconsistent")
+    return pages
+
+
 def _absolute_executable(path: str, name: str) -> str:
     if not isinstance(path, str) or not os.path.isabs(path):
         raise ValueError(name + " must be an absolute path")
@@ -207,7 +254,7 @@ class OcrmypdfBackend:
                 "-l", self.language, "--sidecar", str(sidecar), str(source), str(output)]
 
     def pages(self, source: Path, workdir: Path) -> list[str]:
-        """Return one text string per page (``SKIPPED_PAGE`` text for native-text pages)."""
+        """Return one text string per PDF page (``skipped_marker(n)`` for native-text page n)."""
         sidecar, output = workdir / "sidecar.txt", workdir / "ocr.pdf"
         code = _run_tool(self.runner, self.argv(source, sidecar, output), workdir, self.timeout,
                          "ocrmypdf")
@@ -224,19 +271,41 @@ class OcrmypdfBackend:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             raise BackendError("ocrmypdf_sidecar_unreadable") from None
-        # Tesseract ends every page with a form feed; OCRmyPDF concatenates them.
-        if text.endswith("\f"):
-            text = text[:-1]
-        pages = text.split("\f")
-        if not pages:
-            raise BackendError("ocrmypdf_sidecar_empty")
-        return pages
+        # The form feed separates pages and never terminates the last one: a
+        # trailing "\f" is a blank final page, so nothing is stripped here.
+        return split_sidecar(text)
 
 
-def loopback_endpoint(endpoint: str) -> str:
-    """Accept only ``http://<loopback>:<port>/path`` (no credentials, no query)."""
+def checked_host_gateway(value) -> str:
+    """Validate ``vision.host_gateway``: one literal private IPv4 address, canonical form.
+
+    Meant for the rootless-Docker slirp4netns gateway (e.g. ``10.0.2.2``) that
+    reaches the host's loopback vision server. Loopback, multicast,
+    unspecified, link-local, reserved, public and IPv6 values are refused, as
+    are hostnames (no DNS) and non-canonical spellings.
+    """
+    if not isinstance(value, str):
+        raise ValueError("vision host_gateway must be a private IPv4 address")
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError("vision host_gateway must be a private IPv4 address") from None
+    if (address.version != 4 or str(address) != value or not address.is_private
+            or address.is_loopback or address.is_multicast or address.is_unspecified
+            or address.is_link_local or address.is_reserved):
+        raise ValueError("vision host_gateway must be a private IPv4 address")
+    return value
+
+
+def loopback_endpoint(endpoint: str, extra_hosts: frozenset = frozenset()) -> str:
+    """Accept only ``http://<loopback>:<port>/path`` (no credentials, no query).
+
+    ``extra_hosts`` admits the owner-configured ``vision.host_gateway`` beside
+    loopback; the default admits loopback only.
+    """
     parts = urllib.parse.urlsplit(endpoint or "")
-    if parts.scheme != "http" or parts.hostname not in LOOPBACK_HOSTS:
+    if parts.scheme != "http" or (parts.hostname not in LOOPBACK_HOSTS
+                                  and parts.hostname not in extra_hosts):
         raise ValueError("vision endpoint must be http on a loopback host")
     if parts.username or parts.password or parts.query or parts.fragment or parts.port is None:
         raise ValueError("vision endpoint must name a port and carry no credentials or query")
@@ -273,8 +342,10 @@ class QwenVisionBackend:
 
     def __init__(self, endpoint: str = DEFAULT_VISION_ENDPOINT, model: str = DEFAULT_VISION_MODEL,
                  pdftoppm: str = DEFAULT_PDFTOPPM, dpi: int = 200, timeout: int = 300,
-                 max_tokens: int = 4096, transport=urllib_transport, runner=run_group):
-        self.endpoint = loopback_endpoint(endpoint)
+                 max_tokens: int = 4096, transport=urllib_transport, runner=run_group,
+                 host_gateway: str | None = None):
+        extra_hosts = frozenset({checked_host_gateway(host_gateway)}) if host_gateway is not None else frozenset()
+        self.endpoint = loopback_endpoint(endpoint, extra_hosts)
         if not isinstance(model, str) or not 0 < len(model) <= 128:
             raise ValueError("vision model must be a 1-128 character name")
         if not 72 <= int(dpi) <= 400:
@@ -610,7 +681,7 @@ class OcrStage:
         self.fallback = fallback
         self.quality = quality
         self.signature = _sha(_canonical({
-            "schema": SCHEMA, "primary": primary.identity(),
+            "schema": SCHEMA, "sidecar_parser": SIDECAR_PARSER, "primary": primary.identity(),
             "fallback": fallback.identity() if fallback is not None else None,
             "quality": {"min_chars": quality.min_chars, "min_alnum_ratio": quality.min_alnum_ratio}}))
 
@@ -753,6 +824,13 @@ class OcrStage:
             texts = self.primary.pages(source, workdir)
         except BackendError as error:
             return Outcome(item.document_id, "ocr_failed", error.code)
+        # Index i must be page i + 1: a skip marker naming any other page (an
+        # unexpanded range, say) would shift every later page and send the
+        # wrong page to vision, so the document fails closed before any call.
+        if not texts or len(texts) > MAX_PAGES or any(
+                SKIPPED_PAGE.match(text.strip()) and text.strip() != skipped_marker(number)
+                for number, text in enumerate(texts, start=1)):
+            return Outcome(item.document_id, "ocr_failed", "ocrmypdf_sidecar_inconsistent")
 
         pages, outcome, transient = [], Outcome(item.document_id, "ocr_complete"), False
         for number, text in enumerate(texts, start=1):
@@ -879,8 +957,11 @@ def load_config(path: str | None) -> dict:
         raise ValueError("config has unknown keys or schema")
     vision = config.get("vision")
     if vision is not None and (not isinstance(vision, dict)
-                               or set(vision) - {"endpoint", "model", "dpi", "timeout", "max_tokens"}):
+                               or set(vision) - {"endpoint", "model", "dpi", "timeout", "max_tokens",
+                                                 "host_gateway"}):
         raise ValueError("vision config has unknown keys")
+    if vision is not None and "host_gateway" in vision:
+        checked_host_gateway(vision["host_gateway"])
     return config
 
 
@@ -893,7 +974,8 @@ def vision_backend(config: dict, runner=run_group, transport=urllib_transport):
                              vision.get("model", DEFAULT_VISION_MODEL),
                              config.get("pdftoppm", DEFAULT_PDFTOPPM), vision.get("dpi", 200),
                              vision.get("timeout", 300), vision.get("max_tokens", 4096),
-                             transport=transport, runner=runner)
+                             transport=transport, runner=runner,
+                             host_gateway=vision.get("host_gateway"))
 
 
 def build_stage(out_root: str, config: dict, runner=run_group, transport=urllib_transport) -> OcrStage:

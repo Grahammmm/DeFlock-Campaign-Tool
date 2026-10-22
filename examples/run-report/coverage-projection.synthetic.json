@@ -1,0 +1,818 @@
+[
+  {
+    "name": "a_live_shaped_scheduled_run",
+    "report": {
+      "schema_version": 1,
+      "report_kind": "flock-records-run-report",
+      "run_id": "run_20260102T140000Z_a1a1a1a1",
+      "mode": "scheduled",
+      "started_at": "2026-01-02T14:00:00Z",
+      "finished_at": "2026-01-02T14:01:45Z",
+      "duration_seconds": 105,
+      "overall_status": "warn",
+      "stages": [
+        {
+          "name": "sync",
+          "status": "ok",
+          "counts": {
+            "input": 2,
+            "output": 2,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 10.0,
+          "error_code": null
+        },
+        {
+          "name": "delta",
+          "status": "ok",
+          "counts": {
+            "input": 40,
+            "output": 3,
+            "failed": 0,
+            "skipped": 37
+          },
+          "duration_seconds": 2.0,
+          "error_code": null
+        },
+        {
+          "name": "adoption",
+          "status": "ok",
+          "counts": {
+            "input": 30,
+            "output": 3,
+            "failed": 0,
+            "skipped": 27
+          },
+          "duration_seconds": 3.0,
+          "error_code": null
+        },
+        {
+          "name": "portal",
+          "status": "warn",
+          "counts": {
+            "input": 9,
+            "output": 2,
+            "failed": 3,
+            "skipped": 7
+          },
+          "duration_seconds": 20.0,
+          "error_code": "PORTAL_HTTP_404"
+        },
+        {
+          "name": "extract",
+          "status": "ok",
+          "counts": {
+            "input": 12,
+            "output": 8,
+            "failed": 0,
+            "skipped": 4
+          },
+          "duration_seconds": 60.0,
+          "error_code": null,
+          "outcomes": [
+            {
+              "code": "EXTRACTED",
+              "count": 8
+            },
+            {
+              "code": "AWAITING_OCR",
+              "count": 4
+            }
+          ]
+        },
+        {
+          "name": "digest_gates",
+          "status": "ok",
+          "counts": {
+            "input": 8,
+            "output": 8,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 5.0,
+          "error_code": null
+        },
+        {
+          "name": "outputs",
+          "status": "ok",
+          "counts": {
+            "input": 8,
+            "output": 8,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 4.0,
+          "error_code": null
+        },
+        {
+          "name": "notify",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 1.0,
+          "error_code": null
+        }
+      ],
+      "new_data": {
+        "documents": 3,
+        "pages": 17,
+        "extracted_units": 64,
+        "portal_releases": 0,
+        "request_status_changes": 0
+      },
+      "review_required_count": 0,
+      "notify_failed": false,
+      "needs_g": [
+        {
+          "code": "ADOPTION_CODED_GAPS",
+          "stage": "adoption",
+          "severity": "info",
+          "count": 5
+        },
+        {
+          "code": "PORTAL_HTTP_404",
+          "stage": "portal",
+          "severity": "action",
+          "count": 1
+        },
+        {
+          "code": "PORTAL_FETCH_BLOCKED",
+          "stage": "portal",
+          "severity": "action",
+          "count": 2
+        },
+        {
+          "code": "PORTAL_HOST_NOT_ALLOWLISTED",
+          "stage": "portal",
+          "severity": "action",
+          "count": 1
+        },
+        {
+          "code": "PORTAL_FETCH_DRY_RUN_ONLY",
+          "stage": "portal",
+          "severity": "info",
+          "count": 4
+        },
+        {
+          "code": "AWAITING_OCR",
+          "stage": "extract",
+          "severity": "info",
+          "count": 4
+        }
+      ]
+    },
+    "expected": {
+      "counts": {
+        "adopted": 25,
+        "adopted_this_run": 3,
+        "coded_gap": 5,
+        "awaiting_ocr": 4,
+        "portal_held": 7,
+        "stub": false,
+        "mode": "scheduled"
+      },
+      "line": "Coverage: adopted 25 (+3 this run), coded-gap 5, awaiting_ocr 4, portal-held 7"
+    }
+  },
+  {
+    "name": "b_adoption_skipped_not_configured",
+    "report": {
+      "schema_version": 1,
+      "report_kind": "flock-records-run-report",
+      "run_id": "run_20260102T140000Z_b2b2b2b2",
+      "mode": "manual",
+      "started_at": "2026-01-02T14:00:00Z",
+      "finished_at": "2026-01-02T14:01:42Z",
+      "duration_seconds": 102,
+      "overall_status": "ok",
+      "stages": [
+        {
+          "name": "sync",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 10.0,
+          "error_code": null
+        },
+        {
+          "name": "delta",
+          "status": "ok",
+          "counts": {
+            "input": 5,
+            "output": 0,
+            "failed": 0,
+            "skipped": 5
+          },
+          "duration_seconds": 2.0,
+          "error_code": null
+        },
+        {
+          "name": "adoption",
+          "status": "skipped",
+          "counts": {
+            "input": 0,
+            "output": 0,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": null,
+          "error_code": "ADOPTION_NOT_CONFIGURED"
+        },
+        {
+          "name": "portal",
+          "status": "ok",
+          "counts": {
+            "input": 2,
+            "output": 2,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 20.0,
+          "error_code": null
+        },
+        {
+          "name": "extract",
+          "status": "ok",
+          "counts": {
+            "input": 3,
+            "output": 3,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 60.0,
+          "error_code": null,
+          "outcomes": [
+            {
+              "code": "EXTRACTED",
+              "count": 3
+            }
+          ]
+        },
+        {
+          "name": "digest_gates",
+          "status": "ok",
+          "counts": {
+            "input": 3,
+            "output": 3,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 5.0,
+          "error_code": null
+        },
+        {
+          "name": "outputs",
+          "status": "ok",
+          "counts": {
+            "input": 3,
+            "output": 3,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 4.0,
+          "error_code": null
+        },
+        {
+          "name": "notify",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 1.0,
+          "error_code": null
+        }
+      ],
+      "new_data": {
+        "documents": 0,
+        "pages": 0,
+        "extracted_units": 0,
+        "portal_releases": 0,
+        "request_status_changes": 0
+      },
+      "review_required_count": 0,
+      "notify_failed": false,
+      "needs_g": [
+        {
+          "code": "ADOPTION_NOT_CONFIGURED",
+          "stage": "adoption",
+          "severity": "action",
+          "count": 1
+        },
+        {
+          "code": "PORTAL_FETCH_DRY_RUN_ONLY",
+          "stage": "portal",
+          "severity": "info",
+          "count": 2
+        }
+      ]
+    },
+    "expected": {
+      "counts": {
+        "adopted": null,
+        "adopted_this_run": null,
+        "coded_gap": null,
+        "awaiting_ocr": 0,
+        "portal_held": 2,
+        "stub": false,
+        "mode": "manual"
+      },
+      "line": "Coverage: adopted unknown, coded-gap unknown, awaiting_ocr 0, portal-held 2"
+    }
+  },
+  {
+    "name": "c_portal_and_extract_fail",
+    "report": {
+      "schema_version": 1,
+      "report_kind": "flock-records-run-report",
+      "run_id": "run_20260102T140000Z_c3c3c3c3",
+      "mode": "scheduled",
+      "started_at": "2026-01-02T14:00:00Z",
+      "finished_at": "2026-01-02T14:01:36Z",
+      "duration_seconds": 96,
+      "overall_status": "fail",
+      "stages": [
+        {
+          "name": "sync",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 10.0,
+          "error_code": null
+        },
+        {
+          "name": "delta",
+          "status": "ok",
+          "counts": {
+            "input": 10,
+            "output": 0,
+            "failed": 0,
+            "skipped": 10
+          },
+          "duration_seconds": 2.0,
+          "error_code": null
+        },
+        {
+          "name": "adoption",
+          "status": "ok",
+          "counts": {
+            "input": 10,
+            "output": 0,
+            "failed": 0,
+            "skipped": 10
+          },
+          "duration_seconds": 3.0,
+          "error_code": null
+        },
+        {
+          "name": "portal",
+          "status": "fail",
+          "counts": {
+            "input": 3,
+            "output": 0,
+            "failed": 1,
+            "skipped": 0
+          },
+          "duration_seconds": 20.0,
+          "error_code": "PORTAL_INTAKE_FAILED"
+        },
+        {
+          "name": "extract",
+          "status": "fail",
+          "counts": {
+            "input": 4,
+            "output": 0,
+            "failed": 3,
+            "skipped": 1
+          },
+          "duration_seconds": 60.0,
+          "error_code": "EXTRACT_ALL_ATTEMPTS_FAILED",
+          "outcomes": [
+            {
+              "code": "EXTRACT_ERROR",
+              "count": 3
+            },
+            {
+              "code": "AWAITING_OCR",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "name": "digest_gates",
+          "status": "skipped",
+          "counts": {
+            "input": 0,
+            "output": 0,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": null,
+          "error_code": "UPSTREAM_FAILED"
+        },
+        {
+          "name": "outputs",
+          "status": "skipped",
+          "counts": {
+            "input": 0,
+            "output": 0,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": null,
+          "error_code": "UPSTREAM_FAILED"
+        },
+        {
+          "name": "notify",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 1.0,
+          "error_code": null
+        }
+      ],
+      "new_data": {
+        "documents": 0,
+        "pages": 0,
+        "extracted_units": 0,
+        "portal_releases": 0,
+        "request_status_changes": 0
+      },
+      "review_required_count": 0,
+      "notify_failed": false,
+      "needs_g": [
+        {
+          "code": "EXTRACT_ERROR",
+          "stage": "extract",
+          "severity": "action",
+          "count": 3
+        },
+        {
+          "code": "AWAITING_OCR",
+          "stage": "extract",
+          "severity": "info",
+          "count": 1
+        }
+      ]
+    },
+    "expected": {
+      "counts": {
+        "adopted": 10,
+        "adopted_this_run": 0,
+        "coded_gap": 0,
+        "awaiting_ocr": null,
+        "portal_held": null,
+        "stub": false,
+        "mode": "scheduled"
+      },
+      "line": "Coverage: adopted 10 (+0 this run), coded-gap 0, awaiting_ocr unknown, portal-held unknown"
+    }
+  },
+  {
+    "name": "d_stub_run",
+    "report": {
+      "schema_version": 1,
+      "report_kind": "flock-records-run-report",
+      "run_id": "run_20260102T140000Z_d4d4d4d4",
+      "mode": "test",
+      "started_at": "2026-01-02T14:00:00Z",
+      "finished_at": "2026-01-02T14:01:45Z",
+      "duration_seconds": 105,
+      "overall_status": "warn",
+      "stages": [
+        {
+          "name": "sync",
+          "status": "ok",
+          "counts": {
+            "input": 3,
+            "output": 3,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 10.0,
+          "error_code": null
+        },
+        {
+          "name": "delta",
+          "status": "ok",
+          "counts": {
+            "input": 120,
+            "output": 4,
+            "failed": 0,
+            "skipped": 116
+          },
+          "duration_seconds": 2.0,
+          "error_code": null
+        },
+        {
+          "name": "adoption",
+          "status": "ok",
+          "counts": {
+            "input": 4,
+            "output": 4,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 3.0,
+          "error_code": null
+        },
+        {
+          "name": "portal",
+          "status": "warn",
+          "counts": {
+            "input": 2,
+            "output": 1,
+            "failed": 0,
+            "skipped": 1
+          },
+          "duration_seconds": 20.0,
+          "error_code": "PORTAL_HOST_REFUSED"
+        },
+        {
+          "name": "extract",
+          "status": "ok",
+          "counts": {
+            "input": 5,
+            "output": 3,
+            "failed": 0,
+            "skipped": 2
+          },
+          "duration_seconds": 60.0,
+          "error_code": null
+        },
+        {
+          "name": "digest_gates",
+          "status": "warn",
+          "counts": {
+            "input": 3,
+            "output": 3,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 5.0,
+          "error_code": "GATE_REVIEW_REQUIRED"
+        },
+        {
+          "name": "outputs",
+          "status": "ok",
+          "counts": {
+            "input": 3,
+            "output": 3,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 4.0,
+          "error_code": null
+        },
+        {
+          "name": "notify",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 1.0,
+          "error_code": null
+        }
+      ],
+      "new_data": {
+        "documents": 0,
+        "pages": 0,
+        "extracted_units": 0,
+        "portal_releases": 0,
+        "request_status_changes": 0
+      },
+      "review_required_count": 0,
+      "notify_failed": false,
+      "needs_g": [
+        {
+          "code": "STUB_STAGE_BACKEND",
+          "stage": "sync",
+          "severity": "info",
+          "count": 1
+        },
+        {
+          "code": "STUB_STAGE_BACKEND",
+          "stage": "delta",
+          "severity": "info",
+          "count": 1
+        },
+        {
+          "code": "STUB_STAGE_BACKEND",
+          "stage": "adoption",
+          "severity": "info",
+          "count": 1
+        },
+        {
+          "code": "STUB_STAGE_BACKEND",
+          "stage": "portal",
+          "severity": "info",
+          "count": 1
+        },
+        {
+          "code": "STUB_STAGE_BACKEND",
+          "stage": "extract",
+          "severity": "info",
+          "count": 1
+        },
+        {
+          "code": "STUB_STAGE_BACKEND",
+          "stage": "digest_gates",
+          "severity": "info",
+          "count": 1
+        },
+        {
+          "code": "STUB_STAGE_BACKEND",
+          "stage": "outputs",
+          "severity": "info",
+          "count": 1
+        },
+        {
+          "code": "PORTAL_HOST_NOT_ALLOWLISTED",
+          "stage": "portal",
+          "severity": "action",
+          "count": 1
+        },
+        {
+          "code": "AWAITING_OCR",
+          "stage": "extract",
+          "severity": "info",
+          "count": 2
+        }
+      ]
+    },
+    "expected": {
+      "counts": {
+        "adopted": 4,
+        "adopted_this_run": 4,
+        "coded_gap": 0,
+        "awaiting_ocr": 2,
+        "portal_held": 0,
+        "stub": true,
+        "mode": "test"
+      },
+      "line": "Coverage: adopted 4 (+4 this run), coded-gap 0, awaiting_ocr 2, portal-held 0 [stub]"
+    }
+  },
+  {
+    "name": "e_negative_adopted_is_unknown",
+    "report": {
+      "schema_version": 1,
+      "report_kind": "flock-records-run-report",
+      "run_id": "run_20260102T140000Z_e5e5e5e5",
+      "mode": "manual",
+      "started_at": "2026-01-02T14:00:00Z",
+      "finished_at": "2026-01-02T14:01:45Z",
+      "duration_seconds": 105,
+      "overall_status": "ok",
+      "stages": [
+        {
+          "name": "sync",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 10.0,
+          "error_code": null
+        },
+        {
+          "name": "delta",
+          "status": "ok",
+          "counts": {
+            "input": 6,
+            "output": 1,
+            "failed": 0,
+            "skipped": 5
+          },
+          "duration_seconds": 2.0,
+          "error_code": null
+        },
+        {
+          "name": "adoption",
+          "status": "ok",
+          "counts": {
+            "input": 3,
+            "output": 1,
+            "failed": 0,
+            "skipped": 2
+          },
+          "duration_seconds": 3.0,
+          "error_code": null
+        },
+        {
+          "name": "portal",
+          "status": "ok",
+          "counts": {
+            "input": 0,
+            "output": 0,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 20.0,
+          "error_code": null
+        },
+        {
+          "name": "extract",
+          "status": "ok",
+          "counts": {
+            "input": 0,
+            "output": 0,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 60.0,
+          "error_code": null
+        },
+        {
+          "name": "digest_gates",
+          "status": "ok",
+          "counts": {
+            "input": 0,
+            "output": 0,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 5.0,
+          "error_code": null
+        },
+        {
+          "name": "outputs",
+          "status": "ok",
+          "counts": {
+            "input": 0,
+            "output": 0,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 4.0,
+          "error_code": null
+        },
+        {
+          "name": "notify",
+          "status": "ok",
+          "counts": {
+            "input": 1,
+            "output": 1,
+            "failed": 0,
+            "skipped": 0
+          },
+          "duration_seconds": 1.0,
+          "error_code": null
+        }
+      ],
+      "new_data": {
+        "documents": 0,
+        "pages": 0,
+        "extracted_units": 0,
+        "portal_releases": 0,
+        "request_status_changes": 0
+      },
+      "review_required_count": 0,
+      "notify_failed": false,
+      "needs_g": [
+        {
+          "code": "ADOPTION_CODED_GAPS",
+          "stage": "adoption",
+          "severity": "info",
+          "count": 5
+        }
+      ]
+    },
+    "expected": {
+      "counts": {
+        "adopted": null,
+        "adopted_this_run": 1,
+        "coded_gap": 5,
+        "awaiting_ocr": 0,
+        "portal_held": 0,
+        "stub": false,
+        "mode": "manual"
+      },
+      "line": "Coverage: adopted unknown, coded-gap 5, awaiting_ocr 0, portal-held 0"
+    }
+  }
+]

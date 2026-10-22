@@ -718,6 +718,35 @@ class OutcomeContractTests(unittest.TestCase):
         self.assertEqual(classify({"expansion_limit"}), "EXTRACT_INCOMPLETE")
         self.assertEqual(classify(set()), "EXTRACT_INCOMPLETE")
 
+    def test_extract_one_maps_an_exhausted_document_budget(self):
+        """T6-timeout D2/D5: parse child = min(budget, 600); OCR page progress defers, none times out."""
+        class FakePipeline:
+            def __init__(self, result):
+                self.result, self.alerts = result, []
+
+            def stage_extract(self, subject, stage):
+                self.seen = (self.extraction_timeout, self.document_budget)
+                return self.result
+
+            def _alert(self, key, owner):
+                self.alerts.append(key)
+
+        reason = "extraction_blocked:ocr_needed_or_blank_page,extraction_timeout"
+        cases = ((1200, {"ocr_pages_done": 2, "ocr_pages_pending": [5]}, "DEFERRED_RUN_BUDGET", (600, 1200)),
+                 (300, {"ocr_pages_done": 0, "ocr_pages_pending": [2, 3]}, "EXTRACT_TIMEOUT", (300, 300)))
+        for budget, progress, expected, limits in cases:
+            with self.subTest(expected):
+                pipeline = FakePipeline({"status": "blocked", "reason": reason, **progress})
+                outcome, form, units, pages, detail = native_extract.extract_one(
+                    pipeline, None, "a" * 64, form="pdf", timeout=budget)
+                self.assertEqual((outcome, units, pages, detail), (expected, 0, 0, progress))
+                self.assertEqual(pipeline.seen, limits)
+                self.assertEqual(pipeline.alerts, [], "extract_one adds no hold; the pipeline counted it")
+        # A parse timeout (no page fields) stays the existing retryable timeout.
+        pipeline = FakePipeline({"status": "blocked", "reason": "extraction_blocked:extraction_timeout"})
+        self.assertEqual(native_extract.extract_one(pipeline, None, "a" * 64, form="pdf", timeout=120),
+                         ("EXTRACT_TIMEOUT", "pdf", 0, 0, {}))
+
 
 if __name__ == "__main__":
     unittest.main()

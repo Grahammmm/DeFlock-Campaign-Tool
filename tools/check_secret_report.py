@@ -22,10 +22,10 @@ APPROVED_MANIFESTS = {
         '7776a834fcf471b5'  # pragma: allowlist secret
     ),
     'docs/records-intake-import.json': (
-        '16fac4f376734ba3'  # pragma: allowlist secret
-        'ee5a7a3db906a5f8'  # pragma: allowlist secret
-        '43ba1aa1490c4713'  # pragma: allowlist secret
-        'f995593c56cba413'  # pragma: allowlist secret
+        'c6d125c64208ac43'  # pragma: allowlist secret
+        'c7390ffba30091a1'  # pragma: allowlist secret
+        'bff6be77f51adbeb'  # pragma: allowlist secret
+        '19ee8a9e707c291d'  # pragma: allowlist secret
     ),
 }
 
@@ -38,10 +38,10 @@ HASH_LINE = re.compile(r'\s*"(?:source_sha256|engine_sha256|schema_sha256)": "([
 # update of this digest.
 APPROVED_PIN_FILES = {
     'container/flock-ocr/pins.json': (
-        '02723ddca319da0f'  # pragma: allowlist secret
-        'ef5d5e41aa3aa148'  # pragma: allowlist secret
-        '286dcdbc80824dc0'  # pragma: allowlist secret
-        '687d9f1a2409c442'  # pragma: allowlist secret
+        '8a42359935e6cac7'  # pragma: allowlist secret
+        'bd874dec62be7482'  # pragma: allowlist secret
+        '156cd9ec2a70fb08'  # pragma: allowlist secret
+        '8a3735d5a303716b'  # pragma: allowlist secret
     ),
 }
 

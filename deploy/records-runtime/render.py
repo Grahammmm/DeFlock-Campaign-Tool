@@ -8,8 +8,10 @@ VALUES.json is a flat object mapping each placeholder name (without @) to a
 string. The renderer fails closed. It refuses a missing, unknown or
 shell-unsafe value, a leftover placeholder, an invalid stage plan, a timer
 that is not the three Pacific slots (07:00, 13:00, 20:30
-America/Los_Angeles), and a budget that does not fit the unit's 47 minute
-TimeoutStartSec. It also refuses an output directory that already has files
+America/Los_Angeles), a budget that does not fit the unit's 47 minute
+TimeoutStartSec, and a MIN_FREE_BYTES free-space threshold that is not a
+canonical byte count between 64 MiB and 1 PiB (or a wrapper template that
+lost the placeholder). It also refuses an output directory that already has files
 or sits inside a Git checkout, because rendered files hold private host
 values.
 
@@ -37,15 +39,34 @@ PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
             "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE",
-            # Container stage plans (targets/test-container.json.in and
-            # targets/live-container.json.in).
+            # Container stage plans (targets/test-container.json.in,
+            # targets/live-container.json.in and the Phase 2 OCR plans
+            # targets/live-ocr-container.json.in and
+            # targets/live-ocr-vision-container.json.in).
+            # CONTAINER_OCR_VISION_CONFIG is the owner-only local-vision-config-v1
+            # inside the container; only the live-ocr-vision plan uses (and so
+            # requires) it.
+            "CONTAINER_OCR_VISION_CONFIG",
             "CONTAINER_ENGINE_DIR", "CONTAINER_PROJECT_DIR", "CONTAINER_APPROVAL_FILE",
-            "CONTAINER_PYTHON", "ADOPTION_CONFIG"}
+            "CONTAINER_PYTHON", "CONTAINER_SYNC_SCRIPT", "ADOPTION_CONFIG"}
 INTEGERS = {"RUN_UID", "DOCKER_WAIT_ATTEMPTS", "DOCKER_WAIT_DELAY", "DOCKER_WAIT_MAX_DELAY",
-            "DOCKER_CMD_TIMEOUT", "DOCKER_WAIT_DEADLINE", "NOTIFY_TIMEOUT", "RUN_BUDGET_SECONDS"}
+            "DOCKER_CMD_TIMEOUT", "DOCKER_WAIT_DEADLINE", "NOTIFY_TIMEOUT", "RUN_BUDGET_SECONDS",
+            "MIN_FREE_BYTES"}
+# Free-space preflight (Fable audit F4(a)): bytes that must be available on
+# the RUNTIME_DIR filesystem before a run starts. The floor refuses values
+# that would make the check meaningless (0, or a unit slip such as "2" for
+# 2 GiB); the ceiling (1 PiB) refuses typos and keeps shell arithmetic safe.
+MIN_FREE_BYTES_FLOOR = 64 * 1024 ** 2
+MIN_FREE_BYTES_CEILING = 1024 ** 5
+# Worst case of the wrapper's df probe (DF_TIMEOUT + kill grace), which runs
+# before the Docker wait and so counts against RUN_BUDGET_SECONDS.
+DF_PROBE_SECONDS = 10 + 2
 TARGET_NAMES = {"DEFAULT_TARGET", "SCHEDULED_TARGET"}
 # Supplied per target by the renderer, never by VALUES.json.
 RESERVED = {"TARGET_NAME"}
+# Safety placeholders a template must keep: a wrapper template that dropped
+# the free-space preflight would otherwise render cleanly without it.
+REQUIRED_PLACEHOLDERS = {"run-records.sh.in": {"MIN_FREE_BYTES"}}
 UNIT_TIMEOUT_SECONDS = 47 * 60
 KILL_GRACE = 2
 BACKSTOP_GRACE = 15
@@ -78,6 +99,22 @@ def check_values(values):
     if "EXPECTED_IMAGE" in values and not re.fullmatch(r"sha256:[0-9a-f]{64}",
                                                        values["EXPECTED_IMAGE"]):
         raise RenderError("EXPECTED_IMAGE: expected sha256:<64 hex>")
+    if "MIN_FREE_BYTES" in values:
+        check_min_free_bytes(values["MIN_FREE_BYTES"])
+
+
+def check_min_free_bytes(value):
+    """Validate the free-space preflight threshold (canonical decimal bytes)."""
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        raise RenderError("MIN_FREE_BYTES: expected a positive decimal byte count "
+                          "without leading zeros")
+    number = int(value)
+    if number < MIN_FREE_BYTES_FLOOR:
+        raise RenderError(f"MIN_FREE_BYTES: {number} is below the {MIN_FREE_BYTES_FLOOR} byte "
+                          f"floor (64 MiB); the value is in bytes, not GiB")
+    if number > MIN_FREE_BYTES_CEILING:
+        raise RenderError(f"MIN_FREE_BYTES: {number} exceeds the {MIN_FREE_BYTES_CEILING} byte "
+                          f"ceiling (1 PiB)")
 
 
 def check_budget(values):
@@ -87,7 +124,8 @@ def check_budget(values):
     if total > UNIT_TIMEOUT_SECONDS:
         raise RenderError(f"budget: RUN_BUDGET_SECONDS + notify + grace = {total}s exceeds the "
                           f"{UNIT_TIMEOUT_SECONDS}s unit timeout")
-    readiness = number["DOCKER_WAIT_DEADLINE"] + 3 * (number["DOCKER_CMD_TIMEOUT"] + KILL_GRACE)
+    readiness = (DF_PROBE_SECONDS + number["DOCKER_WAIT_DEADLINE"]
+                 + 3 * (number["DOCKER_CMD_TIMEOUT"] + KILL_GRACE))
     if readiness >= number["RUN_BUDGET_SECONDS"]:
         raise RenderError(f"budget: worst-case Docker readiness {readiness}s leaves no time "
                           f"inside RUN_BUDGET_SECONDS")
@@ -138,7 +176,12 @@ def render(values, targets, out):
     files = []
     for template, output, mode in TEMPLATES:
         text = (HERE / template).read_text(encoding="utf-8")
-        used.update(PLACEHOLDER.findall(text))
+        found = set(PLACEHOLDER.findall(text))
+        missing_required = sorted(REQUIRED_PLACEHOLDERS.get(template, set()) - found)
+        if missing_required:
+            raise RenderError(f"{template}: template lost required placeholder(s) "
+                              f"{missing_required}")
+        used.update(found)
         files.append((output, substitute(text, values, template), mode))
     for name, template in targets:
         if not run_orchestrator.TARGET_RE.match(name):

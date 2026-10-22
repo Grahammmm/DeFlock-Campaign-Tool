@@ -78,6 +78,11 @@ ERROR_CODE = "extraction_stage_error"
 ALERT_PREFIX = "extract:"
 DEFAULT_MAX_DOCUMENTS = 200
 DEFAULT_DOCUMENT_TIMEOUT = 120
+# The per-document budget (run_stages --document-timeout) and the per-child limits under it.
+MAX_DOCUMENT_TIMEOUT = 1400
+PARSE_TIMEOUT_MAX = 600  # extraction_routes.extract bounds the native parse child to 1..600 s
+DEFAULT_OCR_PAGE_TIMEOUT = 180  # each pdftoppm / tesseract child (extract.ocr's default)
+DEFAULT_OCR_VISION_TIMEOUT = 300  # each vision adapter child (ocr_stage's vision default)
 MIN_DOCUMENT_SECONDS = 10
 DEADLINE_MARGIN = 15
 # Queue file for the OCR stage (awaiting-ocr-v1 JSON Lines), rewritten every run.
@@ -144,19 +149,51 @@ def pending_subjects(pipeline):
     return [(row["sha256"], row["preserve"] == "done") for row in rows]
 
 
-def held_outcome(pipeline, subject):
+def ocr_released(codes):
+    """True when an alert held the document only because no OCR runtime was configured.
+
+    Its codes classify as ``AWAITING_OCR`` and, without the OCR runtime code, name no
+    other hold (workbook, timeout, decoder, corrupt, refused, error). Such an alert
+    stops holding once a valid OCR runtime is enabled; every other alert still holds.
+    """
+    codes = set(codes)
+    return classify_codes(codes) == AWAITING_OCR and classify_codes(codes - OCR_CODES) == INCOMPLETE
+
+
+def open_alerts(pipeline, subject):
+    return pipeline._query("SELECT key,count FROM alerts WHERE state='open' AND substr(key,1,?)=?",
+                           (len(ALERT_PREFIX) + len(subject) + 1, ALERT_PREFIX + subject + ":"))
+
+
+def held_outcome(pipeline, subject, *, ocr_enabled=False):
     """Outcome of an earlier run's open extract alert that holds the document, else None.
 
     Retryable outcomes (timeouts, unexpected errors) hold only once their alert has
     counted ``MAX_ATTEMPTS`` runs. Resolving the alert (state != 'open') re-queues it.
+    With ``ocr_enabled`` (Phase 2, T6), an alert that held the document only for the
+    missing OCR runtime (``ocr_released``) no longer holds it, so a PDF queued
+    ``AWAITING_OCR`` in Phase 1 is extracted with OCR on the first OCR-enabled run.
     """
-    rows = pipeline._query("SELECT key,count FROM alerts WHERE state='open' AND substr(key,1,?)=?",
-                           (len(ALERT_PREFIX) + len(subject) + 1, ALERT_PREFIX + subject + ":"))
-    for row in rows:
-        outcome = classify_codes(row["key"].rsplit(":", 1)[-1].split(","))
+    for row in open_alerts(pipeline, subject):
+        codes = row["key"].rsplit(":", 1)[-1].split(",")
+        if ocr_enabled and ocr_released(codes):
+            continue
+        outcome = classify_codes(codes)
         if outcome not in RETRYABLE or row["count"] >= MAX_ATTEMPTS:
             return outcome
     return None
+
+
+def resolve_ocr_released(pipeline, subject):
+    """Mark the subject's OCR-runtime-only alerts resolved after it is extracted with OCR."""
+    keys = [row["key"] for row in open_alerts(pipeline, subject)
+            if ocr_released(row["key"].rsplit(":", 1)[-1].split(","))]
+    if keys and hasattr(pipeline, "_resolve_alert"):
+        for key in keys:
+            try:
+                pipeline._resolve_alert(key)
+            except Exception:  # noqa: BLE001 - the document is extracted; a stale alert only shows in status
+                pass
 
 
 def _hold(pipeline, subject, code):
@@ -204,10 +241,20 @@ def _workbook_refusal(form, error):
 
 
 def extract_one(pipeline, stage, subject, *, form, timeout):
-    """Return ``(outcome, form, units, pages)`` for one classified, parseable original."""
+    """Return ``(outcome, form, units, pages, detail)`` for one classified, parseable original.
+
+    ``timeout`` is the document's wall-clock budget (seconds, already clamped to the stage
+    time left). The native parse child gets ``min(timeout, PARSE_TIMEOUT_MAX)``; OCR pages are
+    admitted against the budget by ``extraction_routes.extract``. When the budget runs out
+    during OCR, ``detail`` carries ``ocr_pages_done``/``ocr_pages_pending`` and the outcome is
+    ``DEFERRED_RUN_BUDGET`` if at least one page got a new receipt (progress; no failed
+    attempt, retried next run), else ``EXTRACT_TIMEOUT`` (retryable, held after
+    ``MAX_ATTEMPTS``). ``detail`` is ``{}`` otherwise.
+    """
     from .extraction_ledger import ExtractionBindingError
 
-    pipeline.extraction_timeout = timeout
+    pipeline.extraction_timeout = min(timeout, PARSE_TIMEOUT_MAX)
+    pipeline.document_budget = timeout
     try:
         result = pipeline.stage_extract(subject, stage)
     except (ExtractionBindingError, ValueError) as error:
@@ -215,20 +262,25 @@ def extract_one(pipeline, stage, subject, *, form, timeout):
         # Held, so later runs do not parse and enroll the same document again.
         if _workbook_refusal(form, error):
             _hold(pipeline, subject, WORKBOOK_REFUSED_CODE)
-            return WORKBOOK_HELD, form, 0, 0
+            return WORKBOOK_HELD, form, 0, 0, {}
         _hold(pipeline, subject, REFUSED_CODE)
-        return NOT_ACCEPTED, form, 0, 0
+        return NOT_ACCEPTED, form, 0, 0, {}
     except Exception:  # noqa: BLE001 - one document never stops the stage
         _hold(pipeline, subject, ERROR_CODE)
-        return ERROR, form, 0, 0
+        return ERROR, form, 0, 0, {}
     status = result.get("status")
     if status == "done":
         units = int(result.get("units") or 0)
-        return EXTRACTED, form, units, _pages(pipeline, result["import_id"]) if result.get("import_id") else 0
+        return EXTRACTED, form, units, _pages(pipeline, result["import_id"]) if result.get("import_id") else 0, {}
     if status == "blocked" and str(result.get("reason", "")).startswith("extraction_"):
-        return classify_codes(_reason_codes(result["reason"])), form, 0, 0
+        outcome = classify_codes(_reason_codes(result["reason"]))
+        done = result.get("ocr_pages_done")
+        if outcome == TIMEOUT and type(done) is int:
+            detail = {"ocr_pages_done": done, "ocr_pages_pending": list(result.get("ocr_pages_pending") or [])}
+            return (DEFERRED if done >= 1 else TIMEOUT), form, 0, 0, detail
+        return outcome, form, 0, 0, {}
     _hold(pipeline, subject, REFUSED_CODE)
-    return NOT_ACCEPTED, form, 0, 0
+    return NOT_ACCEPTED, form, 0, 0, {}
 
 
 def write_private_list(root, run_id, documents):
@@ -284,17 +336,28 @@ def write_awaiting_ocr(root, lines):
 
 def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
         document_timeout=DEFAULT_DOCUMENT_TIMEOUT, clock=time.monotonic, pipeline_factory=None,
-        native_workbook_policy=None):
+        native_workbook_policy=None, ocr=None):
     """Advance pending extraction under the root lock; return the outcome summary.
 
     ``deadline`` is a ``clock()`` value. No document starts unless it can get at
-    least ``MIN_DOCUMENT_SECONDS`` before it. ``max_documents`` caps parse attempts
+    least ``MIN_DOCUMENT_SECONDS`` before it. ``document_timeout`` is each document's
+    wall-clock budget, clamped to the stage time left (``remaining - 5``); see
+    ``extract_one`` for the parse child limit and how an exhausted budget is coded
+    (page progress -> ``DEFERRED_RUN_BUDGET``, none -> ``EXTRACT_TIMEOUT``).
+    ``max_documents`` caps parse attempts
     only: documents classified without a parse (images, unsupported forms, missing
     parsers) and held documents are counted but never use the budget, so they cannot
     starve parseable documents behind them. Parseable documents left unstarted when
     the budget or ``max_documents`` runs out are coded ``DEFERRED_RUN_BUDGET``.
     ``native_workbook_policy`` is a ``workbook_policy.NativeWorkbookPolicy`` from
     trusted startup (``load_native_workbook_policy``), else XLSX stays held.
+    ``ocr`` (Phase 2, T6) is ``{"tools", "tool_signature", "vision", "page_timeout",
+    "vision_timeout"}`` from the operator stage plan: image-only PDF pages then go through
+    per-page Tesseract and, when ``vision`` names a local adapter (``extract.vision``), empty or
+    low-confidence pages through it. ``page_timeout`` bounds each pdftoppm/tesseract child and
+    ``vision_timeout`` each vision child; neither is ever shortened by the document budget
+    (``extraction_routes._ocr_pages_within_budget``). Without ``ocr``
+    those documents stay ``AWAITING_OCR`` exactly as in Phase 1.
     Raises ``RootNotInitialized`` (nothing created) and ``run.RunError``
     (``root_locked``).
     """
@@ -304,9 +367,14 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
     if not (root / "ledger.sqlite").is_file() or not (root / "intake" / "intake.sqlite").is_file():
         raise RootNotInitialized()
     if pipeline_factory is None:
-        pipeline = records_run.Pipeline(root, native_workbook_policy=native_workbook_policy)
+        ocr = ocr or {}
+        pipeline = records_run.Pipeline(root, native_workbook_policy=native_workbook_policy,
+                                        ocr_tools=ocr.get("tools"), ocr_tool_signature=ocr.get("tool_signature"),
+                                        ocr_vision=ocr.get("vision"), ocr_page_timeout=ocr.get("page_timeout"),
+                                        ocr_vision_timeout=ocr.get("vision_timeout"))
     else:
         pipeline = pipeline_factory(root)
+    ocr_enabled = bool(getattr(pipeline, "ocr_tools", None))
     missing = missing_parsers()
     outcomes = {code: 0 for code in OUTCOMES}
     documents, new_units, new_pages = [], 0, 0
@@ -317,9 +385,9 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
         attempted = unexpected = 0
         try:
             for subject, preserved in subjects:
-                form = None
+                form, detail = None, {}
                 remaining = deadline - clock()
-                held = held_outcome(pipeline, subject) if preserved else None
+                held = held_outcome(pipeline, subject, ocr_enabled=ocr_enabled) if preserved else None
                 if not preserved:
                     outcome = PRESERVE_PENDING
                 elif held is not None:
@@ -335,13 +403,15 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
                         if stage is None:
                             stage = pipeline._open_stage_run()
                         timeout = int(max(1, min(document_timeout, remaining - 5)))
-                        outcome, form, units, pages = extract_one(pipeline, stage, subject,
-                                                                  form=form, timeout=timeout)
+                        outcome, form, units, pages, detail = extract_one(pipeline, stage, subject,
+                                                                          form=form, timeout=timeout)
                         unexpected += outcome in (ERROR, NOT_ACCEPTED)
+                        if ocr_enabled and outcome == EXTRACTED:
+                            resolve_ocr_released(pipeline, subject)
                         new_units += units
                         new_pages += pages
                 outcomes[outcome] += 1
-                documents.append({"original_sha256": subject, "form": form, "outcome": outcome})
+                documents.append({"original_sha256": subject, "form": form, "outcome": outcome, **detail})
         finally:
             if stage is not None:
                 pipeline._close_stage_run({"stage": "extract", "outcomes": outcomes})
