@@ -69,6 +69,16 @@ class Case(unittest.TestCase):
         return [p.name for p in self.out.glob("*/page-*/.attempt-*")]
 
 class PageSelectionAndResume(Case):
+    def test_interrupt_cleanup_failure_is_visible_and_residue_is_not_success(self):
+        sha = self.blob(scanned_pdf([noise_page(23)]))
+        with mock.patch.object(ocr.shutil, 'rmtree', side_effect=OSError('synthetic cleanup failure')):
+            with self.assertRaisesRegex(OSError, '^synthetic cleanup failure$'):
+                self.extract(sha, StubRunner(tesseract_error=KeyboardInterrupt()))
+        # Deliberate residue survives only the injected failure; fixture cleanup
+        # runs after restoring rmtree. No batch-abort/continuation dependency.
+        self.assertEqual(len(self.attempt_dirs()), 1)
+        self.assertEqual(list(self.out.glob('*/page-*/current.json')), [])
+
     def test_system_exit_also_cleans_and_propagates(self):
         sha = self.blob(scanned_pdf([noise_page(20)]))
         with self.assertRaises(SystemExit):
