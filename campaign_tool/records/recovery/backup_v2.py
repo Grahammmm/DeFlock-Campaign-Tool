@@ -20,7 +20,7 @@ SCHEMA = "records-backup-v2"
 REQUIRED_ROLES = frozenset(("canonical_ledger", "intake_ledger", "original_blob",
                             "receipt", "cursor", "review_bundle"))
 ROLES = REQUIRED_ROLES | frozenset(("rules", "configuration", "derived_resume",
-                                   "queue_store", "publication_store"))
+                                   "queue_store", "publication_store", "resolution_policy"))
 EXCLUSIONS = frozenset(("credential", "sqlite_sidecar", "process_state", "rebuildable"))
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,79}")
 HASH = re.compile(r"[0-9a-f]{64}")
@@ -133,6 +133,18 @@ def _queries(value):
                 re.match(r"^\s*SELECT\b", sql, re.I) and ";" not in sql, "read_only_reference_query_required")
 
 
+def _policy_store(path, roles, kind, included, digest):
+    # Policies cannot be silently excluded or labelled as rebuildable; a policy
+    # label cannot authorize an arbitrary historical path either.
+    in_directory = "resolution-policies" in path.parts
+    is_policy = "resolution_policy" in roles
+    if in_directory or is_policy:
+        require(included and is_policy and kind == "file" and
+                path.parent.name == "resolution-policies" and
+                _digest(digest) and path.name == digest,
+                "resolution_policy_store_invalid")
+
+
 def _tables(value):
     require(type(value) in (tuple, list) and value and len(value) <= 100 and
             all(type(t) is str and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,99}", t) for t in value) and
@@ -156,6 +168,7 @@ def _profile(profile):
         require(sum(_inside(p, r) for r in roots) == 1 and p not in roots, "store_outside_scope")
         require(type(item.included) is bool and item.kind in ("file", "sqlite") and type(item.roles) is tuple,
                 "store_shape_invalid")
+        _policy_store(p, item.roles, item.kind, item.included, item.expected_sha256)
         if not item.included:
             require(not item.roles and item.kind == "file" and item.exclusion in EXCLUSIONS and
                     not item.expected_sha256 and not item.required_tables and not item.schema_sha256 and
@@ -237,9 +250,52 @@ def _db_check(path, row, deadline):
                             "reference_row_invalid")
                     _absolute(source)
                     refs.append((role, source, digest))
+            refs.extend(_resolution_refs(con, tables))
+            require(len(refs) <= MAX_REFS, "reference_count_bound")
             return refs
         finally:
             con.close()
+
+
+def _resolution_refs(con, tables):
+    """Fixed dependency reader; caller SQL cannot omit resolution evidence.
+
+    Historical paths are identities only, never opened. This checks recovery
+    closure, not approval authenticity or a runnable effective-original view.
+    Both payload variants retain the unchanged Option B table/trigger pin.
+    """
+    if "original_resolutions" not in tables:
+        return []
+    from ..ledger import original_resolution as resolution
+    from ..ledger.mail_resolution_policy import decode
+    rows = con.execute("SELECT original_sha256,binding_sha256,declaration_sha256,"
+                       "policy_sha256,capture_receipt_sha256,capture_occurrence_id,payload_json "
+                       "FROM original_resolutions").fetchmany(MAX_REFS // 3 + 1)
+    require(len(rows) <= MAX_REFS // 3, "reference_count_bound")
+    if not rows:
+        return []
+    require(resolution.installed(con), "original_resolution_schema_required")
+    refs = []
+    for subject, binding, declaration, policy, receipt, occurrence, raw in rows:
+        payload = decode(raw)
+        require(type(payload) is dict, "resolution_backup_payload_invalid")
+        mail = payload.get("schema") == resolution.MAIL_SCHEMA
+        require(set(payload) == (resolution.MAIL_FIELDS if mail else resolution.FIELDS) and
+                payload["schema"] in (resolution.MAIL_SCHEMA, "original_resolution_v1") and
+                raw == resolution.store.canonical(payload) and resolution.digest(payload) == binding and
+                payload["original_sha256"] == subject and payload["declaration_sha256"] == declaration and
+                payload["policy_sha256"] == policy and
+                payload["verification_receipt_sha256" if mail else "capture_receipt_sha256"] == receipt and
+                payload["occurrence_id" if mail else "capture_occurrence_id"] == occurrence and
+                all(_digest(v) for v in (subject, binding, declaration, policy, receipt)),
+                "resolution_backup_payload_invalid")
+        storage = _absolute(payload["storage_path"])
+        require(storage.name == subject and storage.parent.name == "blobs", "resolution_backup_storage_invalid")
+        output = storage.parent.parent
+        refs.extend((("original_blob", str(storage), subject),
+                     ("resolution_policy", str(output / "resolution-policies" / policy), policy),
+                     ("receipt", str(output / ("verification-receipts" if mail else "local-capture-receipts") / receipt), receipt)))
+    return refs
 
 
 def _closure(rows, references):
@@ -425,6 +481,7 @@ def _manifest(source, digest):
                 len(set(row["roles"])) == len(row["roles"]) and set(row["roles"]) <= ROLES and
                 row["kind"] in ("file","sqlite") and _digest(row["sha256"]) and
                 type(row["bytes"]) is int and 0 <= row["bytes"] <= MAX_FILE, "manifest_member_invalid")
+        _policy_store(p, row["roles"], row["kind"], True, row["sha256"])
         roles.update(row["roles"]); total += row["bytes"]
         if "original_blob" in row["roles"]:
             require(p.name == row["sha256"], "original_content_address_mismatch")
@@ -443,6 +500,7 @@ def _manifest(source, digest):
         require(type(row) is dict and set(row) == {"name","source","reason"} and type(row["name"]) is str and
                 NAME.fullmatch(row["name"]) and row["reason"] in EXCLUSIONS, "manifest_exclusion_invalid")
         p = _absolute(row["source"])
+        _policy_store(p, (), "file", False, "")
         require(row["name"] not in names and p not in sources and sum(_inside(p,r) for r in roots) == 1 and p not in roots,
                 "manifest_duplicate_or_outside_store")
         names.add(row["name"]); sources.add(p)
