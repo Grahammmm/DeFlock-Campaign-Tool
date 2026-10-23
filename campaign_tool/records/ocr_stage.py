@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 import errno
 import fcntl
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -324,7 +325,7 @@ def urllib_transport(endpoint: str, body: bytes, timeout: int) -> bytes:
         raise BackendError("vision_http_error") from None
     except TimeoutError:
         raise BackendError("vision_timeout") from None
-    except (urllib.error.URLError, OSError) as error:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
         reason = getattr(error, "reason", None)
         if isinstance(error, TimeoutError) or isinstance(reason, TimeoutError):
             raise BackendError("vision_timeout") from None
@@ -394,10 +395,14 @@ class QwenVisionBackend:
         try:
             reply = json.loads(raw.decode("utf-8"))
             content = reply["choices"][0]["message"]["content"]
-        except (UnicodeDecodeError, ValueError, KeyError, IndexError, TypeError):
+        except (UnicodeDecodeError, ValueError, KeyError, IndexError, TypeError, RecursionError):
             raise BackendError("vision_response_invalid") from None
         if not isinstance(content, str):
             raise BackendError("vision_response_invalid")
+        try:
+            content.encode("utf-8")  # JSON admits lone surrogates; they cannot be published
+        except UnicodeEncodeError:
+            raise BackendError("vision_response_invalid") from None
         # Thinking models may inline their reasoning; only the transcription is kept.
         return THINK_BLOCK.sub("", content, count=1)
 
@@ -1049,7 +1054,13 @@ def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, 
                     continue
                 # Only uncached work counts against the cap, so cached documents
                 # never starve the rest of a stable queue across capped runs.
-                outcome = stage.process(item, allow_work=attempted < args.max_documents)
+                try:
+                    outcome = stage.process(item, allow_work=attempted < args.max_documents)
+                except (BackendError, OSError):
+                    raise
+                except Exception:  # noqa: BLE001 - one document must never stop the queue
+                    outcome = Outcome(item.document_id, "ocr_failed", "ocr_internal_error")
+                    outcome.attempted = True
                 if outcome is None:
                     backlog += 1
                     continue
