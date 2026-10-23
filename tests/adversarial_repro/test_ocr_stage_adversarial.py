@@ -18,7 +18,7 @@ from unittest import mock
 from campaign_tool.records import ocr_stage as stage
 from tests.adversarial_repro._support import call, requires_repro
 from tests.records.ocr_stage_fixtures import (FakeTools, FakeVision, blank_page, noise_page,
-                                              ocrmypdf_sidecar, scanned_pdf)
+                                              mixed_pdf, ocrmypdf_sidecar, scanned_pdf)
 from tests.records.test_ocr_stage import CLEAN, Workspace, fake_ocrmypdf
 
 
@@ -287,7 +287,8 @@ class DocumentFlowProperties(unittest.TestCase):
 
     def test_vision_is_asked_for_exactly_the_blank_pages_and_text_lands_on_its_page(self):
         ws = Workspace(self)
-        digest = ws.add("mixed.pdf", scanned_pdf([noise_page(i) for i in range(1, 5)]))
+        # A skip marker only qualifies on a real native page since X6; pages 1 and 3 carry a text layer.
+        digest = ws.add("mixed.pdf", mixed_pdf([["Approved"], noise_page(2), ["Approved"], noise_page(4)]))
         ws.write_queue()
         tools = FakeTools({digest: [None, CLEAN, None, ""]})
         vision = FakeVision(text="Vision text for the fourth page, long enough to pass.")
