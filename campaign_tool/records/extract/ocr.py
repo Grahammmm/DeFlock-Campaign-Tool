@@ -22,6 +22,8 @@ import tempfile
 import time
 import uuid
 
+from campaign_tool.records import pdf_eligibility
+
 VERSION = "local-ocr-3"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 ARTIFACTS = ("page.pdf", "page.png", "sidecar.txt", "confidence.tsv")
@@ -266,8 +268,17 @@ def _hold(page_dir: Path, source_sha256: str, page: int, requested: bool) -> boo
 
 
 def _validate_receipt(receipt: dict, identity: dict, directory: Path) -> tuple[str, str]:
-    if not isinstance(receipt, dict) or set(receipt) != RECEIPT_KEYS:
+    # Legacy receipts remain readable. Cache-policy migration is staged in X6
+    # phase 2; phase 1 must not be deployed over existing result roots.
+    if not isinstance(receipt, dict) or set(receipt) not in (RECEIPT_KEYS, RECEIPT_KEYS | {'eligibility'}):
         raise ValueError("ocr_receipt_schema_mismatch")
+    if 'eligibility' in receipt:
+        evidence = receipt['eligibility']
+        if (not isinstance(evidence, dict) or evidence.get('source_sha256') != identity['source_sha256']
+                or evidence.get('page') != identity['page'] or evidence.get('policy') != pdf_eligibility.POLICY
+                or evidence.get('probe') != pdf_eligibility.PROBE
+                or (receipt['status'] == 'skipped_machine_text' and evidence.get('decision') != 'native_sufficient')):
+            raise ValueError('ocr_eligibility_binding_mismatch')
     receipt_id = _hash(_json(identity))
     if (receipt["identity"] != identity or receipt["receipt_id"] != receipt_id
             or (SHA256.fullmatch(directory.name) and directory.name != receipt_id)
@@ -624,7 +635,11 @@ def extract_image_only_pages(
                 except Exception:
                     receipt["blocked_reason"] = "page_text_probe_failed"
                 else:
-                    if machine_text.strip():
+                    eligibility = pdf_eligibility.probe(reader.pages[number - 1], source_sha256, number, machine_text)
+                    receipt['eligibility'] = eligibility
+                    if eligibility['decision'] == 'unresolved':
+                        receipt['blocked_reason'] = 'page_eligibility_unresolved'
+                    elif eligibility['decision'] == 'native_sufficient':
                         receipt["status"] = "skipped_machine_text"
                     else:
                         if _raster_pixels(reader.pages[number - 1]) > MAX_RASTER_PIXELS:
