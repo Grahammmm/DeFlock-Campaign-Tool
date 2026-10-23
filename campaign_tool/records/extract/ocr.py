@@ -178,7 +178,9 @@ def _publish_directory(source: Path, destination: Path) -> bool:
 
 def _confidence(tsv: str) -> float | None:
     values = []
-    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
+    # Tesseract emits literal TSV, not CSV quoting. A leading quote is OCR
+    # content, never a delimiter that may swallow subsequent word rows.
+    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t", quoting=csv.QUOTE_NONE):
         if not row.get("text", "").strip():
             continue
         try:
