@@ -114,14 +114,76 @@ older row's read. Config/policy failure refuses the census without output.
 S3b integration interface: `mail_resolution_config.load_settings(root,
 config_path)` returns `ResolutionSettings(config_sha256, context)`, with
 `.policy` and the immutable `MailResolutionReadContext` containing historical
-subject pins. S3b MUST reload this closure under the existing root writer lock,
-compare the config hash/context fingerprint, and refuse changes BEFORE any
-recovery or write (D24). No apply planner or resolution report is implemented
-here. Until S3b lands, nonempty v2 resolution settings deliberately refuse
-apply with `resolution_apply_integration_required`; dry run reports
-`resolution_policy.state=mismatch` for missing/invalid policy or
-`integration_required` for a loaded closure, both exit 3. These staged refusals
-must not be presented as a resolution-ready apply.
+subject pins. Adoption reloads this closure under the existing root writer lock,
+compares the config hash/context fingerprint, and refuses changes BEFORE any
+recovery or write (D24). A pinned missing/invalid policy reports
+`resolution_policy.state=mismatch` in dry run (exit 3); apply refuses with
+`resolution_policy_mismatch`, or `resolution_policy_changed` if the previously
+loaded artifact changed under the lock. Config/gate changes refuse with
+`adoption_gate_changed`. No hash match supplies missing human authorization.
+
+### All-state legacy resolution planner (S3b, synthetic qualification only)
+
+`mail_resolution_plan.plan` is the shared pure snapshot planner. Every policy
+original is `resolved`, `open` or `blocked`, independent of receipt state.
+It checks receipt-set equality, coverage, held/resolved conflicts and dependency
+cycles across ALL discovered receipts, including complete receipts and already
+resolved originals. A successor carries the creating binding receipt,
+occurrence and legacy binding unchanged; dependents may grow, not shrink.
+Historical policies require the separate owner-config subject pins above.
+The immutable resolution row retains its creating policy hash.
+
+Any drift or blocked policy original blocks the ENTIRE apply with
+`resolution_plan_blocked`, even unrelated eligible work. Refusal precedes
+SQLite settlement, dead-run recovery, backend/run creation, CAS/catalog and
+verification-receipt writes. A clean blocked snapshot is refused even before
+creating `run.lock`. With a pending WAL, locked preflight reads a disposable
+private database/WAL copy; it does not checkpoint or open the source read-write.
+Only a nonblocked plan permits normal source WAL recovery. Dry run and census
+still refuse nonempty WAL and create no temporary database copies.
+
+Today's eligible new and incomplete work goes first in existing order. Then
+resolvable binding/dependent receipts follow topological order, with ascending
+receipt digest breaking ties. If a preserve call fails, no direct or transitive
+dependent is called; each suppressed receipt is counted as
+`resolution_dependency_failed`. A later run replans from committed state.
+Already resolved originals satisfy dependencies without another append.
+A post-commit/pre-stage crash resumes the incomplete binding first through
+the existing dead-run recovery path; it does not rebind the original.
+
+Held-only unresolved receipts remain accepted `original_scope_unresolved`
+gaps. Legacy `message/rfc822` still reports `unsupported_rfc822_part`, even
+when it is a dependent; resolution does not widen the MIME contract. A blocked
+binding makes its policy originals blocked even if MIME-first reporting keeps
+the MIME code. V1 and v2-null with no historical pins retain the old report and
+behavior; generic readers and local-capture resolution are not widened.
+
+Policy-mode reports add these counts/hashes (no original or receipt listings):
+
+- `resolvable_messages = resolvable_binding_messages + resolvable_dependent_messages`,
+  and `resolvable_attachments` (including repeated parts).
+- `policy_originals = policy_originals_resolved + resolvable_originals + policy_originals_blocked`.
+- `held_originals`, `resolution_drift` (one finding per original, one per cycle),
+  `resolution_plan.state` (`ok` or `blocked`), and `resolution_policy` (`loaded`
+  or `mismatch`, with its pinned `sha256`).
+- `resolution_baseline` and `resolution_after`, each `{rows, sha256}`; the
+  digest covers sorted `(original_sha256, binding_sha256)` pairs.
+- `resolved_originals`: committed resolution-row delta, including a commit
+  followed by a stage failure. Dry run and zero-work rerun report 0.
+- `after`: the original-state partition, resolvable message count, drift and
+  plan state, measured again while the writer lock is held.
+
+In policy mode `pending_messages` includes resolvable receipts, and
+`new_messages = eligible_new_messages + resolvable_messages + coded_gap_messages`.
+The existing receipt partition still holds. A clean successful apply also has
+`resolved_originals = resolvable_originals`,
+`resolution_after.rows = resolution_baseline.rows + resolved_originals`,
+`after.policy_originals_resolved = policy_originals_resolved + resolved_originals`,
+`after.resolvable_originals = 0`, and
+`adopted_messages + resumed_messages = pending_messages`.
+Drift, a blocked plan or blocked policy originals make exit 3, including in
+`after`. A clean rerun adopts 0, resolves 0, preserves the after digest and
+does not create a run. Software qualification is NOT semantic record acceptance.
 
 Each valid receipt is classified against the ledger:
 
@@ -262,14 +324,16 @@ Coded gaps are never passed to `preserve`, so they cause no CAS blob, intake
 catalog row, verification receipt or ledger write. They are classified afresh
 on every run, counted in `coded_gaps` by code in every dry-run, apply, `after`
 and run summary, and never dropped: `new_messages = eligible_new_messages +
-coded_gap_messages` always holds.
+coded_gap_messages` holds without a resolution policy; policy mode also adds
+`resolvable_messages` to that equation.
 
 `ACCEPTED_GAP_CODES` holds the classes G accepted as reported gaps:
 `original_scope_unresolved` (an EML already declared as an unresolved legacy
 original) and `unsupported_rfc822_part`. They do not block (exit `0`). Any
 other code appears in `unaccepted_coded_gaps` as well and blocks (exit `3`).
-Resolving the accepted classes needs a separately reviewed contract
-(follow-up T4B); this command never rewrites a legacy declaration.
+Resolving unresolved declarations uses the separately reviewed T4B policy path
+above; this command never rewrites a legacy declaration. The rfc822 class is
+unchanged.
 
 ## Report counters (counts and hashes only; no paths, accounts or headers)
 
@@ -313,13 +377,59 @@ pending, incomplete, conflicting, unaccepted-gap or unfinalized items; or
 `preserve` refuses a receipt whose EML or attachment is already declared in the
 ledger as an unresolved legacy original (`canonical_original_binding_conflict`),
 and a legacy receipt whose EML contains a `message/rfc822` part
-(`unsupported_rfc822_part`). This command does not resolve either. Per G's
-decision they are accepted coded gaps (above), reported and never adopted.
-Resolving them needs a separately reviewed contract (T4B, or the
-original-resolution contract in `ledger/original_resolution.py`) and owner (G)
-approval.
+(`unsupported_rfc822_part`). Without a resolution policy these remain accepted
+coded gaps under G's original decision. The optional T4B path resolves only
+approved unresolved originals; rfc822 remains out of scope. Neither path grants
+owner (G) approval.
 
 ## TEST acceptance runbook
+
+The constants in this historical T4 runbook (154 receipts, 36 eligible,
+114 unresolved-scope gaps, one rfc822 gap, 39 final mail rows) apply ONLY to
+the exact pre-T4 backup used at 039900b/t_082c94b0. Pin its backup manifest
+hash privately. Post-T4, post-T17 and other snapshots need their OWN measured
+baseline and owner-approved expectations, not these constants.
+
+For T4B, the following additional gates and checks precede this historical
+procedure. They are instructions for a separately admitted acceptance worker,
+not authority to run census, TEST or live operations now:
+
+1. Independently review the exact engine head. Obtain G's written approval of
+   the real census inventory, TEST policy and revised acceptance numbers.
+   Live policy/apply needs its own separate G approval and a verified full
+   backup closure including `resolution-policies/`. No automatic hold lift.
+2. Privately record B_mail (mail rows), R0 (every resolution row plus report
+   baseline digest), K0 (sorted original keys), D0_orig (all K0 row columns),
+   and full-table digests of legacy_rows, occurrence_projection_rows and
+   captured_legacy_* occurrences. Pin the backup manifest and config hashes.
+3. Require policy originals P and held Hd to cover census I exactly. Run dry
+   with the approved policy: P = P_res union E_r union P_blk (disjoint),
+   P_blk=0, no drift, plan ok. N is binding PLUS dependent resolvable receipts.
+   Only on the historical pre-T4 baseline, new expectations are
+   `GAPS=115-N`, `adopted_messages=36+N`, final `mail_messages=39+N`.
+   On another snapshot use its measured B_mail and eligible count instead.
+4. Apply only when all retained gates permit it. Require no failures,
+   `resolved_originals=|E_r|`, final resolution rows `R0.rows+|E_r|`, and final
+   mail rows `B_mail+eligible_new_messages+N` (plus any separately measured
+   baseline-specific recovery expectations). Every R0 row stays byte-identical.
+5. Privately compare S (new resolution keys) exactly to E_r; S is disjoint
+   from Hd. Each S row has the mail-export payload schema, approved policy hash,
+   binding receipt and binding occurrence. Every K0 original row is unchanged
+   in every column, including its stored unresolved declaration. Compare the
+   three legacy digests unchanged. Do NOT demand whole-originals-table equality:
+   A_new (keys absent from K0) is a legitimate adoption delta. Each A_new row is
+   original/in_scope at the intake CAS path, with verified_export_receipt
+   provenance and a verified_mail_export occurrence from an adopted receipt.
+   Require A_new disjoint from I, exact expected A_new set, and final original
+   count |K0|+|A_new|. Report only counts and list/row digests.
+6. Require quick_check ok and zero foreign keys; rerun dry/apply 0 adopted /
+   0 resolved, P_res=|P|, E_r=P_blk=0, no drift, same resolution-after digest,
+   same original keys and no writes. Record all outputs privately; counts,
+   codes and hashes only outside the acceptance root. Rollback is restoration
+   of the verified full pre-apply closure, never edits/deletes to immutable rows.
+
+The existing `verify_adoption_test.py` script below checks historical T4 only;
+it is NOT the T4B baseline/delta verifier and does not replace these checks.
 
 This is the exact procedure for the local-only acceptance worker. It may only
 be executed against an exact head that has passed an independent
