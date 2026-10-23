@@ -20,6 +20,14 @@ or GitHub. Parent reports carry source versions, counts and fixed hold reasons.
 
 ## Enrollment and acceptance
 
+The separate mail-export census/config slice is documented in
+[RECORDS-MAIL-ADOPTION.md](RECORDS-MAIL-ADOPTION.md#staged-legacy-census-and-config-v2-s3a).
+Its owner-only v2 config independently pins each historical subject's creating
+mail policy; a resolution row cannot choose its own trust root. Census proposals
+are not scope decisions or semantic acceptance. The local-capture policy,
+Option B resolution table/schema pin, and generic fail-closed readers remain
+unchanged. Resolution apply integration and locked reload remain S3b work.
+
 Construct `CanonicalOriginalReconciler(mail_root, intake_output, database,
 policy=...)` using the existing pinned startup identity and lifecycle:
 

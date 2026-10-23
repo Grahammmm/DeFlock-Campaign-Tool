@@ -84,23 +84,11 @@ def _read_small(path):
 
 def load_config(path):
     """Owner-only adoption config. Returns (config, sha256) or raises AdoptionError."""
-    from .runner.core import private_path
+    from .mail_resolution_config import load_config as secure_config
     try:
-        raw = _read_small(private_path(path))
-        config = json.loads(raw)
+        return secure_config(path)
     except (OSError, ValueError, UnicodeError):
         raise AdoptionError("adoption_config_invalid") from None
-    if (not isinstance(config, dict) or config.get("schema") != CONFIG_SCHEMA
-            or config.get("source") != SOURCE
-            or config.get("adoption") not in ("enabled", "disabled")):
-        raise AdoptionError("adoption_config_invalid")
-    pinned = config.get("disable_marker_sha256")
-    if pinned is not None and not (isinstance(pinned, str) and len(pinned) == 64
-                                   and all(c in "0123456789abcdef" for c in pinned)):
-        raise AdoptionError("adoption_config_invalid")
-    if set(config) - {"schema", "source", "adoption", "disable_marker_sha256"}:
-        raise AdoptionError("adoption_config_invalid")
-    return config, hashlib.sha256(raw).hexdigest()
 
 
 def gate(root, config):
@@ -748,7 +736,23 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
         raise AdoptionError("export_inside_records_root")
     config, config_sha = load_config(config_path) if config_path is not None else (None, None)
     decision = gate(root, config)
+    # S3a admits config/census only. Do not silently ignore a configured policy
+    # on today's apply path; S3b owns locked reload, planner and writer wiring.
+    from .mail_resolution_config import CURRENT, HISTORICAL, load_settings
+    configured = config is not None and (config.get(CURRENT) or config.get(HISTORICAL))
+    if configured and apply:
+        raise AdoptionError("resolution_apply_integration_required")
     if not apply:
+        if configured:
+            try:
+                settings = load_settings(root, config_path)
+            except (ValueError, OSError):
+                return {"source": SOURCE, "mode": "dry-run", "resolution_policy": {
+                    "state": "mismatch", "sha256": config.get(CURRENT) if config else None}}
+            # A loaded policy is not yet a resolution plan or semantic acceptance.
+            # Keep the staged slice fail-closed until S3b supplies that plan.
+            return {"source": SOURCE, "mode": "dry-run", "resolution_policy": {
+                "state": "integration_required", "sha256": settings.policy.sha256 if settings.policy else None}}
         report = _classify(root, mail_root)[0]
         report.update(mode="dry-run", gate=decision, adopted_messages=0, resumed_messages=0,
                       adopted_attachments=0, failures={})
@@ -827,6 +831,8 @@ def blocking(report):
     Coded gaps in ACCEPTED_GAP_CODES are reported but do not block; any other
     coded gap does.
     """
+    if report.get("resolution_policy", {}).get("state") in ("mismatch", "integration_required"):
+        return True
     if (report.get("failures") or report.get("gaps") or report.get("identity_conflicts")
             or report.get("unaccepted_coded_gaps")):
         return True
@@ -844,10 +850,18 @@ def main():
     parser = argparse.ArgumentParser(description="Adopt mail-history export receipts into the canonical ledger (dry-run by default).")
     parser.add_argument("--root", required=True, help="existing private records processing root")
     parser.add_argument("--mail-history", required=True, help="frozen export root containing receipts/")
-    parser.add_argument("--config", help="owner-only mail-history-adoption-v1 config (required for --apply)")
-    parser.add_argument("--apply", action="store_true", help="write to the canonical ledger (default: dry-run)")
+    parser.add_argument("--config", help="owner-only mail-history-adoption-v1/v2 config (required for --apply)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="write to the canonical ledger (default: dry-run)")
+    mode.add_argument("--legacy-resolution-inventory", metavar="PRIVATE_OUT_PATH",
+                      help="read-only private legacy census; not an approval")
     args = parser.parse_args()
     try:
+        if args.legacy_resolution_inventory is not None:
+            from .mail_resolution_census import inventory
+            counts = inventory(args.root, args.mail_history, args.legacy_resolution_inventory, config_path=args.config)
+            print(json.dumps(counts, sort_keys=True))
+            return 3 if counts["discovery_gaps"] else 0
         report = adopt(args.root, args.mail_history, config_path=args.config, apply=args.apply)
     except AdoptionError as error:
         print(json.dumps({"source": SOURCE, "status": "refused", "code": str(error)}, sort_keys=True))
