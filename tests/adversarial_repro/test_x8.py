@@ -43,16 +43,64 @@ class PoisonedVisionTextAbortsStage(unittest.TestCase):
     """A1: vision text with a lone surrogate crashes publication and blocks every later document."""
 
     def test_failed_publish_leaves_no_staging_directory(self):
+        # Claude d0264ab asserted stage.run raises Exception on a surrogate.
+        # Operator 16:50 contract: test publication cleanup directly, independent
+        # of X1's parser rejection / later-document continuation. _publish must
+        # propagate the precise UnicodeEncodeError, after deleting partial text.
         ws = Workspace(self)
-        bad = ws.add('a-bad.pdf', scanned_pdf([noise_page(1)]))
-        ws.write_queue()
-        raw = b'{"choices":[{"message":{"content":"\\ud800 page text that is long enough"}}]}'
-        with self.assertRaises(Exception):
-            stage.run(ws.args(vision_config(ws)), FakeTools({bad: ['']}), FakeVision(raw=raw))
-        leftovers = [p.name for p in (Path(ws.out) / '.work').glob('*')]
+        publisher = stage.build_stage(str(ws.out), {})
+        item = stage.QueueItem('doc-bad', 'a' * 64, '/synthetic.pdf')
+        pages = [({'page': 1}, CLEAN), ({'page': 2}, '\ud800 page text that is long enough')]
+        with self.assertRaises(UnicodeEncodeError):
+            publisher._publish(item, pages, stage.Outcome('doc-bad', 'ocr_complete'), 100)
+        leftovers = list((Path(ws.out) / '.work').iterdir())
         self.assertEqual(leftovers, [], 'staging directory holding page text was left behind')
+        self.assertEqual(list(Path(ws.out).glob('*/*/result.json')), [])
 
 class WorkDirectoryHygiene(unittest.TestCase):
+    def test_publish_cleanup_failure_is_visible_even_after_lost_race(self):
+        ws = Workspace(self)
+        publisher = stage.build_stage(str(ws.out), {})
+        item = stage.QueueItem('doc-race', 'b' * 64, '/synthetic.pdf')
+        # A lost race keeps staging local. If removal fails, _publish must not
+        # silently return success while private text remains. No batch involved.
+        def denied(path, *args, **kwargs):
+            if not kwargs.get('ignore_errors', False):
+                raise OSError(errno.EACCES, 'synthetic cleanup denial')
+        with mock.patch.object(stage, '_publish_noreplace', return_value=False), \
+                mock.patch.object(stage.shutil, 'rmtree', side_effect=denied):
+            with self.assertRaises(OSError) as caught:
+                publisher._publish(item, [({'page': 1}, CLEAN)],
+                                   stage.Outcome('doc-race', 'ocr_complete'), 100)
+        self.assertEqual(caught.exception.errno, errno.EACCES)
+        self.assertEqual(len(list((Path(ws.out) / '.work').glob('publish-*'))), 1)
+
+    def test_document_cleanup_failure_is_failed_not_successful_output(self):
+        ws = Workspace(self)
+        digest = ws.add('cleanup.pdf', scanned_pdf([noise_page(32)]))
+        ws.write_queue()
+        real_remove = stage.shutil.rmtree
+        def denied(path, *args, **kwargs):
+            if Path(path).name.startswith('doc-'):
+                raise OSError(errno.EACCES, 'synthetic cleanup denial')
+            return real_remove(path, *args, **kwargs)
+        with mock.patch.object(stage.shutil, 'rmtree', side_effect=denied):
+            line, _, outcomes = stage.run(ws.args(ws.config(ocrmypdf=fake_ocrmypdf(ws.tmp))),
+                                         FakeTools({digest: [CLEAN]}), FakeVision())
+        self.assertEqual((outcomes[0].status, outcomes[0].code), ('ocr_failed', 'publish_failed'))
+        self.assertEqual(line['counts']['output'], 0)
+        self.assertEqual(len(list((Path(ws.out) / '.work').glob('doc-*'))), 1)
+
+    def test_non_oserror_is_not_swallowed_by_document_io_handler(self):
+        ws = Workspace(self)
+        digest = ws.add('unexpected.pdf', scanned_pdf([noise_page(33)]))
+        publisher = stage.build_stage(str(ws.out), {})
+        item = stage.parse_queue_line(ws.lines[0], ws.sources)
+        with mock.patch.object(publisher, '_process', side_effect=RuntimeError('synthetic programming failure')):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic programming failure'):
+                publisher.process(item)
+        self.assertEqual(list((Path(ws.out) / '.work').iterdir()), [])
+
     def test_manifest_or_rename_failure_is_one_failed_document_then_retry(self):
         for failure in ("manifest", "rename"):
             with self.subTest(failure=failure):

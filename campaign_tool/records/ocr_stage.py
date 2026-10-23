@@ -833,7 +833,12 @@ class OcrStage:
                 outcome = Outcome(item.document_id, "ocr_failed", "publish_failed")
             finally:
                 if workdir is not None:
-                    shutil.rmtree(workdir, ignore_errors=True)
+                    try:
+                        shutil.rmtree(workdir)
+                    except OSError:
+                        # Cleanup failure is still a document I/O failure, never
+                        # a successful output or a queue-read failure.
+                        outcome = Outcome(item.document_id, "ocr_failed", "publish_failed")
             outcome.attempted = True
             return outcome
         finally:
@@ -921,7 +926,8 @@ class OcrStage:
         finally:
             # If renamed this path no longer exists; otherwise no private page
             # text survives a failed write, encode, rename or lost race.
-            shutil.rmtree(staging, ignore_errors=True)
+            if staging.exists():
+                shutil.rmtree(staging)
 
 
 def stage_result(outcomes: list[Outcome], queue_errors: dict, backlog: int = 0) -> tuple[dict, int]:
