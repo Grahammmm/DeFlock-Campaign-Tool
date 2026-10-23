@@ -203,14 +203,21 @@ def configure_installed_profile(profile_id, *, engine_version, config_sha256, va
 class StageRunner:
     """Trusted, configured execution authority, separate from receipt data."""
 
-    def __init__(self, token, database, run_id, owner, profile_id, engine, config, validators, test_only):
+    def __init__(self, token, database, run_id, owner, profile_id, engine, config, validators, test_only,
+                 preservation_context=None):
         _require(token is _RUNNER_TOKEN, "runner_factory_required")
         self.database, self.run_id, self.owner = database, run_id, _identity(owner)
         self.profile_id, self.engine_version, self.config_sha256 = profile_id, engine, config
         self.validators, self.test_only = MappingProxyType(dict(validators)), bool(test_only)
+        if preservation_context is not None:
+            from .mail_resolution_context import MailResolutionReadContext
+            _require(type(preservation_context) is MailResolutionReadContext, "resolution_policy_invalid")
+        self.preservation_context = preservation_context
         descriptor = {"profile_id": profile_id, "engine_version": engine, "config_sha256": config,
                       "test_only": self.test_only,
                       "validators": {stage: item[0] for stage, item in validators.items()}}
+        if preservation_context is not None:
+            descriptor["preservation_context"] = preservation_context.fingerprint
         self.profile_sha256 = _hash(store.canonical(descriptor).encode())
         with _transaction(database) as (c, writer):
             self._check_run(c)
@@ -251,10 +258,11 @@ class StageRunner:
         return invalidate(self, subject, stage, reason=reason)
 
 
-def installed_runner(database, *, run_id, owner, profile_id):
+def installed_runner(database, *, run_id, owner, profile_id, preservation_context=None):
     _require(profile_id in _INSTALLED_PROFILES, "installed_profile_missing")
     engine, config, validators = _INSTALLED_PROFILES[profile_id]
-    return StageRunner(_RUNNER_TOKEN, database, run_id, owner, profile_id, engine, config, validators, False)
+    return StageRunner(_RUNNER_TOKEN, database, run_id, owner, profile_id, engine, config, validators, False,
+                       preservation_context=preservation_context)
 
 
 def testing_runner(database, *, run_id, owner, engine_version, config_sha256,
@@ -275,10 +283,12 @@ def _runner(value):
     return value
 
 
-def _subject(connection, subject, stage, run_id):
+def _subject(connection, subject, stage, run_id, *, preservation_context=None):
     _sha(subject)
     _require(stage in STAGES, "invalid_stage")
-    original = store.effective_original(connection, subject)
+    original = (preservation_context.effective_original(connection, subject)
+                if stage == "preserve" and preservation_context is not None
+                else store.effective_original(connection, subject))
     _require(original is not None, "original_missing")
     _require(original["scope"] != "out_of_scope", "original_out_of_scope")
     _require(connection.execute("SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone(),
@@ -387,7 +397,8 @@ def set_content(runner, subject, stage, content, *, author_id, tier):
     _require(tier in ("A", "B"), "invalid_tier")
     with _transaction(database) as (connection, writer):
         runner._check(connection)
-        original, states = _subject(connection, subject, stage, run_id)
+        original, states = _subject(connection, subject, stage, run_id,
+                                    preservation_context=runner.preservation_context)
         digest = _artifact(connection, writer, content, MAX_CONTENT_BYTES)
         if stage == "preserve":
             _preservation_content(connection, original, content)
@@ -478,7 +489,8 @@ def claim(runner, subject, stage, *, ttl_seconds=300, supersedes=None):
     _require(supersedes is None or stage in runner.validators, "domain_adapter_unavailable")
     with _transaction(database) as (c, writer):
         runner._check(c)
-        _, states = _subject(c, subject, stage, run_id)
+        _, states = _subject(c, subject, stage, run_id,
+                             preservation_context=runner.preservation_context)
         inputs = store.canonical(_inputs(states, stage, subject))
         head = _head(c, subject, stage)
         _require(head is not None, "current_content_required")
@@ -611,7 +623,8 @@ def promote(runner, subject, stage, receipt_bytes, *, claim_id=None):
     receipt_hash, error, result = _hash(receipt_bytes), None, None
     with _transaction(database) as (connection, writer):
         runner._check(connection)
-        original, states = _subject(connection, subject, stage, run_id)
+        original, states = _subject(connection, subject, stage, run_id,
+                                    preservation_context=runner.preservation_context)
         _artifact(connection, writer, receipt_bytes, MAX_RECEIPT_BYTES)
         connection.execute("SAVEPOINT stage_promotion")
         try:

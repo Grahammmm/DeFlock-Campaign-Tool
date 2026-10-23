@@ -76,7 +76,7 @@ class ApprovedMailResolutionPolicy:
     The bytes constructor permits synthetic fixtures and already securely read
     artifacts. A matching hash does not authenticate the owner's approval.
     """
-    __slots__ = ("_raw", "_sha256", "_entries")
+    __slots__ = ("_raw", "_sha256", "_entries", "_source_path", "_source_sha256")
 
     def __setattr__(self, name, value):
         raise AttributeError("immutable mail resolution policy")
@@ -92,11 +92,26 @@ class ApprovedMailResolutionPolicy:
     def sha256(self):
         return self._sha256
 
-    def __init__(self, raw, *, expected_sha256):
+    @property
+    def source_path(self):
+        return self._source_path
+
+    @property
+    def source_sha256(self):
+        return self._source_sha256
+
+    def __init__(self, raw, *, expected_sha256, source_path=None, source_sha256=None):
         require(not hasattr(self, "_raw"))
         require(type(raw) is bytes and len(raw) <= MAX_POLICY_BYTES and sha(expected_sha256))
         if hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise ValueError("resolution_policy_mismatch")
+        require((source_path is None) == (source_sha256 is None))
+        if source_path is not None:
+            path = Path(source_path)
+            require(path.is_absolute() and ".." not in path.parts and sha(source_sha256))
+            if source_sha256 != expected_sha256:
+                raise ValueError("resolution_policy_mismatch")
+            source_path = str(path)
         value = decode(raw)
         require(type(value) is dict and set(value) == POLICY_FIELDS
                 and value["schema"] == "approved-mail-resolution-policy-v1")
@@ -123,6 +138,8 @@ class ApprovedMailResolutionPolicy:
         object.__setattr__(self, "_entries", MappingProxyType(frozen))
         object.__setattr__(self, "_sha256", expected_sha256)
         object.__setattr__(self, "_raw", raw)
+        object.__setattr__(self, "_source_path", source_path)
+        object.__setattr__(self, "_source_sha256", source_sha256)
 
     @staticmethod
     def _sorted_hashes(values, limit):
@@ -137,7 +154,9 @@ class ApprovedMailResolutionPolicy:
                                MAX_POLICY_BYTES, owner_only=True)
         except (OSError, ValueError):
             raise ValueError("resolution_policy_invalid") from None
-        return cls(raw, expected_sha256=expected_sha256)
+        return cls(raw, expected_sha256=expected_sha256,
+                   source_path=Path(root) / "resolution-policies" / expected_sha256,
+                   source_sha256=expected_sha256)
 
     def admission(self, subject, size):
         item = self._entries.get(subject)

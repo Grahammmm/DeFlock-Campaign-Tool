@@ -137,20 +137,7 @@ def append(con, *, subject, policy, verification_receipt_sha256, occurrence_id, 
         require(prior[0] == identity, "original_resolution_conflict")
         effective_original(con, subject, output_root=output_root, mail_policy=policy)
         return identity, True
-    require(original["role"] == original["scope"] == "unresolved" and original["storage_path"] is None,
-            "original_resolution_not_unresolved")
-    _legacy_binding(con, subject, original, entry)
-    require(kind != "mail" or original["legacy_format"] == "eml", "original_resolution_import_binding_mismatch")
-    states = con.execute("SELECT stage,status,receipt_sha256 FROM stage_state WHERE original_sha256=?", (subject,)).fetchall()
-    require(len(states) == 7 and {row[0] for row in states} == set(store.STAGES)
-            and all(row[1] == "pending" and row[2] is None for row in states),
-            "original_resolution_requires_unaccepted_original")
-    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stage_content'").fetchone():
-        require(not con.execute("SELECT 1 FROM stage_content WHERE subject_sha256=? LIMIT 1", (subject,)).fetchone(),
-                "original_resolution_requires_uncached_original")
-    require(not con.execute("SELECT 1 FROM proposals p JOIN receipts r ON "
-                            "r.sha256 IN (p.privacy_receipt_sha256,p.independent_receipt_sha256) "
-                            "WHERE r.subject_sha256=? LIMIT 1", (subject,)).fetchone(), "original_resolution_proposal_exists")
+    eligible(con, subject, original, entry, kind)
     values = (subject, identity, payload["declaration_sha256"], policy.sha256,
               verification_receipt_sha256, occurrence_id, store.canonical(payload))
     con.execute("SAVEPOINT mail_resolution_append")
@@ -171,3 +158,22 @@ def append(con, *, subject, policy, verification_receipt_sha256, occurrence_id, 
             raise ValueError("original_resolution_write_failed") from None
         raise
     return identity, False
+
+
+def eligible(con, subject, original, entry, kind):
+    """Read-only pre-occurrence eligibility; append rechecks before writing."""
+    from .original_resolution import require
+    require(original["role"] == original["scope"] == "unresolved" and original["storage_path"] is None,
+            "original_resolution_not_unresolved")
+    _legacy_binding(con, subject, original, entry)
+    require(kind != "mail" or original["legacy_format"] == "eml", "original_resolution_import_binding_mismatch")
+    states = con.execute("SELECT stage,status,receipt_sha256 FROM stage_state WHERE original_sha256=?", (subject,)).fetchall()
+    require(len(states) == 7 and {row[0] for row in states} == set(store.STAGES)
+            and all(row[1] == "pending" and row[2] is None for row in states),
+            "original_resolution_requires_unaccepted_original")
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stage_content'").fetchone():
+        require(not con.execute("SELECT 1 FROM stage_content WHERE subject_sha256=? LIMIT 1", (subject,)).fetchone(),
+                "original_resolution_requires_uncached_original")
+    require(not con.execute("SELECT 1 FROM proposals p JOIN receipts r ON "
+                            "r.sha256 IN (p.privacy_receipt_sha256,p.independent_receipt_sha256) "
+                            "WHERE r.subject_sha256=? LIMIT 1", (subject,)).fetchone(), "original_resolution_proposal_exists")
