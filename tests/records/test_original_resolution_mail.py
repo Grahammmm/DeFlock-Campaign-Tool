@@ -37,9 +37,14 @@ class OriginalResolutionMailTests(unittest.TestCase):
 
     def append(self, con, **changes):
         args = dict(subject=self.sha, policy=self.policy, verification_receipt_sha256=self.receipt,
-                    occurrence_id=self.oid, storage_path=self.path)
+                    occurrence_id=self.oid, storage_path=self.path, output_root=self.output)
         args.update(changes)
         return resolution.append_mail_export(con, **args)
+
+    def read(self, con, **changes):
+        args = dict(output_root=self.output, mail_policy=self.policy)
+        args.update(changes)
+        return resolution.effective_original(con, self.sha, **args)
 
     def enroll(self):
         with store.ledger(self.database) as con:
@@ -54,7 +59,7 @@ class OriginalResolutionMailTests(unittest.TestCase):
         first, reused = self.enroll()
         self.assertFalse(reused)
         with store.ledger(self.database, readonly=True) as con:
-            row = resolution.effective_original(con, self.sha)
+            row = self.read(con)
             self.assertEqual((row["role"], row["scope"], row["storage_path"], row["preservation_status"]),
                              ("original", "in_scope", self.path, "mail_export_validation_pending"))
             self.assertEqual(row["resolution_sha256"], first)
@@ -63,7 +68,7 @@ class OriginalResolutionMailTests(unittest.TestCase):
         self.assertEqual(self.fixture.rows("SELECT DISTINCT status FROM stage_state"), [("pending",)])
         self.assertEqual(self.enroll(), (first, True))
         with sqlite3.connect(self.database) as con:
-            self.assertEqual(resolution.effective_original(con, self.sha)["resolution_sha256"], first)
+            self.assertEqual(self.read(con)["resolution_sha256"], first)
             self.assertIsNone(con.row_factory)
 
     def test_same_original_multiple_genuine_occurrences_one_binding(self):
@@ -108,6 +113,7 @@ class OriginalResolutionMailTests(unittest.TestCase):
             with store.ledger(case.database) as con:
                 con.execute("BEGIN IMMEDIATE")
                 con.execute("PRAGMA defer_foreign_keys=ON")
+                trigger = con.execute("SELECT sql FROM sqlite_master WHERE name='original_resolution_update'").fetchone()[0]
                 con.execute("DROP TRIGGER original_resolution_update")
                 if original:
                     for row in con.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='originals'").fetchall():
@@ -115,8 +121,9 @@ class OriginalResolutionMailTests(unittest.TestCase):
                 row = dict(con.execute("SELECT * FROM original_resolutions").fetchone())
                 payload = json.loads(row["payload_json"])
                 mutate(con, row, payload)
+                con.execute(trigger)  # Do not let F-03 mask payload/occurrence checks.
                 with self.assertRaises(ValueError):
-                    resolution.effective_original(con, case.sha)
+                    case.read(con)
                 con.rollback()
         finally:
             case.doCleanups()
@@ -140,13 +147,19 @@ class OriginalResolutionMailTests(unittest.TestCase):
                 self.receipt_path.unlink(missing_ok=True)
                 if mode == "changed": self.receipt_path.write_bytes(b"changed")
                 if mode == "oversize": self.receipt_path.write_bytes(b"x" * (1024 * 1024 + 1))
-                if mode == "symlink": self.receipt_path.symlink_to(self.fixture.source)
+                if mode == "symlink":
+                    target = self.output / "valid-receipt"
+                    target.write_bytes(self.raw)
+                    self.receipt_path.symlink_to(target)
                 if mode == "parent_symlink":
                     self.receipt_path.parent.rmdir()
-                    self.receipt_path.parent.symlink_to(self.output / "blobs", target_is_directory=True)
+                    target_dir = self.output / "valid-receipts"
+                    target_dir.mkdir()
+                    (target_dir / self.receipt).write_bytes(self.raw)
+                    self.receipt_path.parent.symlink_to(target_dir, target_is_directory=True)
                 with store.ledger(self.database, readonly=True) as con:
                     with self.assertRaisesRegex(ValueError, "original_resolution_mail_receipt_changed"):
-                        resolution.effective_original(con, self.sha)
+                        self.read(con)
 
     def test_old_reader_loudly_refuses_and_schema_pin_unchanged(self):
         self.enroll()

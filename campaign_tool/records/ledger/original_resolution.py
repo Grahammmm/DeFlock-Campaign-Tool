@@ -7,6 +7,8 @@ use effective_original(), retaining the original immutable declaration.
 import hashlib
 import json
 import sqlite3
+from functools import lru_cache
+from contextlib import closing
 from pathlib import Path
 from . import store
 from .migrations import original_resolution_v001 as migration
@@ -31,6 +33,26 @@ def require(value, reason):
         raise ValueError(reason)
 
 
+@lru_cache(maxsize=1)
+def _expected_schema():
+    # Compare SQLite's stored SQL with the unchanged migration, not a marker
+    # that can survive a dropped/replaced trigger. This never touches a ledger.
+    with closing(sqlite3.connect(":memory:")) as reference:
+        reference.executescript("CREATE TABLE ledger_meta(key,value);" + migration.SQL)
+        return tuple(reference.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master "
+            "WHERE name != 'ledger_meta' ORDER BY name"))
+
+
+def _verify_schema(con):
+    expected = _expected_schema()
+    names = [row[1] for row in expected]
+    actual = tuple(tuple(row) for row in con.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name IN (" +
+        ",".join("?" for _ in names) + ") OR tbl_name='original_resolutions' ORDER BY name", names))
+    require(actual == expected, "original_resolution_schema_mismatch")
+
+
 def installed(con):
     present = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                           "AND name='original_resolutions'").fetchone()
@@ -42,6 +64,7 @@ def installed(con):
     require(bool(marker) == bool(present), "unbound_original_resolution_schema")
     if marker:
         require(marker[0] == SCHEMA_HASH, "original_resolution_schema_mismatch")
+        _verify_schema(con)
     return bool(marker)
 
 
@@ -69,7 +92,14 @@ def _named_row(con, sql, parameters):
         cursor.close()
 
 
-def effective_original(con, subject):
+def effective_original(con, subject, *, output_root=None, mail_policy=None):
+    """Read an overlay, failing closed for mail without trusted caller context.
+
+    output_root is the installed intake output root, never inferred from a row.
+    mail_policy is the trusted, hash-pinned policy that created this binding;
+    a row's policy hash alone must never select or approve its own trust root.
+    Local-capture v1 and unresolved declarations need neither new argument.
+    """
     declaration = _named_row(con, "SELECT * FROM originals WHERE sha256=?", (subject,))
     if declaration is None:
         return None
@@ -79,9 +109,13 @@ def effective_original(con, subject):
     row = _named_row(con, "SELECT * FROM original_resolutions WHERE original_sha256=?", (subject,))
     if row is None:
         return original
-    payload = json.loads(row["payload_json"])
+    try:
+        payload = mail.decode(row["payload_json"])
+    except ValueError:
+        raise ValueError("original_resolution_payload_mismatch") from None
     if type(payload) is dict and payload.get("schema") == MAIL_SCHEMA:
-        return mail.effective(con, subject, original, row, payload)
+        return mail.effective(con, subject, original, row, payload,
+                              output_root=output_root, policy=mail_policy)
     require(type(payload) is dict and set(payload) == FIELDS
             and payload["schema"] == migration.NAME and payload["original_sha256"] == subject,
             "original_resolution_payload_mismatch")
@@ -113,11 +147,11 @@ def effective_original(con, subject):
     return original
 
 
-def append_mail_export(con, *, subject, policy, verification_receipt_sha256, occurrence_id, storage_path):
+def append_mail_export(con, *, subject, policy, verification_receipt_sha256, occurrence_id, storage_path, output_root):
     """Backend-only, inside its root-locked write transaction; never a CLI route."""
     return mail.append(con, subject=subject, policy=policy,
                        verification_receipt_sha256=verification_receipt_sha256,
-                       occurrence_id=occurrence_id, storage_path=storage_path)
+                       occurrence_id=occurrence_id, storage_path=storage_path, output_root=output_root)
 
 
 def append_initial(con, *, subject, policy_sha256, capture_receipt_sha256,

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import stat
+from types import MappingProxyType
 
 from . import store
 
@@ -44,7 +45,8 @@ def decode(raw):
 
 def read_regular(path, limit, *, owner_only=False):
     """No symlinks in any component, bounded reads, and no blocking FIFO open."""
-    path = Path(os.path.abspath(path))
+    path = Path(path)
+    require(path.is_absolute() and ".." not in path.parts)
     directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for part in path.parts[1:-1]:
@@ -74,7 +76,24 @@ class ApprovedMailResolutionPolicy:
     The bytes constructor permits synthetic fixtures and already securely read
     artifacts. A matching hash does not authenticate the owner's approval.
     """
+    __slots__ = ("_raw", "_sha256", "_entries")
+
+    def __setattr__(self, name, value):
+        raise AttributeError("immutable mail resolution policy")
+
+    def __delattr__(self, name):
+        raise AttributeError("immutable mail resolution policy")
+
+    @property
+    def raw(self):
+        return self._raw
+
+    @property
+    def sha256(self):
+        return self._sha256
+
     def __init__(self, raw, *, expected_sha256):
+        require(not hasattr(self, "_raw"))
         require(type(raw) is bytes and len(raw) <= MAX_POLICY_BYTES and sha(expected_sha256))
         if hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise ValueError("resolution_policy_mismatch")
@@ -96,7 +115,14 @@ class ApprovedMailResolutionPolicy:
             require(item["verification_receipt_sha256"] not in item["dependent_receipts"])
         # Canonical bytes make the policy identity independent of input layout.
         require(raw == store.canonical(value).encode())
-        self.raw, self.sha256 = raw, expected_sha256
+        # All reachable state is immutable, including the cached admissions.
+        # No repeated policy-wide decode/hash is needed in a write transaction.
+        frozen = {subject: MappingProxyType(dict(item,
+                  dependent_receipts=tuple(item["dependent_receipts"])))
+                  for subject, item in entries.items()}
+        object.__setattr__(self, "_entries", MappingProxyType(frozen))
+        object.__setattr__(self, "_sha256", expected_sha256)
+        object.__setattr__(self, "_raw", raw)
 
     @staticmethod
     def _sorted_hashes(values, limit):
@@ -114,6 +140,6 @@ class ApprovedMailResolutionPolicy:
         return cls(raw, expected_sha256=expected_sha256)
 
     def admission(self, subject, size):
-        item = decode(self.raw)["originals"].get(subject)
+        item = self._entries.get(subject)
         require(item is not None and type(size) is int and item["bytes"] == size)
-        return item  # Fresh decode: caller mutations cannot change this policy.
+        return dict(item, dependent_receipts=list(item["dependent_receipts"]))

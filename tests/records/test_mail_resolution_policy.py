@@ -97,7 +97,9 @@ class MailResolutionPolicyTests(unittest.TestCase):
             with patch.object(policy.os, "getuid", return_value=os.getuid() + 1):
                 with self.assertRaisesRegex(ValueError, "resolution_policy_invalid"):
                     policy.ApprovedMailResolutionPolicy.load(root, expected_sha256=p.sha256)
-            path.unlink(); path.symlink_to(root / "missing")
+            target = root / "valid-policy"
+            target.write_bytes(p.raw); target.chmod(0o600)
+            path.unlink(); path.symlink_to(target)
             with self.assertRaisesRegex(ValueError, "resolution_policy_invalid"):
                 policy.ApprovedMailResolutionPolicy.load(root, expected_sha256=p.sha256)
             path.unlink(); path.mkdir()
@@ -106,6 +108,9 @@ class MailResolutionPolicyTests(unittest.TestCase):
             path.rmdir(); os.mkfifo(path)
             with self.assertRaisesRegex(ValueError, "resolution_policy_invalid"):
                 policy.ApprovedMailResolutionPolicy.load(root, expected_sha256=p.sha256)
-            path.unlink(); directory.rmdir(); directory.symlink_to(root, target_is_directory=True)
+            path.unlink(); directory.rmdir()
+            target_dir = root / "valid-policies"; target_dir.mkdir()
+            (target_dir / p.sha256).write_bytes(p.raw); (target_dir / p.sha256).chmod(0o600)
+            directory.symlink_to(target_dir, target_is_directory=True)
             with self.assertRaisesRegex(ValueError, "resolution_policy_invalid"):
                 policy.ApprovedMailResolutionPolicy.load(root, expected_sha256=p.sha256)
