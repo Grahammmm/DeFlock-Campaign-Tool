@@ -398,6 +398,11 @@ class QwenVisionBackend:
             raise BackendError("vision_response_invalid") from None
         if not isinstance(content, str):
             raise BackendError("vision_response_invalid")
+        # JSON permits escaped lone surrogates; publication requires UTF-8.
+        try:
+            content.encode("utf-8")
+        except UnicodeEncodeError:
+            raise BackendError("vision_response_invalid") from None
         # Thinking models may inline their reasoning; only the transcription is kept.
         return THINK_BLOCK.sub("", content, count=1)
 
@@ -1033,7 +1038,12 @@ def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, 
                     continue
                 # Only uncached work counts against the cap, so cached documents
                 # never starve the rest of a stable queue across capped runs.
-                outcome = stage.process(item, allow_work=attempted < args.max_documents)
+                try:
+                    outcome = stage.process(item, allow_work=attempted < args.max_documents)
+                except Exception:  # noqa: BLE001 - one document must not poison the queue
+                    # Fixed code only: exception text may contain source/model data.
+                    # BaseException (stage deadline, interrupt) must still escape.
+                    outcome = Outcome(item.document_id, "ocr_failed", "document_internal_error", attempted=True)
                 if outcome is None:
                     backlog += 1
                     continue
