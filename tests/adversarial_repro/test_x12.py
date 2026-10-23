@@ -24,7 +24,7 @@ from unittest import mock
 
 from campaign_tool.records import ocr_stage as stage
 
-from tests.adversarial_medium_low._support import call
+from tests.adversarial_repro._support import call
 
 from tests.records.ocr_stage_fixtures import (FakeTools, FakeVision, blank_page, noise_page,
                                               ocrmypdf_sidecar, scanned_pdf)

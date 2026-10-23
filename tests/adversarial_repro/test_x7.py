@@ -16,7 +16,7 @@ from unittest import mock
 
 from campaign_tool.records.extract import ocr
 
-from tests.adversarial_medium_low._support import call
+from tests.adversarial_repro._support import call
 
 from tests.records.ocr_stage_fixtures import PNG_STUB, _pdf, _stream, noise_page, scanned_pdf
 
