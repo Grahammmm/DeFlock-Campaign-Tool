@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 import errno
 import fcntl
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -324,6 +325,8 @@ def urllib_transport(endpoint: str, body: bytes, timeout: int) -> bytes:
         raise BackendError("vision_http_error") from None
     except TimeoutError:
         raise BackendError("vision_timeout") from None
+    except http.client.HTTPException:
+        raise BackendError("vision_response_invalid") from None
     except (urllib.error.URLError, OSError) as error:
         reason = getattr(error, "reason", None)
         if isinstance(error, TimeoutError) or isinstance(reason, TimeoutError):
@@ -394,7 +397,7 @@ class QwenVisionBackend:
         try:
             reply = json.loads(raw.decode("utf-8"))
             content = reply["choices"][0]["message"]["content"]
-        except (UnicodeDecodeError, ValueError, KeyError, IndexError, TypeError):
+        except (UnicodeDecodeError, ValueError, KeyError, IndexError, TypeError, RecursionError):
             raise BackendError("vision_response_invalid") from None
         if not isinstance(content, str):
             raise BackendError("vision_response_invalid")
@@ -408,7 +411,12 @@ class QwenVisionBackend:
 
     def page_text(self, source: Path, page: int, workdir: Path) -> str:
         image = self.render(source, page, workdir)
-        return self.parse(self.transport(self.endpoint, self.request_body(image), self.timeout))
+        try:
+            raw = self.transport(self.endpoint, self.request_body(image), self.timeout)
+        except http.client.HTTPException:
+            # Injected transports have the same failure contract as urllib_transport.
+            raise BackendError("vision_response_invalid") from None
+        return self.parse(raw)
 
 
 # --- quality and queue -------------------------------------------------------
