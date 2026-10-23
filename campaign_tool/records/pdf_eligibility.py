@@ -1,8 +1,10 @@
 """Source-bound conservative X6 eligibility, not OCR quality or acceptance.
 
-Phase 1: bounded axis-aligned painted rectangles in unrotated MediaBox PDF
-user space (pdftoppm's default box). Rotation does not change intersections
-in that space. Unsupported geometry is unknown, never a native exemption.
+Bounded axis-aligned painted rectangles, including nested Forms, in unrotated
+MediaBox PDF user space (pdftoppm's default box). Rotation and UserUnit are
+recorded separately; reported areas use squared PDF user coordinates, not
+physical points or raster pixels. Unsupported geometry is unknown, never a
+native exemption.
 Text boxes/coverage are deliberately unavailable: any proven image suffices
 under v1 rule 5, even with a complete invisible text overlay.
 """
@@ -13,10 +15,12 @@ import unicodedata
 from fractions import Fraction
 
 POLICY = 'x6-eligibility-v1'
-PROBE = 'pypdf-painted-rects-1'
+PROBE = 'pypdf-painted-rects-2'
 MAX_OPERATIONS = 100000
 MAX_STREAM_BYTES = 16 * 1024 * 1024
 MAX_IMAGES = 512
+MAX_FORM_DEPTH = 32
+MAX_FORMS = 512
 
 
 def usable_text(text):
@@ -84,61 +88,76 @@ def _area(rectangles):
     return area
 
 
-# These operators cannot paint a raster or change the clipping domain by
-# themselves. Pattern color, external graphics states, forms and text clipping
-# are NOT assumed safe. They require phase-2 qualification or remain unknown.
+# These operators cannot introduce a raster or change clipping by themselves.
+# Patterns, Type3 fonts, soft masks and unknown operators remain unsupported.
 _SAFE = set(b'BT ET Tm Td TD T* Tj TJ \' " Tc Tw Tz TL Ts '
             b'w J j M d ri i G g RG rg K k CS cs '
             b'S s f F f* B B* b b* MP DP BMC EMC BX EX sh'.split())
 _PATH_END = {b'n', b'S', b's', b'f', b'F', b'f*', b'B', b'B*', b'b', b'b*'}
 
 
-def probe(page, source_sha256, number, text):
-    """Evaluate a page already parsed from caller's hash-verified bytes.
+def _object(value):
+    return value.get_object() if hasattr(value, 'get_object') else value
 
-    No IO, renderer, OCR, model or service calls. Measured image rectangles are
-    evidence, not an assertion that their pixels contain words. Null text/U
-    measurements explicitly mean unavailable, NOT zero or proof of coverage.
-    """
-    evidence: dict = dict(source_sha256=source_sha256, page=number, policy=POLICY,
-                    probe=PROBE, numeric='exact-rational-placement-and-union; binary64-display-areas',
-                    domain_convention='unrotated-MediaBox-pdftoppm-default',
-                    domain=None, rotation=None, user_unit=None, probe_complete=False,
-                    usable_text=usable_text(text), painted_image_present=None,
-                    image_rectangles=[], image_rectangles_exact=[], image_union_area=None, text_union_area=None,
-                    uncovered_image_area=None, text_boxes_complete=False,
-                    unavailable=['usable_text_boxes', 'uncovered_image_area'],
-                    decision='unresolved', reason='page_eligibility_unresolved')
-    images = evidence['image_rectangles']
-    exact_images = []
-    try:
-        domain = _numbers(page.mediabox, 4)
-        if domain[2] <= domain[0] or domain[3] <= domain[1]:
-            raise UnknownGeometry('empty_domain')
-        unit = float(page.get('/UserUnit', 1))
-        raw_rotation = Fraction(str(page.get('/Rotate', 0)))
-        rotation = int(raw_rotation)
-        if not math.isfinite(unit) or unit <= 0 or rotation != raw_rotation or rotation % 90:
-            raise UnknownGeometry('page_transform')
-        evidence.update(domain=[float(v) for v in domain], rotation=rotation, user_unit=unit)
-        if page.get('/Annots') or page.get('/Group'):
-            raise UnknownGeometry('annotation_or_group')
-        content = page.get_contents()
+
+def _group(container):
+    group = _object(container.get('/Group'))
+    if group is None:
+        return
+    if (not isinstance(group, dict) or group.get('/S') != '/Transparency'
+            or set(group) - {'/Type', '/S', '/CS', '/I', '/K'}
+            or group.get('/CS') not in (None, '/DeviceGray', '/DeviceRGB', '/DeviceCMYK')):
+        raise UnknownGeometry('unsupported_group')
+    # Isolation/knockout and a device blending color space cannot introduce
+    # raster placement or alter the clipping geometry. No coverage exemption
+    # is inferred from opacity or compositing; any painted image still wins.
+
+
+def _graphics_state(resources, operands):
+    if len(operands) != 1:
+        raise UnknownGeometry('operand_count')
+    states = _object(resources.get('/ExtGState', {}))
+    state = _object(states[operands[0]])
+    neutral = {'/Type', '/LW', '/LC', '/LJ', '/ML', '/D', '/RI', '/OP', '/op',
+               '/OPM', '/CA', '/ca', '/AIS', '/TK', '/BM', '/SMask'}
+    if (not isinstance(state, dict) or set(state) - neutral
+            or state.get('/SMask') not in (None, '/None')
+            or state.get('/BM') not in (None, '/Normal', '/Compatible')):
+        raise UnknownGeometry('unsupported_graphics_state')
+    for key in ('/CA', '/ca'):
+        if key in state:
+            value, = _numbers([state[key]], 1)
+            if not 0 <= value <= 1:
+                raise UnknownGeometry('invalid_alpha')
+
+
+class _Traversal:
+    """One shared budget across repeated placements, forms and nested streams."""
+    def __init__(self, evidence, pdf):
+        self.evidence, self.pdf = evidence, pdf
+        self.operations = self.bytes = self.forms = 0
+        self.rectangles = []
+        self.active = set()
+
+    def walk(self, content, resources, matrix, clip, path_names=(), graphics_depth=0):
+        from pypdf.generic import ContentStream
         if content is None:
             operations = []
         else:
-            if len(content.get_data()) > MAX_STREAM_BYTES:
+            self.bytes += len(content.get_data())
+            if self.bytes > MAX_STREAM_BYTES:
                 raise UnknownGeometry('stream_bound')
-            operations = content.operations
-        if len(operations) > MAX_OPERATIONS:
-            raise UnknownGeometry('operation_bound')
-        matrix, clip, stack = (1,0,0,1,0,0), domain, []
+            parsed = content if isinstance(content, ContentStream) else ContentStream(content, self.pdf)
+            operations = parsed.operations
+        resources = _object(resources)
+        stack = []
         path, complex_path, pending_clip = [], False, False
-        resources = page.get('/Resources', {})
-        resources = resources.get_object() if hasattr(resources, 'get_object') else resources
-        for operands, operator in operations:
+        for index, (operands, operator) in enumerate(operations):
+            self.operations += 1
+            if self.operations > MAX_OPERATIONS:
+                raise UnknownGeometry('operation_bound')
             if operator == b'q':
-                if len(stack) >= 64:
+                if graphics_depth + len(stack) >= 64:
                     raise UnknownGeometry('stack_bound')
                 stack.append((matrix, clip))
             elif operator == b'Q':
@@ -160,27 +179,55 @@ def probe(page, source_sha256, number, text):
                 if mode not in (0,1,2,3):
                     raise UnknownGeometry('text_clip')
             elif operator == b'Tf':
-                fonts = resources.get('/Font', {})
-                fonts = fonts.get_object() if hasattr(fonts, 'get_object') else fonts
-                font = fonts[operands[0]].get_object()
+                fonts = _object(resources.get('/Font', {}))
+                font = _object(fonts[operands[0]])
                 if font.get('/Subtype') not in {'/Type1', '/MMType1', '/TrueType', '/Type0'}:
                     raise UnknownGeometry('unsupported_font_painting')
+            elif operator == b'gs':
+                _graphics_state(resources, operands)
             elif operator in {b'Do', b'INLINE IMAGE'}:
-                if operator == b'Do':
-                    xobjects = resources.get('/XObject', {})
-                    xobjects = xobjects.get_object() if hasattr(xobjects, 'get_object') else xobjects
-                    obj = xobjects[operands[0]].get_object()
-                    if obj.get('/Subtype') != '/Image' or any(k in obj for k in ('/SMask','/Mask','/ImageMask','/OC')):
-                        raise UnknownGeometry('unsupported_xobject')
                 if pending_clip:
                     raise UnknownGeometry('unapplied_clip')
+                names = path_names + (str(operands[0]) if operator == b'Do' else 'inline',)
+                if operator == b'Do':
+                    xobjects = _object(resources.get('/XObject', {}))
+                    obj = _object(xobjects[operands[0]])
+                    if obj.get('/Subtype') == '/Form':
+                        self.forms += 1
+                        if len(names) > MAX_FORM_DEPTH or self.forms > MAX_FORMS:
+                            raise UnknownGeometry('form_bound')
+                        if id(obj) in self.active:
+                            raise UnknownGeometry('form_cycle')
+                        if obj.get('/FormType', 1) != 1 or any(k in obj for k in ('/OC', '/Ref', '/PS')):
+                            raise UnknownGeometry('unsupported_form')
+                        _group(obj)
+                        form_matrix = _compose(matrix, obj.get('/Matrix', (1,0,0,1,0,0)))
+                        box = _numbers(obj['/BBox'], 4)
+                        if box[2] <= box[0] or box[3] <= box[1]:
+                            raise UnknownGeometry('empty_form_domain')
+                        form_clip = _intersect(clip, _rect(form_matrix,
+                            (box[0], box[1], box[2]-box[0], box[3]-box[1])))
+                        self.active.add(id(obj))
+                        try:
+                            self.walk(obj, obj.get('/Resources', resources), form_matrix, form_clip,
+                                      names, graphics_depth + len(stack) + 1)
+                        finally:
+                            self.active.remove(id(obj))
+                        continue
+                    if obj.get('/Subtype') != '/Image' or any(k in obj for k in ('/SMask','/Mask','/ImageMask','/OC')):
+                        raise UnknownGeometry('unsupported_xobject')
+                else:
+                    settings = operands.get('settings', {})
+                    if any(k in settings for k in ('/IM', '/ImageMask', '/Mask', '/SMask')):
+                        raise UnknownGeometry('unsupported_inline_mask')
                 rect = _intersect(_rect(matrix, (0,0,1,1)), clip)
                 if rect is not None:
-                    if len(images) >= MAX_IMAGES:
+                    if len(self.rectangles) >= MAX_IMAGES:
                         raise UnknownGeometry('image_bound')
-                    exact_images.append(rect)
-                    images.append([float(v) for v in rect])
-                    evidence['image_rectangles_exact'].append([str(v) for v in rect])
+                    self.rectangles.append(rect)
+                    self.evidence['image_rectangles'].append([float(v) for v in rect])
+                    self.evidence['image_rectangles_exact'].append([str(v) for v in rect])
+                    self.evidence['image_placements'].append({'xobject_path': list(names), 'operation': index})
             elif operator not in _SAFE and operator not in _PATH_END:
                 raise UnknownGeometry('unsupported_operator')
             if operator in _PATH_END:
@@ -189,6 +236,40 @@ def probe(page, source_sha256, number, text):
                 path, complex_path, pending_clip = [], False, False
         if stack or pending_clip:
             raise UnknownGeometry('unbalanced_graphics_state')
+
+
+def probe(page, source_sha256, number, text):
+    """Evaluate a page already parsed from caller's hash-verified bytes.
+
+    No IO, renderer, OCR, model or service calls. Measured image rectangles are
+    evidence, not an assertion that their pixels contain words. Null text/U
+    measurements explicitly mean unavailable, NOT zero or proof of coverage.
+    """
+    evidence: dict = dict(source_sha256=source_sha256, page=number, policy=POLICY,
+                    probe=PROBE, numeric='exact-rational-placement-and-union; binary64-display-areas',
+                    domain_convention='unrotated-MediaBox-pdftoppm-default', area_units='squared-PDF-user-coordinates',
+                    domain=None, rotation=None, user_unit=None, probe_complete=False,
+                    usable_text=usable_text(text), painted_image_present=None,
+                    image_rectangles=[], image_rectangles_exact=[], image_placements=[], image_union_area=None, text_union_area=None,
+                    uncovered_image_area=None, text_boxes_complete=False,
+                    unavailable=['usable_text_boxes', 'uncovered_image_area'],
+                    decision='unresolved', reason='page_eligibility_unresolved')
+    images = evidence['image_rectangles']
+    traversal = _Traversal(evidence, getattr(page, 'pdf', None))
+    try:
+        domain = _numbers(page.mediabox, 4)
+        if domain[2] <= domain[0] or domain[3] <= domain[1]:
+            raise UnknownGeometry('empty_domain')
+        unit = float(page.get('/UserUnit', 1))
+        raw_rotation = Fraction(str(page.get('/Rotate', 0)))
+        rotation = int(raw_rotation)
+        if not math.isfinite(unit) or unit <= 0 or rotation != raw_rotation or rotation % 90:
+            raise UnknownGeometry('page_transform')
+        evidence.update(domain=[float(v) for v in domain], rotation=rotation, user_unit=unit)
+        if page.get('/Annots'):
+            raise UnknownGeometry('annotations')
+        _group(page)
+        traversal.walk(page.get_contents(), page.get('/Resources', {}), (1,0,0,1,0,0), domain)
         evidence['probe_complete'] = True
     except Exception as error:
         evidence['unavailable'].append(str(error) if isinstance(error, UnknownGeometry) else 'geometry_probe_failed')
@@ -198,7 +279,7 @@ def probe(page, source_sha256, number, text):
         # no full union-area claim is made for incomplete traversal.
         if evidence['probe_complete']:
             try:
-                area = float(_area(exact_images))
+                area = float(_area(traversal.rectangles))
                 if area <= 0 or not math.isfinite(area):
                     raise UnknownGeometry('nonpositive_measured_area')
                 evidence['image_union_area'] = area
@@ -210,6 +291,4 @@ def probe(page, source_sha256, number, text):
         evidence.update(painted_image_present=False, image_union_area=0.0)
         evidence.update(decision='native_sufficient' if evidence['usable_text'] else 'ocr_required',
                         reason='no_painted_raster' if evidence['usable_text'] else 'no_usable_native_text')
-    # No text is sufficient evidence of needing OCR, but unknown rendering
-    # semantics still block; native admission never becomes ok on uncertainty.
     return evidence
