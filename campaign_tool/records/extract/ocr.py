@@ -180,7 +180,7 @@ def _publish_directory(source: Path, destination: Path) -> bool:
 
 def _confidence(tsv: str) -> float | None:
     values = []
-    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
+    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t", quoting=csv.QUOTE_NONE):
         if not row.get("text", "").strip():
             continue
         try:
@@ -689,7 +689,7 @@ def extract_image_only_pages(
             receipt["blocked_reason"] = "local_ocr_timeout"
         except RuntimeError as error:
             receipt["blocked_reason"] = str(error)
-        except (ValueError, OSError):
+        except (ValueError, OSError, csv.Error):
             receipt["blocked_reason"] = "page_derivative_failed_or_unsafe"
         if receipt["status"] == "blocked" and receipt["blocked_reason"] is None:
             receipt["blocked_reason"] = "page_ocr_unresolved"
