@@ -34,7 +34,7 @@ apply=False, backend_factory=None)` returns the report dict. A refusal raises
 
 ## Adoption gate (configuration, never file deletion)
 
-Config file (owner-only, at most 64 KiB, no extra keys allowed):
+V1 config file (owner-only, at most 64 KiB, no extra keys allowed):
 
     {"schema": "mail-history-adoption-v1",
      "source": "mail-history",
@@ -59,6 +59,69 @@ gate has changed by then, apply is refused with `adoption_gate_changed`. A
 refused apply writes nothing.
 
 ## Receipt classification (read-only)
+
+### Staged legacy census and config v2 (S3a)
+
+The fixture-tested read-only census is available as:
+
+    records adopt-mail --root <private processing root> \
+        --mail-history <frozen export root containing receipts/> \
+        --legacy-resolution-inventory <new private output path> \
+        [--config <owner-only adoption config>]
+
+It is mutually exclusive with `--apply`. The output must be a NEW regular file
+outside Git and both source trees, in an existing owner-only directory. It is
+created with mode 0600, never follows symlinks and never overwrites a file.
+Stdout contains counts only. The inventory is not an approval or a policy.
+No real census, TEST policy or live operation is authorized by this feature.
+
+The inventory schema is `legacy-mail-resolution-inventory-v1`, with `counts`
+and `originals` keyed by original digest. Each entry carries `bytes`,
+`legacy_format`, `kinds`, `legacy_binding_sha256`, `state`, `eligibility_code`,
+`receipts` (digest, MIME precheck code/null, all genuine occurrence ids),
+`proposal` and `warnings`. `proposal.state` is `proposed`, `held` or `fixed`.
+Proposed/fixed entries carry `verification_receipt_sha256`,
+`binding_occurrence_id`, `dependent_receipts`; fixed entries also carry the
+immutable `legacy_binding_sha256`. Held entries carry a safe `code`.
+The inventory includes every discovered containing receipt regardless of its
+adoption state or MIME gap, including legacy rfc822. Invalid discovery inputs
+are counted in `discovery_gaps` and cause exit 3, not clean coverage. A missing
+ledger is never initialized. Ledger/intake snapshots use `immutable=1`, refuse
+nonempty WAL/rollback journals, and preserve source and sidecar identities.
+
+`mail-history-adoption-v2` retains the v1 keys and adds optional
+`legacy_resolution_policy_sha256` (lowercase digest or null) and optional
+`legacy_resolution_historical_policy_pins` (default empty list). V1 and v2
+with no pins retain existing adoption behavior. V2 is bounded to 2 MiB;
+duplicate keys, nonfinite values and extra fields are refused.
+
+Each historical-pin entry has exactly `policy_sha256`, `introduced_at`
+(`YYYY-MM-DDTHH:MM:SSZ` UTC), `provenance_sha256` (the private introduction
+record's digest), and `originals` (nonempty sorted unique original digests).
+The list is sorted by unique policy digest, at most 10,000 pins and 10,000
+subjects total, and no subject appears twice. Historical subject-to-policy
+selection comes ONLY from this owner-only config. No external pin-list path,
+row-derived policy selector, receipt selector or CLI hash is accepted.
+Every current/historical policy is securely loaded from
+`<root>/resolution-policies/<pinned digest>` with its exact content hash,
+schema and owner-only/nonsymlink validation. Hashes do not authenticate approval.
+
+Successor censuses validate existing mail resolutions with their independently
+pinned creating policies and preserve their fixed binding, even with the
+current write policy unpinned. A successor policy alone cannot authorize an
+older row's read. Config/policy failure refuses the census without output.
+
+S3b integration interface: `mail_resolution_config.load_settings(root,
+config_path)` returns `ResolutionSettings(config_sha256, context)`, with
+`.policy` and the immutable `MailResolutionReadContext` containing historical
+subject pins. S3b MUST reload this closure under the existing root writer lock,
+compare the config hash/context fingerprint, and refuse changes BEFORE any
+recovery or write (D24). No apply planner or resolution report is implemented
+here. Until S3b lands, nonempty v2 resolution settings deliberately refuse
+apply with `resolution_apply_integration_required`; dry run reports
+`resolution_policy.state=mismatch` for missing/invalid policy or
+`integration_required` for a loaded closure, both exit 3. These staged refusals
+must not be presented as a resolution-ready apply.
 
 Each valid receipt is classified against the ledger:
 
