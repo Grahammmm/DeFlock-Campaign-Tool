@@ -301,7 +301,7 @@ class CensusTests(unittest.TestCase):
         with patch.object(sys, "argv", ["adopt-mail", "--root", str(self.root), "--mail-history", str(self.mail), "--config", str(path)]), contextlib.redirect_stdout(out):
             self.assertEqual(adoption.main(), 3)
         self.assertEqual(json.loads(out.getvalue())["resolution_policy"]["state"], "mismatch")
-        with self.assertRaisesRegex(adoption.AdoptionError, "integration_required"):
+        with self.assertRaisesRegex(adoption.AdoptionError, "resolution_policy_mismatch"):
             adoption.adopt(self.root, self.mail, config_path=path, apply=True)
         self.assertEqual(before, self.tree())
 
