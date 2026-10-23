@@ -18,7 +18,8 @@ class Utf8AndIsolation(unittest.TestCase):
             self.assertEqual(stage.QwenVisionBackend.parse(reply(text)), text)
 
     def test_unexpected_document_error_keeps_later_document_and_hides_message(self):
-        for error in (ValueError('PRIVATE marker'), RuntimeError('PRIVATE marker'), UnicodeError('PRIVATE marker')):
+        for error in (ValueError('PRIVATE marker'), RuntimeError('PRIVATE marker'),
+                      UnicodeError('PRIVATE marker'), stage.BackendError('vision_response_invalid')):
             with self.subTest(error=type(error).__name__):
                 ws = Workspace(self)
                 bad = ws.add('bad.pdf', scanned_pdf([noise_page(1)]))
@@ -37,6 +38,32 @@ class Utf8AndIsolation(unittest.TestCase):
                 self.assertEqual(set(results(ws.out)), {good})
                 self.assertNotIn('PRIVATE', json.dumps(line))
                 self.assertEqual(list((ws.out / '.work').iterdir()), [])
+
+    def test_shared_work_permissions_fail_closed_but_private_work_succeeds(self):
+        for mode in (0o777, 0o700):
+            with self.subTest(mode=oct(mode)):
+                ws = Workspace(self)
+                first = ws.add('first.pdf', scanned_pdf([noise_page(1)]))
+                second = ws.add('second.pdf', scanned_pdf([noise_page(2)]))
+                ws.write_queue()
+                ws.out.mkdir(mode=0o700, exist_ok=True)
+                ws.out.chmod(0o700)
+                work = ws.out / '.work'
+                work.mkdir(mode=0o700)
+                work.chmod(mode)
+                line, code, outcomes = stage.run(
+                    ws.args(vision_config(ws)),
+                    FakeTools({first: [CLEAN], second: [CLEAN]}), FakeVision())
+                if mode == 0o777:
+                    self.assertEqual(line['error_code'], 'OCR_OUT_ROOT_UNSAFE')
+                    self.assertEqual(line['status'], 'fail')
+                    self.assertEqual(code, 1)
+                    self.assertEqual(outcomes, [])
+                    self.assertEqual(results(ws.out), {})
+                else:
+                    self.assertEqual(code, 0)
+                    self.assertEqual([o.status for o in outcomes], ['ocr_complete', 'ocr_complete'])
+                    self.assertEqual(set(results(ws.out)), {first, second})
 
     def test_control_flow_baseexception_is_not_swallowed(self):
         ws = Workspace(self)

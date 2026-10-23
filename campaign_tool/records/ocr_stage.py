@@ -1048,7 +1048,10 @@ def run(args, runner=run_group, transport=urllib_transport) -> tuple[dict, int, 
                 # never starve the rest of a stable queue across capped runs.
                 try:
                     outcome = stage.process(item, allow_work=attempted < args.max_documents)
-                except Exception:  # noqa: BLE001 - one document must not poison the queue
+                except Exception as error:  # noqa: BLE001 - isolate document failures only
+                    if isinstance(error, BackendError) and error.code == "out_root_unsafe":
+                        # Shared output safety is a stage failure, never document-local.
+                        raise
                     # Fixed code only: exception text may contain source/model data.
                     # BaseException (stage deadline, interrupt) must still escape.
                     outcome = Outcome(item.document_id, "ocr_failed", "document_internal_error", attempted=True)
