@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "report_kind": "flock-records-run-report",
+  "run_id": "run_20000101T000000Z_00000000",
+  "mode": "test",
+  "started_at": "2000-01-01T00:00:00Z",
+  "finished_at": "2000-01-01T00:00:00Z",
+  "duration_seconds": 0,
+  "overall_status": "ok",
+  "stages": [
+    {
+      "name": "sync",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 2,
+        "output": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "delta",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 1,
+        "output": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "adoption",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 1,
+        "output": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "portal",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 1,
+        "output": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "extract",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 424,
+        "output": 0,
+        "failed": 23,
+        "skipped": 401
+      },
+      "outcomes": [
+        {
+          "code": "AWAITING_OCR",
+          "count": 1
+        },
+        {
+          "code": "CORRUPT_DOCUMENT",
+          "count": 22
+        },
+        {
+          "code": "EXTRACT_NOT_ACCEPTED",
+          "count": 1
+        },
+        {
+          "code": "PRESERVE_PENDING",
+          "count": 400
+        }
+      ]
+    },
+    {
+      "name": "digest_gates",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 1,
+        "output": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "outputs",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 1,
+        "output": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "notify",
+      "status": "ok",
+      "error_code": null,
+      "duration_seconds": 0,
+      "counts": {
+        "input": 1,
+        "output": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "new_data": {
+    "documents": 0,
+    "pages": 0,
+    "extracted_units": 0,
+    "portal_releases": 0,
+    "request_status_changes": 0
+  },
+  "review_required_count": 0,
+  "notify_failed": false,
+  "needs_g": [
+    {
+      "stage": "delta",
+      "code": "ADOPTION_CODED_GAPS",
+      "count": 116,
+      "severity": "info"
+    },
+    {
+      "stage": "adoption",
+      "code": "ADOPTION_CODED_GAPS",
+      "count": 116,
+      "severity": "info"
+    },
+    {
+      "stage": "adoption",
+      "code": "ADOPT_BACKUP_SKIPPED",
+      "count": 1,
+      "severity": "info"
+    },
+    {
+      "stage": "portal",
+      "code": "PORTAL_FETCH_DRY_RUN_ONLY",
+      "count": 126,
+      "severity": "info"
+    },
+    {
+      "stage": "extract",
+      "code": "AWAITING_OCR",
+      "count": 1,
+      "severity": "info"
+    },
+    {
+      "stage": "extract",
+      "code": "EXTRACT_CORRUPT_DOCUMENT",
+      "count": 22,
+      "severity": "info"
+    },
+    {
+      "stage": "extract",
+      "code": "EXTRACT_NOT_ACCEPTED",
+      "count": 1,
+      "severity": "info"
+    },
+    {
+      "stage": "extract",
+      "code": "EXTRACT_PRESERVE_PENDING",
+      "count": 400,
+      "severity": "info"
+    }
+  ]
+}
