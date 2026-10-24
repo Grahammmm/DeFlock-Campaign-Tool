@@ -221,3 +221,42 @@ pending, and active failures appear in private status. Successful retry clears t
 active gap without deleting its history. Failure to persist sidecar evidence raises
 an operational error rather than claiming a recorded failure. Fetch and the local
 runner bridge use actual delivery counts and leave every newly enrolled stage pending.
+
+## Offline pointer reconciliation report
+
+`tools/portal_reconcile.py` is a read-only, counts-only report. It compares a
+mail-derived pointer set (`portal-pointer-observations/v1`: host class, URL
+SHA-256, optional host, request id, item id or path) with a queue export
+(`portal-queue-export/v1`: host, request id, item id, state, optional
+`has_version` and reason code):
+
+```sh
+python3 -B tools/portal_reconcile.py --observations /private/run/pointers.json \
+  --queue-export /private/run/queue-export.json --output /private/run/portal-reconcile.json
+```
+
+Each unique URL is assigned exactly one class: `fetched` (a version receipt exists),
+`queued`, `failed` (blocked; reason codes counted from a fixed vocabulary of engine
+codes, anything else as `unrecognized_reason`), `unproven` (host policy unknown, no
+item id, not in queue, or ambiguous queue identity), `held_policy` (host class
+outside the allowlist or `allowlisted: false`), `held_redirect` or
+`missing_request_identity`. Held classes are decided before any queue lookup, so
+they are never reported as fetched. Items are parsed
+with the same `/documents/<item>` pattern as `inventory_notice()`. Malformed rows
+(including wrong JSON types) and conflicting duplicates are counted by fixed reason
+codes and never abort the report.
+
+Producer obligation: each observation's `allowlisted` value must come from a
+custodian-supplied, offline classification of that row's host against the
+root-owned portal allowlist. The tool never reads or changes the allowlist. A
+missing or null `allowlisted` means host policy is unknown: the URL is counted as
+`unproven` (`host_policy_unknown`) and is never reported as fetched, queued or
+failed. A NextRequest host class or a matching queue row is not allowlist proof.
+
+The output never
+includes URLs, paths, hosts, identifiers, filenames, subjects or addresses, and
+identical inputs give byte-identical output. Errors, including argument errors,
+are a single fixed JSON code on stderr (`usage_invalid`, `input_*`,
+`output_not_created`, `internal_error`) and never echo arguments or input text. The report opens no queue store,
+allowlist, ledger, mailbox or network connection. The counts it produces still
+need review and are not acceptance.
