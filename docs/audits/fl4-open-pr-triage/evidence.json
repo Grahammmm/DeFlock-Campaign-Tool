@@ -1,0 +1,1247 @@
+{
+  "schema_version": 1,
+  "repository": "Grahammmm/DeFlock-Campaign-Tool",
+  "release": 0,
+  "captured_at_utc": "2026-10-20T13:13:06.928776+00:00",
+  "scope": [
+    14,
+    39,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    110,
+    130,
+    138,
+    154
+  ],
+  "open_pr_numbers_at_capture": [
+    14,
+    39,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    110,
+    130,
+    138,
+    154,
+    161
+  ],
+  "additional_open_pr_numbers": [
+    161
+  ],
+  "overlap_definition": "intersection of git diff --name-only merge_base head and merge_base release (net path changes; not textual conflicts)",
+  "prs": [
+    {
+      "baseRefName": "main",
+      "headRefName": "claude/social-reels",
+      "headRefOid": 1,
+      "isDraft": false,
+      "number": 14,
+      "state": "OPEN",
+      "title": "Add a daily Reel generator for published campaign facts",
+      "updatedAt": "2026-10-18T16:45:48Z",
+      "merge_base": 2,
+      "pr_files": [
+        ".github/workflows/offline.yml",
+        "NOTICE",
+        "README.md",
+        "campaign_tool/social/__init__.py",
+        "campaign_tool/social/__main__.py",
+        "campaign_tool/social/blender_scenes.py",
+        "campaign_tool/social/facts.py",
+        "campaign_tool/social/fonts/IBMPlexSans-Bold.ttf",
+        "campaign_tool/social/fonts/IBMPlexSans-Regular.ttf",
+        "campaign_tool/social/fonts/IBMPlexSans-SemiBold.ttf",
+        "campaign_tool/social/fonts/OFL.txt",
+        "campaign_tool/social/narration.py",
+        "campaign_tool/social/reel.py",
+        "campaign_tool/social/render.py",
+        "campaign_tool/social/script.py",
+        "campaign_tool/social/sfx.py",
+        "campaign_tool/social/shots.py",
+        "campaign_tool/social/veo.py",
+        "docs/SOCIAL.md",
+        "examples/fictional-campaign/social/boundary.geojson",
+        "examples/fictional-campaign/social/facts.json",
+        "examples/fictional-campaign/social/messaging.md",
+        "examples/fictional-campaign/social/points.geojson",
+        "examples/fictional-campaign/social/social.json",
+        "requirements-blender.txt",
+        "requirements-social.txt",
+        "tests/test_social.py"
+      ],
+      "overlap_files": [
+        ".github/workflows/offline.yml",
+        "README.md"
+      ],
+      "commits_release_only": 438,
+      "commits_pr_only": 4,
+      "patch_bytes": 122647,
+      "identical_at_release": [],
+      "different_at_release": [
+        ".github/workflows/offline.yml",
+        "NOTICE",
+        "README.md"
+      ],
+      "absent_at_release": [
+        "campaign_tool/social/__init__.py",
+        "campaign_tool/social/__main__.py",
+        "campaign_tool/social/blender_scenes.py",
+        "campaign_tool/social/facts.py",
+        "campaign_tool/social/fonts/IBMPlexSans-Bold.ttf",
+        "campaign_tool/social/fonts/IBMPlexSans-Regular.ttf",
+        "campaign_tool/social/fonts/IBMPlexSans-SemiBold.ttf",
+        "campaign_tool/social/fonts/OFL.txt",
+        "campaign_tool/social/narration.py",
+        "campaign_tool/social/reel.py",
+        "campaign_tool/social/render.py",
+        "campaign_tool/social/script.py",
+        "campaign_tool/social/sfx.py",
+        "campaign_tool/social/shots.py",
+        "campaign_tool/social/veo.py",
+        "docs/SOCIAL.md",
+        "examples/fictional-campaign/social/boundary.geojson",
+        "examples/fictional-campaign/social/facts.json",
+        "examples/fictional-campaign/social/messaging.md",
+        "examples/fictional-campaign/social/points.geojson",
+        "examples/fictional-campaign/social/social.json",
+        "requirements-blender.txt",
+        "requirements-social.txt",
+        "tests/test_social.py"
+      ],
+      "release_changed_path_count": 679,
+      "verdict": "close",
+      "reason": "Out-of-scope social renderer with new paid-provider adapters and CI dependencies; preserve the branch for a separately scoped publication/privacy review, not Phase 1 integration."
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-fable-audit-handoff",
+      "headRefOid": 3,
+      "isDraft": true,
+      "number": 39,
+      "state": "OPEN",
+      "title": "docs: Fable full-repository audit and continuation handoff",
+      "updatedAt": "2026-10-01T15:30:11Z",
+      "merge_base": 4,
+      "pr_files": [
+        "docs/fable-audit-2026-10-01/ACCEPTANCE.md",
+        "docs/fable-audit-2026-10-01/AUDIT-INSTRUCTIONS.md",
+        "docs/fable-audit-2026-10-01/BUILD-BRIEF.md",
+        "docs/fable-audit-2026-10-01/CURRENT-STATE.md",
+        "docs/fable-audit-2026-10-01/DECISIONS-AND-BOUNDARIES.md",
+        "docs/fable-audit-2026-10-01/HISTORICAL-AUDIT.md",
+        "docs/fable-audit-2026-10-01/PRIVATE-EVIDENCE.md",
+        "docs/fable-audit-2026-10-01/README.md",
+        "docs/fable-audit-2026-10-01/REVIEW-AND-DETECTORS.md",
+        "docs/fable-audit-2026-10-01/github-snapshot.json"
+      ],
+      "overlap_files": [],
+      "commits_release_only": 347,
+      "commits_pr_only": 1,
+      "patch_bytes": 112252,
+      "identical_at_release": [],
+      "different_at_release": [],
+      "absent_at_release": [
+        "docs/fable-audit-2026-10-01/ACCEPTANCE.md",
+        "docs/fable-audit-2026-10-01/AUDIT-INSTRUCTIONS.md",
+        "docs/fable-audit-2026-10-01/BUILD-BRIEF.md",
+        "docs/fable-audit-2026-10-01/CURRENT-STATE.md",
+        "docs/fable-audit-2026-10-01/DECISIONS-AND-BOUNDARIES.md",
+        "docs/fable-audit-2026-10-01/HISTORICAL-AUDIT.md",
+        "docs/fable-audit-2026-10-01/PRIVATE-EVIDENCE.md",
+        "docs/fable-audit-2026-10-01/README.md",
+        "docs/fable-audit-2026-10-01/REVIEW-AND-DETECTORS.md",
+        "docs/fable-audit-2026-10-01/github-snapshot.json"
+      ],
+      "release_changed_path_count": 532,
+      "verdict": "close",
+      "reason": "Historical October 1 audit packet is absent from the release, not implemented elsewhere; retain as a dated reference rather than merge stale current-state/build instructions."
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-correspondence-skill",
+      "headRefOid": 5,
+      "isDraft": true,
+      "number": 80,
+      "state": "OPEN",
+      "title": "Add source-only Flock correspondence skill and read-only ledger report",
+      "updatedAt": "2026-10-13T02:44:31Z",
+      "merge_base": 6,
+      "pr_files": [
+        "campaign_tool/records/correspondence.py",
+        "docs/CORRESPONDENCE.md",
+        "skills/flock-correspondence/SKILL.md",
+        "skills/flock-correspondence/references/workflow.md",
+        "tests/records/test_correspondence.py"
+      ],
+      "overlap_files": [
+        "campaign_tool/records/correspondence.py",
+        "docs/CORRESPONDENCE.md",
+        "skills/flock-correspondence/SKILL.md",
+        "skills/flock-correspondence/references/workflow.md",
+        "tests/records/test_correspondence.py"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 1,
+      "patch_bytes": 91663,
+      "identical_at_release": [
+        "campaign_tool/records/correspondence.py",
+        "docs/CORRESPONDENCE.md",
+        "skills/flock-correspondence/SKILL.md",
+        "skills/flock-correspondence/references/workflow.md",
+        "tests/records/test_correspondence.py"
+      ],
+      "different_at_release": [],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "All five touched blobs match the release; merged successor Grahammmm/DeFlock-Campaign-Tool#93 already carries the source-only correspondence slice.",
+      "successor_pr": 93
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-semantic-coverage",
+      "headRefOid": 7,
+      "isDraft": true,
+      "number": 81,
+      "state": "OPEN",
+      "title": "Add resumable semantic coverage manifests (ARCH02)",
+      "updatedAt": "2026-10-13T02:46:31Z",
+      "merge_base": 6,
+      "pr_files": [
+        "campaign_tool/records/semantic_coverage.py",
+        "tests/records/test_semantic_coverage.py"
+      ],
+      "overlap_files": [
+        "campaign_tool/records/semantic_coverage.py",
+        "tests/records/test_semantic_coverage.py"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 1,
+      "patch_bytes": 48717,
+      "identical_at_release": [
+        "campaign_tool/records/semantic_coverage.py",
+        "tests/records/test_semantic_coverage.py"
+      ],
+      "different_at_release": [],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "Both touched blobs match the release via Grahammmm/DeFlock-Campaign-Tool#94; range bookkeeping is not semantic acceptance or complete runtime coverage.",
+      "successor_pr": 94
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-build-envelope",
+      "headRefOid": 8,
+      "isDraft": true,
+      "number": 82,
+      "state": "OPEN",
+      "title": "Fix ARCH09 Worker-to-runner build envelope contract",
+      "updatedAt": "2026-10-13T02:46:33Z",
+      "merge_base": 6,
+      "pr_files": [
+        "runner/handlers/build_site.py",
+        "tests/runner/test_build_site_contract.py",
+        "tests/runner/test_build_site_envelope.py",
+        "workers/workspace/src/manifest.ts",
+        "workers/workspace/test/build-contract-bridge.mjs",
+        "workers/workspace/test/build-contract-worker.ts",
+        "workers/workspace/test/build-envelope.test.ts"
+      ],
+      "overlap_files": [
+        "runner/handlers/build_site.py",
+        "tests/runner/test_build_site_contract.py",
+        "tests/runner/test_build_site_envelope.py",
+        "workers/workspace/src/manifest.ts",
+        "workers/workspace/test/build-contract-bridge.mjs",
+        "workers/workspace/test/build-contract-worker.ts",
+        "workers/workspace/test/build-envelope.test.ts"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 1,
+      "patch_bytes": 47228,
+      "identical_at_release": [
+        "runner/handlers/build_site.py",
+        "tests/runner/test_build_site_envelope.py",
+        "workers/workspace/src/manifest.ts",
+        "workers/workspace/test/build-contract-bridge.mjs",
+        "workers/workspace/test/build-contract-worker.ts",
+        "workers/workspace/test/build-envelope.test.ts"
+      ],
+      "different_at_release": [
+        "tests/runner/test_build_site_contract.py"
+      ],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "Grahammmm/DeFlock-Campaign-Tool#95 integrated all seven blobs; only the build seam test differs now, adapted to claim-token/replay semantics by Grahammmm/DeFlock-Campaign-Tool#97.",
+      "successor_pr": 95
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-publish-authority",
+      "headRefOid": 9,
+      "isDraft": true,
+      "number": 83,
+      "state": "OPEN",
+      "title": "Fix publication authority races and bind rollback history",
+      "updatedAt": "2026-10-13T02:46:57Z",
+      "merge_base": 6,
+      "pr_files": [
+        "campaign_tool/records/publish.py",
+        "campaign_tool/records/run.py",
+        "tests/records/test_proposal_provenance.py",
+        "tests/records/test_publish_authority.py"
+      ],
+      "overlap_files": [
+        "campaign_tool/records/publish.py",
+        "campaign_tool/records/run.py",
+        "tests/records/test_proposal_provenance.py",
+        "tests/records/test_publish_authority.py"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 1,
+      "patch_bytes": 72423,
+      "identical_at_release": [
+        "tests/records/test_proposal_provenance.py",
+        "tests/records/test_publish_authority.py"
+      ],
+      "different_at_release": [
+        "campaign_tool/records/publish.py",
+        "campaign_tool/records/run.py"
+      ],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "Grahammmm/DeFlock-Campaign-Tool#89 incorporated publication/provenance repairs; tests and _record_proposal match, while release publication adds retirement/relocation guards.",
+      "successor_pr": 89,
+      "record_proposal_identical": true
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-contextual-revisions",
+      "headRefOid": 10,
+      "isDraft": true,
+      "number": 84,
+      "state": "OPEN",
+      "title": "Add context-bound analysis revisions and unresolved applicability contracts (ARCH04/05)",
+      "updatedAt": "2026-10-13T02:47:51Z",
+      "merge_base": 6,
+      "pr_files": [
+        "campaign_tool/records/context_revision.py",
+        "docs/CONTEXT-REVISION-INTEGRATION.md",
+        "docs/integration/context-revision-run-guards.patch",
+        "tests/records/test_context_revision.py"
+      ],
+      "overlap_files": [
+        "campaign_tool/records/context_revision.py",
+        "docs/CONTEXT-REVISION-INTEGRATION.md",
+        "docs/integration/context-revision-run-guards.patch",
+        "tests/records/test_context_revision.py"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 1,
+      "patch_bytes": 46232,
+      "identical_at_release": [
+        "campaign_tool/records/context_revision.py",
+        "docs/CONTEXT-REVISION-INTEGRATION.md",
+        "docs/integration/context-revision-run-guards.patch",
+        "tests/records/test_context_revision.py"
+      ],
+      "different_at_release": [],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "All four touched blobs match the release via Grahammmm/DeFlock-Campaign-Tool#96; the retained partial patch does not clear unattended/context-provider holds.",
+      "successor_pr": 96
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-backup-integrity",
+      "headRefOid": 11,
+      "isDraft": true,
+      "number": 85,
+      "state": "OPEN",
+      "title": "Fix backup original closure and SQLite snapshot finalization",
+      "updatedAt": "2026-10-13T14:10:23Z",
+      "merge_base": 6,
+      "pr_files": [
+        "campaign_tool/backup.py",
+        "campaign_tool/records/recovery/backup.py",
+        "campaign_tool/records/recovery/backup_v2.py",
+        "docs/BACKUP.md",
+        "docs/RECORDS_BACKUP_V2.md",
+        "tests/records/test_controller_kernel_faults.py",
+        "tests/test_backup_integrity.py",
+        "tests/test_records_backup_v2.py"
+      ],
+      "overlap_files": [
+        "campaign_tool/backup.py",
+        "campaign_tool/records/recovery/backup.py",
+        "campaign_tool/records/recovery/backup_v2.py",
+        "docs/BACKUP.md",
+        "docs/RECORDS_BACKUP_V2.md",
+        "tests/records/test_controller_kernel_faults.py",
+        "tests/test_backup_integrity.py",
+        "tests/test_records_backup_v2.py"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 2,
+      "patch_bytes": 73669,
+      "identical_at_release": [
+        "campaign_tool/backup.py",
+        "campaign_tool/records/recovery/backup.py",
+        "campaign_tool/records/recovery/backup_v2.py",
+        "docs/BACKUP.md",
+        "docs/RECORDS_BACKUP_V2.md",
+        "tests/test_backup_integrity.py",
+        "tests/test_records_backup_v2.py"
+      ],
+      "different_at_release": [
+        "tests/records/test_controller_kernel_faults.py"
+      ],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "Grahammmm/DeFlock-Campaign-Tool#92 carries all seven backup payloads unchanged; the eighth path is an obsolete kernel-test framing change, not missing backup work.",
+      "successor_pr": 92
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-structured-detector-contract",
+      "headRefOid": 12,
+      "isDraft": true,
+      "number": 86,
+      "state": "OPEN",
+      "title": "ARCH10: add source-bound structured detector adapter",
+      "updatedAt": "2026-10-13T02:49:59Z",
+      "merge_base": 6,
+      "pr_files": [
+        "campaign_tool/records/detectors/pipeline.py",
+        "docs/STRUCTURED-DETECTOR-CONTRACT.md",
+        "docs/integration/ARCH10-stage-detect.patch",
+        "tests/records/test_structured_detector_pipeline.py"
+      ],
+      "overlap_files": [
+        "campaign_tool/records/detectors/pipeline.py",
+        "docs/STRUCTURED-DETECTOR-CONTRACT.md",
+        "docs/integration/ARCH10-stage-detect.patch",
+        "tests/records/test_structured_detector_pipeline.py"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 1,
+      "patch_bytes": 36815,
+      "identical_at_release": [
+        "campaign_tool/records/detectors/pipeline.py",
+        "docs/STRUCTURED-DETECTOR-CONTRACT.md",
+        "docs/integration/ARCH10-stage-detect.patch",
+        "tests/records/test_structured_detector_pipeline.py"
+      ],
+      "different_at_release": [],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "All four touched blobs match the release via Grahammmm/DeFlock-Campaign-Tool#98; source adapter inclusion does not mean seven detectors are wired or trusted inputs exist.",
+      "successor_pr": 98
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-hosted-queue-reliability",
+      "headRefOid": 13,
+      "isDraft": true,
+      "number": 87,
+      "state": "OPEN",
+      "title": "Fence hosted queue attempts and make completion atomic",
+      "updatedAt": "2026-10-13T02:50:05Z",
+      "merge_base": 6,
+      "pr_files": [
+        "docs/CONTRACTS.md",
+        "docs/RUNNER.md",
+        "docs/WORKERS.md",
+        "runner/Dockerfile",
+        "runner/client.py",
+        "runner/cloudflare-container.md",
+        "runner/compose.example.yml",
+        "runner/loop.py",
+        "schemas/job.schema.json",
+        "tests/runner/test_build_site.py",
+        "tests/runner/test_client.py",
+        "tests/runner/test_loop.py",
+        "tests/runner/test_queue_reliability.py",
+        "workers/schema/d1.sql",
+        "workers/scripts/sync-data.mjs",
+        "workers/shared/src/generated/schema.ts",
+        "workers/workspace/migrations/0002_job_claims.sql",
+        "workers/workspace/src/db.ts",
+        "workers/workspace/src/runner.ts",
+        "workers/workspace/test/env.d.ts",
+        "workers/workspace/test/helpers.ts",
+        "workers/workspace/test/queue-migration.test.ts",
+        "workers/workspace/test/queue-reliability.test.ts",
+        "workers/workspace/test/runner.test.ts",
+        "workers/workspace/vitest.config.ts"
+      ],
+      "overlap_files": [
+        "docs/CONTRACTS.md",
+        "docs/RUNNER.md",
+        "docs/WORKERS.md",
+        "runner/Dockerfile",
+        "runner/client.py",
+        "runner/cloudflare-container.md",
+        "runner/compose.example.yml",
+        "runner/loop.py",
+        "schemas/job.schema.json",
+        "tests/runner/test_build_site.py",
+        "tests/runner/test_client.py",
+        "tests/runner/test_loop.py",
+        "tests/runner/test_queue_reliability.py",
+        "workers/schema/d1.sql",
+        "workers/scripts/sync-data.mjs",
+        "workers/shared/src/generated/schema.ts",
+        "workers/workspace/migrations/0002_job_claims.sql",
+        "workers/workspace/src/db.ts",
+        "workers/workspace/src/runner.ts",
+        "workers/workspace/test/env.d.ts",
+        "workers/workspace/test/helpers.ts",
+        "workers/workspace/test/queue-migration.test.ts",
+        "workers/workspace/test/queue-reliability.test.ts",
+        "workers/workspace/test/runner.test.ts",
+        "workers/workspace/vitest.config.ts"
+      ],
+      "commits_release_only": 223,
+      "commits_pr_only": 1,
+      "patch_bytes": 159034,
+      "identical_at_release": [
+        "docs/CONTRACTS.md",
+        "docs/RUNNER.md",
+        "docs/WORKERS.md",
+        "runner/Dockerfile",
+        "runner/client.py",
+        "runner/cloudflare-container.md",
+        "runner/compose.example.yml",
+        "runner/loop.py",
+        "schemas/job.schema.json",
+        "tests/runner/test_build_site.py",
+        "tests/runner/test_client.py",
+        "tests/runner/test_loop.py",
+        "tests/runner/test_queue_reliability.py",
+        "workers/schema/d1.sql",
+        "workers/scripts/sync-data.mjs",
+        "workers/shared/src/generated/schema.ts",
+        "workers/workspace/migrations/0002_job_claims.sql",
+        "workers/workspace/src/db.ts",
+        "workers/workspace/src/runner.ts",
+        "workers/workspace/test/env.d.ts",
+        "workers/workspace/test/helpers.ts",
+        "workers/workspace/test/queue-migration.test.ts",
+        "workers/workspace/test/queue-reliability.test.ts",
+        "workers/workspace/test/runner.test.ts",
+        "workers/workspace/vitest.config.ts"
+      ],
+      "different_at_release": [],
+      "absent_at_release": [],
+      "release_changed_path_count": 298,
+      "verdict": "supersede",
+      "reason": "All 25 touched blobs match the release via Grahammmm/DeFlock-Campaign-Tool#97; source integration does not authorize a hosted migration or rollout.",
+      "successor_pr": 97
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/f09-queue-priority-fairness",
+      "headRefOid": 14,
+      "isDraft": false,
+      "number": 110,
+      "state": "OPEN",
+      "title": "test(records): priority cannot starve queue work after restart",
+      "updatedAt": "2026-10-18T20:39:48Z",
+      "merge_base": 15,
+      "pr_files": [
+        "tests/records/test_queue_runtime.py"
+      ],
+      "overlap_files": [],
+      "commits_release_only": 157,
+      "commits_pr_only": 1,
+      "patch_bytes": 1669,
+      "identical_at_release": [],
+      "different_at_release": [
+        "tests/records/test_queue_runtime.py"
+      ],
+      "absent_at_release": [],
+      "release_changed_path_count": 147,
+      "verdict": "rebase",
+      "reason": "Unique 20-line priority/restart fairness regression is absent and its file is unchanged on the release side; retain for fresh Linux CI and independent review."
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-resume-containment",
+      "headRefOid": 16,
+      "isDraft": true,
+      "number": 130,
+      "state": "OPEN",
+      "title": "Compose bounded resume with owned-descendant supervision",
+      "updatedAt": "2026-10-18T14:26:28Z",
+      "merge_base": 17,
+      "pr_files": [
+        "campaign_tool/records/contained_resume.py",
+        "docs/RECORDS-CONTAINED-RESUME.md",
+        "tests/records/test_contained_resume.py"
+      ],
+      "overlap_files": [],
+      "commits_release_only": 107,
+      "commits_pr_only": 2,
+      "patch_bytes": 23623,
+      "identical_at_release": [],
+      "different_at_release": [],
+      "absent_at_release": [
+        "campaign_tool/records/contained_resume.py",
+        "docs/RECORDS-CONTAINED-RESUME.md",
+        "tests/records/test_contained_resume.py"
+      ],
+      "release_changed_path_count": 101,
+      "verdict": "rebase",
+      "reason": "Contained-resume module, docs and tests are absent from the release; preserve the distinct supervision proposal, but failing captured CI and existing containment holds prohibit acceptance.",
+      "observed_checks": [
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162289/job/117695170137",
+          "name": "slice (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162289/job/117695170089",
+          "name": "slice (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162369/job/117695170010",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162345/job/117695170068",
+          "name": "image",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162369/job/117695169955",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162369/job/117695169794",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162325/job/117695169817",
+          "name": "recovery-composition (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162289/job/117695170102",
+          "name": "slice (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162343/job/117695169838",
+          "name": "intake (3.11)",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162343/job/117695169810",
+          "name": "intake (3.13)",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162350/job/117695169841",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162345/job/117695169776",
+          "name": "runner",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162267/job/117695169714",
+          "name": "kernel-faults (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162268/job/117695169658",
+          "name": "synthetic-imap (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162235/job/117695169406",
+          "name": "workers",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162325/job/117695169754",
+          "name": "recovery-composition (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162343/job/117695169660",
+          "name": "intake (3.12)",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162350/job/117695169818",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162361/job/117695169871",
+          "name": "wp5 (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162350/job/117695169688",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162339/job/117695169860",
+          "name": "shell",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162361/job/117695169906",
+          "name": "wp5 (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162267/job/117695169648",
+          "name": "kernel-faults (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162289/job/117695169963",
+          "name": "retirement-boundary",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162361/job/117695169699",
+          "name": "wp5 (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162325/job/117695169568",
+          "name": "recovery-composition (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162229/job/117695169564",
+          "name": "package (3.12)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162268/job/117695169279",
+          "name": "synthetic-imap (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162158/job/117695169515",
+          "name": "offline (3.11)",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162213/job/117695169348",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162188/job/117695169327",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162267/job/117695169434",
+          "name": "kernel-faults (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162158/job/117695169373",
+          "name": "offline (3.13)",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162229/job/117695169422",
+          "name": "package (3.13)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162188/job/117695169088",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162189/job/117695169017",
+          "name": "portal (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162213/job/117695169273",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162158/job/117695169149",
+          "name": "offline (3.12)",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162189/job/117695169258",
+          "name": "portal (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162189/job/117695169222",
+          "name": "portal (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162353/job/117695169397",
+          "name": "native",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162188/job/117695169274",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162213/job/117695169078",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162268/job/117695169460",
+          "name": "synthetic-imap (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162184/job/117695169086",
+          "name": "wheel",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39134162229/job/117695169289",
+          "name": "package (3.11)",
+          "state": "FAILURE"
+        }
+      ],
+      "observed_check_counts": {
+        "CANCELLED": 2,
+        "FAILURE": 8,
+        "SUCCESS": 36
+      }
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/records-selected-export-atomic-routing",
+      "headRefOid": 18,
+      "isDraft": true,
+      "number": 138,
+      "state": "OPEN",
+      "title": "Route selected preserved exports through bounded container intake",
+      "updatedAt": "2026-10-19T15:19:27Z",
+      "merge_base": 19,
+      "pr_files": [
+        "campaign_tool/records/container_host.py",
+        "campaign_tool/records/intake/export_snapshot.py",
+        "campaign_tool/records/intake/folder.py",
+        "campaign_tool/records/unattended.py",
+        "docs/RECORDS-CONTAINER-HOST.md",
+        "docs/RECORDS-EXPORT-BRIDGE.md",
+        "docs/records-intake-import.json",
+        "tests/records/test_secure_open_workspace_capability.py",
+        "tests/records/test_selected_export_container_routing.py",
+        "tests/test_intake_provenance_binding.py",
+        "tools/check_secret_report.py"
+      ],
+      "overlap_files": [
+        "tools/check_secret_report.py"
+      ],
+      "commits_release_only": 96,
+      "commits_pr_only": 2,
+      "patch_bytes": 97730,
+      "identical_at_release": [],
+      "different_at_release": [
+        "campaign_tool/records/container_host.py",
+        "campaign_tool/records/intake/folder.py",
+        "campaign_tool/records/unattended.py",
+        "docs/RECORDS-CONTAINER-HOST.md",
+        "docs/RECORDS-EXPORT-BRIDGE.md",
+        "docs/records-intake-import.json",
+        "tools/check_secret_report.py"
+      ],
+      "absent_at_release": [
+        "campaign_tool/records/intake/export_snapshot.py",
+        "tests/records/test_secure_open_workspace_capability.py",
+        "tests/records/test_selected_export_container_routing.py",
+        "tests/test_intake_provenance_binding.py"
+      ],
+      "release_changed_path_count": 88,
+      "verdict": "rebase",
+      "reason": "Selected-export snapshot/routing is absent from the release; retain under the single integrator, reconcile the secret-report checker overlap and preserve qualification/installed-runtime holds.",
+      "observed_checks": [
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216256/job/118141087967",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216256/job/118141087537",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216316/job/118141087594",
+          "name": "package (3.13)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216316/job/118141087614",
+          "name": "package (3.12)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216256/job/118141087274",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216401/job/118141085733",
+          "name": "wp5 (3.12)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216316/job/118141087115",
+          "name": "package (3.11)",
+          "state": "FAILURE"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216202/job/118141084195",
+          "name": "retirement-boundary",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216477/job/118141086133",
+          "name": "intake (3.11)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216477/job/118141085455",
+          "name": "intake (3.12)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216268/job/118141084883",
+          "name": "portal (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216477/job/118141085193",
+          "name": "intake (3.13)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216457/job/118141086521",
+          "name": "runner",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216401/job/118141085464",
+          "name": "wp5 (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216287/job/118141085669",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216243/job/118141084378",
+          "name": "workers",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216202/job/118141084831",
+          "name": "slice (3.11)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216290/job/118141087021",
+          "name": "wheel",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216401/job/118141085055",
+          "name": "wp5 (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216202/job/118141084571",
+          "name": "slice (3.13)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216268/job/118141084705",
+          "name": "portal (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216202/job/118141084450",
+          "name": "slice (3.12)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216268/job/118141084926",
+          "name": "portal (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216154/job/118141084640",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216149/job/118141084339",
+          "name": "synthetic-imap (3.13)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216460/job/118141086140",
+          "name": "shell",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216457/job/118141086324",
+          "name": "image",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216287/job/118141085346",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216287/job/118141085048",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216154/job/118141084199",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216154/job/118141084753",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216232/job/118141084001",
+          "name": "integration (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216214/job/118141084627",
+          "name": "kernel-faults (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216232/job/118141084343",
+          "name": "integration (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276215966/job/118141083372",
+          "name": "recovery-composition (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216260/job/118141084254",
+          "name": "native",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216214/job/118141084146",
+          "name": "kernel-faults (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216232/job/118141084217",
+          "name": "integration (3.11)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216149/job/118141084394",
+          "name": "synthetic-imap (3.12)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276215955/job/118141083753",
+          "name": "offline (3.12)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276215955/job/118141083232",
+          "name": "offline (3.13)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276215966/job/118141085119",
+          "name": "recovery-composition (3.12)",
+          "state": "IN_PROGRESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216214/job/118141084486",
+          "name": "kernel-faults (3.12)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276216149/job/118141084154",
+          "name": "synthetic-imap (3.11)",
+          "state": "CANCELLED"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276215966/job/118141083637",
+          "name": "recovery-composition (3.13)",
+          "state": "SUCCESS"
+        },
+        {
+          "link": "https://github.com/Grahammmm/DeFlock-Campaign-Tool/actions/runs/39276215955/job/118141083664",
+          "name": "offline (3.11)",
+          "state": "CANCELLED"
+        }
+      ],
+      "observed_check_counts": {
+        "CANCELLED": 17,
+        "FAILURE": 1,
+        "IN_PROGRESS": 1,
+        "SUCCESS": 27
+      }
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "t_9d498ba9/build-venv-docs",
+      "headRefOid": 20,
+      "isDraft": false,
+      "number": 154,
+      "state": "OPEN",
+      "title": "docs(RECORDS-RELEASE): document the pinned flock-build-venv build environment",
+      "updatedAt": "2026-10-20T03:51:36Z",
+      "merge_base": 21,
+      "pr_files": [
+        "docs/RECORDS-RELEASE.md"
+      ],
+      "overlap_files": [],
+      "commits_release_only": 71,
+      "commits_pr_only": 2,
+      "patch_bytes": 2322,
+      "identical_at_release": [],
+      "different_at_release": [
+        "docs/RECORDS-RELEASE.md"
+      ],
+      "absent_at_release": [],
+      "release_changed_path_count": 57,
+      "verdict": "rebase",
+      "reason": "Pinned build-environment guidance is still absent and its file is unchanged on the release side; retain for review/refresh, with no evidence of a textual conflict."
+    }
+  ],
+  "integration_prs": [
+    {
+      "number": 89,
+      "title": "Hold publication through bounded review-authority retirement",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 22
+      }
+    },
+    {
+      "number": 92,
+      "title": "Integrate backup integrity repair with current release guards",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 23
+      }
+    },
+    {
+      "number": 93,
+      "title": "Integrate read-only correspondence report with current canonical ledger",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 24
+      }
+    },
+    {
+      "number": 94,
+      "title": "Report capped processing coverage against current extraction inventory",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 25
+      }
+    },
+    {
+      "number": 95,
+      "title": "Integrate versioned Worker-to-runner website build envelope",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 26
+      }
+    },
+    {
+      "number": 96,
+      "title": "Bind manual analysis reuse to context revisions and unresolved dates",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 27
+      }
+    },
+    {
+      "number": 97,
+      "title": "Integrate hosted queue fencing, atomic completion and restart replay",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 28
+      }
+    },
+    {
+      "number": 98,
+      "title": "Validate structured-detector prerequisites on PR96 context stack",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 29
+      }
+    },
+    {
+      "number": 158,
+      "title": "T17-prep: per-run pre-adoption ledger/intake backup (bounded, rotated)",
+      "state": "MERGED",
+      "mergeCommit": {
+        "oid": 30
+      }
+    }
+  ],
+  "analysis_captured_at_utc": "2026-10-20T13:15:35.513297+00:00",
+  "pr158_changed_paths": [
+    "campaign_tool/records/run_stages.py",
+    "schemas/records-stage-result-v1.json",
+    "tests/test_records_run_stages.py"
+  ],
+  "pr85_pr158_overlap": []
+}
