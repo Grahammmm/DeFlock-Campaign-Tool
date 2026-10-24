@@ -29,6 +29,11 @@ def text_unit(page, data=None):
     return {"kind": "text", "locator": {"page": page}, "text": PAGE_TEXT[page], "data": data or {}}
 
 
+def visual_unit(page):
+    """A visual-only page attempt: no text, so it cannot establish text coverage."""
+    return {"kind": "visual_page", "locator": {"page": page}, "text": "", "data": {}}
+
+
 def receipt(pages, units):
     return {
         "schema": "format-extraction-v1",
@@ -209,6 +214,73 @@ class FcDocCoverageTests(unittest.TestCase):
         self.assertEqual(page["visual_review"], "not_established")
         self.assertEqual(page["ocr_visual_review"], "required")
         self.assertTrue(page["visual_check_required"])
+
+    def test_visual_only_pages_are_unverified_and_partial(self):
+        # Visual-only attempts carry no text: they never establish text or visual review.
+        units = [visual_unit(1), visual_unit(2)]
+        complete = document.analyze(build([1, 2], units, page_count=2))
+        self.check(complete, ["page_without_text_unit"], True,
+                   inventory(2, "declared", "list", 2, 2, 2, 0, status="complete"), [1, 2])
+        for page in row(complete)["pages"]:
+            with self.subTest(page=page["page"]):
+                self.assertEqual(page["text_coverage"], "no_text_unit")
+                self.assertEqual(page["text_unit_count"], 0)
+                self.assertEqual(page["text_sources"], [])
+                self.assertEqual(page["evidence_attempts"], ["visual"])
+                self.assertEqual(page["visual_attempt_count"], 1)
+                self.assertEqual(page["visual_review"], "not_established")
+                self.assertEqual(page["ocr_visual_review"], "not_established")
+        self.assertEqual(row(complete)["visual_review"], "not_established")
+        incomplete = document.analyze(build([{"page_no": 1, "visual_review_complete": True}],
+                                            [visual_unit(1)], page_count=3))
+        self.check(incomplete, ["claimed_visual_review_unverified", "page_inventory_incomplete",
+                                "page_without_text_unit"], True,
+                   inventory(3, "declared", "list", 1, 1, 1, 2, status="incomplete"), [1])
+        page = row(incomplete)["pages"][0]
+        self.assertEqual((page["visual_attempt_count"], page["visual_review"]), (1, "not_established"))
+        # Native and OCR text controls on the same visual page keep their own sources.
+        mixed = document.analyze(build([1, 2], [visual_unit(1), text_unit(1), visual_unit(2), text_unit(2, {"ocr": True})],
+                                       page_count=2))
+        self.check(mixed, ["ocr_visual_review_required"], True,
+                   inventory(2, "declared", "list", 2, 2, 2, 0, status="complete"), [1, 2])
+        self.assertEqual([(p["text_sources"], p["evidence_attempts"], p["visual_attempt_count"]) for p in row(mixed)["pages"]],
+                         [(["native"], ["native", "visual"], 1), (["ocr"], ["ocr", "visual"], 1)])
+
+    def test_conflicting_page_aliases_are_invalid_in_both_directions(self):
+        units = [text_unit(1), text_unit(2)]
+        for pages in ([{"page": 1, "page_no": 999}, {"page": 2, "page_no": 2}],
+                      [{"page_no": 1, "page": 999}, {"page_no": 2, "page": 2}],
+                      [{"page": 1, "page_no": 2}, {"page": 2}]):
+            with self.subTest(pages=pages):
+                result = document.analyze(build(pages, units, page_count=2))
+                # The contradictory entry is not trusted, so neither of its numbers is inventoried.
+                self.check(result, ["page_inventory_incomplete", "page_inventory_invalid"], True,
+                           inventory(2, "declared", "list", 2, 1, 1, 1, invalid=1, status="inconsistent"), [2])
+
+    def test_malformed_alternate_page_alias_is_invalid(self):
+        units = [text_unit(1), text_unit(2)]
+        for bad in (True, False, 0, -1, "bad", "1", 1.0, None, [1]):
+            for first in ({"page": 1, "page_no": bad}, {"page_no": 1, "page": bad}):
+                with self.subTest(entry=first):
+                    result = document.analyze(build([first, {"page_no": 2}], units, page_count=2))
+                    self.check(result, ["page_inventory_incomplete", "page_inventory_invalid"], True,
+                               inventory(2, "declared", "list", 2, 1, 1, 1, invalid=1, status="inconsistent"), [2])
+
+    def test_agreeing_and_single_page_aliases_are_clean(self):
+        units = [text_unit(1), text_unit(2)]
+        for pages in ([{"page": 1, "page_no": 1, "status": "s1"}, {"page": 2, "page_no": 2, "status": "s2"}],
+                      [{"page": 1, "status": "s1"}, {"page_no": 2, "status": "s2"}],
+                      [{"page_no": 1, "status": "s1"}, {"page": 2, "status": "s2"}]):
+            with self.subTest(pages=pages):
+                result = document.analyze(build(pages, units, page_count=2))
+                self.check(result, [], False, inventory(2, "declared", "list", 2, 2, 2, 0, status="complete"), [1, 2])
+                self.assertEqual([p["extraction_status"] for p in row(result)["pages"]], ["s1", "s2"])
+
+    def test_page_metadata_uses_the_same_resolved_identifier(self):
+        # A rejected contradictory entry must not lend its metadata to another page.
+        pages = [{"page": 1, "page_no": 2, "status": "rejected"}, {"page": 2, "status": "kept"}]
+        result = document.analyze(build(pages, [text_unit(1), text_unit(2)], page_count=2))
+        self.assertEqual([(p["page"], p["extraction_status"]) for p in row(result)["pages"]], [(2, "kept")])
 
     def test_citations_unchanged_by_inventory_gaps(self):
         units = [text_unit(1), text_unit(2)]

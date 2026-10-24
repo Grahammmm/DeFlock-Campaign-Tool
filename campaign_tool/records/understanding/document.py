@@ -99,6 +99,26 @@ def _missing_page_count(declared: int | None, in_range: int) -> int | None:
     return None if declared is None else max(0, declared - in_range)
 
 
+_PAGE_ID_KEYS = ("page", "page_no")
+
+
+def _page_entry_id(entry: Any) -> Any:
+    """Resolve one inventory entry to its page identifier, or None when untrusted.
+
+    A dict entry may carry either supported alias or both. Every alias that is
+    present must be a positive integer and all present aliases must agree;
+    a contradictory or malformed entry is rejected rather than silently
+    preferring one number. Inventory counting and page metadata lookup both
+    use this single resolver.
+    """
+    if isinstance(entry, dict):
+        present = [entry[k] for k in _PAGE_ID_KEYS if k in entry]
+        if not present or not all(_positive_int(v) for v in present) or len(set(present)) != 1:
+            return None
+        return present[0]
+    return entry if _positive_int(entry) else None
+
+
 def _page_inventory(context: Any) -> tuple[list[int], dict, set[str]]:
     """Validate the supplied page inventory against any declared total.
 
@@ -115,7 +135,7 @@ def _page_inventory(context: Any) -> tuple[list[int], dict, set[str]]:
         shape, identifiers = "count", list(range(1, raw_pages + 1))
     elif isinstance(raw_pages, list):
         shape = "list"
-        identifiers = [p.get("page", p.get("page_no")) if isinstance(p, dict) else p for p in raw_pages]
+        identifiers = [_page_entry_id(p) for p in raw_pages]
     else:
         # Unsupported shape, bool, nonpositive or over-bound integer: no range is allocated.
         shape, identifiers, invalid = "invalid", [], 1
@@ -180,7 +200,7 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
             state = "text_unit_present" if text_units else "no_text_unit"
             if not text_units:
                 gaps.add("page_without_text_unit")
-            page_meta = next((p for p in raw_pages if isinstance(p, dict) and p.get("page_no", p.get("page")) == page), {}) if isinstance(raw_pages, list) else {}
+            page_meta = next((p for p in raw_pages if isinstance(p, dict) and _page_entry_id(p) == page), {}) if isinstance(raw_pages, list) else {}
             page_rows.append({"page": page, "text_unit_count": len(text_units), "text_coverage": state,
                               "text_sources": sorted({_source_kind(u) for u in text_units if _source_kind(u) != "visual"}),
                               "evidence_attempts": sorted({_source_kind(u) for u in page_units}),
