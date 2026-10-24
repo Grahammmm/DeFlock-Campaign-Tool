@@ -2,13 +2,20 @@
 from pathlib import Path
 import os
 import sys
+import sysconfig
 from urllib.parse import unquote
 
 REPO = Path(__file__).resolve().parents[3]
 OUT = Path(sys.argv[1]).resolve()
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(REPO))
-READ_ROOTS = (REPO, OUT, Path('/usr'), Path('/lib'), Path('/lib64'))
+def _interpreter_roots():
+    names = {'stdlib', 'platstdlib', 'purelib', 'platlib'}
+    paths = [sys.base_prefix, sys.prefix, sys.exec_prefix] + [sysconfig.get_paths()[n] for n in names]
+    return tuple(sorted({Path(p).resolve() for p in paths if p}))
+
+
+READ_ROOTS = (REPO, OUT) + _interpreter_roots()
 
 
 def below(path, root):
@@ -57,6 +64,7 @@ for event, args, reason in (
     ('socket.getaddrinfo', ('fixture.invalid', 443), 'offline_dns_forbidden'),
     ('open', (str(REPO / 'forbidden-sentinel'), 'w', os.O_WRONLY | os.O_CREAT), 'offline_write_boundary'),
     ('sqlite3.connect', (str(REPO / 'forbidden.sqlite'),), 'offline_write_boundary'),
+    ('open', (str(OUT.parent / 'outside-read-roots-sentinel'), 'r', os.O_RDONLY), 'offline_read_boundary'),
 ):
     try:
         guard(event, args)
