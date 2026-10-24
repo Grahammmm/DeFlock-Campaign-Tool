@@ -666,32 +666,73 @@ def _alert_load(fd):
         return json.load(stream, object_pairs_hook=unique)
 
 
+def _alert_prior_ordered(report, prior):
+    """Only ordered, same-mode predecessors contribute identity reservations."""
+    return (prior is not None and prior["run_id"] != report["run_id"]
+            and prior["mode"] == report["mode"]
+            and run_report._parse_utc(prior["finished_at"])
+            <= run_report._parse_utc(report["started_at"]))
+
+
+def _alert_transition(report, baseline, prior, age, last, seen):
+    """Return evidence and whether it can safely advance the checkpoint.
+
+    A forward discontinuity is recorded without events. Its current report
+    becomes the next comparison anchor, not a claim that the gap was verified.
+    Rewinds never advance that anchor, even when their own pair is fresh.
+    """
+    result = _understanding_comparison(report, baseline, prior, age)
+
+    def unverified():
+        return dict(result, verification="UNVERIFIED", reason_code="PRIOR_UNVERIFIED",
+                    events=[], audience="internal")
+
+    if last is not None:
+        if (run_report._parse_utc(report["started_at"])
+                < run_report._parse_utc(last["finished_at"])
+                or run_report._parse_utc(report["finished_at"])
+                <= run_report._parse_utc(last["finished_at"])):
+            return unverified(), False
+        if _alert_json(prior) != _alert_json(last):
+            if prior is not None and (prior["run_id"] in seen
+                    or run_report._parse_utc(prior["started_at"])
+                    < run_report._parse_utc(last["finished_at"])):
+                return unverified(), False
+            # Missing run or missing/unpinned predecessor: retain a gap, not
+            # an alert calculated across an unaudited comparison window.
+            return unverified(), True
+    if result["verification"] != "VERIFIED":
+        return unverified(), True
+    return result, True
+
+
 def _alert_validate_state(state, baseline):
     if (not isinstance(state, dict) or set(state) != {"schema_version", "baseline", "entries"}
             or type(state["schema_version"]) is not int or state["schema_version"] != 1
             or _alert_json(state["baseline"]) != _alert_json(baseline)
             or not isinstance(state["entries"], list)):
         raise ValueError("invalid alert state")
-    seen, last = set(), None
+    seen, last = {}, None
     for entry in state["entries"]:
         if not isinstance(entry, dict) or set(entry) != {
                 "report", "prior_report", "max_prior_age_seconds", "result"}:
             raise ValueError("invalid alert entry")
         report, prior, age = entry["report"], entry["prior_report"], entry["max_prior_age_seconds"]
         _alert_report(report)
-        _alert_report(prior)
-        if last is None:
-            seen.add(prior["run_id"])
+        if prior is not None:
+            _alert_report(prior)
+            if prior["run_id"] in seen and _alert_json(prior) != _alert_json(seen[prior["run_id"]]):
+                raise ValueError("alert prior identity conflict")
         if type(age) is not int or age < 0 or report["run_id"] in seen:
             raise ValueError("invalid alert history")
-        if last is not None and _alert_json(prior) != _alert_json(last):
-            raise ValueError("broken alert history")
-        expected = _understanding_comparison(report, baseline, prior, age)
-        if (expected["verification"] != "VERIFIED"
-                or _alert_json(entry["result"]) != _alert_json(expected)):
+        expected, advance = _alert_transition(report, baseline, prior, age, last, seen)
+        if not advance or _alert_json(entry["result"]) != _alert_json(expected):
             raise ValueError("invalid alert evidence")
-        seen.add(report["run_id"])
+        if prior is not None and _alert_prior_ordered(report, prior):
+            seen[prior["run_id"]] = prior
+        seen[report["run_id"]] = report
         last = report
+    return seen
 
 
 def record_understanding_alerts(report, baseline, ledger_root, *, baseline_sha256,
@@ -721,7 +762,6 @@ def record_understanding_alerts(report, baseline, ledger_root, *, baseline_sha25
         _alert_report(prior_report)
         if prior_sha256 != understanding_identity(prior_report):
             prior_report = None
-    result = _understanding_comparison(report, baseline, prior_report, max_prior_age_seconds)
     root_fd = _alert_directory(ledger_root)
     lock_fd = None
     try:
@@ -742,19 +782,22 @@ def record_understanding_alerts(report, baseline, ledger_root, *, baseline_sha25
                 os.close(state_fd)
                 raise
             state = _alert_load(state_fd)
-        _alert_validate_state(state, baseline)
-        if state["entries"] and report["run_id"] == state["entries"][0]["prior_report"]["run_id"]:
-            raise ValueError("alert seed identity conflict")
+        seen = _alert_validate_state(state, baseline)
         for entry in state["entries"]:
             if entry["report"]["run_id"] == report["run_id"]:
                 if _alert_json(entry["report"]) != _alert_json(report):
                     raise ValueError("alert run identity conflict")
                 replay = dict(entry["result"], events=[], reason_code="ALREADY_RECORDED")
                 return replay
-        if (state["entries"] and _alert_json(prior_report)
-                != _alert_json(state["entries"][-1]["report"])):
-            return dict(result, verification="UNVERIFIED", reason_code="PRIOR_UNVERIFIED", events=[])
-        if result["verification"] != "VERIFIED":
+        if report["run_id"] in seen:
+            raise ValueError("alert seed identity conflict")
+        if (prior_report is not None and prior_report["run_id"] in seen
+                and _alert_json(prior_report) != _alert_json(seen[prior_report["run_id"]])):
+            raise ValueError("alert prior identity conflict")
+        last = state["entries"][-1]["report"] if state["entries"] else None
+        result, advance = _alert_transition(report, baseline, prior_report,
+                                            max_prior_age_seconds, last, seen)
+        if not advance:
             return result
         state["entries"].append({"report": report, "prior_report": prior_report,
                                  "max_prior_age_seconds": max_prior_age_seconds, "result": result})

@@ -205,7 +205,12 @@ class UnderstandingNotifyTests(unittest.TestCase):
                 result = call(root, self.current, self.baseline, prior, **opts)
                 self.assertEqual((result["verification"], result["reason_code"], result["events"]),
                                  ("UNVERIFIED", "PRIOR_UNVERIFIED", []))
-                self.assertFalse((root / LEDGER).exists())
+                state = json.loads((root / LEDGER).read_text())
+                self.assertEqual(len(state["entries"]), 1)
+                self.assertEqual(state["entries"][0]["result"], result)
+                self.assertEqual(result["audience"], "internal")
+                recovered = call(root, report_at(2), self.baseline, self.current)
+                self.assertEqual(recovered["verification"], "VERIFIED")
 
     def test_freshness_inclusive_boundary_and_zero(self):
         self.assertEqual(self.invoke(max_prior_age_seconds=60)["verification"], "VERIFIED")
@@ -227,6 +232,142 @@ class UnderstandingNotifyTests(unittest.TestCase):
         latest = report_at(3)
         self.assertEqual(self.invoke(report=latest, prior=newer)["verification"], "VERIFIED")
         self.assertEqual(len(self.state()["entries"]), 3)
+
+    def test_stale_discontinuity_persisted_then_fresh_recovery(self):
+        self.invoke()  # A -> B
+        stale = report_at(10)
+        stale["needs_g"][4]["count"] = 5
+        original = canonical(stale["needs_g"])
+        result = self.invoke(report=stale, prior=self.current)
+        self.assertEqual((result["verification"], result.get("audience"), result["events"]),
+                         ("UNVERIFIED", "internal", []))
+        self.assertEqual(self.state()["entries"][-1]["result"], result)
+        self.assertEqual(canonical(stale["needs_g"]), original)
+        next_run = report_at(11)
+        next_run["needs_g"][4]["count"] = 10
+        event, = self.invoke(report=next_run, prior=stale)["events"]
+        self.assertEqual((event["reason_code"], event["prior_run_id"], event["prior_sha256"],
+                          event["count"], event["prior_count"]),
+                         ("GAP_WIDENED", stale["run_id"], pin(stale), 10, 5))
+        final = report_at(12)
+        final["needs_g"][4]["count"] = 19
+        self.assertEqual(self.invoke(report=final, prior=next_run)["verification"], "VERIFIED")
+        self.assertEqual(len(self.state()["entries"]), 4)
+        before = (self.root / LEDGER).read_bytes()
+        # Both historical replay and an unseen older pair leave the tip intact.
+        self.assertEqual(self.invoke(report=stale, prior=self.current)["events"], [])
+        self.assertEqual(self.invoke(report=report_at(9), prior=report_at(8))["verification"], "UNVERIFIED")
+        self.assertEqual((self.root / LEDGER).read_bytes(), before)
+
+    def test_missed_run_records_gap_and_recovers_without_history_loss(self):
+        self.invoke()  # B persisted, C not observed by the adapter
+        missed, after, fresh = report_at(2), report_at(3), report_at(4)
+        after["needs_g"][4]["count"] = 6
+        result = self.invoke(report=after, prior=missed)
+        self.assertEqual((result["verification"], result["events"]), ("UNVERIFIED", []))
+        self.assertEqual(self.state()["entries"][-1]["prior_report"], missed)
+        self.assertEqual(self.state()["entries"][-1]["result"], result)
+        fresh["needs_g"][4]["count"] = 7
+        fail(fresh, "STAGE_TIMEOUT")
+        events = self.invoke(report=fresh, prior=after)["events"]
+        self.assertEqual([e["reason_code"] for e in events], ["NEW_TIMEOUT", "GAP_WIDENED"])
+        self.assertEqual(len(self.state()["entries"]), 3)
+        before = (self.root / LEDGER).read_bytes()
+        # Cannot insert the skipped report later or reuse it as an old prior.
+        with self.assertRaisesRegex(ValueError, "seed identity conflict"):
+            self.invoke(report=missed, prior=self.current)
+        self.assertEqual(self.invoke(report=report_at(5), prior=missed)["verification"], "UNVERIFIED")
+        self.assertEqual((self.root / LEDGER).read_bytes(), before)
+        self.assertEqual(self.invoke(report=report_at(5), prior=fresh)["verification"], "VERIFIED")
+
+    def test_absent_or_unpinned_predecessor_is_persistent_recoverable_gap(self):
+        for index, options in enumerate(({"prior_report": None}, {"prior_sha256": "0" * 64})):
+            root = self.root / str(index)
+            root.mkdir()
+            self.invoke(root=root)
+            current = report_at(2)
+            if "prior_report" in options:
+                result = call(root, current, self.baseline, None)
+            else:
+                result = self.invoke(root=root, report=current, prior=self.current, **options)
+            state = json.loads((root / LEDGER).read_text())
+            self.assertEqual(result["verification"], "UNVERIFIED")
+            self.assertEqual(state["entries"][-1]["prior_report"], None)
+            self.assertEqual(state["entries"][-1]["result"], result)
+            newer = report_at(3)
+            fail(newer)
+            event, = self.invoke(root=root, report=newer, prior=current)["events"]
+            self.assertEqual(event["reason_code"], "NEW_FAILURE")
+
+    def test_discontinuity_survives_process_restart_and_dedup(self):
+        self.invoke()
+        stale = report_at(10)
+        self.invoke(report=stale, prior=self.current)
+        newer = report_at(11)
+        fail(newer)
+        case = self.root / "restart-input.json"
+        case.write_text(json.dumps({"report": newer, "prior": stale, "baseline": self.baseline}))
+        command = [sys.executable, str(Path(__file__).resolve()), "--alert-replay", str(self.root)]
+        completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["verification"], "VERIFIED")
+        self.assertEqual([e["reason_code"] for e in result["events"]], ["NEW_FAILURE"])
+        before = (self.root / LEDGER).read_bytes()
+        completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["events"], [])
+        self.assertEqual((self.root / LEDGER).read_bytes(), before)
+        self.assertEqual(self.state()["entries"][1]["result"]["verification"], "UNVERIFIED")
+
+    def test_discontinuity_cannot_adopt_older_or_changed_predecessor(self):
+        self.invoke()
+        stale = report_at(10)
+        self.invoke(report=stale, prior=self.current)
+        before = (self.root / LEDGER).read_bytes()
+        altered = copy.deepcopy(stale)
+        altered["review_required_count"] += 1
+        with self.assertRaisesRegex(ValueError, "prior identity conflict"):
+            self.invoke(report=report_at(11), prior=altered)
+        for prior in (self.current, report_at(8)):
+            result = self.invoke(report=report_at(11), prior=prior)
+            self.assertEqual((result["verification"], result["events"]), ("UNVERIFIED", []))
+        # An unknown pair with a current timestamp equal to the tip is no advance.
+        same_time = report_at(10)
+        same_time["run_id"] = "run_20000101T001000Z_ffffffff"
+        self.assertEqual(self.invoke(report=same_time, prior=report_at(9))["verification"], "UNVERIFIED")
+        self.assertEqual((self.root / LEDGER).read_bytes(), before)
+        self.assertEqual(self.invoke(report=report_at(11), prior=stale)["verification"], "VERIFIED")
+
+    def test_persisted_unverified_evidence_cannot_be_forged_as_verified(self):
+        self.invoke()
+        self.invoke(report=report_at(10), prior=self.current)
+        valid = self.state()
+        for field, value in (("verification", "VERIFIED"), ("audience", "external"),
+                             ("events", [{"reason_code": "GAP_WIDENED"}]), ("sent", True)):
+            state = copy.deepcopy(valid)
+            state["entries"][-1]["result"][field] = value
+            raw = canonical(state)
+            (self.root / LEDGER).write_bytes(raw)
+            with self.assertRaisesRegex(ValueError, "invalid alert evidence"):
+                self.invoke(report=report_at(11), prior=report_at(10))
+            self.assertEqual((self.root / LEDGER).read_bytes(), raw)
+
+    def test_negative_control_detects_disabled_checkpoint_recovery(self):
+        self.invoke()
+        real = adapter._alert_transition
+
+        def broken(*args):
+            result, advance = real(*args)
+            return result, advance and result["verification"] == "VERIFIED"
+
+        with mock.patch.object(adapter, "_alert_transition", side_effect=broken):
+            self.invoke(report=report_at(10), prior=self.current)
+            result = self.invoke(report=report_at(11), prior=report_at(10))
+            with self.assertRaises(AssertionError):
+                self.assertEqual(result["verification"], "VERIFIED")
+        self.invoke(report=report_at(10), prior=self.current)
+        self.assertEqual(self.invoke(report=report_at(11), prior=report_at(10))["verification"], "VERIFIED")
 
     def test_same_run_changed_bytes_and_seed_reuse_refused(self):
         self.invoke()
