@@ -28,12 +28,11 @@ import json
 import sys
 from pathlib import Path
 
-from campaign_tool.records import run_report
-
 AVAILABLE = ("ok", "warn")
 CODED_GAPS = "ADOPTION_CODED_GAPS"
 AWAITING_OCR = "AWAITING_OCR"
-PORTAL_HELD_CODES = ("PORTAL_FETCH_DRY_RUN_ONLY", "PORTAL_HTTP_404", "PORTAL_FETCH_BLOCKED")
+PORTAL_HELD_CODES = ("PORTAL_FETCH_DRY_RUN_ONLY", "PORTAL_HTTP_404", "PORTAL_FETCH_BLOCKED",
+                     "PORTAL_DOWNLOAD_PENDING", "PORTAL_LEDGER_PENDING")
 STUB_CODE = "STUB_STAGE_BACKEND"
 
 
@@ -95,6 +94,8 @@ def format_coverage(counts):
 
 
 def main(argv=None):
+    # Validation is a CLI dependency, not a dependency of the pure projection.
+    from campaign_tool.records import run_report
     parser = argparse.ArgumentParser(
         prog="python3 -m campaign_tool.records.run_coverage",
         description="Print the coverage line of a records run report v1.")

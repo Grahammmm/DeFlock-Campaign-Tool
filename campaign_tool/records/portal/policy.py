@@ -13,6 +13,50 @@ class PortalError(Exception):
     """Only fixed reason codes, never URL-bearing upstream exception text."""
 
 
+FETCH_MIN_TOTAL_BYTES = 25 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class FetchSettings:
+    apply: bool = False
+    max_items: int = 20
+    max_bytes_total: int = 524288000
+
+
+def fetch_settings(plan):
+    """Read only plan.portal.fetch; absent means the unchanged dry-run path."""
+    try:
+        if not isinstance(plan,dict):
+            raise ValueError()
+        portal=plan.get('portal',{})
+        if not isinstance(portal,dict) or set(portal)-{'fetch'}:
+            raise ValueError()
+        value=portal.get('fetch',{})
+        if not isinstance(value,dict) or set(value)-{'apply','max_items','max_bytes_total'}:
+            raise ValueError()
+        result=FetchSettings(**value)
+        if type(result.apply) is not bool or type(result.max_items) is not int or not 1<=result.max_items<=1000:
+            raise ValueError()
+        if type(result.max_bytes_total) is not int or not FETCH_MIN_TOTAL_BYTES<=result.max_bytes_total<=1024*1024*1024:
+            raise ValueError()
+        return result
+    except (TypeError,ValueError):
+        raise PortalError('fetch_plan_invalid') from None
+
+
+def strict_json(raw):
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError('duplicate_key')
+            result[key] = value
+        return result
+    def constant(value):
+        raise ValueError('nonfinite_json')
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+
+
 def hostname(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", value):
         raise PortalError("invalid_host")
@@ -121,16 +165,21 @@ def parse_approval(raw, *, uid, mode, now):
     if uid != 0 or mode & 0o022 or not stat.S_ISREG(mode):
         raise PortalError("approval_not_admin_owned")
     try:
-        data = json.loads(raw)
+        data = strict_json(raw)
         if isinstance(data, dict) and data.get("purpose") == LEGACY_PURPOSE:
             return _legacy_approval(data, now)
-        if data.get("version") != 1 or data.get("enabled") is not True or data.get("purpose") != "portal-document-retrieval":
+        if set(data) != {'version','enabled','purpose','expires_utc','portal_hosts','redirect_hosts','path_prefixes'} or type(data.get('version')) is not int or data.get("version") != 1 or data.get("enabled") is not True or data.get("purpose") != "portal-document-retrieval":
             raise ValueError()
         expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
         if expiry.tzinfo is None or now.tzinfo is None or expiry <= now:
             raise PortalError("approval_expired")
+        for name in ('portal_hosts','redirect_hosts'):
+            if not isinstance(data[name],list) or len(data[name]) != len(set(data[name])):
+                raise ValueError()
         portals = frozenset(hostname(x) for x in data["portal_hosts"])
         redirects = frozenset(hostname(x) for x in data["redirect_hosts"])
+        if portals & redirects:
+            raise ValueError()
         scopes = data["path_prefixes"]
         if not portals or not isinstance(scopes, dict) or set(scopes) != portals | redirects:
             raise ValueError()

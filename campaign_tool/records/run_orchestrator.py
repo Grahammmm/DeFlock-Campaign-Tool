@@ -87,8 +87,9 @@ def zero_counts():
 
 def load_target_config(path):
     """Load and strictly validate a per-target stage plan; raise TargetConfigError."""
+    from .portal.policy import strict_json
     try:
-        config = json.loads(Path(path).read_text(encoding="utf-8"))
+        config = strict_json(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise TargetConfigError(f"target config unreadable: {type(exc).__name__}") from None
     return validate_target_config(config)
@@ -101,8 +102,13 @@ def validate_target_config(config):
     if not isinstance(config, dict):
         fail("$: expected object")
     allowed = {"target_config_version", "target", "mode", "stages"}
-    if set(config) != allowed:
+    if set(config)-{'portal'} != allowed:
         fail(f"$: expected exactly fields {sorted(allowed)}, got {sorted(config)}")
+    from .portal.policy import PortalError, fetch_settings
+    try:
+        fetch_settings(config)
+    except PortalError:
+        fail('$.portal.fetch: invalid settings')
     if config["target_config_version"] != 1:
         fail("$.target_config_version: expected 1")
     if not isinstance(config["target"], str) or not TARGET_RE.match(config["target"]):
@@ -139,7 +145,26 @@ def validate_target_config(config):
             fail(f"{where}.timeout_seconds: expected integer 1..{MAX_STAGE_TIMEOUT}")
         if config["mode"] == "live" and "stub-stage" in argv:
             fail(f"{where}.argv: the stub stage backend is refused in a live target")
+        stage_argv(config,stage)
     return config
+
+
+def stage_argv(config, entry):
+    """Bridge plan settings to the existing stage CLI without changing dry argv."""
+    from .portal.policy import fetch_settings
+    argv=list(entry['argv'])
+    if entry['name']!='portal':
+        return argv
+    reserved=('--portal-download','--portal-max-items','--portal-total-bytes')
+    if any(arg.startswith('--') and any(flag.startswith(arg.split('=',1)[0]) for flag in reserved) for arg in argv):
+        raise TargetConfigError('portal fetch flags must come from plan.portal.fetch')
+    settings=fetch_settings(config)
+    if settings.apply:
+        if argv.count('campaign_tool.records.run_stages')!=1 or '--approval-file' not in argv or '--portal-egress-file' not in argv:
+            raise TargetConfigError('portal fetch requires the existing stage and both policies')
+        argv+=['--portal-download','--portal-max-items',str(settings.max_items),
+               '--portal-total-bytes',str(settings.max_bytes_total)]
+    return argv
 
 
 def expand_argv(argv, run_id, target):
@@ -407,7 +432,7 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
             stages.append(stage_entry(name, "fail", seconds=0, code="RUN_DEADLINE_REACHED"))
             blocked_by = "UPSTREAM_FAILED"
             continue
-        argv = expand_argv(entry["argv"], run_id, config["target"])
+        argv = expand_argv(stage_argv(config,entry), run_id, config["target"])
         try:
             status, counts, code, result, seconds = run_stage(
                 argv, min(entry["timeout_seconds"], remaining), schema, work_dir, env)
