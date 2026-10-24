@@ -14,10 +14,15 @@ does not clear any alert, and every extracted fact stays "review required"
 (docs/RECORDS-EXTRACTION-LEDGER.md, section "Stage authority and runner result").
 
 Today the only enrollment G has approved is D5-A: exactly 20 already-read TEST
-results into the TEST ledger, TEST only, and a run needs G's word again
-(G-DECISIONS.log line 407; lifted as a hold on line 397). The overnight authority
-(line 468) also names only "D5-A exactly-20 TEST enrollment". Nothing on record
-allows LIVE enrollment. Every option below that enrolls anything on LIVE therefore
+results into the TEST ledger, a fixed set, TEST only, no stage acceptance and no
+live alert clearing. Line 397 lifted the D5-A hold. When the scope was read to G
+(G-DECISIONS.log line 407), a run still needed G's word. G then gave that word in
+the overnight authority (line 468: "D5-A exactly-20 TEST enrollment ... this is
+the G word"), only for that fixed TEST scope and only under line 468's conditions
+(the audit, 00-AUDIT.md section 8, records the same correction). This page does
+not ask for that TEST permission again. Whether the D5-A run has happened, and
+whether its result was reviewed: UNVERIFIED. Neither line gives any LIVE
+enrollment authority. Every option below that enrolls anything on LIVE therefore
 needs a NEW G authority, and says so.
 
 How many LIVE results are waiting is UNVERIFIED. The last cited scheduled run
@@ -40,9 +45,20 @@ and applied through its own card.
 - During and after: the operator is present (attended). The run report passes the
   F-003 counts check (tools/run_report_check.py). Note that check covers counts
   only, not rollback evidence.
-- Automatic rollback if any rollback trigger fires: restore the pre-batch backup
-  through the reviewed rollback tool (line 468 method). No original document is
-  deleted.
+- Rollback, plan versus data. Enrollment writes the ledger (data). The automatic
+  rollback named on line 468 restores the plan (LIVE.phase1.json / the latest
+  plan backup). A plan rollback does NOT undo ledger enrollment. Automatic DATA
+  restore is not established: on lines 486-487 the operator declared data
+  auto-restore NOT available (attended only) for the most recent comparable
+  change, keeping plan auto-rollback only, and the audit (section 7, top risk 3)
+  says automatic rollback must exist and be tested before anyone relies on it.
+  So, under every option: undoing an enrollment means an attended restore of the
+  pre-batch data backup, unless a separate, reviewed and qualified data-restore
+  path is later authorized. A full data and evidence restore path is a PROPOSED
+  prerequisite; its readiness is UNVERIFIED and this page does not establish it.
+- No LIVE batch runs until its own reviewed runsheet shows, with receipts, that
+  the pre-batch backup covers everything the batch writes and that the restore
+  path back to it works. No original document is deleted.
 - Still held under every option: outbound messages, publication, data deletion,
   credentials, force-push, off-box export, stage acceptance (including S5; an
   enrollment never supplies it), live alert clearing, the 400 preserve-pending
@@ -63,10 +79,14 @@ this rule without asking again, one at a time, and stop at the first rollback.
   and quick to check; it matches how D5-A was shaped.
 - Cons: slower if many items are waiting; each batch costs one attended session.
 - Cap per run: 20 items, fixed list. No automatic continuation after a failure.
-- Receipts per batch: backup hash receipt; the engine's enrollment results (import
-  and run IDs, original/receipt hashes, "reused" flag, zero stage promotions);
-  the run report and its F-003 check output; an aggregate counts note.
-- Rollback: restore the pre-batch backup; the batch list is re-queued, not lost.
+- Receipts per batch: backup hash receipt and the runsheet's backup-coverage and
+  restore-path proof; the engine's enrollment results (import and run IDs,
+  original/receipt hashes, "reused" flag, zero stage promotions); the run report
+  and its F-003 check output; an aggregate counts note.
+- Rollback: stop at the first trigger. Plan rollback may be automatic, but it does
+  not undo enrollment; reversing the ledger is an attended restore of the
+  pre-batch data backup (see the rules above). The batch list is re-queued, not
+  lost.
 - Needs NEW G authority: yes (LIVE enrollment is not covered by lines 407 or 468).
 
 ### 2. One batch, then ask again. Reply: ONCE
@@ -116,8 +136,8 @@ on its exact list.
 DeFlock baseline commit 93995a1a615f6aaca7bfb0fbeb39a7f3aa367997, including
 docs/RECORDS-EXTRACTION-LEDGER.md, docs/RECORDS-MAIL-ADOPTION.md and
 docs/RECORDS-LEGACY-MAIL-RESOLUTION.md. G-DECISIONS.log lines 397, 407, 461, 468,
-469 and 504 (lines 1-513 verified byte-identical to the round-2 source pin,
+469, 486, 487 and 504 (lines 1-513 verified byte-identical to the round-2 source pin,
 sha256 cefbeb7a...); line 527 was added after that pin and was read on 2026-10-24
 at about 12:45 PDT (context only, not a pinned input). Fable OCR decisions
 20-G-DECISIONS.md (sha256 e73fc784...).
-Fable audit 00-AUDIT.md section 7 (sha256 cd3f608a...).
+Fable audit 00-AUDIT.md sections 7 and 8 (sha256 cd3f608a...).
