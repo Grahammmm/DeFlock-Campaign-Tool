@@ -21,9 +21,10 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
+
+from tests.child_fixtures import fixture_argv
 
 
 def digest(raw):
@@ -189,10 +190,8 @@ class PipelineCompositionTests(unittest.TestCase):
         original_path = Path(originals[digest(text)]["storage_path"])
         # Execute the real wrapper from its installed root so its parser child
         # resolves the same pinned WP4 code; no parser output is fabricated.
-        command = [sys.executable, "-B", "-c", (
-            "import json,sys;from campaign_tool.records.extraction_routes import extract;"
-            "print(json.dumps(extract(sys.argv[1],sys.argv[2],sys.argv[3],form='txt',timeout=20)))"
-        ), str(original_path), digest(text), str(extraction_root)]
+        command = fixture_argv("pipeline_composition_extract",
+                               str(original_path), digest(text), str(extraction_root))
         parsed = subprocess.run(command, cwd=self.roots["wp4"], env=dict(os.environ),
                                 capture_output=True, text=True, timeout=35, check=True)
         extraction = json.loads(parsed.stdout)

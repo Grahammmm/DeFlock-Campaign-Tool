@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 from campaign_tool.records import container_host as host
+from tests.child_fixtures import fixture_path
 
 
 def sha(value):
@@ -632,10 +633,10 @@ class ContainerHostTests(HostFixture):
 
     def test_real_owned_client_timeout_and_output_cap(self):
         with self.assertRaises(host.TransportError):
-            host.call_argv([sys.executable,"-c","import time; time.sleep(10)"],.1)
+            host.call_argv([sys.executable,str(fixture_path("container_host_sleep"))],.1)
         with self.assertRaises(host.TransportError):
-            host.call_argv([sys.executable,"-c","import sys; sys.stdout.buffer.write(b'x'*1048576)"],2)
-        code,raw = host.call_argv([sys.executable,"-c","print('synthetic')"],2)
+            host.call_argv([sys.executable,str(fixture_path("container_host_large_output"))],2)
+        code,raw = host.call_argv([sys.executable,str(fixture_path("container_host_print"))],2)
         self.assertEqual((code,raw),(0,b"synthetic\n"))
 
     def test_terminal_runtime_without_empty_group_rejected(self):

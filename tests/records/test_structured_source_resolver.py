@@ -1,8 +1,6 @@
 """Synthetic canonical primary/support resolution, no semantic/date authority."""
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -13,6 +11,7 @@ from campaign_tool.records.detectors.pipeline import evaluate_structured
 from campaign_tool.records.detectors.core import digest
 from campaign_tool.records.ledger import store
 from campaign_tool.records.run import Pipeline, sha
+from tests.child_fixtures import run_fixture
 from tests.records import test_structured_context_boundary as boundary
 from tests.records.test_run_slice import synthetic_email
 
@@ -235,13 +234,6 @@ class SourceResolverTests(unittest.TestCase):
             original = store.effective_original(con, self.subject)["storage_path"]
             unit = con.execute("SELECT derived_path FROM units WHERE id=?",
                                (self.sources[0]["unit_id"],)).fetchone()[0]
-        script = (
-            "import sys; from campaign_tool.records.detectors.sources import resolve_sources, ResolutionError; "
-            "\ntry:\n resolve_sources(database=sys.argv[1], original_root=sys.argv[2], "
-            "derived_root=sys.argv[3], subject_sha256=sys.argv[4])"
-            "\nexcept ResolutionError:\n sys.exit(0)"
-            "\nraise SystemExit('FIFO incorrectly accepted')"
-        )
         for name in (original, unit):
             with self.subTest(path_kind="original" if name == original else "unit"):
                 path = Path(name)
@@ -249,9 +241,9 @@ class SourceResolverTests(unittest.TestCase):
                 path.unlink()
                 os.mkfifo(path, 0o600)
                 try:
-                    completed = subprocess.run([sys.executable, "-B", "-c", script,
+                    completed = run_fixture("source_resolver_fifo_probe",
                         str(self.pipeline.root.ledger), str(self.pipeline.root.intake / "blobs"),
-                        str(self.pipeline.root.sub("artifacts") / "evidence"), self.subject],
+                        str(self.pipeline.root.sub("artifacts") / "evidence"), self.subject,
                         timeout=3, capture_output=True, text=True)
                     self.assertEqual(completed.returncode, 0, completed.stderr)
                 finally:

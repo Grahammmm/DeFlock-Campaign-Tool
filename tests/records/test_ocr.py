@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from pypdf import PdfReader, PdfWriter
 from campaign_tool.records.extract import ocr
+from tests.child_fixtures import fixture_path
 
 TOOLS = {name: {"available": True, "path": "/synthetic/bin/" + name, "version": name + " 0.0-test"}
          for name in ocr.OCR_TOOLS}
@@ -424,9 +425,8 @@ class OCRTests(unittest.TestCase):
             ocr.load_page_receipt(self.output, self.sha, 1, "0" * 64)
 
     def test_child_limits_apply_address_space_and_file_size(self):
-        code = ("import resource;print(resource.getrlimit(resource.RLIMIT_AS)[0],"
-                "resource.getrlimit(resource.RLIMIT_FSIZE)[0])")
-        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+        probe = fixture_path("ocr_child_limits_probe")
+        result = subprocess.run([sys.executable, str(probe)], capture_output=True, text=True,
                                 check=True, preexec_fn=ocr._limit_child)
         self.assertEqual(result.stdout.split(), [str(ocr.CHILD_MEMORY_BYTES), str(ocr.CHILD_FILE_BYTES)])
 
