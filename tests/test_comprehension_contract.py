@@ -106,7 +106,22 @@ REPO = Path(__file__).resolve().parents[1]
 FIX = REPO / 'tests/fixtures/comprehension'
 TEST_OUT = REPO.parent / 'out'
 SCHEMA = json.loads((REPO / 'schemas/comprehension-handoff-v1.json').read_text())
-PINS = json.loads((FIX / 'source-pins.json').read_text())
+# Data-only Python literal, not imported/executed. Exact-line annotations keep
+# frozen public/test hash anchors visible for review without broad exemptions.
+HASH_ANCHORS = ast.literal_eval((FIX / 'hash-anchors.py').read_text())
+
+
+def restore_fixture_hashes(raw):
+    """Restore relocated anchors in memory; never rewrite committed fixtures.
+
+    Serialized low-entropy tokens retain the schema's hex grammar. Runtime
+    materialization must still match the independent original-byte pins below.
+    """
+    return re.sub(rb'(?<![a-f0-9])(?:[a-f0-9]{64}|[a-f0-9]{40})(?![a-f0-9])',
+                  lambda match: HASH_ANCHORS.get(match[0].decode(), match[0].decode()).encode(), raw)
+
+
+PINS = json.loads(restore_fixture_hashes((FIX / 'source-pins.json').read_bytes()))
 
 
 def byte_hash(data):
@@ -153,6 +168,10 @@ def build_runtime_fixture(root):
     for name, expected in PINS['fixture_files'].items():
         require(byte_hash((FIX / name).read_bytes()) == expected, 'fixture_source_changed')
     shutil.copytree(FIX, root, dirs_exist_ok=True)
+    for name, expected in PINS['materialized_fixture_files'].items():
+        data = restore_fixture_hashes((root / name).read_bytes())
+        require(byte_hash(data) == expected, 'fixture_materialization_changed')
+        (root / name).write_bytes(data)
     with closing(sqlite3.connect(root / 'canonical.sqlite')) as db:
         db.executescript((root / 'canonical.sql').read_text())
     envelope = json.loads((root / 'comprehension-handoff-v1.json').read_text())
@@ -298,6 +317,8 @@ class ComprehensionContractTests(unittest.TestCase):
         ContractSchemaValidator.check_schema(SCHEMA)
         for name, expected in PINS['fixture_files'].items():
             self.assertEqual(byte_hash((FIX / name).read_bytes()), expected, name)
+        for name, expected in PINS['materialized_fixture_files'].items():
+            self.assertEqual(byte_hash(restore_fixture_hashes((FIX / name).read_bytes())), expected, name)
         for path, expected in PINS['files'].items():
             self.assertEqual(byte_hash((REPO / path).read_bytes()), expected, path)
         VALIDATOR.validate(self.envelope)
@@ -318,7 +339,7 @@ class ComprehensionContractTests(unittest.TestCase):
             self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], pins['user_version'])
             self.assertEqual(db.execute('PRAGMA integrity_check').fetchall(), [('ok',)])
             self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0], 'delete')
-        frozen = json.loads((FIX / 'comprehension-handoff-v1.json').read_text())
+        frozen = json.loads(restore_fixture_hashes((FIX / 'comprehension-handoff-v1.json').read_bytes()))
         self.assertEqual(frozen['canonical_copy']['sha256'], pins['original_binary_sha256'])
         self.assertEqual(self.envelope['canonical_copy']['sha256'], byte_hash(path.read_bytes()))
         self.assertFalse((FIX / 'canonical.sqlite').exists())
@@ -342,6 +363,13 @@ class ComprehensionContractTests(unittest.TestCase):
                         build_runtime_fixture(root)
                     connect.assert_not_called()
                     copytree.assert_not_called()
+        # Isolate broken token restoration with otherwise unchanged valid inputs.
+        fresh = Path(tempfile.mkdtemp(prefix='contract-anchor-control-', dir=synthetic_output_root()))
+        with mock.patch(__name__ + '.restore_fixture_hashes', side_effect=lambda raw: raw):
+            with mock.patch('sqlite3.connect') as connect:
+                with self.assertRaisesRegex(ValueError, '^fixture_materialization_changed$'):
+                    build_runtime_fixture(fresh)
+                connect.assert_not_called()
 
     def test_public_scanner_still_rejects_database_paths_and_private_content(self):
         from campaign_tool.records.public_scan import violations

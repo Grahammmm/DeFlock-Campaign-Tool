@@ -31,7 +31,7 @@ CREATE TABLE joins(
  agency_id TEXT REFERENCES agencies(id), request_id TEXT REFERENCES requests(id),
  join_type TEXT NOT NULL, evidence TEXT NOT NULL,
  status TEXT NOT NULL CHECK(status IN ('typed','hinted','blocked')), blocked_reason TEXT);
-INSERT INTO "joins" VALUES('synthetic-join','128eed8b122adf21ca8f06380185b4c73704bb6f5c766c24858e0b99b932cd74','synthetic-agency',NULL,'synthetic','{"source_sha256": "128eed8b122adf21ca8f06380185b4c73704bb6f5c766c24858e0b99b932cd74", "locator": {"page": 1, "row": 1}}','typed',NULL);
+INSERT INTO "joins" VALUES('synthetic-join','0000000000000000000000000000000000000000000000000000000000000004','synthetic-agency',NULL,'synthetic','{"source_sha256": "0000000000000000000000000000000000000000000000000000000000000004", "locator": {"page": 1, "row": 1}}','typed',NULL);
 CREATE TABLE ledger_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE legacy_checkpoints(
  import_id TEXT NOT NULL REFERENCES legacy_imports(id), source_table TEXT NOT NULL,
@@ -64,8 +64,8 @@ CREATE TABLE originals(
  bytes INTEGER NOT NULL CHECK(bytes>=0), mime_detected TEXT, first_seen_at TEXT,
  role TEXT NOT NULL, scope TEXT NOT NULL, storage_path TEXT,
  preservation_status TEXT NOT NULL, legacy_format TEXT, provenance_json TEXT NOT NULL);
-INSERT INTO "originals" VALUES('128eed8b122adf21ca8f06380185b4c73704bb6f5c766c24858e0b99b932cd74',0,NULL,NULL,'synthetic','synthetic',NULL,'synthetic-only',NULL,'{}');
-INSERT INTO "originals" VALUES('048fe71967a6bde94096270ef09f388adb3ea57f85d6f8b4cf19e12bed2e77a3',0,NULL,NULL,'synthetic','synthetic',NULL,'synthetic-only',NULL,'{}');
+INSERT INTO "originals" VALUES('0000000000000000000000000000000000000000000000000000000000000004',0,NULL,NULL,'synthetic','synthetic',NULL,'synthetic-only',NULL,'{}');
+INSERT INTO "originals" VALUES('0000000000000000000000000000000000000000000000000000000000000001',0,NULL,NULL,'synthetic','synthetic',NULL,'synthetic-only',NULL,'{}');
 CREATE TABLE page_state(
  original_sha256 TEXT NOT NULL REFERENCES originals(sha256), page_no INTEGER NOT NULL CHECK(page_no>0),
  method TEXT, method_version TEXT, derivative_sha256 TEXT, confidence REAL,
@@ -109,7 +109,7 @@ CREATE TABLE runs(
  engine_version TEXT NOT NULL, image_digest TEXT, config_sha256 TEXT,
  coverage_cutoff TEXT, status TEXT NOT NULL, summary TEXT NOT NULL);
 CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, checksum TEXT NOT NULL);
-INSERT INTO "schema_migrations" VALUES(1,'2825d09e60945d3c22555141f17cabe40e28eb2af3284009df55ff1367cd6cee');
+INSERT INTO "schema_migrations" VALUES(1,'0000000000000000000000000000000000000000000000000000000000000006');
 CREATE TABLE stage_events(
  sequence INTEGER PRIMARY KEY AUTOINCREMENT, original_sha256 TEXT NOT NULL,
  stage TEXT NOT NULL, status TEXT NOT NULL, receipt_sha256 TEXT, owner TEXT NOT NULL,
