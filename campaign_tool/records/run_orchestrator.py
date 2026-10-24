@@ -520,6 +520,261 @@ def write_notify_alert(alerts_dir, report, reason, exit_code):
     atomic_write_json(alerts / f"notify-failed-{report['run_id']}.json", alert)
 
 
+# --- local understanding alerts (explicit opt-in; never a transport) ---------
+
+
+def _alert_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+def understanding_identity(value):
+    """Canonical content SHA256 used by callers to pin admitted metadata."""
+    import hashlib
+    return hashlib.sha256(_alert_json(value)).hexdigest()
+
+
+def _alert_baseline(baseline):
+    if (not isinstance(baseline, dict)
+            or set(baseline) != {"schema_version", "needs_g"}
+            or type(baseline["schema_version"]) is not int
+            or baseline["schema_version"] != 1
+            or not isinstance(baseline["needs_g"], list)):
+        raise ValueError("invalid alert baseline")
+    counts = {}
+    for row in baseline["needs_g"]:
+        if (not isinstance(row, dict) or set(row) != {"stage", "code", "count"}
+                or row["stage"] not in run_report.STAGE_ORDER
+                or not isinstance(row["code"], str) or not CODE_RE.fullmatch(row["code"])
+                or type(row["count"]) is not int or row["count"] < 0):
+            raise ValueError("invalid alert baseline")
+        key = (row["stage"], row["code"])
+        if key in counts:
+            raise ValueError("duplicate alert baseline identity")
+        counts[key] = row["count"]
+    return counts
+
+
+def _alert_report(report):
+    try:
+        run_report.validate_run_report(report)
+        if type(report["schema_version"]) is not int or not RUN_ID_RE.fullmatch(report["run_id"]):
+            raise ValueError()
+        for stage in report["stages"]:
+            if not all(type(n) is int for n in stage["counts"].values()):
+                raise ValueError()
+            if stage["error_code"] is not None and not CODE_RE.fullmatch(stage["error_code"]):
+                raise ValueError()
+            if any(type(row["count"]) is not int or not CODE_RE.fullmatch(row["code"])
+                   for row in stage.get("outcomes", [])):
+                raise ValueError()
+        if any(type(n) is not int for n in report["new_data"].values()):
+            raise ValueError()
+        if type(report["review_required_count"]) is not int:
+            raise ValueError()
+        if any(type(row["count"]) is not int or not CODE_RE.fullmatch(row["code"])
+               for row in report["needs_g"]):
+            raise ValueError()
+        # Also reject NaN/infinity even if a permissive schema accepts them.
+        understanding_identity(report)
+    except (ValueError, TypeError, KeyError, OverflowError):
+        raise ValueError("invalid alert report") from None
+
+
+def _understanding_comparison(report, baseline, prior, max_age):
+    """Pure comparison of validated, pinned report metadata; no I/O."""
+    report_hash = understanding_identity(report)
+    prior_hash = understanding_identity(prior) if prior is not None else None
+    result = {"verification": "UNVERIFIED", "reason_code": "PRIOR_UNVERIFIED",
+              "run_id": report["run_id"], "report_sha256": report_hash,
+              "prior_sha256": prior_hash, "baseline_sha256": understanding_identity(baseline),
+              "events": [], "review_required": True, "publication_ready": False,
+              "activation_allowed": False, "sent": False}
+    if prior is None:
+        return result
+    age = (run_report._parse_utc(report["started_at"])
+           - run_report._parse_utc(prior["finished_at"])).total_seconds()
+    if (prior["run_id"] == report["run_id"] or prior["mode"] != report["mode"]
+            or age < 0 or age > max_age):
+        return result
+    result.update(verification="VERIFIED", reason_code="LOCAL_COMPARISON_ONLY")
+    prior_stages = {s["name"]: s for s in prior["stages"]}
+    previous = {(r["stage"], r["code"]): r["count"] for r in prior["needs_g"]}
+    accepted = _alert_baseline(baseline)
+
+    def event(reason, stage, code, count, prior_count, allowance):
+        row = {"reason_code": reason, "stage": stage, "code": code,
+               "count": count, "prior_count": prior_count, "baseline_count": allowance,
+               "run_id": report["run_id"], "report_sha256": report_hash,
+               "prior_run_id": prior["run_id"], "prior_sha256": prior_hash,
+               "baseline_sha256": result["baseline_sha256"], "audience": "internal"}
+        row["event_id"] = understanding_identity(row)
+        result["events"].append(row)
+
+    timeouts = {"STAGE_TIMEOUT", "RUN_DEADLINE_REACHED", "NOTIFY_HELPER_TIMEOUT"}
+    for stage in report["stages"]:
+        old = prior_stages[stage["name"]]
+        if stage["status"] == "fail" and (
+                old["status"] != "fail" or old["error_code"] != stage["error_code"]
+                or stage["counts"]["failed"] > old["counts"]["failed"]):
+            event("NEW_TIMEOUT" if stage["error_code"] in timeouts else "NEW_FAILURE",
+                  stage["name"], stage["error_code"], stage["counts"]["failed"],
+                  old["counts"]["failed"], 0)
+    for row in sorted(report["needs_g"], key=lambda r: (r["stage"], r["code"])):
+        key = (row["stage"], row["code"])
+        old, allowance = previous.get(key, 0), accepted.get(key, 0)
+        if row["count"] > max(old, allowance):
+            event("GAP_WIDENED", *key, row["count"], old, allowance)
+    return result
+
+
+def _alert_directory(root):
+    """Open an existing absolute directory, refusing every symlink component."""
+    root = Path(root)
+    if not root.is_absolute() or ".." in root.parts:
+        raise ValueError("alert root must be an existing absolute directory")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(root.anchor, flags)
+    try:
+        for component in root.parts[1:]:
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _alert_regular(fd):
+    import stat
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError("alert leaf must be a single-link regular file")
+
+
+def _alert_load(fd):
+    def unique(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate alert state key")
+            obj[key] = value
+        return obj
+
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        return json.load(stream, object_pairs_hook=unique)
+
+
+def _alert_validate_state(state, baseline):
+    if (not isinstance(state, dict) or set(state) != {"schema_version", "baseline", "entries"}
+            or type(state["schema_version"]) is not int or state["schema_version"] != 1
+            or _alert_json(state["baseline"]) != _alert_json(baseline)
+            or not isinstance(state["entries"], list)):
+        raise ValueError("invalid alert state")
+    seen, last = set(), None
+    for entry in state["entries"]:
+        if not isinstance(entry, dict) or set(entry) != {
+                "report", "prior_report", "max_prior_age_seconds", "result"}:
+            raise ValueError("invalid alert entry")
+        report, prior, age = entry["report"], entry["prior_report"], entry["max_prior_age_seconds"]
+        _alert_report(report)
+        _alert_report(prior)
+        if last is None:
+            seen.add(prior["run_id"])
+        if type(age) is not int or age < 0 or report["run_id"] in seen:
+            raise ValueError("invalid alert history")
+        if last is not None and _alert_json(prior) != _alert_json(last):
+            raise ValueError("broken alert history")
+        expected = _understanding_comparison(report, baseline, prior, age)
+        if (expected["verification"] != "VERIFIED"
+                or _alert_json(entry["result"]) != _alert_json(expected)):
+            raise ValueError("invalid alert evidence")
+        seen.add(report["run_id"])
+        last = report
+
+
+def record_understanding_alerts(report, baseline, ledger_root, *, baseline_sha256,
+                                prior_report=None, prior_sha256=None,
+                                max_prior_age_seconds):
+    """Persist new failure/timeout/gap evidence locally, without sending anything.
+
+    Caller supplies an admitted output directory and canonical baseline/prior
+    pins (``understanding_identity``). No baseline, root, age policy or transport
+    is inferred from environment, credentials or installed runtime defaults.
+    Missing/stale prior evidence is UNVERIFIED, not a successful empty diff.
+    Existing notify outcome and report objects are never changed. This adapter
+    does not satisfy notify delivery, semantic acceptance or live-apply gates.
+    """
+    import fcntl
+    # Snapshot mutable caller inputs before validation or fingerprinting.
+    report = json.loads(_alert_json(report))
+    baseline = json.loads(_alert_json(baseline))
+    prior_report = json.loads(_alert_json(prior_report))
+    _alert_report(report)
+    _alert_baseline(baseline)
+    if baseline_sha256 != understanding_identity(baseline):
+        raise ValueError("alert baseline pin mismatch")
+    if type(max_prior_age_seconds) is not int or max_prior_age_seconds < 0:
+        raise ValueError("invalid prior age policy")
+    if prior_report is not None:
+        _alert_report(prior_report)
+        if prior_sha256 != understanding_identity(prior_report):
+            prior_report = None
+    result = _understanding_comparison(report, baseline, prior_report, max_prior_age_seconds)
+    root_fd = _alert_directory(ledger_root)
+    lock_fd = None
+    try:
+        lock_fd = os.open("understanding-alerts.lock", os.O_RDWR | os.O_CREAT
+                          | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=root_fd)
+        _alert_regular(lock_fd)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        name = "understanding-alerts-v1.json"
+        try:
+            state_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                               | os.O_CLOEXEC, dir_fd=root_fd)
+        except FileNotFoundError:
+            state = {"schema_version": 1, "baseline": baseline, "entries": []}
+        else:
+            try:
+                _alert_regular(state_fd)
+            except BaseException:
+                os.close(state_fd)
+                raise
+            state = _alert_load(state_fd)
+        _alert_validate_state(state, baseline)
+        if state["entries"] and report["run_id"] == state["entries"][0]["prior_report"]["run_id"]:
+            raise ValueError("alert seed identity conflict")
+        for entry in state["entries"]:
+            if entry["report"]["run_id"] == report["run_id"]:
+                if _alert_json(entry["report"]) != _alert_json(report):
+                    raise ValueError("alert run identity conflict")
+                replay = dict(entry["result"], events=[], reason_code="ALREADY_RECORDED")
+                return replay
+        if (state["entries"] and _alert_json(prior_report)
+                != _alert_json(state["entries"][-1]["report"])):
+            return dict(result, verification="UNVERIFIED", reason_code="PRIOR_UNVERIFIED", events=[])
+        if result["verification"] != "VERIFIED":
+            return result
+        state["entries"].append({"report": report, "prior_report": prior_report,
+                                 "max_prior_age_seconds": max_prior_age_seconds, "result": result})
+        # Unique temp files are retained if a write fails; never truncate state.
+        temp_name = ".understanding-alerts-" + os.urandom(16).hex() + ".tmp"
+        temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                          | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=root_fd)
+        with os.fdopen(temp_fd, "wb") as stream:
+            stream.write(_alert_json(state) + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, name, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+        os.fsync(root_fd)
+        return result
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(root_fd)
+
+
 # --- stub backend -----------------------------------------------------------
 
 def stub_stage(stage, fixture_path):
