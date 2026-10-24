@@ -9,7 +9,7 @@ Assertion map (frozen acceptance):
   A3 boundary/recovery  ToleranceBoundaryTests
   A4 broken control     BrokenControlTests
   A5 integration        ConsumerIntegrationTests
-  A6 security           every test (OfflineCase) plus PreservationTests
+  A6 security           every test (OfflineCase), ChildGuardTests, PreservationTests
 """
 import ast
 import copy
@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from campaign_tool.records import run_coverage, run_report  # noqa: E402
+from tools import accept_fa21_report_finite as accept  # noqa: E402
 from tools import run_report_check  # noqa: E402
 
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "run_report"
@@ -70,11 +71,15 @@ def _sha256(path):
 
 
 def _repo_listing():
-    listing = set()
+    """Every repository file (outside .git) with its size and mtime: any created,
+    removed or rewritten file changes this snapshot."""
+    listing = {}
     for current, dirs, files in os.walk(REPO_ROOT):
         dirs[:] = [d for d in dirs if d != ".git"]
         for name in files:
-            listing.add(str(Path(current, name).relative_to(REPO_ROOT)))
+            path = Path(current, name)
+            stat = path.lstat()
+            listing[str(path.relative_to(REPO_ROOT))] = (stat.st_size, stat.st_mtime_ns)
     return listing
 
 
@@ -153,6 +158,9 @@ class OfflineCase(unittest.TestCase):
 
     def tearDown(self):
         self.assertEqual(NETWORK_ATTEMPTS, [])
+        # Under the acceptance helper these are its live in-process guard records.
+        self.assertEqual(accept.NETWORK_ATTEMPTS, [])
+        self.assertEqual(accept.WRITE_VIOLATIONS, [])
         for path, digest in _STATE["hashes"].items():
             self.assertEqual(_sha256(path), digest, path)
         self.assertEqual(_repo_listing(), _STATE["listing"])
@@ -176,9 +184,17 @@ class OfflineCase(unittest.TestCase):
         return path
 
     def child(self, *argv):
-        env = dict(os.environ, TMPDIR=str(self.root), PYTHONDONTWRITEBYTECODE="1")
-        return subprocess.run([sys.executable, "-B", *argv], cwd=REPO_ROOT, env=env,
-                              capture_output=True, text=True, timeout=60)
+        """Run a Python CLI through the guarded file-based launcher (guards before import)."""
+        ledger = self.root / "child-ledger.jsonl"
+        result = launch(self.root / "child", ledger, ["-B", *argv])
+        self.assertEqual(accept.ledger_entries(ledger), [])
+        return result
+
+
+def launch(root, ledger, rest):
+    env = dict(os.environ, TMPDIR=str(root), PYTHONDONTWRITEBYTECODE="1")
+    return subprocess.run(accept.launcher_argv(root, ledger, rest), cwd=REPO_ROOT, env=env,
+                          capture_output=True, text=True, timeout=60)
 
 
 class FinitePositiveTests(OfflineCase):
@@ -403,6 +419,74 @@ class ConsumerIntegrationTests(OfflineCase):
                                  "run_coverage: run report invalid; no coverage line")
 
 
+class ChildGuardTests(OfflineCase):
+    """A6: Python children are guarded before import, and violations fail closed.
+
+    Safe synthetic controls only. The network control runs only after the guard is
+    confirmed in place, and it calls the guard with a non-socket object, so the
+    unguarded built-in would raise TypeError without any I/O. The write control
+    targets a sibling directory inside this test's own per-run root.
+    """
+
+    def probe(self):
+        inside, outside = self.root / "inside", self.root / "outside"
+        outside.mkdir()
+        ledger = self.root / "probe-ledger.jsonl"
+        denied = outside / "denied.txt"
+        result = launch(inside, ledger, ["-B", "-m", "tests.test_fa21_report_finite",
+                                         "--fa21-probe", str(denied)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout), accept.ledger_entries(ledger), inside, denied
+
+    def test_child_guards_are_installed_before_any_product_import(self):
+        report, _, inside, _ = self.probe()
+        for name in ("installed", "socket.connect", "socket.connect_ex", "create_connection",
+                     "getaddrinfo"):
+            self.assertIs(report["guards"][name], True, name)
+        self.assertEqual(report["product_modules_at_install"], [])
+        self.assertEqual(Path(report["guards"]["tempdir"]).resolve(), inside.resolve())
+        self.assertTrue(Path(report["gettempdir"]).resolve().is_relative_to(inside.resolve()))
+
+    def test_child_violations_are_refused_recorded_and_fail_the_parent(self):
+        report, entries, _, denied = self.probe()
+        self.assertEqual(report["connect"], "refused")
+        self.assertEqual(report["write"], "refused")
+        self.assertFalse(denied.exists())
+        self.assertEqual(sorted(e["kind"] for e in entries), ["network", "write"])
+        self.assertEqual(accept.guard_failures([], [], entries, []), ["child"])
+        self.assertEqual(accept.guard_failures([], [], [], []), [])
+
+    def test_launcher_refuses_non_file_children(self):
+        ledger = self.root / "refused-ledger.jsonl"
+        result = launch(self.root / "refused", ledger, ["--not-a-script-file"])
+        self.assertEqual(result.returncode, 97)
+        self.assertEqual([e["kind"] for e in accept.ledger_entries(ledger)], ["refused-child"])
+
+    def test_unguarded_python_children_are_rerouted_through_the_launcher(self):
+        state = {"root": str(self.root / "r"), "child_ledger": str(self.root / "l.jsonl")}
+        with mock.patch.dict(accept.STATE, state):
+            argv, route = accept.wrap_child_argv([sys.executable, "-m", "campaign_tool.x", "--a"])
+            self.assertEqual(route, "wrapped")
+            self.assertEqual(argv[:4], [sys.executable, "-B", accept.LAUNCHER, "--child-launch"])
+            self.assertEqual(argv[-4:], ["--", "-m", "campaign_tool.x", "--a"])
+            self.assertEqual(accept.wrap_child_argv(argv), (argv, "already-guarded"))
+            self.assertEqual(accept.wrap_child_argv(["git", "status"])[1], "non-python")
+        children = [{"argv0": "git", "route": "non-python"},
+                    {"argv0": "other-tool", "route": "non-python"},
+                    {"argv0": "python3", "route": "wrapped"}]
+        self.assertEqual(accept.unguarded_children(children), [children[1]])
+        self.assertEqual(accept.guard_failures([], [], [], children[1:2]), ["unguarded-child"])
+
+    def test_dir_fd_relative_paths_resolve_against_their_directory(self):
+        fd = os.open(self.root, os.O_RDONLY)
+        try:
+            self.assertEqual(accept._resolve("entry.json", fd),
+                             os.path.realpath(self.root / "entry.json"))
+        finally:
+            os.close(fd)
+        self.assertFalse(accept.is_allowed_write(accept.UNRESOLVED))
+
+
 class PreservationTests(OfflineCase):
     """A6: synthetic-only inputs, no acquisition modules, schema unchanged."""
 
@@ -438,5 +522,27 @@ class PreservationTests(OfflineCase):
         self.assertTrue(self.root.is_relative_to(_STATE["root"]))
 
 
+def _guard_probe(denied):
+    """Child-side probe for ChildGuardTests; only meaningful under the launcher."""
+    report = {"guards": accept.guards_active(), "gettempdir": tempfile.gettempdir(),
+              "product_modules_at_install": accept.STATE["product_modules_at_install"]}
+    report["connect"] = "unguarded-not-called"
+    if report["guards"]["socket.connect"]:
+        try:
+            socket.socket.connect(object(), ("192.0.2.1", 9))
+        except OSError:
+            report["connect"] = "refused"
+    try:
+        with open(denied, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        report["write"] = "allowed"
+    except PermissionError:
+        report["write"] = "refused"
+    print(json.dumps(report, sort_keys=True))
+    return 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--fa21-probe"]:
+        raise SystemExit(_guard_probe(sys.argv[2]))
     unittest.main()
