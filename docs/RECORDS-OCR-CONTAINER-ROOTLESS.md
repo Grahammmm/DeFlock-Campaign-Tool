@@ -135,7 +135,7 @@ The [R1] preflight (below) checks free space for the whole run up front.
 [S1] repeats that check with the exact baseline sizes. [A2] checks, from the
 current data (the replacement may have grown it), what is still to come: its
 own archives, SQLite backups and largest extract, then a rollback's preserved
-current state, `2T + D + L + 512 MiB` (see the table below). [A2] does not
+current state, `2T + D + 2L + 512 MiB` (see the table below). [A2] does not
 count the S1 archives, S2 backups or the build: they are already on disk.
 
 ## [R1] preflight
@@ -157,11 +157,12 @@ finding refuses the run (exit 2, nothing changed). The findings go to
 | overflow owners | The same survey refuses entries owned by uid or gid 65534 (formerly found only at [S1], after the stop). |
 | [S3] sockets | The survey names every socket, fifo and device per mount. They are excluded from every equality check (see "Sockets and other special files"). |
 | [C2] settings diff | A create-only probe: `POST /containers/create` of `<name>-swap-probe` with the saved settings and the old image, without `Binds`, `Mounts` and `VolumesFrom` (it never mounts live data), never started. Its inspect is diffed with the same rules as [C2] (name and mounts left out), then it is removed with `docker rm -v`. Any difference refuses the run. |
-| [A2] free space | The survey sizes give one archive set (tar headers, pax reserve, long names, padding, record rounding) `T`, the largest extracted mount `L` and the SQLite data `D`. The run needs `3T + 2D + L + B + 512 MiB` free: S1 archives, S2 backups, A2 archives and backups, and the preserved current state plus its verify extract of an [RB-C] restore after [A2]. Extracts run one mount at a time and are deleted, so only the largest counts. `B` is a fixed build allowance, not a measurement: 64 MiB for `$RUN/build` (wheel, `requirements.lock`, `.dockerignore`) plus 2 GiB for the new image's layers and builder intermediates in the Docker data root, usually on the same filesystem. With `--reuse-image` nothing is built and `B` is 0. |
+| [A2] free space | The survey sizes give one archive set (tar headers, pax reserve, long names, padding, record rounding) `T`, the largest extracted mount `L` and the SQLite data `D`. The run needs `3T + 2D + 2L + B + 512 MiB` free: S1 archives, S2 backups, A2 archives and backups, and the preserved current state plus its verify extract of an [RB-C] restore after [A2]. Extracts run one mount at a time and are deleted, but a step that fails leaves its extract behind, next to the rollback's verify extract, so the largest counts twice. `B` is a fixed build allowance, not a measurement: 64 MiB for `$RUN/build` (wheel, `requirements.lock`, `.dockerignore`) plus 2 GiB for the new image's layers and builder intermediates in the Docker data root, usually on the same filesystem. With `--reuse-image` nothing is built and `B` is 0. |
 
-Freeing space is the operator's job. Superseded run directories under
-`--private` are kept or deleted under the owner's retention rule, never by the
-driver.
+Freeing space is the operator's job. The swap itself never deletes a run
+directory; `rootless_swap.py prune` (see "Pruning superseded runs") lists the
+ones the owner's retention rule may remove and deletes them only with
+`--apply`.
 
 ## Rootless owner runbook
 
@@ -498,6 +499,44 @@ it (it was never started and holds no data), then run `--dry-run` with
 `--reuse-image` and read its `reusing ...` line before `--apply`.
 
 Alternatively, choose a new `--new-tag` and let the run build again.
+
+## Pruning superseded runs
+
+```
+python3 container/flock-ocr/rootless_swap.py prune --private "$PRIVATE"            # dry run: KEEP/PRUNE per run
+python3 container/flock-ocr/rootless_swap.py prune --private "$PRIVATE" --apply    # delete the PRUNE lines
+```
+
+The dry run changes nothing and creates no lock file; it fails if a swap
+holds the lock. `--apply` takes the swap lock, checks that the daemon is
+rootless, refuses every candidate if any container (running or stopped)
+mounts a path overlapping one or an own process has a file open under one,
+re-checks the selection before each deletion, and empties each run in a
+helper that mounts only that run writable (and the recipe read-only), then
+removes the empty directory. No image, container, timer or live mount is
+touched. Each run is listed as `KEEP <dir>: <reasons>` or
+`PRUNE <dir>: <why eligible>`. A run is kept when it is:
+
+- the newest run, or the latest run with phase `complete` (the rollback point
+  of the swap in service);
+- not finished: any phase other than `complete`, `rolled_back` or `refused`;
+- named by any run's `reuse.run_dir` or by `--reuse-image RUN_DIR` (repeatable,
+  for a reuse still to come);
+- holding a non-empty `rollback/`, unless `--include-rollback-archives` is
+  given. A rollback keeps the pre-restore state in
+  `rollback/<label>/attempt-NNN` before it restores S1; that archive can be
+  the only copy of what the replacement wrote, so a `rolled_back` run is
+  not pruned by default;
+- a remnant without `state.json` (attempts from older drivers), unless
+  `--include-orphans` and an immutable `--helper-image` are given and its top
+  level holds only step directories (`s1`, `s2`, `s3`, `a2`, `build`, `b1`,
+  `rollback`).
+
+Unknown or malformed state, a symlinked run directory or `state.json`, a
+reference that is not a direct run under `--private`, or a `state.json` whose
+`run_dir`/`private` do not name this directory fails the whole prune before
+anything is deleted. Paths are compared resolved on both sides: the driver
+stores `--private` as given, so a symlinked parent of `--private` matches.
 
 ## Known limits
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rootless driver for the OCR container swap (docs/RECORDS-OCR-CONTAINER-ROOTLESS.md).
 
-One script, five modes:
+One script, five modes and a prune subcommand:
 
   --dry-run   Read-only. Runs R1 discovery (docker info/inspect/ps, systemctl
               --user show) and prints every later command without running it.
@@ -18,6 +18,8 @@ One script, five modes:
               against it with stand-ins only for the engine build ([B1], [B2],
               [V1], [A4]) and a simulated pause unit, checks the result and
               removes everything it created. CI runs it on rootless Docker.
+  prune       `rootless_swap.py prune --private DIR`: lists superseded run
+              directories (prune_runs.py); deletes only with --apply.
 
 [R1] ends with a preflight that refuses the run, before anything is stopped,
 on each failure an earlier attempt met late: an off-main or stale checkout, a
@@ -124,6 +126,7 @@ def _load(name, filename):
 snapshot_evidence = _load("flock_ocr_snapshot_evidence", "snapshot_evidence.py")
 preflight = _load("flock_ocr_preflight", "preflight.py")
 check_runbook = _load("flock_ocr_check_runbook", "check_runbook.py")
+prune_runs = _load("flock_ocr_prune_runs", "prune_runs.py")
 
 
 class StepFailed(Exception):
@@ -306,12 +309,15 @@ def space_budget(tar_bytes, largest_extract, sqlite_bytes, build_bytes=0):
     archives and backups, and one preserved current-state archive per
     restored mount (worst case: all of them) plus its verify extract. Extracts
     (S2, S3, A2, restore verify) run one mount at a time and are deleted
-    before the next, so only the largest counts, once. build_bytes is the
-    [B1]/[B2] allowance (build_allowance); it is left out when 0.
+    before the next, but a step that fails leaves its extract behind (the
+    delete is its last action), so the rollback's verify extract can sit next
+    to it: the largest extract counts twice. build_bytes is the [B1]/[B2]
+    allowance (build_allowance); it is left out when 0.
     """
     parts = {"s1_archives": tar_bytes, "s2_sqlite_backups": sqlite_bytes,
              "a2_archives": tar_bytes, "a2_sqlite_backups": sqlite_bytes,
-             "restore_preservation": tar_bytes, "largest_extract": largest_extract}
+             "restore_preservation": tar_bytes, "largest_extract": largest_extract,
+             "failed_step_extract": largest_extract}
     if build_bytes:
         parts["build_and_image"] = build_bytes
     parts["margin"] = MARGIN
@@ -322,7 +328,8 @@ def a2_budget(tar_bytes, largest_extract, sqlite_bytes):
     """Free bytes [A2] needs: space_budget without what [S1]/[S2] and the build already hold.
 
     2 archive sets (A2's and a rollback's preserved current state) + the A2
-    SQLite backups + the largest extract + the margin.
+    SQLite backups + the largest extract twice (one a failed A2 step left, one
+    for the rollback's verify) + the margin.
     """
     parts, _ = space_budget(tar_bytes, largest_extract, sqlite_bytes)
     for spent in ("s1_archives", "s2_sqlite_backups"):
@@ -728,7 +735,7 @@ class Swap:
                 # rollback's preserved current state and its verify extract.
                 # Sized from the current data, which the replacement may have grown.
                 parts, need = a2_budget(tar, extract, self.a2_sqlite_bytes(baselines))
-                what = "A2 and a rollback after it (2 archive sets + SQLite backups + largest extract + 512 MiB)"
+                what = "A2 and a rollback after it (2 archive sets + SQLite backups + 2 largest extracts + 512 MiB)"
             free = self.system.disk_free(self.run_dir)
             shown = ", ".join(f"{k} {v}" for k, v in parts.items())
             if free < need:
@@ -1198,8 +1205,8 @@ class Swap:
     def preflight_budget(self, surveys):
         """Space for S1 + S2/S3 extraction + the build + A2 + an RB-C restore, up front (attempt 6 failed at A2)."""
         if self.dry:
-            self.log("    would require free space for S1 archives + S2/S3 extract + $RUN/build and the new image "
-                     "+ A2 + restore + 512 MiB")
+            self.log("    would require free space for S1 archives + S2/S3 extract + a failed step's extract + "
+                     "$RUN/build and the new image + A2 + restore + 512 MiB")
             return
         tar = sum(r["tar_bytes"] for r in surveys.values())
         extract = max(r["extract_bytes"] for r in surveys.values())
@@ -1210,7 +1217,7 @@ class Swap:
         shown = ", ".join(f"{k} {v}" for k, v in parts.items())
         if free < need:
             self.fail(f"preflight: private dir has {free} bytes free, the run needs {need} ({shown}); free "
-                      f"{need - free} bytes first (superseded run dirs under --private are the operator's)")
+                      f"{need - free} bytes first (superseded run dirs under --private: rootless_swap.py prune)")
         self.log(f"    preflight: space {free} bytes free >= {need} needed ({shown})")
 
     def q1_pause(self):
@@ -2174,11 +2181,15 @@ def _lock(private):
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        handle.close()
         raise SystemExit("another rootless_swap.py run holds the lock")
     return handle
 
 
 def main(argv=None, system=None, out=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["prune"]:
+        return prune_runs.main(argv[1:], system=system or System(), out=out, swap_class=Swap, lock=_lock)
     args = parse_args(argv)
     if args.mode == "rehearse":
         return Rehearsal(args, system=system, out=out).run()

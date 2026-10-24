@@ -1755,7 +1755,8 @@ class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
         # attempt 6: S1 checked 3x + 512 MiB, A2 re-checked 3x after S1 had used 1x: 146 MB short
         parts, need = self.expected_need()
         self.assertEqual(set(parts), {"s1_archives", "s2_sqlite_backups", "a2_archives", "a2_sqlite_backups",
-                                      "restore_preservation", "largest_extract", "build_and_image", "margin"})
+                                      "restore_preservation", "largest_extract", "failed_step_extract",
+                                      "build_and_image", "margin"})
         self.assertEqual(parts["margin"], 512 << 20)
         self.assertEqual(parts["s1_archives"], parts["a2_archives"])
         self.fake.free = need - 1
@@ -1807,9 +1808,9 @@ class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
         self.assertGreaterEqual(free, tar + written + 3 * 512 + 10240 + (512 << 20),
                                 "the old gate would have refused too; not a discriminating case")
         match = re.search(r"FAIL at \[A2\]: private dir has (\d+) bytes free, needs (\d+) for A2 and a rollback "
-                          r"after it \(2 archive sets \+ SQLite backups \+ largest extract \+ 512 MiB\) "
+                          r"after it \(2 archive sets \+ SQLite backups \+ 2 largest extracts \+ 512 MiB\) "
                           r"\(a2_archives \d+, a2_sqlite_backups \d+, restore_preservation \d+, "
-                          r"largest_extract \d+, margin 536870912\)", out)
+                          r"largest_extract \d+, failed_step_extract \d+, margin 536870912\)", out)
         self.assertIsNotNone(match, out)
         self.assertEqual(int(match.group(1)), free)
         self.assertGreater(int(match.group(2)), free)
@@ -1821,11 +1822,11 @@ class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
         return (sum(s["tar_bytes"] for s in surveys), max(s["extract_bytes"] for s in surveys),
                 sum(s["sqlite_bytes"] for s in surveys))
 
-    def test_a2_budget_is_two_archive_sets_one_backup_set_one_extract_and_the_margin(self):
+    def test_a2_budget_is_two_archive_sets_one_backup_set_two_extracts_and_the_margin(self):
         parts, need = swap.a2_budget(100, 7, 3)
         self.assertEqual(parts, {"a2_archives": 100, "a2_sqlite_backups": 3, "restore_preservation": 100,
-                                 "largest_extract": 7, "margin": 512 << 20})
-        self.assertEqual(need, 2 * 100 + 3 + 7 + (512 << 20))
+                                 "largest_extract": 7, "failed_step_extract": 7, "margin": 512 << 20})
+        self.assertEqual(need, 2 * 100 + 3 + 2 * 7 + (512 << 20))
         # space_budget minus what S1/S2 and the build already hold at A2
         full, total = swap.space_budget(100, 7, 3, swap.build_allowance(None))
         self.assertEqual(total - need, full["s1_archives"] + full["s2_sqlite_backups"] + full["build_and_image"])
@@ -1895,9 +1896,10 @@ class SurveyAndBudgetTests(unittest.TestCase):
             self.assertGreaterEqual(estimate["tar_bytes"], archive.stat().st_size)
             self.assertLess(estimate["tar_bytes"], archive.stat().st_size + 64 * 1024)
 
-    def test_budget_is_three_archive_sets_two_backup_sets_one_extract_and_the_margin(self):
+    def test_budget_is_three_archive_sets_two_backup_sets_two_extracts_and_the_margin(self):
+        # PR #161's rule: a failed step's extract can remain next to a rollback's verify extract.
         parts, need = swap.space_budget(100, 7, 3)
-        self.assertEqual(need, 3 * 100 + 2 * 3 + 7 + (512 << 20))
+        self.assertEqual(need, 3 * 100 + 2 * 3 + 2 * 7 + (512 << 20))
 
 
 class RehearsalModeTests(unittest.TestCase):
