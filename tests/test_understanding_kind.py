@@ -1,10 +1,12 @@
 """Synthetic-only F-033 acceptance; no extraction/inference/real records.
 
-Native receipt/unit shapes are pinned to extraction_routes.py:433 and
-understanding/evidence.py:43-69 at baseline93995a1. Workbook row text is a JSON
-array (tests/runner/test_extract.py:50-62); page cues use page=1. These fixtures
-are NOT trusted workbook/preservation qualification. Outputs are retained in a
-new candidate out/test-kind-UUID on each run, never written under fixtures.
+Receipt wrapper: extraction_routes.py:433 and understanding/evidence.py:43-69.
+Native units: intake/folder.py at baseline93995a1: csv_header at302 (string
+array), docx_paragraph at348 (part/paragraph), workbook_row at363-365 (dict
+cells in both JSON text and data.cells), text_line at386 (line). PDF uses page=1.
+These synthetic fixtures are NOT workbook/preservation qualification. Native
+XLSX's cached-values issue still holds other/low. Outputs are retained in a new
+candidate out/test-kind-UUID on each run, never written under fixtures.
 """
 import copy
 import hashlib
@@ -36,6 +38,25 @@ POSITIVES = {
 def unit(text, *, page=1, kind_name="pdf_page", locator=None):
     return {"kind": kind_name, "locator": {"page": page} if locator is None else locator,
             "text": text, "data": {}}
+
+
+def workbook(values, *, sheet="opaque", row=1, types=None):
+    # Source-shaped synthetic cells, not a string-array workbook surrogate.
+    types = types if types is not None else ["s" if type(v) is str else "n" for v in values]
+    cells = [{"cell": chr(65 + i) + str(row), "value": v, "type": t}
+             for i, (v, t) in enumerate(zip(values, types))]
+    return {"kind": "workbook_row", "locator": {"sheet": sheet, "row": row},
+            "text": json.dumps(cells, sort_keys=True, ensure_ascii=True, default=str),
+            "data": {"cells": cells}}
+
+
+def csv_header(values, *, record=1):
+    return unit(json.dumps(values, sort_keys=True, ensure_ascii=True, default=str), kind_name="csv_header",
+                locator={"record": record, "line_start": record, "line_end": record})
+
+
+def paragraph(text, *, number=1, part="word/document.xml"):
+    return unit(text, kind_name="docx_paragraph", locator={"part": part, "paragraph": number})
 
 
 def native(*units, status="complete", issues=None):
@@ -92,6 +113,15 @@ class KindTests(unittest.TestCase):
         types = set().union(*ast.literal_eval(assignment.value).values())
         self.assertTrue(types <= kind.KINDS)
         self.assertEqual(types, {"search-log", "sharing-list", "network-search", "retention-setting", "audit", "request"})
+        pipeline = ast.parse((REPO / "campaign_tool/records/detectors/pipeline.py").read_text())
+        assignment = next(n for n in pipeline.body if isinstance(n, ast.Assign)
+                          and any(isinstance(t, ast.Name) and t.id == "KNOWN_TYPES" for t in n.targets))
+        # Inspect the native union AST without importing/evaluating its code.
+        self.assertIsInstance(assignment.value, ast.BinOp)
+        self.assertIsInstance(assignment.value.op, ast.BitOr)
+        self.assertEqual(ast.dump(assignment.value.left),
+                         ast.dump(ast.parse("set().union(*TYPES.values())", mode="eval").body))
+        self.assertEqual(kind.KINDS, types | ast.literal_eval(assignment.value.right))
 
     def test_conflicting_channels_and_mixed_documents_are_other(self):
         cases = [args(filename="policy.pdf"),
@@ -125,17 +155,17 @@ class KindTests(unittest.TestCase):
 
     def test_sheet_and_native_header_rules(self):
         headers = ["event_id", "searched_at", "purpose"]
-        row = unit(json.dumps(headers), kind_name="workbook_row", locator={"sheet": "Search log", "row": 1})
+        row = workbook(headers, sheet="Search log")
         output = kind.classify(**args(native(row)))
         self.assertEqual((output["kind"], output["confidence"]), ("search-log", "high"))
         self.assertEqual({m["channel"] for m in output["matched_cues"]}, {"sheet", "header"})
         for names, expected in ((["agency_id", "retention_days"], "retention-setting"),
                                 (["user_id", "training_completed_at"], "training-roster")):
-            test = unit(json.dumps(names), kind_name="workbook_row", locator={"sheet": "opaque", "row": 1})
+            test = workbook(names)
             self.assertEqual(kind.classify(**args(native(test)))["kind"], expected)
         # Header cue does not arise from values or generic partial columns.
         for cells, row_index in ((headers, 2), (["event_id", "purpose"], 1)):
-            test = unit(json.dumps(cells), kind_name="workbook_row", locator={"sheet": "opaque", "row": row_index})
+            test = workbook(cells, row=row_index)
             self.assertEqual(kind.classify(**args(native(test)))["kind"], "other")
 
     def test_all_header_signatures_and_near_miss_controls(self):
@@ -150,12 +180,13 @@ class KindTests(unittest.TestCase):
         }
         for expected, names in signatures.items():
             for permutation in (names, list(reversed(names))):
-                test = unit(json.dumps(permutation), kind_name="workbook_row", locator={"sheet": "opaque", "row": 1})
-                output = kind.classify(**args(native(test)))
-                self.assertEqual((output["kind"], output["confidence"]), (expected, "medium"))
+                for test in (workbook(permutation), csv_header(permutation)):
+                    output = kind.classify(**args(native(test)))
+                    self.assertEqual((output["kind"], output["confidence"]), (expected, "medium"))
             for removed in names:
-                test = unit(json.dumps([n for n in names if n != removed]), kind_name="workbook_row", locator={"sheet": "opaque", "row": 1})
-                self.assertEqual(kind.classify(**args(native(test)))["kind"], "other")
+                for test in (workbook([n for n in names if n != removed]),
+                             csv_header([n for n in names if n != removed])):
+                    self.assertEqual(kind.classify(**args(native(test)))["kind"], "other")
 
     def test_explicit_confidence_levels_and_semantic_gate_control(self):
         self.assertEqual(kind.classify(**args())["confidence"], "medium")
@@ -167,9 +198,100 @@ class KindTests(unittest.TestCase):
             self.assertEqual((output["kind"], output["confidence"]), ("other", "low"))
         self.assertEqual(kind.classify(**args())["kind"], "search-log")
 
+    def test_native_text_and_docx_opening_titles(self):
+        for expected, title in POSITIVES.items():
+            for opening in (unit(title, kind_name="text_line", locator={"line": 1}),
+                            paragraph(title)):
+                with self.subTest(expected=expected, kind=opening["kind"]):
+                    output = kind.classify(**args(native(opening)))
+                    self.assertEqual((output["kind"], output["confidence"], output["reason"]),
+                                     (expected, "medium", "explicit_cues"))
+                    self.assertEqual(output["matched_cues"], [{
+                        "kind": expected, "channel": "first_page",
+                        "rule": title.casefold().replace(" ", "-"),
+                        "unit_sha256": hashlib.sha256(kind.canonical_bytes(opening)).hexdigest()}])
+
+    def test_native_text_docx_negatives_and_non_native_text(self):
+        for opening in (unit("Search log", kind_name="text_line", locator={"line": 2}),
+                        unit("Search log", kind_name="text_line", locator={"line": True}),
+                        unit("Search log", kind_name="text_line", locator={"line": "1"}),
+                        unit("Memo about search log", kind_name="text_line", locator={"line": 1}),
+                        paragraph("Policy discussion"),
+                        paragraph("Policy", part="word/header1.xml"),
+                        paragraph("Policy", part="word/comments.xml"),
+                        paragraph("Policy", number=True),
+                        unit("Policy", kind_name="text")):
+            output = kind.classify(**args(native(opening)))
+            self.assertEqual((output["kind"], output["confidence"], output["reason"]),
+                             ("other", "low", "no_decisive_cues"))
+        # A later body title cannot override an ordinary opening paragraph.
+        result = kind.classify(**args(native(paragraph("Memo"), paragraph("Policy", number=2))))
+        self.assertEqual(result["kind"], "other")
+
+    def test_first_emitted_docx_paragraph_uses_main_part_locator_not_order(self):
+        opening = paragraph("ALPR policy", number=3)  # Empty paragraphs 1-2 are not emitted.
+        later = paragraph("Search log", number=8)
+        header = paragraph("Contract", part="word/header1.xml")
+        a = kind.classify(**args(native(later, opening, header)))
+        b = kind.classify(**args(native(header, opening, later)))
+        self.assertEqual((a["kind"], a["confidence"]), ("policy", "medium"))
+        self.assertEqual(a["matched_cues"], b["matched_cues"])
+
+    def test_ordinary_workbook_row_one_is_no_header_not_refusal(self):
+        signature = ["event_id", "searched_at", "purpose"]
+        cases = [[], [42, 3.5], [None], [True, False], ["ordinary", "data"],
+                 signature + [42], signature + [None], signature + [False]]
+        for values in cases:
+            for sheet in ("opaque", "Search log"):
+                output = kind.classify(**args(native(workbook(values, sheet=sheet))))
+                self.assertEqual(output["kind"], "other" if sheet == "opaque" else "search-log")
+                self.assertNotIn("header", {c["channel"] for c in output["matched_cues"]})
+        for types in (["f", "s", "s"], ["e", "s", "s"], ["n", "s", "s"]):
+            output = kind.classify(**args(native(workbook(signature, types=types))))
+            self.assertEqual(output["reason"], "no_decisive_cues")
+
+    def test_malformed_native_headers_fail_closed(self):
+        for text in ('{}', '["event_id","searched_at","purpose"]', '[{}]',
+                     '[{"cell":"A1","value":[],"type":"s"}]',
+                     '[{"cell":null,"value":"event_id","type":"s"}]'):
+            test = unit(text, kind_name="workbook_row", locator={"sheet": "opaque", "row": 1})
+            self.error("header_shape", args(native(test)))
+        for text in ('{}', '[null]', '[1]', '[{"value":"event_id"}]'):
+            test = unit(text, kind_name="csv_header", locator={"record": 1})
+            self.error("header_shape", args(native(test)))
+
+    def test_csv_header_locator_conflict_and_disabled_rule_controls(self):
+        names = ["event_id", "searched_at", "purpose"]
+        for values, record in ((names, 2), (names, True), ([], 1), (["event_id", "purpose"], 1)):
+            output = kind.classify(**args(native(csv_header(values, record=record))))
+            self.assertEqual((output["kind"], output["reason"]), ("other", "no_decisive_cues"))
+        output = kind.classify(**args(native(csv_header(names + ["network_id"]))))
+        self.assertEqual((output["kind"], output["reason"]), ("other", "conflicting_cues"))
+        for header in (csv_header(names), workbook(names)):
+            values = args(native(header))
+            self.assertEqual(kind.classify(**values)["kind"], "search-log")
+            with patch.object(kind, "HEADERS", {}):
+                self.assertEqual(kind.classify(**values)["reason"], "no_decisive_cues")
+            self.assertEqual(kind.classify(**values)["kind"], "search-log")
+
+    def test_native_workbook_upstream_issue_keeps_cues_informational(self):
+        row = workbook(["event_id", "searched_at", "purpose"], sheet="Search log")
+        sheet = {"kind": "workbook_sheet", "locator": {"sheet": "Search log"}, "text": "",
+                 "data": {"state": "visible", "declared_rows": 1, "declared_columns": 3}}
+        receipt = native(sheet, row, status="partial", issues=[{
+            "code": "workbook_cached_values_and_objects_not_reviewed"}])
+        receipt["route"] = {"route": "extract:xlsx", "format": "xlsx"}
+        output = kind.classify(**args(receipt))
+        self.assertEqual((output["kind"], output["confidence"], output["reason"]),
+                         ("other", "low", "upstream_not_clear"))
+        self.assertEqual({c["channel"] for c in output["matched_cues"]}, {"sheet", "header"})
+        for flag in ("qualified", "activation_allowed", "publication_ready"):
+            self.assertIs(output[flag], False)
+        self.assertIs(output["review_required"], True)
+
     def test_mixed_header_signatures_are_ambiguous(self):
         cells = ["event_id", "searched_at", "purpose", "network_id"]
-        test = unit(json.dumps(cells), kind_name="workbook_row", locator={"sheet": "opaque", "row": 1})
+        test = workbook(cells)
         output = kind.classify(**args(native(test)))
         self.assertEqual((output["kind"], output["reason"]), ("other", "conflicting_cues"))
 
@@ -243,6 +365,10 @@ class KindTests(unittest.TestCase):
 
     def test_reordered_identical_jobs_repeat_exact_receipts(self):
         jobs = [args(native(unit(title)), filename=label + ".pdf") for label, title in POSITIVES.items()]
+        jobs.extend(args(native(opening)) for opening in (
+            workbook(["event_id", "searched_at", "purpose"]),
+            csv_header(["event_id", "searched_at", "purpose"]),
+            unit("Search log", kind_name="text_line", locator={"line": 1}), paragraph("ALPR policy")))
         def process(values):
             return sorted(kind.canonical_bytes(kind.classify(**item)) for item in values)
         self.assertEqual(process(jobs), process(list(reversed(jobs))))
@@ -306,6 +432,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual((self.output / ref["path"]).read_bytes(), saved)
         self.assertEqual(self.receipt.read_bytes(), before)
         self.assertEqual(sorted(p.name for p in self.source.iterdir()), ["extraction.json"])
+
+    def test_cli_native_units_saved_receipts(self):
+        for opening, expected, mime in (
+            (workbook(["event_id", "searched_at", "purpose"]), "search-log", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            (csv_header(["event_id", "searched_at", "purpose"]), "search-log", "text/csv"),
+            (unit("Search log", kind_name="text_line", locator={"line": 1}), "search-log", "text/plain"),
+            (paragraph("ALPR policy"), "policy", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")):
+            self.values = args(native(opening))
+            before = self.values["derived_receipt"]
+            self.receipt.write_bytes(before)
+            result, ref = self.invoke(filename="opaque", mime=mime)
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            saved = (self.output / ref["path"]).read_bytes()
+            output = json.loads(saved)
+            self.assertEqual((output["kind"], output["confidence"]), (expected, "medium"))
+            self.assertEqual(output["derived_receipt_sha256"], self.values["derived_receipt_sha256"])
+            self.assertEqual(hashlib.sha256(saved).hexdigest(), ref["sha256"])
+            self.assertEqual(self.receipt.read_bytes(), before)
 
     def test_hash_failure_creates_no_output(self):
         result, body = self.invoke(**{"derived-receipt-sha256": "0" * 64})

@@ -7,6 +7,13 @@ receipt); its canonical digest is retained, and it cannot alone establish kind.
 Kind is a routing candidate, NEVER a mapping into CURRENT_CORE_UNIT or evidence
 of actual usage. F-046's handoff references the exact serialized receipt hash;
 this module neither changes that envelope nor consumes canonical stores.
+
+Native folder.py workbook receipts carry a cached-values/objects review issue;
+their sheet/header cues remain informational and the result stays other/low.
+This classifier does not qualify workbooks or remove that upstream hold.
+Opening titles use native pdf_page page1, text_line line1 and the first emitted
+main-part docx_paragraph. Headers use csv_header record1 and workbook_row row1.
+Unknown unit kinds (including the non-native "text") supply no content cues.
 """
 import hashlib
 import json
@@ -35,8 +42,8 @@ TITLES = {
     "denial-or-extension": ("records request denial", "records request extension"),
 }
 KINDS = frozenset(TITLES) | {"other"}
-# Native workbook_row text is a JSON array; these explicit header signatures
-# are conservative recognition rules, not a new normalized-unit field contract.
+# Native workbook_row text contains dict cells; csv_header contains strings.
+# These signatures are recognition rules, not a normalized-unit contract.
 HEADERS = {
     "search-log": {"event_id", "searched_at", "purpose"},
     "sharing-list": {"agency_id", "recipient_agency_id", "sharing_enabled"},
@@ -137,8 +144,23 @@ def classify(*, run_id, artifact_sha256, derived_receipt_sha256,
         require(type(unit["kind"]) is str and type(unit["locator"]) is dict and
                 type(unit["data"]) is dict and type(unit["text"]) is str, "unit_payload_shape")
         require(len(unit["text"].encode("utf-8")) <= MAX_TEXT_BYTES, "unit_text_bound")
+    # DOCX emits only nonempty paragraphs and numbers them before filtering.
+    # Pick the first emitted main-document paragraph by locator, not input order;
+    # header/footer/comment parts cannot establish the document's opening title.
+    first_paragraph = min((u["locator"]["paragraph"] for u in units
+                           if u["kind"] == "docx_paragraph"
+                           and u["locator"].get("part") == "word/document.xml"
+                           and type(u["locator"].get("paragraph")) is int
+                           and u["locator"]["paragraph"] > 0), default=None)
+    for unit in units:
         locator = unit["locator"]
-        if unit["kind"] in ("text", "pdf_page") and type(locator.get("page")) is int and locator["page"] == 1:
+        opening = (
+            (unit["kind"] == "pdf_page" and type(locator.get("page")) is int and locator["page"] == 1)
+            or (unit["kind"] == "text_line" and type(locator.get("line")) is int and locator["line"] == 1)
+            or (unit["kind"] == "docx_paragraph" and locator.get("part") == "word/document.xml"
+                and type(locator.get("paragraph")) is int and locator["paragraph"] == first_paragraph)
+        )
+        if opening:
             lines = [line.strip() for line in unit["text"].splitlines() if line.strip()]
             if lines:
                 title(lines[0], "first_page", unit)
@@ -146,10 +168,23 @@ def classify(*, run_id, artifact_sha256, derived_receipt_sha256,
             sheet = locator.get("sheet")
             require(type(sheet) is str and 0 < len(sheet) <= 1024, "sheet_locator_invalid")
             title(sheet, "sheet", unit)
+        header = None
         if unit["kind"] == "workbook_row" and type(locator.get("row")) is int and locator["row"] == 1:
             cells = decode(unit["text"])
-            require(type(cells) is list and all(type(c) is str for c in cells), "header_shape")
-            names = {c.strip().casefold() for c in cells}
+            require(type(cells) is list and all(
+                type(c) is dict and set(c) == {"cell", "value", "type"}
+                and type(c["cell"]) is str and type(c["type"]) is str
+                and type(c["value"]) in (str, int, float, bool, type(None))
+                for c in cells), "header_shape")
+            # Ordinary data, blanks, formulas and mixed rows are not headers.
+            # Do not salvage a partial signature by dropping non-string cells.
+            if all(type(c["value"]) is str and c["type"] in ("s", "inlineStr") for c in cells):
+                header = [c["value"] for c in cells]
+        if unit["kind"] == "csv_header" and type(locator.get("record")) is int and locator["record"] == 1:
+            header = decode(unit["text"])
+            require(type(header) is list and all(type(c) is str for c in header), "header_shape")
+        if header is not None:
+            names = {c.strip().casefold() for c in header}
             for kind, fields in HEADERS.items():
                 if fields <= names:
                     add(kind, "header", "header-" + kind, unit)
