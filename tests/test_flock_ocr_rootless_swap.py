@@ -322,6 +322,37 @@ class FakeSystem:
         return result.returncode, result.stdout, result.stderr
 
 
+class ShrinkingDisk:
+    """Free space of one filesystem holding --private, the live mounts and the Docker data root.
+
+    Installed as FakeSystem.free: every call returns capacity minus the bytes
+    now in those directories and the build so far ([B2] uses the whole
+    build_allowance), so free space falls as the run writes.
+    """
+
+    def __init__(self, fake, private, capacity):
+        self.dirs, self.capacity = (private, fake.volume, fake.bind), capacity
+        self.image_bytes, self.seen, self.used_at = 0, [], []
+        fake.free = self
+        fake.hooks["docker build"] = self.build
+
+    def build(self):
+        self.image_bytes += swap.build_allowance(None)  # the build uses all of its allowance
+
+    def used(self):
+        total = self.image_bytes
+        for root in self.dirs:
+            for parent, _, files in os.walk(root):
+                total += sum(os.lstat(os.path.join(parent, f)).st_size for f in files)
+        return total
+
+    def __call__(self, path):
+        used = self.used()
+        self.used_at.append(used)
+        self.seen.append(self.capacity - used)
+        return self.seen[-1]
+
+
 def lifecycle(fake):
     """Ordered state-changing events (no helpers, no reads), labelled at call time.
 
@@ -1718,13 +1749,13 @@ class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
     def expected_need(self):
         surveys = [evidence.survey(self.fake.volume), evidence.survey(self.fake.bind)]
         return swap.space_budget(sum(s["tar_bytes"] for s in surveys), max(s["extract_bytes"] for s in surveys),
-                                 sum(s["sqlite_bytes"] for s in surveys))
+                                 sum(s["sqlite_bytes"] for s in surveys), swap.build_allowance(None))
 
     def test_a2_space_is_budgeted_up_front(self):
         # attempt 6: S1 checked 3x + 512 MiB, A2 re-checked 3x after S1 had used 1x: 146 MB short
         parts, need = self.expected_need()
         self.assertEqual(set(parts), {"s1_archives", "s2_sqlite_backups", "a2_archives", "a2_sqlite_backups",
-                                      "restore_preservation", "largest_extract", "margin"})
+                                      "restore_preservation", "largest_extract", "build_and_image", "margin"})
         self.assertEqual(parts["margin"], 512 << 20)
         self.assertEqual(parts["s1_archives"], parts["a2_archives"])
         self.fake.free = need - 1
@@ -1733,33 +1764,96 @@ class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
             code, out, f"private dir has {need - 1} bytes free, the run needs {need} (s1_archives ")
         self.assertIn("free 1 bytes first", out)
 
-    def test_a2_gate_is_one_archive_set_plus_512_mib(self):
-        _, need = self.expected_need()
-        tar = sum(evidence.space_estimate(evidence.manifest(d)["entries"])["tar_bytes"]
-                  for d in (self.fake.volume, self.fake.bind))
-        seen = []
+    def disk_run(self, where, capacity, replacement_writes=0):
+        """One --apply on a fresh fake whose disk free space shrinks with use (ShrinkingDisk)."""
+        self.fake = FakeSystem(self.tmp / where)
+        self.private = self.fake.tmp / "private"
+        disk = ShrinkingDisk(self.fake, self.private, capacity)
+        if replacement_writes:
+            # The new container writes into a mount between [C3] and [A1].
+            self.fake.hooks["start:" + "9" * 64] = lambda: (self.fake.bind / "written-by-new.bin").write_bytes(
+                os.urandom(replacement_writes))
+        code, out = self.run_swap(self.args())
+        return disk, code, out
 
-        def free(path):
-            seen.append(path)
-            # preflight and S1 see the full budget; A2 sees only one archive set + margin,
-            # far below the 3x + 512 MiB the old A2 check demanded
-            return need if len(seen) <= 2 else tar + (512 << 20)
-        self.fake.free = free
+    def test_a2_gate_budgets_a2_and_a_rollback_on_a_disk_that_fills_up(self):
+        # Fix (PR #164 review): A2 checked only 1x + 512 MiB, but A2 and an RB-C
+        # rollback after it need 2 archive sets + SQLite backups + the largest
+        # extract + 512 MiB. The fake disk holds --private, the live mounts and
+        # the Docker data root; its free space falls as the run writes.
+        tar, extract, sqlite = self.a2_parts()
+        need_a2 = swap.a2_budget(tar, extract, sqlite)[1]
+        written = 64 << 10
+        probe, code, out = self.disk_run("a", 1 << 40)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(probe.seen), 3)  # preflight, S1, A2
+        used_at_a2 = probe.used_at[2]
+        # Positive control: a disk sized to leave exactly the A2 need (+ 64 KiB
+        # for run-to-run JSON size jitter) passes R1, S1 and A2 and completes.
+        capacity = used_at_a2 + need_a2 + (64 << 10)
+        disk, code, out = self.disk_run("b", capacity)
+        self.assertEqual(code, 0, out)
+        self.assertGreaterEqual(disk.seen[2], need_a2)
+        self.assertLess(disk.seen[2], disk.seen[0])  # free space really fell between R1 and A2
+        self.assertIn(f"{need_a2} needed for A2 and a rollback after it", out)
+        # Negative control: the same disk, but the replacement wrote 64 KiB into
+        # a mount. A2 no longer has room for itself and a rollback, while the
+        # old 1x + 512 MiB gate (one archive set of the grown data: at most the
+        # old set + the new file + a header block and a tar record) would still
+        # have passed.
+        disk, code, out = self.disk_run("c", capacity, replacement_writes=written)
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        free = disk.seen[2]
+        self.assertGreaterEqual(free, tar + written + 3 * 512 + 10240 + (512 << 20),
+                                "the old gate would have refused too; not a discriminating case")
+        match = re.search(r"FAIL at \[A2\]: private dir has (\d+) bytes free, needs (\d+) for A2 and a rollback "
+                          r"after it \(2 archive sets \+ SQLite backups \+ largest extract \+ 512 MiB\) "
+                          r"\(a2_archives \d+, a2_sqlite_backups \d+, restore_preservation \d+, "
+                          r"largest_extract \d+, margin 536870912\)", out)
+        self.assertIsNotNone(match, out)
+        self.assertEqual(int(match.group(1)), free)
+        self.assertGreater(int(match.group(2)), free)
+        self.assertFalse(any("-cpf" in h["command"] and any(a.startswith("/private/a2/") for a in h["command"])
+                             for h in self.fake.helper_runs), "an A2 archive was written before the gate")
+
+    def a2_parts(self):
+        surveys = [evidence.survey(self.fake.volume), evidence.survey(self.fake.bind)]
+        return (sum(s["tar_bytes"] for s in surveys), max(s["extract_bytes"] for s in surveys),
+                sum(s["sqlite_bytes"] for s in surveys))
+
+    def test_a2_budget_is_two_archive_sets_one_backup_set_one_extract_and_the_margin(self):
+        parts, need = swap.a2_budget(100, 7, 3)
+        self.assertEqual(parts, {"a2_archives": 100, "a2_sqlite_backups": 3, "restore_preservation": 100,
+                                 "largest_extract": 7, "margin": 512 << 20})
+        self.assertEqual(need, 2 * 100 + 3 + 7 + (512 << 20))
+        # space_budget minus what S1/S2 and the build already hold at A2
+        full, total = swap.space_budget(100, 7, 3, swap.build_allowance(None))
+        self.assertEqual(total - need, full["s1_archives"] + full["s2_sqlite_backups"] + full["build_and_image"])
+
+    def test_a2_sqlite_backups_are_sized_from_grown_databases(self):
+        driver = swap.Swap(swap.parse_args(self.args()), system=self.fake, out=io.StringIO())
+        driver.state = {"preflight": {"sqlite_bytes": 1000}, "sqlite_backups": {"m00/state/flock.db": "x"}}
+        grown = {"m00": {"entries": {"state/flock.db": {"type": "f", "size": 4096},
+                                     "state/flock.db-wal": {"type": "f", "size": 8192}}}}
+        self.assertEqual(driver.a2_sqlite_bytes(grown), 4096 + 8192)
+        shrunk = {"m00": {"entries": {"state/flock.db": {"type": "f", "size": 10}}}}
+        self.assertEqual(driver.a2_sqlite_bytes(shrunk), 1000)  # never below the R1 survey
+
+    def test_build_and_new_image_are_budgeted_unless_the_image_is_reused(self):
+        parts, need = self.expected_need()
+        build = swap.build_allowance(None)
+        self.assertEqual(parts["build_and_image"], build)
+        self.assertEqual(build, (64 << 20) + (2 << 30))
+        self.assertEqual(swap.build_allowance({"run_dir": "/r"}), 0)
+        self.assertNotIn("build_and_image", swap.space_budget(1, 1, 1)[0])  # --reuse-image: nothing built
+        self.fake.free = need - 1
+        code, out = self.run_swap(self.args())
+        self.assert_refused_before_any_change(code, out, f"the run needs {need} (")
+        self.assertIn(f"build_and_image {build}, margin", out)
+        shutil.rmtree(self.private)
+        self.fake.free = need
         code, out = self.run_swap(self.args())
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(seen), 3)
-        self.assertIn(f"space: {tar + (512 << 20)} bytes free, {tar + (512 << 20)} needed for the A2 archives "
-                      "(1x + 512 MiB)", out)
-        self.assertLess(tar + (512 << 20), 3 * tar + (512 << 20))
-        shutil.rmtree(self.private)
-        self.fake = FakeSystem(self.tmp / "short")
-        self.private = self.fake.tmp / "private"
-        seen.clear()
-        self.fake.free = lambda path: (seen.append(path), need if len(seen) <= 2 else tar + (512 << 20) - 1)[1]
-        code, out = self.run_swap(self.args())
-        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        self.assertIn(f"FAIL at [A2]: private dir has {tar + (512 << 20) - 1} bytes free, needs "
-                      f"{tar + (512 << 20)} for the A2 archives (1x + 512 MiB)", out)
 
 
 class SurveyAndBudgetTests(unittest.TestCase):
@@ -1767,7 +1861,7 @@ class SurveyAndBudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "m"
             (root / "db").mkdir(parents=True)
-            subprocess.run([sys.executable, "-B", "-c", _WAL_WRITER, str(root / "db" / "live.db")], check=True)
+            subprocess.run([sys.executable, "-B", str(_WAL_WRITER), str(root / "db" / "live.db")], check=True)
             digest = malformed_sqlite(root / "fx" / "ledger.sqlite")
             (root / "blob.bin").write_bytes(b"x" * 5000)
             make_socket(root / "run", "s.sock")
@@ -1821,6 +1915,40 @@ class RehearsalModeTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             swap.parse_args(["--dry-run", "--rehearse-fault", "unpinned-fixture"])
 
+    def test_rehearse_mib_is_bounded(self):
+        for value, ok in (("1", True), (str(swap.REHEARSE_MIB_MAX), True), ("0", False),
+                          (str(swap.REHEARSE_MIB_MAX + 1), False), ("10000000", False)):
+            with self.subTest(value=value):
+                argv = ["--rehearse", "--private", "/scratch/r", "--rehearse-mib", value]
+                if ok:
+                    self.assertEqual(swap.parse_args(argv).rehearse_mib, int(value))
+                    continue
+                with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                    swap.parse_args(argv)
+                self.assertIn(f"--rehearse-mib must be between 1 and {swap.REHEARSE_MIB_MAX}", err.getvalue())
+
+    def test_scratch_root_inside_git_is_refused_before_anything_is_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp) / "checkout"
+            (checkout / ".git").mkdir(parents=True)
+            system = DockerLedger()
+            for root in (checkout, checkout / "deeper" / "scratch"):
+                with self.subTest(root=root):
+                    out = io.StringIO()
+                    code = swap.Rehearsal(swap.parse_args(["--rehearse", "--private", str(root)]),
+                                          system=system, out=out).run()
+                    self.assertEqual(code, swap.EXIT_REFUSED, out.getvalue())
+                    self.assertIn("refused: --private is inside a Git checkout", out.getvalue())
+            self.assertEqual(system.calls, [])  # no docker call: no volume, fixture or container
+            self.assertEqual(sorted(p.name for p in checkout.iterdir()), [".git"])  # nothing created
+            # Control: the same layout without .git gets past the check (and fails later, at setup).
+            shutil.rmtree(checkout / ".git")
+            out = io.StringIO()
+            code = swap.Rehearsal(swap.parse_args(["--rehearse", "--private", str(checkout)]),
+                                  system=DockerLedger(), out=out).run()
+            self.assertEqual(code, swap.EXIT_ESCALATE, out.getvalue())
+            self.assertIn("rehearsal: setup FAILED: docker create", out.getvalue())
+
     def test_rehearsal_system_simulates_only_its_own_units(self):
         system = swap.RehearsalSystem({"r-mail.timer": "active", "r-mail.service": "inactive"})
         self.assertEqual(system.run(["systemctl", "--user", "show", "--property=LoadState,ActiveState",
@@ -1833,8 +1961,8 @@ class RehearsalModeTests(unittest.TestCase):
 
     def test_rehearsal_swap_replaces_only_the_engine_build_steps(self):
         overridden = {name for name in vars(swap.RehearsalSwap) if not name.startswith("__")}
-        self.assertEqual(overridden, {"preflight_checkout", "b1_wheel", "b2_image", "_wheel_hash_in",
-                                      "v1_verify_image", "a4_reverify"})
+        self.assertEqual(overridden, {"mount_users", "preflight_checkout", "b1_wheel", "b2_image",
+                                      "_wheel_hash_in", "v1_verify_image", "a4_reverify"})
         self.assertEqual(swap.RehearsalSwap.__mro__[1:], swap.Swap.__mro__)
 
     def test_fixture_generator_writes_the_historical_shapes(self):
@@ -1882,6 +2010,10 @@ class RehearsalFaultModeTests(RunMixin, unittest.TestCase):
         self.token = "0a1b2c3d"
         self.name = f"flock-swap-rehearsal-{SECOND}-{self.token}"
         self.fake.find(TARGET)["Name"] = "/" + self.name
+        # Both mount users are this rehearsal's own (the sidecar as a second
+        # labelled user); UNRELATED mounts nothing of the rehearsal's.
+        for ref in (self.name, SIDECAR):
+            self.fake.find(ref)["Config"]["Labels"][swap.REHEARSAL_LABEL] = f"{SECOND}-{self.token}"
         self.fake.units = {f"{self.name}-mail.timer": "active", f"{self.name}-mail.service": "inactive"}
         self.fixture_path = self.fake.bind / self.FIXTURE
         malformed_sqlite(self.fixture_path)
@@ -1950,6 +2082,77 @@ class RehearsalFaultModeTests(RunMixin, unittest.TestCase):
         code, out = self.rehearse()
         self.assertIn("owned by the overflow ID 65534", out)
         self.assert_not_caught(code, out, "the survey also refused on unrelated findings")
+
+
+class RehearsalForeignMountUserTests(RunMixin, unittest.TestCase):
+    """A rehearsal never stops or restarts a container it did not create (PR #164 review, fix 1).
+
+    `_overlaps` counts a bind when either path holds the other, so a real
+    container mounting a folder above the rehearsal's bind directory is a
+    mount user. The full rehearsal runs RehearsalSwap.run_main against
+    FakeSystem; setup and cleanup are replaced and the image stand-ins [V1]
+    and [A4] (which need a real image) pass.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.token = "0a1b2c3d"
+        self.stamp = f"{SECOND}-{self.token}"
+        self.name = f"flock-swap-rehearsal-{self.stamp}"
+        target = self.fake.find(TARGET)
+        target["Name"] = "/" + self.name
+        target["Config"]["Labels"][swap.REHEARSAL_LABEL] = self.stamp
+        self.fake.units = {f"{self.name}-mail.timer": "active", f"{self.name}-mail.service": "inactive"}
+        parent = self.fake.bind.parent  # holds the rehearsal's bind directory
+        self.parent_mount = {"Type": "bind", "Source": str(parent), "Destination": "/srv", "RW": True,
+                             "Mode": "", "Propagation": "rprivate"}
+        self.sidecar = self.fake.find(SIDECAR)
+
+    def rehearse(self):
+        args = swap.parse_args(["--rehearse", "--private", str(self.tmp / "scratch")])
+        out = io.StringIO()
+        with mock.patch.object(swap.datetime, "datetime", FrozenSecond), \
+                mock.patch.object(swap.secrets, "token_hex", return_value=self.token), \
+                mock.patch.object(swap.Rehearsal, "base_image", return_value=OLD_IMAGE), \
+                mock.patch.object(swap.Rehearsal, "setup", return_value={"pins": {}}), \
+                mock.patch.object(swap.Rehearsal, "cleanup"), \
+                mock.patch.object(swap.RehearsalSwap, "v1_verify_image"), \
+                mock.patch.object(swap.RehearsalSwap, "a4_reverify"):
+            code = swap.Rehearsal(args, system=self.fake, out=out).run()
+        return code, out.getvalue()
+
+    def test_unlabelled_container_mounting_a_parent_folder_refuses_in_r1(self):
+        self.sidecar["Mounts"] = [self.parent_mount]
+        self.sidecar["HostConfig"]["Binds"] = [f"{self.parent_mount['Source']}:/srv"]
+        code, out = self.rehearse()
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"FAIL at [R1]: rehearsal: container(s) ['{SIDECAR}'] mount a path overlapping this "
+                      f"rehearsal's mounts and do not carry {swap.REHEARSAL_LABEL}={self.stamp}", out)
+        self.assertIn("rehearsal: FAILED, driver exit 2", out)
+        self.assertEqual(self.fake.events, [])  # nothing stopped, started, renamed or built
+        self.assertTrue(self.sidecar["State"]["Running"])
+        self.assertTrue(self.fake.find(self.name)["State"]["Running"])
+        self.assertEqual(self.fake.units[f"{self.name}-mail.timer"], "active")
+        self.assertFalse(any("survey" in r["command"] for r in self.fake.helper_runs))
+
+    def test_another_rehearsals_label_value_is_foreign_too(self):
+        self.sidecar["Config"]["Labels"][swap.REHEARSAL_LABEL] = f"{SECOND}-ffffffff"
+        code, out = self.rehearse()
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"container(s) ['{SIDECAR}'] mount a path overlapping", out)
+        self.assertEqual(self.fake.events, [])
+
+    def test_control_own_labelled_mount_users_are_stopped_and_restarted(self):
+        self.sidecar["Mounts"] = [self.parent_mount]
+        self.sidecar["Config"]["Labels"][swap.REHEARSAL_LABEL] = self.stamp
+        code, out = self.rehearse()
+        self.assertEqual(code, swap.EXIT_OK, out)
+        self.assertIn("rehearsal: OK, the R1 preflight through A5 passed", out)
+        events = self.fake.events
+        self.assertLess(events.index("stop sidecar"), events.index("start new"))
+        self.assertLess(events.index("start new"), events.index("start sidecar"))  # [A5] releases it
+        self.assertNotIn("stop unrelated", events)  # unlabelled, but mounts nothing of the rehearsal's
+        self.assertTrue(self.fake.find("3" * 64)["State"]["Running"])
 
 
 class DockerLedger:

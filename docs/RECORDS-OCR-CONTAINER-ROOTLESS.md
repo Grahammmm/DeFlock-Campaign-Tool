@@ -132,8 +132,11 @@ cannot restore such a file to its real owner, so the run stops before any
 archive is taken.
 
 The [R1] preflight (below) checks free space for the whole run up front.
-[S1] repeats that check with the exact baseline sizes. [A2] checks only what it
-adds: one set of archives plus 512 MiB ("1x + 512 MiB").
+[S1] repeats that check with the exact baseline sizes. [A2] checks, from the
+current data (the replacement may have grown it), what is still to come: its
+own archives, SQLite backups and largest extract, then a rollback's preserved
+current state, `2T + D + L + 512 MiB` (see the table below). [A2] does not
+count the S1 archives, S2 backups or the build: they are already on disk.
 
 ## [R1] preflight
 
@@ -154,7 +157,7 @@ finding refuses the run (exit 2, nothing changed). The findings go to
 | overflow owners | The same survey refuses entries owned by uid or gid 65534 (formerly found only at [S1], after the stop). |
 | [S3] sockets | The survey names every socket, fifo and device per mount. They are excluded from every equality check (see "Sockets and other special files"). |
 | [C2] settings diff | A create-only probe: `POST /containers/create` of `<name>-swap-probe` with the saved settings and the old image, without `Binds`, `Mounts` and `VolumesFrom` (it never mounts live data), never started. Its inspect is diffed with the same rules as [C2] (name and mounts left out), then it is removed with `docker rm -v`. Any difference refuses the run. |
-| [A2] free space | The survey sizes give one archive set (tar headers, pax reserve, long names, padding, record rounding) `T`, the largest extracted mount `L` and the SQLite data `D`. The run needs `3T + 2D + L + 512 MiB` free: S1 archives, S2 backups, A2 archives and backups, and the preserved current state plus its verify extract of an [RB-C] restore after [A2]. Extracts run one mount at a time and are deleted, so only the largest counts. |
+| [A2] free space | The survey sizes give one archive set (tar headers, pax reserve, long names, padding, record rounding) `T`, the largest extracted mount `L` and the SQLite data `D`. The run needs `3T + 2D + L + B + 512 MiB` free: S1 archives, S2 backups, A2 archives and backups, and the preserved current state plus its verify extract of an [RB-C] restore after [A2]. Extracts run one mount at a time and are deleted, so only the largest counts. `B` is a fixed build allowance, not a measurement: 64 MiB for `$RUN/build` (wheel, `requirements.lock`, `.dockerignore`) plus 2 GiB for the new image's layers and builder intermediates in the Docker data root, usually on the same filesystem. With `--reuse-image` nothing is built and `B` is 0. |
 
 Freeing space is the operator's job. Superseded run directories under
 `--private` are kept or deleted under the owner's retention rule, never by the
@@ -513,12 +516,15 @@ Alternatively, choose a new `--new-tag` and let the run build again.
 
 ```
 python3 container/flock-ocr/rootless_swap.py --rehearse --private "$SCRATCH" \
-  [--rehearse-image python:3.12-slim-bookworm] [--rehearse-mib 1024] \
+  [--rehearse-image IMAGE] [--rehearse-mib 1024] \
   [--rehearse-fault unpinned-fixture] [--rehearse-keep]
 ```
 
-`--private` is the rehearsal's own scratch root, outside Git. The rehearsal
-never takes a container, unit, tag, pin or reuse argument; it makes its own.
+`--private` is the rehearsal's own scratch root, outside Git (checked before
+anything is written). `--rehearse-image` must already be local (default
+`python:3.12-slim-bookworm`; CI pulls it by digest). `--rehearse-mib` is 1 to
+16384. The rehearsal never takes a container, unit, tag, pin or reuse
+argument; it makes its own.
 Each invocation has its own owner identity `<stamp>`, the UTC second plus 32
 random bits (`20261020t160000z-0a1b2c3d`), so two rehearsals started in the
 same second on one daemon never share a name, label, tag or directory:
@@ -537,6 +543,11 @@ same second on one daemon never share a name, label, tag or directory:
 2. A throwaway target `flock-swap-rehearsal-<stamp>` (labelled
    `deflock.flock-swap.rehearsal=<stamp>`) on the rehearsal image: the volume,
    the bind, a tmpfs, `--init`, a restart policy, a health check, no network.
+   Every container whose mounts overlap the rehearsal's (a bind counts when
+   either path holds the other) must carry this invocation's label value;
+   any other, for example a real container that mounts a folder above the
+   scratch root, refuses the run in [R1] before anything is stopped. The
+   rehearsal never stops or starts a container it did not create.
 3. The real driver, `--apply` code, from the [R1] preflight through [A5]. Only
    four steps are stand-ins, because they need the pinned engine build: [B1]
    writes a synthetic wheel into `$RUN/build/dist`, [B2] layers it onto the
@@ -552,8 +563,9 @@ same second on one daemon never share a name, label, tag or directory:
    exists, every container carrying its own label value (`docker rm -f -v`);
    the tag only if the image's `deflock.flock-swap.rehearsal.image` label names
    this target (built by its [B2]); its volume; then its bind and private
-   directories, removed as namespace root by a helper confined to the scratch
-   root. A setup failure on a name collision removes nothing it did not
+   directories, emptied as namespace root by a helper that mounts only those
+   two directories (never the scratch root, so other rehearsals' directories
+   stay out of reach), then removed by the host user. A setup failure on a name collision removes nothing it did not
    create. `--rehearse-keep` keeps the data and private directory.
 
 `--rehearse-fault unpinned-fixture` withholds the fixture's pin. The rehearsal

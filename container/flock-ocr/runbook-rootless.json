@@ -6,7 +6,7 @@
     "rootless_swap.py executes these steps in this order and takes the on_fail path of a failing step. CI runs them against rootless Docker only via --rehearse (throwaway target, synthetic mounts, stand-in engine build; .github/workflows/flock-swap-rehearsal.yml)."
   ],
   "main": [
-    {"id": "R1", "kind": "record", "on_fail": "stop_unchanged", "does": "check rootless daemon, private dir, names, tag and pause units; save docker inspect; derive mounts and mount users; probe helper image; preflight: checkout on main at origin/main, empty recipe dist/, read-only live survey (SQLite integrity and pins, overflow owners, special files), create-only C2 probe, free space for S1 + extract + A2 + restore"},
+    {"id": "R1", "kind": "record", "on_fail": "stop_unchanged", "does": "check rootless daemon, private dir, names, tag and pause units; save docker inspect; derive mounts and mount users; probe helper image; preflight: checkout on main at origin/main, empty recipe dist/, read-only live survey (SQLite integrity and pins, overflow owners, special files), create-only C2 probe, free space for S1 + extract + build + A2 + restore"},
     {"id": "Q1", "kind": "pause_writers", "on_fail": "RB-A", "does": "systemctl --user stop each pause timer, wait for its service to be idle, stop the service"},
     {"id": "Q2", "kind": "stop_all_mount_users", "on_fail": "RB-A", "does": "docker stop (never rm) every container using the mounts, including the target and its app-server; confirm quiescence"},
     {"id": "S1", "kind": "snapshot", "on_fail": "RB-A", "does": "helper (namespace root, live read-only): baseline manifest, --numeric-owner tar, manifest again, compare"},

@@ -28,6 +28,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      # Pinned by digest (Docker Hub tag 3.12-slim-bookworm, 2026-10-21); a tag
+      # pull could change the rehearsal's base between runs.
+      REHEARSE_IMAGE: "python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70"
       # The OCR host has no buildx plugin, so its B2 `docker build` runs the
       # classic builder, which resolves `FROM sha256:<old image ID>` locally.
       # The runner ships buildx/BuildKit, which treats a bare image ID as a
@@ -54,15 +57,17 @@ jobs:
       - name: Rootless daemon and rehearsal image
         run: |
           docker info --format '{{json .SecurityOptions}}' | tee /dev/stderr | grep -q name=rootless
-          docker pull python:3.12-slim-bookworm
+          docker pull "$REHEARSE_IMAGE"
       - name: Rehearse R1 preflight -> A5 (1 GiB synthetic mounts)
         run: |
           python3 -B container/flock-ocr/rootless_swap.py --rehearse \
-            --private "$RUNNER_TEMP/flock-swap-rehearsal" --rehearse-mib 1024
+            --private "$RUNNER_TEMP/flock-swap-rehearsal" --rehearse-mib 1024 \
+            --rehearse-image "$REHEARSE_IMAGE"
       - name: Rehearse a historical failure (unpinned S2 fixture) caught in preflight
         run: |
           python3 -B container/flock-ocr/rootless_swap.py --rehearse \
             --private "$RUNNER_TEMP/flock-swap-rehearsal-fault" --rehearse-mib 16 \
+            --rehearse-image "$REHEARSE_IMAGE" \
             --rehearse-fault unpinned-fixture
       - name: Nothing left behind
         if: always()

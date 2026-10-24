@@ -23,8 +23,8 @@ One script, five modes:
 on each failure an earlier attempt met late: an off-main or stale checkout, a
 leftover recipe dist/, an unpinned malformed SQLite database or a stale pin,
 overflow-owned entries, a create-only [C2] probe whose settings differ, and
-too little free space for S1 + S2/S3 extraction + A2 + a restore. [B1]/[B2]
-build in $RUN/build.
+too little free space for S1 + S2/S3 extraction + the build + A2 + a restore.
+[B1]/[B2] build in $RUN/build.
 
 No sudo. Data steps run in throwaway helper containers (`docker run --rm`) as
 root of the rootless daemon's user namespace, which is the host user plus its
@@ -102,6 +102,9 @@ IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 HEX64_RE = re.compile(r"[0-9a-f]{64}")
 ATTEMPT_RE = re.compile(r"attempt-(\d{3,})")
 MARGIN = 512 << 20  # free-space margin on top of every budget
+BUILD_CONTEXT_ALLOWANCE = 64 << 20  # $RUN/build: engine wheel, requirements.lock, .dockerignore
+NEW_IMAGE_ALLOWANCE = 2 << 30  # [B2] layers and builder intermediates in the Docker data root
+REHEARSE_MIB_MAX = 16384  # --rehearse-mib upper bound (16 GiB of synthetic data)
 PROBE_SUFFIX = "-swap-probe"
 # HostConfig fields the create-only [C2] probe leaves out: the probe must never
 # mount live data. Real [C2] still compares them.
@@ -296,19 +299,46 @@ def probe_diff(before, probe, image_config):
     return inspect_diff(_probe_view(before), _probe_view(probe), image_config, image_config)
 
 
-def space_budget(tar_bytes, largest_extract, sqlite_bytes):
+def space_budget(tar_bytes, largest_extract, sqlite_bytes, build_bytes=0):
     """Peak private-dir bytes from [S1] to the end of an [RB-C] restore after [A2].
 
     At that moment the run dir holds the S1 archives and S2 backups, the A2
     archives and backups, and one preserved current-state archive per
     restored mount (worst case: all of them) plus its verify extract. Extracts
     (S2, S3, A2, restore verify) run one mount at a time and are deleted
-    before the next, so only the largest counts, once.
+    before the next, so only the largest counts, once. build_bytes is the
+    [B1]/[B2] allowance (build_allowance); it is left out when 0.
     """
     parts = {"s1_archives": tar_bytes, "s2_sqlite_backups": sqlite_bytes,
              "a2_archives": tar_bytes, "a2_sqlite_backups": sqlite_bytes,
-             "restore_preservation": tar_bytes, "largest_extract": largest_extract, "margin": MARGIN}
+             "restore_preservation": tar_bytes, "largest_extract": largest_extract}
+    if build_bytes:
+        parts["build_and_image"] = build_bytes
+    parts["margin"] = MARGIN
     return parts, sum(parts.values())
+
+
+def a2_budget(tar_bytes, largest_extract, sqlite_bytes):
+    """Free bytes [A2] needs: space_budget without what [S1]/[S2] and the build already hold.
+
+    2 archive sets (A2's and a rollback's preserved current state) + the A2
+    SQLite backups + the largest extract + the margin.
+    """
+    parts, _ = space_budget(tar_bytes, largest_extract, sqlite_bytes)
+    for spent in ("s1_archives", "s2_sqlite_backups"):
+        del parts[spent]
+    return parts, sum(parts.values())
+
+
+def build_allowance(reuse):
+    """[B1]/[B2] bytes on the private dir's filesystem: 0 when --reuse-image skips the build.
+
+    $RUN/build holds the wheel, requirements.lock and .dockerignore; the new
+    image's layers (apt OCR toolchain, venv) and the builder's intermediate
+    containers land in the Docker data root, usually the same filesystem.
+    Both are fixed allowances, not measurements.
+    """
+    return 0 if reuse else BUILD_CONTEXT_ALLOWANCE + NEW_IMAGE_ALLOWANCE
 
 
 # ---- side effects (replaced by a fake in tests) ----
@@ -687,20 +717,23 @@ class Swap:
         if not self.dry:
             estimates = [snapshot_evidence.space_estimate(b["entries"]) for b in baselines.values()]
             tar = sum(e["tar_bytes"] for e in estimates)
+            extract = max(e["extract_bytes"] for e in estimates)
             if prefix == "s1":
                 # The whole run from here on, as budgeted by the preflight in [R1].
                 sqlite = int((self.state.get("preflight") or {}).get("sqlite_bytes", 0))
-                _, need = space_budget(tar, max(e["extract_bytes"] for e in estimates), sqlite)
+                parts, need = space_budget(tar, extract, sqlite, build_allowance(self.state.get("reuse")))
                 what = "S1 through a rollback after A2 (the R1 preflight budget)"
             else:
-                # A2 only archives for comparison; its extracts, backups and a
-                # rollback's preservation were budgeted at [R1] and [S1].
-                need = tar + MARGIN
-                what = "the A2 archives (1x + 512 MiB)"
+                # Still to come: the A2 archives, backups and extracts, then a
+                # rollback's preserved current state and its verify extract.
+                # Sized from the current data, which the replacement may have grown.
+                parts, need = a2_budget(tar, extract, self.a2_sqlite_bytes(baselines))
+                what = "A2 and a rollback after it (2 archive sets + SQLite backups + largest extract + 512 MiB)"
             free = self.system.disk_free(self.run_dir)
+            shown = ", ".join(f"{k} {v}" for k, v in parts.items())
             if free < need:
-                self.fail(f"private dir has {free} bytes free, needs {need} for {what}")
-            self.log(f"    space: {free} bytes free, {need} needed for {what} ({total} bytes of data)")
+                self.fail(f"private dir has {free} bytes free, needs {need} for {what} ({shown})")
+            self.log(f"    space: {free} bytes free, {need} needed for {what} ({shown}; {total} bytes of data)")
         self.mkdir(prefix)
         for mount in self.state["mounts"]:
             label = mount["label"]
@@ -710,6 +743,21 @@ class Swap:
             self.write_json(f"{prefix}/{label}.after-tar.json", after)
             self.require_equal(baselines[label], after, f"{label} live after tar vs baseline")
         return baselines
+
+    def a2_sqlite_bytes(self, baselines):
+        """Bytes the A2 SQLite backups can take: the R1 survey's figure, or more if databases grew.
+
+        Each database [S2] backed up is sized again from the A2 baseline
+        (file + -wal); databases the replacement created are not known here
+        and are covered by the margin.
+        """
+        surveyed = int((self.state.get("preflight") or {}).get("sqlite_bytes", 0))
+        current = 0
+        for key in self.state.get("sqlite_backups") or {}:
+            label, rel = key.split("/", 1)
+            entries = (baselines.get(label) or {}).get("entries") or {}
+            current += sum(int((entries.get(p) or {}).get("size", 0)) for p in (rel, rel + "-wal"))
+        return max(surveyed, current)
 
     def accepted_per_mount(self, baselines):
         """Assign each --accept-malformed-sqlite pin to the mount(s) holding it.
@@ -1148,14 +1196,15 @@ class Swap:
         self.log("    preflight: C2 probe settings equal apart from image, ID, creation, state and mounts")
 
     def preflight_budget(self, surveys):
-        """Space for S1 + S2/S3 extraction + A2 + an RB-C restore, up front (attempt 6 failed at A2)."""
+        """Space for S1 + S2/S3 extraction + the build + A2 + an RB-C restore, up front (attempt 6 failed at A2)."""
         if self.dry:
-            self.log("    would require free space for S1 archives + S2/S3 extract + A2 + restore + 512 MiB")
+            self.log("    would require free space for S1 archives + S2/S3 extract + $RUN/build and the new image "
+                     "+ A2 + restore + 512 MiB")
             return
         tar = sum(r["tar_bytes"] for r in surveys.values())
         extract = max(r["extract_bytes"] for r in surveys.values())
         sqlite = sum(r["sqlite_bytes"] for r in surveys.values())
-        parts, need = space_budget(tar, extract, sqlite)
+        parts, need = space_budget(tar, extract, sqlite, build_allowance(self.state.get("reuse")))
         free = self.system.disk_free(self.run_dir)
         self.state["preflight"].update({"budget": parts, "need": need, "free": free, "sqlite_bytes": sqlite})
         shown = ", ".join(f"{k} {v}" for k, v in parts.items())
@@ -1724,7 +1773,27 @@ class RehearsalSwap(Swap):
     wheel by hash in the image and in the running replacement. Every other
     step, the preflight included, is the code --apply runs; only the checkout
     check reports instead of refusing (CI rehearses pull-request heads).
+    Mount users are confined to this rehearsal's own containers.
     """
+
+    def mount_users(self):
+        """Mount users, refusing any container that is not this rehearsal's own.
+
+        A bind mount counts as overlapping when either path holds the other, so
+        a real container mounting a folder above the scratch root would be
+        stopped at [Q2]/[A1] and restarted at [A5]. The rehearsal never stops
+        or starts a container without this invocation's label value; the first
+        call is in [R1], before anything is stopped.
+        """
+        users = super().mount_users()
+        stamp = self.args.rehearsal_stamp
+        foreign = [u["Name"].lstrip("/") for u in users
+                   if ((u.get("Config") or {}).get("Labels") or {}).get(REHEARSAL_LABEL) != stamp]
+        if foreign:
+            self.fail(f"rehearsal: container(s) {foreign} mount a path overlapping this rehearsal's mounts and do "
+                      f"not carry {REHEARSAL_LABEL}={stamp}; the rehearsal never stops or starts them. Use a "
+                      "scratch root that no other container mounts")
+        return users
 
     def preflight_checkout(self):
         head, problems = self.checkout_problems()
@@ -1867,7 +1936,8 @@ class Rehearsal:
 
     def swap_args(self, base, pins):
         return argparse.Namespace(
-            mode="apply", rehearse=True, container=self.name, pause_unit=[f"{self.name}-mail"],
+            mode="apply", rehearse=True, rehearsal_stamp=self.stamp, container=self.name,
+            pause_unit=[f"{self.name}-mail"],
             private=str(self.root / f"{self.name}-private"), new_tag=self.tag,
             reuse_image=None, build_python=None, helper_image=base, accept_a2=None,
             mail_wait=60, stop_timeout=20, health_wait=120, helper_timeout=3600,
@@ -1967,6 +2037,10 @@ class Rehearsal:
         if not root.is_absolute():
             self.log("refused: --private must be an absolute path")
             return EXIT_REFUSED
+        # Before anything is written: the fixture and run dir go under root.
+        if any((p / ".git").exists() for p in (root, *root.parents)):
+            self.log("refused: --private is inside a Git checkout")
+            return EXIT_REFUSED
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         second = re.sub(r"[^0-9tz]", "", datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dt%H%M%Sz"))
         self.stamp = f"{second}-{secrets.token_hex(4)}"
@@ -2041,7 +2115,8 @@ def parse_args(argv):
     parser.add_argument("--rehearse-image", default="python:3.12-slim-bookworm",
                         help="local image for the throwaway target and helpers (needs GNU tar, python3, sqlite3; "
                              "never pulled)")
-    parser.add_argument("--rehearse-mib", type=int, default=1024, help="synthetic mount data in MiB (default 1024)")
+    parser.add_argument("--rehearse-mib", type=int, default=1024,
+                        help=f"synthetic mount data in MiB (default 1024, at most {REHEARSE_MIB_MAX})")
     parser.add_argument("--rehearse-fault", choices=("unpinned-fixture",),
                         help="inject a historical failure; the rehearsal passes only if the preflight refuses it")
     parser.add_argument("--rehearse-keep", action="store_true", help="keep the synthetic data and run dir")
@@ -2063,8 +2138,8 @@ def parse_args(argv):
             parser.error(f"--rehearse makes its own target, unit, tag and pins; not allowed: {', '.join(given)}")
         if not args.private:
             parser.error("required: --private (the rehearsal's scratch root, outside Git)")
-        if args.rehearse_mib < 1:
-            parser.error("--rehearse-mib must be at least 1")
+        if not 1 <= args.rehearse_mib <= REHEARSE_MIB_MAX:
+            parser.error(f"--rehearse-mib must be between 1 and {REHEARSE_MIB_MAX}")
         return args
     if args.rehearse_fault or args.rehearse_keep:
         parser.error("--rehearse-fault/--rehearse-keep need --rehearse")
