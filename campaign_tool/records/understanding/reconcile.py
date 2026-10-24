@@ -21,12 +21,23 @@ def canonical_citations(cites):
 def canonical_facts(facts):
  # Copies ordered by the unique fact_id, each with canonically ordered citations.
  return [dict(f,citations=canonical_citations(f.get("citations"))) for f in sorted(facts,key=lambda f:f["fact_id"])]
+def canonical_cited(item):
+ # Copy of one cited item (requirement, exception or term) with canonically ordered citations.
+ return dict(item,citations=canonical_citations(item["citations"])) if type(item)is dict and "citations" in item else item
+CITED_POLICY_FIELDS=("exceptions","incorporated_terms")
+def canonical_governing(version):
+ # Selected-version payload minus requirements (bound separately); every cited list item keeps its
+ # position but its citation sequence is canonical. Order-significant value arrays are untouched.
+ if version is None:return None
+ governing={k:v for k,v in version.items() if k!="requirements"}
+ for k in CITED_POLICY_FIELDS:
+  if type(governing.get(k))is list:governing[k]=[canonical_cited(x) for x in governing[k]]
+ return governing
 def finding_identity(*,snapshot_sha256,scope,family_id,rule_selection,version,requirement,event_key,facts):
  """One versioned canonical preimage binding a finding to its evidence and governing policy."""
- governing=None if version is None else {k:v for k,v in version.items() if k!="requirements"}
  return evidence.sha({"finding_identity_version":FINDING_IDENTITY_VERSION,"snapshot_sha256":snapshot_sha256,
-  "scope":scope,"family_id":family_id,"rule_selection":rule_selection,"policy_version":governing,
-  "requirement":dict(requirement,citations=canonical_citations(requirement["citations"])) if "citations" in requirement else requirement,
+  "scope":scope,"family_id":family_id,"rule_selection":rule_selection,"policy_version":canonical_governing(version),
+  "requirement":canonical_cited(requirement),
   "event_key":event_key,"facts":canonical_facts(facts)})
 def rule_support_bound(req,version,bundle):
  cites=req.get("citations")
