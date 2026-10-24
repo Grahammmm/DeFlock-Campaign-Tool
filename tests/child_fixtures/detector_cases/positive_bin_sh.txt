@@ -1,0 +1,3 @@
+# expect: SHELL_INLINE
+import subprocess
+subprocess.run(["/bin/sh", "-c", "true"])

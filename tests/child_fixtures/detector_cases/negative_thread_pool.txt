@@ -1,0 +1,4 @@
+# expect: none
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor() as pool:
+    pass

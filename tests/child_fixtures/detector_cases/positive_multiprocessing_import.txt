@@ -1,0 +1,2 @@
+# expect: MULTIPROCESSING
+import multiprocessing

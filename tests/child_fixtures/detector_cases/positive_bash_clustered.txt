@@ -1,0 +1,3 @@
+# expect: SHELL_INLINE
+import shutil, subprocess
+subprocess.run([shutil.which("bash"), "-ec", "true"])

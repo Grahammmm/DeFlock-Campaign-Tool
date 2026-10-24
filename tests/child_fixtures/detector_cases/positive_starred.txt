@@ -1,0 +1,4 @@
+# expect: INLINE
+import subprocess, sys
+FLAGS = ["-B", "-c"]
+subprocess.run([sys.executable, *FLAGS, "pass"])

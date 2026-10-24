@@ -1,0 +1,3 @@
+# expect: none
+def start(context_module):
+    return context_module.get_context("fork")

@@ -1,0 +1,3 @@
+# expect: INLINE
+import os, sys
+os.execl(sys.executable, sys.executable, "-c", "pass")

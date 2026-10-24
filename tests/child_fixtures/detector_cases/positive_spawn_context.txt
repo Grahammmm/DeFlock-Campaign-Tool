@@ -1,0 +1,3 @@
+# expect: START_METHOD
+def start(context_module):
+    return context_module.get_context("spawn")

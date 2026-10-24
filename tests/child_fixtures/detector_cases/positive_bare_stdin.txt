@@ -1,0 +1,3 @@
+# expect: STDIN
+import subprocess, sys
+subprocess.run([sys.executable], input="pass")

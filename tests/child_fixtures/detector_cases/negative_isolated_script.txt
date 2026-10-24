@@ -1,0 +1,3 @@
+# expect: none
+import subprocess, sys
+subprocess.run([sys.executable, "-I", "script.py"])

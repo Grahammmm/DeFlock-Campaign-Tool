@@ -1,0 +1,4 @@
+# expect: PROCESS_POOL
+from concurrent.futures import ProcessPoolExecutor
+with ProcessPoolExecutor() as pool:
+    pass

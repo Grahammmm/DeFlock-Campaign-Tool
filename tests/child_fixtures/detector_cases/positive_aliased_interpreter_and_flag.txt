@@ -1,0 +1,5 @@
+# expect: INLINE
+import subprocess, sys
+PY = sys.executable
+INLINE = "-c"
+subprocess.run([PY, INLINE, "pass"])

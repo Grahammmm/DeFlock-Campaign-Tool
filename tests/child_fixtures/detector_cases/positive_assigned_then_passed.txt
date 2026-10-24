@@ -1,0 +1,4 @@
+# expect: INLINE
+import subprocess, sys
+command = [sys.executable, "-B", "-c", "pass"]
+subprocess.run(command)

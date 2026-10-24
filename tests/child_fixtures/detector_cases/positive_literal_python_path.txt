@@ -1,0 +1,3 @@
+# expect: INLINE
+import subprocess
+subprocess.run(["/usr/bin/python3.12", "-c", "pass"])

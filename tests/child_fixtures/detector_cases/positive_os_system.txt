@@ -1,0 +1,3 @@
+# expect: SHELL_CALL
+import os
+os.system("true")

@@ -1,0 +1,7 @@
+# expect: NESTED_INLINE
+import subprocess, sys
+SOURCE = """
+import subprocess, sys
+subprocess.run([sys.executable, "-c", "pass"])
+"""
+subprocess.run([sys.executable, "-B", "child.py", SOURCE])

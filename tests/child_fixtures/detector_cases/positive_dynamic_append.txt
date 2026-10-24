@@ -1,0 +1,6 @@
+# expect: DYNAMIC_FLAG
+import subprocess, sys
+command = [sys.executable]
+command.append("-c")
+command.append("pass")
+subprocess.run(command)

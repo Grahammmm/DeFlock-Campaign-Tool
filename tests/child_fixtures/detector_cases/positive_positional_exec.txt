@@ -1,0 +1,4 @@
+# expect: INLINE
+import asyncio, sys
+async def main():
+    await asyncio.create_subprocess_exec(sys.executable, "-B", "-c", "pass")

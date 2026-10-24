@@ -1,0 +1,4 @@
+# expect: none
+import subprocess
+from tests.child_fixtures import fixture_argv
+subprocess.run(fixture_argv("example", "-c"))
