@@ -319,9 +319,9 @@ def check_public_tree(run_dir: Path) -> dict:
     return {"children": [child], "problems": [] if child["exit"] == 0 else [f"exit {child['exit']}"]}
 
 
-def identity(run_dir: Path) -> dict:
-    head = run_child("git-rev-parse", ["git", "rev-parse", "HEAD"], REPO, run_dir)
-    status = run_child("git-status", ["git", "status", "--porcelain", "--untracked-files=all"], REPO, run_dir)
+def identity(run_dir: Path, label: str) -> dict:
+    head = run_child(f"{label}-git-rev-parse", ["git", "rev-parse", "HEAD"], REPO, run_dir)
+    status = run_child(f"{label}-git-status", ["git", "status", "--porcelain", "--untracked-files=all"], REPO, run_dir)
     porcelain = Path(status["stdout_path"]).read_text(encoding="utf-8") if status["exit"] == 0 else None
     return {"head": Path(head["stdout_path"]).read_text(encoding="utf-8").strip() if head["exit"] == 0 else None,
             "tree_clean": porcelain == "", "status_porcelain": porcelain, "children": [head, status],
@@ -352,10 +352,17 @@ def main(argv: list[str]) -> int:
               "repo": str(REPO), "run_dir": str(run_dir), "verdict_scope": "MACHINE CHECK ONLY - REVIEW REQUIRED",
               "started_utc": stamp}
     try:
-        record["identity_before"] = identity(run_dir)
+        record["identity_before"] = identity(run_dir, "before")
         record["result"] = HANDLERS[args.check](run_dir)
-        record["identity_after"] = {k: v for k, v in identity(run_dir).items() if k != "children"}
+        record["identity_after"] = identity(run_dir, "after")
         problems = list(record["result"]["problems"])
+        for phase in ("identity_before", "identity_after"):
+            if not record[phase]["head"] or record[phase]["status_porcelain"] is None:
+                problems.append(f"{phase}: git identity unavailable")
+        if record["identity_before"]["head"] != record["identity_after"]["head"]:
+            problems.append("candidate HEAD changed during check")
+        if record["identity_before"]["status_porcelain"] != record["identity_after"]["status_porcelain"]:
+            problems.append("candidate working tree changed during check")
         if record["identity_before"]["source_sha256"] != record["identity_after"]["source_sha256"]:
             problems.append("candidate source changed during check")
     except Exception as exc:  # incomplete check is a failure, never a pass
@@ -366,6 +373,7 @@ def main(argv: list[str]) -> int:
         json.dump(record, fh, indent=2, sort_keys=True, default=str)
     print(json.dumps({"check": args.check, "passed": record["passed"], "problems": problems,
                       "run_dir": str(run_dir), "head": record.get("identity_before", {}).get("head"),
+                      "tree_clean": record.get("identity_before", {}).get("tree_clean"),
                       "result_sha256": sha256_file(run_dir / "result.json")}, sort_keys=True))
     return 0 if record["passed"] else 1
 
