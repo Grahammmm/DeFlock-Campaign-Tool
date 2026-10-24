@@ -236,13 +236,27 @@ python3 -B tools/portal_reconcile.py --observations /private/run/pointers.json \
 ```
 
 Each unique URL is assigned exactly one class: `fetched` (a version receipt exists),
-`queued`, `failed` (blocked, reason codes counted), `unproven` (no item id, not in
-queue, or ambiguous queue identity), `held_policy` (host class outside the
-allowlist), `held_redirect` or `missing_request_identity`. Held classes are decided
-before any queue lookup, so they are never reported as fetched. Items are parsed
+`queued`, `failed` (blocked; reason codes counted from a fixed vocabulary of engine
+codes, anything else as `unrecognized_reason`), `unproven` (host policy unknown, no
+item id, not in queue, or ambiguous queue identity), `held_policy` (host class
+outside the allowlist or `allowlisted: false`), `held_redirect` or
+`missing_request_identity`. Held classes are decided before any queue lookup, so
+they are never reported as fetched. Items are parsed
 with the same `/documents/<item>` pattern as `inventory_notice()`. Malformed rows
-and conflicting duplicates are counted by fixed reason codes. The output never
+(including wrong JSON types) and conflicting duplicates are counted by fixed reason
+codes and never abort the report.
+
+Producer obligation: each observation's `allowlisted` value must come from a
+custodian-supplied, offline classification of that row's host against the
+root-owned portal allowlist. The tool never reads or changes the allowlist. A
+missing or null `allowlisted` means host policy is unknown: the URL is counted as
+`unproven` (`host_policy_unknown`) and is never reported as fetched, queued or
+failed. A NextRequest host class or a matching queue row is not allowlist proof.
+
+The output never
 includes URLs, paths, hosts, identifiers, filenames, subjects or addresses, and
-identical inputs give byte-identical output. The report opens no queue store,
+identical inputs give byte-identical output. Errors, including argument errors,
+are a single fixed JSON code on stderr (`usage_invalid`, `input_*`,
+`output_not_created`, `internal_error`) and never echo arguments or input text. The report opens no queue store,
 allowlist, ledger, mailbox or network connection. The counts it produces still
 need review and are not acceptance.

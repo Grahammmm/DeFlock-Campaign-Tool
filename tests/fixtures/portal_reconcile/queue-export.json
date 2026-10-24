@@ -6,7 +6,7 @@
     {"host": "records.example.test", "request_id": "26-102", "item_id": "doc-c", "state": "blocked", "reason": "retry_exhausted"},
     {"host": "records.example.test", "request_id": "26-102", "item_id": "doc-d", "state": "retry", "reason": "timeout"},
     {"host": "records.example.test", "request_id": "26-103", "item_id": "doc-e", "state": "pending", "has_version": true},
-    {"host": "records.example.test", "request_id": "26-104", "item_id": "doc-f", "state": "blocked", "reason": "expired_link"},
+    {"host": "records.example.test", "request_id": "26-104", "item_id": "doc-f", "state": "blocked", "reason": "expired_or_denied_link"},
     {"host": "records.example.test", "request_id": "26-105", "item_id": "doc-g", "state": "received", "has_version": true},
     {"host": "records.example.test", "request_id": "26-106", "item_id": "doc-h", "state": "pending"},
     {"host": "records.example.test", "request_id": "26-106", "item_id": "doc-h", "state": "received"},

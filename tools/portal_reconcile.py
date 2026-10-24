@@ -11,6 +11,11 @@ Inputs, both JSON and both synthetic or operator supplied:
                  "observations": [{"host_class": ..., "url_sha256": ...,
                    "host"?: ..., "request_id"?: ..., "item_id"?: ...,
                    "path"?: ..., "allowlisted"?: bool}, ...]}
+                "allowlisted" is the custodian-supplied, offline classification
+                of the row's host against the root-owned portal allowlist. The
+                producer must set it from that classification; this tool never
+                reads the allowlist. Absent means host policy is unknown, which
+                is never treated as allowed.
   queue export  {"schema": "portal-queue-export/v1",
                  "items": [{"host": ..., "request_id": ..., "item_id": ...,
                    "state": ..., "has_version"?: bool, "reason"?: ...}, ...]}
@@ -32,9 +37,10 @@ Each unique URL (unique url_sha256) gets exactly one class:
   queued                    matching queue item in pending/fetching/retry,
                             no version receipt
   failed                    matching queue item blocked, no version receipt
-                            (reason codes counted)
-  unproven                  no item id, no matching queue item, or an
-                            ambiguous (duplicated) queue identity
+                            (reason codes counted from a fixed vocabulary)
+  unproven                  host policy unknown (no allowlisted value), no
+                            item id, no matching queue item, or an ambiguous
+                            (duplicated) queue identity
 
 Held classes are decided before any queue lookup, so a held pointer is never
 reported as fetched even when a queue row with the same identity exists.
@@ -80,14 +86,37 @@ QUEUE_STATES = QUEUED_STATES | FAILED_STATES | RECEIVED_STATES
 
 CLASSES = ("fetched", "queued", "failed", "unproven", "held_policy",
            "held_redirect", "missing_request_identity")
-UNPROVEN_REASONS = ("no_item_id", "not_in_queue", "queue_identity_ambiguous")
+UNPROVEN_REASONS = ("host_policy_unknown", "no_item_id", "not_in_queue",
+                    "queue_identity_ambiguous")
+
+# Fixed vocabulary of item-level failure codes the engine can store in
+# portal_items.reason (PortalError codes on the fetch path in engine.py,
+# https_transport.py and policy.py, plus engine fallbacks). Only these appear
+# as report keys; any other value, however code-shaped, is folded into
+# UNRECOGNIZED_REASON so free text from an export can never reach the output.
+KNOWN_REASONS = frozenset({
+    "adapter_failure", "ambiguous_http_headers", "approval_expired",
+    "archive_invalid", "archive_limits", "archive_unsafe_path",
+    "archive_unsupported_member", "authorization_required", "dns_failed",
+    "dns_invalid", "dns_timeout", "egress_denied", "empty_document",
+    "encoded_body_unsupported", "expired_or_denied_link", "http_failure",
+    "https_connect_failed", "invalid_host", "invalid_http_response",
+    "invalid_length", "invalid_url", "length_mismatch", "login_page",
+    "path_not_approved", "payload_kind_mismatch", "peer_address_changed",
+    "portal_not_approved", "redirect_limit", "redirect_not_approved",
+    "redirect_without_location", "retry_exhausted", "signature_mismatch",
+    "size_limit", "ssrf_address_denied", "timeout", "total_size_limit",
+    "transient_http", "transport_chunk_contract", "transport_or_storage_failure",
+    "unsupported_collection_media", "unsupported_transfer_encoding",
+})
+UNRECOGNIZED_REASON = "unrecognized_reason"
+NO_REASON = "no_reason"
 
 OBSERVATION_KEYS = {"host_class", "url_sha256", "host", "request_id", "item_id",
                     "path", "allowlisted"}
 QUEUE_KEYS = {"host", "request_id", "item_id", "state", "has_version", "reason"}
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
-REASON = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 class InputError(Exception):
@@ -114,7 +143,7 @@ def read_json(path, schema, list_key):
         raise InputError("input_too_large")
     try:
         document = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         raise InputError("input_not_json") from None
     if not isinstance(document, dict) or document.get("schema") != schema:
         raise InputError("input_schema_mismatch")
@@ -141,13 +170,15 @@ def normalize_observation(row):
     if set(row) - OBSERVATION_KEYS:
         raise ValueError("unknown_field")
     host_class = row.get("host_class")
-    if host_class not in HOST_CLASSES:
+    if not isinstance(host_class, str) or host_class not in HOST_CLASSES:
         raise ValueError("unknown_host_class")
     url_sha256 = row.get("url_sha256")
     if not isinstance(url_sha256, str) or not SHA256.fullmatch(url_sha256):
         raise ValueError("invalid_url_sha256")
-    allowlisted = row.get("allowlisted", True)
-    if type(allowlisted) is not bool:
+    # Host policy must be stated explicitly by the custodian-supplied
+    # classification; absence is "unknown", never an implicit allowance.
+    allowlisted = row.get("allowlisted")
+    if allowlisted is not None and type(allowlisted) is not bool:
         raise ValueError("invalid_allowlisted")
     host = row.get("host")
     if host is not None:
@@ -170,7 +201,7 @@ def normalize_observation(row):
             if item_id is not None and item_id != match.group(1):
                 raise ValueError("item_id_path_mismatch")
             item_id = match.group(1)
-    if host_class in ALLOWLISTED_CLASSES and allowlisted and host is None:
+    if host_class in ALLOWLISTED_CLASSES and allowlisted is True and host is None:
         raise ValueError("missing_host")
     return (url_sha256, host_class, host, request_id, item_id, allowlisted)
 
@@ -187,7 +218,7 @@ def normalize_queue_row(row):
     except PortalError:
         raise ValueError("invalid_identity") from None
     state = row.get("state")
-    if state not in QUEUE_STATES:
+    if not isinstance(state, str) or state not in QUEUE_STATES:
         raise ValueError("unknown_state")
     has_version = row.get("has_version")
     if has_version is not None and type(has_version) is not bool:
@@ -201,9 +232,33 @@ def normalize_queue_row(row):
     reason = row.get("reason")
     if reason is not None and not isinstance(reason, str):
         raise ValueError("invalid_reason")
-    if reason is not None and not REASON.fullmatch(reason):
-        reason = "unrecognized_reason"
+    if reason is not None and reason not in KNOWN_REASONS:
+        reason = UNRECOGNIZED_REASON
     return (row["host"], row["request_id"], row["item_id"]), state, has_version, reason
+
+
+def _normalized(function, row):
+    """Apply a row normalizer; any per-row failure becomes a fixed code.
+
+    Explicit checks above raise ValueError(<code>). Anything else a hostile
+    JSON value could trigger is folded into one fixed code so a single row can
+    never abort the report or surface exception text.
+    """
+    try:
+        return function(row), None
+    except ValueError as exc:
+        code = str(exc)
+        return None, code if code in MALFORMED_CODES else "invalid_value"
+    except Exception:  # noqa: BLE001 - per-row containment, fixed code only
+        return None, "invalid_value"
+
+
+MALFORMED_CODES = frozenset({
+    "not_object", "unknown_field", "unknown_host_class", "invalid_url_sha256",
+    "invalid_allowlisted", "invalid_host", "invalid_identity", "invalid_path",
+    "item_id_path_mismatch", "missing_host", "unknown_state",
+    "invalid_has_version", "received_without_version", "invalid_reason",
+})
 
 
 def _count(mapping, key, amount=1):
@@ -214,11 +269,11 @@ def build_queue(rows):
     malformed = {}
     seen = {}
     for row in rows:
-        try:
-            identity, state, has_version, reason = normalize_queue_row(row)
-        except ValueError as exc:
-            _count(malformed, str(exc))
+        normalized, code = _normalized(normalize_queue_row, row)
+        if normalized is None:
+            _count(malformed, code)
             continue
+        identity, state, has_version, reason = normalized
         seen.setdefault(identity, []).append((state, has_version, reason))
     items = {}
     ambiguous = set()
@@ -237,8 +292,12 @@ def classify(observation, items, ambiguous):
     # Held classes first: a held pointer is never matched against the queue.
     if host_class in REDIRECT_CLASSES:
         return "held_redirect", host_class
-    if host_class in POLICY_HELD_CLASSES or not allowlisted:
+    if host_class in POLICY_HELD_CLASSES or allowlisted is False:
         return "held_policy", host_class
+    if allowlisted is not True:
+        # No custodian-supplied host classification: nothing downstream may be
+        # reported as policy-cleared (fetched/queued/failed).
+        return "unproven", "host_policy_unknown"
     if request_id is None:
         return "missing_request_identity", None
     if item_id is None:
@@ -253,7 +312,7 @@ def classify(observation, items, ambiguous):
     if has_version:
         return "fetched", identity
     if state in FAILED_STATES:
-        return "failed", reason or "no_reason"
+        return "failed", reason or NO_REASON
     return "queued", state
 
 
@@ -265,10 +324,9 @@ def reconcile(observation_rows, queue_rows):
     by_url = {}
     conflicting = set()
     for row in observation_rows:
-        try:
-            observation = normalize_observation(row)
-        except ValueError as exc:
-            _count(malformed, str(exc))
+        observation, code = _normalized(normalize_observation, row)
+        if observation is None:
+            _count(malformed, code)
             continue
         previous = by_url.get(observation[0])
         if previous is None:
@@ -369,8 +427,21 @@ def write_new(path, text):
         os.fsync(handle.fileno())
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Counts-only portal pointer reconciliation (offline).")
+class _CodedArgumentParser(argparse.ArgumentParser):
+    """Argument errors print one fixed code; argv text is never echoed."""
+
+    def error(self, message):  # noqa: ARG002 - message may contain argv text
+        _emit_error("usage_invalid")
+        raise SystemExit(2)
+
+
+def _emit_error(code):
+    sys.stderr.write(json.dumps({"error": code}) + "\n")
+
+
+def _run(argv):
+    parser = _CodedArgumentParser(description="Counts-only portal pointer reconciliation (offline).",
+                                  allow_abbrev=False)
     parser.add_argument("--observations", required=True, help="mail-derived pointer observations JSON")
     parser.add_argument("--queue-export", required=True, help="portal queue export JSON")
     parser.add_argument("--output", help="new report file (refuses to overwrite); default stdout")
@@ -379,18 +450,28 @@ def main(argv=None):
         observations = read_json(args.observations, OBSERVATION_SCHEMA, "observations")
         queue = read_json(args.queue_export, QUEUE_SCHEMA, "items")
     except InputError as exc:
-        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        _emit_error(str(exc))
         return 2
     text = render(reconcile(observations, queue))
     if args.output:
         try:
             write_new(args.output, text)
         except OSError:
-            print(json.dumps({"error": "output_not_created"}), file=sys.stderr)
+            _emit_error("output_not_created")
             return 2
     else:
         sys.stdout.write(text)
     return 0
+
+
+def main(argv=None):
+    try:
+        return _run(argv)
+    except SystemExit:
+        raise
+    except Exception:  # noqa: BLE001 - never print a traceback or input text
+        _emit_error("internal_error")
+        return 3
 
 
 if __name__ == "__main__":
