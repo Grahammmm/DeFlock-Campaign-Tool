@@ -22,6 +22,32 @@ RUN_ID = "synthetic-s5-f011"
 DECISION = "2026-10-24T18:10:00Z"
 
 
+def load_packet():
+    """Materialize real digest relationships from low-entropy synthetic rows.
+
+    valid.json is an inert template, not a CLI-ready receipt. True source pins
+    stay exact; all dependent snapshot/report digests are generated at test time.
+    No checker predicate is patched or relaxed to accept the synthetic packet.
+    """
+    p = json.loads(FIXTURE.read_text())
+    p["source_head"] = check.SOURCE_HEAD
+    p["f010_sha256"] = check.F010_SHA
+    p["contract_pins"] = check.PINS.copy()
+    before, after = (p["snapshots"][phase]["resolutions"] for phase in ("before", "after"))
+    p["binding"]["snapshot_sha256"] = check.digest(p["snapshots"]["before"])
+    for gate in p["gates"].values():
+        gate["snapshot_sha256"] = p["binding"]["snapshot_sha256"]
+    for phase, wrapper in p["reports"].items():
+        wrapper["binding"] = p["binding"].copy()
+        report = wrapper["report"]
+        if phase != "preflight":
+            for field, rows in (("resolution_baseline", after if phase == "rerun" else before),
+                                ("resolution_after", after if phase in ("apply", "rerun") else before)):
+                report[field]["sha256"] = check.resolution_summary(rows)["sha256"]
+        wrapper["sha256"] = check.digest(report)
+    return p
+
+
 def make_packet(owner):
     """Author a fresh producer-shaped synthetic sample; never called on TEST."""
     # Imports run only after test tempdir redirection, not in the checker CLI.
@@ -117,7 +143,31 @@ def make_packet(owner):
 
 class CheckerTests(unittest.TestCase):
     def setUp(self):
-        self.p = json.loads(FIXTURE.read_text())
+        self.p = load_packet()
+
+    @contextlib.contextmanager
+    def runsheet_repo(self):
+        """Copy only admitted source closure, then forbid every read outside it."""
+        out = REPO.parent / "out"
+        out.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="s5-hermetic-", dir=out) as temp:
+            repo = Path(temp) / "repo"
+            for name in (*check.PINS, "tools/t4b_test_apply_check.py", "docs/runbooks/T4B-TEST-APPLY.md"):
+                target = repo / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((REPO / name).read_bytes())
+            original_read = check.read_local
+            reads = []
+
+            def read(path, root):
+                path, root = Path(path), Path(root)
+                self.assertTrue(path.is_relative_to(repo), str(path))
+                self.assertIn(root, (repo, repo.parent))
+                reads.append(path)
+                return original_read(path, root)
+
+            with patch.object(check, "REPO", repo), patch.object(check, "read_local", read):
+                yield repo, reads
 
     def validate(self, p=None):
         return check.validate(self.p if p is None else p, RUN_ID, DECISION)
@@ -312,38 +362,75 @@ class CheckerTests(unittest.TestCase):
                 check.parse(raw)
 
     def test_runsheet_positive_and_inert_negatives(self):
-        text = (REPO / "docs/runbooks/T4B-TEST-APPLY.md").read_text()
-        self.assertTrue(check.validate_runsheet(text))
-        for candidate, code in (("", "empty_runsheet"), (text.replace('"--apply"', '"--invented-option"'), "unsupported_option"),
-                                (text.replace(str(REPO / "tools/t4b_test_apply_check.py"), "/missing/check.py"), "missing_absolute_helper"),
-                                (re.sub(r"## backup\n.*?(?=## baseline)", "## backup\n\n", text, flags=re.S), "missing_runsheet_step:backup"),
-                                (text.replace("adopted=eligible_new+N", "adopted=eligible_new-N"), "runsheet_content_changed")):
-            with self.subTest(code=code), self.assertRaisesRegex(check.CheckError, "^" + code + "$"):
-                check.validate_runsheet(candidate)
+        with self.runsheet_repo() as (repo, reads):
+            text = (repo / "docs/runbooks/T4B-TEST-APPLY.md").read_text()
+            self.assertTrue(check.validate_runsheet(text, repo=repo))
+            self.assertIn(repo / "tools/t4b_test_apply_check.py", reads)
+            for candidate, code in (("", "empty_runsheet"), (text.replace('"--apply"', '"--invented-option"'), "unsupported_option"),
+                                    (text.replace("<REPO_ROOT>/tools/t4b_test_apply_check.py", "/missing/check.py"), "missing_absolute_helper"),
+                                    (re.sub(r"## backup\n.*?(?=## baseline)", "## backup\n\n", text, flags=re.S), "missing_runsheet_step:backup"),
+                                    (text.replace("adopted=eligible_new+N", "adopted=eligible_new-N"), "runsheet_content_changed")):
+                with self.subTest(code=code), self.assertRaisesRegex(check.CheckError, "^" + code + "$"):
+                    check.validate_runsheet(candidate, repo=repo)
+            for bad in ("tools/t4b_test_apply_check.py", "<REPO_ROOT>/../tools/t4b_test_apply_check.py"):
+                candidate = text.replace("<REPO_ROOT>/tools/t4b_test_apply_check.py", bad)
+                with self.subTest(helper=bad), self.assertRaisesRegex(check.CheckError, "^missing_absolute_helper$"):
+                    check.validate_runsheet(candidate, repo=repo)
+            with self.assertRaisesRegex(check.CheckError, "^missing_absolute_helper$"):
+                check.validate_runsheet(text, repo=Path("relative-repo"))
+            with self.assertRaisesRegex(check.CheckError, "^command_source_mismatch$"):
+                check.validate_runsheet(text.replace("<SOURCE_HEAD>", "wrong-head"), repo=repo)
 
     def test_missing_helper_and_pinned_source_not_assumed_present(self):
-        text = (REPO / "docs/runbooks/T4B-TEST-APPLY.md").read_text()
-        original = check.read_local
-        for missing in ("tools/t4b_test_apply_check.py", "campaign_tool/records/mail_adoption.py"):
-            def read(path, root):
-                if str(path).endswith(missing):
-                    raise FileNotFoundError("synthetic missing tool")
-                return original(path, root)
-            with self.subTest(missing=missing), patch.object(check, "read_local", read), self.assertRaises(FileNotFoundError):
-                check.validate_runsheet(text)
+        with self.runsheet_repo() as (repo, reads):
+            text = (repo / "docs/runbooks/T4B-TEST-APPLY.md").read_text()
+            original = check.read_local
+            for missing in ("tools/t4b_test_apply_check.py", "campaign_tool/records/mail_adoption.py"):
+                def read(path, root):
+                    if Path(path) == repo / missing:
+                        raise FileNotFoundError("synthetic missing tool")
+                    return original(path, root)
+                with self.subTest(missing=missing), patch.object(check, "read_local", read), self.assertRaises(FileNotFoundError):
+                    check.validate_runsheet(text, repo=repo)
+            with patch.object(check, "read_local", lambda path, root: b"" if Path(path) == repo / "tools/t4b_test_apply_check.py" else original(path, root)):
+                with self.assertRaisesRegex(check.CheckError, "^missing_absolute_helper$"):
+                    check.validate_runsheet(text, repo=repo)
+            self.assertTrue(check.validate_runsheet(text, repo=repo))
+            self.assertIn(repo / "tools/t4b_test_apply_check.py", reads)
 
     def test_cli_packet_hash_run_binding_and_no_writes(self):
-        args = ["--packet", str(FIXTURE), "--packet-sha256", check.sha(FIXTURE.read_bytes()),
-                "--run-id", RUN_ID, "--decision-time", DECISION]
-        before = FIXTURE.stat()
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(check.main(args), 0)
-        self.assertIn("SYNTHETIC_VALID_REVIEW_REQUIRED", out.getvalue())
-        args[3] = "f" * 64
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(check.main(args), 2)
-        self.assertIn("packet_hash_mismatch", out.getvalue())
-        self.assertEqual(FIXTURE.stat(), before)
+        fixture_before = FIXTURE.stat()
+        with self.runsheet_repo() as (repo, reads):
+            packet = repo / "packet.json"
+            packet.write_text(json.dumps(self.p))
+            args = ["--packet", str(packet), "--packet-sha256", check.sha(packet.read_bytes()),
+                    "--run-id", RUN_ID, "--decision-time", DECISION]
+            before = packet.stat()
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(check.main(args), 0)
+            self.assertIn("SYNTHETIC_VALID_REVIEW_REQUIRED", out.getvalue())
+            self.assertIn(repo / "tools/t4b_test_apply_check.py", reads)
+            args[3] = "f" * 64
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(check.main(args), 2)
+            self.assertIn("packet_hash_mismatch", out.getvalue())
+            self.assertEqual(packet.stat(), before)
+        self.assertEqual(FIXTURE.stat(), fixture_before)
+
+    def test_source_pins_and_tampered_source_fail_closed(self):
+        with self.runsheet_repo() as (repo, reads):
+            text = (repo / "docs/runbooks/T4B-TEST-APPLY.md").read_text()
+            self.assertTrue(check.validate_runsheet(text, repo=repo))
+            for name, expected in check.PINS.items():
+                with self.subTest(source=name):
+                    path = repo / name
+                    raw = path.read_bytes()
+                    self.assertEqual(check.sha(raw), expected)
+                    path.write_bytes(raw + b"\n# synthetic tampering\n")
+                    with self.assertRaisesRegex(check.CheckError, "^pinned_source_changed$"):
+                        check.validate_runsheet(text, repo=repo)
+                    path.write_bytes(raw)
+            self.assertTrue(check.validate_runsheet(text, repo=repo))
 
     def test_symlink_and_fifo_refused_before_read(self):
         import os
