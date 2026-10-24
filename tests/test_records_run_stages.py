@@ -33,6 +33,7 @@ from campaign_tool.records import native_extract, run_orchestrator, run_stages
 from campaign_tool.records import run as records_run
 from campaign_tool.records.ledger import store
 from campaign_tool.records.portal.policy import PortalError, parse_approval
+from tests.child_fixtures import fixture_argv
 from tests.test_records_portal import NOW, policy_data
 
 REPO = Path(__file__).resolve().parents[1]
@@ -810,7 +811,7 @@ class DeadlineTests(unittest.TestCase):
     def test_child_group_killed_on_timeout(self):
         with tempfile.TemporaryDirectory() as temp:
             pidfile = Path(temp) / "grandchild.pid"
-            argv = ["/bin/sh", "-c", f"sleep 30 & echo $! > '{pidfile}'; wait"]
+            argv = fixture_argv("run_stages_background_sleep", str(pidfile), "wait")
             started = time.monotonic()
             with self.assertRaises(run_stages.StageTimeout):
                 run_stages.run_child(argv, 1)
@@ -830,7 +831,7 @@ class DeadlineTests(unittest.TestCase):
     def test_child_descendants_killed_after_normal_exit(self):
         with tempfile.TemporaryDirectory() as temp:
             pidfile = Path(temp) / "orphan.pid"
-            argv = ["/bin/sh", "-c", f"sleep 30 & echo $! > '{pidfile}'; echo '{{\"ok\": 1}}'"]
+            argv = fixture_argv("run_stages_background_sleep", str(pidfile), "ok")
             code, out = run_stages.run_child(argv, 10)
             self.assertEqual((code, run_stages.last_json(out)), (0, {"ok": 1}))
             orphan = int(pidfile.read_text())

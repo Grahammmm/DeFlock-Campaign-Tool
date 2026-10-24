@@ -38,10 +38,8 @@ REVIEWED_EXCEPTIONS = frozenset({
     ("tests/test_records_runtime.py", "StageContractTests.test_target_config_rejections", "SHELL"),
 })
 
-# Files that still launch inline-source children; empty once all are converted.
-KNOWN_REMAINING = frozenset({
-    "tests/test_records_run_stages.py",
-})
+# Files that still launch inline-source children; all are converted.
+KNOWN_REMAINING = frozenset()
 
 
 def dotted(node):
