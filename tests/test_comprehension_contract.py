@@ -13,6 +13,9 @@ from pathlib import Path
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 import uuid
@@ -101,6 +104,7 @@ class ContractSchemaValidator:
 
 REPO = Path(__file__).resolve().parents[1]
 FIX = REPO / 'tests/fixtures/comprehension'
+TEST_OUT = REPO.parent / 'out'
 SCHEMA = json.loads((REPO / 'schemas/comprehension-handoff-v1.json').read_text())
 PINS = json.loads((FIX / 'source-pins.json').read_text())
 
@@ -123,6 +127,44 @@ with mock.patch('sqlite3.connect', side_effect=RuntimeError('import_database_for
 
 
 VALIDATOR = ContractSchemaValidator(SCHEMA)
+
+
+def synthetic_output_root():
+    # Validate ancestry BEFORE mkdir/mkdtemp; never redirect through a symlink.
+    for ancestor in [*reversed(TEST_OUT.parents), TEST_OUT]:
+        if ancestor.exists() or ancestor.is_symlink():
+            require(not stat.S_ISLNK(ancestor.lstat().st_mode), 'symlink_forbidden')
+    TEST_OUT.mkdir(exist_ok=True)
+    return TEST_OUT
+
+
+def build_runtime_fixture(root):
+    """Build only in a fresh admitted synthetic out/ child, never in fixtures.
+
+    SQL preserves the frozen database's native schema/rows, not its version-
+    dependent SQLite page layout. Only the runtime copies of the producer and
+    envelope are rebound to the generated database bytes; source pins stay fixed.
+    """
+    root = Path(root).absolute()
+    require(root.parent == TEST_OUT, 'fixture_root_outside_synthetic_out')
+    for ancestor in [*reversed(root.parents), root]:
+        require(not stat.S_ISLNK(ancestor.lstat().st_mode), 'symlink_forbidden')
+    require(not any(root.iterdir()), 'fixture_root_not_empty')
+    for name, expected in PINS['fixture_files'].items():
+        require(byte_hash((FIX / name).read_bytes()) == expected, 'fixture_source_changed')
+    shutil.copytree(FIX, root, dirs_exist_ok=True)
+    with closing(sqlite3.connect(root / 'canonical.sqlite')) as db:
+        db.executescript((root / 'canonical.sql').read_text())
+    envelope = json.loads((root / 'comprehension-handoff-v1.json').read_text())
+    envelope['canonical_copy']['sha256'] = byte_hash((root / 'canonical.sqlite').read_bytes())
+    producer = json.loads((root / envelope['source_manifest']).read_text())
+    producer['canonical_copy'] = copy.deepcopy(envelope['canonical_copy'])
+    producer_bytes = (json.dumps(producer, sort_keys=True) + '\n').encode()
+    (root / envelope['source_manifest']).write_bytes(producer_bytes)
+    envelope['source_manifest_sha256'] = byte_hash(producer_bytes)
+    (root / 'comprehension-handoff-v1.json').write_text(
+        json.dumps(envelope, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n')
+    return envelope
 
 
 def checked_path(root, relative):
@@ -215,8 +257,10 @@ def validate_handoff(envelope, root, *, expected_run_id, expected_source_manifes
 
 class ComprehensionContractTests(unittest.TestCase):
     def setUp(self):
-        self.envelope = json.loads((FIX / 'comprehension-handoff-v1.json').read_text())
-        self.root = FIX
+        # Retain fresh temporary roots like the existing mutation outputs: no
+        # cleanup/deletion authority is inferred by this test-only change.
+        self.root = Path(tempfile.mkdtemp(prefix='contract-runtime-', dir=synthetic_output_root()))
+        self.envelope = build_runtime_fixture(self.root)
         self.expected = {'expected_run_id': self.envelope['run_id'],
                          'expected_source_manifest_sha256': self.envelope['source_manifest_sha256']}
 
@@ -224,9 +268,9 @@ class ComprehensionContractTests(unittest.TestCase):
         return validate_handoff(self.envelope if envelope is None else envelope, self.root, **self.expected)
 
     def mutable_copy(self):
-        target = REPO.parent / 'out' / ('contract-' + uuid.uuid4().hex)
+        target = synthetic_output_root() / ('contract-' + uuid.uuid4().hex)
         target.parent.mkdir(exist_ok=True)
-        shutil.copytree(FIX, target)
+        shutil.copytree(self.root, target)
         self.root = target
         return target
 
@@ -258,8 +302,65 @@ class ComprehensionContractTests(unittest.TestCase):
             self.assertEqual(byte_hash((REPO / path).read_bytes()), expected, path)
         VALIDATOR.validate(self.envelope)
 
+    def test_runtime_database_preserves_frozen_native_schema_and_content(self):
+        pins = PINS['canonical_database']
+        def digest(value):
+            return byte_hash(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+        path = self.root / 'canonical.sqlite'
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+            schema = db.execute('SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name').fetchall()
+            tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+            data = {name: db.execute('SELECT * FROM "' + name.replace('"', '""') + '" ORDER BY rowid').fetchall()
+                    for name in tables}
+            self.assertEqual(digest(schema), pins['schema_sha256'])
+            self.assertEqual(digest(data), pins['data_sha256'])
+            self.assertEqual(byte_hash(('\n'.join(db.iterdump()) + '\n').encode()), pins['dump_sha256'])
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], pins['user_version'])
+            self.assertEqual(db.execute('PRAGMA integrity_check').fetchall(), [('ok',)])
+            self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0], 'delete')
+        frozen = json.loads((FIX / 'comprehension-handoff-v1.json').read_text())
+        self.assertEqual(frozen['canonical_copy']['sha256'], pins['original_binary_sha256'])
+        self.assertEqual(self.envelope['canonical_copy']['sha256'], byte_hash(path.read_bytes()))
+        self.assertFalse((FIX / 'canonical.sqlite').exists())
+        self.check()
+
+    def test_runtime_builder_refuses_outside_root_before_any_write(self):
+        for root in (FIX, REPO, TEST_OUT, self.root / 'nested', TEST_OUT / '..' / 'escape'):
+            with self.subTest(root=str(root)):
+                with mock.patch('sqlite3.connect') as connect, mock.patch.object(shutil, 'copytree') as copytree:
+                    with mock.patch.object(Path, 'read_bytes', side_effect=AssertionError('unexpected source read')):
+                        with self.assertRaisesRegex(ValueError, '^fixture_root_outside_synthetic_out$'):
+                            build_runtime_fixture(root)
+                    connect.assert_not_called()
+                    copytree.assert_not_called()
+        alias = TEST_OUT / ('contract-alias-' + uuid.uuid4().hex)
+        alias.symlink_to(self.root, target_is_directory=True)
+        for root, reason in ((alias, 'symlink_forbidden'), (self.root, 'fixture_root_not_empty')):
+            with self.subTest(root=str(root)):
+                with mock.patch('sqlite3.connect') as connect, mock.patch.object(shutil, 'copytree') as copytree:
+                    with self.assertRaisesRegex(ValueError, '^' + reason + '$'):
+                        build_runtime_fixture(root)
+                    connect.assert_not_called()
+                    copytree.assert_not_called()
+
+    def test_public_scanner_still_rejects_database_paths_and_private_content(self):
+        from campaign_tool.records.public_scan import violations
+        self.assertEqual(violations('tests/fixtures/comprehension/canonical.sqlite', b''),
+                         [('tests/fixtures/comprehension/canonical.sqlite', 0, 'private_path')])
+        self.assertEqual(violations('tests/fixtures/comprehension/canonical.sql', (FIX / 'canonical.sql').read_bytes()), [])
+        private_marker = b'-----BEGIN ' + b'PRIVATE KEY-----'
+        self.assertEqual(violations('synthetic.sql', private_marker), [('synthetic.sql', 1, 'private_key')])
+
+    def test_fresh_import_has_no_database_or_fixture_write(self):
+        result = subprocess.run([sys.executable, '-B', str(FIX / 'import-isolation.py')],
+                                cwd=REPO, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, 'PASS pre-import isolation: no database or fixture write\n')
+        self.assertEqual(result.stderr, '')
+
     def test_real_adapter_positive_and_canonical_bytes_unchanged(self):
-        before = {p.name: (p.stat().st_ino, byte_hash(p.read_bytes())) for p in FIX.iterdir()}
+        before = {p.name: (p.stat().st_ino, byte_hash(p.read_bytes())) for p in self.root.iterdir()}
+        source_before = {p.name: (p.stat().st_ino, byte_hash(p.read_bytes())) for p in FIX.iterdir()}
         kwargs = self.check()
         subject = next(item['record']['original_sha256'] for item in kwargs['normalized']['units']
                        if item['record']['record_type'] == 'retention-setting')
@@ -270,7 +371,8 @@ class ComprehensionContractTests(unittest.TestCase):
         self.assertFalse(result['publication_ready'])
         self.assertEqual(result['stage_promotions'], 0)
         self.assertEqual(result, pipeline.evaluate_structured(subject_sha256=subject, **kwargs))
-        self.assertEqual(before, {p.name: (p.stat().st_ino, byte_hash(p.read_bytes())) for p in FIX.iterdir()})
+        self.assertEqual(before, {p.name: (p.stat().st_ino, byte_hash(p.read_bytes())) for p in self.root.iterdir()})
+        self.assertEqual(source_before, {p.name: (p.stat().st_ino, byte_hash(p.read_bytes())) for p in FIX.iterdir()})
 
     def test_actual_api_signatures_not_a_second_format(self):
         sig = inspect.signature(pipeline.evaluate_structured)
@@ -459,9 +561,12 @@ class ComprehensionContractTests(unittest.TestCase):
 
     def test_canonical_serialization_is_byte_stable(self):
         expected = json.dumps(self.envelope, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n'
-        self.assertEqual(expected.encode(), (FIX / 'comprehension-handoff-v1.json').read_bytes())
+        self.assertEqual(expected.encode(), (self.root / 'comprehension-handoff-v1.json').read_bytes())
         reordered = dict(reversed(list(self.envelope.items())))
         self.assertEqual(expected, json.dumps(reordered, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n')
+        frozen = json.loads((FIX / 'comprehension-handoff-v1.json').read_text())
+        self.assertEqual((json.dumps(frozen, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n').encode(),
+                         (FIX / 'comprehension-handoff-v1.json').read_bytes())
 
     def test_host_mapping_is_static_and_unchanged(self):
         source = REPO / 'campaign_tool/records/run_stages.py'

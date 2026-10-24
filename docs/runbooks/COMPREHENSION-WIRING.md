@@ -212,6 +212,24 @@ The byte-hash negative deliberately disables only that gate on inert whitespace
 and proves the otherwise-valid control proceeds. Mutation outputs are retained
 under a new candidate out/contract-<uuid> each run, never under fixtures.
 
+The committed canonical.sql is a text export of the original synthetic database,
+not a renamed database binary. Each test builds a database in a fresh temporary
+out/contract-runtime-<random> directory; these synthetic outputs are retained,
+not automatically deleted. Schema objects (including indexes and triggers), all
+table rows, the logical dump and user_version are checked against independently
+frozen original-database identities in source-pins.json. SQLite binary page
+layout is not a portable fixture identity. The frozen JSON fixtures still
+describe the original binary hash; only their runtime copies bind the generated
+database hash and new synthetic producer-manifest hash. All other bindings and
+the run identity stay unchanged. The builder refuses roots outside synthetic
+out/ before copying or opening a database. A fresh-process probe installs
+database/write guards before importing the oracle. Scanner controls still
+reject database suffixes and private content; no scanner exemption is added.
+
+Public-tree acceptance (separate invocation in the candidate repo):
+
+    python3 tools/check_public_tree.py
+
 Applicable existing contract tests for this source boundary are
  tests.records.test_structured_detector_pipeline (safe in-memory local command)
  and tests.records.test_structured_context_boundary (operator-run with full
@@ -225,9 +243,11 @@ Full discovery = operator-run: python3 -m unittest discover tests, exact frozen
 candidate head, using /home/user/agent-work/tools/venv-fullsuite as admitted by
 the operator's 2026-10-24 10:43 PDT comment. The worker does not run unsafe full
 child discovery, push or obtain remote CI. Scoped success is not full-suite
-clearance. Operator attaches the full result and creates exactly one existing-
-route opus-coder actual Opus5.5 verification child; no worker self-approval or
-second verifier. Complete test evidence and exact head are supplied separately.
+clearance. For the database-fixture follow-up on card t_2f9f33ac, the sole
+independent reviewer is actual Opus5.5 (opus-coder) on that same card, with one
+consolidated verdict under REVIEW-RUBRIC.md v1.3; no duplicate verification
+child or worker self-approval. Operator owns new-head full discovery, push and
+shipping. Complete test evidence and exact head are supplied separately.
 
 Independent review and operator adoption remain required before any consumer
 uses this proposed interface. Machine-valid means REVIEW REQUIRED only.
