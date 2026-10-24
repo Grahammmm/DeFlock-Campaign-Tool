@@ -55,6 +55,8 @@ from pathlib import Path
 import sqlite3
 import stat
 import sys
+import shutil
+import tempfile
 import uuid
 
 from .intake import folder as intake_folder, mail_delta
@@ -84,23 +86,11 @@ def _read_small(path):
 
 def load_config(path):
     """Owner-only adoption config. Returns (config, sha256) or raises AdoptionError."""
-    from .runner.core import private_path
+    from .mail_resolution_config import load_config as secure_config
     try:
-        raw = _read_small(private_path(path))
-        config = json.loads(raw)
+        return secure_config(path)
     except (OSError, ValueError, UnicodeError):
         raise AdoptionError("adoption_config_invalid") from None
-    if (not isinstance(config, dict) or config.get("schema") != CONFIG_SCHEMA
-            or config.get("source") != SOURCE
-            or config.get("adoption") not in ("enabled", "disabled")):
-        raise AdoptionError("adoption_config_invalid")
-    pinned = config.get("disable_marker_sha256")
-    if pinned is not None and not (isinstance(pinned, str) and len(pinned) == 64
-                                   and all(c in "0123456789abcdef" for c in pinned)):
-        raise AdoptionError("adoption_config_invalid")
-    if set(config) - {"schema", "source", "adoption", "disable_marker_sha256"}:
-        raise AdoptionError("adoption_config_invalid")
-    return config, hashlib.sha256(raw).hexdigest()
 
 
 def gate(root, config):
@@ -246,7 +236,7 @@ def _wal_pending(path):
 
 
 @contextlib.contextmanager
-def _snapshot_db(db_path, prefix):
+def _snapshot_db(db_path, prefix, *, copy_wal=False):
     """Read-only SQLite access that never creates, changes or removes a file.
 
     ``mode=ro`` alone (as in ``store.ledger(readonly=True)``) creates ``-shm``
@@ -265,8 +255,37 @@ def _snapshot_db(db_path, prefix):
     if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
         raise AdoptionError(prefix + "_not_owner_only")
     before = _sidecar_keys(path)
-    if (before[1] is not None and before[1][1] > 0) or before[3] is not None:
+    pending_wal = before[1] is not None and before[1][1] > 0
+    if before[3] is not None or (pending_wal and not copy_wal):
         raise AdoptionError(prefix + "_wal_not_checkpointed")
+    if pending_wal:
+        # Locked apply preflight only: recover a private disposable copy, NEVER
+        # the source. A blocked plan must not checkpoint even committed frames.
+        from .run import require_root_lock
+        # Both canonical ledger and intake catalog belong to this records root.
+        require_root_lock(path.parent.parent if prefix == "intake" else path.parent)
+        with tempfile.TemporaryDirectory(prefix="adoption-preflight-") as directory:
+            target = Path(directory) / "snapshot.sqlite"
+            for suffix in ("", "-wal"):
+                source = Path(str(path) + suffix)
+                info = source.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
+                    raise AdoptionError(prefix + "_not_owner_only")
+                with intake_folder.secure_open(source) as stream, open(str(target) + suffix, "xb") as out:
+                    os.fchmod(out.fileno(), 0o600)
+                    shutil.copyfileobj(stream, out, 1024 * 1024)
+            if _sidecar_keys(path) != before:
+                raise AdoptionError(prefix + "_changed_during_read")
+            con = sqlite3.connect(target, timeout=5)
+            con.row_factory = sqlite3.Row
+            try:
+                con.execute("PRAGMA query_only=ON")
+                yield con
+            finally:
+                con.close()
+        if _sidecar_keys(path) != before:
+            raise AdoptionError(prefix + "_changed_during_read")
+        return
     con = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=5)
     con.row_factory = sqlite3.Row
     try:
@@ -279,12 +298,12 @@ def _snapshot_db(db_path, prefix):
 
 
 @contextlib.contextmanager
-def _snapshot_ledger(ledger_path):
+def _snapshot_ledger(ledger_path, *, copy_wal=False):
     """Sidecar-free read of the canonical ledger, schema-checked."""
     from .ledger import store
     from .ledger.migrations import v001
     store.private_parent(store.checked_path(ledger_path))
-    with _snapshot_db(ledger_path, "ledger") as con:
+    with _snapshot_db(ledger_path, "ledger", copy_wal=copy_wal) as con:
         row = con.execute("SELECT checksum FROM schema_migrations WHERE version=?",
                           (v001.VERSION,)).fetchone()
         if (con.execute("PRAGMA user_version").fetchone()[0] != v001.VERSION
@@ -592,12 +611,12 @@ def _preserved(con, item):
     return True
 
 
-def _projection(mail_root, output, ledger_path):
+def _projection(mail_root, output, ledger_path, context=None):
     """Read-only recomputation of the mail_messages row the backend would write."""
     from types import SimpleNamespace
     from .runner.canonical_mail import CanonicalMailBackend
     from .runner.contracts import Folder
-    backend = CanonicalMailBackend(mail_root, output, ledger_path)
+    backend = CanonicalMailBackend(mail_root, output, ledger_path, resolution_context=context)
 
     def project(item):
         account, mailbox, validity, uid = item["identity"]
@@ -607,7 +626,7 @@ def _projection(mail_root, output, ledger_path):
     return project
 
 
-def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
+def classify_receipts(ledger_path, receipts, blobs, mail_root=None, context=None, *, copy_wal=False):
     """Read-only classification. Returns ({identity: (state, coded_gap)}, unfinalized runs).
 
     state is ``new``, ``complete``, ``incomplete`` or an ``identity_*`` code;
@@ -616,11 +635,12 @@ def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
     original-binding precondition, i.e. the backend's own order), else None.
     """
     from .ledger import store
+    reader = context or store
     states = {}
     intake_path = blobs.parent / "intake.sqlite"
-    projection = _projection(mail_root, blobs.parent, ledger_path) if mail_root is not None else None
+    projection = _projection(mail_root, blobs.parent, ledger_path, context) if mail_root is not None else None
     with contextlib.ExitStack() as stack:
-        con = stack.enter_context(_snapshot_ledger(ledger_path))
+        con = stack.enter_context(_snapshot_ledger(ledger_path, copy_wal=copy_wal))
         intake = None
         groups = _occurrence_groups(con, {item["identity"] for item in receipts})
         for item in receipts:
@@ -634,12 +654,12 @@ def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
                 for sha, size in item["originals"]:
                     if gap:
                         break
-                    gap = binding_conflict(con, store, blobs, sha, size)
+                    gap = binding_conflict(con, reader, blobs, sha, size)
                 states[item["identity"]] = ("new", gap)
                 continue
             if intake is None and intake_path.exists():
-                intake = stack.enter_context(_snapshot_db(intake_path, "intake"))
-            code = identity_conflict(con, store, blobs, item, rows, groups.get(item["identity"], []),
+                intake = stack.enter_context(_snapshot_db(intake_path, "intake", copy_wal=copy_wal))
+            code = identity_conflict(con, reader, blobs, item, rows, groups.get(item["identity"], []),
                                      intake=intake, projection=projection)
             if code:
                 states[item["identity"]] = (code, None)
@@ -651,20 +671,36 @@ def classify_receipts(ledger_path, receipts, blobs, mail_root=None):
     return states, unfinalized
 
 
-def _classify(root, mail_root):
+def _classify(root, mail_root, settings=None, *, copy_wal=False):
     receipts, gaps = discover(mail_root, root / "intake")
     states, unfinalized = classify_receipts(root / "ledger.sqlite", receipts, root / "intake" / "blobs",
-                                            mail_root=mail_root)
+                                            mail_root=mail_root, context=settings.context if settings else None, copy_wal=copy_wal)
     for item in receipts:
         item["state"], item["coded_gap"] = states[item["identity"]]
+    resolution_report, ordered = {}, []
+    if settings and settings.policy:
+        from .mail_resolution_census import receipt_occurrences
+        from .mail_resolution_plan import plan
+        records = {r["receipt_sha256"]: receipt_occurrences(r, mail_root, root / "intake") for r in receipts}
+        mime = {r["receipt_sha256"]: mime_precheck(r, mail_root, root / "intake") for r in receipts}
+        with _snapshot_ledger(root / "ledger.sqlite", copy_wal=copy_wal) as con:
+            resolution_report, codes, ordered, predecessors, _ = plan(con, receipts, records, mime, settings.context)
+        for item in receipts:
+            digest = item["receipt_sha256"]
+            if item["state"] == "new":
+                item["coded_gap"] = codes[digest]
+            item["resolvable"] = digest in ordered
+            item["predecessors"] = predecessors[digest]
     new = [r for r in receipts if r["state"] == "new"]
     coded = [r for r in new if r["coded_gap"]]
-    eligible = [r for r in new if not r["coded_gap"]]
+    eligible = [r for r in new if not r["coded_gap"] and not r.get("resolvable")]
+    by_digest = {r["receipt_sha256"]: r for r in receipts}
+    resolvable = [by_digest[digest] for digest in ordered]
     incomplete = [r for r in receipts if r["state"] == "incomplete"]
     complete = [r for r in receipts if r["state"] == "complete"]
     conflicts = Counter(r["state"] for r in receipts if r["state"].startswith("identity_"))
     gap_codes = Counter(r["coded_gap"] for r in coded)
-    pending = eligible + incomplete
+    pending = eligible + incomplete + resolvable
     report = {"source": SOURCE,
               # Inventory: every valid receipt in the export, whatever its ledger state.
               "receipts": len(receipts),
@@ -693,13 +729,19 @@ def _classify(root, mail_root):
               "identity_conflicts": dict(sorted(conflicts.items())),
               "unfinalized_runs": len(unfinalized),
               "gaps": dict(sorted(gaps.items()))}
+    report.update(resolution_report)
     return report, pending, unfinalized
 
 
 def _after(report):
-    return {key: report[key] for key in ("already_adopted", "new_messages", "incomplete_messages",
+    result = {key: report[key] for key in ("already_adopted", "new_messages", "incomplete_messages",
                                          "pending_messages", "coded_gap_messages", "coded_gaps",
                                          "unaccepted_coded_gaps", "identity_conflicts", "unfinalized_runs")}
+    for key in ("policy_originals", "policy_originals_resolved", "resolvable_originals", "policy_originals_blocked",
+                "resolvable_messages", "resolution_drift", "resolution_plan"):
+        if key in report:
+            result[key] = report[key]
+    return result
 
 
 def _identity(config_sha256):
@@ -748,8 +790,21 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
         raise AdoptionError("export_inside_records_root")
     config, config_sha = load_config(config_path) if config_path is not None else (None, None)
     decision = gate(root, config)
+    from .mail_resolution_config import CURRENT, HISTORICAL, load_settings
+    configured = config is not None and (config.get(CURRENT) or config.get(HISTORICAL))
+    settings = None
+    if configured:
+        try:
+            settings = load_settings(root, config_path)
+        except (ValueError, OSError):
+            if apply:
+                raise AdoptionError("resolution_policy_mismatch") from None
+            return {"source": SOURCE, "mode": "dry-run", "resolution_policy": {
+                "state": "mismatch", "sha256": config.get(CURRENT)}}
     if not apply:
-        report = _classify(root, mail_root)[0]
+        report = _classify(root, mail_root, settings)[0]
+        if "resolution_baseline" in report:
+            report["resolution_after"] = report["resolution_baseline"]
         report.update(mode="dry-run", gate=decision, adopted_messages=0, resumed_messages=0,
                       adopted_attachments=0, failures={})
         return report
@@ -761,36 +816,65 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
     from .runner.core import safe_code
     ledger_path = root / "ledger.sqlite"
     factory = backend_factory or CanonicalMailBackend
+    if settings and settings.policy and not (_wal_pending(ledger_path) or _wal_pending(root / "intake" / "intake.sqlite")):
+        # Refuse an already-blocked clean snapshot even before run.lock creation.
+        if _classify(root, mail_root, settings)[0]["resolution_plan"]["state"] == "blocked":
+            raise AdoptionError("resolution_plan_blocked")
     with root_lock(root):
         # Gate re-checked and the ledger classified only under the writer lock.
-        if not gate(root, config)["open"]:
+        locked_config, locked_sha = load_config(config_path)
+        if locked_sha != config_sha or not gate(root, locked_config)["open"]:
             raise AdoptionError("adoption_gate_changed")
+        if settings is not None:
+            try:
+                locked_settings = load_settings(root, config_path)
+            except (ValueError, OSError):
+                raise AdoptionError("resolution_policy_changed") from None
+            if (locked_settings.config_sha256 != settings.config_sha256
+                    or locked_settings.context.fingerprint != settings.context.fingerprint):
+                raise AdoptionError("resolution_policy_changed")
+            settings = locked_settings
+            # Precedes SQLite settlement, dead-run recovery and backend creation.
+            preflight = _classify(root, mail_root, settings, copy_wal=True)[0]
+            if preflight.get("resolution_plan", {}).get("state") == "blocked":
+                raise AdoptionError("resolution_plan_blocked")
         settled = _settle_ledger(ledger_path)
         _settle_intake(root / "intake" / "intake.sqlite")
-        report, pending, unfinalized = _classify(root, mail_root)
+        report, pending, unfinalized = _classify(root, mail_root, settings)
         report.update(mode="apply", gate=decision, adopted_messages=0, resumed_messages=0,
                       adopted_attachments=0, failures={})
         if settled:
             report["ledger_wal_recovered"] = True
         backend = None
+        backend_kwargs = ({"resolution_policy": settings.policy, "resolution_context": settings.context}
+                          if settings else {})
         if unfinalized:
-            backend = factory(mail_root, root / "intake", ledger_path)
+            backend = factory(mail_root, root / "intake", ledger_path, **backend_kwargs)
             report["recovered_runs"] = _recover_runs(backend, unfinalized)
         if not pending:
-            report["after"] = _after(_classify(root, mail_root)[0] if unfinalized else report)
+            report["after"] = _after(_classify(root, mail_root, settings)[0] if unfinalized else report)
+            if "resolution_baseline" in report:
+                report["resolution_after"] = report["resolution_baseline"]
             return report
-        backend = backend or factory(mail_root, root / "intake", ledger_path)
+        backend = backend or factory(mail_root, root / "intake", ledger_path, **backend_kwargs)
         identity = _identity(config_sha)
         backend.start_run(identity)
         failures = Counter()
         adopted = resumed = attachments = 0
+        failed_receipts = set()
         try:
             for item in pending:
+                digest = item["receipt_sha256"]
+                if item.get("predecessors", set()) & failed_receipts:
+                    failures["resolution_dependency_failed"] += 1
+                    failed_receipts.add(digest)
+                    continue
                 account, mailbox, validity, uid = item["identity"]
                 try:
                     value = backend.preserve(item["path"], account, Folder(mailbox, int(validity)), int(uid))
                 except Exception as error:  # one bad receipt never stops the run
                     failures[safe_code(error) if not isinstance(error, mail_delta.Rejected) else str(error)] += 1
+                    failed_receipts.add(digest)
                     continue
                 if item["state"] == "incomplete":
                     resumed += 1
@@ -816,7 +900,10 @@ def adopt(root, mail_root, *, config_path=None, apply=False, backend_factory=Non
         # Read the post-run state while still holding the writer lock.
         _settle_ledger(ledger_path)
         _settle_intake(root / "intake" / "intake.sqlite")
-        remaining = _classify(root, mail_root)[0]
+        remaining = _classify(root, mail_root, settings)[0]
+        if "resolution_baseline" in report:
+            report["resolution_after"] = remaining["resolution_baseline"]
+            report["resolved_originals"] = report["resolution_after"]["rows"] - report["resolution_baseline"]["rows"]
     report["after"] = _after(remaining)
     return report
 
@@ -827,12 +914,19 @@ def blocking(report):
     Coded gaps in ACCEPTED_GAP_CODES are reported but do not block; any other
     coded gap does.
     """
+    if (report.get("resolution_policy", {}).get("state") == "mismatch"
+            or report.get("resolution_drift") or report.get("policy_originals_blocked")
+            or report.get("resolution_plan", {}).get("state") == "blocked"):
+        return True
     if (report.get("failures") or report.get("gaps") or report.get("identity_conflicts")
             or report.get("unaccepted_coded_gaps")):
         return True
     if report.get("mode") == "dry-run" and (report.get("incomplete_messages") or report.get("unfinalized_runs")):
         return True
     after = report.get("after")
+    if after and (after.get("resolution_drift") or after.get("policy_originals_blocked")
+                  or after.get("resolution_plan", {}).get("state") == "blocked"):
+        return True
     if after and (after["pending_messages"] or after["incomplete_messages"]
                   or after["identity_conflicts"] or after["unfinalized_runs"]
                   or after["unaccepted_coded_gaps"]):
@@ -844,10 +938,18 @@ def main():
     parser = argparse.ArgumentParser(description="Adopt mail-history export receipts into the canonical ledger (dry-run by default).")
     parser.add_argument("--root", required=True, help="existing private records processing root")
     parser.add_argument("--mail-history", required=True, help="frozen export root containing receipts/")
-    parser.add_argument("--config", help="owner-only mail-history-adoption-v1 config (required for --apply)")
-    parser.add_argument("--apply", action="store_true", help="write to the canonical ledger (default: dry-run)")
+    parser.add_argument("--config", help="owner-only mail-history-adoption-v1/v2 config (required for --apply)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="write to the canonical ledger (default: dry-run)")
+    mode.add_argument("--legacy-resolution-inventory", metavar="PRIVATE_OUT_PATH",
+                      help="read-only private legacy census; not an approval")
     args = parser.parse_args()
     try:
+        if args.legacy_resolution_inventory is not None:
+            from .mail_resolution_census import inventory
+            counts = inventory(args.root, args.mail_history, args.legacy_resolution_inventory, config_path=args.config)
+            print(json.dumps(counts, sort_keys=True))
+            return 3 if counts["discovery_gaps"] else 0
         report = adopt(args.root, args.mail_history, config_path=args.config, apply=args.apply)
     except AdoptionError as error:
         print(json.dumps({"source": SOURCE, "status": "refused", "code": str(error)}, sort_keys=True))

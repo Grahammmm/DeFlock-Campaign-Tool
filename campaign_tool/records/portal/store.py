@@ -202,7 +202,7 @@ class Queue:
         fd = os.open(self.objects / digest, os.O_RDONLY | os.O_NOFOLLOW)
         try:
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size != size:
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o277 or info.st_size != size:
                 raise PortalError("object_integrity_failed")
             sha = hashlib.sha256()
             while chunk := os.read(fd, 65536):
@@ -216,8 +216,8 @@ class Queue:
         check_hash(digest)
         destination = self.objects / digest
         try:
+            os.chmod(path, 0o400)
             os.link(path, destination, follow_symlinks=False)
-            os.chmod(destination, 0o400)
             sync_dir(self.objects)
         except FileExistsError:
             pass

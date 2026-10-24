@@ -2,22 +2,22 @@
   "schema_version": 1,
   "notes": [
     "Reviewed pins for container/flock-ocr. Change only in a reviewed PR.",
-    "engine.* was produced by running `python3 -B -m campaign_tool.records version --json` in a clean detached checkout of engine.commit (2026-10-19). It is the source inventory the installed wheel must reproduce.",
+    "engine.* was produced by running `python3 -B -m campaign_tool.records version --json` in a clean detached checkout of engine.commit (2026-10-20). It is the source inventory the installed wheel must reproduce.",
     "wheel_sha256 is recorded by the operator from build_wheel.py output (two independent builds must agree byte-for-byte) and passed to preflight.py; it is not invented here.",
     "expected_versions are matched against the first output line of each command (pdftotext -v prints on stderr).",
-    "engine.package_file_count is len(package_files) of that manifest: the committed files under campaign_tool/ at engine.commit minus the generated manifest members (171 at 0ab6804). It is not the wheel member count; tests/test_flock_ocr_container.py derives it from the pinned commit's tree."
+    "engine.package_file_count is len(package_files) of that manifest: the committed files under campaign_tool/ at engine.commit minus the generated manifest members (190 at cc0b8e0). It is not the wheel member count; tests/test_flock_ocr_container.py derives it from the pinned commit's tree."
   ],
   "engine": {
-    "commit": "0ab680433b7fe9a1593c19ad64ae2ed27dd045f3",
-    "commit_subject": "Merge pull request #136 from Grahammmm/codex/records-ocr-inherited-limits",
-    "commit_time_epoch": 1792367253,
-    "tree": "7271fe677a8e39ee7c787b1ade4844a1c7f6e5ad",
+    "commit": "cc0b8e0e8fd2919a447ca93b16ee630587cb5556",
+    "commit_subject": "Merge pull request #167 from Grahammmm/flock/t_df6a1465-t6-fix-ocr-sidecar-ranges",
+    "commit_time_epoch": 1792516722,
+    "tree": "21ad06dedeb3f6915ca82b83dc715c04ade4fdda",
     "package_name": "deflock-campaign-tool",
     "package_version": "0.1.0",
     "wheel_filename": "deflock_campaign_tool-0.1.0-py3-none-any.whl",
-    "manifest_sha256": "302d0f314b0c653876ebd42387898b96520874f64f0b0da68d72b00a558fe59e",
+    "manifest_sha256": "d5c62b6524309ba76083b10e62594028af4ef2a080341a26b839e90faafb1551",
     "dependency_lock_sha256": "8699276a235c5cbe5a091aaf76f9673ff193c91af6b490bdcc9d265a220b8f54",
-    "package_file_count": 171,
+    "package_file_count": 190,
     "ledger_schema_version": 1
   },
   "wheel_build": {

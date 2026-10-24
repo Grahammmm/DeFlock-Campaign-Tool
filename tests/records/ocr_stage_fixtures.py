@@ -64,14 +64,60 @@ def blank_page(width=1275, height=1650):
 
 def native_text_pdf(lines):
     """Born-digital one-page PDF with Helvetica text (used to make a real scan)."""
-    text = b"BT /F1 28 Tf 72 700 Td 36 TL " + b" ".join(
-        b"(" + line.encode("ascii") + b") '" for line in lines) + b" ET"
-    return _pdf([b"<< /Type /Catalog /Pages 2 0 R >>",
-                 b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-                 b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-                 b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-                 _stream(b"", text),
-                 b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"])
+    return mixed_pdf([lines])
+
+
+def mixed_pdf(pages):
+    """Multi-page PDF: each page is a list of text lines (a born-digital page with
+    a text layer, which ``--skip-text`` skips) or ``(width, height, gray)`` (an
+    image-only scan page, drawn like ``scanned_pdf``)."""
+    count = len(pages)
+    kids = b" ".join(b"%d 0 R" % (4 + 3 * i) for i in range(count))
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+               b"<< /Type /Pages /Kids [" + kids + b"] /Count %d >>" % count,
+               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    for index, page in enumerate(pages):
+        content_obj, extra_obj = 5 + 3 * index, 6 + 3 * index
+        if isinstance(page, tuple):
+            width, height, gray = page
+            w_pt, h_pt = width * 72 / 150, height * 72 / 150
+            objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] "
+                           b"/Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>"
+                           % (w_pt, h_pt, extra_obj, content_obj))
+            objects.append(_stream(b"", b"q %.2f 0 0 %.2f 0 0 cm /Im0 Do Q" % (w_pt, h_pt)))
+            objects.append(_stream(b"/Type /XObject /Subtype /Image /Width %d /Height %d "
+                                   b"/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode"
+                                   % (width, height), zlib.compress(gray)))
+        else:
+            text = b"BT /F1 28 Tf 72 700 Td 36 TL " + b" ".join(
+                b"(" + line.encode("ascii") + b") '" for line in page) + b" ET"
+            objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                           b"/Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>" % content_obj)
+            objects.append(_stream(b"", text))
+            objects.append(b"null")  # keeps the 3-objects-per-page numbering
+    return _pdf(objects)
+
+
+def ocrmypdf_sidecar(pages):
+    """The sidecar OCRmyPDF 14/15 writes for ``pages`` (``None`` = skipped native page).
+
+    Mirrors ``ocrmypdf._pipeline.merge_sidecars`` + ``enumerate_compress_ranges``:
+    a form feed only BETWEEN segments (none after the last), and each run of
+    consecutive skipped pages collapsed into one ``[OCR skipped on page(s) A-B]``.
+    """
+    segments, index = [], 0
+    while index < len(pages):
+        if pages[index] is None:
+            end = index
+            while end + 1 < len(pages) and pages[end + 1] is None:
+                end += 1
+            span = f"{index + 1}-{end + 1}" if end > index else f"{index + 1}"
+            segments.append(f"[OCR skipped on page(s) {span}]")
+            index = end + 1
+        else:
+            segments.append(pages[index])
+            index += 1
+    return "\f".join(segments)
 
 
 def rasterize_gray(pdftoppm, pdf_path, workdir, dpi=150):
@@ -99,8 +145,10 @@ PNG_STUB = b"\x89PNG\r\n\x1a\n" + b"synthetic-render"
 class FakeTools:
     """Stands in for subprocess.run: fake ocrmypdf (sidecar) and pdftoppm (PNG).
 
-    ``sidecars`` maps a source PDF's sha256 to its per-page texts. ``exit_code``
-    or ``raise_timeout`` simulate OCRmyPDF failures.
+    ``sidecars`` maps a source PDF's sha256 to its per-page texts (``None`` for a
+    page ``--skip-text`` skips), written in OCRmyPDF's real sidecar format, or
+    to a ``str`` written verbatim. ``exit_code`` or ``raise_timeout`` simulate
+    OCRmyPDF failures.
     """
 
     def __init__(self, sidecars=None, exit_code=0, raise_timeout=False):
@@ -119,7 +167,8 @@ class FakeTools:
                 return subprocess.CompletedProcess(argv, self.exit_code)
             source, sidecar = Path(argv[-2]), Path(argv[argv.index("--sidecar") + 1])
             pages = self.sidecars[hashlib.sha256(source.read_bytes()).hexdigest()]
-            sidecar.write_text("".join(text + "\f" for text in pages), encoding="utf-8")
+            text = pages if isinstance(pages, str) else ocrmypdf_sidecar(pages)
+            sidecar.write_text(text, encoding="utf-8")
             Path(argv[-1]).write_bytes(source.read_bytes())
             return subprocess.CompletedProcess(argv, 0)
         if tool == "pdftoppm":

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "needs_g": [
+    {
+      "stage": "delta",
+      "code": "ADOPTION_CODED_GAPS",
+      "count": 116
+    },
+    {
+      "stage": "adoption",
+      "code": "ADOPTION_CODED_GAPS",
+      "count": 116
+    },
+    {
+      "stage": "adoption",
+      "code": "ADOPT_BACKUP_SKIPPED",
+      "count": 1
+    },
+    {
+      "stage": "portal",
+      "code": "PORTAL_FETCH_DRY_RUN_ONLY",
+      "count": 126
+    },
+    {
+      "stage": "extract",
+      "code": "AWAITING_OCR",
+      "count": 1
+    },
+    {
+      "stage": "extract",
+      "code": "EXTRACT_CORRUPT_DOCUMENT",
+      "count": 22
+    },
+    {
+      "stage": "extract",
+      "code": "EXTRACT_NOT_ACCEPTED",
+      "count": 1
+    },
+    {
+      "stage": "extract",
+      "code": "EXTRACT_PRESERVE_PENDING",
+      "count": 400
+    }
+  ]
+}

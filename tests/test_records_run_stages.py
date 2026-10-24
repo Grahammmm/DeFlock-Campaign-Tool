@@ -686,10 +686,46 @@ class CountStageTests(StageTestCase):
 
     def test_extract_invalid_limits_refused(self):
         for flag, value in (("--max-documents", "0"), ("--max-documents", "5001"),
-                            ("--document-timeout", "9"), ("--document-timeout", "601")):
+                            ("--document-timeout", "9"), ("--document-timeout", "1401"),
+                            # the stage deadline (--timeout 60) minus the 15 s margin cannot honour it
+                            ("--document-timeout", "46")):
             with self.subTest(flag=flag, value=value):
                 code, parsed, raw = self.stage("extract", flag, value)
                 self.assertEqual((code, parsed["error_code"]), (1, "STAGE_CONFIG_INVALID"))
+
+    def test_extract_limit_matrix(self):
+        """T6-timeout D1/D3: document budget vs stage deadline, OCR child limits only with their flags."""
+        def invalid(*argv, timeout="1490"):
+            return run_stages.config_invalid(run_stages.parser().parse_args(
+                ["extract", "--project", "/p", "--timeout", timeout, *argv]))
+        vision = ("--ocr", "--ocr-vision-config", "/v.json")
+        accepted = ((), ("--document-timeout", "10"), ("--document-timeout", "1400"),
+                    ("--document-timeout", "1200", "--ocr", "--ocr-page-timeout", "180"),
+                    ("--ocr", "--ocr-page-timeout", "10"), ("--ocr", "--ocr-page-timeout", "600"),
+                    (*vision, "--ocr-vision-timeout", "10"), (*vision, "--ocr-vision-timeout", "600"),
+                    ("--document-timeout", "1200", *vision, "--ocr-page-timeout", "180", "--ocr-vision-timeout", "300"))
+        refused = (("--document-timeout", "1401"), ("--document-timeout", "1476"),
+                   ("--ocr-page-timeout", "180"), ("--ocr", "--ocr-page-timeout", "9"),
+                   ("--ocr", "--ocr-page-timeout", "601"), ("--ocr", "--ocr-vision-timeout", "300"),
+                   ("--ocr-vision-timeout", "300"), (*vision, "--ocr-vision-timeout", "9"),
+                   (*vision, "--ocr-vision-timeout", "601"))
+        for argv in accepted:
+            with self.subTest(accepted=argv):
+                self.assertFalse(invalid(*argv))
+        for argv in refused:
+            with self.subTest(refused=argv):
+                self.assertTrue(invalid(*argv))
+        # --document-timeout <= --timeout - DEADLINE_MARGIN (15 s); the unpinned default is clamped instead.
+        self.assertFalse(invalid("--document-timeout", "1400", timeout="1415"))
+        self.assertTrue(invalid("--document-timeout", "1400", timeout="1414"))
+        self.assertFalse(invalid("--document-timeout", "45", timeout="60"))
+        self.assertTrue(invalid("--document-timeout", "46", timeout="60"))
+        self.assertFalse(invalid(timeout="60"))
+
+    def test_extract_unpinned_document_timeout_is_the_default_budget(self):
+        with mock.patch.object(native_extract, "run", return_value=self.summary()) as fake:
+            code, parsed, raw = self.stage("extract")
+        self.assertEqual((code, fake.call_args.kwargs["document_timeout"]), (0, native_extract.DEFAULT_DOCUMENT_TIMEOUT))
 
     def test_missing_ledger_is_unreadable_and_not_created(self):
         for stage, expected in (("extract", "EXTRACT_ROOT_NOT_INITIALIZED"),
@@ -870,6 +906,73 @@ class TemplateTests(unittest.TestCase):
         test_plan = self._check_template(module, directory, "test-container.json.in", "test")
         live_plan = self._check_template(module, directory, "live-container.json.in", "live")
         self.assertEqual(test_plan["stages"], live_plan["stages"])
+
+    def test_committed_ocr_plans_match_generator_and_differ_only_in_extract(self):
+        # T6-plan: Phase 2 LIVE plans. Only the extract stage differs from the Phase 1 LIVE plan.
+        directory, module = self._load_generator()
+        self.assertEqual(module.TEMPLATES, {
+            "test-container.json.in": ("test", None), "live-container.json.in": ("live", None),
+            "live-ocr-container.json.in": ("live", "ocr"),
+            "live-ocr-vision-container.json.in": ("live", "ocr-vision")})
+        live_plan = self._check_template(module, directory, "live-container.json.in", "live")
+        # T6-timeout B: per-document budget 1200 s, page children 180 s, vision children 300 s.
+        limits = ["--max-documents", "20", "--document-timeout", "1200", "--ocr-page-timeout", "180"]
+        tail = {"ocr": [*limits, "--ocr"],
+                "ocr-vision": [*limits, "--ocr-vision-timeout", "300", "--ocr",
+                               "--ocr-vision-config", "@CONTAINER_OCR_VISION_CONFIG@"]}
+        for filename, variant in (("live-ocr-container.json.in", "ocr"),
+                                  ("live-ocr-vision-container.json.in", "ocr-vision")):
+            with self.subTest(filename):
+                committed = (directory / filename).read_text(encoding="utf-8")
+                self.assertEqual(committed, module.render_text("live", variant))
+                plan = json.loads(committed)
+                self.assertEqual(plan["mode"], "live")
+                self.assertEqual([s["name"] for s in plan["stages"]], list(run_stages.STAGES))
+                for ocr_stage, phase1 in zip(plan["stages"], live_plan["stages"]):
+                    if ocr_stage["name"] != "extract":
+                        self.assertEqual(ocr_stage, phase1)
+                        continue
+                    argv = ocr_stage["argv"]
+                    self.assertEqual(argv[:argv.index("--max-documents")],
+                                     phase1["argv"][:phase1["argv"].index("--timeout")]
+                                     + ["--timeout", "1490", "--run-id", "{run_id}"])
+                    self.assertEqual(argv[argv.index("--max-documents"):], tail[variant])
+                    self.assertEqual((ocr_stage["timeout_seconds"], ocr_stage["on_fail"]), (1500, "stop"))
+                    # The adapter accepts these limits (its own bounds) and sees the OCR flags.
+                    args = run_stages.parser().parse_args(argv[argv.index(run_stages.__name__) + 1:])
+                    self.assertFalse(run_stages.config_invalid(args))
+                    self.assertTrue(1 <= args.timeout <= 2700 and 1 <= args.max_documents <= 5000
+                                    and 10 <= args.document_timeout <= 1400)
+                    self.assertTrue(args.ocr)
+                    self.assertEqual((args.document_timeout, args.ocr_page_timeout, args.ocr_vision_timeout),
+                                     (1200, 180, 300 if variant == "ocr-vision" else None))
+                    # The pinned budget fits the stage deadline and admits one uncached page.
+                    self.assertLessEqual(args.document_timeout,
+                                         args.timeout - native_extract.DEADLINE_MARGIN)
+                    self.assertGreaterEqual(args.document_timeout, 2 * args.ocr_page_timeout
+                                            + (args.ocr_vision_timeout or 0))
+                    self.assertEqual(args.ocr_vision_config,
+                                     "@CONTAINER_OCR_VISION_CONFIG@" if variant == "ocr-vision" else None)
+        for bad in (("test", "ocr"), ("live", "tesseract")):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                module.plan(*bad)
+
+    def test_live_mail_plan_refreshes_only_live_sync(self):
+        directory, module = self._load_generator()
+        value = json.loads((directory / module.LIVE_MAIL_TEMPLATE).read_text())
+        self.assertEqual(value, module.live_mail_plan())
+        original = module.plan("live")
+        sync = value["stages"][0]
+        self.assertEqual(sync["argv"][-2:],
+                         ["--sync-script", "@CONTAINER_SYNC_SCRIPT@"])
+        args = run_stages.parser().parse_args(
+            sync["argv"][sync["argv"].index(run_stages.__name__) + 1:])
+        self.assertEqual(args.sync_script, "@CONTAINER_SYNC_SCRIPT@")
+        self.assertEqual(args.timeout, 110)
+        self.assertEqual((sync["timeout_seconds"], sync["on_fail"]), (120, "stop"))
+        sync["argv"] = sync["argv"][:-2]
+        self.assertEqual(value, original)
+        self.assertNotIn("--sync-script", module.plan("test")["stages"][0]["argv"])
 
     def test_render_accepts_container_python(self):
         sys.path.insert(0, str(REPO / "deploy/records-runtime"))
