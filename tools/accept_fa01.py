@@ -24,6 +24,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
@@ -209,12 +210,18 @@ def run_credentials(run_root, stream, record):
     stream.write("== check_secret_report.py stderr ==\n" + check.stderr.decode(errors="replace"))
     try:
         results = json.loads(report.read_bytes()).get("results", {})
-        potential = sum(len(v) for v in results.values())
+        raw_hits = sum(len(v) for v in results.values())
     except (ValueError, AttributeError):
-        potential = None
-    stream.write("potential secrets: " + str(potential) + "\n")
+        raw_hits = None
+    # "potential secrets" is the unchanged repository checker's own count (raw
+    # hits minus verified provenance hashes); parsed from its literal summary line.
+    match = re.search(rb"potential secrets: (\d+);", check.stdout)
+    potential = int(match.group(1)) if match else None
+    stream.write("raw detect-secrets hits: " + str(raw_hits) + "; checker potential secrets: "
+                 + str(potential) + "\n")
     record["scan"] = {"argv": scan_argv, "cwd": str(REPO), "exit": scan.returncode,
-                      "report": str(report), "report_sha256": sha256_file(report), "potential_secrets": potential}
+                      "report": str(report), "report_sha256": sha256_file(report),
+                      "raw_hits": raw_hits, "potential_secrets": potential}
     record["check"] = {"argv": check_argv, "cwd": str(REPO), "exit": check.returncode}
     return scan.returncode == 0 and check.returncode == 0 and potential == 0
 
