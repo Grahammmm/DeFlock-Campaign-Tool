@@ -75,7 +75,9 @@ as a typed canonical join. Downstream must still supply freshly admitted
 
 Mapping columns are positional, unique and exact. A CSV header must match the
 names in order, without case folding, trimming, substring recognition or guessed
-aliases. Only that bound structural header is classified `other`. A missing or
+aliases. Only a bound structural header is classified `other`; mapping
+`record_type=other` is refused with `mapping_record_type`, so data records cannot
+use the structural-header dedupe exemption. A missing or
 mismatched header prevents successful CSV row mapping. A null target denotes an
 unknown column, not permission to ignore it: the entire row stays unknown and
 incomplete. Extra columns likewise stay unknown. Unknown target names/types and
@@ -86,10 +88,17 @@ contract in `rows.FIELD_NAMES`. New fields require a reviewed mapping extension.
 `unit_kind` is `csv_row`, `text_line` or `pdf_page`. The last two consume ONE
 explicitly delimited row from already-admitted extracted text per cited unit,
 using the declared delimiter and strict CSV quoting. They do not discover tables,
-select a header, split an ambiguous multiline page into guessed rows or run OCR.
+guess a header, split an ambiguous multiline page into guessed rows or run OCR.
+An exact ordered match to the declared column names is a bound structural header,
+with no observed fields and no event group, just like CSV. A permutation of all
+exact declared labels is `header_mapping_mismatch`, unknown with empty fields;
+there is no label trimming, case folding, aliasing or heuristic header detection.
 A quoted newline within one field is supported by the CSV parser. Distinct
 physical rows in one text unit are `text_table_row_ambiguous`, not partial success.
-Page/line and CSV record/line-start/line-end locators are preserved exactly.
+An empty text unit is likewise `text_table_row_ambiguous`, not silently skipped.
+Native PDF `{page: n}`, text `{line: n}` and CSV record/line-start/line-end locators
+are preserved exactly. A native PDF page contains the whole page text; a header
+plus a data row on the same page therefore stays ambiguous, not split into units.
 Sheet/row workbook mapping is intentionally deferred to F-040b; workbook inputs
 are unresolved, with all original holds retained. No raw workbook is opened.
 
@@ -175,5 +184,6 @@ on that deciding gate; no prohibited operation is executed.
 Full discovery (`python3 -m unittest discover tests`) is OPERATOR-RUN at the frozen
 candidate head under the 2026-10-24 11:01 PDT card admission; pending full discovery
 is NOT full-suite clearance. Worker no-push/no-merge/no-publication remains intact.
-Author: sol-reviewer, actual gpt-6.1-sol / openai-codex, task t_2185944d, run 1115.
+Author: sol-reviewer, actual gpt-6.1-sol / openai-codex, task t_2185944d,
+initial run 1115 and round-1 rework run 1119. Original Opus review/history retained.
 Independent review must be actual Opus5.5, never the Sol author reviewing itself.

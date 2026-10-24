@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import re
 import unittest
 from unittest.mock import patch
 
@@ -23,12 +24,14 @@ def producer_json(value):
 
 
 def presence(value):
-    # Independently frozen producer cases used by synthetic receipts.
+    # Frozen producer regex, intake/folder.py:209-215 (not rows._presence).
+    if value is None:
+        return "missing_field"
     if value == "":
         return "empty"
     if not value.strip():
         return "whitespace"
-    if value in {"[redacted]", "[withheld]", "REDACTED", "xxx", "██"}:
+    if re.fullmatch(r"(?i)\s*(?:\[?redacted\]?|\[?withheld\]?|x{3,}|\u2588+)\s*", value):
         return "redacted_marker"
     return "present"
 
@@ -49,7 +52,7 @@ def fixture(values=None, *, kind="csv_row", columns=COLUMNS, subject="synthetic-
         else:
             text = "|".join(cells)
             data = {}
-            locator = {"page": 2, "line": n} if kind == "pdf_page" else {"line": n}
+            locator = {"page": n} if kind == "pdf_page" else {"line": n}
         raw_units.append({"kind": kind, "locator": locator, "text": text, "data": data})
     receipt = {"schema": "format-extraction-v1", "original_sha256": original, "original_changed": False,
                "status": "complete", "review_status": "not_reviewed", "issues": [], "pages": [],
@@ -112,14 +115,16 @@ class RowTests(unittest.TestCase):
     def test_producer_whitespace_and_redaction_vocabulary(self):
         for value, expected in [("", "blank"), ("  ", "blank"), ("[redacted]", "redacted"),
                                 ("[withheld]", "redacted"), ("REDACTED", "redacted"),
-                                ("xxx", "redacted"), ("██", "redacted")]:
+                                ("xxx", "redacted"), ("XXXX", "redacted"),
+                                ("[REDACTED]", "redacted"), (" [Withheld] ", "redacted"),
+                                ("██", "redacted")]:
             with self.subTest(value=value):
                 args, _ = fixture([["event-1", STAMP, value, "user-1"]])
                 result = rows.normalize(**args)
                 self.assertEqual(records(result)[0]["fields"]["purpose"], {"state": expected})
                 self.assertTrue(result["normalized"]["complete"])
 
-    def test_text_missing_vs_blank_and_page_line_locators(self):
+    def test_text_missing_vs_blank_and_native_locators(self):
         for kind in ("text_line", "pdf_page"):
             args, _ = fixture([["event-1", STAMP, ""]], kind=kind)
             result = rows.normalize(**args)
@@ -127,6 +132,69 @@ class RowTests(unittest.TestCase):
             record = records(result)[0]
             self.assertEqual(record["fields"], {"purpose": {"state": "blank"}, "user_id": {"state": "missing"}})
             self.assertEqual(record["locator"], args["source_bindings"][0]["locator"])
+            self.assertEqual(record["locator"], {"page": 1} if kind == "pdf_page" else {"line": 1})
+
+    def test_other_mapping_cannot_bypass_duplicate_conflict_detection(self):
+        for kind in ("csv_row", "text_line", "pdf_page"):
+            with self.subTest(kind=kind):
+                args, _ = fixture([["event-1", STAMP, "first", "user-1"],
+                                   ["event-1", STAMP, "second", "user-1"]], kind=kind)
+                args["mappings"][0]["record_type"] = "other"
+                with self.assertRaisesRegex(rows.RowsError, "^mapping_record_type$"):
+                    rows.normalize(**args)
+
+    def test_exact_text_headers_are_structural_not_events(self):
+        for kind in ("text_line", "pdf_page"):
+            with self.subTest(kind=kind):
+                args, _ = fixture([[c[0] for c in COLUMNS],
+                                   ["event-1", STAMP, "specific", "user-1"]], kind=kind)
+                output = rows.normalize(**args)
+                self.assertTrue(output["normalized"]["complete"])
+                header_source = args["source_bindings"][0]
+                item = next(i for i in output["normalized"]["units"]
+                            if i["source"]["unit_id"] == header_source["unit_id"])
+                self.assertEqual(item["record"], {
+                    "original_sha256": h("synthetic-source"), "locator": header_source["locator"],
+                    "record_type": "other", "event_id": header_source["unit_id"],
+                    "event_at": None, "fields": {}})
+                diagnostic = next(d for d in output["diagnostics"]
+                                  if d["unit_id"] == header_source["unit_id"])
+                self.assertEqual(diagnostic["cells"], {})
+                self.assertEqual(diagnostic["reasons"], [])
+                self.assertEqual([e["identity"] for e in output["events"]],
+                                 [["agency-A", "search-log", "event-1"]])
+                self.assertEqual(output["events"][0]["sources"],
+                                 [{k: args["source_bindings"][1][k]
+                                   for k in ("unit_id", "artifact_sha256")}])
+                self.assertEqual(output, rows.normalize(**args))
+
+    def test_text_header_order_mismatch_stays_unknown(self):
+        for kind in ("text_line", "pdf_page"):
+            for labels in (["When", "ID", "Reason", "User"], ["ID", "When", "User", "Reason"]):
+                with self.subTest(kind=kind, labels=labels):
+                    args, _ = fixture([labels], kind=kind)
+                    output = rows.normalize(**args)
+                    self.assertFalse(output["normalized"]["complete"])
+                    self.assertEqual(reasons(output), {"header_mapping_mismatch"})
+                    self.assertEqual(records(output)[0]["record_type"], "unknown")
+                    self.assertEqual(records(output)[0]["fields"], {})
+                    self.assertEqual(output["diagnostics"][0]["cells"], {})
+                    self.assertEqual(output["events"], [])
+
+    def test_native_pdf_multiline_page_and_blank_text_are_unresolved(self):
+        for kind, text in (("pdf_page", "ID|When|Reason|User\nevent-1|" + STAMP + "|specific|user-1"),
+                           ("text_line", "")):
+            with self.subTest(kind=kind):
+                args, receipt = fixture(kind=kind)
+                receipt["units"][0]["text"] = text
+                output = rows.normalize(**args_for(receipt, args["mappings"][0]))
+                self.assertFalse(output["normalized"]["complete"])
+                self.assertEqual(reasons(output), {"text_table_row_ambiguous"})
+                record = records(output)[0]
+                self.assertEqual(record["record_type"], "unknown")
+                self.assertEqual(record["fields"], {})
+                self.assertEqual(record["locator"], {"page": 1} if kind == "pdf_page" else {"line": 1})
+                self.assertEqual(output["events"], [])
 
     def test_identity_cell_states_not_inferred(self):
         for index, value, state, reason in [(0, "[redacted]", "redacted", "stable_event_identity_missing"),
@@ -272,6 +340,18 @@ class RowTests(unittest.TestCase):
             self.assertIn(reason, reasons(output))
         args, _ = fixture([["event-1", STAMP, "specific"]])
         self.assertIn("csv_ragged_row", reasons(rows.normalize(**args)))
+        # Native producer shape: ragged rows have no positional presence binding
+        # and add an extraction issue, rather than pretending alignment is known.
+        args, receipt = fixture([["event-1", STAMP, "specific"]])
+        receipt["units"][1]["data"].update(presence=None, column_mapping="ambiguous")
+        receipt["issues"] = [{"code": "csv_ragged_row_ambiguous",
+                              "locator": receipt["units"][1]["locator"],
+                              "detail": {"expected_fields": 4, "actual_fields": 3}}]
+        output = rows.normalize(**args_for(receipt, args["mappings"][0]))
+        self.assertFalse(output["normalized"]["complete"])
+        self.assertEqual(reasons(output), {"csv_positional_binding"})
+        self.assertEqual(records(output)[0]["fields"], {})
+        self.assertEqual(output["upstream"][0]["reason"], "upstream_not_clear")
 
     def test_explicit_typed_conversions_and_invalid_types(self):
         columns = COLUMNS[:2] + [("Days", "retention_days", "int"), ("Enabled", "access_enabled", "bool"),

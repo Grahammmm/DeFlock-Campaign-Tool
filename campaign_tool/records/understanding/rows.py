@@ -54,7 +54,7 @@ def _mapping(value):
         require(type(value[key]) is str and 0 < len(value[key].strip()) <= 256,
                 "mapping_identity")
     require(evidence.is_hash(value["artifact_sha256"]), "mapping_artifact_hash")
-    require(value["record_type"] in KNOWN_TYPES, "mapping_record_type")
+    require(value["record_type"] in KNOWN_TYPES - {"other"}, "mapping_record_type")
     require(value["unit_kind"] in TEXT_KINDS | {"csv_row"}, "mapping_unit_kind")
     require(type(value["delimiter"]) is str and len(value["delimiter"]) == 1
             and value["delimiter"] not in '\r\n\x00"', "mapping_delimiter")
@@ -230,32 +230,43 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
                     require(len(bound_headers) == 1 and _decode(bound_headers[0]["text"]) ==
                             [c["name"] for c in mapping["columns"]], "header_mapping_mismatch")
                 values = _values(unit, mapping)
-                require(len(values) <= len(mapping["columns"]), "unmapped_columns")
-                if unit["kind"] == "csv_row":
-                    require(len(values) == len(mapping["columns"]), "csv_ragged_row")
-                require(all(c["target"] is not None for c in mapping["columns"]), "unmapped_columns")
-                record["record_type"] = mapping["record_type"]
-                for index, column in enumerate(mapping["columns"]):
-                    state = _cell(values[index] if index < len(values) else None, column["type"])
-                    target = column["target"]
-                    cell_states[target] = state
-                    if target in {"event_id", "event_at"}:
-                        record[target] = state.get("value") if state["state"] == "observed" else None
-                    else:
-                        record["fields"][target] = state
-                identity = record["event_id"]
-                require(type(identity) is str and 0 < len(identity.strip()) <= 256,
-                        "stable_event_identity_missing")
-                try:
-                    stamp = record["event_at"]
-                    require(type(stamp) is str, "event_timezone_or_time_unresolved")
-                    match = re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(Z|[+-]([0-9]{2}):([0-9]{2}))", stamp)
-                    require(match is not None and (match[1] == "Z" or
-                            (int(match[2]) <= 23 and int(match[3]) <= 59)),
-                            "event_timezone_or_time_unresolved")
-                    moment(record["event_at"])
-                except ValueError:
-                    raise RowsError("event_timezone_or_time_unresolved") from None
+                names = [c["name"] for c in mapping["columns"]]
+                if unit["kind"] in TEXT_KINDS and values == names:
+                    # Only an exact declared header is structural, never an event.
+                    record["record_type"] = "other"
+                    record["event_id"] = uid
+                else:
+                    if unit["kind"] in TEXT_KINDS:
+                        # A permutation of all exact labels is a mismatched header,
+                        # not observed data. No trimming/case folding/label guessing.
+                        require(not (len(values) == len(names) and set(values) == set(names)),
+                                "header_mapping_mismatch")
+                    require(len(values) <= len(mapping["columns"]), "unmapped_columns")
+                    if unit["kind"] == "csv_row":
+                        require(len(values) == len(mapping["columns"]), "csv_ragged_row")
+                    require(all(c["target"] is not None for c in mapping["columns"]), "unmapped_columns")
+                    record["record_type"] = mapping["record_type"]
+                    for index, column in enumerate(mapping["columns"]):
+                        state = _cell(values[index] if index < len(values) else None, column["type"])
+                        target = column["target"]
+                        cell_states[target] = state
+                        if target in {"event_id", "event_at"}:
+                            record[target] = state.get("value") if state["state"] == "observed" else None
+                        else:
+                            record["fields"][target] = state
+                    identity = record["event_id"]
+                    require(type(identity) is str and 0 < len(identity.strip()) <= 256,
+                            "stable_event_identity_missing")
+                    try:
+                        stamp = record["event_at"]
+                        require(type(stamp) is str, "event_timezone_or_time_unresolved")
+                        match = re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(Z|[+-]([0-9]{2}):([0-9]{2}))", stamp)
+                        require(match is not None and (match[1] == "Z" or
+                                (int(match[2]) <= 23 and int(match[3]) <= 59)),
+                                "event_timezone_or_time_unresolved")
+                        moment(record["event_at"])
+                    except ValueError:
+                        raise RowsError("event_timezone_or_time_unresolved") from None
             except RowsError as error:
                 reasons.append(str(error))
         item = {"record": record, "source": {"unit_id": uid, "artifact_sha256": unit["artifact_sha256"]}}
