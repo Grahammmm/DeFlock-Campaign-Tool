@@ -685,6 +685,214 @@ class RaceAndErrorTests(ReplayFixture, unittest.TestCase):
         self.assertEqual(snapshot(self.root), before)
 
 
+class MetadataAndCleanupTests(ReplayFixture, unittest.TestCase):
+    """Round-2 corrections, authored by gpt-6.1-sol / openai-codex.
+
+    Only temporary fixture permissions change; owner/link-count changes and
+    failed syscalls are simulated. Descriptor tracking never inspects host fds.
+    """
+
+    def metadata_case(self, kind):
+        _, run_dir = self.saved("policy")
+        real_reader, real_fstat, real_stat = cli._read_replay_artifact, os.fstat, os.stat
+        root_ino, run_ino = os.lstat(self.output).st_ino, os.lstat(run_dir).st_ino
+        state = {"fired": False, "after": None}
+        before = snapshot(self.root)
+
+        def reader(*args):
+            raw = real_reader(*args)
+            if not state["fired"]:
+                state["fired"] = True
+                if kind == "root_mode":
+                    self.output.chmod(0o755)
+                elif kind == "run_mode_cycle":
+                    old = os.lstat(run_dir).st_ctime_ns
+                    run_dir.chmod(0o755)
+                    run_dir.chmod(0o700)
+                    self.assertNotEqual(os.lstat(run_dir).st_ctime_ns, old)
+                elif kind == "sibling":
+                    (self.output / "unrelated-sibling").mkdir(mode=0o700)
+                state["after"] = snapshot(self.root)
+            return raw
+
+        def altered(st):
+            if not state["fired"]:
+                return st
+            if kind == "root_owner" and st.st_ino == root_ino:
+                return fake_stat(st, st_uid=st.st_uid + 1)
+            if kind == "run_owner" and st.st_ino == run_ino:
+                return fake_stat(st, st_uid=st.st_uid + 1)
+            if kind == "run_ctime" and st.st_ino == run_ino:
+                return fake_stat(st, st_ctime_ns=st.st_ctime_ns + 1)
+            if kind == "run_nlink" and st.st_ino == run_ino:
+                return fake_stat(st, st_nlink=st.st_nlink + 1)
+            return st
+
+        def fstat(fd):
+            return altered(real_fstat(fd))
+
+        def entry(*a, **k):
+            st = real_stat(*a, **k)
+            if kind == "root_namespace_mode" and state["fired"] and k.get("dir_fd") is not None and st.st_ino == root_ino:
+                return fake_stat(st, st_mode=st.st_mode | 0o055)
+            return st
+
+        try:
+            with mock.patch.object(cli, "_read_replay_artifact", reader), \
+                    mock.patch("os.fstat", fstat), mock.patch("os.stat", entry):
+                if kind == "sibling":
+                    self.assertTrue(self.run_command("policy")["reused"])
+                else:
+                    with self.assertRaises(ValueError) as caught:
+                        self.run_command("policy")
+                    self.assertEqual(str(caught.exception), "existing_run_changed")
+            self.assertTrue(state["fired"])
+            # Neither unsafe permissions nor an unrelated concurrent sibling is repaired.
+            self.assertEqual(snapshot(self.root), state["after"])
+        finally:
+            if kind == "root_mode":
+                self.output.chmod(0o700)
+        self.assertTrue(self.run_command("policy")["reused"])
+        if kind != "sibling":
+            self.assertEqual(snapshot(self.root), before)
+
+    def test_output_root_mode_drift_refused(self):
+        self.metadata_case("root_mode")
+
+    def test_output_root_owner_drift_refused(self):
+        self.metadata_case("root_owner")
+
+    def test_run_owner_drift_refused(self):
+        self.metadata_case("run_owner")
+
+    def test_run_directory_mode_roundtrip_refused(self):
+        self.metadata_case("run_mode_cycle")
+
+    def test_run_ctime_drift_refused(self):
+        self.metadata_case("run_ctime")
+
+    def test_run_nlink_drift_refused(self):
+        self.metadata_case("run_nlink")
+
+    def test_final_namespace_security_metadata_bound_to_descriptor(self):
+        self.metadata_case("root_namespace_mode")
+
+    def test_unrelated_sibling_creation_permitted(self):
+        self.metadata_case("sibling")
+
+    def descriptor_case(self, phase, target, via_cli, primary=False):
+        _, run_dir = self.saved("policy")
+        real_open, real_close, real_fstat = os.open, os.close, os.fstat
+        records, live = [], {}
+        state = {"fired": 0, "primary": 0}
+        value = command_input("policy")
+        input_file = self.root / "input.json"
+        input_file.write_bytes(evidence.canonical(value))
+        input_file.chmod(0o600)
+        argv = ["understanding", "policy", "--input", str(input_file), "--output", str(self.output)]
+        before = snapshot(self.root)
+
+        def opened(path, flags, mode=0o777, *, dir_fd=None):
+            fd = real_open(path, flags, mode, dir_fd=dir_fd)
+            record = {"fd": fd, "name": os.fspath(path), "closes": 0}
+            records.append(record)
+            live[fd] = record
+            return fd
+
+        def matches(record):
+            return record is not None and record["name"] == {
+                "root": "/", "output": self.output.name,
+                "run": run_dir.name, "artifact": "result.json"}[target]
+
+        def fstat(fd):
+            if phase == "fstat" and matches(live.get(fd)) and not state["fired"]:
+                state["fired"] += 1
+                raise OSError(errno.EIO, PAYLOAD)
+            return real_fstat(fd)
+
+        def closed(fd):
+            record = live.pop(fd, None)
+            if record is not None:
+                record["closes"] += 1
+            real_close(fd)
+            if phase == "close" and matches(record) and not state["fired"]:
+                state["fired"] += 1
+                # POSIX close failure is ambiguous. Never retry this numeric fd.
+                raise OSError(errno.EIO, PAYLOAD)
+
+        real_read = os.read
+
+        def read(fd, n):
+            if primary and live.get(fd, {}).get("name") == "result.json":
+                state["primary"] += 1
+                raise OSError(errno.EIO, PAYLOAD)
+            return real_read(fd, n)
+
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with mock.patch("os.open", opened), mock.patch("os.close", closed), \
+                    mock.patch("os.fstat", fstat), mock.patch("os.read", read), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                if via_cli:
+                    with mock.patch.object(sys, "argv", argv), self.assertRaises(SystemExit) as caught:
+                        cli.main()
+                    self.assertEqual(caught.exception.code, "understanding_input_or_evidence_validation_failed")
+                else:
+                    with self.assertRaises(ValueError) as caught:
+                        self.run_command("policy")
+                    expected = "existing_run_artifact_unreadable" if primary or phase == "fstat" else "existing_run_close_failed"
+                    self.assertEqual(str(caught.exception), expected)
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertTrue(caught.exception.__suppress_context__)
+            self.assertEqual(state["fired"], 1)
+            if primary:
+                self.assertGreater(state["primary"], 0)
+            self.assertEqual(out.getvalue(), "")
+            self.assertNotIn("Traceback", err.getvalue())
+            self.assertNotIn(PAYLOAD, err.getvalue() + str(caught.exception))
+            self.assertEqual(snapshot(self.root), before)
+            self.assertTrue(records)
+            self.assertEqual(live, {}, "successful opens must all be released")
+            self.assertTrue(all(r["closes"] == 1 for r in records), records)
+        finally:
+            # If the regression exposes a leak, release only this fixture's fds.
+            for fd in list(live):
+                real_close(fd)
+        self.assertTrue(self.run_command("policy")["reused"])
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_fstat_failures_own_every_open_immediately_api(self):
+        for target in ("root", "output", "run", "artifact"):
+            with self.subTest(target=target):
+                self.setUp()
+                self.descriptor_case("fstat", target, False)
+
+    def test_fstat_failures_own_every_open_immediately_cli(self):
+        for target in ("root", "output", "run", "artifact"):
+            with self.subTest(target=target):
+                self.setUp()
+                self.descriptor_case("fstat", target, True)
+
+    def test_close_failures_release_remaining_descriptors_api(self):
+        for target in ("root", "output", "run", "artifact"):
+            with self.subTest(target=target):
+                self.setUp()
+                self.descriptor_case("close", target, False)
+
+    def test_close_failures_release_remaining_descriptors_cli(self):
+        for target in ("root", "output", "run", "artifact"):
+            with self.subTest(target=target):
+                self.setUp()
+                self.descriptor_case("close", target, True)
+
+    def test_primary_refusal_survives_close_error_api_and_cli(self):
+        for target in ("root", "artifact"):
+            for via_cli in (False, True):
+                with self.subTest(target=target, via_cli=via_cli):
+                    self.setUp()
+                    self.descriptor_case("close", target, via_cli, primary=True)
+
+
 class _stack:
     def __init__(self, patches):
         self.patches = patches
