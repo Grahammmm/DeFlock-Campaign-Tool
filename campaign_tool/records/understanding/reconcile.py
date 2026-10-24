@@ -14,6 +14,20 @@ def test_value(value,test):
   if type(value)not in (int,float) or type(expected)not in (int,float):return None
   return value<=expected if op=="at_most" else value>=expected
  return None
+FINDING_IDENTITY_VERSION="content-bound-v2"
+def canonical_citations(cites):
+ # New sorted list of the same citation objects; inputs are never reordered in place.
+ return sorted(cites,key=evidence.canonical) if type(cites)is list else cites
+def canonical_facts(facts):
+ # Copies ordered by the unique fact_id, each with canonically ordered citations.
+ return [dict(f,citations=canonical_citations(f.get("citations"))) for f in sorted(facts,key=lambda f:f["fact_id"])]
+def finding_identity(*,snapshot_sha256,scope,family_id,rule_selection,version,requirement,event_key,facts):
+ """One versioned canonical preimage binding a finding to its evidence and governing policy."""
+ governing=None if version is None else {k:v for k,v in version.items() if k!="requirements"}
+ return evidence.sha({"finding_identity_version":FINDING_IDENTITY_VERSION,"snapshot_sha256":snapshot_sha256,
+  "scope":scope,"family_id":family_id,"rule_selection":rule_selection,"policy_version":governing,
+  "requirement":dict(requirement,citations=canonical_citations(requirement["citations"])) if "citations" in requirement else requirement,
+  "event_key":event_key,"facts":canonical_facts(facts)})
 def rule_support_bound(req,version,bundle):
  cites=req.get("citations")
  if type(cites)is not list or not cites:return False
@@ -55,8 +69,9 @@ def compare(facts,versions,*,bundle,agency_id,jurisdiction,regulated_role,event_
    test=req.get("test",{});field=test.get("field") if type(test)is dict else None
    events=sorted({k[0] for k in byfield if k[1]==field}) or ["request-level"]
    for event in events:
-    obs=byfield.get((event,field),[]);cites=[c for f in obs for c in f["citations"]]
-    base={"finding_id":evidence.sha([agency_id,request_number,family,rid,event,[f["fact_id"] for f in obs],selected["status"]]),"agency_id":agency_id,"request_number":request_number,"family_id":family,"version_id":req.get("version_id"),"requirement_id":rid,"requirement_text":req["text"],"rule_source":req.get("source_pointer"),"rule_selection":selected["status"],"event_key":event,"fact_ids":[f["fact_id"] for f in obs],"citations":cites,"counterevidence":[f["fact_id"] for f in obs if f.get("counterevidence")],"exceptions":[f["fact_id"] for f in obs if f.get("exception_applies")],"legal_assessment":"NOT_ASSESSED","review_acceptance":False,"derived":True}
+    raw=byfield.get((event,field),[]);obs=canonical_facts(raw);cites=[c for f in obs for c in f["citations"]]
+    fid=finding_identity(snapshot_sha256=bundle["snapshot_sha256"],scope={"agency_id":agency_id,"request_number":request_number,"jurisdiction":jurisdiction,"regulated_role":regulated_role,"event_at":event_at},family_id=family,rule_selection=selected["status"],version=version,requirement=req,event_key=event,facts=raw)
+    base={"finding_id":fid,"finding_identity_version":FINDING_IDENTITY_VERSION,"agency_id":agency_id,"request_number":request_number,"family_id":family,"version_id":req.get("version_id"),"requirement_id":rid,"requirement_text":req["text"],"rule_source":req.get("source_pointer"),"rule_selection":selected["status"],"event_key":event,"fact_ids":[f["fact_id"] for f in obs],"citations":cites,"counterevidence":[f["fact_id"] for f in obs if f.get("counterevidence")],"exceptions":[f["fact_id"] for f in obs if f.get("exception_applies")],"legal_assessment":"NOT_ASSESSED","review_acceptance":False,"derived":True}
     if version is None:classification="applicability_unresolved";reason=selected["status"]
     elif not evidence.is_hash(version["source"].get("content_sha256")) or version["source"].get("verification_status") not in ("verified","verified_primary","verified_exact_source") or not rule_support_bound(req,version,bundle):
      classification="applicability_unresolved";reason="rule_source_or_requirement_span_unbound"
