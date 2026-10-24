@@ -65,6 +65,24 @@ def findings_markdown(result):
    loc=json.dumps(c["locator"],sort_keys=True);span=c["span"]
    lines.append("  Source "+c["original_sha256"]+" "+loc+" bytes "+str(span["start_byte"])+"–"+str(span["end_byte"])+": "+c["quote"].replace("\n"," "))
  return ("\n".join(lines)+"\n").encode()
+def _read_replay_artifact(dest,name,data):
+ """Bounded no-follow, nonblocking descriptor read of one private saved artifact."""
+ try:return evidence.read_pinned(dest/name,evidence.sha(data),limit=len(data))
+ except OSError:raise ValueError("existing_run_artifact_unreadable")from None
+ except ValueError as e:
+  if str(e)=="artifact_hash_mismatch":raise ValueError("existing_run_conflict")from None
+  raise
+def _validate_existing_run(dest,artifacts):
+ """Reuse a saved run only if it is exactly the private regular artifacts expected; never repair it."""
+ evidence.need(not any(x.is_symlink() for x in (dest,*dest.parents)),"existing_run_symlink")
+ s=os.lstat(dest)
+ evidence.need(stat.S_ISDIR(s.st_mode) and s.st_uid==os.geteuid() and not s.st_mode&0o077,"existing_run_unsafe")
+ try:names=sorted(os.listdir(dest))
+ except OSError:raise ValueError("existing_run_artifact_unreadable")from None
+ evidence.need(names==sorted(artifacts),"existing_run_artifact_set")
+ for name,data in artifacts.items():evidence.need(_read_replay_artifact(dest,name,data)==data,"existing_run_conflict")
+ a=os.lstat(dest)
+ evidence.need((s.st_dev,s.st_ino,s.st_mode,s.st_uid)==(a.st_dev,a.st_ino,a.st_mode,a.st_uid) and sorted(os.listdir(dest))==names,"existing_run_changed")
 def run(command,value,input_sha256,output):
  result=execute(command,value);raw=evidence.canonical(result)+b"\n";pins=code_pins()
  binding={"command":command,"input_sha256":input_sha256,"code_pins":pins,"result_sha256":evidence.sha(raw)}
@@ -74,10 +92,8 @@ def run(command,value,input_sha256,output):
  artifacts={"result.json":raw,"receipt.json":receipt_raw}
  if command=="requests":artifacts["due-actions.json"]=evidence.canonical({"schema":"request-due-actions-v1","actions":result["due_actions"],"automatic_scheduling":False,"verification":"derived_needs_review","source_run_id":run_id})+b"\n"
  if command=="reconcile":artifacts["findings.md"]=findings_markdown(result)
- reused=dest.exists()
- if reused:
-  evidence.need(not dest.is_symlink(),"existing_run_symlink")
-  for name,data in artifacts.items():evidence.need((dest/name).read_bytes()==data,"existing_run_conflict")
+ reused=os.path.lexists(dest)
+ if reused:_validate_existing_run(dest,artifacts)
  else:
   stage=Path(tempfile.mkdtemp(prefix=".understanding-",dir=root))
   try:
