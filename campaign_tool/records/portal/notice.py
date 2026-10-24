@@ -21,9 +21,12 @@ class Links(HTMLParser):
 
     def handle_starttag(self,tag,attrs):
         if tag.lower()=="a":
-            value=dict(attrs).get("href")
-            if value:
-                self.urls.append(value)
+            # An anchor carrying more than one href (even identical values) is
+            # ambiguous: HTML keeps the first, dict(attrs) kept the last. Such an
+            # anchor contributes no href URL rather than silently picking one.
+            values=[value for name,value in attrs if name.lower()=="href"]
+            if len(values)==1 and values[0]:
+                self.urls.append(values[0])
 
     def handle_data(self,data):
         self.urls.extend(re.findall(r'https://[^\s<>"\']+',data))
