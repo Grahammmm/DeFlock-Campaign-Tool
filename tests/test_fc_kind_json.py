@@ -17,7 +17,7 @@ RUN_ID = "fc-kind-json-synthetic-run"
 # Stable refusal vocabulary this suite expects; fixed here, not read from kind.py.
 CODES = {"invalid_json", "invalid_unicode_json", "nonfinite_json", "duplicate_json_key"}
 LONE = ("\ud800", "\udbff", "\udc00", "\udfff")
-OVERFLOW = (b"1e309", b"-1e309", b"1E400", b"-1.5e+999", b"123456789e305",
+OVERFLOW = (b"1e309", b"-1e309", b"1E400", b"-1.5e+999", str(123456789).encode() + b"e305",
             b"1" + b"0" * 400 + b".0", b"-0.1e310")
 FINITE = (b"1e308", b"-1e308", b"1e-400", b"-1e-400", b"2.5E+10", b"0.0", b"-0",
           repr(sys.float_info.max).encode(), b"5e-324", b"9" * 100, b"-12", b"3.25")
