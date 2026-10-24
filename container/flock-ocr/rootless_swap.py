@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rootless driver for the OCR container swap (docs/RECORDS-OCR-CONTAINER-ROOTLESS.md).
 
-One script, four modes:
+One script, four swap modes and a prune subcommand:
 
   --dry-run   Read-only. Runs R1 discovery (docker info/inspect/ps, systemctl
               --user show) and prints every later command without running it.
@@ -13,6 +13,7 @@ One script, four modes:
               snapshot) after the owner reviewed the diff: --accept-a2 SHA256.
   --rollback  Runs the rollback path for the step a held or interrupted run
               stopped at.
+  prune       List superseded run directories; delete only with --apply.
 
 No sudo. Data steps run in throwaway helper containers (`docker run --rm`) as
 root of the rootless daemon's user namespace, which is the host user plus its
@@ -44,7 +45,6 @@ import urllib.parse
 from pathlib import Path
 
 RECIPE = Path(__file__).resolve().parent
-DIST = RECIPE / "dist"  # build_wheel.py output and the Dockerfile build context's only wheel
 RUNBOOK = RECIPE / "runbook-rootless.json"
 LIVE, PRIV, REC = "/live", "/private", "/recipe"
 HELPER_LABEL = "deflock.flock-swap.helper=1"
@@ -101,6 +101,7 @@ def _load(name, filename):
 snapshot_evidence = _load("flock_ocr_snapshot_evidence", "snapshot_evidence.py")
 preflight = _load("flock_ocr_preflight", "preflight.py")
 check_runbook = _load("flock_ocr_check_runbook", "check_runbook.py")
+prune_runs = _load("flock_ocr_prune_runs", "prune_runs.py")
 
 
 class StepFailed(Exception):
@@ -618,13 +619,30 @@ class Swap:
                 if unmapped:
                     self.fail(f"{label}: {len(unmapped)} entr(y/ies) owned by an ID outside the "
                               "rootless namespace (overflow 65534); a rootless archive cannot preserve them")
-                total += sum(e.get("size", 0) for e in baseline["entries"].values())
+                # Round file payloads to filesystem blocks and allow tar/PAX
+                # headers, directory entries and metadata per manifest entry.
+                total += sum(((e.get("size", 0) + 4095) // 4096) * 4096 + 4096
+                             for e in baseline["entries"].values())
             baselines[label] = baseline
         if not self.dry:
-            need = 3 * total + (512 << 20)
+            # S1 and A2 each retain an archive plus SQLite backups (2 copies).
+            # One evidence/restore-test extract can remain after a failure;
+            # rollback then needs a current-state archive and its verify extract.
+            # At A2, S1 is already on disk, so only budget remaining allocations.
+            copies = {"s1_evidence": 2 if prefix == "s1" else 0,
+                      "a2_evidence": 2, "scratch_extract": 1, "rollback_preservation": 2}
+            need = sum(copies.values()) * total + (512 << 20)
             free = self.system.disk_free(self.run_dir)
+            self.write_json(f"{prefix}/space-budget.json", {
+                "estimated_copy_bytes": total, "copies": copies, "reserve_bytes": 512 << 20,
+                "required_free_bytes": need, "available_bytes": free})
+            self.log(f"    {prefix} space budget: {copies}, {total} bytes/copy + 512 MiB reserve; "
+                     f"needs {need}, available {free}")
             if free < need:
                 self.fail(f"private dir has {free} bytes free, needs {need}")
+        else:
+            self.log(f"    would budget {'S1 + ' if prefix == 's1' else ''}A2 archives/backups, "
+                     "scratch extract and rollback preservation/verify together + 512 MiB")
         self.mkdir(prefix)
         for mount in self.state["mounts"]:
             label = mount["label"]
@@ -956,35 +974,9 @@ class Swap:
         self.write_json("snapshot-receipt.json", receipt)
         self.state["archives_sha256"] = archives
 
-    def park_stale_dist(self):
-        """Move a previous attempt's wheel out of the build context (never delete).
-
-        build_wheel.py refuses a non-empty dist/ and the Dockerfile context must
-        hold exactly one wheel, so any attempt that failed after B1 left a dist/
-        that made the next attempt fail at B1 (attempt 4, 2026-10-19).  Only a
-        directory holding nothing but engine wheels is parked; anything else is
-        a hand-made state and stops the run before the build.
-        """
-        dist = Path(DIST)
-        if dist.is_symlink() or (dist.exists() and not dist.is_dir()):
-            self.fail(f"{dist} must be absent or a real directory")
-        if not dist.exists():
-            return
-        entries = sorted(p.name for p in dist.iterdir())
-        if not entries:
-            return
-        unexpected = [e for e in entries if not (e.startswith("deflock_campaign_tool-") and e.endswith(".whl"))
-                      or (dist / e).is_symlink() or not (dist / e).is_file()]
-        if unexpected:
-            self.fail(f"{dist} holds entries that are not engine wheels: {unexpected}; move them aside by hand")
-        target = self.run_dir / "b1" / "stale-dist"
-        if self.dry:
-            self.log(f"    would move stale {dist} ({', '.join(entries)}) to {target}")
-            return
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        shutil.move(str(dist), str(target))
-        self.state["stale_dist_parked"] = entries
-        self.log(f"    moved stale {dist} ({', '.join(entries)}) to {target}")
+    @property
+    def build_context(self):
+        return self.run_dir / "b1" / "context"
 
     def b1_wheel(self):
         self.require_gate()
@@ -993,9 +985,14 @@ class Swap:
             self.state["wheel_sha256"] = reuse["wheel_sha256"]
             self.log(f"    not rebuilt: reusing wheel sha256 {reuse['wheel_sha256']} recorded by {reuse['run_dir']}")
             return
-        self.park_stale_dist()
+        if self.dry:
+            self.log(f"    would create isolated build context {self.build_context}")
+        else:
+            self.build_context.mkdir(parents=True, mode=0o700)
+            for name in (".dockerignore", "requirements.lock"):
+                shutil.copyfile(RECIPE / name, self.build_context / name)
         _, out, _ = self.sh([sys.executable, "-B", RECIPE / "build_wheel.py", "--build-python",
-                             self.state["build_python"], "--provenance-out",
+                             self.state["build_python"], "--dist", self.build_context / "dist", "--provenance-out",
                              Path(self.state["run_dir"]) / "wheel-provenance.json"], effect=True, timeout=3600)
         if self.dry:
             self.state["wheel_sha256"] = "<WHEEL_SHA256>"
@@ -1019,11 +1016,13 @@ class Swap:
             return
         commit = self.pins["engine"]["commit"]
         self.sh([sys.executable, "-B", RECIPE / "preflight.py", "--base-image", st["old_image"],
-                 "--engine-commit", commit, "--wheel-sha256", st["wheel_sha256"], "--tag", st["new_tag"]],
+                 "--engine-commit", commit, "--wheel-sha256", st["wheel_sha256"], "--tag", st["new_tag"],
+                 "--context", self.build_context],
                 effect=True, timeout=300)
         command = preflight.build_command(argparse.Namespace(
             base_image=st["old_image"], engine_commit=commit, wheel_sha256=st["wheel_sha256"],
-            engine_manifest_sha256=self.pins["engine"]["manifest_sha256"], tag=st["new_tag"]))
+            engine_manifest_sha256=self.pins["engine"]["manifest_sha256"], tag=st["new_tag"],
+            context=self.build_context))
         self.sh(command, effect=True, timeout=7200)
         _, out, _ = self.sh(["docker", "image", "inspect", "--format", "{{.Id}}", st["new_tag"]], effect=True)
         st["new_image_id"] = "<NEW_IMAGE_ID>" if self.dry else out.strip()
@@ -1520,11 +1519,16 @@ def _lock(private):
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        handle.close()
         raise SystemExit("another rootless_swap.py run holds the lock")
     return handle
 
 
 def main(argv=None, system=None, out=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "prune":
+        return prune_runs.main(argv[1:], system=system or System(), out=out,
+                               swap_class=Swap, lock=_lock)
     args = parse_args(argv)
     swap = Swap(args, system=system, out=out)
     if args.mode in ("resume", "rollback"):
