@@ -12,7 +12,9 @@ Requirement map (card t_09b2b889):
   A4 broken control     BaselineDictLinks + ambiguous_href_urls (used by the helper's
                         negative-control case), InventoryIntegrationTests.test_a4_*
   A5 integration        InventoryIntegrationTests.test_a5_*
-  A6 security           InventoryIntegrationTests.test_a6_*, module teardown check
+  A6 security           InventoryIntegrationTests.test_a6_*, WriteRootTests.test_a6_*
+                        (helper write guard: in-root positive, inert escape-write
+                        refusal), module teardown full-tree content-hash check
 """
 import hashlib
 import os
@@ -123,17 +125,20 @@ def run_inventory(queue, body, known_hosts=frozenset({HOST})):
 
 
 def repository_snapshot():
-    paths = {}
+    """Content hash of every retained repository file (fixtures included), minus .git/bytecode."""
+    hashes = {}
     for directory, dirs, files in os.walk(REPO):
         dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
         for name in files:
             path = Path(directory) / name
-            paths[str(path.relative_to(REPO))] = path.stat().st_size
-    retained = {}
-    for relative in ("campaign_tool/records/portal/notice.py", "tests/test_fa24_notice_href.py",
-                     "tests/test_records_portal.py", "tests/records/test_portal_intake.py"):
-        retained[relative] = hashlib.sha256((REPO / relative).read_bytes()).hexdigest()
-    return paths, retained
+            hashes[str(path.relative_to(REPO))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
+
+
+def run_root():
+    """Per-run root published by the acceptance helper's write guard, or None standalone."""
+    value = os.environ.get("FA24_ACCEPT_RUN_ROOT")
+    return Path(value) if value else None
 
 
 _SNAPSHOT = None
@@ -147,8 +152,8 @@ def setUpModule():
 def tearDownModule():
     after = repository_snapshot()
     if after != _SNAPSHOT:
-        added = sorted(set(after[0]) - set(_SNAPSHOT[0]))
-        raise AssertionError(f"A6: repository changed during the regression run: added={added}")
+        changed = sorted(k for k in set(after) | set(_SNAPSHOT) if after.get(k) != _SNAPSHOT.get(k))
+        raise AssertionError(f"A6: retained repository bytes changed during the regression run: {changed}")
 
 
 class LinksParserTests(unittest.TestCase):
@@ -265,6 +270,8 @@ class InventoryIntegrationTests(unittest.TestCase):
     def test_a5_real_queue_receipt_invariants(self):
         root = Path(tempfile.mkdtemp(prefix="fa24-queue-"))
         self.assertNotIn(REPO, root.resolve().parents)
+        if run_root() is not None:
+            self.assertIn(run_root(), root.resolve().parents)
         queue = Queue(root / "queue")
         try:
             self.assertEqual(run_inventory(queue, self.mixed_notice()), {"items": 1})
@@ -310,6 +317,37 @@ class InventoryIntegrationTests(unittest.TestCase):
                     args.update(kwargs)
                     notice.inventory_notice(spy, **args)
         self.assertEqual(spy.calls, [])
+
+
+class WriteRootTests(unittest.TestCase):
+    """A6: writes stay under the helper's fresh per-run root (requires the acceptance helper)."""
+
+    def setUp(self):
+        if run_root() is None:
+            self.skipTest("write guard is installed only by tools/accept_fa24_notice_href.py")
+
+    def test_a6_temp_root_is_inside_per_run_root(self):
+        self.assertIn(run_root(), Path(tempfile.gettempdir()).resolve().parents)
+
+    def test_a6_in_root_write_is_allowed(self):
+        target = Path(tempfile.mkdtemp(prefix="fa24-write-")) / "positive.txt"
+        target.write_bytes(b"synthetic")
+        self.assertEqual(target.read_bytes(), b"synthetic")
+        self.assertIn(run_root(), target.resolve().parents)
+
+    def test_a6_escape_write_is_refused_before_the_syscall(self):
+        # Inert: every target sits below a nonexistent directory and the rename
+        # source does not exist, so unguarded calls would raise FileNotFoundError
+        # and write nothing; only the guard raises PermissionError("...write guard...").
+        escape = Path(os.sep) / f"fa24-escape-{os.getpid()}-{SOURCE[:12]}" / "probe.txt"
+        missing_source = Path(tempfile.gettempdir()) / "fa24-missing-source"
+        self.assertFalse(escape.parent.exists())
+        self.assertFalse(missing_source.exists())
+        for attempt in (lambda: open(escape, "w"), lambda: os.open(escape, os.O_WRONLY | os.O_CREAT),
+                        lambda: os.mkdir(escape), lambda: os.replace(missing_source, escape)):
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(PermissionError, "write guard"):
+                attempt()
+        self.assertFalse(escape.parent.exists())
 
 
 if __name__ == "__main__":

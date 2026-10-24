@@ -12,7 +12,11 @@ directory below --output-parent, which must lie outside this repository:
                     tools/check_secret_report.py on that exact JSON
 
 Before any repository module is imported the runner redirects tempfile to the
-per-run directory, disables bytecode writes and installs socket guards. A pass
+per-run directory, disables bytecode writes and installs socket guards plus an
+audit-hook write guard that refuses (before the syscall) any Python-level file
+write, mkdir, rename, removal or sqlite connect outside the per-run directory.
+The guard self-checks with an inert escape probe and an in-root positive. The
+whole repository tree (minus .git) is content-hashed before and after. A pass
 is REVIEW REQUIRED; it is not full-repository CI or semantic acceptance.
 """
 import argparse
@@ -41,6 +45,8 @@ HASHED = (
     "tools/check_secret_report.py",
 )
 GUARD_HITS = []
+WRITE_HITS = []
+PROBE_HITS = []  # refusals of inert synthetic /fa24-escape-* probes (expected, still refused)
 
 
 def sha256_bytes(data):
@@ -57,7 +63,8 @@ def identity():
     for relative in HASHED:
         path = REPO / relative
         hashes[relative] = sha256_bytes(path.read_bytes()) if path.is_file() else None
-    return {"head": git("rev-parse", "HEAD"), "status_porcelain": git("status", "--porcelain"), "source_sha256": hashes}
+    return {"head": git("rev-parse", "HEAD"), "status_porcelain": git("status", "--porcelain"),
+            "source_sha256": hashes, "tree_sha256": tree_digest()}
 
 
 def fresh_run_dir(parent, case):
@@ -83,6 +90,80 @@ def install_offline_guards():
     socket.socket.connect_ex = refuse("socket.connect_ex")
     socket.create_connection = refuse("socket.create_connection")
     socket.getaddrinfo = refuse("socket.getaddrinfo")
+
+
+WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+# audit event -> ((path arg index, dir_fd arg index or None), ...)
+WRITE_EVENTS = {"os.mkdir": ((0, 2),), "os.rename": ((0, 2), (1, 3)), "os.replace": ((0, 2), (1, 3)),
+                "os.remove": ((0, 1),), "os.rmdir": ((0, 1),), "os.truncate": ((0, None),),
+                "os.symlink": ((1, 2),), "os.link": ((1, 3),), "shutil.rmtree": ((0, 1),),
+                "shutil.copyfile": ((1, None),), "sqlite3.connect": ((0, None),)}
+
+
+def install_write_guard(run):
+    """Refuse (before the syscall) any Python-level write outside the per-run root."""
+    root = os.path.realpath(run)
+
+    def inside(target, dir_fd=None):
+        if isinstance(target, int):
+            return True  # already-open descriptor
+        text = os.fsdecode(target)
+        if text in ("", ":memory:", os.devnull):
+            return True
+        if text.startswith("file:"):
+            text = text[5:].split("?", 1)[0]
+        if isinstance(dir_fd, int) and dir_fd >= 0 and not os.path.isabs(text):
+            try:  # dir_fd-relative call (e.g. shutil.rmtree internals): resolve via its directory
+                text = os.path.join(os.readlink(f"/proc/self/fd/{dir_fd}"), text)
+            except OSError:
+                return False  # unresolvable descriptor: fail closed
+        resolved = os.path.realpath(text)
+        return resolved == root or resolved.startswith(root + os.sep)
+
+    def hook(event, args):
+        if event == "open":
+            path, mode, flags = (tuple(args) + (None, None, None))[:3]
+            writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+                isinstance(flags, int) and flags & WRITE_FLAGS)
+            targets = [(path, None)] if writing and path is not None else []
+        elif event in WRITE_EVENTS:
+            targets = [(args[p], args[d] if d is not None and d < len(args) else None)
+                       for p, d in WRITE_EVENTS[event] if p < len(args) and args[p] is not None]
+        else:
+            return
+        for target, dir_fd in targets:
+            if not inside(target, dir_fd):
+                text = os.fsdecode(target)
+                probe = text.startswith(os.path.join(os.sep, "fa24-escape-"))
+                (PROBE_HITS if probe else WRITE_HITS).append(f"{event}:{text}")
+                raise PermissionError(f"acceptance write guard refused {event} outside per-run root")
+    sys.addaudithook(hook)
+    os.environ["FA24_ACCEPT_RUN_ROOT"] = root
+    # Inert self-check: the escape target lives under a nonexistent top-level
+    # directory, so even an unguarded open could not create it.
+    escape = os.path.join(os.sep, f"fa24-escape-{secrets.token_hex(6)}", "probe")
+    try:
+        open(escape, "w").close()
+        refused = False
+    except PermissionError:
+        refused = True
+    except OSError:
+        refused = False
+    positive = run / "write-guard-positive.txt"
+    positive.write_text("in-root write allowed\n")
+    probe_hits = [hit for hit in PROBE_HITS if escape in hit]
+    return {"root": root, "escape_probe_refused": refused and len(probe_hits) == 1 and not WRITE_HITS,
+            "in_root_positive_written": positive.is_file()}
+
+
+def tree_digest():
+    digest = hashlib.sha256()
+    for directory, dirs, files in os.walk(REPO):
+        dirs[:] = sorted(d for d in dirs if d not in (".git", "__pycache__"))
+        for name in sorted(files):
+            path = Path(directory) / name
+            digest.update(str(path.relative_to(REPO)).encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def prepare_import_root(run):
@@ -203,8 +284,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     run = fresh_run_dir(args.output_parent, args.case)
     before = identity()
+    guard = install_write_guard(run)
     try:
-        if args.case == "behavior":
+        if not (guard["escape_probe_refused"] and guard["in_root_positive_written"]):
+            ok, details = False, {"stop": "write_guard_self_check_failed"}
+        elif args.case == "behavior":
             ok, details = case_tests(run, [REGRESSION])
         elif args.case == "compatibility":
             ok, details = case_tests(run, COMPATIBILITY)
@@ -218,7 +302,13 @@ def main(argv=None):
     if after != before:
         ok = False
         details["stop"] = "candidate_identity_changed_during_run"
+    if WRITE_HITS:
+        ok = False
+        details["stop"] = "write_outside_per_run_root_refused"
+    guard["refused_writes"] = list(WRITE_HITS)
+    guard["refused_inert_probes"] = len(PROBE_HITS)
     record = {"case": args.case, "argv": [sys.executable, *sys.argv], "cwd": os.getcwd(),
+              "write_guard": guard,
               "interpreter": sys.executable, "python": sys.version.split()[0], "run_dir": str(run),
               "identity": before, "result": "PASS_REVIEW_REQUIRED" if ok else "FAIL",
               "exit": 0 if ok else 1, **details}
