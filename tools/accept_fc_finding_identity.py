@@ -125,15 +125,84 @@ def run_child(run_dir, label, argv, cwd, env=None, stdout_path=None, timeout=900
     return record
 
 
+def verbose_test_id(name, parenthesized):
+    """Actual TestCase.id() from one verbose line.
+
+    Python 3.11+ prints ``name (module.Class.name)``; older runtimes printed
+    ``name (module.Class)``. Only the latter needs the method appended.
+    """
+    if parenthesized.endswith("." + name):
+        return parenthesized
+    return parenthesized + "." + name
+
+
 def parse_unittest(stderr_text):
     ran = RAN.findall(stderr_text)
     summary = SUMMARY.findall(stderr_text)
-    tests = [{"name": m.group(1), "id": m.group(2) + "." + m.group(1), "outcome": m.group(3)}
+    tests = [{"name": m.group(1), "id": verbose_test_id(m.group(1), m.group(2)),
+              "outcome": "skipped" if m.group(3).startswith("skipped") else m.group(3)}
              for m in VERBOSE.finditer(stderr_text)]
     detail = summary[-1][1] if summary else ""
     counts = dict((k.strip(), int(v)) for k, v in (part.split("=") for part in detail.split(", ") if "=" in part))
     return {"tests_run": int(ran[-1]) if ran else 0, "summary": summary[-1][0] if summary else None,
             "summary_detail": detail, "summary_counts": counts, "tests": tests}
+
+
+class _ParserControl(unittest.TestCase):
+    """Synthetic in-memory outcomes used only to check the verbose parser."""
+
+    def test_control_ok(self):
+        pass
+
+    def test_control_documented(self):
+        """A first docstring line printed beneath the verbose test line."""
+
+    def test_control_fail(self):
+        self.fail("deliberate synthetic failure")
+
+    def test_control_error(self):
+        raise ValueError("deliberate synthetic error")
+
+    @unittest.skip("deliberate synthetic skip")
+    def test_control_skip(self):
+        pass
+
+
+def parser_self_check():
+    """Run known ok/docstring/fail/error/skip cases; parsed IDs must equal case.id()."""
+    suite = unittest.TestLoader().loadTestsFromTestCase(_ParserControl)
+    actual = {case.id(): "ok" for case in suite}  # Collected before run(), which releases cases.
+    stream = io.StringIO()
+    outcome = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
+    for case, _ in outcome.failures:
+        actual[case.id()] = "FAIL"
+    for case, _ in outcome.errors:
+        actual[case.id()] = "ERROR"
+    for case, _ in outcome.skipped:
+        actual[case.id()] = "skipped"
+    parsed = parse_unittest(stream.getvalue())
+    recorded = {t["id"]: t["outcome"] for t in parsed["tests"]}
+    return {"expected": actual, "parsed": recorded, "tests_run": parsed["tests_run"],
+            "match": recorded == actual and len(parsed["tests"]) == len(actual) == parsed["tests_run"],
+            "python_version": sys.version}
+
+
+def loaded_suite_ids(target, root):
+    """IDs of the suite unittest would execute for ``target`` (loaded, not run)."""
+    root_text = str(root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+    suite = unittest.TestLoader().loadTestsFromName(target)
+    ids = []
+
+    def walk(item):
+        if isinstance(item, unittest.TestSuite):
+            for child in item:
+                walk(child)
+        else:
+            ids.append(item.id())
+    walk(suite)
+    return ids
 
 
 def unittest_child(run_dir, label, target, root=None):
@@ -144,6 +213,20 @@ def unittest_child(run_dir, label, target, root=None):
     parsed = parse_unittest(stderr_text)
     record.update(parsed)
     problems = []
+    record["parser_self_check"] = parser_self_check()
+    if not record["parser_self_check"]["match"]:
+        problems.append("parser_self_check_failed")
+    try:
+        expected_ids = loaded_suite_ids(target, root)
+    except Exception as error:  # Unloadable suite: fail closed, keep the class.
+        expected_ids = None
+        record["loaded_suite_error"] = repr(error)[:2000]
+    parsed_ids = [t["id"] for t in parsed["tests"]]
+    record["loaded_suite_ids"] = expected_ids
+    record["parsed_ids_match_loaded_suite"] = (expected_ids is not None and len(parsed_ids) == len(set(parsed_ids))
+                                               and sorted(parsed_ids) == sorted(expected_ids))
+    if not record["parsed_ids_match_loaded_suite"]:
+        problems.append("parsed_ids_differ_from_loaded_suite")
     if record.get("exit") != 0:
         problems.append("unittest_exit_nonzero")
     if parsed["summary"] != "OK":

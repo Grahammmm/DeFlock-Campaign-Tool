@@ -267,6 +267,80 @@ class PolicyAndScopeBindingTests(unittest.TestCase):
         self.assertNotEqual(finding_id("rule_unbound"), finding_id("baseline_value_30"))
 
 
+def governed_versions(bundle, *, exception_cites=None, term_cites=None):
+    """Selected version carrying cited policy exceptions and incorporated terms."""
+    versions = versions_for(bundle)
+    first = evidence.cite_text(unit(bundle, 1), "Policy 100.1")
+    second = evidence.cite_text(unit(bundle, 1), "Agency: Example Agency")
+    versions[0]["exceptions"] = [
+        {"exception_id": "x1", "text": "synthetic exception text",
+         "citations": exception_cites if exception_cites is not None else [first, second]},
+        {"exception_id": "x2", "text": "second synthetic exception", "citations": [second]},
+    ]
+    versions[0]["incorporated_terms"] = [
+        {"term_id": "t1", "text": "synthetic incorporated term",
+         "citations": term_cites if term_cites is not None else [second, first]},
+    ]
+    return versions, first, second
+
+
+class GoverningCitationOrderTests(unittest.TestCase):
+    """Citation order inside the selected version's exceptions and terms is not identity."""
+
+    def setUp(self):
+        self.bundle = make_bundle()
+        self.facts = [fact(self.bundle)]
+
+    def finding(self, versions):
+        return only(run(self.facts, versions, self.bundle))
+
+    def test_exception_citation_permutation_keeps_identity_and_rendering(self):
+        versions, first, second = governed_versions(self.bundle)
+        forward = self.finding(versions)
+        reordered, _, _ = governed_versions(self.bundle, exception_cites=[second, first])
+        backward = self.finding(reordered)
+        self.assertEqual(forward["classification"], "no_conflict_observed")
+        self.assertEqual(forward["finding_id"], backward["finding_id"])
+        self.assertEqual(forward, backward)
+
+    def test_incorporated_term_citation_permutation_keeps_identity_and_rendering(self):
+        versions, first, second = governed_versions(self.bundle)
+        forward = self.finding(versions)
+        reordered, _, _ = governed_versions(self.bundle, term_cites=[first, second])
+        backward = self.finding(reordered)
+        self.assertEqual(forward["classification"], "no_conflict_observed")
+        self.assertEqual(forward["finding_id"], backward["finding_id"])
+        self.assertEqual(forward, backward)
+
+    def test_governing_inputs_are_not_mutated(self):
+        versions, first, second = governed_versions(self.bundle, exception_cites=None, term_cites=None)
+        versions[0]["exceptions"][0]["citations"] = [second, first]
+        before = copy.deepcopy((self.facts, versions, self.bundle))
+        self.finding(versions)
+        self.assertEqual((self.facts, versions, self.bundle), before)
+        self.assertEqual(versions[0]["exceptions"][0]["citations"], [second, first])
+
+    def test_changed_exception_citation_content_changes_identity(self):
+        versions, first, _second = governed_versions(self.bundle)
+        other = evidence.cite_text(unit(self.bundle, 1), "Public records request R-0001")
+        changed, _, _ = governed_versions(self.bundle, exception_cites=[first, other])
+        base = self.finding(versions)
+        moved = self.finding(changed)
+        self.assertNotEqual(base["finding_id"], moved["finding_id"])
+        self.assertEqual(base["classification"], moved["classification"])
+
+    def test_changed_incorporated_term_citation_content_changes_identity(self):
+        versions, first, _second = governed_versions(self.bundle)
+        changed, _, _ = governed_versions(self.bundle, term_cites=[first])
+        self.assertNotEqual(self.finding(versions)["finding_id"], self.finding(changed)["finding_id"])
+
+    def test_exception_item_order_remains_bound(self):
+        versions, _first, _second = governed_versions(self.bundle)
+        swapped = copy.deepcopy(versions)
+        swapped[0]["exceptions"].reverse()
+        self.assertNotEqual(self.finding(versions)["finding_id"], self.finding(swapped)["finding_id"])
+
+
 class ClassificationPreservedTests(unittest.TestCase):
     """The patch changes identity/order only, never factual or legal decisions."""
 
