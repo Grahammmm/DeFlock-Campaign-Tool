@@ -30,7 +30,8 @@ Use an approved environment with the pinned requirements-build.txt packages.
 No system package install or service restart is part of this procedure.
 
 ```sh
-python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir "$WHEEL_OUTPUT" .
+BUILD_PYTHON=~/agent-work/flock-build-venv/bin/python
+"$BUILD_PYTHON" -m pip wheel --no-deps --no-build-isolation --wheel-dir "$WHEEL_OUTPUT" .
 python3 -m venv "$CANDIDATE_RUNTIME"
 "$CANDIDATE_RUNTIME/bin/python" -m pip install --no-deps --no-index "$WHEEL_OUTPUT"/*.whl
 cd "$ISOLATED_CHECK_DIRECTORY"
@@ -42,6 +43,33 @@ staging target using an approved bundled build runtime, then transfer the pure
 Python package with its wheel hash and manifest. Do not change the container
 image or system Python to work around missing tooling. Keep candidate and active
 runtime paths separate; changing the active runtime remains an owner action.
+
+### Pinned build environment
+
+`python3 -m pip wheel --no-build-isolation` builds with whatever setuptools/wheel
+the build interpreter already has, so the build must run from an approved venv
+that pins those tools rather than from an arbitrary host Python. The build venv
+`~/agent-work/flock-build-venv` is that environment: it pins `setuptools==84.0.0`
+and `wheel==0.48.0` (the same versions as `[build-system]` in `pyproject.toml`
+and `requirements-build.txt`) on Python 3.12. Create it once and reuse it:
+
+```sh
+python3 -m venv ~/agent-work/flock-build-venv
+~/agent-work/flock-build-venv/bin/python -m pip install -r requirements-build.txt
+```
+
+The OCR container's `container/flock-ocr/build_wheel.py` verifies the pinned
+toolchain before building and never installs or downloads anything, so point its
+`--build-python` at the build venv:
+
+```sh
+~/agent-work/flock-build-venv/bin/python container/flock-ocr/build_wheel.py \
+  --build-python ~/agent-work/flock-build-venv/bin/python
+```
+
+The venv itself is a host-local artifact and is not committed; only the pinned
+versions in `requirements-build.txt` and `pyproject.toml` are. On a fresh host,
+recreate it with the two commands above (no system package install).
 
 ## Public-tree scan
 
