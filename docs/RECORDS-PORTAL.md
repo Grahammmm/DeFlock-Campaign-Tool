@@ -221,3 +221,28 @@ pending, and active failures appear in private status. Successful retry clears t
 active gap without deleting its history. Failure to persist sidecar evidence raises
 an operational error rather than claiming a recorded failure. Fetch and the local
 runner bridge use actual delivery counts and leave every newly enrolled stage pending.
+
+## Offline pointer reconciliation report
+
+`tools/portal_reconcile.py` is a read-only, counts-only report. It compares a
+mail-derived pointer set (`portal-pointer-observations/v1`: host class, URL
+SHA-256, optional host, request id, item id or path) with a queue export
+(`portal-queue-export/v1`: host, request id, item id, state, optional
+`has_version` and reason code):
+
+```sh
+python3 -B tools/portal_reconcile.py --observations /private/run/pointers.json \
+  --queue-export /private/run/queue-export.json --output /private/run/portal-reconcile.json
+```
+
+Each unique URL is assigned exactly one class: `fetched` (a version receipt exists),
+`queued`, `failed` (blocked, reason codes counted), `unproven` (no item id, not in
+queue, or ambiguous queue identity), `held_policy` (host class outside the
+allowlist), `held_redirect` or `missing_request_identity`. Held classes are decided
+before any queue lookup, so they are never reported as fetched. Items are parsed
+with the same `/documents/<item>` pattern as `inventory_notice()`. Malformed rows
+and conflicting duplicates are counted by fixed reason codes. The output never
+includes URLs, paths, hosts, identifiers, filenames, subjects or addresses, and
+identical inputs give byte-identical output. The report opens no queue store,
+allowlist, ledger, mailbox or network connection. The counts it produces still
+need review and are not acceptance.

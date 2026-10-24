@@ -1,0 +1,33 @@
+{
+  "schema": "portal-pointer-observations/v1",
+  "observations": [
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "path": "/documents/doc-a/download", "url_sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "path": "/documents/doc-a/download", "url_sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "path": "/documents/doc-a", "url_sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "item_id": "doc-b", "url_sha256": "2222222222222222222222222222222222222222222222222222222222222222"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-102", "path": "/documents/doc-c", "url_sha256": "3333333333333333333333333333333333333333333333333333333333333333"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-102", "item_id": "doc-d", "url_sha256": "4444444444444444444444444444444444444444444444444444444444444444"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-103", "item_id": "doc-e", "path": "/documents/doc-e", "url_sha256": "5555555555555555555555555555555555555555555555555555555555555555"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-104", "item_id": "doc-f", "url_sha256": "6666666666666666666666666666666666666666666666666666666666666666"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-108", "path": "/requests/26-108", "url_sha256": "7777777777777777777777777777777777777777777777777777777777777777"},
+    {"host_class": "nextrequest", "host": "records.example.test", "path": "/documents/doc-z", "url_sha256": "8888888888888888888888888888888888888888888888888888888888888888"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-109", "item_id": "doc-n", "url_sha256": "9999999999999999999999999999999999999999999999999999999999999999"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-106", "item_id": "doc-h", "url_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"host_class": "govqa", "host": "records.example.test", "request_id": "26-105", "item_id": "doc-g", "url_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"host_class": "microsoft_delivery", "host": "share.example.test", "url_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    {"host_class": "other_delivery", "url_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+    {"host_class": "tracked_redirect", "host": "records.example.test", "request_id": "26-105", "item_id": "doc-g", "url_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-105", "item_id": "doc-g", "allowlisted": false, "url_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "item_id": "doc-b", "url_sha256": "abababababababababababababababababababababababababababababababab"},
+    {"host_class": "govqa", "host": "records.example.test", "request_id": "26-101", "item_id": "doc-b", "url_sha256": "abababababababababababababababababababababababababababababababab"},
+    {"host_class": "dropbox", "host": "records.example.test", "url_sha256": "1212121212121212121212121212121212121212121212121212121212121212"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "item_id": "doc-b", "url_sha256": "not-a-hash"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "item_id": "doc-x", "url": "https://records.example.test/documents/doc-x", "url_sha256": "1313131313131313131313131313131313131313131313131313131313131313"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "path": "/documents/doc-y?v=1", "url_sha256": "1414141414141414141414141414141414141414141414141414141414141414"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "26-101", "item_id": "doc-w", "path": "/documents/doc-v", "url_sha256": "1515151515151515151515151515151515151515151515151515151515151515"},
+    {"host_class": "nextrequest", "request_id": "26-101", "item_id": "doc-m", "url_sha256": "1616161616161616161616161616161616161616161616161616161616161616"},
+    {"host_class": "nextrequest", "host": "Records.Example.Test", "request_id": "26-101", "item_id": "doc-k", "url_sha256": "1717171717171717171717171717171717171717171717171717171717171717"},
+    {"host_class": "nextrequest", "host": "records.example.test", "request_id": "bad id with spaces", "item_id": "doc-j", "url_sha256": "1818181818181818181818181818181818181818181818181818181818181818"},
+    42
+  ]
+}
