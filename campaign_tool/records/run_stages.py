@@ -26,8 +26,9 @@ the run report.
   (fail closed). The backup is taken under the records-root writer lock.
 * ``portal``: builds mail-delta notices from preserved messages in memory,
   runs T8 allowlist-gated intake into ``portal-queue-v1`` and then a fetch
-  *dry run*. The allowlist is only read. Downloads are a separate, explicit
-  step and are never done here. Items that step left ``blocked`` (e.g. an
+  *dry run* by default. Only explicit plan.portal.fetch.apply enables the
+  existing fetch engine through the plan-to-CLI bridge. The allowlist is
+  only read. Items the fetch left ``blocked`` (e.g. an
   HTTP 404) are counted on every run (warn ``PORTAL_HTTP_404`` /
   ``PORTAL_FETCH_BLOCKED``) until they are resolved.
 * ``extract``: Phase 1 (G 2026-10-19) native text only (``native_extract``).
@@ -687,6 +688,9 @@ def stage_portal(args):
             errors += 1
         elif notice and "/documents/" in notice["body"]:
             notices.append(notice)
+    if getattr(args,'portal_download',False) and errors:
+        # Download mode must not mutate a queue after any source parse/binding error.
+        return result('fail',{'input':len(notices),'failed':errors},'PORTAL_NOTICE_UNREADABLE'),1
     loader = lambda: load_approval(args.approval_file)  # read-only allowlist
     try:
         loader()
@@ -705,6 +709,12 @@ def stage_portal(args):
             for key in totals:
                 totals[key] += outcome[key]
         dry = fetch_queue(queue, apply=False, approval_loader=loader)
+        if getattr(args,'portal_download',False):
+            # Separate explicit opt-in; the default remains the existing dry run.
+            from .portal.download import from_stage
+            downloaded = from_stage(queue,args)
+            dry = fetch_queue(queue, apply=False)
+            dry['download'] = downloaded
         refused_hosts = queue.db.execute("SELECT COUNT(DISTINCT host) FROM portal_refusals").fetchone()[0]
         blocked, http_404 = fetch_blocked(queue, dry.get("items", []))
     except (PortalError, OSError, ValueError, sqlite3.Error):
@@ -713,6 +723,8 @@ def stage_portal(args):
         if queue is not None:
             queue.close()
     pending = sum(1 for item in dry.get("items", []) if item.get("state") not in ("received", "blocked"))
+    applying = getattr(args,'portal_download',False)
+    delivery_pending = dry.get('ledger_pending',0) if applying else 0
     counts = {"input": totals["enrolled"] + totals["refused"] + totals["skipped"],
               "output": totals["enrolled"], "skipped": totals["skipped"] + totals["refused"],
               "failed": errors + blocked}
@@ -720,7 +732,13 @@ def stage_portal(args):
                   ("PORTAL_FETCH_BLOCKED", "action", blocked - http_404),
                   ("PORTAL_HOST_NOT_ALLOWLISTED", "action", refused_hosts),
                   ("PORTAL_NOTICE_UNREADABLE", "action", errors),
-                  ("PORTAL_FETCH_DRY_RUN_ONLY", "info", pending or totals["enrolled"]))
+                  ("PORTAL_DOWNLOAD_PENDING" if applying else "PORTAL_FETCH_DRY_RUN_ONLY", "info", pending if applying else pending or totals["enrolled"]),
+                  ("PORTAL_LEDGER_PENDING", "action", delivery_pending),
+                  ("PORTAL_PRESERVE_REVIEW_REQUIRED", "info", dry.get('download',{}).get('ledger_delivered',0)))
+    if applying:
+        counts['output'] = dry.get('download',{}).get('ledger_delivered',0)
+    if delivery_pending:
+        return result('warn',counts,'PORTAL_LEDGER_PENDING',needs_g=items),0
     if blocked:
         # An approved document link that the separate fetch step could not get (blocked, e.g.
         # HTTP 404) is counted on every run until resolved; the run continues (warn).
@@ -915,6 +933,12 @@ def parser():
     p.add_argument("--sync-script", help="sync: existing mail sync script to run first (live only)")
     p.add_argument("--config", help="adoption: owner-only mail-history-adoption-v1 config")
     p.add_argument("--approval-file", help="portal: root-owned allowlist (read only)")
+    p.add_argument('--portal-download',action='store_true',help='portal: explicit byte retrieval, no stage promotions')
+    p.add_argument('--portal-egress-file',help='portal: independent root-owned egress policy, read only')
+    p.add_argument('--portal-max-bytes',type=int,default=25*1024*1024)
+    p.add_argument('--portal-total-bytes',type=int,default=256*1024*1024)
+    p.add_argument('--portal-max-items',type=int,default=60)
+    p.add_argument('--portal-request-timeout',type=float,default=25)
     p.add_argument("--max-documents", type=int, default=200,
                    help="extract: documents attempted per run; the rest are counted as deferred")
     p.add_argument("--document-timeout", type=int, default=None,
@@ -936,6 +960,17 @@ def parser():
 def config_invalid(args):
     """True when the limits are out of bounds or contradict each other (STAGE_CONFIG_INVALID)."""
     from . import native_extract as ne
+
+    if args.portal_download:
+        if args.stage != 'portal' or not args.portal_egress_file or args.timeout <= 5:
+            return True
+        from .portal.engine import Limits
+        try:
+            Limits(max_bytes=args.portal_max_bytes,max_total_bytes=args.portal_total_bytes,
+                   max_items=args.portal_max_items,timeout=args.portal_request_timeout,
+                   run_timeout=min(args.timeout-5,1200))
+        except (ValueError,TypeError):
+            return True
 
     if not 1 <= args.timeout <= 2700 or not 1 <= args.max_documents <= 5000:
         return True

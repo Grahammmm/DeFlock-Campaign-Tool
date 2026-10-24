@@ -52,6 +52,7 @@ jobs:
               'tests.test_records_portal', 'tests.test_records_portal_https',
               'tests.test_records_portal_repairs', 'tests.test_records_portal_runner_contract',
               'tests.test_records_portal_wp1', 'tests.records.test_portal_intake',
+              'tests.test_records_portal_fetch_plan', 'tests.test_records_portal_clock_contract',
               'tests.records.test_portal_legacy_approval'])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():

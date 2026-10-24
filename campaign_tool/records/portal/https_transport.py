@@ -14,7 +14,7 @@ import stat
 import time
 from datetime import datetime,timezone
 from .engine import Response
-from .policy import PortalError,hostname,safe_ancestors,url_parts
+from .policy import PortalError,hostname,safe_ancestors,url_parts,strict_json
 
 
 def _dns_worker(host,pipe):
@@ -99,10 +99,14 @@ def load_egress(path,now=None):
                 raise PortalError("egress_policy_changed")
         finally:
             os.close(fd)
-        data=json.loads(raw)
+        data=strict_json(raw)
+        if set(data) != {'version','enabled','purpose','expires_utc','hosts'} or type(data.get('version')) is not int:
+            raise ValueError()
         expiry=datetime.fromisoformat(data["expires_utc"].replace("Z","+00:00"))
         if data.get("version")!=1 or data.get("enabled") is not True or data.get("purpose")!="independent-portal-egress" or expiry.tzinfo is None or expiry<=now or not isinstance(data["hosts"],list) or not data["hosts"]:
             raise PortalError("egress_policy_invalid")
+        if len(data['hosts']) != len(set(data['hosts'])):
+            raise ValueError()
         return EgressApproval(data["hosts"],expiry)
     except (OSError,ValueError,TypeError,KeyError,AttributeError):
         raise PortalError("egress_policy_missing_or_invalid") from None
@@ -162,18 +166,21 @@ class DeadlineSocket:
 class StdlibHTTPS:
     def __init__(self,*,apply=False,approval_loader=None,egress_loader=None,origin_host=None,
                  max_bytes=25*1024*1024,resolver=None,connector=None,clock=time.monotonic,
-                 wall=lambda:datetime.now(timezone.utc)):
+                 wall=lambda:datetime.now(timezone.utc), run_budget=None):
         if type(max_bytes) is not int or not 1<=max_bytes<=100*1024*1024:
             raise ValueError("invalid_limit")
         self.apply=apply;self.approval_loader=approval_loader;self.egress_loader=egress_loader
         self.origin=origin_host;self.max_bytes=max_bytes
         self.resolver=resolver or resolve_bounded;self.connector=connector or connect_pinned
         self.clock=clock;self.wall=wall
+        if run_budget is not None and (type(run_budget) is not int or run_budget < 1):
+            raise ValueError('invalid_limit')
+        self.run_budget=run_budget
 
     def for_origin(self,origin):
         return StdlibHTTPS(apply=self.apply,approval_loader=self.approval_loader,
             egress_loader=self.egress_loader,origin_host=origin,max_bytes=self.max_bytes,
-            resolver=self.resolver,connector=self.connector,clock=self.clock,wall=self.wall)
+            resolver=self.resolver,connector=self.connector,clock=self.clock,wall=self.wall,run_budget=self.run_budget)
 
     def open(self,url,*,timeout):
         if self.apply is not True:
@@ -231,6 +238,10 @@ class StdlibHTTPS:
             length=headers.get("content-length")
             if length is not None and (not length.isdigit() or len(length)>12 or int(length)>self.max_bytes):
                 raise PortalError("size_limit")
+            ceiling = min(self.max_bytes,self.run_budget) if self.run_budget is not None else self.max_bytes
+            reason = 'total_size_limit' if ceiling < self.max_bytes else 'size_limit'
+            if length is not None and int(length)>ceiling:
+                raise PortalError(reason)
             owned_response=response;owned_sock=sock
             def close():
                 owned_response.close();owned_sock.close()
@@ -240,7 +251,14 @@ class StdlibHTTPS:
                     while True:
                         if self.clock()>=deadline:
                             raise TimeoutError()
-                        chunk=owned_response.read1(min(65536,self.max_bytes-count+1))
+                        if count == ceiling:
+                            if length is not None and int(length) == count:
+                                break
+                            # EOF probe is never yielded or charged to the body budget.
+                            if owned_response.read1(1):
+                                raise PortalError(reason)
+                            break
+                        chunk=owned_response.read1(min(65536,ceiling-count))
                         if not chunk:
                             break
                         count+=len(chunk)
@@ -256,3 +274,8 @@ class StdlibHTTPS:
             if sock:
                 sock.close()
             raise
+
+    def for_budget(self,max_bytes):
+        return StdlibHTTPS(apply=self.apply,approval_loader=self.approval_loader,
+            egress_loader=self.egress_loader,origin_host=self.origin,max_bytes=self.max_bytes,
+            resolver=self.resolver,connector=self.connector,clock=self.clock,wall=self.wall,run_budget=max_bytes)
