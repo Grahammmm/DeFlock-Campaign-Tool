@@ -17,8 +17,6 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -26,6 +24,7 @@ from campaign_tool.records import mail_adoption
 from campaign_tool.records.intake import eml_export
 from campaign_tool.records.run import Pipeline
 from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
+from tests.child_fixtures import run_fixture
 from tests.records.test_mail_adoption_regression import _blob, _write_private, synthetic_receipt
 
 REPO = Path(__file__).resolve().parents[2]
@@ -56,47 +55,19 @@ def ledger_rows(ledger):
         con.close()
 
 
-def run_python(code, *args):
+def run_python(fixture, *args):
     env = dict(os.environ, PYTHONPATH=str(REPO), PYTHONDONTWRITEBYTECODE="1")
-    return subprocess.run([sys.executable, "-B", "-c", code, *args], cwd=REPO, env=env,
-                          capture_output=True, text=True, timeout=120)
+    return run_fixture(fixture, *args, cwd=REPO, env=env,
+                       capture_output=True, text=True, timeout=120)
 
 
-CLI = "import sys\nfrom campaign_tool.records import mail_adoption\nsys.argv[0]='adopt-mail'\nsys.exit(mail_adoption.main())\n"
+CLI = "mail_adoption_cli"
 
-CRASH_AFTER_ENROLLMENT = """
-import os, sys
-from campaign_tool.records import mail_adoption
-from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
-def crash(*args):
-    os._exit(17)   # hard crash: mail_messages already committed, nothing else runs
-def factory(*args):
-    return CanonicalMailBackend(*args, stage_runner_factory=crash)
-mail_adoption.adopt(sys.argv[1], sys.argv[2], config_path=sys.argv[3], apply=True, backend_factory=factory)
-"""
+CRASH_AFTER_ENROLLMENT = "mail_adoption_crash_after_enrollment"
 
-CRASH_AFTER_CLAIM = """
-import os, sys
-from campaign_tool.records import mail_adoption
-from campaign_tool.records.runner import canonical_mail
-real = canonical_mail.installed_preservation_runner
-class Crashing:
-    def __init__(self, inner): self.inner = inner
-    def __getattr__(self, name): return getattr(self.inner, name)
-    def promote(self, *args, **kw): os._exit(18)   # lease claimed, receipt not promoted
-canonical_mail.installed_preservation_runner = lambda *a, **kw: Crashing(real(*a, **kw))
-mail_adoption.adopt(sys.argv[1], sys.argv[2], config_path=sys.argv[3], apply=True)
-"""
+CRASH_AFTER_CLAIM = "mail_adoption_crash_after_claim"
 
-WAL_WRITER_CRASH = """
-import os, sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
-con.execute("PRAGMA wal_autocheckpoint=0")
-# Rewrites header page 1 with the same value: a real WAL frame, no semantic change.
-con.execute("PRAGMA user_version=%d" % con.execute("PRAGMA user_version").fetchone()[0])
-con.commit()
-os._exit(0)   # committed WAL frames, never checkpointed
-"""
+WAL_WRITER_CRASH = "mail_adoption_wal_writer_crash"
 
 
 class AdoptionRecoveryTests(unittest.TestCase):

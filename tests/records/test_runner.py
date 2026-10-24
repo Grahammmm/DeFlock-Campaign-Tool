@@ -1,13 +1,14 @@
 """Offline representative slice. Synthetic promotion double is NOT WP1 acceptance."""
 import hashlib
 import json
-import multiprocessing
+import subprocess
 from pathlib import Path
 import sqlite3
 import unittest
 from campaign_tool.records.runner import core
 from campaign_tool.records.runner.adapters import LegacyIntakeBackend,OfflineExporter
 from campaign_tool.records.runner.contracts import Folder,StageReceipt,IntegrationGap
+from tests.child_fixtures import run_fixture
 from tests.records import test_mail_delta as fixtures
 
 class Transcript:
@@ -29,11 +30,6 @@ class SyntheticPromotingBackend(LegacyIntakeBackend):
         self.accepted[key]=receipt.sha256
         if self.after_commit_crash:
             self.after_commit_crash=False;raise KeyboardInterrupt('simulated process crash')
-
-def process_lock_probe(root,queue):
-    try:
-        with core.writer_lock(root):queue.put('acquired')
-    except ValueError:queue.put('blocked')
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
@@ -97,11 +93,10 @@ class RunnerTests(unittest.TestCase):
         with core.writer_lock(self.root):
             with self.assertRaisesRegex(ValueError,'already_owned'):self.invoke()
     def test_second_process_lock(self):
-        ctx=multiprocessing.get_context('spawn');q=ctx.Queue()
         with core.writer_lock(self.root):
-            p=ctx.Process(target=process_lock_probe,args=(str(self.root),q));p.start();p.join(5)
-            if p.is_alive():p.terminate();p.join();self.fail('synthetic lock probe timeout')
-            self.assertEqual(q.get(timeout=1),'blocked')
+            try:p=run_fixture('runner_lock_probe',str(self.root),capture_output=True,text=True,timeout=5)
+            except subprocess.TimeoutExpired:self.fail('synthetic lock probe timeout')
+            self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(p.stdout,'blocked\n')
     def test_runtime_pin_mismatch_refuses_before_journal(self):
         self.profile['runtime']['version']='fictional wrong version';self.write_profile()
         with self.assertRaisesRegex(ValueError,'pin_mismatch'):self.invoke()

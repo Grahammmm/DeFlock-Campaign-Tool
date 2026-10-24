@@ -40,17 +40,11 @@ REVIEWED_EXCEPTIONS = frozenset({
 
 # Files that still launch inline-source children; empty once all are converted.
 KNOWN_REMAINING = frozenset({
-    "tests/records/test_bounded_resume.py",
     "tests/records/test_container_host.py",
-    "tests/records/test_controller_kernel_faults.py",
     "tests/records/test_extraction_inherited_budget.py",
-    "tests/records/test_mail_adoption_recovery.py",
     "tests/records/test_ocr.py",
     "tests/records/test_pipeline_composition.py",
-    "tests/records/test_runner.py",
     "tests/records/test_structured_source_resolver.py",
-    "tests/records/test_systemd_control.py",
-    "tests/records/test_worker_lifecycle.py",
     "tests/test_records_run_stages.py",
 })
 

@@ -6,14 +6,13 @@ import os
 from pathlib import Path
 import platform
 import signal
-import subprocess
-import sys
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from campaign_tool.records import bounded_resume as bounded
+from tests.child_fixtures import run_fixture
 
 
 class BoundedResumeTests(unittest.TestCase):
@@ -97,17 +96,8 @@ class BoundedResumeTests(unittest.TestCase):
         # The short-lived child deliberately violates the no-child admission
         # contract only to test descriptor inheritance. This is not descendant
         # cleanup qualification or permission for a live adapter to spawn.
-        source = '''
-import json, os, subprocess, sys
-from campaign_tool.records.bounded_resume import run_once
-def adapter(request):
-    os.write(1, b'synthetic-private-stdout')
-    os.write(2, b'synthetic-private-stderr')
-    subprocess.run([sys.executable, '-c', 'import os; os.write(1, b"synthetic-private-child")'], check=True)
-print(json.dumps(run_once(adapter, execute=True, seconds=2)))
-'''
-        result = subprocess.run([sys.executable, '-B', '-c', source], capture_output=True,
-                                text=True, timeout=5, check=True)
+        result = run_fixture('bounded_resume_output_fence', capture_output=True,
+                             text=True, timeout=5, check=True)
         self.assertEqual(json.loads(result.stdout)['status'], 'completed')
         self.assertEqual(result.stderr, '')
         self.assertNotIn('synthetic-private', result.stdout)

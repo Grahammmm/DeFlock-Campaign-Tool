@@ -19,8 +19,10 @@ from campaign_tool.records import mail_adoption
 from campaign_tool.records.intake import eml_export
 from tests.records import native_msg_fixtures as native
 from tests.records import test_mail_adoption_recovery as recovery
-from tests.records.test_mail_adoption_recovery import WAL_WRITER_CRASH, ledger_rows, run_python, tree
+from tests.records.test_mail_adoption_recovery import ledger_rows, run_python, tree
 from tests.records.test_mail_wire_intake import binary, chain, leaf, mixed
+
+INTAKE_WAL_WRITER_CRASH = "mail_adoption_intake_wal_writer_crash"
 
 
 class _Base(recovery.AdoptionRecoveryTests):
@@ -188,8 +190,7 @@ class CanonicalBindingDriftTests(_Base):
     # -- intake catalog WAL: dry-run must not touch it ------------------------
     def test_intake_wal_dry_run_fails_closed_without_mutation(self):
         intake = self.root / "intake" / "intake.sqlite"
-        crashed = run_python("import sqlite3, sys\nsqlite3.connect(sys.argv[1]).execute('PRAGMA journal_mode=WAL').fetchone()\n"
-                             + WAL_WRITER_CRASH, str(intake))
+        crashed = run_python(INTAKE_WAL_WRITER_CRASH, str(intake))
         self.assertEqual(crashed.returncode, 0, crashed.stderr)
         self.assertGreater(Path(str(intake) + "-wal").stat().st_size, 0)
         Path(str(intake) + "-shm").unlink()

@@ -5,13 +5,12 @@ import json
 import os
 from pathlib import Path
 import threading
-import subprocess
-import sys
 from unittest import mock
 import unittest
 
 from campaign_tool.records import container_host as host
 from campaign_tool.records import systemd_control as control
+from tests.child_fixtures import run_fixture
 from tests.records import test_container_host as fixtures
 
 
@@ -438,26 +437,11 @@ class SystemdControlTests(fixtures.HostFixture):
     def assert_fresh_process_denied(self):
         before = (self.receipts / "active.json").read_bytes()
         jobs = sorted(p.name for p in self.receipts.iterdir() if p.is_dir())
-        child = """
-import json, sys
-from pathlib import Path
-from campaign_tool.records import container_host as host, systemd_control as control
-from tests.records.test_container_host import FakeDocker
-profile = Path(sys.argv[1])
-fake = FakeDocker(profile)
-try:
-    host.run(profile, invoke=fake.invoke, containment=fake.containment)
-    direct = "unexpected"
-except host.Rejected:
-    direct = "rejected"
-result = control.run(profile, "3" * 32, invoke=fake.invoke, containment=fake.containment)
-print(json.dumps({"direct": direct, "bound": result["status"], "calls": len(fake.calls)}))
-"""
         env = {"HOME": str(Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                "TMPDIR": str(self.root), "PYTHONDONTWRITEBYTECODE": "1",
                "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
-        result = subprocess.run([sys.executable, "-B", "-c", child, str(self.profile)],
-                                capture_output=True, timeout=10, env=env)
+        result = run_fixture("systemd_fresh_process_probe", str(self.profile),
+                             capture_output=True, timeout=10, env=env)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout),
                          {"direct": "rejected", "bound": "held", "calls": 0})

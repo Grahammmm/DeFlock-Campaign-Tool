@@ -13,6 +13,7 @@ from unittest import mock
 
 from campaign_tool.records import container_host as host
 from campaign_tool.records import systemd_control as control
+from tests.child_fixtures import popen_fixture
 from tests.records import test_container_host as fixtures
 
 
@@ -167,18 +168,16 @@ class ControllerKernelFaultTests(fixtures.HostFixture):
         env = {"HOME": str(Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                "TMPDIR": str(self.root), "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
                "PYTHONDONTWRITEBYTECODE": "1"}
-        driver = ("from tests.records.test_controller_kernel_faults import _child; "
-                  "import sys; _child(*sys.argv[1:])")
         progress_read = progress_write = None
         if progress:
             progress_read, progress_write = os.pipe()
             self.addCleanup(os.close, progress_read)
             env["KERNEL_TEST_PROGRESS_FD"] = str(progress_write)
         try:
-            child = subprocess.Popen([sys.executable, "-B", "-c", driver, str(self.profile),
-                                      action, invocation, job_id], env=env, stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     pass_fds=(progress_write,) if progress else ())
+            child = popen_fixture("kernel_faults_driver", str(self.profile),
+                                  action, invocation, job_id, env=env, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  pass_fds=(progress_write,) if progress else ())
         finally:
             if progress_write is not None:
                 os.close(progress_write)

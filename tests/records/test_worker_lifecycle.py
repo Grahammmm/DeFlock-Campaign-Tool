@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 from campaign_tool.records import worker_lifecycle as lifecycle
+from tests.child_fixtures import fixture_path, write_source
 
 MODULE = "campaign_tool.records.worker_lifecycle"
 READY_WORKER = "import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(30)"
@@ -68,10 +69,12 @@ class WorkerLifecycleTests(unittest.TestCase):
         self.temp.cleanup()
 
     def start(self, code, *, wall=1, owned=256, extra=()):
+        # Worker source varies per test; each start gets its own file.
+        script = write_source(self.root, code, stem="worker-" + str(len(self.running)))
         process = subprocess.Popen(
             [sys.executable, "-B", "-m", MODULE, "supervise", "--state-dir", str(self.state),
              "--wall-seconds", str(wall), "--term-seconds", "0.2", "--kill-seconds", "1",
-             "--max-owned", str(owned), *extra, "--", sys.executable, "-B", "-c", code,
+             "--max-owned", str(owned), *extra, "--", sys.executable, "-B", str(script),
              str(self.marker)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.running.append(process)
         return process
@@ -320,7 +323,7 @@ time.sleep(30)
         self.assertEqual((self.state / "receipt.json").stat().st_mode & 0o777, 0o600)
 
     def test_unrelated_process_not_signalled(self):
-        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        unrelated = subprocess.Popen([sys.executable, str(fixture_path("sleep_thirty"))])
         self.running.append(unrelated)
         process = self.start(READY_WORKER, wall=5)
         self.ready(process)
