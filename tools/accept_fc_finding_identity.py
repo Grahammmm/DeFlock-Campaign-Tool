@@ -35,7 +35,7 @@ sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parents[1]
 CHECKS = ("focused", "compatibility", "negative", "portability", "credentials", "public-tree")
-BASE_COMMIT = "f111fa78f6e4f0731df86399b8784a50b0fdd42e"
+BASE_SELECTOR = "parent of the first commit adding tests/records/test_fc_finding_identity.py"
 RECONCILE_PATH = "campaign_tool/records/understanding/reconcile.py"
 FOCUSED_MODULE = "tests.records.test_fc_finding_identity"
 COMPAT_TARGET = "tests.records.test_understanding.ReconcileTests"
@@ -175,16 +175,34 @@ def _load_in_process(root):
     return reconcile, focused
 
 
+def baseline_commit():
+    """Pinned base = parent of the commit that first added the focused test module.
+
+    Derived from history (no high-entropy literal in source); run.json records
+    the resolved commit so a reviewer can compare it with the frozen brief pin.
+    """
+    done = subprocess.run(["git", "-C", str(REPO), "log", "--format=%H", "--diff-filter=A", "HEAD", "--",
+                           "tests/records/test_fc_finding_identity.py"],
+                          capture_output=True, text=True, timeout=60, check=True)
+    added = [line for line in done.stdout.split() if line]
+    if not added:
+        raise RuntimeError("focused_test_commit_not_found")
+    parent = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--verify", added[-1] + "^1"],
+                            capture_output=True, text=True, timeout=60, check=True)
+    return parent.stdout.strip()
+
+
 def _baseline_reconcile():
     """Build the pinned-baseline reconcile module in memory from the git object."""
-    done = subprocess.run(["git", "-C", str(REPO), "show", BASE_COMMIT + ":" + RECONCILE_PATH],
+    base = baseline_commit()
+    done = subprocess.run(["git", "-C", str(REPO), "show", base + ":" + RECONCILE_PATH],
                           capture_output=True, timeout=60, check=True)
     source = done.stdout
     module = types.ModuleType("campaign_tool.records.understanding._fc_baseline_reconcile")
     module.__package__ = "campaign_tool.records.understanding"
-    module.__file__ = "<git {}:{}>".format(BASE_COMMIT, RECONCILE_PATH)
+    module.__file__ = "<git {}:{}>".format(base, RECONCILE_PATH)
     exec(compile(source, module.__file__, "exec"), module.__dict__)
-    return module, sha256_bytes(source)
+    return module, sha256_bytes(source), base
 
 
 def _projection(result):
@@ -198,7 +216,7 @@ def baseline_differential(run_dir, result):
     """Old/new classification comparison over every shared synthetic scenario."""
     problems = []
     reconcile, focused = _load_in_process(REPO)
-    baseline, baseline_sha = _baseline_reconcile()
+    baseline, baseline_sha, base = _baseline_reconcile()
     rows = []
     for name, (_f, _v, _b, _s, expected) in sorted(focused.scenarios().items()):
         old = focused.run_scenario(name, compare=baseline.compare)
@@ -221,10 +239,11 @@ def baseline_differential(run_dir, result):
     }
     path = run_dir / "baseline-differential.json"
     with open(path, "x") as handle:
-        json.dump({"baseline_commit": BASE_COMMIT, "baseline_reconcile_sha256": baseline_sha,
+        json.dump({"baseline_commit": base, "baseline_selector": BASE_SELECTOR,
+                   "baseline_reconcile_sha256": baseline_sha,
                    "rows": rows, "measured": measured}, handle, indent=2, sort_keys=True)
     result["baseline_differential"] = {
-        "path": str(path), "sha256": sha256_file(path), "scenarios": len(rows),
+        "path": str(path), "sha256": sha256_file(path), "scenarios": len(rows), "baseline_commit": base,
         "baseline_reconcile_sha256": baseline_sha, "measured": measured,
         "classification_mismatches": [r["scenario"] for r in rows if not r["classification_equal"]],
         "expected_table_mismatches": [r["scenario"] for r in rows if not r["expected_matches_old"]]}
@@ -266,6 +285,13 @@ def check_compatibility(run_dir, result):
 def _run_cases(focused, names):
     loader = unittest.TestLoader()
     suite = unittest.TestSuite(loader.loadTestsFromName(name, focused) for name in names)
+    stream = io.StringIO()
+    outcome = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
+    return outcome, stream.getvalue()
+
+
+def _run_module(focused):
+    suite = unittest.TestLoader().loadTestsFromModule(focused)
     stream = io.StringIO()
     outcome = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
     return outcome, stream.getvalue()
@@ -315,7 +341,7 @@ def check_negative(run_dir, result):
     finally:
         reconcile.finding_identity = original
     phases["restored_identity_helper"] = reconcile.finding_identity is original
-    restored, restored_text = _run_cases(focused, [FOCUSED_MODULE])
+    restored, restored_text = _run_module(focused)
     phases["restored"] = _summarise(restored)
     phases["restored_direct"] = {
         "changed_value_same_id": focused.finding_id("baseline_value_30") == focused.finding_id("value_45"),
@@ -531,7 +557,7 @@ def main(argv=None):
               "argv": [sys.executable] + list(sys.argv),
               "cwd": os.getcwd(), "interpreter": sys.executable, "python_version": sys.version,
               "repo_root": str(REPO), "run_dir": str(run_dir), "started_utc": now(),
-              "base_commit": BASE_COMMIT, "git": git_identity(), "source_hashes": source_hashes(REPO),
+              "base_selector": BASE_SELECTOR, "git": git_identity(), "source_hashes": source_hashes(REPO),
               "children": [], "acceptance": "REVIEW REQUIRED; machine validity only, not semantic/legal acceptance"}
     try:
         problems = HANDLERS[args.check](run_dir, result)
