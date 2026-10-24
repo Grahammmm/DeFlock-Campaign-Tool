@@ -1,5 +1,5 @@
 """Offline portable commands. Outputs are private immutable derivatives."""
-import argparse,json,os,stat,tempfile,hashlib
+import argparse,errno,json,os,stat,tempfile,hashlib
 from pathlib import Path
 from . import evidence,document,correspondence,policy,reconcile
 VERSION="records-understanding-cli-v1"
@@ -65,24 +65,82 @@ def findings_markdown(result):
    loc=json.dumps(c["locator"],sort_keys=True);span=c["span"]
    lines.append("  Source "+c["original_sha256"]+" "+loc+" bytes "+str(span["start_byte"])+"–"+str(span["end_byte"])+": "+c["quote"].replace("\n"," "))
  return ("\n".join(lines)+"\n").encode()
-def _read_replay_artifact(dest,name,data):
- """Bounded no-follow, nonblocking descriptor read of one private saved artifact."""
- try:return evidence.read_pinned(dest/name,evidence.sha(data),limit=len(data))
- except OSError:raise ValueError("existing_run_artifact_unreadable")from None
- except ValueError as e:
-  if str(e)=="artifact_hash_mismatch":raise ValueError("existing_run_conflict")from None
-  raise
+_DIR_FLAGS=getattr(os,"O_PATH",os.O_RDONLY)|os.O_DIRECTORY|os.O_NOFOLLOW|getattr(os,"O_CLOEXEC",0)
+_RUN_FLAGS=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|getattr(os,"O_CLOEXEC",0)
+_LEAF_FLAGS=os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|getattr(os,"O_CLOEXEC",0)
+def _refuse(e,symlink_code):
+ """Map a validation OSError to a stable non-payload code (never the message or path)."""
+ if e.errno in (errno.ELOOP,errno.ENOTDIR):return ValueError(symlink_code)
+ if e.errno in (errno.ENOENT,getattr(errno,"ESTALE",errno.ENOENT)):return ValueError("existing_run_changed")
+ return ValueError("existing_run_artifact_unreadable")
+def _ident(st):return (st.st_dev,st.st_ino)
+def _entry(dfd,name):
+ """No-follow identity of one name inside an already opened directory."""
+ st=os.stat(name,dir_fd=dfd,follow_symlinks=False)
+ return (st.st_dev,st.st_ino,stat.S_IFMT(st.st_mode),st.st_mode,st.st_uid,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+def _read_replay_artifact(dfd,name,data,entry):
+ """Bounded no-follow, nonblocking descriptor read of one private saved artifact,
+ opened relative to the checked run-directory descriptor and bound to its listed entry."""
+ try:fd=os.open(name,_LEAF_FLAGS,dir_fd=dfd)
+ except OSError as e:raise _refuse(e,"symlink_artifact")from None
+ try:
+  before=os.fstat(fd)
+  evidence.need(stat.S_ISREG(before.st_mode) and before.st_uid==os.geteuid() and not before.st_mode&0o077 and before.st_size<=len(data),"private_artifact_bound")
+  evidence.need(_ident(before)==entry[:2],"existing_run_changed")
+  chunks=[];size=0
+  while True:
+   b=os.read(fd,min(65536,len(data)-size+1))
+   if not b:break
+   size+=len(b);evidence.need(size<=len(data),"private_artifact_bound");chunks.append(b)
+  after=os.fstat(fd)
+  evidence.need((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns),"artifact_changed")
+ except OSError as e:raise _refuse(e,"symlink_artifact")from None
+ finally:os.close(fd)
+ raw=b"".join(chunks)
+ evidence.need(evidence.sha(raw)==evidence.sha(data),"existing_run_conflict")
+ return raw
+def _open_chain(dest):
+ """Open every ancestor of dest from / with no-follow directory descriptors, then dest itself."""
+ chain=[]
+ try:
+  fd=os.open("/",_DIR_FLAGS&~os.O_NOFOLLOW);chain.append((fd,None,os.fstat(fd)))
+  parts=dest.parts[1:]
+  for i,part in enumerate(parts):
+   last=i==len(parts)-1
+   fd=os.open(part,_RUN_FLAGS if last else _DIR_FLAGS,dir_fd=chain[-1][0])
+   chain.append((fd,part,os.fstat(fd)))
+   evidence.need(stat.S_ISDIR(chain[-1][2].st_mode),"existing_run_symlink")
+  return chain
+ except OSError as e:
+  _close(chain);raise _refuse(e,"existing_run_symlink")from None
+ except ValueError:
+  _close(chain);raise
+def _close(chain):
+ for fd,_,_ in chain:os.close(fd)
 def _validate_existing_run(dest,artifacts):
- """Reuse a saved run only if it is exactly the private regular artifacts expected; never repair it."""
- evidence.need(not any(x.is_symlink() for x in (dest,*dest.parents)),"existing_run_symlink")
- s=os.lstat(dest)
- evidence.need(stat.S_ISDIR(s.st_mode) and s.st_uid==os.geteuid() and not s.st_mode&0o077,"existing_run_unsafe")
- try:names=sorted(os.listdir(dest))
- except OSError:raise ValueError("existing_run_artifact_unreadable")from None
- evidence.need(names==sorted(artifacts),"existing_run_artifact_set")
- for name,data in artifacts.items():evidence.need(_read_replay_artifact(dest,name,data)==data,"existing_run_conflict")
- a=os.lstat(dest)
- evidence.need((s.st_dev,s.st_ino,s.st_mode,s.st_uid)==(a.st_dev,a.st_ino,a.st_mode,a.st_uid) and sorted(os.listdir(dest))==names,"existing_run_changed")
+ """Reuse a saved run only if it is exactly the private regular artifacts expected; never repair it.
+
+ Every read goes through descriptors bound to checked no-follow ancestry; afterwards the
+ whole namespace (ancestor entries, run directory, listing, artifact entries) must still
+ name the same inodes, or the replay is refused. Filesystem failures become stable codes."""
+ chain=_open_chain(dest)
+ try:
+  root_st=chain[-2][2];dfd,_,s=chain[-1]
+  evidence.need(root_st.st_uid==os.geteuid() and not root_st.st_mode&0o077,"existing_run_unsafe")
+  evidence.need(s.st_uid==os.geteuid() and not s.st_mode&0o077,"existing_run_unsafe")
+  names=sorted(os.listdir(dfd))
+  evidence.need(names==sorted(artifacts),"existing_run_artifact_set")
+  entries={name:_entry(dfd,name) for name in names}
+  for name,data in artifacts.items():evidence.need(_read_replay_artifact(dfd,name,data,entries[name])==data,"existing_run_conflict")
+  a=os.fstat(dfd)
+  evidence.need((s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_mtime_ns)==(a.st_dev,a.st_ino,a.st_mode,a.st_uid,a.st_mtime_ns),"existing_run_changed")
+  evidence.need(sorted(os.listdir(dfd))==names,"existing_run_changed")
+  evidence.need(all(_entry(dfd,name)==entries[name] for name in names),"existing_run_changed")
+  for (pfd,_,_),(_,part,st) in zip(chain,chain[1:]):
+   now=os.stat(part,dir_fd=pfd,follow_symlinks=False)
+   evidence.need(stat.S_ISDIR(now.st_mode) and _ident(now)==_ident(st),"existing_run_changed")
+ except OSError as e:raise _refuse(e,"existing_run_symlink")from None
+ finally:_close(chain)
 def run(command,value,input_sha256,output):
  result=execute(command,value);raw=evidence.canonical(result)+b"\n";pins=code_pins()
  binding={"command":command,"input_sha256":input_sha256,"code_pins":pins,"result_sha256":evidence.sha(raw)}

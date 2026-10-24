@@ -143,8 +143,10 @@ def negative_control(run, clean):
     if original is None:
         return False, detail
 
-    def raw_read(dest, name, data):
-        return (Path(dest) / name).read_bytes()
+    def raw_read(dfd, name, data, entry):
+        # The old raw read: follows a leaf symlink and checks nothing about the file.
+        with open(name, "rb", opener=lambda p, f: os.open(p, f, dir_fd=dfd)) as fh:
+            return fh.read()
 
     with mock.patch.object(cli, "_read_replay_artifact", raw_read):
         mutant = run([NEG_CONTRACT, NEG_POSITIVE])
