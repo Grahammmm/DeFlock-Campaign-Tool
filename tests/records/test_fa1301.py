@@ -2,12 +2,21 @@
 
 Synthetic, file-based fixtures only. Every ledger is generated below a fresh
 temporary directory; no operator record, live path or network is used.
+
+Importing this module is inert: it imports no application module and installs
+no hook. Application tests (Behavior, GateControl, Isolation) execute only in
+file-launched helper children that install the offline boundary before any
+application import. Ordinary unittest loading/discovery therefore receives
+only OrdinaryLoading, which launches those guarded children and verifies the
+discovering process's ambient state is unchanged afterwards.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -15,15 +24,57 @@ import tempfile
 import unittest
 from unittest import mock
 
-from campaign_tool.records.ledger import store
-from campaign_tool.records.ledger.migrations import v001
+store = None  # bound by Fixture.setUpClass, only inside a guarded helper child
+v001 = None
 
 REPO = Path(os.path.abspath(__file__)).parents[2]
 HELPER = REPO / "tools" / "accept_fa1301.py"
+PROBE = REPO / "tests" / "fixtures" / "fa1301" / "ordinary_probe.py"
+PROBE_ENV = "FA1301_ORDINARY_PROBE"
+BOUNDARY_ATTR = "FA1301_BOUNDARY_RUN_DIR"
+APP_PREFIX = "campaign_tool"
+CHILD_SUITES = ("behavior", "gatecontrol", "isolation")
 MISMATCH = "ledger base schema mismatch"
 DECIDING_MARK = "FA1301-GATE-MISSING: ledger yielded a connection and UPDATE originals succeeded"
 SHA = hashlib.sha256(b"fa1301 synthetic original").hexdigest()
 RECEIPT = hashlib.sha256(b"fa1301 synthetic receipt").hexdigest()
+
+
+def guarded_run_dir():
+    """Run directory of the helper boundary active in THIS process, else None.
+
+    The marker is a module attribute that tools/accept_fa1301.py sets on its own
+    __main__ module after installing the boundary; it is never inherited by
+    other processes. The redirected temporary root must also be in force.
+    """
+    run_dir = getattr(sys.modules.get("__main__"), BOUNDARY_ATTR, None)
+    if not run_dir:
+        return None
+    root = os.path.realpath(run_dir)
+    if not os.path.realpath(tempfile.gettempdir()).startswith(root + os.sep):
+        return None
+    return root
+
+
+def ambient_state():
+    """Process state an unrelated peer test relies on (umask read is restored at once)."""
+    current = os.umask(0o022)
+    os.umask(current)
+    return {
+        "umask": current, "dont_write_bytecode": sys.dont_write_bytecode, "tempdir": tempfile.gettempdir(),
+        "environ": dict(os.environ), "path": list(sys.path), "cwd": os.getcwd(),
+        "app_modules": sorted(name for name in sys.modules
+                              if name == APP_PREFIX or name.startswith(APP_PREFIX + ".")),
+        "create_connection": id(socket.create_connection), "getaddrinfo": id(socket.getaddrinfo),
+        "socket_connect": id(socket.socket.connect), "sqlite_connect": id(sqlite3.connect),
+    }
+
+
+def load_tests(loader, standard_tests, pattern):
+    """Ordinary loading/discovery gets only the inert OrdinaryLoading entry point."""
+    if guarded_run_dir() is not None:
+        return standard_tests
+    return loader.loadTestsFromTestCase(OrdinaryLoading)
 
 
 def statements(sql):
@@ -139,7 +190,23 @@ def snapshot(path):
 
 
 class Fixture(unittest.TestCase):
+    """Application fixtures; refuse to run outside a guarded helper child."""
+
+    @classmethod
+    def setUpClass(cls):
+        global store, v001
+        if guarded_run_dir() is None:
+            raise RuntimeError("FA1301 application tests run only in guarded helper children; "
+                               "use ordinary discovery (OrdinaryLoading) or tools/accept_fa1301.py")
+        from campaign_tool.records.ledger import store as loaded_store
+        from campaign_tool.records.ledger.migrations import v001 as loaded_v001
+        store, v001 = loaded_store, loaded_v001
+
     def setUp(self):
+        # store.initialize sets a process umask; restore the incoming one on every path.
+        incoming = os.umask(0o077)
+        os.umask(incoming)
+        self.addCleanup(os.umask, incoming)
         self.tmp = tempfile.TemporaryDirectory(prefix="fa1301-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -435,6 +502,71 @@ class Isolation(Fixture):
         proc = self.launch("--case", "behavior", "--output-root", inside / "out")
         self.assertEqual(proc.returncode, 3, proc.stderr)
         self.assertFalse(inside.exists())
+
+    def test_ordinary_loading_is_inert_and_preserves_peer_state(self):
+        """A file-launched peer process loads and runs this module the ordinary way."""
+        result = self.root / "ordinary-probe.json"
+        probe_tmp = private_dir(self.root / "probe-tmp")
+        env = {"HOME": str(self.root), "TMPDIR": str(probe_tmp), "LC_ALL": "C.UTF-8", "PATH": "/usr/bin:/bin",
+               PROBE_ENV: "1", PROBE_ENV + "_REPORT": str(self.root / "ordinary-children.json")}
+        proc = subprocess.run([sys.executable, "-B", str(PROBE), "--result", str(result)], cwd=str(REPO),
+                              capture_output=True, text=True, timeout=1500, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout[-4000:] + proc.stderr[-4000:])
+        data = json.loads(result.read_text())
+        self.assertTrue(data["test_module"].startswith(str(REPO) + os.sep), data["test_module"])
+        self.assertEqual(data["before"]["app_modules"], [])
+        self.assertEqual(data["after_import"]["app_modules"], [], "importing the module loaded the application")
+        self.assertEqual(data["after_load"]["app_modules"], [], "ordinary loading loaded the application")
+        self.assertEqual(data["after_import"], data["before"], "import changed ambient peer state")
+        self.assertEqual(data["after_load"], data["before"], "loading changed ambient peer state")
+        self.assertEqual(data["ids"], ["tests.records.test_fa1301.OrdinaryLoading."
+                                       "test_application_suites_pass_in_guarded_children"])
+        self.assertEqual((data["run"], data["failures"], data["errors"], data["skipped"]), (1, [], [], []),
+                         data["output"][-4000:])
+        self.assertEqual(data["before"]["umask"], 0o022)
+        self.assertEqual(data["after_run"], data["before"], "running the suite changed ambient peer state")
+        self.assertEqual(data["peer_mode"], 0o644, "a later unrelated peer file inherited a polluted umask")
+        children = data["children"]
+        self.assertEqual(sorted(children), ["behavior", "gatecontrol"])
+        for suite, child in children.items():
+            self.assertGreater(child["selected"], 0, suite)
+            self.assertTrue(child["store"].startswith(str(REPO) + os.sep), (suite, child["store"]))
+            self.assertTrue(child["tempdir"].startswith(os.path.realpath(probe_tmp) + os.sep),
+                            (suite, child["tempdir"]))
+
+
+class OrdinaryLoading(unittest.TestCase):
+    """Ordinary discovery entry point; no application import or execution in this process."""
+
+    def test_application_suites_pass_in_guarded_children(self):
+        suites = [s for s in CHILD_SUITES if not (os.environ.get(PROBE_ENV) and s == "isolation")]
+        before = ambient_state()
+        summary = {}
+        with tempfile.TemporaryDirectory(prefix="fa1301-ordinary-") as tmp:
+            for suite in suites:
+                run_dir = Path(tmp) / suite
+                for item in (run_dir, run_dir / "home", run_dir / "tmp"):
+                    item.mkdir(mode=0o700)
+                env = {"HOME": str(run_dir / "home"), "TMPDIR": str(run_dir / "tmp"), "LC_ALL": "C.UTF-8",
+                       "PATH": "/usr/bin:/bin"}
+                proc = subprocess.run([sys.executable, "-B", str(HELPER), "--child", suite, "--run-dir", str(run_dir)],
+                                      cwd=str(REPO), capture_output=True, text=True, timeout=1500, env=env)
+                self.assertEqual(proc.returncode, 0, "%s: %s%s" % (suite, proc.stdout[-4000:], proc.stderr[-4000:]))
+                data = json.loads((run_dir / "child-result.json").read_text())
+                self.assertGreater(data["selected"], 0, suite)
+                self.assertEqual(data["run"], data["selected"], suite)
+                for key in ("failures", "errors", "skipped", "sentinel_hits"):
+                    self.assertEqual(data[key], [], (suite, key))
+                self.assertTrue(data["dont_write_bytecode"], suite)
+                self.assertEqual(data["boundary"], os.path.realpath(run_dir), suite)
+                for path in list(data["modules"].values()) + [data["test_module"]]:
+                    self.assertTrue(path.startswith(str(REPO) + os.sep), (suite, path))
+                summary[suite] = {"selected": data["selected"], "store": data["modules"]["store"],
+                                  "tempdir": data["tempdir"]}
+        self.assertEqual(ambient_state(), before, "guarded children changed this process's ambient state")
+        report = os.environ.get(PROBE_ENV + "_REPORT")
+        if os.environ.get(PROBE_ENV) and report:
+            Path(report).write_text(json.dumps(summary, sort_keys=True))
 
 
 if __name__ == "__main__":

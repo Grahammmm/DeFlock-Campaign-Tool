@@ -27,6 +27,8 @@ import urllib.parse  # noqa: E402
 
 HELPER = Path(os.path.abspath(__file__))
 REPO = HELPER.parents[1]
+PROBE = REPO / "tests" / "fixtures" / "fa1301" / "ordinary_probe.py"
+BOUNDARY_ATTR = "FA1301_BOUNDARY_RUN_DIR"  # set on this __main__ module only after the boundary is installed
 CASES = ("behavior", "compatibility", "negative-control", "isolation", "credential-scan", "public-tree")
 MODULE = "tests.records.test_fa1301"
 SUITES = {
@@ -109,7 +111,7 @@ def _install_boundary(run_dir, repo):
             read_roots.add(os.path.realpath(value))
     read_roots.update({"/usr/lib", "/usr/share/zoneinfo", "/proc/self"})
     read_files = {"/dev/null", "/dev/urandom", "/etc/localtime"}
-    allowed_exec = (os.path.realpath(sys.executable), str(HELPER))
+    allowed_exec = (os.path.realpath(sys.executable), (str(HELPER), str(PROBE)))
 
     def under(path, roots):
         return any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
@@ -158,7 +160,7 @@ def _install_boundary(run_dir, repo):
                 executable, argv = args[0], list(args[1] or [])
                 argv0 = os.path.realpath(str(executable or (argv[0] if argv else "")))
                 if not (len(argv) >= 3 and argv0 == allowed_exec[0] and argv[1] == "-B"
-                        and os.path.abspath(str(argv[2])) == allowed_exec[1]):
+                        and os.path.abspath(str(argv[2])) in allowed_exec[1]):
                     record("process", argv[:3])
             elif event in ("os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "pty.spawn"):
                 record("process", event)
@@ -214,12 +216,15 @@ def child_main(suite, run_dir):
     repo = REPO
     sys.path[:] = [str(repo)] + [p for p in sys.path if p and os.path.abspath(p) not in (str(repo), os.getcwd())]
     _install_boundary(run_dir, repo)
+    # In-process marker for tests.records.test_fa1301: application tests run only when it is present.
+    setattr(sys.modules[__name__], BOUNDARY_ATTR, os.path.realpath(run_dir))
     result_path = run_dir / "child-result.json"
     if suite == "probe":
         return _probe(run_dir, repo, result_path)
     if suite not in SUITES:
         print("refused: unknown child suite", file=sys.stderr)
         return 2
+    import tempfile
     import unittest
     modules = _child_modules(repo)
     loader = unittest.TestLoader()
@@ -236,6 +241,8 @@ def child_main(suite, run_dir):
         "expected_failures": len(outcome.expectedFailures),
         "unexpected_successes": len(outcome.unexpectedSuccesses),
         "modules": modules, "test_module": getattr(test_module, "__file__", None),
+        "boundary": getattr(sys.modules[__name__], BOUNDARY_ATTR, None),
+        "tempdir": os.path.realpath(tempfile.gettempdir()),
         "dont_write_bytecode": bool(sys.flags.dont_write_bytecode and sys.dont_write_bytecode),
         "sentinel_hits": _HITS, "runner_output": stream.getvalue(),
     }
@@ -448,7 +455,8 @@ def identity():
         proc = subprocess.run(["git", *args], cwd=REPO, capture_output=True)
         return proc.stdout
     files = {}
-    for relative in ("campaign_tool/records/ledger/store.py", "tests/records/test_fa1301.py", "tools/accept_fa1301.py"):
+    for relative in ("campaign_tool/records/ledger/store.py", "tests/records/test_fa1301.py", "tools/accept_fa1301.py",
+                     "tests/fixtures/fa1301/ordinary_probe.py"):
         path = REPO / relative
         files[relative] = sha_file(path) if path.is_file() else None
     manifest = REPO.parent / "SOURCE-MANIFEST.json"
