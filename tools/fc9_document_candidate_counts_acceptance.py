@@ -39,12 +39,10 @@ FIXTURE_FILE = "tests/fixtures/fc9-document-candidate-counts/cases.json"
 RUNNER_FILE = "tools/fc9_document_candidate_counts_acceptance.py"
 AUTHORED = (SUITE_FILE, FIXTURE_FILE, RUNNER_FILE)
 COMPAT_SELECTORS = ("tests.records.test_understanding.DocumentTests", "tests.records.test_fc_doc_coverage")
-# Read-only subjects pinned by the card brief; any byte change fails every phase.
-PINNED_SOURCES = {
-    "campaign_tool/records/understanding/document.py": "f3a48098d27ad71061781d2eaacfde803f3f1be108f2a4fce3085f12dacd9a27",
-    "tests/records/test_understanding.py": "77fa084d176066327bc1795381a911671da7875f1f5721e164002616d6f5922a",
-    "tests/records/test_fc_doc_coverage.py": "ceadbfa869eca6264a04077cf098260f5c2a8fb7dde9142c668052e8fb21a257",
-}
+# Read-only subjects named by the card brief. They must be byte-identical to the
+# pinned base (git blob comparison); measured SHA256 values are receipted.
+PINNED_SOURCES = ("campaign_tool/records/understanding/document.py", "tests/records/test_understanding.py",
+                  "tests/records/test_fc_doc_coverage.py")
 CHECKER_FILES = ("tools/check_public_tree.py", "campaign_tool/records/public_scan.py", "tools/check_secret_report.py")
 SENTINEL_TEST = "tests.records.test_understanding.EvidenceTests.test_receipt_normalizes_to_pinned_bundle"
 CONTRACT_TESTS = ("test_frozen_caps_match_product_constants", "test_fixture_expectations_are_frozen_count_arithmetic",
@@ -186,8 +184,16 @@ def check_manifest(run: Run, manifest_path: Path, phase: str) -> dict:
         run.need(Path(sys.prefix).resolve() == venv.resolve(), "interpreter is not the staged repo venv")
         run.need(Path(sys.executable).parent.parent == REPO / ".venv",
                  "interpreter was not invoked through the staged repo .venv")
-    for rel, pinned in PINNED_SOURCES.items():
-        run.need(sha256_file(REPO / rel) == pinned, f"read-only pinned source changed: {rel}")
+    unchanged_base = run.child("pinned-sources-vs-base", ["git", "diff", "--quiet", base, "HEAD", "--",
+                                                          *PINNED_SOURCES], REPO)
+    unchanged_tree = run.child("pinned-sources-vs-worktree", ["git", "diff", "--quiet", "HEAD", "--",
+                                                              *PINNED_SOURCES], REPO)
+    run.need(unchanged_base["exit"] == 0 and unchanged_tree["exit"] == 0,
+             "read-only pinned sources differ from the pinned base")
+    facts["pinned_sha256"] = {rel: sha256_file(REPO / rel) for rel in PINNED_SOURCES}
+    _, changed = run.git("changed-paths", "diff", "--name-only", base, "HEAD")
+    facts["changed_paths"] = changed.split()
+    run.need(sorted(facts["changed_paths"]) == sorted(AUTHORED), f"diff outside write set: {facts['changed_paths']}")
     facts["runtime"] = runtime
     return facts
 
