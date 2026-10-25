@@ -135,9 +135,16 @@ def evidence(*values):
     return identity(*values)
 
 
+def _manifest_entry(indexes, ordinal):
+    """Exact in-range position only; Python negative indexes must never alias an entry."""
+    if not isinstance(indexes,list) or type(ordinal) is not int or not 0<=ordinal<len(indexes):
+        raise IndexError('source ordinal out of range')
+    return indexes[ordinal]
+
+
 def source_valid(sid,mid,ordinal,path,mapping,expected,body):
     try:
-        spec=strict_json(body)['indexes'][ordinal]
+        spec=_manifest_entry(strict_json(body)['indexes'],ordinal)
         return int(sid==identity(mid,ordinal) and path==spec['path'] and expected==spec['sha256']
                    and mapping==canonical({'kind':spec['kind'],'fields':spec['fields'],'declarations':spec.get('declarations',{}),'artifact_paths':spec.get('artifact_paths',{})}))
     except (ValueError,IndexError,KeyError,TypeError): return 0
