@@ -89,6 +89,8 @@ RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
 SUMMARY = re.compile(r"^(OK|FAILED)(?: \(([^)]*)\))?\s*$", re.M)
 VERBOSE = re.compile(r"^(test\w*) \(([\w.]+)\)(?:\n[^\n]*?)? \.\.\. (ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)$",
                      re.M)
+# Failure/error block headers, including subTest failures that leave no "... ok" line.
+FAILURE_HEADER = re.compile(r"^(ERROR|FAIL): (test\w*) \(([\w.]+)\)", re.M)
 UNHASHABLE = re.compile(r"^TypeError: (?:cannot use '[^']+' as a set element \()?unhashable type: '(?:dict|list)'", re.M)
 
 
@@ -183,8 +185,9 @@ def parse_unittest(stderr_text):
              for m in VERBOSE.finditer(stderr_text)]
     detail = summary[-1][1] if summary else ""
     counts = dict((k.strip(), int(v)) for k, v in (part.split("=") for part in detail.split(", ") if "=" in part))
+    failing = sorted({verbose_test_id(m.group(2), m.group(3)) + " " + m.group(1) for m in FAILURE_HEADER.finditer(stderr_text)})
     return {"tests_run": int(ran[-1]) if ran else 0, "summary": summary[-1][0] if summary else None,
-            "summary_detail": detail, "summary_counts": counts, "tests": tests}
+            "summary_detail": detail, "summary_counts": counts, "tests": tests, "failing_test_ids": failing}
 
 
 class _ParserControl(unittest.TestCase):
