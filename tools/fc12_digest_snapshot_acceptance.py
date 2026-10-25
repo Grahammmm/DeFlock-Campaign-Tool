@@ -370,10 +370,10 @@ def compatibility(e):
     import unittest
     sys.path.insert(0, str(REPO))
     selected = unittest.TestLoader().loadTestsFromNames(list(SELECTORS))
+    ids = sorted(test.id() for test in iterate(selected))  # before running: TestSuite drops tests after a run
     # Raw unittest output is a real file, not a synthesized count.
     with (e.output / "unittest.txt").open("x") as stream:
         result = unittest.TextTestRunner(stream=stream, verbosity=2).run(selected)
-    ids = sorted(test.id() for test in iterate(selected))
     summary = {"selectors": list(SELECTORS), "test_ids": ids, "tests_run": result.testsRun,
                "failures": len(result.failures), "errors": len(result.errors), "skipped": len(result.skipped)}
     save(e.output / "compatibility-summary.json", summary)
