@@ -27,7 +27,20 @@ CITATIONS = {
 CHP_RETENTION_DAYS = 60
 
 RETENTION_CONTEXT = re.compile(r"(?i)\b(retain|retention|retained|kept|keep|stored|store|purge[sd]?|delete[sd]?|destroy(?:ed)?|preserv\w*)\b")
-DURATION = re.compile(r"(?i)\b(\d{1,4})\s*[- ]?\s*(day|days|month|months|year|years|week|weeks|hour|hours)\b")
+# A duration is a complete nonnegative plain integer (1-4 digits) plus a unit.
+# The lookbehinds/lookahead refuse to read a fragment of a larger numeric token:
+# a sign or leading decimal point (-30, +30, \u221230, \u00b130, .5), the tail of a
+# decimal, grouped, fraction or clock number (1.5, 1,000, 1'000, 1\u202f000, 1/2,
+# 1:30), the end of a hyphen/dash range with or without single spaces (30-60,
+# 30 \u2013 60) and a space-grouped thousands tail (1 000). Such forms stay
+# uninterpreted; scanning continues, so a later well-formed duration still hits.
+DURATION = re.compile(
+    r"(?i)\b"
+    r"(?<![.+\-\u2212\u2013\u2014\u00b1])"
+    r"(?<!\d[.,'\u2019/:\u00a0\u2009\u202f])"
+    r"(?<!\d\s[-\u2013\u2014])(?<!\d[-\u2013\u2014]\s)(?<!\d\s[-\u2013\u2014]\s)"
+    r"(?!(?<=\d )\d{3}(?!\d))"
+    r"(\d{1,4})\s*[- ]?\s*(day|days|month|months|year|years|week|weeks|hour|hours)\b")
 SHARING = re.compile(r"(?i)\b(out[- ]of[- ]state|other states?|federal(?:\s+agenc\w+)?|nationwide|national\s+(?:lookup|search|network)|ICE|Immigration and Customs|Customs and Border|CBP|DHS|FBI|Homeland Security|U\.?S\.? Marshals?)\b")
 IMMIGRATION = re.compile(r"(?i)\b(immigration|ICE|Immigration and Customs|CBP|Customs and Border)\b")
 AUDIT = re.compile(r"(?i)\b(audit(?:s|ed|ing)?|audit\s+log|access\s+log|query\s+log|search\s+log|record\s+of\s+(?:each\s+)?access|log\s+of\s+(?:each\s+)?(?:access|query|search))\b")
