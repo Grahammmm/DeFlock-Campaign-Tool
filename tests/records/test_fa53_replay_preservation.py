@@ -9,9 +9,11 @@ the same assertions against the pinned original module as a negative control.
 """
 from email.message import EmailMessage
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
+import secrets
 import sqlite3
 import stat
 import tempfile
@@ -24,6 +26,22 @@ ATTACHMENTS = (b"%PDF-1.4\nfa53 synthetic attachment one\n",
 PRIOR = b"fa53 synthetic prior catalog record"
 EXPECTED_REFUSAL = "existing_blob_invalid"
 MISSING_CASES = ("original", "one_attachment", "multiple")
+HELPER = Path(__file__).resolve().parents[2] / "tools" / "accept_fa53_replay_preservation.py"
+# Set by the acceptance helper to a fresh per-invocation evidence directory so
+# A3 before/after snapshots are retained; None (direct unittest runs) keeps
+# them in memory only.
+SNAPSHOT_SINK = None
+
+
+def retain_snapshot(case_id, record):
+    if SNAPSHOT_SINK is None:
+        return None
+    sink = Path(SNAPSHOT_SINK)
+    sink.mkdir(mode=0o700, exist_ok=True)
+    path = sink / (case_id + ".json")
+    with open(path, "x") as handle:  # a duplicate case ID is an error, never an overwrite
+        handle.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return path
 
 
 def sha(data):
@@ -242,12 +260,19 @@ class _Base(unittest.TestCase):
         self.assertEqual(result["status"], "imported")
         return out, result
 
-    def assert_refused_unchanged(self, out, code):
+    def assert_refused_unchanged(self, out, code, case_id, missing=()):
         before = snapshot(out, self.receipt, self.fx.root)
-        with self.assertRaises(self.MODULE.Rejected) as caught:
-            self.run_import(out)
-        self.assertEqual(str(caught.exception), code)
-        self.assertEqual(snapshot(out, self.receipt, self.fx.root), before)
+        outcome = list(attempt(self.MODULE, self.receipt, self.fx.root, out))
+        after = snapshot(out, self.receipt, self.fx.root)
+        # JSON round-trip so the retained record compares exactly like the in-memory one.
+        before, after = json.loads(json.dumps(before)), json.loads(json.dumps(after))
+        retain_snapshot(case_id, {
+            "case_id": case_id, "test_id": self.id(), "module": self.MODULE.__name__,
+            "module_file": self.MODULE.__file__, "expected_refusal": code, "outcome": outcome,
+            "missing_declarations": sorted(missing), "before": before, "after": after,
+            "unchanged": before == after})
+        self.assertEqual(outcome, ["rejected", code])
+        self.assertEqual(after, before)
         # Caller rollback: no transaction or writer lock lingers after refusal.
         db = sqlite3.connect(out / "intake.sqlite", timeout=0)
         try:
@@ -312,7 +337,7 @@ class A2MissingDeclarationTests(_Base):
         self.assertEqual(self.rows(out, "SELECT * FROM edges ORDER BY child"),
                          self.rows(template, "SELECT * FROM edges ORDER BY child"))
         active = self.active(out)
-        self.assert_refused_unchanged(out, EXPECTED_REFUSAL)
+        self.assert_refused_unchanged(out, EXPECTED_REFUSAL, "a2-missing-" + case, absent)
         self.assertEqual(self.active(out), active)
         self.assertFalse(absent & {row[0] for row in self.rows(out, "SELECT sha FROM preservations")})
 
@@ -337,7 +362,7 @@ class A2MissingDeclarationTests(_Base):
     def test_a2_wrong_size_declaration_keeps_size_conflict(self):
         template, _ = self.template()
         out = self.fx.construct(template, "wrong-size", wrong_size=[self.fx.attachment_shas[1]])
-        self.assert_refused_unchanged(out, "preservation_size_conflict")
+        self.assert_refused_unchanged(out, "preservation_size_conflict", "a2-wrong-size")
 
 
 class A3ConsumerBoundaryTests(_Base):
@@ -356,9 +381,9 @@ class A3ConsumerBoundaryTests(_Base):
         template, _ = self.template()
         target = self.fx.attachment_shas[1]
         absent = self.fx.construct(template, "absent-blob", skip_blobs=[target])
-        self.assert_refused_unchanged(absent, EXPECTED_REFUSAL)
+        self.assert_refused_unchanged(absent, EXPECTED_REFUSAL, "a3-absent-blob")
         corrupt = self.fx.construct(template, "corrupt-blob", corrupt_blobs=[self.fx.eml_sha])
-        self.assert_refused_unchanged(corrupt, EXPECTED_REFUSAL)
+        self.assert_refused_unchanged(corrupt, EXPECTED_REFUSAL, "a3-corrupt-blob")
 
     def test_a3_outcome_driver_matches_frozen_behavior(self):
         outcomes = missing_declaration_outcomes(self.MODULE, Path(self.fx.base) / "driver")
@@ -366,6 +391,75 @@ class A3ConsumerBoundaryTests(_Base):
         self.assertEqual(outcomes["fully_declared"][0], "replay")
         for case in MISSING_CASES:
             self.assertEqual(outcomes[case], ["rejected", EXPECTED_REFUSAL], case)
+
+
+class HelperEvidenceRootTests(unittest.TestCase):
+    """A5: the acceptance helper refuses unsafe evidence parents before writing anything."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("fa53_acceptance_helper", HELPER)
+        cls.helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.helper)
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="fa53-root-")
+        self.addCleanup(temp.cleanup)
+        self.base = Path(os.path.realpath(temp.name))
+        self.admitted = self.base / "candidate"
+        self.repo = self.admitted / "repo"
+        self.repo.mkdir(parents=True)
+        (self.admitted / "real").mkdir()
+        (self.admitted / "plain-file").write_bytes(b"")
+        (self.admitted / "link-leaf").symlink_to(self.admitted / "real", target_is_directory=True)
+        (self.admitted / "link-outside").symlink_to(self.base, target_is_directory=True)
+
+    def check(self, raw):
+        return self.helper.safe_output_parent(str(raw), admitted=self.admitted, repo=self.repo)
+
+    def tree(self):
+        # os.walk never follows the deliberately linked directories.
+        return sorted((os.path.join(top, name), os.path.islink(os.path.join(top, name)))
+                      for top, dirs, files in os.walk(self.base) for name in dirs + files)
+
+    def test_in_root_parents_accepted(self):
+        for raw in (self.admitted / "evidence", self.admitted / "real", self.admitted / "real" / "new"):
+            self.assertEqual(self.check(raw), (raw, None), raw)
+
+    def test_unsafe_parents_refused_without_writing(self):
+        before = self.tree()
+        refusals = {
+            "evidence": "output_parent_not_absolute",
+            self.base / "outside": "output_parent_outside_candidate",
+            self.admitted: "output_parent_outside_candidate",
+            str(self.admitted) + "/../escape": "output_parent_outside_candidate",
+            str(self.admitted) + "-sibling/evidence": "output_parent_outside_candidate",
+            self.repo: "output_parent_inside_repo",
+            self.repo / "evidence": "output_parent_inside_repo",
+            self.admitted / "link-leaf": "output_parent_linked:" + str(self.admitted / "link-leaf"),
+            self.admitted / "link-leaf" / "evidence": "output_parent_linked:" + str(self.admitted / "link-leaf"),
+            self.admitted / "link-outside" / "evidence":
+                "output_parent_linked:" + str(self.admitted / "link-outside"),
+            self.admitted / "plain-file": "output_parent_not_directory:" + str(self.admitted / "plain-file"),
+            self.admitted / "plain-file" / "evidence":
+                "output_parent_not_directory:" + str(self.admitted / "plain-file"),
+            self.admitted / "missing" / "evidence": "output_parent_ancestor_missing",
+        }
+        for raw, problem in refusals.items():
+            self.assertEqual(self.check(raw), (None, problem), raw)
+        self.assertEqual(self.tree(), before)
+        self.assertFalse((self.base / "outside").exists())
+
+    def test_default_root_is_the_directory_containing_the_repository(self):
+        helper = self.helper
+        self.assertEqual(helper.ADMITTED_ROOT, HELPER.parents[2])
+        token = secrets.token_hex(6)
+        outside = helper.ADMITTED_ROOT.parent / ("fa53-outside-" + token)
+        self.assertEqual(helper.safe_output_parent(str(outside)), (None, "output_parent_outside_candidate"))
+        self.assertFalse(outside.exists())
+        inside = helper.ADMITTED_ROOT / ("fa53-evidence-probe-" + token)
+        self.assertEqual(helper.safe_output_parent(str(inside)), (inside, None))
+        self.assertFalse(inside.exists())
 
 
 del _Base

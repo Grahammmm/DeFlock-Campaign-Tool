@@ -27,6 +27,9 @@ import sys
 sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parents[1]
+# Exclusive candidate root: this file is <candidate>/repo/tools/<name>. Evidence
+# parents must lie strictly below it (and outside the repository).
+ADMITTED_ROOT = REPO.parent
 PRODUCT = "campaign_tool/records/intake/mail_delta.py"
 TEST_MODULE = "tests.records.test_fa53_replay_preservation"
 AUTHORED = (PRODUCT, "tests/records/test_fa53_replay_preservation.py",
@@ -43,6 +46,12 @@ BASELINE_EXPECTED_FAILURES = (
     "test_a3_outcome_driver_matches_frozen_behavior",
 )
 APP_MODULES = ("campaign_tool.records.intake.mail_delta", "campaign_tool.records.intake.folder")
+# A3: retained before/after snapshots, one JSON file per refused-replay case ID.
+# Missing-declaration cases map to how many preservation declarations they omit.
+SNAPSHOT_DIR = "a3-snapshots"
+MISSING_SNAPSHOTS = {"a2-missing-original": 1, "a2-missing-one_attachment": 1, "a2-missing-multiple": 3}
+OTHER_SNAPSHOTS = {"a2-wrong-size": "preservation_size_conflict", "a3-absent-blob": "existing_blob_invalid",
+                   "a3-corrupt-blob": "existing_blob_invalid"}
 CASES = ("behavior", "compatibility", "negative-control", "isolation", "credentials")
 SCRUBBED_ENV_PREFIXES = ("PYTHON", "LD_")
 SCRUBBED_ENV_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "OLLAMA", "OPENAI", "ANTHROPIC",
@@ -73,11 +82,20 @@ def identity():
             "clean_tree": status == b"", "file_sha256": files}
 
 
-def safe_output_parent(raw):
-    """Refuse relative, linked, in-repo or non-directory evidence parents before writing."""
-    path = Path(os.path.abspath(raw))
+def safe_output_parent(raw, admitted=None, repo=None):
+    """Refuse relative, out-of-candidate, linked, in-repo or non-directory evidence parents.
+
+    Pure predicate: it only inspects (lstat) and never creates anything. The
+    containment test runs before any filesystem access, so an out-of-root path
+    is refused without touching it.
+    """
+    admitted = Path(os.path.abspath(admitted or ADMITTED_ROOT))
+    repo = Path(os.path.abspath(repo or REPO))
     if not Path(raw).is_absolute():
         return None, "output_parent_not_absolute"
+    path = Path(os.path.abspath(raw))
+    if path == admitted or not path.is_relative_to(admitted):
+        return None, "output_parent_outside_candidate"
     probe = Path("/")
     for part in path.parts[1:]:
         probe = probe / part
@@ -91,9 +109,9 @@ def safe_output_parent(raw):
             return None, "output_parent_linked:" + str(probe)
         if not stat.S_ISDIR(mode.st_mode):
             return None, "output_parent_not_directory:" + str(probe)
-    if path == REPO or path.is_relative_to(REPO):
+    if path == repo or path.is_relative_to(repo):
         return None, "output_parent_inside_repo"
-    if REPO.is_relative_to(path):
+    if repo.is_relative_to(path):
         return None, "output_parent_contains_repo"
     return path, None
 
@@ -213,6 +231,20 @@ def check_credentials(run):
             "raw_report_hits": hits, "checker_summary": summary}
 
 
+def rebind_snapshots(run, verdict):
+    """Parent re-hash of the child's retained A3 snapshots; fail closed on any gap."""
+    report = verdict.get("a3_snapshots")
+    expected = set(MISSING_SNAPSHOTS) | set(OTHER_SNAPSHOTS)
+    if not isinstance(report, dict) or set(report.get("cases") or {}) != expected or report.get("problems"):
+        return False
+    for case in sorted(expected):
+        entry = report["cases"][case]
+        path = Path(entry["path"])
+        if path.parent != run.dir / SNAPSHOT_DIR or not path.is_file() or sha256_file(path) != entry["sha256"]:
+            return False
+    return True
+
+
 def parent_main(args):
     started = datetime.now(timezone.utc).isoformat()
     parent, problem = safe_output_parent(args.output_parent)
@@ -246,6 +278,10 @@ def parent_main(args):
             verdict["source_copy"] = str(copy)
     else:
         verdict = check_credentials(run)
+    if args.case in ("behavior", "isolation"):
+        verdict["a3_snapshots_rebound"] = rebind_snapshots(run, verdict)
+        if not verdict["a3_snapshots_rebound"]:
+            verdict["pass"] = False
     after = identity()
     stable = before == after
     passed = verdict.get("pass") is True and stable and bool(run.children) and all(
@@ -263,7 +299,8 @@ def parent_main(args):
                       "result_sha256": sha256_file(run.dir / "result.json"),
                       "head": after["head"], "tests_run": verdict.get("tests_run"),
                       "failures": verdict.get("failures"), "errors": verdict.get("errors"),
-                      "skipped": verdict.get("skipped")}, sort_keys=True))
+                      "skipped": verdict.get("skipped"),
+                      "a3_snapshots_rebound": verdict.get("a3_snapshots_rebound")}, sort_keys=True))
     return record["exit"]
 
 
@@ -433,6 +470,54 @@ def clean(result):
             and not result.expectedFailures and not result.unexpectedSuccesses)
 
 
+def verify_snapshots(sink):
+    """A3: every refused-replay case left a complete, unchanged before/after snapshot."""
+    expected = dict(OTHER_SNAPSHOTS, **{case: "existing_blob_invalid" for case in MISSING_SNAPSHOTS})
+    report = {"dir": str(sink), "cases": {}, "problems": []}
+    present = sorted(p.name for p in sink.iterdir()) if sink.is_dir() else []
+    unexpected = sorted(set(present) - {case + ".json" for case in expected})
+    if unexpected:
+        report["problems"].append("unexpected_snapshot_files:" + ",".join(unexpected))
+    for case, code in sorted(expected.items()):
+        path = sink / (case + ".json")
+        try:
+            raw = path.read_bytes()
+            data = json.loads(raw)
+        except (OSError, ValueError):
+            report["problems"].append(case + ":missing_or_malformed")
+            continue
+        before, after = data.get("before"), data.get("after")
+        problems = []
+        if data.get("case_id") != case or data.get("expected_refusal") != code:
+            problems.append("case_or_code_mismatch")
+        if data.get("outcome") != ["rejected", code]:
+            problems.append("outcome_not_refusal")
+        complete = all(isinstance(s, dict) and isinstance(s.get("tables"), dict) and s["tables"]
+                       and isinstance(s.get("files"), dict) and s["files"] for s in (before, after))
+        if not complete:
+            problems.append("snapshot_incomplete")
+        elif before != after or data.get("unchanged") is not True:
+            problems.append("snapshot_changed")
+        else:
+            files = before["files"]
+            if not any(name.endswith("/receipt.json") and entry[1] for name, entry in files.items()):
+                problems.append("receipt_hash_missing")
+            if not any("/blobs/" in name and entry[1] for name, entry in files.items()):
+                problems.append("blob_hashes_missing")
+            if not before["tables"].get("preservations") and case not in MISSING_SNAPSHOTS:
+                problems.append("preservation_rows_missing")
+        if case in MISSING_SNAPSHOTS and complete:
+            missing = data.get("missing_declarations") or []
+            declared = {json.loads(row)[0] for row in before["tables"].get("preservations", [])}
+            if len(missing) != MISSING_SNAPSHOTS[case] or set(missing) & declared:
+                problems.append("missing_declarations_inconsistent")
+        report["cases"][case] = {"path": str(path), "sha256": sha256_bytes(raw), "problems": problems,
+                                 "tables": sorted(before["tables"]) if complete else None,
+                                 "file_count": len(before["files"]) if complete else None}
+        report["problems"] += [case + ":" + p for p in problems]
+    return report
+
+
 def child_main(args):
     run_dir = Path(args.run_dir).resolve()
     source = Path(args.source_root).resolve()
@@ -451,10 +536,19 @@ def child_main(args):
     import unittest
     checks = {}
     if args.child in ("unittest", "isolation"):
+        sink = None
+        if TEST_MODULE in args.module:
+            import importlib
+            fa53 = importlib.import_module(TEST_MODULE)
+            sink = run_dir / SNAPSHOT_DIR
+            setattr(fa53, "SNAPSHOT_SINK", sink)
         suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(name) for name in args.module)
         result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(suite)
         record.update(unittest_record(result), modules=args.module)
         checks["tests_clean"] = clean(result)
+        if sink is not None:
+            record["a3_snapshots"] = verify_snapshots(sink)
+            checks["a3_snapshots_retained"] = not record["a3_snapshots"]["problems"]
     else:
         record.update(negative_control(Path(args.baseline), args.baseline_sha256, tmp))
         checks["negative_control"] = record.pop("pass")
