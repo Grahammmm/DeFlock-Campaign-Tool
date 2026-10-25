@@ -352,7 +352,8 @@ def run_suite(report_path, discovery=False):
     suite = (loader.discover(str(REPO / "tests/records"), pattern="test_fc9_review_restart_lifecycle.py",
                             top_level_dir=str(REPO)) if discovery
              else loader.loadTestsFromName(MODULE + ".RestartLifecycleTests"))
-    result = unittest.TextTestRunner(verbosity=2, resultclass=CoverageResult).run(suite)
+    with (Path(report_path).parent / "unittest.txt").open("x") as stream:
+        result = unittest.TextTestRunner(stream=stream, verbosity=2, resultclass=CoverageResult).run(suite)
     required = set(fixture()["required_dimensions"])
     summary = {"tests_run": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
         "skipped": len(result.skipped), "dimensions": sorted(result.dimensions),
