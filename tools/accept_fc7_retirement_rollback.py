@@ -634,7 +634,15 @@ def remote_url():
         return None
 
 
-def git_identity():
+def staged_venv_link(manifest):
+    """The operator-staged, untracked ``.venv`` link is the only tolerated status entry, and only when it is
+    a symlink resolving to the manifest's declared repo_venv."""
+    declared = ((manifest or {}).get("runtime") or {}).get("repo_venv")
+    link = REPO / ".venv"
+    return bool(declared and link.is_symlink() and link.resolve() == Path(declared).resolve())
+
+
+def git_identity(manifest=None):
     identity = {}
     for name, args in (("head", ("rev-parse", "HEAD")),
                        ("status_porcelain", ("status", "--porcelain", "--untracked-files=all"))):
@@ -643,7 +651,10 @@ def git_identity():
         except (OSError, subprocess.SubprocessError) as error:
             identity[name] = None
             identity[name + "_error"] = type(error).__name__
-    identity["clean"] = identity.get("status_porcelain") == ""
+    entries = [line for line in (identity.get("status_porcelain") or "").splitlines() if line]
+    identity["tolerated_status_entries"] = [e for e in entries if e == "?? .venv" and staged_venv_link(manifest)]
+    identity["clean"] = (identity.get("status_porcelain") is not None
+                         and entries == identity["tolerated_status_entries"])
     try:
         identity["base"] = baseline_commit()
         identity["changed_files_vs_base"] = sorted(git("diff", "--name-only", identity["base"], "HEAD").split())
@@ -1266,7 +1277,7 @@ def main(argv=None):
               "repo_root": str(REPO), "run_dir": str(run_dir), "started_utc": now(),
               "remote_origin": origin, "source_manifest": manifest,
               "manifest_gate_qualification": qualify_manifest_gate(run_dir, origin),
-              "base_selector": BASE_SELECTOR, "git": git_identity(), "source_hashes": source_hashes(REPO),
+              "base_selector": BASE_SELECTOR, "git": git_identity(load_manifest(manifest_path())), "source_hashes": source_hashes(REPO),
               "full_discovery": "operator-run (OWED, not PASS)",
               "children": [], "acceptance": "REVIEW REQUIRED; machine validity only, not semantic/legal acceptance"}
     if manifest_problems:
