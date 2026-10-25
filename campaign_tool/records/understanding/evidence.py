@@ -58,7 +58,7 @@ def normalize_receipt(receipt,subject,receipt_sha256,format=None,extra_context=N
     need(type(raw_units)is list and type(pages)is list,"native_receipt_units")
     out=[];gaps=[]
     for ordinal,raw in enumerate(raw_units,1):
-        if ordinal>MAX_UNITS:gaps.append({"code":"unit_count_bound","first_unprocessed_ordinal":ordinal,"remaining":len(raw_units)-len(out)});break
+        if ordinal>MAX_UNITS:gaps.append({"code":"unit_count_bound","first_unprocessed_ordinal":ordinal,"remaining":len(raw_units)-ordinal+1});break
         try:out.append(unit(raw,subject,receipt_sha256,ordinal))
         except (ValueError,UnicodeError,TypeError):gaps.append({"code":"unit_normalization_failed","ordinal":ordinal})
     context={"format":format or receipt.get("route",{}).get("format","unknown"),"native_status":receipt.get("status","unknown"),"pages":pages,"declared_unit_count":len(raw_units),"normalized_unit_count":len(out),"normalization_gaps":gaps,"parser":receipt.get("parser"),"parser_version":receipt.get("parser_version"),"native_receipt_sha256":receipt_sha256,"review_acceptance":False,"semantic_acceptance":False}
