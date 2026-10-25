@@ -3,7 +3,7 @@
 No registration, run creation, promotion or I/O occurs at import. Inputs are
 untrusted data. Default catalog build/export remain read-only.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -50,6 +50,32 @@ def _decode(raw):
                           parse_constant=lambda value: (_ for _ in ()).throw(ValueError()))
     except (ValueError, UnicodeError, TypeError, RecursionError) as error:
         raise CatalogStageError("invalid_card_json") from error
+
+
+# Stored lease expiry: RFC3339-style date-time with explicit Z or signed HH:MM.
+# ASCII digits only; up to six fractional digits (the precision datetime holds).
+_LEASE_CLOCK = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})"
+                          r"(?:\.([0-9]{1,6}))?(?:(Z)|([+-])([0-9]{2}):([0-9]{2}))")
+
+
+def _decision_instant():
+    """The one trusted UTC instant a lease decision compares against."""
+    return datetime.now(timezone.utc)
+
+
+def _lease_expiry(value):
+    """Strictly parse a stored lease expiry; never coerce or repair it."""
+    match = _LEASE_CLOCK.fullmatch(value) if type(value) is str else None
+    require(match is not None, "catalog_lease_clock_invalid")
+    year, month, day, hour, minute, second, fraction, zulu, sign, offset_hours, offset_minutes = match.groups()
+    require(zulu or (int(offset_hours) <= 23 and int(offset_minutes) <= 59), "catalog_lease_clock_invalid")
+    offset = timedelta(0) if zulu else (1 if sign == "+" else -1) * timedelta(
+        hours=int(offset_hours), minutes=int(offset_minutes))
+    try:
+        return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second),
+                        int((fraction or "0").ljust(6, "0")), tzinfo=timezone(offset))
+    except ValueError as error:
+        raise CatalogStageError("catalog_lease_clock_invalid") from error
 
 
 def _locator(value):
@@ -404,7 +430,14 @@ class CatalogStage:
                     return {"status": "blocked", "reason": "production_extraction_authority_required",
                             "promoted": False, "canonical_stage_changed": False}
             lease = con.execute("SELECT * FROM work_leases WHERE item_key=?", ("stage:" + subject + ":catalog",)).fetchone()
-            if lease and datetime.fromisoformat(lease["expires_at"]) > datetime.now(timezone.utc):
+            if lease:
+                # A malformed stored expiry is a gap, decided before any new stage work.
+                try:
+                    expires_at = _lease_expiry(lease["expires_at"])
+                except CatalogStageError:
+                    return {"status": "blocked", "reason": "catalog_lease_clock_invalid",
+                            "promoted": False, "canonical_stage_changed": False}
+            if lease and expires_at > _decision_instant():
                 current_claim = con.execute("SELECT owner,run_id FROM stage_claims WHERE subject_sha256=? AND stage='catalog' AND leased_at=?",
                                             (subject, lease["leased_at"])).fetchone()
                 if current_claim is None or current_claim["owner"] != self.runner.owner or current_claim["run_id"] != self.runner.run_id:

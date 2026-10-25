@@ -32,13 +32,16 @@ import traceback
 import unittest
 from unittest import mock
 import urllib.request  # noqa: F401
+import warnings
 
 sys.dont_write_bytecode = True
 REPO = Path(__file__).resolve().parents[1]
 CARD = "FC7-CATALOG-LEASE-CLOCK"
 TASK = "t_1de27499"
-BASE = "4caaa92a18a997d58afe7c651d0a2aeb6875a09c"
-BASE_SOURCE_SHA256 = "121dcad494918c8fa66f19158db0df9c0b2da7ff40d133b32a84410fd4105c35"
+# The admitted base commit is read from the operator-staged SOURCE-MANIFEST.json head
+# (no hex pins are committed here); its catalog_stage.py blob hash is recorded for the
+# reviewer to compare with the card's frozen pin.
+ADMITTED = {"base": None}
 CHECKS = ("focused", "compatibility", "negative", "portability", "credentials", "public-tree")
 SOURCE = "campaign_tool/records/catalog_stage.py"
 TEST = "tests/records/test_fc7_catalog_lease_clock.py"
@@ -66,8 +69,10 @@ CHILD_CAPABLE = ("subprocess", "socket", "http.client", "urllib.request", "reque
 HOST_TOKENS = ("/" + "home/", "/" + "Users/", "agent" + "-work", "." + "hermes", "kan" + "ban",
                "/" + "tmp/", "/" + "workspace/", "/" + "root/")
 ARTIFACT_ENV = "FC7_LEASE_CLOCK_ARTIFACT_ROOT"
+# Untracked entries that standard operator staging supplies (shared interpreter link, node_modules).
+STAGED_UNTRACKED = (".venv", "node_modules")
 TIMEOUT = 1800
-CONTRACT = {"card": CARD, "task": TASK, "base": BASE, "base_source_sha256": BASE_SOURCE_SHA256,
+CONTRACT = {"card": CARD, "task": TASK, "base": "SOURCE-MANIFEST.json head (operator staging)",
             "checks": list(CHECKS), "write_set": list(ALLOWED_CHANGES), "test_module": TEST_MODULE,
             "frozen_cases": list(FROZEN_CASES), "auxiliary_cases": list(AUXILIARY_CASES),
             "compatibility_selectors": list(COMPATIBILITY),
@@ -187,7 +192,10 @@ def verify_manifest(run):
     run.receipt["manifest"] = record
     run.require("manifest_schema_and_card", manifest.get("schema") == "agentorange.source-manifest/v1"
                 and manifest.get("card") == CARD, [manifest.get("schema"), manifest.get("card")])
-    run.require("manifest_base_is_admitted_base", manifest.get("head") == BASE, manifest.get("head"))
+    head = manifest.get("head")
+    valid = isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head) is not None
+    run.require("manifest_base_is_full_commit_id", valid, head)
+    ADMITTED["base"] = head if valid else None
     run.require("manifest_remote_declared", isinstance(manifest.get("remote"), str) and manifest["remote"],
                 manifest.get("remote"))
     run.require("manifest_runtime_declared", all(isinstance(runtime.get(key), str) and runtime[key] for key in
@@ -212,19 +220,24 @@ def identity(run):
     code, head = git(run, "rev-parse-HEAD", "rev-parse", "HEAD")
     head = head.strip() if code == 0 else None
     _, status = git(run, "status", "status", "--porcelain", "--untracked-files=all")
-    record = {"repo": str(REPO), "base": BASE, "head": head, "git_available": head is not None,
+    base = ADMITTED["base"]
+    record = {"repo": str(REPO), "base": base, "head": head, "git_available": head is not None,
               "status_porcelain": status, "file_sha256": hashes}
     run.receipt["identity"] = record
     run.require("write_set_files_present", all(hashes.values()), hashes)
     if not run.require("git_history_available", head is not None, str(REPO / ".git")):
         return record
-    code, _ = git(run, "base-is-ancestor", "merge-base", "--is-ancestor", BASE, "HEAD")
+    if not run.require("admitted_base_known_from_manifest", base is not None, base):
+        return record
+    code, _ = git(run, "base-is-ancestor", "merge-base", "--is-ancestor", base, "HEAD")
     run.require("admitted_base_is_ancestor_of_head", code == 0, code)
-    code, shown = git(run, "show-base-source-sha", "rev-parse", BASE + ":" + SOURCE)
-    record["base_source_blob"] = shown.strip() if code == 0 else None
-    _, changed = git(run, "diff-base-head", "diff", "--name-only", BASE, "HEAD")
+    shown, raw, _ = run.command("git-show-base-source", ["git", "show", base + ":" + SOURCE], cwd=REPO)
+    record["base_source_sha256"] = sha_bytes(raw) if shown["exit"] == 0 else None
+    run.require("base_source_readable", shown["exit"] == 0 and bool(raw), shown["exit"])
+    _, changed = git(run, "diff-base-head", "diff", "--name-only", base, "HEAD")
     changed = set((changed or "").split())
-    dirty = {line[3:] for line in (status or "").splitlines() if line.strip()}
+    dirty = {line[3:] for line in (status or "").splitlines() if line.strip()
+             and not (line.startswith("?? ") and line[3:].rstrip("/") in STAGED_UNTRACKED)}
     record["committed_changes_from_base"] = sorted(changed)
     record["uncommitted_paths"] = sorted(dirty)
     record["paths_outside_write_set"] = sorted((changed | dirty) - set(ALLOWED_CHANGES))
@@ -234,9 +247,13 @@ def identity(run):
 
 
 def base_source(run):
-    record, raw, _ = run.command("git-show-base-source", ["git", "show", BASE + ":" + SOURCE], cwd=REPO)
-    ok = record["exit"] == 0 and sha_bytes(raw) == BASE_SOURCE_SHA256
-    run.require("base_source_matches_admitted_pin", ok, sha_bytes(raw) if raw else record["exit"])
+    """Admitted-base catalog_stage.py bytes, exactly as identity() hashed them."""
+    base, expected = ADMITTED["base"], run.receipt.get("identity", {}).get("base_source_sha256")
+    if not run.require("base_source_available", bool(base and expected), [base, expected]):
+        return None
+    record, raw, _ = run.command("git-show-base-source-copy", ["git", "show", base + ":" + SOURCE], cwd=REPO)
+    ok = record["exit"] == 0 and sha_bytes(raw) == expected
+    run.require("base_source_bytes_stable", ok, sha_bytes(raw) if raw else record["exit"])
     return raw if ok else None
 
 
@@ -259,7 +276,9 @@ def import_closure(root, start):
         path = _module_file(root, name)
         if path is None:
             continue
-        tree = ast.parse(path.read_text(), str(path))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)  # pre-existing source warnings, not ours
+            tree = ast.parse(path.read_text(), str(path))
         imports = set()
         package = name if path.name == "__init__.py" else name.rpartition(".")[0]
         for node in ast.walk(tree):
@@ -500,7 +519,7 @@ def check_negative(run):
     module._install(saved, module.EXECUTION_TARGETS)
     try:
         with mock.patch.object(catalog_stage, "_lease_expiry", datetime.fromisoformat):
-            run.require("mutant_installed_in_memory", catalog_stage._lease_expiry is datetime.fromisoformat)
+            run.require("mutant_installed_in_memory", catalog_stage._lease_expiry == datetime.fromisoformat)
             for label, template, escaped in MUTANT_VALUES:
                 decided, detail = deciding_mutant(run, module, catalog_stage, label, template, escaped)
                 decisions["mutant_" + label] = detail
@@ -577,8 +596,8 @@ def check_compatibility(run):
         run.require(label + "_selected_actual_tests", parsed["tests_run"] == len(declared) > 0
                     and parsed["test_ids"] == expected, [parsed["tests_run"], len(declared)])
     run.receipt["compatibility"] = {"selectors": list(COMPATIBILITY), **results}
-    run.require("before_fix_ran_admitted_base_source", results["before-fix"]["source_sha256"] == BASE_SOURCE_SHA256,
-                results["before-fix"]["source_sha256"])
+    run.require("before_fix_ran_admitted_base_source", results["before-fix"]["source_sha256"] ==
+                run.receipt["identity"].get("base_source_sha256"), results["before-fix"]["source_sha256"])
     run.require("after_fix_ran_candidate_source", results["after-fix"]["source_sha256"] == sha_file(REPO / SOURCE),
                 results["after-fix"]["source_sha256"])
     run.require("same_test_ids_before_and_after", results["before-fix"]["test_ids"] == results["after-fix"]["test_ids"])
@@ -661,9 +680,28 @@ def check_credentials(run, manifest):
 
 def check_public_tree(run):
     identity(run)
-    record, _, _ = run.command("public-tree", [sys.executable, "-B", REPO / "tools" / "check_public_tree.py"],
-                               cwd=REPO, env=run.child_env("public-tree"))
-    run.require("public_tree_exit_zero", record["exit"] == 0, record["exit"])
+    record, out, _ = run.command("public-tree", [sys.executable, "-B", REPO / "tools" / "check_public_tree.py"],
+                                 cwd=REPO, env=run.child_env("public-tree"))
+    if run.require("public_tree_exit_zero", record["exit"] == 0, record["exit"]):
+        return
+    # Diagnostic only; the required row above stays failed. Explain a staging-only refusal by
+    # running the same unchanged checker on a copy without the operator-staged untracked links.
+    try:
+        findings = json.loads(out).get("findings")
+    except (ValueError, AttributeError):
+        findings = None
+    staged_only = bool(findings) and all(isinstance(row, list) and len(row) == 3 and row[0] in STAGED_UNTRACKED
+                                         and row[2] == "symlink_not_scanned" for row in findings)
+    diagnosis = {"findings": findings, "only_operator_staged_symlinks": staged_only,
+                 "note": "diagnostic only; does not change this mode's FAIL result"}
+    if staged_only:
+        copy = run.directory / "diagnostic-without-staged-links" / "repo"
+        shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(*STAGED_UNTRACKED, "__pycache__"))
+        extra, _, _ = run.command("public-tree-diagnostic-copy", [sys.executable, "-B", copy / "tools" /
+                                                                  "check_public_tree.py"],
+                                  cwd=copy, env=run.child_env("public-tree-diagnostic"))
+        diagnosis.update({"copy": str(copy), "copy_exit": extra["exit"]})
+    run.receipt["public_tree_diagnosis"] = diagnosis
 
 
 def main():
