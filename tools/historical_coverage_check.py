@@ -196,7 +196,8 @@ def validate_attestation(document):
     except ValueError:
         raise Refusal("attestation_capture_time") from None
     require(moment.tzinfo is not None and moment.utcoffset() is not None, "attestation_capture_time")
-    require(document["count_unit"] in COUNT_UNITS, "attestation_count_unit")
+    count_unit = document["count_unit"]
+    require(isinstance(count_unit, str) and count_unit in COUNT_UNITS, "attestation_count_unit")
     return document
 
 

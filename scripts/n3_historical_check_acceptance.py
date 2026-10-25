@@ -185,15 +185,51 @@ def check_origins(origins, root):
         raise GuardRefusal(f"ambient import outside candidate root: {bad}")
 
 
-def import_card_test(root, module_name):
+def configure_import_root(root, record):
+    """Put the runner-resolved candidate root first on sys.path before candidate imports.
+
+    No environment variable is consulted. When a relocated root is active, the
+    staged checkout entry is taken off sys.path so it cannot satisfy an import.
+    """
+    root = Path(root).resolve()
+    entry = str(root)
+    others = {str(REPO)} if root != REPO else set()
+    sys.path[:] = [p for p in sys.path if p != entry and p not in others]
+    sys.path.insert(0, entry)
+    setup = {"root": entry, "sys_path_0": sys.path[0],
+             "root_first_on_sys_path": sys.path[0] == entry,
+             "staged_repo_absent_when_relocated": not (others & set(sys.path)),
+             "environment_override_used": False}
+    record.setdefault("import_path_setup", []).append(setup)
+    if not (setup["root_first_on_sys_path"] and setup["staged_repo_absent_when_relocated"]):
+        raise GuardRefusal(f"candidate root not configured on sys.path: {setup}")
+    return setup
+
+
+def import_card_test(root, module_name, record):
     path = root / TEST_REL
     if not path.is_file():
         raise InputUnavailable(f"missing card test file {TEST_REL}")
+    setup = configure_import_root(root, record)
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    setup["root_first_after_import"] = sys.path[0] == setup["root"]
+    if not setup["root_first_after_import"]:
+        raise GuardRefusal(f"sys.path changed during candidate import: {sys.path[0]!r}")
     return module
+
+
+def import_path_ok(record, root):
+    """Runtime assertion that the active root was configured and is still first."""
+    entry = str(Path(root).resolve())
+    setups = record.get("import_path_setup") or []
+    ok = bool(setups) and all(s["root"] == entry and s["root_first_on_sys_path"]
+                              and s["staged_repo_absent_when_relocated"]
+                              and s.get("root_first_after_import") for s in setups)
+    record["import_path_final_sys_path_0"] = sys.path[0]
+    return ok and sys.path[0] == entry
 
 
 def run_suite(suite, stream):
@@ -229,7 +265,7 @@ def card_origins(module):
 
 def mode_focused(run_dir, stream, record):
     prepare_scratch(run_dir)
-    module = import_card_test(REPO, "n3_hc_card_test")
+    module = import_card_test(REPO, "n3_hc_card_test", record)
     origins = card_origins(module)
     record["module_origins"] = origins
     check_origins(origins, REPO)
@@ -238,15 +274,15 @@ def mode_focused(run_dir, stream, record):
     summary = result_summary(result)
     record["result"] = summary
     record["checks_executed"] = summary["tests_run"]
-    ok = summary["successful"] and summary["tests_run"] >= 8 and summary["skipped"] == 0
     record["criteria"] = {"successful": summary["successful"], "at_least_8_tests": summary["tests_run"] >= 8,
-                          "no_skips": summary["skipped"] == 0}
-    return 0 if ok else 1
+                          "no_skips": summary["skipped"] == 0,
+                          "candidate_root_on_sys_path": import_path_ok(record, REPO)}
+    return 0 if all(record["criteria"].values()) else 1
 
 
 def mode_negative(run_dir, stream, record):
     prepare_scratch(run_dir)
-    module = import_card_test(REPO, "n3_hc_card_test")
+    module = import_card_test(REPO, "n3_hc_card_test", record)
     origins = card_origins(module)
     record["module_origins"] = origins
     check_origins(origins, REPO)
@@ -283,7 +319,8 @@ def mode_negative(run_dir, stream, record):
     record["criteria"] = {"mutant_failed_for_exact_reason": mutant_ok,
                           "restored_retention_passed": restored.wasSuccessful() and restored.testsRun == 1,
                           "restored_full_passed": full.wasSuccessful() and full.testsRun >= 8,
-                          "seam_restored": record["seam_restored"]}
+                          "seam_restored": record["seam_restored"],
+                          "candidate_root_on_sys_path": import_path_ok(record, REPO)}
     return 0 if all(record["criteria"].values()) else 1
 
 
@@ -320,7 +357,7 @@ def mode_portability(run_dir, stream, record):
     os.mkdir(home, 0o700)
     os.environ["HOME"] = str(home)
     os.chdir(scratch)
-    module = import_card_test(relocated, "n3_hc_relocated_test")
+    module = import_card_test(relocated, "n3_hc_relocated_test", record)
     tool_origin = Path(module.hcc.__file__).resolve()
     record["module_origins"] = {"n3_hc_relocated_test": module.__file__, "tool": str(tool_origin)}
     check_origins(record["module_origins"], relocated)
@@ -337,12 +374,13 @@ def mode_portability(run_dir, stream, record):
     record["criteria"] = {
         "relocated_suite_passed": summary["successful"] and summary["tests_run"] >= 8,
         "tool_loaded_from_relocated_root": relocated in tool_origin.parents,
+        "relocated_root_on_sys_path": import_path_ok(record, relocated),
         "home_is_synthetic": os.path.expanduser("~") == str(home),
         "tool_reads_no_home": "expanduser" not in tool_text and "HOME" not in tool_text,
         "no_box_paths": not hits,
         "unique_allocation": first != second and first.is_dir() and second.is_dir(),
     }
-    record["checks_executed"] = summary["tests_run"] + len(CARD_FILES) + 4
+    record["checks_executed"] = summary["tests_run"] + len(CARD_FILES) + 5
     return 0 if all(record["criteria"].values()) else 1
 
 

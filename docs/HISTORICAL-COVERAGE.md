@@ -82,7 +82,10 @@ attestation belongs to M-29 and is refused here. `version` must be the integer
 1; a boolean or string is refused. `capture_time_utc` must be ISO-8601 with an
 explicit offset. Any explicit offset is accepted, because the contract wording
 says "with UTC offset". Whether only +00:00 should be allowed is left for the
-custodian to decide when accepting the shape. Any other field value outside the
+custodian to decide when accepting the shape. Every field is type-checked
+before its value is compared, so a list, object, null or other non-string where
+a string is expected (for example `count_unit: []`) is the same typed refusal
+(exit 2) as a wrong string. Any other field value outside the
 list above is a typed refusal.
 
 ## Verdict rule
@@ -160,6 +163,13 @@ run reports UNSUPPLIED, which is the honest result.
 - hygiene: static checks for no network and no stray writes. It then runs detect-secrets, `tools/check_secret_report.py` and `tools/check_public_tree.py` through an exact-argv subprocess allowlist.
 
 Every mode writes a receipt in a fresh unique directory below the output root.
+Before importing candidate code (and after installing the guards) the runner
+puts the root it resolved from its own file path, or the relocated root in
+portability mode, first on `sys.path`; no environment variable is used. In
+portability mode the staged checkout entry is taken off `sys.path`. The receipt
+records this as `import_path_setup`, and the focused, negative and portability
+criteria fail if the root is not first on `sys.path` before and after the
+import (hygiene imports no candidate code).
 Fixtures are synthetic. `tests/fixtures/n3_historical_check/scenarios.json` lists
 the populations only. Diffs and attestations are generated at test time in
 scratch space, never inside the fixture directory.

@@ -287,6 +287,32 @@ class HistoricalCoverageCheckTest(unittest.TestCase):
             result = self.run_tool([diff], [att], self.tmp / f"out-att-{index}.json")
             self.assert_refused(*result, expected)
 
+    def test_container_valued_attestation_fields_are_typed_refusals(self):
+        diff, raw = self.put_diff("plain")
+        cases = [
+            ({"count_unit": []}, "attestation_count_unit"),
+            ({"count_unit": {}}, "attestation_count_unit"),
+            ({"count_unit": ["occurrences"]}, "attestation_count_unit"),
+            ({"count_unit": None}, "attestation_count_unit"),
+            ({"layer": []}, "attestation_layer"),
+            ({"status": {}}, "attestation_status"),
+            ({"attested_by_role": []}, "attestation_role"),
+            ({"root_label": {}}, "attestation_root_label"),
+            ({"version": []}, "attestation_version"),
+            ({"diff_sha256": []}, "attestation_digest"),
+            ({"root_manifest_sha256": {}}, "attestation_digest"),
+            ({"capture_time_utc": []}, "attestation_capture_time"),
+        ]
+        for index, (override, expected) in enumerate(cases):
+            att = self.put_attestation("root-plain", raw, f"att-container-{index}.json", **override)
+            result = self.run_tool([diff], [att], self.tmp / f"out-container-{index}.json")
+            self.assert_refused(*result, expected)
+        for index, unit in enumerate(sorted(hcc.COUNT_UNITS)):
+            att = self.put_attestation("root-plain", raw, f"att-unit-{index}.json", count_unit=unit)
+            code, _out, err, output = self.run_tool([diff], [att], self.tmp / f"out-unit-{index}.json")
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(self.report(output)["overall_verdict"], "COVERED")
+
     def test_record_shape_and_identity_overlap_refused(self):
         document = build_diff("mixed")
         document["changed"][0]["after"] = document["changed"][0]["before"]
