@@ -110,7 +110,10 @@ def _scope(c,imports):
         if type(x)is not dict or set(x)!={"original_sha256","import_id","manifest_sha256","unit_ids"}:_no("import_scope_invalid")
         subject,imp,msha,ids=(x[k] for k in ("original_sha256","import_id","manifest_sha256","unit_ids"))
         if any(type(v)is not str or not HEX.fullmatch(v) for v in (subject,imp,msha)) or subject in subjects:_no("import_scope_invalid")
-        if type(ids)is not list or not ids or len(ids)>MAX_UNITS or len(set(ids))!=len(ids) or any(type(v)is not str or not HEX.fullmatch(v) for v in ids):_no("import_scope_invalid")
+        if type(ids)is not list or not ids or len(ids)>MAX_UNITS:_no("import_scope_invalid")
+        # Exact member types and HEX identities before any set(): an unhashable member must not escape as TypeError.
+        if any(type(v)is not str or not HEX.fullmatch(v) for v in ids):_no("import_scope_invalid")
+        if len(set(ids))!=len(ids):_no("import_scope_invalid")
         requested+=len(ids)
         if requested>MAX_UNITS:_no("unit_count_limit")
         subjects.add(subject)
