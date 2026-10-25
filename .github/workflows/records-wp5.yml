@@ -1,6 +1,15 @@
 name: WP5 pinned catalog composition
 on:
   pull_request:
+    paths:
+      - '.github/workflows/records-wp5.yml'
+      - '**'
+      - 'pyproject.toml'
+      - 'requirements*.txt'
+      - 'conftest.py'
+      - '**/conftest.py'
+      - 'campaign_tool/__init__.py'
+      - 'tests/__init__.py'
   push:
     branches: [main]
   workflow_dispatch:
@@ -23,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && '["3.11", "3.12", "3.13"]' || '["3.11", "3.12"]') }}
     steps:
       - name: Checkout WP5 candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret

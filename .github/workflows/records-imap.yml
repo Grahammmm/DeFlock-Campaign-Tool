@@ -1,6 +1,19 @@
 name: Records IMAP source and global budget
 on:
   pull_request:
+    paths:
+      - '.github/workflows/records-imap.yml'
+      - 'campaign_tool/records/**'
+      - 'campaign_tool/digest/**'
+      - 'campaign_tool/law.py'
+      - 'campaign_tool/_resources/**'
+      - 'tests/records/**'
+      - 'pyproject.toml'
+      - 'requirements*.txt'
+      - 'conftest.py'
+      - '**/conftest.py'
+      - 'campaign_tool/__init__.py'
+      - 'tests/__init__.py'
   push:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && '["3.11", "3.12", "3.13"]' || '["3.11", "3.12"]') }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:

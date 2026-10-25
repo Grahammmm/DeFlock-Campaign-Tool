@@ -1,6 +1,25 @@
 name: Installed campaign CLI
 on:
   pull_request:
+    paths:
+      - '.github/workflows/campaign-install.yml'
+      - 'campaign_tool/**'
+      - 'tests/*.py'
+      - 'tools/**'
+      - 'data/agencies/**'
+      - 'schemas/**'
+      - 'jurisdictions/**'
+      - 'templates/**'
+      - 'setup.py'
+      - 'README.md'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'pyproject.toml'
+      - 'requirements*.txt'
+      - 'conftest.py'
+      - '**/conftest.py'
+      - 'campaign_tool/__init__.py'
+      - 'tests/__init__.py'
   push:
     branches: [main]
   workflow_dispatch:

@@ -1,6 +1,37 @@
 name: Records run slice
 on:
   pull_request:
+    paths:
+      - '.github/workflows/records-run.yml'
+      - 'campaign_tool/records/**'
+      - 'campaign_tool/digest/**'
+      - 'campaign_tool/law.py'
+      - 'campaign_tool/_resources/**'
+      - 'campaign_tool/agency_cards.py'
+      - 'campaign_tool/backup.py'
+      - 'campaign_tool/cli.py'
+      - 'campaign_tool/content.py'
+      - 'campaign_tool/discovery.py'
+      - 'campaign_tool/kit.py'
+      - 'campaign_tool/map_controller.py'
+      - 'campaign_tool/markdown_lite.py'
+      - 'campaign_tool/meetings.py'
+      - 'campaign_tool/review.py'
+      - 'campaign_tool/shell.py'
+      - 'campaign_tool/site.py'
+      - 'tools/check_public_tree.py'
+      - 'runner/**'
+      - 'scripts/**'
+      - 'schemas/**'
+      - 'deploy/records-runtime/**'
+      - 'tests/records/**'
+      - 'tests/runner/**'
+      - 'pyproject.toml'
+      - 'requirements*.txt'
+      - 'conftest.py'
+      - '**/conftest.py'
+      - 'campaign_tool/__init__.py'
+      - 'tests/__init__.py'
   push:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && '["3.11", "3.12", "3.13"]' || '["3.11", "3.12"]') }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret - public action commit
         with:

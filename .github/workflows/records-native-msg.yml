@@ -1,8 +1,20 @@
 name: Records native mail completion
 on:
   pull_request:
+    paths:
+      - '.github/workflows/records-native-msg.yml'
+      - '**'
+      - 'pyproject.toml'
+      - 'requirements*.txt'
+      - 'conftest.py'
+      - '**/conftest.py'
+      - 'campaign_tool/__init__.py'
+      - 'tests/__init__.py'
   push:
     branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:

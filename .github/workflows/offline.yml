@@ -1,6 +1,15 @@
 name: Offline shell checks
 on:
   pull_request:
+    paths:
+      - '.github/workflows/offline.yml'
+      - '**'
+      - 'pyproject.toml'
+      - 'requirements*.txt'
+      - 'conftest.py'
+      - '**/conftest.py'
+      - 'campaign_tool/__init__.py'
+      - 'tests/__init__.py'
   push:
     branches: [main]
   workflow_dispatch:
