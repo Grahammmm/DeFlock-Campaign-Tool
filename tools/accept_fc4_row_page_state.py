@@ -27,7 +27,6 @@ import secrets
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import types
 import unittest
@@ -257,11 +256,19 @@ def _baseline_rows():
     return module, sha256_bytes(source), base
 
 
+def _test_id(case):
+    """Owning test method id; a failing subTest reports its parent test, not its parameters."""
+    parent = getattr(case, "test_case", None)
+    return (parent if parent is not None else case).id()
+
+
 def _summarise(outcome):
     return {"tests_run": outcome.testsRun,
-            "failures": sorted({case.id() for case, _ in outcome.failures}),
-            "errors": sorted({case.id() for case, _ in outcome.errors}),
-            "skipped": sorted({case.id() for case, _ in outcome.skipped}),
+            "failures": sorted({_test_id(case) for case, _ in outcome.failures}),
+            "errors": sorted({_test_id(case) for case, _ in outcome.errors}),
+            "skipped": sorted({_test_id(case) for case, _ in outcome.skipped}),
+            "failing_subtests": sum(1 for case, _ in outcome.failures + outcome.errors
+                                    if getattr(case, "test_case", None) is not None),
             "unexpected_successes": [case.id() for case in outcome.unexpectedSuccesses],
             "successful": outcome.wasSuccessful()}
 
@@ -324,17 +331,20 @@ def check_compatibility(run_dir, result):
     final, final_problems = unittest_child(run_dir, "compatibility-final", COMPAT_SELECTORS)
     result["children"].append(final)
     problems += final_problems
-    # Baseline: the same unchanged selectors on an extracted copy of the pinned base tree.
+    # Baseline: the same unchanged selectors in a local clone checked out at the pinned base
+    # (a real git work tree, since some selectors assert git-boundary behaviour).
     base = baseline_commit()
-    archive = run_dir / "baseline.tar"
-    record = run_child(run_dir, "baseline-archive", ["git", "-C", REPO, "archive", "--format=tar", "-o", archive, base],
-                       REPO)
-    result["children"].append(record)
-    if record.get("exit") != 0:
-        return problems + ["baseline_archive_failed"]
-    base_root = run_dir / "baseline-tree"
-    with tarfile.open(archive) as handle:
-        handle.extractall(base_root, filter="data")
+    base_root = run_dir / "baseline-clone"
+    for label, argv in (("baseline-clone", ["git", "clone", "-q", "--no-hardlinks", "--no-checkout", REPO, base_root]),
+                        ("baseline-checkout", ["git", "-C", base_root, "checkout", "-q", "--detach", base])):
+        record = run_child(run_dir, label, argv, run_dir)
+        result["children"].append(record)
+        if record.get("exit") != 0:
+            return problems + [label + "_failed"]
+    head = subprocess.run(["git", "-C", str(base_root), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          timeout=60, check=True).stdout.strip()
+    if head != base:
+        return problems + ["baseline_clone_head_mismatch"]
     baseline, baseline_problems = unittest_child(run_dir, "compatibility-baseline", COMPAT_SELECTORS, root=base_root,
                                                  expect_loaded=False)
     result["children"].append(baseline)
@@ -627,6 +637,8 @@ def main(argv=None):
     except Exception as error:  # Incomplete check: record the class, fail closed.
         problems = ["check_incomplete:" + type(error).__name__]
         result["exception"] = repr(error)[:2000]
+    if not result["git"].get("clean") or not result["git"].get("head") or not result["git"].get("base"):
+        problems = problems + ["candidate_identity_not_bound_clean_head"]
     result["finished_utc"] = now()
     result["problems"] = problems
     result["verdict"] = "PASS_REVIEW_REQUIRED" if not problems else "FAIL"

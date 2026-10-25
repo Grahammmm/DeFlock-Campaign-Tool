@@ -201,7 +201,7 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
             upstream.append({"artifact_sha256": subject, "reason": "upstream_not_clear"})
         for page in receipt["pages"]:
             require(type(page) is dict, "receipt_page_shape")
-        # Explicit page states only; an empty list proves nothing and infers nothing.
+        # Explicit page states only: an empty list keeps prior behaviour; no page count is inferred.
         if not all(_page_clear(page) for page in receipt["pages"]):
             upstream.append({"artifact_sha256": subject, "reason": "upstream_pages_not_clear"})
         for ordinal, raw_unit in enumerate(receipt["units"], 1):
