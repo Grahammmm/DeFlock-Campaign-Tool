@@ -165,9 +165,23 @@ class OcrKindTests(unittest.TestCase):
         self.assertEqual(other['coverage'], result['coverage'])
         self.assertEqual(other['gaps'], result['gaps'])
         self.assertIs(other['review_acceptance'], False)
-        for key in ('classifications', 'entity_candidates', 'date_mentions', 'summary_facts'):
+        for key in ('classifications', 'entity_candidates', 'date_mentions'):
             self.assertEqual(sorted(other[key], key=lambda x: x['unit_id']),
                              sorted(result[key], key=lambda x: x['unit_id']))
+        original_facts = {f['unit_id']: f for f in result['summary_facts']}
+        self.assertEqual(set(original_facts), {f['unit_id'] for f in other['summary_facts']})
+        for fact in other['summary_facts']:
+            previous = original_facts[fact['unit_id']]
+            self.assertEqual(fact['kind'], previous['kind'])
+            # Reordering changes the bundle snapshot and thus the derived-claim
+            # digest, but never its exact support/citation, text or context.
+            old_claim = previous['claim']
+            new_claim = fact['claim']
+            self.assertEqual({k: v for k, v in new_claim.items() if k not in ('snapshot_sha256', 'evidence_sha256')},
+                             {k: v for k, v in old_claim.items() if k not in ('snapshot_sha256', 'evidence_sha256')})
+            self.assertEqual(old_claim['snapshot_sha256'], bundle['snapshot_sha256'])
+            self.assertEqual(new_claim['snapshot_sha256'], reordered['snapshot_sha256'])
+            self.evidence.validate_claim(new_claim, reordered)
         for item in other['classifications']:
             self.evidence.validate_citation(item['citation'], reordered)
         self.assertEqual(bundle, saved)

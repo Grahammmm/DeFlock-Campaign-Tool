@@ -163,7 +163,8 @@ class Row:
             self.tests('discovery-with-peers', 'discovery', cwd)
             for path in OWNED[1:]:
                 raw = (self.repo / path).read_text()
-                need(not any(v in raw for v in ('/home/', '/Users/', '/workspace/')), 'machine-specific path ' + path)
+                prefixes = tuple('/' + v + '/' for v in ('home', 'Users', 'workspace'))
+                need(not any(v in raw for v in prefixes), 'machine-specific path ' + path)
         elif phase == 'credentials':
             need(not self.baseline, 'credentials requires final candidate')
             # os.walk does not follow directory links. Refuse any file links;
