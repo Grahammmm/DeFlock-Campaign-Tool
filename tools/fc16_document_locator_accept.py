@@ -609,6 +609,9 @@ class PeerSentinel(unittest.TestCase):
 
 
 def discovery_child(report_path):
+    # Prime the stdlib tempdir cache from the inherited TMPDIR so the peer
+    # snapshot itself (which calls gettempdir) is not mistaken for poisoning.
+    tempfile.gettempdir()
     loader = unittest.TestLoader()
     discovered = loader.discover(start_dir=str(REPO / "tests" / "records"), pattern="test_fc16_document_locator.py",
                                  top_level_dir=str(REPO))
