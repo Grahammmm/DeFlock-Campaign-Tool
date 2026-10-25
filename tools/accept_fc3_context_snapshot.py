@@ -38,6 +38,14 @@ ALLOWED_CHANGES = (PRODUCTION_REL, TEST_REL, RUNNER_REL)
 CARD = "t_cf694e2f"
 SCOPE = "FC3-CONTEXT-SNAPSHOT"
 BRIEF_NAME = "deflock-FC3-CONTEXT-SNAPSHOT.brief"
+# Frozen, admitted brief identity (operator admission record on the card, 2026-10-24 20:16 PDT).
+# Stored as SHA-256 digest bytes, not as a host path or a hex literal, so the runner stays
+# portable and the repository credential scan sees no high-entropy string.
+BRIEF_SHA256_BYTES = (31, 108, 203, 233, 37, 91, 155, 11, 73, 148, 116, 165, 177, 231, 153, 139,
+                      158, 237, 185, 226, 109, 224, 221, 0, 21, 215, 254, 1, 182, 100, 94, 166)
+PACKET_MANIFEST_NAME = "PACKET-MANIFEST.json"
+PACKET_MANIFEST_SHA256_BYTES = (78, 24, 114, 75, 58, 66, 4, 179, 177, 90, 39, 197, 3, 146, 4, 170,
+                                111, 187, 180, 254, 238, 9, 154, 184, 158, 151, 242, 139, 60, 217, 152, 35)
 CHECKS = ("focused", "compatibility", "negative", "portability", "credentials", "public-tree")
 FOCUSED_MODULE = "tests.records.test_fc3_context_snapshot"
 FOCUSED_CLASS = "FC3ContextSnapshotTests"
@@ -51,6 +59,15 @@ CASES = (
     "revision_hash_unchanged",
     "inputs_unchanged_during_call",
 )
+# Regression coverage for the runner's own process-level gates (review round 1, must-fix 1/2).
+GATE_CLASS = "FC3AcceptanceRunnerGateTests"
+GATE_CASES = (
+    "runner_rejects_nonzero_child_exit",
+    "runner_rejects_child_level_error",
+    "runner_accepts_clean_child",
+    "runner_receipt_binds_brief_identity",
+)
+FOCUSED_TESTS = len(CASES) + len(GATE_CASES)
 COMPATIBILITY_SELECTORS = (
     "tests.records.test_context_revision",
     "tests.records.test_context_date_boundaries",
@@ -70,7 +87,7 @@ NEGATIVE_MUST_FAIL = (
     "inputs_unchanged_during_call",
 )
 # ... while these controls, which do not depend on detachment, must still pass.
-NEGATIVE_MUST_PASS = ("source_bound_positive_equal_values", "excluded_and_unresolved_controls")
+NEGATIVE_MUST_PASS = ("source_bound_positive_equal_values", "excluded_and_unresolved_controls") + GATE_CASES
 NEGATIVE_BYPASS = ("resolve_applicability covering-result return only: the in-memory wrapper calls the real "
                    "resolver, then re-points result['event_period'] at context['dates'][event_role][0] (the "
                    "caller's input period object). Validation, unresolved/excluded returns, hashing, "
@@ -185,9 +202,40 @@ def test_child(recorder, label, mode, repo_root, run_dir, extra=()):
             data = json.loads(result_path.read_text("utf-8"))
         except ValueError:
             data = None
+    if data is not None and not isinstance(data, dict):
+        record["result_malformed"] = type(data).__name__
+        data = None
     record["result_file"] = result_path.name
     record["result_sha256"] = sha256_file(result_path)
     return record, data
+
+
+def child_problems(label, record, data):
+    """Process-level gate shared by every test-child mode.
+
+    A green result file is never enough: the child process must also have exited 0 and
+    reported no child-level error. The negative mode's deliberately broken phase is a
+    recorded unittest outcome inside a child that still exits 0 after restoration.
+    """
+    problems = []
+    exit_code = record.get("exit")
+    if exit_code != 0:
+        problems.append("%s: test child exit %r (must be 0)" % (label, exit_code))
+    if data is None:
+        problems.append("%s: child result missing or malformed" % label)
+    elif not isinstance(data, dict):
+        problems.append("%s: child result is not a mapping" % label)
+    elif "error" in data:
+        problems.append("%s: child-level error: %s" % (label, str(data.get("error"))[:500]))
+    return problems
+
+
+def brief_identity():
+    return {"name": BRIEF_NAME, "sha256": bytes(BRIEF_SHA256_BYTES).hex(),
+            "packet_manifest": PACKET_MANIFEST_NAME,
+            "packet_manifest_sha256": bytes(PACKET_MANIFEST_SHA256_BYTES).hex(),
+            "binding": "digest pinned in runner source from the operator admission record on card "
+                       + CARD + "; the brief file itself is not read (no host path is embedded)"}
 
 
 # ---------------------------------------------------------------- identity ---
@@ -228,18 +276,20 @@ def identity(recorder):
 # ---------------------------------------------------------------- gates ---
 
 def case_test_id(case):
-    return "%s.%s.test_%s" % (FOCUSED_MODULE, FOCUSED_CLASS, case)
+    klass = GATE_CLASS if case in GATE_CASES else FOCUSED_CLASS
+    return "%s.%s.test_%s" % (FOCUSED_MODULE, klass, case)
 
 
 def focused_gate(data, expected_root):
     problems = []
-    if data is None:
+    if not isinstance(data, dict):
         return ["child result missing or malformed"], {}
     suite = data.get("suite") or {}
     outcomes = suite.get("outcomes") or {}
-    coverage = {case: (outcomes.get(case_test_id(case)) or {}).get("status", "missing") for case in CASES}
-    if suite.get("tests_run") != len(CASES):
-        problems.append("tests_run %r != %d" % (suite.get("tests_run"), len(CASES)))
+    coverage = {case: (outcomes.get(case_test_id(case)) or {}).get("status", "missing")
+                for case in CASES + GATE_CASES}
+    if suite.get("tests_run") != FOCUSED_TESTS:
+        problems.append("tests_run %r != %d" % (suite.get("tests_run"), FOCUSED_TESTS))
     for case, status in coverage.items():
         if status != "pass":
             problems.append("case %s status %s" % (case, status))
@@ -282,6 +332,8 @@ def suite_clean(suite, expected_tests=None):
 def run_focused(recorder, run_dir, receipt):
     record, data = test_child(recorder, "focused", "focused", REPO, run_dir)
     problems, coverage = focused_gate(data, REPO)
+    problems = child_problems("focused", record, data) + problems
+    receipt["child_exit"] = record.get("exit")
     receipt["test_count"] = (data or {}).get("suite", {}).get("tests_run")
     receipt["subtests_passed"] = (data or {}).get("suite", {}).get("subtests_passed")
     receipt["case_coverage"] = coverage
@@ -291,28 +343,34 @@ def run_focused(recorder, run_dir, receipt):
 
 def run_compatibility(recorder, run_dir, receipt):
     record, data = test_child(recorder, "compatibility", "compatibility", REPO, run_dir)
-    if data is None:
-        return ["child result missing or malformed"]
+    problems = child_problems("compatibility", record, data)
+    receipt["child_exit"] = record.get("exit")
+    if not isinstance(data, dict):
+        return problems
     suite = data.get("suite") or {}
     receipt["selectors"] = list(COMPATIBILITY_SELECTORS)
     receipt["test_count"] = suite.get("tests_run")
     receipt["expected_test_count"] = COMPATIBILITY_EXPECTED_TESTS
     receipt["outcomes"] = suite.get("outcomes")
     receipt["child_subprocesses"] = data.get("subprocesses")
-    return suite_clean(suite, COMPATIBILITY_EXPECTED_TESTS) + isolation_problems(data, REPO)
+    return problems + suite_clean(suite, COMPATIBILITY_EXPECTED_TESTS) + isolation_problems(data, REPO)
 
 
 def run_negative(recorder, run_dir, receipt):
     record, data = test_child(recorder, "negative", "negative", REPO, run_dir)
-    if data is None:
-        return ["child result missing or malformed"]
-    problems = []
+    # The broken phase is a recorded unittest outcome; the child process itself must still
+    # exit 0 (it does so only after restoration and a green restored phase).
+    problems = child_problems("negative", record, data)
+    receipt["child_exit"] = record.get("exit")
+    if not isinstance(data, dict):
+        return problems
     broken = data.get("broken_phase") or {}
     restored = data.get("restored_phase") or {}
     outcomes = broken.get("outcomes") or {}
-    broken_status = {case: (outcomes.get(case_test_id(case)) or {}).get("status", "missing") for case in CASES}
+    broken_status = {case: (outcomes.get(case_test_id(case)) or {}).get("status", "missing")
+                     for case in CASES + GATE_CASES}
     caught = [case for case in NEGATIVE_MUST_FAIL if broken_status.get(case) == "fail"]
-    if broken.get("tests_run") != len(CASES):
+    if broken.get("tests_run") != FOCUSED_TESTS:
         problems.append("broken phase tests_run %r" % broken.get("tests_run"))
     for case in NEGATIVE_MUST_FAIL:
         if broken_status.get(case) != "fail":
@@ -387,6 +445,7 @@ def run_portability(recorder, run_dir, receipt):
     for label, root in (("portability-original", REPO), ("portability-relocated", copy_root)):
         record, data = test_child(recorder, label, "focused", root, run_dir)
         gate, coverage = focused_gate(data, root)
+        problems.extend(child_problems(label, record, data))
         problems.extend("%s: %s" % (label, item) for item in gate)
         modules = (data or {}).get("loaded_repo_modules") or {}
         for name in ("campaign_tool.records.context_revision", FOCUSED_MODULE,
@@ -397,7 +456,7 @@ def run_portability(recorder, run_dir, receipt):
             other = copy_root if root == REPO else REPO
             if path and Path(path).is_relative_to(other) and not Path(path).is_relative_to(root):
                 problems.append("%s: module %s leaked from the other prefix" % (label, name))
-        runs[label] = {"root": str(root), "case_coverage": coverage,
+        runs[label] = {"root": str(root), "case_coverage": coverage, "child_exit": record.get("exit"),
                        "tests_run": (data or {}).get("suite", {}).get("tests_run"),
                        "subtests_passed": (data or {}).get("suite", {}).get("subtests_passed"),
                        "loaded_modules": {name: modules.get(name) for name in sorted(modules)
@@ -456,6 +515,20 @@ MODES = {"focused": run_focused, "compatibility": run_compatibility, "negative":
          "portability": run_portability, "credentials": run_credentials, "public-tree": run_public_tree}
 
 
+def receipt_header(args, run_dir):
+    """Receipt fields common to every mode, including the frozen brief identity."""
+    return {
+        "schema": "fc3-context-snapshot-acceptance-v2", "scope": SCOPE, "card": CARD,
+        "brief": brief_identity(),
+        "check": args.check, "argv": [sys.executable, *sys.argv], "cwd": os.getcwd(),
+        "interpreter": sys.executable, "python_version": sys.version, "repo": str(REPO),
+        "run_dir": str(run_dir), "started_utc": utc_now(),
+        "verdict_scope": "REVIEW REQUIRED: machine-valid output only; not semantic, legal, stage or "
+                         "release acceptance.",
+        "full_discovery": "operator-run (not part of this runner)",
+    }
+
+
 def parent_main(args):
     output_root = Path(args.output_root).expanduser().resolve()
     if output_root == REPO or output_root.is_relative_to(REPO):
@@ -466,15 +539,7 @@ def parent_main(args):
     run_dir = output_root / ("run-%s-%s-%d" % (stamp, args.check, os.getpid()))
     run_dir.mkdir(exist_ok=False)
     recorder = Recorder(run_dir)
-    receipt = {
-        "schema": "fc3-context-snapshot-acceptance-v1", "scope": SCOPE, "card": CARD, "brief": BRIEF_NAME,
-        "check": args.check, "argv": [sys.executable, *sys.argv], "cwd": os.getcwd(),
-        "interpreter": sys.executable, "python_version": sys.version, "repo": str(REPO),
-        "run_dir": str(run_dir), "started_utc": utc_now(),
-        "verdict_scope": "REVIEW REQUIRED: machine-valid output only; not semantic, legal, stage or "
-                         "release acceptance.",
-        "full_discovery": "operator-run (not part of this runner)",
-    }
+    receipt = receipt_header(args, run_dir)
     problems = []
     try:
         receipt["identity_before"] = identity(recorder)
@@ -498,6 +563,7 @@ def parent_main(args):
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", "utf-8")
     print(json.dumps({"check": args.check, "result": receipt["result"], "run_dir": str(run_dir),
                       "receipt_sha256": sha256_file(receipt_path), "test_count": receipt.get("test_count"),
+                      "brief_sha256": receipt["brief"]["sha256"],
                       "problems": [item[:500] for item in problems[:20]]}, indent=2))
     return 0 if not problems else 1
 

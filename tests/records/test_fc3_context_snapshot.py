@@ -9,7 +9,11 @@ classifications and reasons are unchanged; only aliasing is removed.
 """
 import copy
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
+import tempfile
+import types
 import unittest
 
 from campaign_tool.records import context_revision as cr
@@ -407,6 +411,173 @@ class FC3ContextSnapshotTests(unittest.TestCase):
                     self.assertEqual(mutable_nodes(inputs), ids_before)
                     self.assertDetached(result, inputs, out)
                     self.assertDetached(out, inputs)
+
+
+# ------------------------------------------------------------------------------------------
+# Acceptance-runner gate regressions (review round 1). These exercise the real gate code of
+# tools/accept_fc3_context_snapshot.py with a fake recorder: no process is started.
+
+MISSING = object()
+
+
+def load_runner():
+    path = Path(__file__).resolve().parents[2] / "tools" / "accept_fc3_context_snapshot.py"
+    spec = importlib.util.spec_from_file_location("fc3_acceptance_runner_under_test", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("cannot load acceptance runner from %s" % path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeRecorder:
+    """Stands in for the runner's Recorder; behaviour(label, cwd) -> (exit, payload, stdout)."""
+
+    def __init__(self, run_dir, behaviour):
+        self.run_dir = run_dir
+        self.behaviour = behaviour
+        self.children = []
+        self.git_calls = []
+
+    def git(self, *args):
+        self.git_calls.append(list(args))
+        return ""
+
+    def child(self, label, argv, cwd, env=None, timeout=1800):
+        argv = [str(item) for item in argv]
+        exit_code, payload, stdout = self.behaviour(label, Path(cwd))
+        if "--child-result" in argv and payload is not MISSING:
+            target = Path(argv[argv.index("--child-result") + 1])
+            target.write_text(json.dumps(payload), "utf-8")
+        record = {"label": label, "argv": argv, "cwd": str(cwd), "exit": exit_code}
+        self.children.append(record)
+        return record, types.SimpleNamespace(returncode=exit_code, stdout=stdout, stderr=b"")
+
+
+class FC3AcceptanceRunnerGateTests(unittest.TestCase):
+    TEST_MODES = ("focused", "compatibility", "negative", "portability")
+    BAD_EXITS = (1, 2, 37, 255, -9, None)
+    ERROR_VALUES = ("Traceback (most recent call last): synthetic", "", None, {"detail": "x"}, ["x"], 0)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_runner()
+
+    def suite(self, failing=()):
+        r = self.runner
+        outcomes = {}
+        for case in r.CASES + r.GATE_CASES:
+            status = "fail" if case in failing else "pass"
+            outcomes[r.case_test_id(case)] = {"status": status, "subtests_failed": 1 if failing else 0}
+        return {"tests_run": r.FOCUSED_TESTS, "failures": len(failing), "errors": 0, "skipped": 0,
+                "expected_failures": 0, "unexpected_successes": 0, "subtests_passed": 5,
+                "outcomes": outcomes, "was_successful": not failing}
+
+    def green_payload(self, label, root):
+        r = self.runner
+        payload = {"repo_root": str(root), "sentinel_hits": [], "refused_subprocesses": [],
+                   "foreign_modules": [], "unredirected_constants": [], "subprocesses": [],
+                   "loaded_repo_modules": {
+                       "campaign_tool.records.context_revision": str(root / r.PRODUCTION_REL),
+                       r.FOCUSED_MODULE: str(root / r.TEST_REL),
+                       "tests.records.test_context_revision": str(root / "tests/records/test_context_revision.py")}}
+        if label == "compatibility":
+            payload["suite"] = {"tests_run": r.COMPATIBILITY_EXPECTED_TESTS, "failures": 0, "errors": 0,
+                                "skipped": 0, "expected_failures": 0, "unexpected_successes": 0,
+                                "outcomes": {}, "was_successful": True}
+        elif label == "negative":
+            payload.update(broken_phase=self.suite(failing=r.NEGATIVE_MUST_FAIL), restored_phase=self.suite(),
+                           wrapper_installed=True, restored_identity=True,
+                           source_sha256_before="same", source_sha256_after="same",
+                           reference_before=[{"scenario": "s"}], reference_after=[{"scenario": "s"}])
+        else:
+            payload["suite"] = self.suite()
+        return payload
+
+    def run_mode(self, mode, behaviour):
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = FakeRecorder(Path(tmp), behaviour)
+            receipt = {}
+            problems = self.runner.MODES[mode](recorder, Path(tmp), receipt)
+            return problems, receipt, recorder
+
+    def test_runner_accepts_clean_child(self):
+        for mode in self.TEST_MODES:
+            with self.subTest(mode=mode):
+                problems, receipt, recorder = self.run_mode(
+                    mode, lambda label, cwd: (0, self.green_payload(label, cwd), b""))
+                self.assertEqual(problems, [])
+                self.assertTrue(recorder.children)
+                self.assertTrue(all(child["exit"] == 0 for child in recorder.children))
+        problems, receipt, _ = self.run_mode("public-tree", lambda label, cwd: (0, MISSING, b""))
+        self.assertEqual(problems, [])
+        self.assertEqual(receipt["public_tree_exit"], 0)
+
+    def test_runner_rejects_nonzero_child_exit(self):
+        for mode in self.TEST_MODES:
+            for bad in self.BAD_EXITS:
+                with self.subTest(mode=mode, exit=bad):
+                    problems, _, _ = self.run_mode(
+                        mode, lambda label, cwd, bad=bad: (bad, self.green_payload(label, cwd), b""))
+                    self.assertTrue(problems, "green result with child exit %r was accepted" % (bad,))
+                    self.assertTrue(any("exit %r" % (bad,) in item for item in problems), problems)
+        with self.subTest(mode="portability", variant="one_of_two_children"):
+            problems, _, _ = self.run_mode("portability", lambda label, cwd: (
+                37 if label == "portability-relocated" else 0, self.green_payload(label, cwd), b""))
+            self.assertTrue(any("portability-relocated: test child exit 37" in item for item in problems))
+            self.assertFalse(any("portability-original: test child exit" in item for item in problems))
+        for bad in (1, 37):
+            with self.subTest(mode="public-tree", exit=bad):
+                problems, _, _ = self.run_mode("public-tree", lambda label, cwd, bad=bad: (bad, MISSING, b""))
+                self.assertTrue(problems)
+            with self.subTest(mode="credentials", exit=bad):
+                problems, _, _ = self.run_mode("credentials", lambda label, cwd, bad=bad: (
+                    bad, MISSING, b'{"version": "synthetic", "results": {}}'))
+                self.assertTrue(problems)
+
+    def test_runner_rejects_child_level_error(self):
+        for mode in self.TEST_MODES:
+            for value in self.ERROR_VALUES:
+                with self.subTest(mode=mode, error=value):
+                    def behaviour(label, cwd, value=value):
+                        payload = self.green_payload(label, cwd)
+                        payload["error"] = value
+                        return 0, payload, b""
+                    problems, _, _ = self.run_mode(mode, behaviour)
+                    self.assertTrue(any("child-level error" in item for item in problems), problems)
+            for variant, payload in (("missing", MISSING), ("list", ["not", "a", "mapping"]),
+                                     ("string", "green"), ("null", None)):
+                with self.subTest(mode=mode, result=variant):
+                    problems, _, _ = self.run_mode(mode, lambda label, cwd, payload=payload: (0, payload, b""))
+                    self.assertTrue(problems, "exit 0 with %s result was accepted" % variant)
+        with self.subTest(mode="negative", variant="restored_phase_red_exit_zero"):
+            def red_restored(label, cwd):
+                payload = self.green_payload(label, cwd)
+                payload["restored_phase"] = self.suite(failing=("mutate_result_nested_evidence",))
+                return 0, payload, b""
+            problems, _, _ = self.run_mode("negative", red_restored)
+            self.assertTrue(any(item.startswith("restored:") for item in problems), problems)
+
+    def test_runner_receipt_binds_brief_identity(self):
+        r = self.runner
+        headers = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for check in r.CHECKS:
+                headers.append(r.receipt_header(types.SimpleNamespace(check=check), Path(tmp)))
+        self.assertEqual(len(headers), 6)
+        for header in headers:
+            brief = header["brief"]
+            self.assertEqual(brief, headers[0]["brief"])
+            self.assertEqual(brief["name"], "deflock-FC3-CONTEXT-SNAPSHOT.brief")
+            self.assertEqual(len(brief["sha256"]), 64)
+            self.assertEqual(bytes.fromhex(brief["sha256"]).hex(), brief["sha256"])
+            # Admitted digest anchors (operator admission record); short, low-entropy fragments.
+            self.assertTrue(brief["sha256"].startswith("1f6ccbe9"))
+            self.assertTrue(brief["sha256"].endswith("b6645ea6"))
+            self.assertTrue(brief["packet_manifest_sha256"].startswith("4e18724b"))
+            self.assertEqual(header["card"], "t_cf694e2f")
+        source = Path(r.__file__).read_text("utf-8")
+        self.assertIn("receipt = receipt_header(args, run_dir)", source)
 
 
 if __name__ == "__main__":
