@@ -49,6 +49,16 @@ CONTRACT_TESTS = ("test_frozen_caps_match_product_constants", "test_fixture_expe
                   "test_fixture_covers_every_cap_boundary", "test_malformed_specs_are_rejected",
                   "test_malformed_fixture_documents_are_rejected", "test_each_generated_unit_feeds_exactly_one_family",
                   "test_negative_control_rejects_zeroed_omissions")
+# Inert runner stop-gate controls (fake launcher / marker callbacks; no real child).
+RUNNER_CONTROL_TESTS = ("test_invalid_manifest_stops_before_any_child_or_phase",
+                        "test_unreadable_manifest_stops_before_any_child_or_phase",
+                        "test_git_prerequisite_failure_stops_before_phase",
+                        "test_launch_error_is_terminal_and_refuses_later_children",
+                        "test_timeout_and_signal_and_exec_refusal_are_terminal",
+                        "test_ordinary_nonzero_exit_is_not_terminal",
+                        "test_terminal_child_in_phase_finalizes_without_more_children",
+                        "test_public_tree_stops_dependent_clone_checkout_and_scans",
+                        "test_credentials_scanner_failure_stops_checker")
 # Frozen experiment behaviour -> named tests (case tests are test_case_<fixture id>).
 BEHAVIOUR_MAP = {
     "zero/below/at/above for classifications": ["test_case_classifications_" + b for b in ("zero", "below", "at", "above")],
@@ -68,6 +78,7 @@ BEHAVIOUR_MAP = {
     "malformed case specs and fixture documents": ["test_malformed_specs_are_rejected",
                                                    "test_malformed_fixture_documents_are_rejected"],
     "declared synthetic negative control": ["test_negative_control_rejects_zeroed_omissions"],
+    "runner prerequisite gates and terminal child outcomes (inert controls)": list(RUNNER_CONTROL_TESTS),
 }
 CHILD_TIMEOUT = 1200
 # Fragments are joined at run time so this file does not match its own scan.
@@ -85,28 +96,67 @@ def sha256_file(path: Path) -> str | None:
     return sha256_bytes(path.read_bytes()) if path.is_file() else None
 
 
+# Exit statuses that mean the child program was not genuinely executed (exec
+# refusal / command not found by a wrapper). A negative status is a signal kill.
+# Any other nonzero exit is an ordinary outcome judged by the calling check.
+EXEC_REFUSAL_EXITS = (126, 127)
+
+
+class Halt(Exception):
+    """Terminal stop: no further child, phase, clone or scan work runs after this."""
+
+
 class Run:
-    def __init__(self, run_dir: Path):
+    def __init__(self, run_dir: Path, launcher=None):
         self.run_dir = run_dir
         self.children: list[dict] = []
         self.problems: list[str] = []
+        self.launcher = launcher or subprocess.run
+        self.terminal: dict | None = None  # the child record that stopped this run
+        self.stopped_at: str | None = None
+        self.manifest_facts: dict = {}
 
     def child(self, name: str, argv: list, cwd: Path, stdout_path: Path | None = None) -> dict:
-        """Run one literal argument-list child (shell disabled) and keep its raw output."""
+        """Run one literal argument-list child (shell disabled) and keep its raw output.
+
+        Launch errors, timeouts, signal kills and exec-refusal statuses are terminal:
+        the record (argv/cwd/raw error) is kept, a problem is recorded and Halt is
+        raised; every later child request is refused without launching anything.
+        """
+        if self.terminal is not None:
+            raise Halt(f"child {name!r} not launched: run stopped at child {self.terminal['name']!r}")
         out_path = stdout_path or self.run_dir / f"{name}.stdout"
         err_path = self.run_dir / f"{name}.stderr"
-        record = {"name": name, "argv": [str(a) for a in argv], "cwd": str(cwd), "shell": False}
+        record = {"name": name, "argv": [str(a) for a in argv], "cwd": str(cwd), "shell": False,
+                  "run_dir": str(self.run_dir)}
+        terminal = None
         try:
             with open(out_path, "xb") as out, open(err_path, "xb") as err:
-                proc = subprocess.run([str(a) for a in argv], cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=out,
-                                      stderr=err, timeout=CHILD_TIMEOUT, check=False, shell=False)
+                proc = self.launcher([str(a) for a in argv], cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=out,
+                                     stderr=err, timeout=CHILD_TIMEOUT, check=False, shell=False)
             record["exit"] = proc.returncode
+            if proc.returncode < 0:
+                terminal = "killed_by_signal"
+            elif proc.returncode in EXEC_REFUSAL_EXITS:
+                terminal = "exec_refused_or_missing"
+        except subprocess.TimeoutExpired as exc:
+            record["exit"] = None
+            record["launch_error"] = f"{type(exc).__name__}: {exc}"
+            terminal = "timeout"
         except (OSError, subprocess.SubprocessError) as exc:
             record["exit"] = None
             record["launch_error"] = f"{type(exc).__name__}: {exc}"
+            terminal = "launch_error"
         record.update(stdout_path=str(out_path), stderr_path=str(err_path),
                       stdout_sha256=sha256_file(out_path), stderr_sha256=sha256_file(err_path))
         self.children.append(record)
+        if terminal is not None:
+            record["terminal"] = terminal
+            self.terminal = record
+            self.stopped_at = f"child:{name}"
+            self.problems.append(f"STOP {terminal} at child {name!r}: argv={record['argv']} cwd={record['cwd']} "
+                                 f"exit={record['exit']} error={record.get('launch_error')}")
+            raise Halt(f"terminal child outcome {terminal} at {name!r}")
         return record
 
     def text(self, record: dict, stream: str = "stdout") -> str:
@@ -120,6 +170,12 @@ class Run:
         if not ok:
             self.problems.append(message)
         return ok
+
+    def gate(self, stage: str) -> None:
+        """Hard execution gate: any recorded problem stops all later work."""
+        if self.problems:
+            self.stopped_at = stage
+            raise Halt(f"{stage}: prerequisite failed; no later work runs")
 
     def write_json(self, name: str, value) -> Path:
         path = self.run_dir / name
@@ -140,16 +196,53 @@ def identity(run: Run, label: str) -> dict:
 
 
 def check_manifest(run: Run, manifest_path: Path, phase: str) -> dict:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    runtime = manifest.get("runtime") if isinstance(manifest, dict) else None
-    run.need(isinstance(manifest, dict) and manifest.get("schema") == MANIFEST_SCHEMA, "manifest schema mismatch")
+    """Validate staging prerequisites. Two hard gates: static facts (no child
+    launched before they pass), then git identity facts (no phase work before
+    they pass). Facts gathered so far stay on run.manifest_facts for receipts."""
+    facts = run.manifest_facts
+    facts["manifest_path"] = str(manifest_path)
+    facts["manifest_sha256"] = sha256_file(manifest_path)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        run.need(False, f"manifest unreadable: {type(exc).__name__}: {exc}")
+        manifest = None
+    if not isinstance(manifest, dict):
+        run.need(False, "manifest is not a JSON object")
+        run.gate("manifest-static")
+        return facts  # unreachable: the gate above always raises Halt
+    runtime = manifest.get("runtime")
+    run.need(manifest.get("schema") == MANIFEST_SCHEMA, "manifest schema mismatch")
     run.need(isinstance(runtime, dict), "manifest runtime missing")
-    runtime = runtime or {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    facts["runtime"] = runtime
     run.need(Path(str(manifest.get("repo"))).resolve() == REPO, "manifest repo is not this candidate")
     run.need(Path(str(manifest.get("write_root"))).resolve() == REPO.parent, "manifest write_root mismatch")
     base, base_tree = str(manifest.get("head")), str(manifest.get("tree"))
     run.need(bool(_HEX40.fullmatch(base)) and bool(_HEX40.fullmatch(base_tree)), "manifest head/tree not full SHAs")
-    facts = {"manifest_sha256": sha256_file(manifest_path), "base": base, "base_tree": base_tree}
+    facts.update(base=base, base_tree=base_tree)
+    venv = Path(str(runtime.get("repo_venv")))
+    facts["repo_venv"] = str(venv)
+    facts["dotvenv_link"] = os.readlink(REPO / ".venv") if (REPO / ".venv").is_symlink() else None
+    run.need((REPO / ".venv").is_symlink() and (REPO / ".venv").resolve() == venv.resolve(),
+             ".venv is not the manifest-bound shared repo venv link")
+    facts["interpreter"] = sys.executable
+    facts["sys_prefix"] = sys.prefix
+    if phase == "credentials":
+        expected = str(runtime.get("credential_scan_python3"))
+        run.need(sys.executable == expected and Path(expected).is_absolute(),
+                 f"credentials row must run under runtime.credential_scan_python3 ({expected})")
+    else:
+        run.need(Path(sys.prefix).resolve() == venv.resolve(), "interpreter is not the staged repo venv")
+        run.need(Path(sys.executable).parent.parent == REPO / ".venv",
+                 "interpreter was not invoked through the staged repo .venv")
+    run.gate("manifest-static")
+    return check_manifest_git(run, facts)
+
+
+def check_manifest_git(run: Run, facts: dict) -> dict:
+    """Second gate: candidate identity measured with git (static facts already passed)."""
+    base, base_tree = facts["base"], facts["base_tree"]
     _, measured_base_tree = run.git("base-tree", "rev-parse", f"{base}^{{tree}}")
     facts["measured_base_tree"] = measured_base_tree.strip()
     run.need(facts["measured_base_tree"] == base_tree, "manifest tree does not match the base commit tree")
@@ -169,21 +262,6 @@ def check_manifest(run: Run, manifest_path: Path, phase: str) -> dict:
         run.need(signed, f"commit {sha} lacks Signed-off-by")
     run.need(bool(commits), "no candidate commits above base")
     facts["candidate_commits"] = commits
-    venv = Path(str(runtime.get("repo_venv")))
-    facts["repo_venv"] = str(venv)
-    facts["dotvenv_link"] = os.readlink(REPO / ".venv") if (REPO / ".venv").is_symlink() else None
-    run.need((REPO / ".venv").is_symlink() and (REPO / ".venv").resolve() == venv.resolve(),
-             ".venv is not the manifest-bound shared repo venv link")
-    facts["interpreter"] = sys.executable
-    facts["sys_prefix"] = sys.prefix
-    if phase == "credentials":
-        expected = str(runtime.get("credential_scan_python3"))
-        run.need(sys.executable == expected and Path(expected).is_absolute(),
-                 f"credentials row must run under runtime.credential_scan_python3 ({expected})")
-    else:
-        run.need(Path(sys.prefix).resolve() == venv.resolve(), "interpreter is not the staged repo venv")
-        run.need(Path(sys.executable).parent.parent == REPO / ".venv",
-                 "interpreter was not invoked through the staged repo .venv")
     unchanged_base = run.child("pinned-sources-vs-base", ["git", "diff", "--quiet", base, "HEAD", "--",
                                                           *PINNED_SOURCES], REPO)
     unchanged_tree = run.child("pinned-sources-vs-worktree", ["git", "diff", "--quiet", "HEAD", "--",
@@ -194,7 +272,7 @@ def check_manifest(run: Run, manifest_path: Path, phase: str) -> dict:
     _, changed = run.git("changed-paths", "diff", "--name-only", base, "HEAD")
     facts["changed_paths"] = changed.split()
     run.need(sorted(facts["changed_paths"]) == sorted(AUTHORED), f"diff outside write set: {facts['changed_paths']}")
-    facts["runtime"] = runtime
+    run.gate("manifest-git")
     return facts
 
 
@@ -280,7 +358,7 @@ def case_report(fixture: dict, outcomes: dict[str, str]) -> list[dict]:
 
 # ---------------------------------------------------------------- phases
 
-def phase_suite(run: Run) -> dict:
+def phase_suite(run: Run, facts: dict, before: dict) -> dict:
     _import_repo()
     module = importlib.import_module(SUITE_MODULE)
     run.need(Path(module.__file__).resolve() == REPO / SUITE_FILE, "suite module loaded outside candidate")
@@ -312,7 +390,7 @@ def phase_suite(run: Run) -> dict:
             "negative_control": control, "restored_positive_rerun": rerun}
 
 
-def phase_compatibility(run: Run) -> dict:
+def phase_compatibility(run: Run, facts: dict, before: dict) -> dict:
     _import_repo()
     suite = unittest.defaultTestLoader.loadTestsFromNames(list(COMPAT_SELECTORS))
     summary = run_suite_in_process(run, "compatibility-unittest", suite)
@@ -334,9 +412,10 @@ def host_literal_scan() -> list[dict]:
     return hits
 
 
-def phase_portable(run: Run) -> dict:
+def phase_portable(run: Run, facts: dict, before: dict) -> dict:
     hits = host_literal_scan()
     run.need(not hits, f"host-specific or forbidden literals: {hits}")
+    run.gate("portable-host-literals")
     script_cwd = run.run_dir / "script-cwd"
     script_cwd.mkdir()
     script_tmp = run.run_dir / "script-temp-root"
@@ -362,7 +441,7 @@ def phase_portable(run: Run) -> dict:
     run.need(not report.get("outside_repo_modules"), "discovery loaded product modules outside candidate")
     _import_repo()
     fixture = json.loads((REPO / FIXTURE_FILE).read_text(encoding="utf-8"))
-    required = {f"test_case_{c['id']}" for c in fixture["cases"]} | set(CONTRACT_TESTS)
+    required = {f"test_case_{c['id']}" for c in fixture["cases"]} | set(CONTRACT_TESTS) | set(RUNNER_CONTROL_TESTS)
     script_ok = {k for k, v in script_outcomes.items() if v == "ok"}
     disc_ok = {k for k, v in disc_outcomes.items() if v == "ok"}
     run.need(required <= script_ok, f"script run missing required cases {sorted(required - script_ok)}")
@@ -419,19 +498,24 @@ def discovery_child(report_path: Path, temp_root: Path) -> int:
     return 0 if not run.problems and not changes and not outside else 1
 
 
-def phase_credentials(run: Run, manifest: dict) -> dict:
-    scanner = Path(str(manifest["runtime"].get("detect_secrets")))
-    if not run.need(scanner.is_absolute() and scanner.is_file(), f"manifest detect_secrets unavailable: {scanner}"):
-        return {}
+def phase_credentials(run: Run, facts: dict, before: dict) -> dict:
+    scanner = Path(str(facts["runtime"].get("detect_secrets")))
+    run.need(scanner.is_absolute() and scanner.is_file(), f"manifest detect_secrets unavailable: {scanner}")
+    run.gate("credentials-scanner-available")
     report = run.run_dir / "secret-scan.json"
     scan = run.child("detect-secrets-scan", [scanner, "scan", "--all-files", "--exclude-files", "^.git/", "--no-verify"],
                      REPO, stdout_path=report)
     run.need(scan["exit"] == 0, f"scanner exit {scan['exit']}")
-    data = json.loads(report.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        run.need(False, f"secret report unparseable: {type(exc).__name__}")
+        data = None
     results = data.get("results") if isinstance(data, dict) else None
     run.need(isinstance(results, dict), "secret report malformed")
     traversed = sorted(p for p in (results or {}) if p == ".venv" or p.startswith(".venv/"))
     run.need(not traversed, f"scanner traversed the staged .venv link: {traversed[:5]}")
+    run.gate("credentials-scan")  # the checker depends on a genuine, complete scanner report
     check = run.child("check-secret-report", [sys.executable, REPO / "tools" / "check_secret_report.py", report], REPO)
     out = run.text(check)
     found = re.search(r"potential secrets: (\d+)", out)
@@ -449,10 +533,11 @@ def _scan_json(run: Run, record: dict) -> dict | None:
         return None
 
 
-def phase_public_tree(run: Run, manifest: dict, before: dict) -> dict:
+def phase_public_tree(run: Run, facts: dict, before: dict) -> dict:
     head, tree = before["head"], before["tree"]
     run.need(bool(_HEX40.fullmatch(head)) and bool(_HEX40.fullmatch(tree)), "candidate HEAD/tree unavailable")
     run.need(before["status_porcelain"] == "", f"candidate has uncommitted or untracked files: {before['status_porcelain']!r}")
+    run.gate("public-tree-identity")
     for rel in AUTHORED:
         tracked = run.child("ls-files-" + Path(rel).name, ["git", "ls-files", "--error-unmatch", rel], REPO)
         run.need(tracked["exit"] == 0, f"authored file not tracked: {rel}")
@@ -461,12 +546,15 @@ def phase_public_tree(run: Run, manifest: dict, before: dict) -> dict:
     run.need(worktree["exit"] == 0 and index["exit"] == 0, "tracked or index bytes differ from HEAD")
     _, ignored = run.git("ignored-inventory", "status", "--porcelain=v1", "--ignored", "--untracked-files=all")
     _, tracked_paths = run.git("tracked-inventory", "ls-files")
+    run.gate("public-tree-committed")  # no clone of an uncommitted or untracked candidate
     clone = run.run_dir / "committed-tree"
     cl = run.child("clone", ["git", "clone", "--local", "--no-hardlinks", "--no-checkout", "--no-recurse-submodules",
                              REPO, clone], run.run_dir)
     run.need(cl["exit"] == 0, "local clone failed")
+    run.gate("public-tree-clone")
     co = run.child("clone-checkout", ["git", "checkout", "--detach", head], clone)
     run.need(co["exit"] == 0, "clone checkout failed")
+    run.gate("public-tree-checkout")
     _, clone_head = run.git("clone-head", "rev-parse", "HEAD", cwd=clone)
     _, clone_tree = run.git("clone-tree", "rev-parse", "HEAD^{tree}", cwd=clone)
     run.need(clone_head.strip() == head and clone_tree.strip() == tree, "clone HEAD/tree differ from candidate")
@@ -475,6 +563,7 @@ def phase_public_tree(run: Run, manifest: dict, before: dict) -> dict:
                 for rel in AUTHORED + CHECKER_FILES + tuple(PINNED_SOURCES)}
     for rel, pair in compared.items():
         run.need(pair["candidate"] is not None and pair["candidate"] == pair["clone"], f"clone bytes differ: {rel}")
+    run.gate("public-tree-clone-identity")  # scan only a verified exact committed tree
     scan = run.child("clone-check-public-tree", [sys.executable, clone / "tools" / "check_public_tree.py"], clone)
     parsed = _scan_json(run, scan)
     run.need(scan["exit"] == 0, f"committed-tree public scan exit {scan['exit']}")
@@ -482,7 +571,7 @@ def phase_public_tree(run: Run, manifest: dict, before: dict) -> dict:
     # INC-174 informational: the unchanged checker in the staged repo itself.
     inplace = run.child("inplace-check-public-tree", [sys.executable, REPO / "tools" / "check_public_tree.py"], REPO)
     inplace_parsed = _scan_json(run, inplace)
-    venv_ok = (REPO / ".venv").is_symlink() and (REPO / ".venv").resolve() == Path(manifest["runtime"]["repo_venv"]).resolve()
+    venv_ok = (REPO / ".venv").is_symlink() and (REPO / ".venv").resolve() == Path(str(facts["runtime"].get("repo_venv"))).resolve()
     findings = inplace_parsed.get("findings") if isinstance(inplace_parsed, dict) else None
     allowed = (inplace["exit"] == 0 and findings == []) or \
         (inplace["exit"] == 1 and findings == [[".venv", 0, "symlink_not_scanned"]] and venv_ok)
@@ -500,6 +589,53 @@ def phase_public_tree(run: Run, manifest: dict, before: dict) -> dict:
 
 
 # ---------------------------------------------------------------- main
+
+PHASE_FUNCS = {"suite": phase_suite, "compatibility": phase_compatibility, "portable": phase_portable,
+               "credentials": phase_credentials, "public-tree": phase_public_tree}
+
+
+def execute(run: Run, phase: str, manifest_path: Path, record: dict, phases: dict | None = None,
+            check=None) -> dict:
+    """Prerequisites gate the phase; a Halt anywhere ends all further work.
+
+    ``phases`` and ``check`` are injectable only so inert controls can prove the
+    gates with marker callbacks; acceptance always uses the defaults."""
+    phases = PHASE_FUNCS if phases is None else phases
+    check = check_manifest if check is None else check
+    try:
+        facts = check(run, manifest_path, phase)
+        record["identity_before"] = before = identity(run, "before")
+        run.gate("identity-before")
+        record["fixture_sha256"] = sha256_file(REPO / FIXTURE_FILE)
+        record["phase_entered"] = True
+        record["result"] = phases[phase](run, facts, before)
+        record["identity_after"] = after = identity(run, "after")
+        for key in ("head", "tree", "status_porcelain", "authored_sha256", "pinned_sha256"):
+            run.need(before[key] == after[key], f"candidate {key} changed during phase")
+    except Halt as exc:
+        record["stopped"] = {"stage": run.stopped_at, "reason": str(exc), "terminal_child": run.terminal,
+                             "note": "STOP: no later child, phase, clone or scan work ran after this point"}
+        if not run.problems:  # defensive: a stop is never a pass
+            run.problems.append(f"stopped: {exc}")
+    except Exception as exc:  # an incomplete phase is a failure, never a pass
+        run.problems.append(f"incomplete: {type(exc).__name__}: {exc}")
+    record.setdefault("phase_entered", False)
+    record["manifest"] = run.manifest_facts
+    return finalize(run, record)
+
+
+def finalize(run: Run, record: dict) -> dict:
+    """Receipt-only finalizer: hashes and writes files, never launches a child."""
+    record["children"] = run.children
+    record["problems"] = run.problems
+    record["passed"] = not run.problems
+    temp_root = run.run_dir / "tmp"
+    record["artifacts"] = {str(p.relative_to(run.run_dir)): sha256_file(p) for p in sorted(run.run_dir.rglob("*"))
+                           if p.is_file() and not p.is_relative_to(run.run_dir / "committed-tree")
+                           and not p.is_relative_to(temp_root)}
+    run.write_json("result.json", record)
+    return record
+
 
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[0] == "--discovery-child":
@@ -526,37 +662,12 @@ def main(argv: list[str]) -> int:
               "repo": str(REPO), "run_dir": str(run_dir), "tempdir": tempfile.tempdir, "started_utc": started,
               "verdict_scope": "MACHINE CHECK ONLY - REVIEW REQUIRED; not semantic, legal, human or live acceptance",
               "full_discovery": "operator-run (not part of this packet)"}
-    try:
-        record["manifest"] = check_manifest(run, args.source_manifest.resolve(), args.phase)
-        record["identity_before"] = before = identity(run, "before")
-        record["fixture_sha256"] = sha256_file(REPO / FIXTURE_FILE)
-        if args.phase == "suite":
-            record["result"] = phase_suite(run)
-        elif args.phase == "compatibility":
-            record["result"] = phase_compatibility(run)
-        elif args.phase == "portable":
-            record["result"] = phase_portable(run)
-        elif args.phase == "credentials":
-            record["result"] = phase_credentials(run, json.loads(args.source_manifest.read_text(encoding="utf-8")))
-        else:
-            record["result"] = phase_public_tree(run, json.loads(args.source_manifest.read_text(encoding="utf-8")),
-                                                 before)
-        record["identity_after"] = after = identity(run, "after")
-        for key in ("head", "tree", "status_porcelain", "authored_sha256", "pinned_sha256"):
-            run.need(before[key] == after[key], f"candidate {key} changed during phase")
-    except Exception as exc:  # an incomplete phase is a failure, never a pass
-        run.problems.append(f"incomplete: {type(exc).__name__}: {exc}")
-    record["children"] = run.children
-    record["problems"] = run.problems
-    record["passed"] = not run.problems
-    record["artifacts"] = {str(p.relative_to(run_dir)): sha256_file(p) for p in sorted(run_dir.rglob("*"))
-                           if p.is_file() and not p.is_relative_to(run_dir / "committed-tree")
-                           and not p.is_relative_to(temp_root)}
-    run.write_json("result.json", record)
+    record = execute(run, args.phase, args.source_manifest.resolve(), record)
     print(json.dumps({"phase": args.phase, "passed": record["passed"], "problems": run.problems,
-                      "run_dir": str(run_dir), "head": record.get("identity_before", {}).get("head"),
+                      "stopped": record.get("stopped"), "run_dir": str(run_dir),
+                      "head": record.get("identity_before", {}).get("head"),
                       "tree": record.get("identity_before", {}).get("tree"),
-                      "result_sha256": sha256_file(run_dir / "result.json")}, sort_keys=True))
+                      "result_sha256": sha256_file(run_dir / "result.json")}, sort_keys=True, default=str))
     return 0 if record["passed"] else 1
 
 

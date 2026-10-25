@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -455,6 +457,237 @@ def _case_test(case_id: str):
 
 for _case_id in CASES:
     setattr(FC9CandidateCountCaseTests, f"test_case_{_case_id}", _case_test(_case_id))
+
+
+# ------------------------------------------------------------ runner stop-gate controls
+# Inert controls for the acceptance runner: every child goes to a fake launcher
+# (nothing is executed), phases are marker callbacks, and all receipts land in a
+# per-test temporary directory. No real guard refusal is attempted.
+
+RUNNER_PATH = REPO / "tools" / "fc9_document_candidate_counts_acceptance.py"
+
+
+def load_runner():
+    spec = importlib.util.spec_from_file_location("fc9_candidate_counts_runner_under_test", RUNNER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeLauncher:
+    """Stands in for subprocess.run; ``respond(argv)`` returns (exit, stdout) or an exception."""
+
+    def __init__(self, respond):
+        self.respond = respond
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, cwd, stdin, stdout, stderr, timeout, check, shell):
+        assert shell is False and isinstance(argv, list)
+        self.calls.append(list(argv))
+        outcome = self.respond(argv)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        code, text = outcome
+        stdout.write(text.encode("utf-8"))
+        return subprocess.CompletedProcess(argv, code)
+
+
+def _ok(argv):
+    return 0, ""
+
+
+class FC9RunnerStopGateTests(unittest.TestCase):
+    """Prerequisite failures and terminal child outcomes stop all later work."""
+
+    def setUp(self):
+        self.runner = load_runner()
+        holder = tempfile.TemporaryDirectory(prefix="fc9-runner-control-")
+        self.addCleanup(holder.cleanup)
+        self.tmp = Path(holder.name)
+        self.entered: list[str] = []
+
+    def make_run(self, respond=_ok, name="run"):
+        run_dir = self.tmp / name
+        run_dir.mkdir()
+        launcher = FakeLauncher(respond)
+        return self.runner.Run(run_dir, launcher=launcher), launcher
+
+    def marker_phases(self, also=None):
+        def marker(run, facts, before):
+            self.entered.append("phase")
+            if also:
+                also(run)
+            return {"marker": True}
+        return {phase: marker for phase in self.runner.PHASES}
+
+    def manifest(self, **overrides) -> Path:
+        value = {"schema": self.runner.MANIFEST_SCHEMA, "repo": str(self.tmp / "not-the-candidate"),
+                 "write_root": str(self.tmp), "head": "0" * 40, "tree": "1" * 40,
+                 "runtime": {"repo_venv": str(self.tmp / "venv")}}
+        value.update(overrides)
+        path = self.tmp / "manifest.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    def test_invalid_manifest_stops_before_any_child_or_phase(self):
+        path = self.manifest()
+        for phase in self.runner.PHASES:
+            with self.subTest(phase=phase):
+                run, launcher = self.make_run(name=f"invalid-{phase}")
+                record = self.runner.execute(run, phase, path, {}, phases=self.marker_phases())
+                self.assertEqual(self.entered, [])
+                self.assertEqual(launcher.calls, [])
+                self.assertFalse(record["passed"])
+                self.assertFalse(record["phase_entered"])
+                self.assertEqual(record["stopped"]["stage"], "manifest-static")
+                self.assertIn("manifest repo is not this candidate", record["problems"])
+                self.assertTrue((run.run_dir / "result.json").is_file())
+
+    def test_unreadable_manifest_stops_before_any_child_or_phase(self):
+        for label, content in (("not-json", "{"), ("not-object", "[]")):
+            with self.subTest(label=label):
+                path = self.tmp / f"{label}.json"
+                path.write_text(content, encoding="utf-8")
+                run, launcher = self.make_run(name=label)
+                record = self.runner.execute(run, "suite", path, {}, phases=self.marker_phases())
+                self.assertEqual((self.entered, launcher.calls), ([], []))
+                self.assertEqual(record["stopped"]["stage"], "manifest-static")
+                self.assertFalse(record["passed"])
+        run, launcher = self.make_run(name="missing")
+        record = self.runner.execute(run, "suite", self.tmp / "absent.json", {}, phases=self.marker_phases())
+        self.assertEqual((self.entered, launcher.calls, record["passed"]), ([], [], False))
+
+    def test_git_prerequisite_failure_stops_before_phase(self):
+        base, base_tree, head = "2" * 40, "3" * 40, "4" * 40
+
+        def respond(argv):
+            if argv[:2] == ["git", "rev-parse"]:
+                return 0, (base_tree if argv[2].endswith("^{tree}") else head) + "\n"
+            if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+                return 1, ""  # ordinary nonzero: HEAD does not descend from base
+            return 0, ""
+
+        def check(run, manifest_path, phase):
+            run.manifest_facts.update(base=base, base_tree=base_tree)
+            return self.runner.check_manifest_git(run, run.manifest_facts)
+
+        run, launcher = self.make_run(respond)
+        record = self.runner.execute(run, "public-tree", self.tmp / "unused.json", {},
+                                     phases=self.marker_phases(), check=check)
+        self.assertEqual(self.entered, [])
+        self.assertEqual(record["stopped"]["stage"], "manifest-git")
+        self.assertIn("candidate HEAD does not descend from the pinned base", record["problems"])
+        names = [c["name"] for c in record["children"]]
+        self.assertFalse(any(n.startswith("before-") for n in names), names)
+        self.assertEqual(len(launcher.calls), len(names))
+
+    def test_launch_error_is_terminal_and_refuses_later_children(self):
+        run, launcher = self.make_run(lambda argv: PermissionError(13, "refused by guard (inert mock)"))
+        with self.assertRaises(self.runner.Halt):
+            run.child("first", ["git", "status"], self.tmp)
+        record = run.children[0]
+        self.assertEqual((record["argv"], record["cwd"], record["exit"]), (["git", "status"], str(self.tmp), None))
+        self.assertIn("PermissionError", record["launch_error"])
+        self.assertEqual(record["terminal"], "launch_error")
+        self.assertEqual(record["run_dir"], str(run.run_dir))
+        self.assertTrue(run.problems and run.problems[0].startswith("STOP launch_error"))
+        with self.assertRaises(self.runner.Halt):
+            run.child("second", ["git", "log"], self.tmp)
+        self.assertEqual(len(launcher.calls), 1)
+        self.assertEqual(len(run.children), 1)
+
+    def test_timeout_and_signal_and_exec_refusal_are_terminal(self):
+        outcomes = {"timeout": subprocess.TimeoutExpired(["git"], 1), "killed_by_signal": (-9, ""),
+                    "exec_refused_or_missing": (126, ""), "launch_error": FileNotFoundError(2, "missing")}
+        for label, outcome in outcomes.items():
+            with self.subTest(label=label):
+                run, launcher = self.make_run(lambda argv, outcome=outcome: outcome, name=label)
+                with self.assertRaises(self.runner.Halt):
+                    run.child("only", ["git", "status"], self.tmp)
+                self.assertEqual(run.terminal["terminal"], label)
+                self.assertEqual(len(run.problems), 1)
+                with self.assertRaises(self.runner.Halt):
+                    run.child("later", ["git", "status"], self.tmp)
+                self.assertEqual(len(launcher.calls), 1)
+
+    def test_ordinary_nonzero_exit_is_not_terminal(self):
+        run, launcher = self.make_run(lambda argv: (1, "findings"))
+        first = run.child("informational", ["git", "diff", "--quiet"], self.tmp)
+        second = run.child("next", ["git", "status"], self.tmp)
+        self.assertEqual((first["exit"], second["exit"]), (1, 1))
+        self.assertNotIn("terminal", first)
+        self.assertIsNone(run.terminal)
+        self.assertEqual(run.problems, [])
+        self.assertEqual(len(launcher.calls), 2)
+
+    def test_terminal_child_in_phase_finalizes_without_more_children(self):
+        def respond(argv):
+            if argv[0] == "refused-tool":
+                return PermissionError(13, "refused (inert mock)")
+            return 0, ""
+
+        def inside(run):
+            run.child("phase-child", ["refused-tool", "--flag"], self.tmp)
+            self.entered.append("after-terminal")  # must never run
+            run.child("phase-child-2", ["git", "status"], self.tmp)
+
+        run, launcher = self.make_run(respond)
+        record = self.runner.execute(run, "suite", self.tmp / "unused.json", {},
+                                     phases=self.marker_phases(also=inside), check=lambda r, p, ph: {})
+        self.assertEqual(self.entered, ["phase"])
+        self.assertEqual(launcher.calls[-1], ["refused-tool", "--flag"])
+        names = [c["name"] for c in record["children"]]
+        self.assertEqual(names[-1], "phase-child")
+        self.assertFalse(any(n.startswith("after-") for n in names), names)
+        self.assertNotIn("identity_after", record)
+        self.assertEqual(record["stopped"]["terminal_child"]["name"], "phase-child")
+        self.assertEqual(record["stopped"]["terminal_child"]["argv"], ["refused-tool", "--flag"])
+        self.assertFalse(record["passed"])
+        saved = json.loads((run.run_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["stopped"]["stage"], "child:phase-child")
+
+    def test_public_tree_stops_dependent_clone_checkout_and_scans(self):
+        facts = {"runtime": {"repo_venv": str(self.tmp / "venv")}}
+        clean = {"head": "5" * 40, "tree": "6" * 40, "status_porcelain": ""}
+        failing = {  # label: (before, (git verb, exit) to fail, gate stage, last child launched)
+            "dirty-candidate": (dict(clean, status_porcelain=" M x\n"), None, "public-tree-identity", None),
+            "untracked-authored": (clean, ("ls-files", 1), "public-tree-committed", "tracked-inventory"),
+            "clone-failed": (clean, ("clone", 128), "public-tree-clone", "clone"),
+            "checkout-failed": (clean, ("checkout", 1), "public-tree-checkout", "clone-checkout"),
+        }
+        downstream = ("clone", "clone-checkout", "clone-head", "clone-tree", "clone-check-public-tree",
+                      "inplace-check-public-tree", "source-head-recheck", "source-status-recheck")
+        for label, (before, fail, stage, last) in failing.items():
+            with self.subTest(label=label):
+                def respond(argv, fail=fail):
+                    if fail and argv[0] == "git" and argv[1] == fail[0]:
+                        return fail[1], ""
+                    return 0, ""
+                run, launcher = self.make_run(respond, name=label)
+                with self.assertRaises(self.runner.Halt):
+                    self.runner.phase_public_tree(run, facts, before)
+                self.assertEqual(run.stopped_at, stage)
+                names = [c["name"] for c in run.children]
+                self.assertEqual(names[-1] if names else None, last)
+                cut = downstream.index(last) + 1 if last in downstream else 0
+                for forbidden in downstream[cut:]:
+                    self.assertNotIn(forbidden, names)
+                self.assertEqual(len(launcher.calls), len(names))
+
+    def test_credentials_scanner_failure_stops_checker(self):
+        facts = {"runtime": {"detect_secrets": sys.executable}}
+        for label, outcome in (("scanner-exit", (2, "{\"results\": {}}")), ("scanner-garbage", (0, "not json"))):
+            with self.subTest(label=label):
+                run, launcher = self.make_run(lambda argv, outcome=outcome: outcome, name=label)
+                with self.assertRaises(self.runner.Halt):
+                    self.runner.phase_credentials(run, facts, {})
+                self.assertEqual(run.stopped_at, "credentials-scan")
+                self.assertEqual([c["name"] for c in run.children], ["detect-secrets-scan"])
+                self.assertEqual(len(launcher.calls), 1)
+        run, launcher = self.make_run(name="scanner-missing")
+        with self.assertRaises(self.runner.Halt):
+            self.runner.phase_credentials(run, {"runtime": {"detect_secrets": str(self.tmp / "absent")}}, {})
+        self.assertEqual((run.stopped_at, launcher.calls), ("credentials-scanner-available", []))
 
 
 if __name__ == "__main__":
