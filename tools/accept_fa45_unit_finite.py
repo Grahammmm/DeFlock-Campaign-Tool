@@ -21,11 +21,18 @@ repository and free of symlinked ancestors:
                     unchanged tools/check_secret_report.py on that exact report
 
 In-process cases disable bytecode, point tempfile/TMPDIR at the run
-directory, refuse sockets and refuse (via an audit hook) Python-level file
-writes, renames, removals and sqlite opens outside the run directory, all
-before any application module is imported. The repository tree is content
-hashed before and after each case. These are regression controls, not a
-sandbox. PASS means REVIEW REQUIRED, never semantic or release acceptance.
+directory and, all before any application module is imported, arm sentinels:
+an audit hook refuses Python-level file writes/renames/removals and sqlite
+opens outside the run directory, and file/directory reads outside the run
+directory, the admitted repository source and explicit runtime roots; every
+child/model execution entry point (subprocess, os.exec*/spawn*/system/fork,
+plus the matching audit events) and socket connects are refused. Inert
+self-check controls (a generated run-local stand-in for a live file and
+mocked child endpoints) must each be refused with their exact registered
+identity and phase; any other refusal is fatal even if caught by the code
+under test. The repository tree is content hashed before and after each
+case. These are regression controls, not a sandbox. PASS means REVIEW
+REQUIRED, never semantic or release acceptance.
 """
 import argparse
 import datetime
@@ -101,9 +108,22 @@ FULL_CI = {
                         "tests.records.test_original_reconciliation"],
 }
 FULL_CI_TIMEOUT = 3600
-GUARD_HITS = []
-WRITE_HITS = []
-PROBE_HITS = []
+GUARD_HITS = []        # every unexpected refusal (write/read/child/network): always fatal
+WRITE_HITS = []        # the unexpected write subset, kept separately in the record
+PROBE_HITS = []        # refusals that exactly matched an expected self-check probe
+EXPECTED_PROBES = {}   # (kind, target) -> phase in which that one probe is expected
+STATE = {"armed": False, "phase": "pre-arm"}
+FORBIDDEN_CONTROL = "control-forbidden"
+CHILD_ENTRY_POINTS = {
+    "subprocess": ("run", "call", "check_call", "check_output", "getoutput", "getstatusoutput"),
+    "os": ("system", "popen", "execv", "execve", "execl", "execle", "execlp", "execlpe", "execvp",
+           "execvpe", "spawnv", "spawnve", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnvp",
+           "spawnvpe", "posix_spawn", "posix_spawnp", "fork", "forkpty"),
+}
+CHILD_AUDIT_EVENTS = ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn",
+                      "os.fork", "os.forkpty", "pty.spawn")
+CHILD_ORIGINALS = {}
+ORIGINAL_POPEN = subprocess.Popen
 
 
 def sha256_bytes(data):
@@ -158,11 +178,72 @@ def fresh_run_dir(parent, case):
     return run
 
 
+class InertChildReached(Exception):
+    """Raised by inert doubles placed behind the child guard during self-check only."""
+
+
+def refuse_hit(kind, target):
+    """Record a refusal and raise. A hit is expected only if its exact (kind, target) was
+    registered for the current phase; every other hit stays fatal even if the caller catches."""
+    hit = {"kind": kind, "target": target, "phase": STATE["phase"]}
+    if EXPECTED_PROBES.get((kind, target)) == STATE["phase"]:
+        del EXPECTED_PROBES[(kind, target)]
+        PROBE_HITS.append(hit)
+    else:
+        GUARD_HITS.append(hit)
+        if kind == "write":
+            WRITE_HITS.append(target)
+    raise PermissionError("offline acceptance guard refused " + kind + ": " + target)
+
+
+def child_target(label, args, kwargs):
+    first = args[0] if args else kwargs.get("args", kwargs.get("path", ""))
+    if isinstance(first, int) and len(args) > 1:  # os.spawn*(mode, file, ...)
+        first = args[1]
+    if isinstance(first, (list, tuple)):
+        first = first[0] if first else ""
+    try:
+        text = os.fsdecode(first)
+    except TypeError:
+        text = type(first).__name__
+    return label + ":" + text
+
+
+def guarded_child(label):
+    def guarded(*args, **kwargs):
+        if STATE["armed"]:
+            refuse_hit("child", child_target(label, args, kwargs))
+        return CHILD_ORIGINALS[label](*args, **kwargs)
+    guarded.__name__ = label.rsplit(".", 1)[1]
+    guarded.__qualname__ = guarded.__name__
+    return guarded
+
+
+class GuardedPopen(ORIGINAL_POPEN):
+    def __init__(self, *args, **kwargs):
+        if STATE["armed"]:
+            self._child_created = False  # keeps Popen.__del__ quiet on refusal
+            refuse_hit("child", child_target("subprocess.Popen", args, kwargs))
+        super().__init__(*args, **kwargs)
+
+
+def install_child_guards():
+    """Python-level refusal of every child/model execution entry point while armed."""
+    modules = {"subprocess": subprocess, "os": os}
+    for module_name, names in CHILD_ENTRY_POINTS.items():
+        module = modules[module_name]
+        for name in names:
+            label = module_name + "." + name
+            if hasattr(module, name) and label not in CHILD_ORIGINALS:
+                CHILD_ORIGINALS[label] = getattr(module, name)
+                setattr(module, name, guarded_child(label))
+    subprocess.Popen = GuardedPopen
+
+
 def install_offline_guards():
     def refuse(name):
         def guard(*args, **kwargs):
-            GUARD_HITS.append(name)
-            raise OSError("offline acceptance guard refused " + name)
+            refuse_hit("network", name)
         return guard
     socket.socket.connect = refuse("socket.connect")
     socket.socket.connect_ex = refuse("socket.connect_ex")
@@ -179,57 +260,187 @@ WRITE_EVENTS = {"os.mkdir": ((0, 2),), "os.rename": ((0, 2), (1, 3)), "os.replac
                 "sqlite3.connect": ((0, None),)}
 
 
-def install_write_guard(run):
-    """Refuse, before the syscall, Python-level writes and sqlite opens outside the run root."""
-    root = os.path.realpath(run)
+READ_EVENTS = {"os.listdir": 0, "os.scandir": 0, "shutil.copyfile": 0, "shutil.copytree": 0}
 
-    def inside(target, dir_fd=None):
-        if isinstance(target, int):
-            return True
+
+def under(path, base):
+    return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def runtime_read_roots():
+    """Explicit interpreter/runtime roots: the venv prefix and this interpreter's scheme paths."""
+    import sysconfig
+    roots = {os.path.realpath(sys.prefix), os.path.realpath(sys.exec_prefix)}
+    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
+        value = sysconfig.get_paths().get(key)
+        if value:
+            roots.add(os.path.realpath(value))
+    return sorted(roots)
+
+
+def install_write_guard(run):
+    """Install every pre-import sentinel, then prove each with inert controls.
+
+    While armed, an audit hook refuses (before the syscall) file writes and sqlite opens
+    outside the run root, and file/directory reads outside the run root, the admitted
+    repository source and the explicit runtime roots. The run-local control-forbidden
+    directory is outside both, so it acts as a generated stand-in for a live file. Every
+    child/model execution entry point is refused at Python level (plus the audit events
+    as a second layer) and sockets are refused. Self-check probes are registered by exact
+    (kind, target, phase); any other refusal is recorded as unexpected and is fatal."""
+    from unittest import mock
+    root = os.path.realpath(run)
+    forbidden = os.path.join(root, FORBIDDEN_CONTROL)
+    os.mkdir(forbidden, 0o700)
+    forbidden_file = os.path.join(forbidden, "synthetic-live-record.txt")
+    with open(forbidden_file, "w") as handle:
+        handle.write("generated synthetic stand-in for a live file; must never be read\n")
+    read_roots = sorted({root, os.path.realpath(REPO), *runtime_read_roots()})
+
+    def resolve(target, dir_fd=None):
         text = os.fsdecode(target)
-        if text in ("", ":memory:", os.devnull):
-            return True
         if text.startswith("file:"):
             text = unquote(urlsplit(text).path)
         if isinstance(dir_fd, int) and dir_fd >= 0 and not os.path.isabs(text):
             try:
                 text = os.path.join(os.readlink("/proc/self/fd/" + str(dir_fd)), text)
             except OSError:
-                return False
-        resolved = os.path.realpath(text)
-        return resolved == root or resolved.startswith(root + os.sep)
+                return None
+        return os.path.realpath(text)
+
+    def allowed(kind, target, dir_fd=None):
+        if isinstance(target, int):
+            return True  # an already opened descriptor
+        if os.fsdecode(target) in ("", ":memory:", os.devnull):
+            return True
+        resolved = resolve(target, dir_fd)
+        if resolved is None or under(resolved, forbidden):
+            return False
+        if kind == "write":
+            return under(resolved, root)
+        return resolved == os.devnull or any(under(resolved, base) for base in read_roots)
+
+    def display(target):
+        return str(target) if isinstance(target, int) else os.fsdecode(target)
 
     def hook(event, args):
+        if not STATE["armed"]:
+            return
+        checks = []
         if event == "open":
             path, mode, flags = (tuple(args) + (None, None, None))[:3]
+            if path is None:
+                return
             writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
                 isinstance(flags, int) and flags & WRITE_FLAGS)
-            targets = [(path, None)] if writing and path is not None else []
-        elif event in WRITE_EVENTS:
-            targets = [(args[p], args[d] if d is not None and d < len(args) else None)
-                       for p, d in WRITE_EVENTS[event] if p < len(args) and args[p] is not None]
-        else:
-            return
-        for target, dir_fd in targets:
-            if not inside(target, dir_fd):
-                text = os.fsdecode(target) if not isinstance(target, int) else str(target)
-                probe = text.startswith(os.path.join(os.sep, "fa45-escape-"))
-                (PROBE_HITS if probe else WRITE_HITS).append(event + ":" + text)
-                raise PermissionError("acceptance write guard refused " + event + " outside run root")
+            checks.append(("write" if writing else "read", path, None))
+        elif event in WRITE_EVENTS or event in READ_EVENTS:
+            if event in READ_EVENTS and READ_EVENTS[event] < len(args):
+                source = args[READ_EVENTS[event]]
+                checks.append(("read", "." if source is None else source, None))
+            for p, d in WRITE_EVENTS.get(event, ()):
+                if p < len(args) and args[p] is not None:
+                    checks.append(("write", args[p], args[d] if d is not None and d < len(args) else None))
+        elif event in CHILD_AUDIT_EVENTS:
+            values = tuple(args)
+            if event == "os.spawn":
+                values = values[1:]
+            elif event == "subprocess.Popen" and values and values[0] is None:
+                values = values[1:]
+            refuse_hit("child", child_target(event, values, {}))
+        for kind, target, dir_fd in checks:
+            if not allowed(kind, target, dir_fd):
+                refuse_hit(kind, display(target))
+
     sys.addaudithook(hook)
-    escape = os.path.join(os.sep, "fa45-escape-" + secrets.token_hex(6), "probe")
+    install_child_guards()
+    install_offline_guards()
+    STATE["armed"] = True
+    STATE["phase"] = "guard-self-check"
     try:
-        open(escape, "w").close()
+        controls = guard_self_check(run, forbidden, forbidden_file, mock)
+    finally:
+        STATE["phase"] = "case"
+    leftover = sorted(target for (_, target) in EXPECTED_PROBES)
+    EXPECTED_PROBES.clear()
+    ok = all(controls.values()) and not leftover and not GUARD_HITS
+    return {"root": root, "read_roots": read_roots, "forbidden_control": forbidden,
+            "child_entry_points": sorted(CHILD_ORIGINALS) + ["subprocess.Popen"],
+            "child_audit_events": list(CHILD_AUDIT_EVENTS), "controls": controls,
+            "unconsumed_expected_probes": leftover, "self_check_ok": ok}
+
+
+def expect_refusal(kind, target, action):
+    """Run one inert probe that must be refused with exactly this (kind, target, phase)."""
+    before = len(PROBE_HITS)
+    EXPECTED_PROBES[(kind, target)] = STATE["phase"]
+    try:
+        action()
         refused = False
     except PermissionError:
         refused = True
-    except OSError:
+    except (InertChildReached, OSError):
         refused = False
-    positive = run / "write-guard-positive.txt"
+    consumed = (kind, target) not in EXPECTED_PROBES
+    EXPECTED_PROBES.pop((kind, target), None)
+    matched = (len(PROBE_HITS) == before + 1 and PROBE_HITS[-1]["kind"] == kind
+               and PROBE_HITS[-1]["target"] == target)
+    return refused and consumed and matched
+
+
+def guard_self_check(run, forbidden, forbidden_file, mock):
+    token = secrets.token_hex(6)
+    controls = {}
+    escape = os.path.join(os.sep, "fa45-escape-" + token, "probe")
+    controls["write_outside_run_refused"] = expect_refusal(
+        "write", escape, lambda: open(escape, "w").close())
+    forbidden_write = os.path.join(forbidden, "write-probe-" + token + ".txt")
+    controls["write_into_forbidden_control_refused"] = expect_refusal(
+        "write", forbidden_write, lambda: open(forbidden_write, "w").close())
+    controls["read_generated_live_stand_in_refused"] = expect_refusal(
+        "read", forbidden_file, lambda: open(forbidden_file).read())
+    controls["list_generated_live_stand_in_refused"] = expect_refusal(
+        "read", forbidden, lambda: os.listdir(forbidden))
+    argv0 = "fa45-inert-child-" + token + "-NOT-EXECUTED"
+    modules = {"subprocess": subprocess, "os": os}
+    for label in sorted(CHILD_ORIGINALS):
+        module_name, name = label.split(".", 1)
+        if name in ("fork", "forkpty"):
+            args, target = (), label + ":"
+        elif name.startswith("spawn"):
+            args, target = (os.P_WAIT, argv0, [argv0]), label + ":" + argv0
+        elif module_name == "subprocess" and name not in ("getoutput", "getstatusoutput"):
+            args, target = ([argv0],), label + ":" + argv0
+        else:
+            args, target = (argv0, [argv0]) if name.startswith(("exec", "posix_spawn")) else (argv0,), \
+                label + ":" + argv0
+        inert = mock.Mock(side_effect=InertChildReached(label))
+        entry = getattr(modules[module_name], name)
+        with mock.patch.dict(CHILD_ORIGINALS, {label: inert}):
+            refused = expect_refusal("child", target, lambda: entry(*args))
+        controls["child_refused:" + label] = refused and not inert.called
+    with mock.patch.object(ORIGINAL_POPEN, "_execute_child", side_effect=InertChildReached("Popen")) as inner:
+        refused = expect_refusal("child", "subprocess.Popen:" + argv0, lambda: subprocess.Popen([argv0]))
+        controls["child_refused:subprocess.Popen"] = refused and not inner.called
+    # Reviewer-shaped control: Popen replaced by an inert endpoint after the guard is installed.
+    with mock.patch.object(subprocess, "Popen", side_effect=InertChildReached("endpoint")) as endpoint:
+        refused = expect_refusal("child", "subprocess.run:" + argv0, lambda: subprocess.run([argv0]))
+        controls["child_refused_before_patched_popen_endpoint"] = refused and not endpoint.called
+    # Local AF_UNIX connect to a missing run-local path: inert even if the guard were absent.
+    unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        missing = os.path.join(os.path.realpath(run), "no-such-socket-" + token)
+        controls["socket_connect_refused"] = expect_refusal(
+            "network", "socket.connect", lambda: unix.connect(missing))
+    finally:
+        unix.close()
+    positive = Path(run) / "write-guard-positive.txt"
     positive.write_text("in-root write allowed\n")
-    probe_hits = [hit for hit in PROBE_HITS if escape in hit]
-    return {"root": root, "escape_probe_refused": refused and len(probe_hits) == 1 and not WRITE_HITS,
-            "in_root_positive_written": positive.is_file()}
+    controls["run_local_write_and_read_allowed"] = positive.read_text() == "in-root write allowed\n"
+    controls["admitted_source_read_allowed"] = len((REPO / PRODUCT).read_bytes()) > 0
+    controls["runtime_read_allowed"] = len(Path(json.__file__).read_bytes()) > 0
+    controls["no_unexpected_hits_during_self_check"] = not GUARD_HITS
+    return controls
 
 
 def prepare_import_root(run, source_root):
@@ -433,7 +644,10 @@ def case_isolation(run):
         "unsafe_constants_or_defaults": unsafe_constants,
         "tempfile_tempdir": tempfile.gettempdir(), "tmp_leftovers": leftovers,
         "sentinels": {"socket": "connect/connect_ex/sendto/create_connection/getaddrinfo refused",
-                      "write_guard": "audit hook, run root only", "bytecode": sys.dont_write_bytecode},
+                      "write_guard": "audit hook, run root only",
+                      "read_guard": "audit hook, run root + admitted source + runtime roots only",
+                      "child_guard": sorted(CHILD_ORIGINALS) + ["subprocess.Popen"],
+                      "bytecode": sys.dont_write_bytecode},
         "absolute_paths_in_committed_files": portable, "guard_hits": list(GUARD_HITS),
     })
     return ok, details
@@ -524,8 +738,8 @@ def main(argv=None):
     try:
         if args.case in ("behavior", "compatibility", "negative-control", "isolation"):
             guard = install_write_guard(run)
-            if not (guard["escape_probe_refused"] and guard["in_root_positive_written"]):
-                raise RuntimeError("write_guard_self_check_failed")
+            if not guard["self_check_ok"]:
+                raise RuntimeError("guard_self_check_failed")
         if args.case == "behavior":
             ok, details = case_tests(run, [REGRESSION], ACCEPTANCE)
         elif args.case == "compatibility":
@@ -542,6 +756,8 @@ def main(argv=None):
             ok, details = False, {"stop": "unknown_case"}
     except Exception as exc:  # any unexpected failure fails closed
         ok, details = False, {"stop": "unknown_failure: " + type(exc).__name__ + ": " + str(exc)}
+    STATE["armed"] = False  # the case is over; identity() below runs git again
+    STATE["phase"] = "post-case"
     after = identity()
     if after != before:
         ok = False
@@ -549,8 +765,14 @@ def main(argv=None):
     if WRITE_HITS:
         ok = False
         details["stop"] = "write_outside_run_root_refused"
+    if GUARD_HITS:  # fatal even when the code under test caught the refusal
+        ok = False
+        details.setdefault("stop", "unexpected_guard_hit")
+    if isinstance(guard, dict) and "controls" in guard and not guard.get("self_check_ok"):
+        ok = False
+    guard["unexpected_hits"] = list(GUARD_HITS)
     guard["refused_writes"] = list(WRITE_HITS)
-    guard["refused_inert_probes"] = len(PROBE_HITS)
+    guard["expected_probe_hits"] = list(PROBE_HITS)
     record = {"case": args.case, "argv": [sys.executable, *sys.argv], "cwd": os.getcwd(),
               "interpreter": sys.executable, "python": sys.version.split()[0],
               "run_dir": str(run), "identity": before, "write_guard": guard,
