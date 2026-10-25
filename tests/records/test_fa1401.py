@@ -9,11 +9,17 @@ column affinity; those cases are judged on the value actually delivered, and
 nothing here claims SQL can tell a converted boolean or numeral apart.
 
 No real record, mailbox, canonical store or live path is read. Network and
-process sentinels are installed before the application import and while this
-module's tests run, and are restored afterwards.
+process sentinels and the scoped data-file/SQLite boundary from
+tests/fixtures/fa1401/offline_boundary.py are installed before the application
+import and while this module's tests run, and are restored afterwards. File
+writes are admitted only under the generated fixture/temp roots; reads also
+under this repository and the running interpreter. Any sentinel hit fails the
+test that caused it.
 """
 import hashlib
 import http.client
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -25,7 +31,45 @@ import tempfile
 import unittest
 import urllib.request
 
+REPO = Path(__file__).resolve().parents[2]
+BOUNDARY_FILE = REPO / "tests" / "fixtures" / "fa1401" / "offline_boundary.py"
+BOUNDARY_NAME = "fa1401_offline_boundary"
+
+
+def _load_boundary():
+    loaded = sys.modules.get(BOUNDARY_NAME)
+    if loaded is not None:
+        if Path(loaded.__file__).resolve() != BOUNDARY_FILE:
+            raise RuntimeError("fa1401 boundary already loaded from another tree")
+        return loaded
+    spec = importlib.util.spec_from_file_location(BOUNDARY_NAME, BOUNDARY_FILE)
+    loaded = importlib.util.module_from_spec(spec)
+    sys.modules[BOUNDARY_NAME] = loaded
+    spec.loader.exec_module(loaded)
+    return loaded
+
+
+boundary = _load_boundary()
+ARTIFACT_ENV = "FA1401_ARTIFACT_ROOT"
+
+
+def fixture_parent():
+    """Explicit evidence root from the launcher, else the ordinary temp root."""
+    configured = os.environ.get(ARTIFACT_ENV)
+    parent = Path(configured).resolve() if configured else Path(tempfile.gettempdir()).resolve()
+    if not parent.is_dir() or parent == REPO or REPO in parent.parents:
+        raise RuntimeError("fa1401 fixture parent must be an existing directory outside the repository")
+    return parent
+
+
+def file_boundary():
+    """A fresh scoped boundary admitting writes only to this run's fixture and temp roots."""
+    return boundary.FileBoundary(repo=REPO, write_roots=(fixture_parent(), Path(tempfile.gettempdir()).resolve()),
+                                 hits=SENTINEL_HITS)
+
+
 SENTINEL_HITS = []
+GUARDED_RUNS = []
 APPLICATION_PRELOADED = sorted(name for name in sys.modules if name.split(".")[0] == "campaign_tool")
 _ABSENT = object()
 NETWORK_TARGETS = ((socket, "create_connection"), (socket, "getaddrinfo"), (socket.socket, "connect"),
@@ -60,39 +104,42 @@ def _restore(saved):
 
 
 def guards_active():
-    return sorted(owner.__name__ + "." + attribute for owner, attribute in EXECUTION_TARGETS
-                  if hasattr(getattr(owner, attribute), MARK))
+    return sorted([owner.__name__ + "." + attribute for owner, attribute in EXECUTION_TARGETS
+                   if hasattr(getattr(owner, attribute), MARK)] + boundary.active())
 
+
+EXPECTED_ACTIVE = sorted([owner.__name__ + "." + attribute for owner, attribute in EXECUTION_TARGETS]
+                         + boundary.target_names())
+IMPORT_BOUNDARY_ACTIVE = []
 
 _import_guard = []
+_import_files = file_boundary()
 _install(_import_guard, NETWORK_TARGETS)
+_import_files.install()
 try:
-    REPO = Path(__file__).resolve().parents[2]
+    IMPORT_BOUNDARY_ACTIVE.extend(boundary.active())
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
     from campaign_tool.records.ledger import store
     from campaign_tool.records.ledger import receipt_projection as rp
 finally:
+    _import_files.restore()
     _restore(_import_guard)
 
-ARTIFACT_ENV = "FA1401_ARTIFACT_ROOT"
 LABEL = b"fa1401 synthetic receipt index "
 COUNT = 3
+MODULE_BOUNDARY = []
 
 
 def setUpModule():
     saved = []
+    files = file_boundary()
     unittest.addModuleCleanup(_restore, saved)
+    unittest.addModuleCleanup(files.restore)
+    unittest.addModuleCleanup(MODULE_BOUNDARY.clear)
     _install(saved, EXECUTION_TARGETS)
-
-
-def fixture_parent():
-    """Explicit evidence root from the launcher, else the ordinary temp root."""
-    configured = os.environ.get(ARTIFACT_ENV)
-    parent = Path(configured).resolve() if configured else Path(tempfile.gettempdir()).resolve()
-    if not parent.is_dir() or parent == REPO or REPO in parent.parents:
-        raise RuntimeError("fa1401 fixture parent must be an existing directory outside the repository")
-    return parent
+    files.install()
+    MODULE_BOUNDARY.append(files)
 
 
 def index_bytes(position):
@@ -132,6 +179,11 @@ def call_args(mid, body, ordinal, entry_position, *, sid=None):
 
 class ReceiptOrdinalTests(unittest.TestCase):
     def setUp(self):
+        # The offline boundary must be live for every case, and any hit is fatal to it.
+        self.assertEqual(guards_active(), EXPECTED_ACTIVE)
+        self.assertEqual(len(MODULE_BOUNDARY), 1)
+        self.addCleanup(self.assert_no_new_sentinel_hits, len(SENTINEL_HITS))
+        GUARDED_RUNS.append(self.id())
         self.tmp = tempfile.TemporaryDirectory(prefix="fa1401-", dir=fixture_parent())
         self.root = Path(self.tmp.name)
         self.root.chmod(0o700)
@@ -142,6 +194,9 @@ class ReceiptOrdinalTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def assert_no_new_sentinel_hits(self, seen):
+        self.assertEqual(SENTINEL_HITS[seen:], [], "offline sentinel refused an access")
 
     # -- synthetic ledger helpers -------------------------------------------------
     def insert_manifest(self, con, body=None):
@@ -176,6 +231,64 @@ class ReceiptOrdinalTests(unittest.TestCase):
                 self.insert_source(con, self.source_row(mid, self.body, ordinal, ordinal % COUNT))
             con.commit()
         return mid
+
+    # -- offline boundary --------------------------------------------------------
+    def test_offline_file_boundary_scoped(self):
+        self.assertEqual(IMPORT_BOUNDARY_ACTIVE, boundary.target_names())
+        # The hooks sit on the exact attributes the ledger code looks up at call time.
+        reachable = {"store.sqlite3.connect": store.sqlite3.connect, "store.os.open": store.os.open,
+                     "rp.os.open": rp.os.open, "tempfile mkstemp os.open": getattr(store.tempfile, "_os").open,
+                     "Path.open via io.open": io.open, "builtins.open": open}
+        self.assertEqual({name: hasattr(hook, boundary.MARK) for name, hook in reachable.items()},
+                         {name: True for name in reachable})
+        live = MODULE_BOUNDARY[0]
+        source = REPO / "campaign_tool" / "records" / "ledger" / "receipt_projection.py"
+        outside = fixture_parent().parent / "fa1401-not-admitted" / "data.sqlite"
+        decisions = {
+            "fixture_write": live.admitted(boundary.resolve(self.root / "new.json", write=True), True),
+            "fixture_read": live.admitted(boundary.resolve(self.db, write=False), False),
+            "repo_read": live.admitted(boundary.resolve(source, write=False), False),
+            "runtime_read": live.admitted(boundary.resolve(os.__file__, write=False), False),
+            "repo_write": live.admitted(boundary.resolve(source, write=True), True),
+            "outside_read": live.admitted(boundary.resolve(outside, write=False), False),
+            "outside_write": live.admitted(boundary.resolve(outside, write=True), True),
+            "unresolvable": live.admitted(None, False),
+        }
+        self.assertEqual(decisions, {"fixture_write": True, "fixture_read": True, "repo_read": True,
+                                     "runtime_read": True, "repo_write": False, "outside_read": False,
+                                     "outside_write": False, "unresolvable": False})
+        # Relative names under a dir_fd (rp.capture, rmtree) are judged at their real directory.
+        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            self.assertEqual(boundary.resolve("index.jsonl", fd, write=False),
+                             os.path.join(os.path.realpath(self.root), "index.jsonl"))
+        finally:
+            os.close(fd)
+        classify = boundary.FileBoundary
+        self.assertEqual(classify._connect(":memory:"), [])
+        self.assertEqual(classify._connect(self.db.as_uri() + "?mode=ro", uri=True), [(str(self.db), None, False)])
+        self.assertEqual(classify._connect(self.db.as_uri() + "?mode=rw", uri=True), [(str(self.db), None, True)])
+        self.assertEqual(classify._connect(self.db), [(str(self.db), None, True)])
+        self.assertEqual(classify._os_open(self.db, os.O_RDONLY), [(self.db, None, False)])
+        self.assertEqual(classify._os_open(self.db, os.O_WRONLY | os.O_CREAT), [(self.db, None, True)])
+        self.assertEqual(classify._open(3, "rb"), [])
+        # A hook refuses before its callee runs. The callee is an inert recorder, so the
+        # refused case touches no file at all; an admitted fixture path reaches it.
+        probe = boundary.FileBoundary(repo=REPO, write_roots=(self.root,), hits=[])
+        reached = []
+        for name, classifier, refused, admitted in (
+                ("probe.open", probe._open, (str(outside), "wb"), (str(self.root / "a"), "wb")),
+                ("probe.connect", probe._connect, (outside.as_uri(),), (self.db.as_uri() + "?mode=ro",))):
+            hook = probe.wrap(name, classifier, lambda *args, **kwargs: reached.append(args))
+            with self.subTest(hook=name):
+                with self.assertRaisesRegex(PermissionError, boundary.MARK):
+                    hook(*refused, uri=True) if name == "probe.connect" else hook(*refused)
+                self.assertEqual(reached, [])
+                hook(*admitted, uri=True) if name == "probe.connect" else hook(*admitted)
+                self.assertEqual(len(reached), 1)
+                del reached[:]
+        self.assertEqual([hit["hook"] for hit in probe.hits], ["probe.open", "probe.connect"])
+        self.assertEqual(SENTINEL_HITS, [])
 
     # -- A1 ----------------------------------------------------------------------
     def test_index_zero_selects_first_entry(self):

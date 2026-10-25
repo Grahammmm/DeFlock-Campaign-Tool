@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import http.client
 import importlib
+import importlib.util
 import io
 import json
 import os
@@ -38,10 +39,13 @@ SOURCE = "campaign_tool/records/ledger/receipt_projection.py"
 TEST = "tests/records/test_fa1401.py"
 RUNNER = "tools/accept_fa1401.py"
 FIXTURE_PREFIX = "tests/fixtures/fa1401/"
-WRITE_SET = (SOURCE, TEST, RUNNER)
+BOUNDARY = FIXTURE_PREFIX + "offline_boundary.py"
+BOUNDARY_NAME = "fa1401_offline_boundary"
+WRITE_SET = (SOURCE, TEST, RUNNER, BOUNDARY)
 TEST_MODULE = "tests.records.test_fa1401"
 TEST_CLASS = "ReceiptOrdinalTests"
-REQUIRED_CASES = ("index_zero_selects_first_entry", "registered_exact_ordinals_select_their_matching_entry",
+REQUIRED_CASES = ("offline_file_boundary_scoped", "index_zero_selects_first_entry",
+                  "registered_exact_ordinals_select_their_matching_entry",
                   "registered_negative_ordinals_return_zero", "direct_negative_source_insert_raises_integrity_error",
                   "non_exact_integer_ordinals_rejected", "out_of_range_ordinals_rejected",
                   "complete_binding_comparison_preserved", "sql_affinity_cases_judged_as_delivered",
@@ -205,20 +209,40 @@ GUARDED = ((socket, "create_connection"), (socket, "getaddrinfo"), (socket.socke
            (subprocess, "Popen"))
 
 
-class Sentinels:
-    """Launcher-owned network/process boundary for in-process selected suites."""
+def load_boundary():
+    """The committed scoped data-file/SQLite boundary, loaded once from this repository."""
+    path = REPO / BOUNDARY
+    loaded = sys.modules.get(BOUNDARY_NAME)
+    if loaded is None:
+        spec = importlib.util.spec_from_file_location(BOUNDARY_NAME, path)
+        loaded = importlib.util.module_from_spec(spec)
+        sys.modules[BOUNDARY_NAME] = loaded
+        spec.loader.exec_module(loaded)
+    if Path(loaded.__file__).resolve() != path:
+        raise RuntimeError("fa1401 boundary loaded from another tree: " + str(loaded.__file__))
+    return loaded
 
-    def __init__(self):
+
+class Sentinels:
+    """Launcher-owned network/process and data-file/SQLite boundary for in-process selected suites."""
+
+    def __init__(self, write_roots):
         self.hits = []
         self.saved = []
+        self.files = load_boundary().FileBoundary(repo=REPO, write_roots=write_roots, hits=self.hits)
+        self.file_hooks_active = []
+        self.file_hooks_after_suite = []
 
     def __enter__(self):
         for owner, attribute in GUARDED:
             self.saved.append((owner, attribute, vars(owner).get(attribute, self)))
             setattr(owner, attribute, _sentinel(self.hits, owner.__name__ + "." + attribute))
+        self.files.install()
+        self.file_hooks_active = load_boundary().active()
         return self
 
     def __exit__(self, *exc):
+        self.files.restore()
         while self.saved:
             owner, attribute, value = self.saved.pop()
             if value is self:
@@ -229,8 +253,10 @@ class Sentinels:
 
 
 def guarded_identity():
-    return {owner.__name__ + "." + attribute: (vars(owner).get(attribute), getattr(owner, attribute))
-            for owner, attribute in GUARDED}
+    record = {owner.__name__ + "." + attribute: (vars(owner).get(attribute), getattr(owner, attribute))
+              for owner, attribute in GUARDED}
+    record.update(load_boundary().identity())
+    return record
 
 
 def identity_diff(before, after):
@@ -328,6 +354,20 @@ def check_module_closure(run):
     run.require("network_capable_modules_not_loaded", not network, network)
 
 
+def check_module_boundary(run, module, label, summary):
+    """The test module's own file/SQLite boundary was live for every case and left nothing behind."""
+    run.require(label + "_file_boundary_live_during_import", module.IMPORT_BOUNDARY_ACTIVE
+                == load_boundary().target_names(), module.IMPORT_BOUNDARY_ACTIVE)
+    guarded = [name for name in module.GUARDED_RUNS]
+    run.receipt.setdefault("boundary_guarded_tests", {})[label] = guarded
+    run.require(label + "_file_boundary_live_for_every_case", len(guarded) == summary["tests_run"] > 0,
+                {"guarded": len(guarded), "tests_run": summary["tests_run"]})
+    del module.GUARDED_RUNS[:]
+    run.require(label + "_offline_sentinels_untouched", module.SENTINEL_HITS == [], module.SENTINEL_HITS)
+    run.require(label + "_file_boundary_restored", load_boundary().active() == [] and module.guards_active() == []
+                and module.MODULE_BOUNDARY == [], {"active": module.guards_active()})
+
+
 def case_behavior(run):
     identity(run)
     fixtures = run.scratch()
@@ -338,7 +378,7 @@ def case_behavior(run):
     summary = run_suite(run, "behavior", named(module, REQUIRED_CASES))
     run.require("behavior_all_named_cases_pass", clean(summary, len(REQUIRED_CASES))
                 and summary["outcomes"] == {"test_" + name: "pass" for name in REQUIRED_CASES}, summary)
-    run.require("offline_sentinels_untouched", module.SENTINEL_HITS == [], module.SENTINEL_HITS)
+    check_module_boundary(run, module, "behavior", summary)
     run.require("guarded_callables_restored", identity_diff(before, guarded_identity()) == [],
                 identity_diff(before, guarded_identity()))
     check_module_closure(run)
@@ -369,16 +409,22 @@ def case_compatibility(run):
     before = guarded_identity()
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
-    with Sentinels() as guard:
+    with Sentinels((run.directory,)) as guard:
         module = importlib.import_module(COMPAT_MODULE)
         suite = unittest.TestSuite(unittest.TestLoader().loadTestsFromName(name) for name in COMPATIBILITY)
         summary = run_suite(run, "compatibility", suite)
+        guard.file_hooks_after_suite = load_boundary().active()
     run.require("compatibility_module_from_this_repo", Path(module.__file__).resolve() == REPO / COMPAT_FILE,
                 module.__file__)
     run.require("compatibility_exact_selectors_pass", clean(summary, len(COMPATIBILITY))
                 and sorted(summary["outcomes"]) == sorted(name.rsplit(".", 1)[-1] for name in COMPATIBILITY)
                 and set(summary["outcomes"].values()) == {"pass"}, summary)
+    run.require("compatibility_file_boundary_live_during_suite",
+                guard.file_hooks_active == guard.file_hooks_after_suite == load_boundary().target_names(),
+                [guard.file_hooks_active, guard.file_hooks_after_suite])
+    run.receipt["compatibility_write_roots"] = guard.files.write_roots
     run.require("launcher_sentinels_untouched", guard.hits == [], guard.hits)
+    run.require("compatibility_file_boundary_restored", load_boundary().active() == [], load_boundary().active())
     run.require("guarded_callables_restored", identity_diff(before, guarded_identity()) == [],
                 identity_diff(before, guarded_identity()))
     check_module_closure(run)
@@ -399,6 +445,7 @@ def case_negative_control(run):
 
     with mock.patch.object(rp, "_manifest_entry", unguarded):
         broken = run_suite(run, "regressed", named(module, DECIDING + (POSITIVE,)))
+    check_module_boundary(run, module, "regressed", broken)
     for name in DECIDING:
         run.require("regression_detected_" + name, broken["outcomes"].get("test_" + name) == "fail",
                     broken["outcomes"])
@@ -410,6 +457,7 @@ def case_negative_control(run):
     restored = run_suite(run, "restored", named(module, DECIDING + (POSITIVE,)))
     run.require("restored_candidate_passes", clean(restored, len(DECIDING) + 1)
                 and set(restored["outcomes"].values()) == {"pass"}, restored)
+    check_module_boundary(run, module, "restored", restored)
     run.require("product_file_unchanged_on_disk", sha_file(REPO / SOURCE) == on_disk, on_disk)
     run.require("offline_sentinels_untouched", module.SENTINEL_HITS == [], module.SENTINEL_HITS)
 
@@ -424,6 +472,7 @@ class UnrelatedConsumer(unittest.TestCase):
         hits = list(self.module.SENTINEL_HITS)
         self.assertEqual(identity_diff(self.expected, guarded_identity()), [])
         self.assertEqual(self.module.guards_active(), [])
+        self.assertEqual(load_boundary().active(), [])
         self.assertEqual(tempfile.tempdir, self.temp_root)
         self.assertEqual(self.module.SENTINEL_HITS, hits)
 
@@ -431,7 +480,7 @@ class UnrelatedConsumer(unittest.TestCase):
 def case_isolation(run):
     identity(run)
     scanned = {name: sorted(token for token in HOST_TOKENS if token in (REPO / name).read_text())
-               for name in (TEST, RUNNER)}
+               for name in (TEST, RUNNER, BOUNDARY)}
     run.require("no_host_paths_in_new_test_or_launcher", not any(scanned.values()), scanned)
     copy = run.directory / "second-prefix" / "fa1401-copy" / "repo"
     shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(".git", "__pycache__"))
@@ -451,6 +500,12 @@ def case_isolation(run):
         run.receipt["copy_receipt"] = {"path": str(receipts[0]), "sha256": sha_file(receipts[0]),
                                        "result": child.get("result"), "repo": child.get("repo")}
         run.require("copy_behavior_passed", child.get("result") == "PASS_REVIEW_REQUIRED", child.get("result"))
+        child_checks = {row.get("name"): row.get("ok") for row in child.get("checks") or []}
+        boundary_checks = ("behavior_file_boundary_live_during_import", "behavior_file_boundary_live_for_every_case",
+                           "behavior_offline_sentinels_untouched", "behavior_file_boundary_restored")
+        run.require("copy_file_boundary_established_in_child",
+                    all(child_checks.get(name) is True for name in boundary_checks),
+                    {name: child_checks.get(name) for name in boundary_checks})
         run.require("copy_ran_from_second_prefix", child.get("repo") == str(copy.resolve()), child.get("repo"))
         run.require("copy_loaded_only_copy_modules", bool(modules) and not stray, stray)
         run.require("copy_product_module_is_copy",
@@ -471,9 +526,17 @@ def case_isolation(run):
     summary = run_suite(run, "isolation", suite)
     run.require("isolation_fa1401_then_unrelated_peers_pass", clean(summary, 4)
                 and set(summary["outcomes"].values()) == {"pass"}, summary)
+    guarded = list(module.GUARDED_RUNS)
+    del module.GUARDED_RUNS[:]
+    run.receipt.setdefault("boundary_guarded_tests", {})["isolation"] = guarded
+    expected_guarded = sorted("test_" + name for name in (DECIDING[-1], POSITIVE))
+    run.require("isolation_file_boundary_live_for_fa1401_cases_only",
+                sorted(name.rsplit(".", 1)[-1] for name in guarded) == expected_guarded, guarded)
+    run.require("isolation_offline_sentinels_untouched", module.SENTINEL_HITS == [], module.SENTINEL_HITS)
     run.require("guarded_callables_restored_after_suite", identity_diff(before, guarded_identity()) == [],
                 identity_diff(before, guarded_identity()))
-    run.require("no_guards_left_active", module.guards_active() == [], module.guards_active())
+    run.require("no_guards_left_active", module.guards_active() == [] and load_boundary().active() == [],
+                module.guards_active())
     check_module_closure(run)
 
 
