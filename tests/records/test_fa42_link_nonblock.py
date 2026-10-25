@@ -6,10 +6,21 @@ FIFO after the genuine precheck and before the final open) runs only in a
 file-launched child process under a watchdog, and only after the inert open
 flag check is green, so a red baseline fails instead of hanging.
 
-Running this file directly is reserved for that child mode; the tests are
-collected by ordinary unittest discovery.
+Running this file directly is reserved for child modes; the tests are
+collected by ordinary unittest discovery.  Every child mode first runs the
+acceptance helper's bootstrap_child(), which installs process-local offline
+and live-file controls BEFORE any application import and records startup
+evidence for that process:
+
+  --fa42-fifo-child MODE ROOT       FIFO replacement race (read | snapshot)
+  --fa42-guarded-unittest RUN EVIDENCE NAME...
+                                    unittest for the acceptance runner
+  --fa42-bootstrap-probe on|off ROOT
+                                    inert startup probe; "off" removes only the
+                                    startup controls (deciding A6 control)
 """
 import errno
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -23,28 +34,73 @@ from unittest import mock
 
 THIS_FILE = Path(__file__).resolve()
 REPO_ROOT = THIS_FILE.parents[2]
+HELPER_PATH = REPO_ROOT / "tools" / "accept_fa42_link_nonblock.py"
 CHILD_FLAG = "--fa42-fifo-child"
+GUARDED_FLAG = "--fa42-guarded-unittest"
+PROBE_FLAG = "--fa42-bootstrap-probe"
 FIXTURE_MARKER = ".fa42-fixture-root"
 WATCHDOG_SECONDS = 5
+# Startup evidence returned by FIFO children launched from this process.
+CHILD_STARTUP_RECORDS = []
 
 
-def _install_child_sentinels():
-    # Child mode only: refuse any network use before application imports.
-    import socket
-
-    def refuse(*_args, **_kwargs):
-        raise OSError("fa42 child: network access refused")
-
-    socket.socket.connect = refuse
-    socket.socket.connect_ex = refuse
-    socket.create_connection = refuse
-    socket.getaddrinfo = refuse
+def load_helper():
+    """Load the acceptance helper (stdlib-only, no side effects) by file path."""
+    spec = importlib.util.spec_from_file_location("_fa42_acceptance_helper", HELPER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-if __name__ == "__main__":
-    _install_child_sentinels()
+def _child_root(raw):
+    root = Path(raw)
+    info = os.lstat(root)
+    if (not root.is_absolute() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or info.st_mode & 0o077
+            or not (root / FIXTURE_MARKER).is_file()):
+        raise SystemExit("fa42 child: refusing unmarked or unsafe fixture root")
+    return root
+
+
+def _private_subdir(root, name):
+    path = root / name
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise SystemExit("fa42 child: unsafe per-run tmp directory")
+    return path
+
+
+def _child_startup(argv):
+    """Child modes only: process-local controls before any application import."""
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
+    helper = load_helper()
+    if len(argv) == 4 and argv[1] == CHILD_FLAG and argv[2] in ("read", "snapshot"):
+        root = _child_root(argv[3])
+        enabled = True
+    elif len(argv) == 4 and argv[1] == PROBE_FLAG and argv[2] in ("on", "off"):
+        root = _child_root(argv[3])
+        enabled = argv[2] == "on"
+    elif len(argv) >= 5 and argv[1] == GUARDED_FLAG:
+        root = Path(argv[2])
+        info = os.lstat(root)
+        evidence = Path(argv[3])
+        if (not root.is_absolute() or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid() or info.st_mode & 0o077
+                or evidence.parent != root or evidence.exists()):
+            raise SystemExit("fa42 child: refusing unsafe run root or evidence path")
+        enabled = True
+    else:
+        raise SystemExit("fa42: run through unittest discovery; direct use is child mode only")
+    _private_subdir(root, "tmp")
+    return helper, helper.bootstrap_child(root, extra_read=(REPO_ROOT,), enabled=enabled)
+
+
+_CHILD_BOOT = _child_startup(sys.argv) if __name__ == "__main__" else None
 
 from campaign_tool.records import catalog_links  # noqa: E402
 
@@ -470,6 +526,15 @@ class FifoReplacementRaceTests(Fa42Case):
         self.assertTrue(evidence["fifo_open_nonblocking"])
         self.assertEqual(evidence["fifo_reads"], 0)
         self.assertTrue(evidence["all_fds_closed"])
+        # A6: this child installed its own controls before application import.
+        startup = evidence["startup"]
+        self.assertEqual(load_helper().verify_startup_evidence(startup, parent_pid=os.getpid()),
+                         [])
+        self.assertEqual(startup["ppid"], os.getpid())
+        self.assertEqual(Path(startup["application_after_controls"][
+            "campaign_tool.records.catalog_links"]).resolve(),
+            REPO_ROOT / "campaign_tool" / "records" / "catalog_links.py")
+        CHILD_STARTUP_RECORDS.append(startup)
         return evidence
 
     def test_regular_to_writerless_fifo_after_precheck_is_invalid_input_file(self):
@@ -581,6 +646,50 @@ class NegativeControlTests(Fa42Case):
 
 # --------------------------------------------------- A6 portability/isolation
 
+class StartupControlTests(Fa42Case):
+    """A6 deciding control for the child bootstrap (inert probe children)."""
+
+    def launch_probe(self, state):
+        root = make_fixture_root(self.root)
+        argv = [sys.executable, "-B", "-W", "error::ResourceWarning", str(THIS_FILE),
+                PROBE_FLAG, state, str(root)]
+        try:
+            done = subprocess.run(argv, cwd=root, capture_output=True, text=True,
+                                  timeout=WATCHDOG_SECONDS, check=False)
+        except subprocess.TimeoutExpired:
+            self.fail(f"startup probe ({state}) exceeded the {WATCHDOG_SECONDS}s watchdog")
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        return json.loads(done.stdout)
+
+    def test_bootstrap_installs_controls_before_application_import(self):
+        helper = load_helper()
+        self.assertEqual((helper.GUARDED_FLAG, helper.PROBE_FLAG), (GUARDED_FLAG, PROBE_FLAG))
+        evidence = self.launch_probe("on")
+        self.assertEqual(helper.verify_startup_evidence(evidence, parent_pid=os.getpid()), [])
+        self.assertEqual(evidence["application_before_controls"], [])
+        self.assertTrue(evidence["guards"]["probe_refused"])
+        self.assertEqual(evidence["guards"]["hits"], [])
+        self.assertIsInstance(evidence["runtime_constants_redirected"], list)
+        for name in helper.APPLICATION_CLOSURE:
+            module = Path(evidence["application_after_controls"][name]).resolve()
+            self.assertTrue(str(module).startswith(str(REPO_ROOT) + os.sep), name)
+
+    def test_removed_startup_control_fails_acceptance(self):
+        helper = load_helper()
+        removed = self.launch_probe("off")
+        self.assertFalse(removed["guards_installed"])
+        problems = helper.verify_startup_evidence(removed, parent_pid=os.getpid())
+        self.assertIn("startup controls not installed", problems)
+        self.assertIn("live-file probe not refused", problems)
+        self.assertEqual(helper.verify_startup_evidence(None), [
+            "startup evidence missing or malformed"])
+        same_process = dict(self.launch_probe("on"), pid=os.getpid())
+        self.assertIn("startup evidence is not from a separate child process",
+                      helper.verify_startup_evidence(same_process, parent_pid=os.getpid()))
+        restored = self.launch_probe("on")
+        self.assertEqual(helper.verify_startup_evidence(restored, parent_pid=os.getpid()), [])
+
+
 class PortabilityTests(unittest.TestCase):
     def test_loaded_module_belongs_to_this_source_tree(self):
         module = Path(catalog_links.__file__).resolve()
@@ -599,17 +708,7 @@ class PortabilityTests(unittest.TestCase):
 
 # ------------------------------------------------------------------ child mode
 
-def _child_root(raw):
-    root = Path(raw)
-    info = os.lstat(root)
-    if (not root.is_absolute() or not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid() or info.st_mode & 0o077
-            or not (root / FIXTURE_MARKER).is_file()):
-        raise SystemExit("fa42 child: refusing unmarked or unsafe fixture root")
-    return root
-
-
-def _child_main(mode, raw_root):
+def _child_main(mode, raw_root, startup):
     if hasattr(signal, "alarm"):
         signal.alarm(WATCHDOG_SECONDS)
     root = _child_root(raw_root)
@@ -653,11 +752,34 @@ def _child_main(mode, raw_root):
         "all_fds_closed": all(fd_is_closed(fd) for fd in opener.fds),
         "output_exists": output.exists() if output is not None else False,
     })
+    # Written last so the guard hit list covers the whole child run.
+    evidence["startup"] = startup
     print(json.dumps(evidence, sort_keys=True))
     return 0
 
 
+def _guarded_unittest_main(helper, startup, argv):
+    evidence_path, names = Path(argv[3]), argv[4:]
+    program = unittest.main(module=None, argv=[argv[0], "-v", *names], exit=False)
+    result = program.result
+    loaded = sys.modules.get("tests.records.test_fa42_link_nonblock")
+    startup["unittest"] = {"names": names, "ran": result.testsRun,
+                           "failures": len(result.failures), "errors": len(result.errors),
+                           "skipped": len(result.skipped),
+                           "successful": result.wasSuccessful()}
+    startup["descendant_startup"] = list(getattr(loaded, "CHILD_STARTUP_RECORDS", []))
+    with open(evidence_path, "x", encoding="utf-8") as handle:
+        handle.write(json.dumps(startup, indent=2, sort_keys=True) + "\n")
+    problems = helper.verify_startup_evidence(startup)
+    return 0 if result.wasSuccessful() and not problems else 1
+
+
 if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == CHILD_FLAG:
-        raise SystemExit(_child_main(sys.argv[2], sys.argv[3]))
-    raise SystemExit("fa42: run through unittest discovery; direct use is child mode only")
+    _helper, _startup = _CHILD_BOOT
+    if sys.argv[1] == CHILD_FLAG:
+        raise SystemExit(_child_main(sys.argv[2], sys.argv[3], _startup))
+    if sys.argv[1] == PROBE_FLAG:
+        # Inert probe: report startup state and exit; no application code runs.
+        print(json.dumps(_startup, sort_keys=True))
+        raise SystemExit(0)
+    raise SystemExit(_guarded_unittest_main(_helper, _startup, sys.argv))

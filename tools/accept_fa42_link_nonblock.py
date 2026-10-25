@@ -17,8 +17,14 @@ directory below --output-parent (which must lie outside this repository):
                     tools/check_secret_report.py on that exact report
 
 Children are launched with argv arrays (no shell).  TMPDIR is set to a per-run
-test-data directory only.  A pass is REVIEW REQUIRED: machine-valid evidence,
-not semantic, legal, human, stage or release acceptance.
+test-data directory only.  Every application-executing child (behavior,
+compatibility and the FIFO race children) starts through the test file's
+child bootstrap, which calls bootstrap_child() here to install process-local
+offline/live-file controls BEFORE any application import, inventories and
+redirects the runtime path closure, and records per-process startup evidence
+that verify_startup_evidence() must accept.  A pass is REVIEW REQUIRED:
+machine-valid evidence, not semantic, legal, human, stage or release
+acceptance.
 """
 import argparse
 import datetime
@@ -33,6 +39,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 
 REPO = Path(__file__).resolve().parents[1]
 MODULE = "tests.records.test_fa42_link_nonblock"
@@ -46,6 +53,12 @@ S3A_MODULES = ("tests.records.test_mail_resolution_census", "tests.records.test_
 CASES = ("behavior", "compatibility", "negative-control", "isolation", "full-ci", "credentials")
 CHILD_TIMEOUT = 600
 FULL_TIMEOUT = 3600
+GUARDED_FLAG = "--fa42-guarded-unittest"
+PROBE_FLAG = "--fa42-bootstrap-probe"
+STARTUP_SCHEMA = "fa42-child-startup/v1"
+APPLICATION_CLOSURE = ("campaign_tool.records.catalog_links",
+                       "campaign_tool.records.agency_reconciliation")
+FIFO_CHILD_COUNT = 2
 
 BEHAVIOR_MAP = {
     "A1-positive": [
@@ -79,6 +92,8 @@ BEHAVIOR_MAP = {
 NEGATIVE_TESTS = [
     "NegativeControlTests.test_control_without_nonblock_fails_flag_assertion_before_special_open",
     "NegativeControlTests.test_control_permitting_nonregular_read_fails_no_read_assertion",
+    "StartupControlTests.test_bootstrap_installs_controls_before_application_import",
+    "StartupControlTests.test_removed_startup_control_fails_acceptance",
 ]
 STATUS_LINE = re.compile(r"^(test\w*) \(([\w.]+)\) \.\.\. (.+)$", re.M)
 RAN_LINE = re.compile(r"^Ran (\d+) tests? in ", re.M)
@@ -249,14 +264,44 @@ def interpreter():
 
 # --------------------------------------------------------------------- cases
 
+def guarded_unittest_step(run, label, names, failures, *, expected_descendants, **checks):
+    """Launch unittest in a child that bootstraps controls before imports."""
+    evidence_path = run / f"{label}.startup.json"
+    argv = [*interpreter(), str(REPO / TEST_FILE), GUARDED_FLAG, str(run), str(evidence_path),
+            *names]
+    step, parsed = unittest_step(run, label, argv, failures, **checks)
+    try:
+        startup = json.loads(evidence_path.read_text())
+    except (OSError, ValueError):
+        startup = None
+    problems = verify_startup_evidence(startup, parent_pid=os.getpid())
+    descendants = startup.get("descendant_startup") if isinstance(startup, dict) else None
+    if not isinstance(descendants, list):
+        descendants = []
+        problems.append("descendant startup evidence missing")
+    if len(descendants) != expected_descendants:
+        problems.append(f"descendant startup records {len(descendants)} != "
+                        f"{expected_descendants}")
+    for index, child in enumerate(descendants):
+        problems.extend(f"descendant {index}: {problem}" for problem in
+                        verify_startup_evidence(child, parent_pid=startup.get("pid")))
+    step["startup_evidence"] = {"path": str(evidence_path),
+                                "sha256": sha256_file(evidence_path),
+                                "pid": startup.get("pid") if isinstance(startup, dict) else None,
+                                "descendants": len(descendants), "problems": problems}
+    failures.extend(f"{label} startup: {problem}" for problem in problems)
+    return step, parsed
+
+
 def case_behavior(run, record, failures):
     ids = []
     for tests in BEHAVIOR_MAP.values():
         for test in tests:
             if f"{MODULE}.{test}" not in ids:
                 ids.append(f"{MODULE}.{test}")
-    step, _ = unittest_step(run, "behavior", [*interpreter(), "-m", "unittest", "-v", *ids],
-                            failures, expected_ids=ids, expected_count=len(ids))
+    step, _ = guarded_unittest_step(run, "behavior", ids, failures,
+                                    expected_descendants=FIFO_CHILD_COUNT,
+                                    expected_ids=ids, expected_count=len(ids))
     record["steps"].append(step)
     record["requirement_map"] = {key: [f"{MODULE}.{test}" for test in tests]
                                  for key, tests in BEHAVIOR_MAP.items()}
@@ -272,9 +317,8 @@ def case_compatibility(run, record, failures):
         if code != 0 or dirty:
             failures.append(f"compatibility file changed: {relative}")
     expected = sum(count_tests(relative) for relative in COMPAT_FILES)
-    step, _ = unittest_step(run, "compatibility",
-                            [*interpreter(), "-m", "unittest", "-v", *COMPAT_MODULES],
-                            failures, expected_count=expected)
+    step, _ = guarded_unittest_step(run, "compatibility", list(COMPAT_MODULES), failures,
+                                    expected_descendants=0, expected_count=expected)
     record["steps"].append(step)
 
 
@@ -365,20 +409,108 @@ def install_guards(run, allowed_extra=()):
 
 
 def redirect_runtime_constants(run, modules):
-    """Inventory absolute path constants/defaults in the closure; redirect any."""
+    """Inventory absolute path constants and bound defaults; redirect every one."""
+    target = run / "tmp" / "redirected"
     found = []
+
+    def moved(value, name):
+        if isinstance(value, (str, Path)) and os.path.isabs(str(value)):
+            return type(value)(target / name), True
+        return value, False
+
     for module in modules:
         for name, value in sorted(vars(module).items()):
-            if isinstance(value, (str, Path)) and os.path.isabs(str(value)) and name.isupper():
+            if name.startswith("__"):
+                continue
+            new, changed = moved(value, name)
+            if changed:
                 found.append(f"{module.__name__}.{name}")
-                setattr(module, name, type(value)(run / "tmp" / "redirected" / name))
-            function = value if callable(value) else None
-            defaults = getattr(function, "__defaults__", None) or ()
-            if getattr(function, "__module__", None) == module.__name__:
-                for default in defaults:
-                    if isinstance(default, (str, Path)) and os.path.isabs(str(default)):
-                        found.append(f"{module.__name__}.{name}(default)")
+                setattr(module, name, new)
+            function = getattr(value, "__func__", value)
+            if not isinstance(function, types.FunctionType) \
+                    or function.__module__ != module.__name__:
+                continue
+            if function.__defaults__:
+                pairs = [moved(default, f"{name}-default-{index}")
+                         for index, default in enumerate(function.__defaults__)]
+                if any(changed for _new, changed in pairs):
+                    found.append(f"{module.__name__}.{name}(defaults)")
+                    function.__defaults__ = tuple(new for new, _changed in pairs)
+            for key, default in sorted((function.__kwdefaults__ or {}).items()):
+                new, changed = moved(default, f"{name}-kwdefault-{key}")
+                if changed:
+                    found.append(f"{module.__name__}.{name}(kwdefault {key})")
+                    function.__kwdefaults__[key] = new
     return found
+
+
+def application_modules_loaded():
+    return {name: getattr(module, "__file__", None) for name, module in sorted(sys.modules.items())
+            if module is not None and name.split(".")[0] == "campaign_tool"}
+
+
+def bootstrap_child(run, *, extra_read=(), enabled=True):
+    """Process-local startup for an application-executing child.
+
+    Must be called before any campaign_tool import: installs the offline and
+    live-file controls, then imports the runtime closure and redirects its
+    absolute path constants/defaults into run/tmp.  enabled=False exists only
+    for the inert removed-control probe and never runs application tests.
+    """
+    import importlib
+
+    run = Path(run)
+    evidence = {"schema": STARTUP_SCHEMA, "pid": os.getpid(), "ppid": os.getppid(),
+                "executable": sys.executable, "argv": list(sys.argv),
+                "bootstrap_enabled": bool(enabled),
+                "application_before_controls": sorted(application_modules_loaded()),
+                "guards_installed": False, "guards": None,
+                "runtime_constants_redirected": None,
+                "dont_write_bytecode": None, "tempdir": None}
+    if enabled:
+        evidence["guards"] = install_guards(run, allowed_extra=extra_read)
+        evidence["guards_installed"] = True
+    closure = [importlib.import_module(name) for name in APPLICATION_CLOSURE]
+    if enabled:
+        evidence["runtime_constants_redirected"] = redirect_runtime_constants(run, closure)
+    import tempfile
+    evidence["dont_write_bytecode"] = sys.dont_write_bytecode
+    evidence["tempdir"] = tempfile.gettempdir()
+    evidence["application_after_controls"] = application_modules_loaded()
+    return evidence
+
+
+def verify_startup_evidence(evidence, *, parent_pid=None):
+    """Return the list of problems; an empty list is the only acceptable result."""
+    if not isinstance(evidence, dict) or evidence.get("schema") != STARTUP_SCHEMA:
+        return ["startup evidence missing or malformed"]
+    problems = []
+    if evidence.get("bootstrap_enabled") is not True or evidence.get("guards_installed") is not True:
+        problems.append("startup controls not installed")
+    if evidence.get("application_before_controls") != []:
+        problems.append("application imported before startup controls")
+    guards = evidence.get("guards") if isinstance(evidence.get("guards"), dict) else {}
+    if guards.get("probe_refused") is not True:
+        problems.append("live-file probe not refused")
+    if guards.get("inside_positive") is not True:
+        problems.append("per-run write positive failed")
+    if guards.get("hits") != []:
+        problems.append(f"guard hits: {str(guards.get('hits'))[:400]}")
+    if not isinstance(evidence.get("runtime_constants_redirected"), list):
+        problems.append("runtime path closure not inventoried")
+    if evidence.get("dont_write_bytecode") is not True:
+        problems.append("bytecode writing not disabled")
+    roots = (guards.get("allowed_roots") or {}).get("writable") or []
+    tempdir = evidence.get("tempdir")
+    if not tempdir or not any(tempdir == root or tempdir.startswith(root.rstrip("/") + "/")
+                              for root in roots):
+        problems.append("tempdir not redirected into the per-run root")
+    loaded = evidence.get("application_after_controls") or {}
+    if any(not loaded.get(name) for name in APPLICATION_CLOSURE):
+        problems.append("application closure not loaded after controls")
+    if parent_pid is not None and evidence.get("pid") in (None, parent_pid):
+        problems.append("startup evidence is not from a separate child process")
+    return problems
 
 
 def case_negative_control(run, record, failures):
@@ -406,6 +538,30 @@ def case_negative_control(run, record, failures):
     if (result.testsRun != len(NEGATIVE_TESTS) or result.failures or result.errors
             or result.skipped or not result.wasSuccessful()):
         failures.append("a4 in-memory controls did not all pass")
+
+    # A6 deciding control: the same child bootstrap with ONLY its startup
+    # controls removed must be rejected by the acceptance verifier, and the
+    # restored bootstrap must be accepted.  The probe imports the application
+    # closure and exits; it runs no application code paths.
+    startup_step = {"label": "startup-control-removed"}
+    for state in ("off", "on"):
+        probe_root = test_module.make_fixture_root(str(run / "tmp"))
+        launched = run_child(run, f"startup-probe-{state}",
+                             [*interpreter(), str(REPO / TEST_FILE), PROBE_FLAG, state,
+                              str(probe_root)], cwd=probe_root, timeout=60)
+        try:
+            evidence = json.loads(Path(launched["stdout_path"]).read_text())
+        except (OSError, ValueError):
+            evidence = None
+        launched["problems"] = verify_startup_evidence(evidence, parent_pid=os.getpid())
+        startup_step[state] = launched
+    record["steps"].append(startup_step)
+    if startup_step["off"]["exit"] != 0 or startup_step["on"]["exit"] != 0:
+        failures.append("startup probe child failed")
+    if "startup controls not installed" not in startup_step["off"]["problems"]:
+        failures.append("removed startup control was not detected")
+    if startup_step["on"]["problems"]:
+        failures.append(f"restored startup control rejected: {startup_step['on']['problems']}")
 
     base = record["identity"]["baseline_ref"]
     shown = subprocess.run(["git", "-C", str(REPO), "show", f"{base}:{PRODUCT_FILE}"],
@@ -507,6 +663,23 @@ def case_isolation(run, record, failures):
     if (result.testsRun != expected or not expected or result.failures or result.errors
             or result.skipped or not result.wasSuccessful()):
         failures.append("focused suite from second copy did not fully pass")
+    descendants = list(getattr(test_module, "CHILD_STARTUP_RECORDS", []))
+    problems = []
+    if len(descendants) != FIFO_CHILD_COUNT:
+        problems.append(f"FIFO child startup records {len(descendants)} != {FIFO_CHILD_COUNT}")
+    for index, child in enumerate(descendants):
+        problems.extend(f"FIFO child {index}: {problem}" for problem in
+                        verify_startup_evidence(child, parent_pid=os.getpid()))
+        for name, path in (child.get("application_after_controls") or {}).items():
+            if not path or not os.path.abspath(path).startswith(str(copy) + os.sep):
+                problems.append(f"FIFO child {index}: {name} loaded outside the second copy")
+    descendant_path = run / "isolation.fifo-child-startup.json"
+    descendant_path.write_text(json.dumps(descendants, indent=2, sort_keys=True) + "\n")
+    record["fifo_child_startup"] = {"path": str(descendant_path),
+                                    "sha256": sha256_file(descendant_path),
+                                    "pids": [child.get("pid") for child in descendants],
+                                    "problems": problems}
+    failures.extend(problems)
     return guards
 
 
