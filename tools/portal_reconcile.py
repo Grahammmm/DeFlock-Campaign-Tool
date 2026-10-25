@@ -265,25 +265,60 @@ def _count(mapping, key, amount=1):
     mapping[key] = mapping.get(key, 0) + amount
 
 
+def _queue_identity(row):
+    """Return the row's (host, request_id, item_id) when each field is valid
+    on its own, independent of the rest of the row; otherwise None.
+
+    A missing or invalid identity field is never inferred or repaired.
+    """
+    try:
+        if not isinstance(row, dict):
+            return None
+        hostname(row.get("host"))
+        identifier(row.get("request_id"))
+        identifier(row.get("item_id"))
+        return (row["host"], row["request_id"], row["item_id"])
+    except Exception:  # noqa: BLE001 - any identity failure means "unidentifiable"
+        return None
+
+
 def build_queue(rows):
+    """Return (items, ambiguous identities, malformed reason counts, malformed row count).
+
+    Identities are collected before row-content validation, so a row that is
+    malformed outside its identity fields still occupies its identity. Any
+    identity seen more than once is withheld from items and marked ambiguous,
+    whatever the validity of its rows. malformed_rows counts each intrinsically
+    invalid row once plus the surplus fully valid rows of each identity group;
+    duplicate_identity (group size minus one) is an overlap diagnostic.
+    """
     malformed = {}
-    seen = {}
+    invalid_rows = 0
+    groups = {}  # identity -> [valid entries, invalid row count]
     for row in rows:
+        identity = _queue_identity(row)
         normalized, code = _normalized(normalize_queue_row, row)
         if normalized is None:
             _count(malformed, code)
+            invalid_rows += 1
+            if identity is not None:
+                groups.setdefault(identity, [[], 0])[1] += 1
             continue
         identity, state, has_version, reason = normalized
-        seen.setdefault(identity, []).append((state, has_version, reason))
+        groups.setdefault(identity, [[], 0])[0].append((state, has_version, reason))
     items = {}
     ambiguous = set()
-    for identity, entries in seen.items():
-        if len(entries) > 1:
-            _count(malformed, "duplicate_identity", len(entries) - 1)
+    surplus_valid = 0
+    for identity, (entries, invalid) in groups.items():
+        size = len(entries) + invalid
+        if size > 1:
+            _count(malformed, "duplicate_identity", size - 1)
             ambiguous.add(identity)
+            surplus_valid += max(len(entries) - 1, 0)
             continue
-        items[identity] = entries[0]
-    return items, ambiguous, malformed
+        if entries:
+            items[identity] = entries[0]
+    return items, ambiguous, malformed, invalid_rows + surplus_valid
 
 
 def classify(observation, items, ambiguous):
@@ -317,7 +352,7 @@ def classify(observation, items, ambiguous):
 
 
 def reconcile(observation_rows, queue_rows):
-    items, ambiguous, queue_malformed = build_queue(queue_rows)
+    items, ambiguous, queue_malformed, queue_malformed_rows = build_queue(queue_rows)
 
     malformed = {}
     duplicates = 0
@@ -401,7 +436,7 @@ def reconcile(observation_rows, queue_rows):
         },
         "queue": {
             "rows": len(queue_rows),
-            "malformed_rows": sum(queue_malformed.values()),
+            "malformed_rows": queue_malformed_rows,
             "malformed_reasons": dict(sorted(queue_malformed.items())),
             "items": len(items),
             "ambiguous_identities": len(ambiguous),
