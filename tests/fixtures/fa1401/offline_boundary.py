@@ -4,7 +4,10 @@ While installed, every Python-level file open, directory/link/rename/unlink
 change and SQLite connection reachable from the ledger code is checked before
 the real call runs. Writes are admitted only under the explicit write roots
 (the run's generated fixture and temp roots). Reads are additionally admitted
-under the repository and the running interpreter's own runtime. Anything else
+under the repository and the running interpreter's own runtime. Dereferencing
+opens and SQLite connects are judged at their fully resolved target (a leaf
+symlink is followed); only namespace changes judge the final name itself.
+Anything else
 is recorded as a hit and refused with PermissionError before the real call, so
 the test or launcher that installed the boundary fails. Already-open file
 descriptors (os.fdopen) pass, because the descriptor itself was admitted.
@@ -29,6 +32,7 @@ except ImportError:  # pragma: no cover - non-POSIX
 
 MARK = "fa1401_file_sentinel"
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _ABSENT = object()
 
 
@@ -43,16 +47,23 @@ def _fd_directory(fd):
     return None
 
 
-def resolve(path, dir_fd=None, *, write):
-    """Absolute real path judged for this access, or None when it cannot be resolved."""
+def resolve(path, dir_fd=None, *, write, follow=True):
+    """Absolute real path judged for this access, or None when it cannot be resolved.
+
+    Dereferencing accesses (every read, and writes through open/io.open, writable
+    os.open without O_NOFOLLOW or O_CREAT|O_EXCL, and SQLite connects) are judged at
+    the fully resolved target, so an admitted-root leaf symlink to an outside path
+    is judged outside. Only namespace changes (follow=False: mkdir, rmdir, unlink,
+    rename, symlink creation and no-follow creates) act on the final name itself,
+    so for them only the containing directory is followed.
+    """
     raw = os.fsdecode(os.fspath(path))
     if not os.path.isabs(raw):
         base = os.getcwd() if dir_fd is None else _fd_directory(dir_fd)
         if base is None:
             return None
         raw = os.path.join(base, raw)
-    if write:
-        # A write changes the final name itself, so only its directory is followed.
+    if write and not follow:
         head, tail = os.path.split(os.path.abspath(raw))
         return os.path.join(os.path.realpath(head), tail)
     return os.path.realpath(raw)
@@ -89,31 +100,49 @@ class FileBoundary:
         return _within(path, self.write_roots if write else self.read_roots)
 
     def check(self, name, accesses):
-        for path, dir_fd, write in accesses:
-            judged = resolve(path, dir_fd, write=write)
+        for path, dir_fd, write, follow in accesses:
+            judged = resolve(path, dir_fd, write=write, follow=follow)
             if not self.admitted(judged, write):
-                self.hits.append({"hook": name, "write": write, "path": judged or os.fsdecode(os.fspath(path))})
+                self.hits.append({"hook": name, "write": write, "follow": follow,
+                                  "path": judged or os.fsdecode(os.fspath(path))})
                 raise PermissionError("%s:%s refused %s access outside the admitted fixture/runtime roots"
                                       % (MARK, name, "write" if write else "read"))
 
     # -- per-call access classification --------------------------------------------
+    # Each access is (path, dir_fd, write, follow). follow=True judges the fully
+    # resolved target; follow=False (namespace change) judges the name in its real
+    # directory.
     @staticmethod
     def _open(file, mode="r", *args, **kwargs):
         if isinstance(file, int):
             return []
-        return [(file, None, any(flag in mode for flag in "wax+"))]
+        return [(file, None, any(flag in mode for flag in "wax+"), True)]
 
     @staticmethod
     def _os_open(path, flags, *args, dir_fd=None, **kwargs):
-        return [(path, dir_fd, bool(flags & WRITE_FLAGS))]
+        write = bool(flags & WRITE_FLAGS)
+        # The kernel refuses a final symlink for O_NOFOLLOW and for O_CREAT|O_EXCL.
+        names_only = write and bool(flags & NOFOLLOW or (flags & os.O_CREAT and flags & os.O_EXCL))
+        return [(path, dir_fd, write, not names_only)]
 
     @staticmethod
     def _change(path, *args, dir_fd=None, **kwargs):
-        return [(path, dir_fd, True)]
+        return [(path, dir_fd, True, False)]
 
     @staticmethod
     def _pair(src, dst, *args, src_dir_fd=None, dst_dir_fd=None, **kwargs):
-        return [(src, src_dir_fd, True), (dst, dst_dir_fd, True)]
+        return [(src, src_dir_fd, True, False), (dst, dst_dir_fd, True, False)]
+
+    @staticmethod
+    def _link(src, dst, *args, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True, **kwargs):
+        # A hard link makes the (possibly followed) source writable through dst.
+        return [(src, src_dir_fd, True, bool(follow_symlinks)), (dst, dst_dir_fd, True, False)]
+
+    @staticmethod
+    def _symlink(src, dst, *args, dir_fd=None, **kwargs):
+        # Creating a link writes only the name dst; its text is not accessed here, and
+        # any later open through it is judged at the resolved target.
+        return [(dst, dir_fd, True, False)]
 
     @staticmethod
     def _connect(database, *args, uri=False, **kwargs):
@@ -126,14 +155,14 @@ class FileBoundary:
             location = unquote(parts.path)
             if modes == ["memory"] or location in ("", ":memory:"):
                 return []
-            return [(location, None, modes != ["ro"])]
-        return [(text, None, True)]
+            return [(location, None, modes != ["ro"], True)]
+        return [(text, None, True, True)]
 
     def targets(self):
         return ((builtins, "open", self._open), (io, "open", self._open), (os, "open", self._os_open),
                 (os, "mkdir", self._change), (os, "rmdir", self._change), (os, "unlink", self._change),
                 (os, "remove", self._change), (os, "rename", self._pair), (os, "replace", self._pair),
-                (os, "link", self._pair), (sqlite3, "connect", self._connect),
+                (os, "link", self._link), (os, "symlink", self._symlink), (sqlite3, "connect", self._connect),
                 (sqlite3.dbapi2, "connect", self._connect))
 
     def wrap(self, name, classify, real):

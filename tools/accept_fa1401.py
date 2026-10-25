@@ -44,7 +44,8 @@ BOUNDARY_NAME = "fa1401_offline_boundary"
 WRITE_SET = (SOURCE, TEST, RUNNER, BOUNDARY)
 TEST_MODULE = "tests.records.test_fa1401"
 TEST_CLASS = "ReceiptOrdinalTests"
-REQUIRED_CASES = ("offline_file_boundary_scoped", "index_zero_selects_first_entry",
+REQUIRED_CASES = ("offline_file_boundary_scoped", "offline_file_boundary_follows_dereferencing_writes",
+                  "index_zero_selects_first_entry",
                   "registered_exact_ordinals_select_their_matching_entry",
                   "registered_negative_ordinals_return_zero", "direct_negative_source_insert_raises_integrity_error",
                   "non_exact_integer_ordinals_rejected", "out_of_range_ordinals_rejected",

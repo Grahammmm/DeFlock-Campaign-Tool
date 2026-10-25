@@ -266,11 +266,13 @@ class ReceiptOrdinalTests(unittest.TestCase):
             os.close(fd)
         classify = boundary.FileBoundary
         self.assertEqual(classify._connect(":memory:"), [])
-        self.assertEqual(classify._connect(self.db.as_uri() + "?mode=ro", uri=True), [(str(self.db), None, False)])
-        self.assertEqual(classify._connect(self.db.as_uri() + "?mode=rw", uri=True), [(str(self.db), None, True)])
-        self.assertEqual(classify._connect(self.db), [(str(self.db), None, True)])
-        self.assertEqual(classify._os_open(self.db, os.O_RDONLY), [(self.db, None, False)])
-        self.assertEqual(classify._os_open(self.db, os.O_WRONLY | os.O_CREAT), [(self.db, None, True)])
+        self.assertEqual(classify._connect(self.db.as_uri() + "?mode=ro", uri=True),
+                         [(str(self.db), None, False, True)])
+        self.assertEqual(classify._connect(self.db.as_uri() + "?mode=rw", uri=True),
+                         [(str(self.db), None, True, True)])
+        self.assertEqual(classify._connect(self.db), [(str(self.db), None, True, True)])
+        self.assertEqual(classify._os_open(self.db, os.O_RDONLY), [(self.db, None, False, True)])
+        self.assertEqual(classify._os_open(self.db, os.O_WRONLY | os.O_CREAT), [(self.db, None, True, True)])
         self.assertEqual(classify._open(3, "rb"), [])
         # A hook refuses before its callee runs. The callee is an inert recorder, so the
         # refused case touches no file at all; an admitted fixture path reaches it.
@@ -288,6 +290,99 @@ class ReceiptOrdinalTests(unittest.TestCase):
                 self.assertEqual(len(reached), 1)
                 del reached[:]
         self.assertEqual([hit["hook"] for hit in probe.hits], ["probe.open", "probe.connect"])
+        self.assertEqual(SENTINEL_HITS, [])
+
+    def test_offline_file_boundary_follows_dereferencing_writes(self):
+        # R2-MF1: a leaf symlink inside an admitted root that points outside must be
+        # judged at its real target for every dereferencing open/connect, while
+        # namespace changes on the link itself and ordinary fixture writes still pass.
+        outside = self.root.parent / ("fa1401-not-admitted-" + self.root.name) / "target.bin"
+        alias = self.root / "alias.bin"
+        os.symlink(outside, alias)  # fixture-owned dangling link; its target is never created
+        self.assertTrue(alias.is_symlink())
+        self.assertFalse(os.path.lexists(outside.parent))
+        plain = self.root / "plain.bin"
+        probe = boundary.FileBoundary(repo=REPO, write_roots=(self.root,), hits=[])
+        reached = []
+
+        def hook(name, classifier):
+            return probe.wrap(name, classifier, lambda *args, **kwargs: reached.append((name, args, kwargs)))
+        hooks = {"open": hook("probe.open", probe._open), "io.open": hook("probe.io.open", probe._open),
+                 "os.open": hook("probe.os.open", probe._os_open),
+                 "connect": hook("probe.connect", probe._connect),
+                 "unlink": hook("probe.unlink", probe._change), "rename": hook("probe.rename", probe._pair),
+                 "link": hook("probe.link", probe._link), "symlink": hook("probe.symlink", probe._symlink)}
+        uri = lambda path, mode: (Path(path).as_uri() + "?mode=" + mode,)
+        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            refused = (
+                ("open wb", "open", (str(alias), "wb"), {}),
+                ("open r+b", "open", (str(alias), "r+b"), {}),
+                ("open ab", "open", (alias, "ab"), {}),
+                ("io.open w", "io.open", (str(alias), "w"), {}),
+                ("open rb", "open", (str(alias), "rb"), {}),
+                ("os.open wronly|creat", "os.open", (str(alias), os.O_WRONLY | os.O_CREAT), {}),
+                ("os.open rdwr", "os.open", (str(alias), os.O_RDWR), {}),
+                ("os.open dir_fd", "os.open", ("alias.bin", os.O_WRONLY | os.O_TRUNC), {"dir_fd": fd}),
+                ("connect path", "connect", (str(alias),), {}),
+                ("connect uri rwc", "connect", uri(alias, "rwc"), {"uri": True}),
+                ("connect uri ro", "connect", uri(alias, "ro"), {"uri": True}),
+                ("hard link followed", "link", (str(alias), str(self.root / "hard.bin")), {}),
+            )
+            for label, name, args, kwargs in refused:
+                with self.subTest(refused=label):
+                    before = len(probe.hits)
+                    with self.assertRaisesRegex(PermissionError, boundary.MARK):
+                        hooks[name](*args, **kwargs)
+                    self.assertEqual(reached, [])
+                    self.assertEqual(len(probe.hits), before + 1)
+                    self.assertEqual(probe.hits[-1]["path"], os.path.realpath(outside))
+            admitted = (
+                ("plain open wb", "open", (str(plain), "wb"), {}),
+                ("plain io.open r+", "io.open", (plain, "r+"), {}),
+                ("plain os.open creat", "os.open", (str(plain), os.O_WRONLY | os.O_CREAT | os.O_TRUNC), {}),
+                ("plain os.open dir_fd", "os.open", ("plain.bin", os.O_RDWR | os.O_CREAT), {"dir_fd": fd}),
+                ("plain connect", "connect", (str(self.db),), {}),
+                ("plain connect uri", "connect", uri(self.db, "rw"), {"uri": True}),
+                ("link nofollow create", "os.open", (str(alias), os.O_WRONLY | os.O_CREAT | boundary.NOFOLLOW), {}),
+                ("link exclusive create", "os.open", (str(alias), os.O_WRONLY | os.O_CREAT | os.O_EXCL), {}),
+                ("unlink link itself", "unlink", (str(alias),), {}),
+                ("unlink link via dir_fd", "unlink", ("alias.bin",), {"dir_fd": fd}),
+                ("rename link itself", "rename", (str(alias), str(self.root / "moved.bin")), {}),
+                ("hard link of link itself", "link", (str(alias), str(self.root / "hard.bin")),
+                 {"follow_symlinks": False}),
+                ("create another link", "symlink", (str(outside), str(self.root / "second.bin")), {}),
+            )
+            for label, name, args, kwargs in admitted:
+                with self.subTest(admitted=label):
+                    del reached[:]
+                    hooks[name](*args, **kwargs)
+                    self.assertEqual(len(reached), 1)
+        finally:
+            os.close(fd)
+        self.assertEqual(len(probe.hits), len(refused))
+        self.assertTrue(all(hit["follow"] for hit in probe.hits))
+        # Nothing above reached a real callee: the link and its missing target are unchanged.
+        self.assertTrue(alias.is_symlink())
+        self.assertFalse(os.path.lexists(outside.parent))
+        # The live module boundary judges a write through a leaf link at its target too,
+        # without recording a hit (decision only, no callee), and still admits the link
+        # itself and ordinary fixture writes.
+        live = MODULE_BOUNDARY[0]
+        repo_alias = self.root / "repo-alias.bin"
+        os.symlink(REPO / "fa1401-never-created.bin", repo_alias)
+        self.assertEqual({
+            "write_through_link": live.admitted(boundary.resolve(repo_alias, write=True), True),
+            "write_link_name": live.admitted(boundary.resolve(repo_alias, write=True, follow=False), True),
+            "write_plain": live.admitted(boundary.resolve(plain, write=True), True),
+        }, {"write_through_link": False, "write_link_name": True, "write_plain": True})
+        plain.write_bytes(b"fa1401 fixture write\n")
+        self.assertEqual(plain.read_bytes(), b"fa1401 fixture write\n")
+        os.unlink(repo_alias)
+        os.unlink(alias)
+        self.assertFalse(os.path.lexists(alias))
+        self.assertFalse(os.path.lexists(outside.parent))
+        self.assertFalse(os.path.lexists(REPO / "fa1401-never-created.bin"))
         self.assertEqual(SENTINEL_HITS, [])
 
     # -- A1 ----------------------------------------------------------------------
