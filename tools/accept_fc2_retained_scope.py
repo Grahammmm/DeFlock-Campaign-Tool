@@ -16,8 +16,8 @@ start) is a child of this same script running under ``-I`` that installs a
 narrow offline/process guard before any application import: Python-level
 sentinels plus an audit hook cover socket creation for internet families,
 connect/connectionless sends/bind/listen/name resolution, and process
-creation. Only explicitly listed local children are admitted (git and the
-installed scanner from the parent; the repository's own check scripts and the
+creation. Only explicitly listed local children are admitted (git; the
+installed scanner from the parent only; the repository's own check scripts and the
 records CLI module, which are re-launched under the same guard). Every guard
 event is appended to a per-process log in the run directory at the moment it
 happens, so a forbidden attempt fails the gate even when the caller catches
@@ -415,7 +415,7 @@ def identity_self_check(run_dir):
 
 
 def child_env(run_dir, label):
-    """Inherited environment with temp/home/XDG data defaults redirected into the run directory."""
+    """Inherited environment with temp, HOME and XDG data defaults redirected into the run directory."""
     scratch = run_dir / (label + "-home")
     scratch.mkdir(mode=0o700)
     env = dict(os.environ)
@@ -872,7 +872,7 @@ def guarded_task_main(task, run_dir, report, guard_dir):
 
 def guarded_exec_main(guard_dir, rest):
     """Run one admitted local script/module under the guard, emulating ``python [-B] script|-m module``."""
-    guard = install_guard(guard_dir, "exec", allow={"local-python", "runner:--guarded-exec"})
+    guard = install_guard(guard_dir, "exec", allow={"git", "local-python", "runner:--guarded-exec"})
     target = local_python_target(rest, os.getcwd())
     if target is None:
         guard.record("hit", "unadmitted_exec", "runner", describe(rest))
