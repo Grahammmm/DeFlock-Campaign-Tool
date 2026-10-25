@@ -57,8 +57,8 @@ class BodyLinks(Links):
 
 @dataclass(frozen=True)
 class Scope:
-    hosts: frozenset
-    excluded_hosts: frozenset = frozenset()
+    hosts: set | frozenset
+    excluded_hosts: set | frozenset = frozenset()
     max_depth: int = 3
     max_pages: int = 100
     max_members: int = 1000
@@ -66,10 +66,16 @@ class Scope:
 
     def __post_init__(self):
         from .policy import hostname
-        for host in self.hosts | self.excluded_hosts:
+        if type(self.hosts) not in (set, frozenset) or type(self.excluded_hosts) not in (set, frozenset):
+            raise PortalError("invalid_inventory_scope")
+        hosts = frozenset(self.hosts)
+        excluded_hosts = frozenset(self.excluded_hosts)
+        for host in hosts | excluded_hosts:
             hostname(host)
-        if self.hosts & self.excluded_hosts:
+        if hosts & excluded_hosts:
             raise PortalError("scope_conflict")
+        object.__setattr__(self, "hosts", hosts)
+        object.__setattr__(self, "excluded_hosts", excluded_hosts)
         for name, ceiling in (("max_depth", 3), ("max_pages", 100),
                               ("max_members", 1000), ("max_links", 1000)):
             if type(getattr(self, name)) is not int or not 1 <= getattr(self, name) <= ceiling:
