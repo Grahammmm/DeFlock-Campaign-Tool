@@ -1,0 +1,38 @@
+AGENCY TIMELINE REPORT agency-timeline-report-v1 (REVIEW REQUIRED; counts, ids and dates only)
+snapshot_sha256 <snapshot_sha256>
+
+CONTACTS
+AGENCY          FIRST_CONTACT         LAST_CONTACT          SENT  RECEIVED  UNDATED  REQUESTS  ATTACHMENTS  PORTAL_ITEMS  UNRESOLVED_JOINS  UNKNOWN_DOMAIN
+agency-alpha    2026-07-03T16:05:00Z  2026-08-18T09:00:00Z  1     2         0        1         2            1             0                 0
+agency-bravo    2026-08-05T15:00:00Z  2026-08-31T23:30:00Z  1     1         0        1         1            1             1                 0
+agency-charlie  2026-10-01T12:00:00Z  2026-10-01T12:00:00Z  0     2         1        0         0            0             1                 0
+(UNKNOWN)       2026-09-15T08:00:00Z  2026-09-15T08:00:00Z  0     1         0        0         1            1             1                 1
+TOTAL           2026-07-03T16:05:00Z  2026-10-01T12:00:00Z  2     6         1        2         4            3             3                 1
+
+MONTHS (UTC)
+AGENCY          MONTH    SENT  RECEIVED
+agency-alpha    2026-07  1     1
+agency-alpha    2026-08  0     1
+agency-bravo    2026-08  1     1
+agency-charlie  2026-10  0     1
+(UNKNOWN)       2026-09  0     1
+TOTAL           2026-07  1     1
+TOTAL           2026-08  1     2
+TOTAL           2026-09  0     1
+TOTAL           2026-10  0     1
+
+REQUESTS
+AGENCY        REQUEST      STATUS               SUBMITTED             DETERMINATION_DUE     DETERMINED            PRODUCED  LINKED_MESSAGES  LAST_LINKED
+agency-alpha  req-alpha-1  awaiting_production  2026-07-03T16:00:00Z  2026-07-20T00:00:00Z  2026-07-18T17:30:00Z  -         2                2026-07-05T17:00:00Z
+agency-bravo  req-bravo-1  open                 2026-08-05            -                     -                     -         1                2026-08-05T15:00:00Z
+
+GAPS
+ancestry_invalid_occurrences=0
+distinct_attachment_originals=3
+mail_messages_total=9
+scope_excluded_joins=1
+scope_excluded_messages=1
+scope_excluded_occurrences=2
+unparseable_dates=0
+visible_messages=8
+withheld_values=0
