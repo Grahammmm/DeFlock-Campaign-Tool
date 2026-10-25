@@ -36,7 +36,73 @@ FLAGS = {"publication_ready": False, "stage_promotions": 0, "review_required": T
          "qualified": False, "activation_allowed": False}
 MAX_BYTES = core.MAX_INPUT_BYTES
 ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
-CODE = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
+# Closed vocabulary from pinned F-042 tools/detectors_run.py, adapter/core
+# wp6-pure-detectors-v2, and F-044 requests.py (see handoff source hashes).
+# Never allow arbitrary snake-case text or field_/rule_ prefix matches.
+REASON_CODES = frozenset("""
+    date_missing date_invalid date_not_canonical event_time_missing
+    event_time_invalid event_timezone_missing fields_not_object unknown_field_state
+    original_hash_missing exact_locator_missing exact_locator_bound
+    exact_locator_key_invalid exact_locator_path_invalid exact_locator_value_invalid
+    unit_not_object typed_agency_join_missing_or_ambiguous stable_event_identity_missing
+    conflicting_duplicate_event rules_version_missing invalid_rule_interval
+    rule_provenance_missing rule_not_effective applicable_rule_missing_or_ambiguous
+    training_context_missing training_context_invalid recipient_level_unsupported
+    home_jurisdiction_missing retention_rule_unit_unsupported retention_mode_unsupported
+    retention_value_invalid audit_period_invalid_or_oversize audit_period_crosses_policy_version
+    audit_production_scope_unknown audit_dates_bound no_due_audit_in_window
+    request_rule_event_mismatch as_of_precedes_request deadline_counting_rule_unsupported
+    weekend_rule_invalid holiday_table_hash_missing holiday_table_hash_mismatch
+    holiday_version_missing holiday_dates_invalid holiday_coverage_insufficient
+    deadline_roll_rule_unsupported deadline_roll_resource_bound extension_days_outside_supplied_rule
+    extension_basis_not_established extension_notice_outside_supplied_rule
+    extension_calculation_unsupported determination_state_unsupported determination_date_inconsistent
+    generic_reason_rule_missing event_policy_timezone_mismatch business_hours_rule_invalid
+    not_detector_input_type supplied_context_evaluated unsupported_or_invalid_context invalid_record
+    source_bindings_required source_bindings_byte_bound source_binding_shape
+    source_unit_identity_invalid duplicate_source_unit_identity source_artifact_hash_missing
+    join_revision_byte_bound join_row_bound typed_join_evidence_bound typed_join_support_missing
+    typed_agency_missing typed_request_agency_mismatch typed_join_evidence_invalid
+    subject_hash_invalid normalization_missing rules_or_config_missing structured_context_byte_bound
+    normalization_schema_unsupported normalizer_version_missing normalization_incomplete
+    primary_source_inventory_missing source_inventory_mismatch normalization_inventory_incomplete
+    canonical_join_snapshot_missing canonical_join_sources_changed normalized_unit_shape
+    normalized_source_shape normalized_source_missing_or_changed normalized_locator_mismatch
+    record_mapping_unknown unrelated_support_record rule_source_unbound
+    rule_version_or_applicability_unresolved required_context_unresolved
+    no_matching_type_in_complete_normalization outside_supplied_rule_intervals invalid_structured_context
+    canonical_copy_sidecar_present canonical_copy_byte_bound canonical_copy_not_sqlite
+    canonical_copy_wal_unqualified canonical_copy_unreadable canonical_copy_unqualified
+    canonical_copy_changed canonical_joins_invalid canonical_original_missing
+    canonical_original_resolution_unqualified adapter_blocked_before_evaluation
+    no_computed_evaluation persistence_manifest_mismatch persistence_integrity_failure
+    detector_context_blocked producer_run_id_mismatch run_id_invalid
+    out_root_not_absolute out_root_not_normalized out_root_parent_unavailable out_root_not_exclusive
+    invalid_citation message_kind_direction_mismatch message_kind_unknown
+    withdrawal_candidate_requires_review partial_delivery_fulfillment_not_established
+    delivery_scope_unverified fulfillment_text_indicates_partial_delivery
+    duplicate_message_id_conflict duplicate_message_sha256_conflict message_direction_invalid
+    duplicate_replay future_dated_message agency_receipt_date_unexpected
+    agency_receipt_date_missing agency_receipt_date_invalid agency_receipt_date_after_as_of
+    in_reply_to_invalid thread_order_ambiguous reply_thread_request_conflict thread_order_conflict
+    sent_message_missing sent_date_missing sent_date_invalid receipt_date_missing receipt_date_invalid
+    no_state_transition message_shape_invalid agency_or_request_number_missing
+    unresolved_reason detector_results_missing citation_or_agency_unresolved
+    request_citation_unresolved request_agency_unresolved request_state_unresolved
+    reminder_citation_unresolved
+""".split()) | frozenset(
+    "field_" + key + "_" + state
+    for key in ("user_id", "training_completed_at", "access_enabled", "recipient_level",
+                "recipient_jurisdiction", "retention_mode", "retention_days", "period_start",
+                "period_end", "production_complete", "audit_dates", "request_received",
+                "extension_claimed", "extension_days", "extension_notice_at", "extension_basis",
+                "determination_state", "determination_at", "purpose")
+    for state in ("missing", "blank", "redacted", "type")
+) | frozenset(
+    "rule_" + key + "_invalid"
+    for key in ("maximum_days", "frequency_days", "determination_days", "extension_days_max",
+                "reminder_days", "timezone_offset_minutes", "daily_count_threshold", "off_hours_threshold")
+)
 STATES = {"sent", "acknowledged", "extension", "fulfilled", "denied", "delivery_recorded",
           "partial_delivery", "UNRESOLVED", "NOT_ESTABLISHED"}
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
@@ -60,7 +126,7 @@ def digest(value):
 
 
 def code(value):
-    return value if isinstance(value, str) and CODE.fullmatch(value) else "unresolved_reason"
+    return value if isinstance(value, str) and value in REASON_CODES else "unresolved_reason"
 
 
 def identity(value):
@@ -226,9 +292,13 @@ def project(*, run_id, detector_results, requests, request_provenance, source_bi
         agency = request.get("agency_id")
         # Request identities may be human-facing; hash rather than expose them.
         key = digest(request.get("request_id"))
-        reasons = [code(r) for r in request.get("unresolved_reasons", [])]
+        raw_reasons = request.get("unresolved_reasons", [])
+        need(type(raw_reasons) is list, "request_unresolved_reasons_shape")
+        reasons = [code(r) for r in raw_reasons]
         cited = []
         hashes = request.get("message_sha256s", [])
+        need(type(hashes) is list and all(core.sha(h) for h in hashes),
+             "request_message_hashes_shape")
         for transition in request["transitions"]:
             cite = transition.get("citation", {}) if type(transition) is dict else {}
             if (type(cite) is not dict or not core.sha(cite.get("message_sha256")) or

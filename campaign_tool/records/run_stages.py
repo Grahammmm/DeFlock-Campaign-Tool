@@ -894,11 +894,17 @@ def stage_outputs(args):
     if digest_context is not None:
         from .understanding import digest as usage_digest
         try:
+            usage_digest.need(type(digest_context) is dict, "digest_context_shape")
             if usage_digest.enabled(digest_context.get("plan")):
                 usage_digest.need(digest_context.get("run_id") == args.run_id,
                                   "digest_run_mismatch")
                 usage_digest.need(str(digest_context.get("admitted_root")) == str(args.project),
                                   "digest_project_root_mismatch")
+                output = usage_digest.validate_roots(digest_context.get("admitted_root"),
+                                                    digest_context.get("output_root"))
+                usage_digest.need(output.name not in {"run-outputs", "processing-v1",
+                                                      "portal-queue-v1", "mail"},
+                                  "digest_reserved_project_entry")
                 # Existing snapshot IO also stays inside the synthetic project.
                 for relative in ("processing-v1/ledger.sqlite", "portal-queue-v1/portal.sqlite",
                                  "run-outputs", f"run-outputs/{args.run_id}.json",

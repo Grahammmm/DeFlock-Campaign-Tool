@@ -406,6 +406,88 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(sentinel.read_bytes(), b"unchanged")
         self.assertFalse(self.ctx["output_root"].exists())
 
+    def test_name_shaped_and_malformed_reasons_are_not_emitted(self):
+        result = self.ctx["detector_results"][0]
+        entry = result["structured"]["retention-over-policy"]
+        entry["reason"] = "officer_jane_doe_named"
+        outcome_key = entry["manifest"]["outcomes"][0]["event_key"]
+        entry["manifest"]["outcomes"][0]["reason"] = "officer_jane_doe_named"
+        request = self.ctx["requests"]["requests"][0]
+        request["unresolved_reasons"] = ["requester_john_smith", None, {}, 1]
+        self.refresh_requests()
+        digest.write_digest(**self.ctx)
+        for name in ("digest.json", "digest.md"):
+            text = (self.ctx["output_root"] / name).read_text()
+            self.assertNotIn("officer_jane_doe_named", text)
+            self.assertNotIn("requester_john_smith", text)
+        report = json.loads((self.ctx["output_root"] / "digest.json").read_text())
+        row = next(r for r in report["detector_statuses"] if r["detector"] == "retention-over-policy")
+        self.assertEqual(row["reason"], "unresolved_reason")
+        self.assertEqual(next(o for o in row["outcomes"] if o["event_key"] == outcome_key)["reason"],
+                         "unresolved_reason")
+        self.assertEqual(report["requests"][0]["unresolved_reasons"], ["unresolved_reason"])
+        self.assertIsNone(report["requests"][0]["reminders"]["ten_day_candidate"])
+
+    def test_known_parent_reason_vocabulary_preserved_unknowns_minimized(self):
+        for reason in ("canonical_copy_changed", "normalization_incomplete",
+                       "field_user_id_redacted", "rule_maximum_days_invalid",
+                       "supplied_context_evaluated", "rule_not_effective",
+                       "thread_order_conflict", "delivery_scope_unverified",
+                       "sent_date_missing", "agency_receipt_date_invalid"):
+            with self.subTest(reason=reason):
+                self.assertEqual(digest.code(reason), reason)
+        for reason in ("field_officer_jane_doe_redacted", "rule_requester_john_smith_invalid",
+                       "officer_jane_doe_named", "requester_john_smith", None, {}, []):
+            with self.subTest(reason=reason):
+                self.assertEqual(digest.code(reason), "unresolved_reason")
+
+    def test_request_hash_inventory_requires_list_of_exact_sha256_values(self):
+        message_hash = self.ctx["requests"]["requests"][0]["message_sha256s"][0]
+        for index, value in enumerate((message_hash, "prefix" + message_hash + "suffix", None,
+                      {message_hash: True}, [message_hash, "not-a-sha"], [None], [message_hash.upper()])):
+            with self.subTest(value=value):
+                self.ctx["output_root"] = self.root / ("hash-shape-" + str(index))
+                self.ctx["requests"]["requests"][0]["message_sha256s"] = value
+                self.refresh_requests()
+                self.refused("request_message_hashes_shape")
+        self.ctx["requests"]["requests"][0]["message_sha256s"] = []
+        self.refresh_requests()
+        row = self.report()["requests"][0]
+        self.assertEqual(row["state"], "UNRESOLVED")
+        self.assertEqual(row["unresolved_reasons"], ["reminder_citation_unresolved", "request_citation_unresolved"])
+        self.assertIsNone(row["reminders"]["ten_day_candidate"])
+        self.ctx["requests"]["requests"][0]["message_sha256s"] = [message_hash]
+        self.refresh_requests()
+        self.assertEqual(self.report()["requests"][0]["state"], "sent")
+
+    def test_request_reason_container_has_typed_refusal_before_writes(self):
+        for index, value in enumerate((None, "thread_order_conflict", {}, 1, False)):
+            with self.subTest(value=value):
+                self.ctx["output_root"] = self.root / ("reason-shape-" + str(index))
+                self.ctx["requests"]["requests"][0]["unresolved_reasons"] = value
+                self.refresh_requests()
+                self.refused("request_unresolved_reasons_shape")
+
+    def test_stage_reserved_output_entries_refuse_before_reads_or_writes(self):
+        for name in ("run-outputs", "processing-v1", "portal-queue-v1", "mail"):
+            with self.subTest(name=name):
+                self.ctx["output_root"] = self.root / name
+                args = SimpleNamespace(project=str(self.root), run_id=RUN, digest_context=self.ctx)
+                with mock.patch.object(run_stages, "ledger_ro", side_effect=AssertionError("must not read")), \
+                     mock.patch.object(run_stages, "snapshot_ro", side_effect=AssertionError("must not read")):
+                    line, code = run_stages.stage_outputs(args)
+                self.assertEqual((line["error_code"], code), ("OUTPUTS_DIGEST_REFUSED", 1))
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_stage_non_dict_context_has_typed_refusal_before_reads_or_writes(self):
+        for context_value in ([], "private text", 1, False):
+            with self.subTest(context=context_value):
+                args = SimpleNamespace(project=str(self.root), run_id=RUN, digest_context=context_value)
+                with mock.patch.object(run_stages, "ledger_ro", side_effect=AssertionError("must not read")):
+                    line, code = run_stages.stage_outputs(args)
+                self.assertEqual((line["error_code"], code), ("OUTPUTS_DIGEST_REFUSED", 1))
+                self.assertEqual(list(self.root.iterdir()), [])
+
     def test_stage_missing_snapshot_never_writes_digest(self):
         args = SimpleNamespace(project=str(self.root), run_id=RUN, digest_context=self.ctx)
         line, code = run_stages.stage_outputs(args)
