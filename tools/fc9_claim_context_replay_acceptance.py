@@ -74,6 +74,11 @@ REQUIRED_SUITE = tuple(_M + n for n in (
     "MalformedTests.test_corrupt_snapshot_hash_is_bundle_refusal_not_context_refusal",
     "MalformedTests.test_malformed_saved_claims_rejected",
     "CoverageTests.test_fixture_dimensions_are_complete",
+    "RunnerAdmissionTests.test_unreadable_manifest_refused_before_any_dispatch",
+    "RunnerAdmissionTests.test_real_identity_mismatch_manifest_refused_before_dispatch",
+    "RunnerAdmissionTests.test_each_identity_failure_class_refused_before_dispatch",
+    "RunnerAdmissionTests.test_clean_identity_dispatches_exactly_the_named_phase_once",
+    "RunnerAdmissionTests.test_clean_identity_phase_problems_are_returned",
 ))
 # Declared synthetic control: with only the final stale/changed equality gate
 # disabled, these context-only refusals must fail their expected-refusal assertion.
@@ -483,6 +488,32 @@ def phase_public_tree(run, manifest):
     return problems, detail
 
 
+IDENTITY_REFUSED = "identity_refused_before_dispatch"
+
+
+def phase_handlers():
+    return {"suite": phase_suite, "compatibility": phase_compatibility, "portable": phase_portable,
+            "credentials": phase_credentials, "public-tree": phase_public_tree}
+
+
+def dispatch(run, phase, manifest_path, identity=None, handlers=None):
+    """Check the shared staging identity first; invoke the phase only when it is clean.
+
+    Any identity/admission problem (unreadable manifest, repo/head/tree mismatch,
+    wrong runtime, changed product pin) returns before any phase handler, test,
+    scanner or clone child runs, so the mismatch goes back to its admission owner.
+    """
+    identity = check_identity if identity is None else identity
+    handlers = phase_handlers() if handlers is None else handlers
+    handler = handlers[phase]
+    problems, ident, manifest = identity(run, phase, manifest_path)
+    if problems:
+        return [IDENTITY_REFUSED] + list(problems), ident, {
+            "dispatch": "not invoked: identity/admission check failed; returned to the admission owner"}
+    more, detail = handler(run, manifest)
+    return list(more), ident, dict(detail, dispatch="invoked after clean identity")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--phase", required=True, choices=PHASES)
@@ -492,11 +523,7 @@ def main(argv=None):
     run = Run(args.phase, args.out_base)
     started = utc_now()
     try:
-        problems, ident, manifest = check_identity(run, args.phase, args.source_manifest)
-        handler = {"suite": phase_suite, "compatibility": phase_compatibility, "portable": phase_portable,
-                   "credentials": phase_credentials, "public-tree": phase_public_tree}[args.phase]
-        more, detail = handler(run, manifest)
-        problems = problems + more
+        problems, ident, detail = dispatch(run, args.phase, args.source_manifest)
     except Exception as exc:  # an incomplete row is a failure, never a pass
         problems, ident, detail = ["runner_exception:%s:%s" % (type(exc).__name__, exc)], {}, {}
     tests_run = {rec["name"]: rec["result"].get("tests_run") for rec in run.children

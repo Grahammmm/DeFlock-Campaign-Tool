@@ -393,6 +393,142 @@ class CoverageTests(unittest.TestCase):
                                                                      + len(MALFORMED)))
 
 
+RUNNER_PATH = REPO / "tools" / "fc9_claim_context_replay_acceptance.py"
+
+
+def _load_runner():
+    """Load the card's acceptance runner from its repository path without registering it in sys.modules."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_fc9_claim_context_replay_runner_under_test", RUNNER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _InertRun:
+    """In-memory stand-in for the runner's Run: records identity git reads; any phase work is refused."""
+
+    def __init__(self):
+        self.git_calls, self.work = [], []
+        self.children = []
+
+    def git(self, name, *args, cwd=None):
+        self.git_calls.append(name)
+        return 0, "0" * 40
+
+    def _refuse(self, kind, name):
+        self.work.append((kind, name))
+        raise AssertionError("phase work dispatched: %s %s" % (kind, name))
+
+    def child(self, name, argv, cwd, stdout_path=None):
+        self._refuse("child", name)
+
+    def py_child(self, name, mode, targets, cwd=None):
+        self._refuse("py_child", name)
+
+    def fresh(self, name):
+        self._refuse("fresh", name)
+
+
+class RunnerAdmissionTests(unittest.TestCase):
+    """The acceptance runner must refuse before any phase/test/scanner/clone work when identity fails."""
+
+    FAILURE_CLASSES = ("manifest_schema", "manifest_repo_mismatch", "manifest_head_not_pinned_base",
+                       "manifest_tree_mismatch", "head_unreadable", "head_is_base_not_candidate",
+                       "head_not_descended_from_base", "interpreter_not_staged_repo_venv",
+                       "credential_interpreter_not_manifest", "interpreter_prefix_not_manifest_venv",
+                       "staged_venv_link_not_manifest_venv",
+                       "product_pin_changed:campaign_tool/records/grounded_evidence.py")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = _load_runner()
+
+    def recording_handlers(self, calls):
+        def make(phase):
+            def handler(run, manifest):
+                calls.append(phase)
+                return [], {"phase": phase}
+            return handler
+        return {phase: make(phase) for phase in self.runner.PHASES}
+
+    def assert_refused_without_work(self, result, run, calls, expected):
+        problems, _, detail = result
+        self.assertEqual(problems[0], self.runner.IDENTITY_REFUSED)
+        for item in expected:
+            self.assertIn(item, problems)
+        self.assertTrue(detail["dispatch"].startswith("not invoked"))
+        self.assertEqual(run.work, [])
+        self.assertEqual(run.children, [])
+        self.assertEqual(calls, [])
+
+    def test_unreadable_manifest_refused_before_any_dispatch(self):
+        absent = FIXTURE.parent / "absent-source-manifest.json"
+        self.assertFalse(absent.exists())
+        for phase in self.runner.PHASES:
+            for handlers_kind in ("real", "recording"):
+                with self.subTest(phase=phase, handlers=handlers_kind):
+                    run, calls = _InertRun(), []
+                    handlers = None if handlers_kind == "real" else self.recording_handlers(calls)
+                    result = self.runner.dispatch(run, phase, str(absent), handlers=handlers)
+                    self.assert_refused_without_work(result, run, calls, ["manifest_unreadable:FileNotFoundError"])
+                    self.assertEqual(run.git_calls, [])
+
+    def test_real_identity_mismatch_manifest_refused_before_dispatch(self):
+        # The card fixture is valid JSON but not a source manifest: schema, repo and head all mismatch.
+        for phase in self.runner.PHASES:
+            for handlers_kind in ("real", "recording"):
+                with self.subTest(phase=phase, handlers=handlers_kind):
+                    run, calls = _InertRun(), []
+                    handlers = None if handlers_kind == "real" else self.recording_handlers(calls)
+                    result = self.runner.dispatch(run, phase, str(FIXTURE), handlers=handlers)
+                    self.assert_refused_without_work(result, run, calls, [
+                        "manifest_schema", "manifest_repo_mismatch", "manifest_head_not_pinned_base"])
+
+    def test_each_identity_failure_class_refused_before_dispatch(self):
+        for failure in self.FAILURE_CLASSES:
+            for phase in self.runner.PHASES:
+                with self.subTest(failure=failure, phase=phase):
+                    run, calls, seen = _InertRun(), [], []
+
+                    def identity(r, p, m, failure=failure):
+                        seen.append(p)
+                        return [failure], {"head": "synthetic"}, {"schema": "synthetic"}
+                    result = self.runner.dispatch(run, phase, "synthetic-manifest", identity=identity,
+                                                  handlers=self.recording_handlers(calls))
+                    self.assert_refused_without_work(result, run, calls, [failure])
+                    self.assertEqual(seen, [phase])
+                    run2 = _InertRun()
+                    result2 = self.runner.dispatch(run2, phase, "synthetic-manifest", identity=identity)
+                    self.assert_refused_without_work(result2, run2, [], [failure])
+
+    def test_clean_identity_dispatches_exactly_the_named_phase_once(self):
+        manifest = {"schema": "synthetic-clean"}
+        for phase in self.runner.PHASES:
+            with self.subTest(phase=phase):
+                run, calls = _InertRun(), []
+
+                def identity(r, p, m):
+                    return [], {"head": "synthetic"}, manifest
+                handlers = self.recording_handlers(calls)
+                problems, ident, detail = self.runner.dispatch(run, phase, "synthetic-manifest",
+                                                               identity=identity, handlers=handlers)
+                self.assertEqual(calls, [phase])
+                self.assertEqual(problems, [])
+                self.assertEqual(ident, {"head": "synthetic"})
+                self.assertEqual(detail, {"phase": phase, "dispatch": "invoked after clean identity"})
+
+    def test_clean_identity_phase_problems_are_returned(self):
+        def identity(r, p, m):
+            return [], {}, {}
+
+        def handler(run, manifest):
+            return ["phase_problem"], {}
+        problems, _, _ = self.runner.dispatch(_InertRun(), "suite", "synthetic-manifest", identity=identity,
+                                              handlers={"suite": handler})
+        self.assertEqual(problems, ["phase_problem"])
+
+
 if __name__ == "__main__":
     _prog = unittest.main(exit=False)
     if "--case-report" in _OPTS:
