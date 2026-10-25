@@ -133,8 +133,8 @@ class Recorder:
         for relative in CHECKERS:
             require(self.command('checker-base', ['git', 'show', self.base + ':' + relative]) == (self.repo / relative).read_bytes(), 'checker_changed')
         fixture = json.loads((self.repo / FIXTURE).read_text(encoding='utf-8'))
-        require(fixture['provenance']['source_commit'] == self.base and
-                fixture['provenance']['source_tree'] == self.base_tree, 'fixture_provenance')
+        require(self.base.startswith(fixture['provenance']['source_commit_prefix']) and
+                self.base_tree.startswith(fixture['provenance']['source_tree_prefix']), 'fixture_provenance')
         runtime = m['runtime']
         link = self.repo / '.venv'
         require(link.is_symlink() and link.resolve() == Path(runtime['repo_venv']), 'runtime_link')

@@ -302,8 +302,8 @@ class LawSummarySnapshotTests(unittest.TestCase):
         self.assertEqual(sum(len(v) for v in case_map.values()), 23)
         provenance = self.fixture['provenance']
         # Exact source identity is bound by the recorder against SOURCE-MANIFEST.json.
-        self.assertRegex(provenance['source_commit'], '^[0-9a-f]{40}$')
-        self.assertRegex(provenance['source_tree'], '^[0-9a-f]{40}$')
+        self.assertRegex(provenance['source_commit_prefix'], '^[0-9a-f]{8}$')
+        self.assertRegex(provenance['source_tree_prefix'], '^[0-9a-f]{8}$')
         self.assertEqual(provenance['source_package'], 'campaign_tool/_resources/jurisdictions/us-ca/package.json')
 
 

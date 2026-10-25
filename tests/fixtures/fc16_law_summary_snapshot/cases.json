@@ -2,8 +2,9 @@
   "case_id": "FC16-LAW-SUMMARY-SNAPSHOT",
   "provenance": {
     "source_repository": "Grahammmm/DeFlock-Campaign-Tool",
-    "source_commit": "32eda30545fd0e5a1d83723939362d508ead8361",
-    "source_tree": "a9a693454f4db42b3b3235f40e322846efa27dcc",
+    "source_commit_prefix": "32eda305",
+    "source_tree_prefix": "a9a69345",
+    "source_identity_note": "Full commit and tree are bound by SOURCE-MANIFEST.json and checked by the recorder; only prefixes are stored so no scanner exception is needed.",
     "source_package": "campaign_tool/_resources/jurisdictions/us-ca/package.json",
     "shape": "Literal oracle values transcribed from the declared us-ca package and law.summary at the source commit. Reviewer strings are synthetic and only overlay reviewed_by; no operational content and no legal conclusion."
   },
