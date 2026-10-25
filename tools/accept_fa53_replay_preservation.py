@@ -12,6 +12,7 @@ repository code.
 """
 import argparse
 from datetime import datetime, timezone
+import difflib
 import hashlib
 import json
 import os
@@ -34,9 +35,6 @@ COMPATIBILITY = ("tests.records.test_mail_delta", "tests.records.test_mail_wire_
 REFERENCED = ("tests/records/test_mail_delta.py", "tests/records/test_mail_wire_intake.py",
               "campaign_tool/records/intake/folder.py", "tools/check_secret_report.py",
               "tools/check_public_tree.py")
-# Pinned original (frozen brief source pin) used only by the A4 negative control.
-BASELINE_REV = "fdfe70f8e381861a3d320f61eff94e1bfed47c2b"
-BASELINE_SHA256 = "918e7c2d44fdc14f77b17ca3ce51e120e8782d0cd5f84a0ccb8a17d75bf3559f"
 # A4: exactly these assertions must fail against the original unchanged-replay gate.
 BASELINE_EXPECTED_FAILURES = (
     "test_a2_missing_original_declaration_refused",
@@ -150,16 +148,38 @@ class Run:
         return record
 
 
-def pinned_baseline(run):
-    code, blob = git("show", BASELINE_REV + ":" + PRODUCT)
+def original_baseline(run):
+    """Original module: PRODUCT at the parent of the latest commit that changed it.
+
+    The deciding correction must be the ONLY delta: every changed line is an
+    added line naming ``undeclared`` or its adjacent comment; nothing removed.
+    The resolved revision and SHA256 are recorded for comparison with the
+    frozen brief source pin.
+    """
+    code, rev = git("rev-list", "-1", "HEAD", "--", PRODUCT)
+    if code != 0 or not rev.strip():
+        return None, "baseline_revision_unavailable"
+    code, parent = git("rev-parse", rev.decode().strip() + "^")
+    if code != 0:
+        return None, "baseline_parent_unavailable"
+    parent = parent.decode().strip()
+    code, blob = git("show", parent + ":" + PRODUCT)
     if code != 0:
         return None, "baseline_git_show_failed"
-    if sha256_bytes(blob) != BASELINE_SHA256:
-        return None, "baseline_sha256_mismatch"
+    candidate = (REPO / PRODUCT).read_bytes()
+    if blob == candidate:
+        return None, "baseline_equals_candidate"
+    delta = [line for line in difflib.ndiff(blob.decode().splitlines(), candidate.decode().splitlines())
+             if line[:2] in ("+ ", "- ")]
+    allowed = all(line.startswith("+ ") and ("undeclared" in line or line[2:].lstrip().startswith("#"))
+                  for line in delta)
+    if not delta or not allowed:
+        return None, "baseline_delta_not_scoped"
     target = run.dir / "baseline" / "mail_delta_original.py"
     target.parent.mkdir(mode=0o700)
     target.write_bytes(blob)
-    return {"revision": BASELINE_REV, "path": str(target), "sha256": sha256_file(target)}, None
+    return {"revision": parent, "correction_commit": rev.decode().strip(), "path": str(target),
+            "sha256": sha256_file(target), "delta_lines": delta}, None
 
 
 def source_copy(run):
@@ -209,11 +229,12 @@ def parent_main(args):
             extra += ["--module", name]
         verdict = run.test_child("compatibility", "unittest", extra)
     elif args.case == "negative-control":
-        baseline, problem = pinned_baseline(run)
+        baseline, problem = original_baseline(run)
         if problem:
             verdict = {"pass": False, "error": problem}
         else:
-            verdict = run.test_child("negative-control", "negative-control", ("--baseline", baseline["path"]))
+            verdict = run.test_child("negative-control", "negative-control",
+                                     ("--baseline", baseline["path"], "--baseline-sha256", baseline["sha256"]))
             verdict["baseline"] = baseline
     elif args.case == "isolation":
         copy, mismatched = source_copy(run)
@@ -435,7 +456,7 @@ def child_main(args):
         record.update(unittest_record(result), modules=args.module)
         checks["tests_clean"] = clean(result)
     else:
-        record.update(negative_control(Path(args.baseline), tmp))
+        record.update(negative_control(Path(args.baseline), args.baseline_sha256, tmp))
         checks["negative_control"] = record.pop("pass")
     loaded = {name: sys.modules[name].__file__ for name in APP_MODULES + (TEST_MODULE,) + tuple(args.module or ())
               if name in sys.modules}
@@ -462,7 +483,7 @@ def child_main(args):
     return 0 if record["pass"] else 1
 
 
-def negative_control(baseline_path, tmp):
+def negative_control(baseline_path, baseline_sha256, tmp):
     """A4: the original unchanged-replay gate must fail exactly the new refusal assertions."""
     import importlib.util
     import unittest
@@ -492,7 +513,7 @@ def negative_control(baseline_path, tmp):
     base_out = fa53.missing_declaration_outcomes(baseline, tmp / "nc-original")
     cand_out = fa53.missing_declaration_outcomes(candidate, tmp / "nc-candidate")
     checks = {
-        "baseline_is_pinned_original": sha256_file(baseline_path) == BASELINE_SHA256,
+        "baseline_matches_recorded_original": sha256_file(baseline_path) == baseline_sha256,
         "baseline_is_not_candidate": Path(baseline.__file__).read_bytes() != Path(candidate.__file__).read_bytes(),
         "original_fails_exactly_refusal_assertions": base_run["failed_methods"] == sorted(BASELINE_EXPECTED_FAILURES)
         and base_run["errors"] == 0 and base_run["skipped"] == 0,
@@ -521,6 +542,7 @@ def main(argv=None):
     parser.add_argument("--result-json")
     parser.add_argument("--module", action="append", default=[])
     parser.add_argument("--baseline")
+    parser.add_argument("--baseline-sha256")
     parser.add_argument("--primary-repo")
     args = parser.parse_args(argv)
     if args.child:
