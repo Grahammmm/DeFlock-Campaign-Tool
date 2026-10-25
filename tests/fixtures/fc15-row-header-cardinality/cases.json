@@ -1,0 +1,17 @@
+{
+  "schema": "fc15-row-header-cardinality/v1",
+  "columns": [
+    {"name": "ID", "target": "event_id", "type": "str"},
+    {"name": "When", "target": "event_at", "type": "str"},
+    {"name": "Purpose", "target": "purpose", "type": "str"}
+  ],
+  "values": ["fictional-event", "2020-01-20T12:00:00+00:00", "fictional-purpose"],
+  "cases": {
+    "one_matching": ["matching"],
+    "zero_headers": [],
+    "two_equal": ["matching", "matching"],
+    "two_conflicting_matching_first": ["matching", "conflicting"],
+    "two_conflicting_matching_last": ["conflicting", "matching"],
+    "foreign_header": []
+  }
+}
