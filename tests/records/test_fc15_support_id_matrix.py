@@ -99,10 +99,11 @@ class SupportIdentityMatrix(unittest.TestCase):
                     if representation == "retained_data_pointer" else "verified_exact_retained_bytes",
                     "semantic_assessment": "NOT_ASSESSED", "review_acceptance": False,
                     "snapshot_sha256": bundle["snapshot_sha256"]}
-        self.assertEqual(self.ge.validate_support(support, bundle), expected)
+        result = self.ge.validate_support(support, bundle)
+        self.assertEqual(result, expected)
+        self.assertIs(result["review_acceptance"], False)
         self.assertEqual(self.ge.validate_support(support, bundle), expected)
         self.assertEqual((support, bundle), before)
-        self.assertIs(expected["review_acceptance"], False)
 
     def rejection(self, function, support, bundle, code, label):
         before = copy.deepcopy((support, bundle))

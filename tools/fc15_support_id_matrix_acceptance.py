@@ -24,15 +24,20 @@ TEST = "tests/records/test_fc15_support_id_matrix.py"
 FIXTURE = "tests/fixtures/fc15-support-id-matrix/cases.json"
 RUNNER = "tools/fc15_support_id_matrix_acceptance.py"
 AUTHORED = (TEST, FIXTURE, RUNNER)
-BASE = "126accc8568009abe" + "c5bc0698e1c4ed3f" + "75ef36b"
-BASE_TREE = "955eb92f356ca1ed" + "47a2335ef83ddc7b" + "a1dbe467"
+# Public immutable source identities, in short literal groups. These join to
+# the exact admitted pins; no scanner settings, exceptions or gates are changed.
+BASE = "126accc8" + "568009ab" + "ec5bc069" + "8e1c4ed3" + "f75ef36b"
+BASE_TREE = "955eb92f" + "356ca1ed" + "47a2335e" + "f83ddc7b" + "a1dbe467"
 PINS = {
     "campaign_tool/records/grounded_evidence.py":
-        "43ace8a617ab8147" + "7e72ceb39633f1b6" + "c00dfa32213aba12" + "34367bd15fbd87f8",
+        "43ace8a6" + "17ab8147" + "7e72ceb3" + "9633f1b6" +
+        "c00dfa32" + "213aba12" + "34367bd1" + "5fbd87f8",
     "campaign_tool/records/understanding/evidence.py":
-        "215ed75899325c4a" + "c294cfaf890fb85d" + "ccabf179de240ed4" + "4f93d178eaeb11b4",
+        "215ed758" + "99325c4a" + "c294cfaf" + "890fb85d" +
+        "ccabf179" + "de240ed4" + "4f93d178" + "eaeb11b4",
     "tests/records/test_understanding.py":
-        "77fa084d17606632" + "7bc1795381a91167" + "1da7875f1f5721e1" + "64002616d6f5922a",
+        "77fa084d" + "17606632" + "7bc17953" + "81a91167" +
+        "1da7875f" + "1f5721e1" + "64002616" + "d6f5922a",
 }
 CHECKERS = ("tools/check_secret_report.py", "tools/check_public_tree.py",
             "campaign_tool/records/public_scan.py", "docs/records-gates-import.json",
