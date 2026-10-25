@@ -13,7 +13,9 @@ CI, semantic acceptance or permission. Full discovery = operator-run.
 Unittest cases run in a file-launched child interpreter (this file with
 --child) that disables bytecode, redirects temporary paths into the run
 directory and installs network/process/live-file/write sentinels BEFORE any
-repository import. The parent never imports repository code.
+repository import. Any actual sentinel refusal fails the case; the isolation
+case checks the guard policy only inertly, never by attempting a forbidden
+operation. The parent never imports repository code.
 """
 import argparse
 from datetime import datetime, timezone
@@ -287,78 +289,75 @@ def install_guards(run_dir, source_root, state):
             return True
         return target.is_relative_to(home) and not any(target.is_relative_to(r) for r in readable)
 
-    def refuse(event, detail):
-        state["violations"].append({"phase": state["phase"], "event": event, "detail": repr(detail)[:200]})
-        raise PermissionError("fa1403 acceptance guard refused " + event)
-
     mutations = {"os.mkdir": ((0, 2),), "os.remove": ((0, 1),), "os.rmdir": ((0, 1),), "os.chmod": ((0, 2),),
                  "os.chown": ((0, 3),), "os.utime": ((0, 3),), "os.truncate": ((0, None),),
                  "shutil.rmtree": ((0, 1),), "os.rename": ((0, 2), (1, 3)), "os.replace": ((0, 2), (1, 3)),
                  "os.link": ((0, 2), (1, 3)), "os.symlink": ((1, 2),), "shutil.copyfile": ((1, None),),
                  "shutil.move": ((0, None), (1, None))}
 
-    def hook(event, args):
+    def decide(event, args):
+        """Pure policy: return (refused_event, detail) or None. Performs no guarded operation."""
         if event.startswith("socket.") and event not in ("socket.__new__", "socket.gethostname"):
-            refuse(event, args)
-        elif event in ("subprocess.Popen", "os.system", "os.posix_spawn", "os.spawn", "os.exec", "os.fork",
-                       "os.forkpty", "pty.spawn", "urllib.Request", "webbrowser.open"):
-            refuse(event, args[:2] if isinstance(args, tuple) else args)
-        elif event == "ctypes.dlopen":
-            if args and args[0] is None:
-                state["allowed"].append({"phase": state["phase"], "dlopen": "self-process"})
-            else:
-                refuse(event, args)
-        elif event == "open":
+            return event, args
+        if event in ("subprocess.Popen", "os.system", "os.posix_spawn", "os.spawn", "os.exec", "os.fork",
+                     "os.forkpty", "pty.spawn", "urllib.Request", "webbrowser.open"):
+            return event, (args[:2] if isinstance(args, tuple) else args)
+        if event == "ctypes.dlopen":
+            return None if args and args[0] is None else (event, args)
+        if event == "open":
             path, mode, flags = args
             writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
                 isinstance(flags, int) and flags & write_flags)
             if writing and not inside(path):
-                refuse(event, path)
+                return event, path
             if live(path):
-                refuse("live-file-read", path)
+                return "live-file-read", path
         elif event == "sqlite3.connect":
             if not inside(args[0]):
-                refuse(event, args[0])
+                return event, args[0]
         elif event in mutations:
             for index, fd_index in mutations[event]:
                 if index < len(args):
                     dir_fd = args[fd_index] if fd_index is not None and fd_index < len(args) else None
                     if not inside(args[index], dir_fd):
-                        refuse(event, args[index])
+                        return event, args[index]
+        return None
+
+    def hook(event, args):
+        refused = decide(event, args)
+        if refused is None:
+            if event == "ctypes.dlopen":
+                state["allowed"].append({"phase": state["phase"], "dlopen": "self-process"})
+            return
+        state["violations"].append({"phase": state["phase"], "event": refused[0],
+                                    "detail": repr(refused[1])[:200]})
+        raise PermissionError("fa1403 acceptance guard refused " + refused[0])
 
     sys.addaudithook(hook)
+    return decide
 
 
-def sentinel_probes(run_dir, state):
-    """Each sentinel must refuse before any side effect (isolation case only)."""
-    import socket
-    outside = Path(run_dir).resolve().parent / ("fa1403-sentinel-" + secrets.token_hex(6))
-    live = Path(os.path.expanduser("~")) / (".fa1403-sentinel-" + secrets.token_hex(6))
-    probes = {}
+def guard_policy(decide, run_dir):
+    """Inert policy check: evaluate the installed guard's decision on synthetic event tuples.
 
-    def attempt(name, action):
-        state["phase"] = "sentinel:" + name
-        before = len(state["violations"])
-        try:
-            action()
-            probes[name] = False
-        except PermissionError:
-            probes[name] = len(state["violations"]) == before + 1
-        except OSError:
-            probes[name] = False
-        state["phase"] = "tests"
-
-    def network():
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.1)
-            sock.connect(("192.0.2.1", 9))
-
-    attempt("network_connect", network)
-    attempt("write_outside_run", lambda: open(outside, "wb").close())
-    attempt("live_file_read", lambda: open(live, "rb").close())
-    attempt("process_launch", lambda: subprocess.run(["true"], check=False))
-    probes["write_outside_run_absent"] = not outside.exists()
-    return probes
+    No socket, process, outside write or home-file read is attempted; any actual
+    refusal anywhere in the child remains fatal.
+    """
+    run_dir = Path(run_dir).resolve()
+    outside = str(run_dir.parent / "fa1403-policy-outside")
+    live = str(Path(os.path.expanduser("~")) / ".fa1403-policy-live")
+    inside = str(run_dir / "tmp" / "fa1403-policy-inside")
+    refuse = {"network_connect": ("socket.connect", (None, ("192.0.2.1", 9))),
+              "process_launch": ("subprocess.Popen", (["true"], None, None, None)),
+              "write_outside_run": ("open", (outside, "wb", os.O_WRONLY | os.O_CREAT)),
+              "live_file_read": ("open", (live, "rb", os.O_RDONLY)),
+              "sqlite_outside_run": ("sqlite3.connect", (outside,))}
+    allow = {"write_inside_run": ("open", (inside, "wb", os.O_WRONLY | os.O_CREAT)),
+             "sqlite_inside_run": ("sqlite3.connect", (inside,)),
+             "sqlite_memory": ("sqlite3.connect", (":memory:",))}
+    result = {name: decide(*event) is not None for name, event in refuse.items()}
+    result.update({name: decide(*event) is None for name, event in allow.items()})
+    return result
 
 
 def path_constants(names, run_dir):
@@ -437,11 +436,11 @@ def child_main(args):
     import tempfile
     tempfile.tempdir = str(tmp)
     state = {"phase": "tests", "violations": [], "allowed": []}
-    install_guards(run_dir, source, state)
+    decide = install_guards(run_dir, source, state)
     record = {"mode": args.child, "tempdir": tempfile.gettempdir(), "source_root": str(source),
               "dont_write_bytecode": sys.dont_write_bytecode}
     if args.child == "isolation":
-        record["sentinels"] = sentinel_probes(run_dir, state)
+        record["guard_policy"] = guard_policy(decide, run_dir)
     sys.path.insert(0, str(source))
     import unittest
     from unittest import mock
@@ -492,7 +491,8 @@ def child_main(args):
     record["path_constants_and_defaults"] = found
     checks["no_reachable_path_constants_outside_run"] = all(item["inside_run"] for item in found)
     if args.child == "isolation":
-        checks["sentinels_refused"] = len(record["sentinels"]) == 5 and all(record["sentinels"].values())
+        policy = record["guard_policy"]
+        checks["guard_policy_inert"] = len(policy) == 8 and all(policy.values())
         checks["no_bytecode_in_source_copy"] = not any(source.rglob("*.pyc"))
         primary = Path(args.primary_repo).resolve() if args.primary_repo else None
         checks["source_is_fresh_copy"] = primary is not None and source != primary and not source.is_relative_to(
@@ -500,8 +500,7 @@ def child_main(args):
         checks["fixture_prefix_inside_copy_run"] = Path(record["tempdir"]).resolve().is_relative_to(run_dir)
     record["guard_violations"] = state["violations"]
     record["allowed_events"] = state["allowed"]
-    checks["no_unexpected_guard_violations"] = not [v for v in state["violations"]
-                                                    if not v["phase"].startswith("sentinel:")]
+    checks["no_guard_violations"] = not state["violations"]   # every actual refusal is fatal
     record["checks"] = checks
     record["pass"] = all(value is True for value in checks.values())
     Path(args.result_json).write_text(json.dumps(record, indent=2, sort_keys=True, default=str) + "\n")
