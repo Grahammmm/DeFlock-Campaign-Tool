@@ -418,13 +418,29 @@ def render(report):
     return json.dumps(report, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
 
 
+def _sync_parent(path):
+    """Confirm the new report name's containing directory is durable."""
+    fd = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_new(path, text):
-    """Create a new 0600 file; never overwrite or follow a symlink."""
+    """Exclusively create a 0600 report and sync both its bytes and name.
+
+    OSError propagates on failure. A complete but not durability-confirmed
+    file may remain after directory sync fails; it is never removed or reused.
+    A same-name retry still refuses, so the caller must inspect the residue or
+    explicitly choose a different output name. No parent directory is created.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="ascii") as handle:
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
+    _sync_parent(path)
 
 
 class _CodedArgumentParser(argparse.ArgumentParser):
