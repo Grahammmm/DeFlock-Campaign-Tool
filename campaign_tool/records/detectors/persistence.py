@@ -2,9 +2,10 @@
 from datetime import datetime, timezone
 import json
 import math
+import re
 import sqlite3
 
-from .core import MAX_INPUT_BYTES, MAX_UNITS, VERSION, canonical, digest, evaluate, moment, sha
+from .core import MAX_INPUT_BYTES, MAX_UNITS, VERSION, canonical, digest, evaluate, sha
 from .migrations import persistence_v001 as migration
 from ..ledger import store
 
@@ -27,6 +28,27 @@ def require(condition, reason):
 def _trusted_now():
     """Execution admission uses the installed process clock, never record config."""
     return datetime.now(timezone.utc)
+
+
+# RFC3339-style run clock: real calendar/time fields, then an explicit Z or a
+# signed HH:MM offset. ASCII digits only; fractional seconds stay permitted.
+_RUN_STARTED_AT = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-]([0-9]{2}):([0-9]{2}))")
+
+
+def _run_started_at(value):
+    """Admit runs.started_at only as an aware instant with possible timezone fields."""
+    require(type(value) is str, "run_started_at_invalid")
+    match = _RUN_STARTED_AT.fullmatch(value)
+    require(match is not None, "run_started_at_invalid")
+    if match[1] is not None:
+        require(int(match[1]) < 24 and int(match[2]) < 60, "run_started_at_invalid")
+    try:
+        started = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PersistenceError("run_started_at_invalid") from exc
+    require(started.tzinfo is not None and started.utcoffset() is not None, "run_started_at_invalid")
+    return started
 
 
 def _preflight(units, joins, rules, config):
@@ -120,7 +142,7 @@ def persist_evaluation(connection, *, run_id, detector, units, joins, rules, con
         require(run is not None, "canonical_run_missing")
         require(run["kind"] in ("detector", "detector-runner", "records-runner"), "run_kind_not_detector_capable")
         require(isinstance(run["engine_version"], str) and bool(run["engine_version"].strip()), "run_engine_version_missing")
-        require(moment(run["started_at"]) <= _trusted_now(), "run_started_in_future")
+        require(_run_started_at(run["started_at"]) <= _trusted_now(), "run_started_in_future")
         require(run["config_sha256"] == digest(supplied["config"]), "run_config_mismatch")
         provenance = {key: value for key, value in run.items() if key not in ("status", "ended_at", "summary")}
         source_bindings = []
