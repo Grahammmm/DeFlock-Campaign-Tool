@@ -912,6 +912,8 @@ def stage_outputs(args):
         temporary = directory / f".{name}.json.tmp"
         temporary.write_text(json.dumps(snapshot, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, target)
+        from .outcomes.comparison import write_run_comparison
+        write_run_comparison(args.project, args.run_id)
     except OSError:
         return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
     finally:
