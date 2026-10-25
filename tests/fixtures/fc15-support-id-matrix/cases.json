@@ -1,0 +1,15 @@
+{
+  "schema": "fc15-support-id-matrix/v1",
+  "fictional": true,
+  "representations": ["text_span", "text_pointer", "retained_data_pointer"],
+  "identities": ["unit_id", "original_sha256", "import_id", "artifact_sha256", "text_sha256"],
+  "text": "Fictional retention period: 17 days.",
+  "span_quote": "17 days",
+  "json_text": "{\"fictional_days\": 17, \"label\": \"invented\"}",
+  "pointer": "/fictional_days",
+  "pointer_quote": "17",
+  "retained_data": {"fictional_days": 17, "label": "invented"},
+  "claim": "Synthetic claim for structural testing only.",
+  "cases": ["valid_representations", "five_bindings", "locator_and_membership", "peer_order", "no_partial_claim"],
+  "controls": ["identity_comparison", "unique_membership"]
+}
