@@ -67,10 +67,12 @@ def worker(args):
         selectors = ([*EXPIRY, POSITIVE] if args.worker == 'mutant' else
                      COMPAT if args.worker == 'compatibility' else
                      [BEHAVIOR, *COMPAT] if args.worker == 'isolation' else [BEHAVIOR])
+        guarded_hooks = hook_identity()
         loader = unittest.TestLoader()
         suite = loader.loadTestsFromNames(selectors)
-        if loader.errors or suite.countTestCases() == 0:
-            raise RuntimeError('missing selected tests')
+        import_hooks_preserved = hook_identity() == guarded_hooks
+        if loader.errors or suite.countTestCases() == 0 or not import_hooks_preserved:
+            raise RuntimeError('missing selected tests or import hook leak')
         original = module.StdlibHTTPS.open
         if args.worker == 'mutant':
             tree = ast.parse((REPO / FILES[0]).read_text(), filename=module.__file__)
@@ -107,9 +109,10 @@ def worker(args):
             replacement = original
         with patch.object(module.StdlibHTTPS, 'open', replacement):
             result = unittest.TextTestRunner(verbosity=2, resultclass=RecordedResult).run(suite)
-        if module.StdlibHTTPS.open is not original:
-            raise RuntimeError('mutant leaked into candidate')
-        details = dict(tests=result.testsRun, failures=len(result.failures), errors=len(result.errors),
+        if module.StdlibHTTPS.open is not original or hook_identity() != guarded_hooks:
+            raise RuntimeError('test hook or mutant leaked into candidate')
+        details = dict(import_hooks_preserved=import_hooks_preserved, execution_hooks_preserved=True,
+                       tests=result.testsRun, failures=len(result.failures), errors=len(result.errors),
                        skips=len(result.skipped), unexpected_successes=len(result.unexpectedSuccesses),
                        expected_failures=len(result.expectedFailures),
                        failure_ids=[test.id() for test, _ in result.failures],
@@ -162,7 +165,7 @@ def acceptance(args):
         raise ValueError('evidence must be outside repository')
     output.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(prefix='fa1412-', dir=output))
-    receipt = dict(case=args.case, argv=sys.argv, cwd=str(Path.cwd()), evidence=str(folder),
+    receipt = dict(case=args.case, argv=[sys.executable, *sys.argv], cwd=str(Path.cwd()), evidence=str(folder),
                    source_sha256={name: digest(REPO / name) for name in FILES}, rows=[])
     ok = False
     try:
