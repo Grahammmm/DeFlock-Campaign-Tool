@@ -71,10 +71,10 @@ def identity(manifest):
             "status": git("status", "--porcelain", "--untracked-files=all")}
 
 
-def run_command(argv, cwd, run, label):
+def run_command(argv, cwd, run, label, temporary_root=None):
     completed = subprocess.run([str(a) for a in argv], cwd=cwd, capture_output=True,
                                timeout=180, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1",
-                                                     TMPDIR=str(run)))
+                                                     TMPDIR=str(temporary_root or run)))
     out, err = run / (label + ".stdout"), run / (label + ".stderr")
     out.write_bytes(completed.stdout)
     err.write_bytes(completed.stderr)
@@ -86,11 +86,24 @@ def run_command(argv, cwd, run, label):
     return row
 
 
-def worker(run, selected, ordinary=False):
+def worker(run, selected, ordinary=False, portable_default=False):
     """Imports and fixtures are guarded only within this worker's test scope."""
     sys.path.insert(0, str(REPO))
     from tests.records import test_fa1709_unit_locator_lexemes as fixtures
-    fixtures.FIXTURE_ROOT = run
+    require(fixtures.FIXTURE_ROOT is None, "fixture default already overridden")
+    if not portable_default:
+        fixtures.FIXTURE_ROOT = run
+    temporary_roots = []
+    factory = tempfile.TemporaryDirectory
+
+    def contained_temporary_directory(*args, **kwargs):
+        root = safe(kwargs.get("dir") or tempfile.gettempdir())
+        require(root == run or run in root.parents, "temporary fixture escapes worker")
+        directory = factory(*args, **kwargs)
+        path = safe(directory.name)
+        require(run in path.parents, "created fixture escapes worker")
+        temporary_roots.append(path)
+        return directory
     before = (socket.socket, socket.create_connection, socket.getaddrinfo,
               subprocess.Popen, sqlite3.connect, tempfile.tempdir, list(sys.path), os.umask(0o077))
     os.umask(before[-1])
@@ -98,7 +111,14 @@ def worker(run, selected, ordinary=False):
     with ExitStack() as stack, redirect_stdout(output), redirect_stderr(output):
         fixtures.offline(stack, run)
         stack.callback(os.umask, before[-1])
-        stack.enter_context(mock.patch.object(tempfile, "tempdir", str(run)))
+        if portable_default:
+            require(safe(os.environ["TMPDIR"]) == run, "TMPDIR must be worker-owned")
+            # Exercise normal gettempdir resolution, not a launcher override.
+            stack.enter_context(mock.patch.object(tempfile, "tempdir", None))
+            stack.enter_context(mock.patch.object(tempfile, "TemporaryDirectory",
+                                                 side_effect=contained_temporary_directory))
+        else:
+            stack.enter_context(mock.patch.object(tempfile, "tempdir", str(run)))
         # Compatibility selectors have an inspected inert import closure and
         # use only LedgerTests.TemporaryDirectory; redirect before loading them.
         if ordinary:
@@ -113,13 +133,20 @@ def worker(run, selected, ordinary=False):
              subprocess.Popen, sqlite3.connect, tempfile.tempdir, list(sys.path), os.umask(0o077))
     os.umask(after[-1])
     require(before == after, "test scope leaked ambient state")
+    if portable_default:
+        require(fixtures.FIXTURE_ROOT is None and temporary_roots,
+                "portable default was not exercised")
+        require(not any(path.exists() for path in temporary_roots), "fixture cleanup incomplete")
     (run / "tests.stdout").write_text(output.getvalue())
     (run / "tests.stderr").write_text(stream.getvalue())
     row = {"selected_test_ids": selected, "executed": result.testsRun,
            "errors": len(result.errors), "failures": len(result.failures),
            "skips": len(result.skipped), "unexpected_successes": len(result.unexpectedSuccesses),
            "expected_failures": len(result.expectedFailures), "ordinary_loader": ordinary,
-           "ambient_restored": True, "argv": sys.argv, "cwd": str(Path.cwd()),
+           "ambient_restored": True, "portable_default": portable_default,
+           "temporary_fixture_roots": [str(path) for path in temporary_roots],
+           "temporary_fixtures_cleaned": portable_default,
+           "argv": sys.argv, "cwd": str(Path.cwd()),
            "interpreter": sys.executable,
            "stdout_sha256": digest(run / "tests.stdout"),
            "stderr_sha256": digest(run / "tests.stderr")}
@@ -133,14 +160,16 @@ def worker(run, selected, ordinary=False):
     return row
 
 
-def test_child(run, label, selected, ordinary=False):
+def test_child(run, label, selected, ordinary=False, portable_default=False):
     child = run / label
     child.mkdir(mode=0o700)
     argv = [sys.executable, "-B", str(Path(__file__).resolve()), "--worker", str(child),
             "--selectors", *selected]
     if ordinary:
         argv.append("--ordinary")
-    run_command(argv, REPO, run, label)
+    if portable_default:
+        argv.append("--portable-default")
+    run_command(argv, REPO, run, label, temporary_root=child)
     return json.loads((child / "tests.json").read_text())
 
 
@@ -177,9 +206,10 @@ def main():
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--selectors", nargs="+")
     parser.add_argument("--ordinary", action="store_true")
+    parser.add_argument("--portable-default", action="store_true")
     args = parser.parse_args()
     if args.worker:
-        worker(safe(args.worker), args.selectors, args.ordinary)
+        worker(safe(args.worker), args.selectors, args.ordinary, args.portable_default)
         return 0
     require(args.case and args.output_root, "case and output root required")
     parent = safe(REPO.parent)
@@ -210,6 +240,8 @@ def main():
                 require(not re.search(r"(?:/h[o]me/|/U[s]ers/|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", content),
                         "box-only path or hex literal in new source")
             receipt["tests"] = [test_child(run, "ordinary-before", BEHAVIOR + COMPATIBILITY, ordinary=True),
+                                test_child(run, "portable-default", BEHAVIOR + COMPATIBILITY,
+                                           ordinary=True, portable_default=True),
                                 test_child(run, "second-prefix", BEHAVIOR),
                                 test_child(run, "ordinary-after", BEHAVIOR + COMPATIBILITY, ordinary=True)]
         else:

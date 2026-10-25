@@ -74,9 +74,8 @@ def assert_source_spelling(test, observed, original):
 
 class LocatorLexemeTests(unittest.TestCase):
     def setUp(self):
-        root = checked_directory(FIXTURE_ROOT or
-                                 Path(__file__).resolve().parents[3].parent /
-                                 "out" / "fa1709-unittest")
+        root = checked_directory(tempfile.gettempdir() if FIXTURE_ROOT is None
+                                 else FIXTURE_ROOT)
         self.tmp = tempfile.TemporaryDirectory(prefix="lexemes-", dir=root)
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
