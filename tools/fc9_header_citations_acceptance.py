@@ -72,6 +72,10 @@ REQUIRED_TESTS = tuple("%s.%s" % pair for pair in (
     ("MixedUnlocatableTests", "test_mixed_agreeing_date_keeps_cited_value"),
     ("MixedUnlocatableTests", "test_mixed_agreeing_id_keeps_cited_value"),
     ("MixedUnlocatableTests", "test_mixed_conflict_original_keeps_valid_peer"),
+    ("UtcOverflowTests", "test_raw_overflow_date_stays_unknown"),
+    ("UtcOverflowTests", "test_stripped_overflow_date_stays_unknown"),
+    ("UtcOverflowTests", "test_mixed_cited_raw_overflow_date_conflicts"),
+    ("UtcOverflowTests", "test_overflow_original_keeps_valid_peer"),
     ("TextBackedCompatibilityTests", "test_text_backed_dict_headers_keep_text_span"),
     ("TextBackedCompatibilityTests", "test_text_backed_raw_strings_keep_text_span"),
     ("NegativeControlTests", "test_declared_negative_control_legacy_pointer_seam"),
@@ -111,6 +115,11 @@ CASE_MAP = {
     "mixed unlocatable agreeing duplicate (positive control keeps cited value)": [
         "MixedUnlocatableTests.test_mixed_agreeing_date_keeps_cited_value",
         "MixedUnlocatableTests.test_mixed_agreeing_id_keeps_cited_value"],
+    "unlocated Date whose UTC normalization overflows (raw/stripped/mixed) -> fail closed, peer survives": [
+        "UtcOverflowTests.test_raw_overflow_date_stays_unknown",
+        "UtcOverflowTests.test_stripped_overflow_date_stays_unknown",
+        "UtcOverflowTests.test_mixed_cited_raw_overflow_date_conflicts",
+        "UtcOverflowTests.test_overflow_original_keeps_valid_peer"],
     "valid clocks / clock boundary": ["AddressableHeaderTests.test_every_addressable_representation_cites_exact_pointer",
                                       "ConflictAndBoundaryTests.test_timezone_unknown_clock_is_cited_but_not_ordered"],
     "ordinary text-backed headers (exact text-span fallback)": [

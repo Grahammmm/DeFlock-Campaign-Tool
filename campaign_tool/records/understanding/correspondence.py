@@ -537,12 +537,16 @@ def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
                 # Keep the uncited value for same-field reconciliation only: it
                 # can never become the resolved value, but a contradiction with
                 # it leaves that field unknown instead of promoting a peer.
+                recon = "raw:" + value
                 if folded == "message-id":
                     recon = value.casefold()
                 elif parsed is not None and parsed.tzinfo is not None and parsed.utcoffset() is not None:
-                    recon = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-                else:
-                    recon = "raw:" + value
+                    # Fail closed: an out-of-range instant keeps its raw key,
+                    # so the field stays unknown or conflicting, never aborts.
+                    try:
+                        recon = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                    except (OverflowError, ValueError):
+                        pass
                 row["unlocated"].append((folded, recon))
                 continue
             if folded == "message-id":

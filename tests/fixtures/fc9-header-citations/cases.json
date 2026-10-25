@@ -180,6 +180,34 @@
       "id_pointer": "/headers/1/1",
       "date_pointer": "/headers/0/1",
       "date_resolved": true
+    },
+    {
+      "name": "raw_utc_overflow_date",
+      "shape": "raw Date string whose UTC normalization overflows",
+      "headers": ["Date: Fri, 31 Dec 9999 23:59:59 -1400", ["Message-ID", "<r2001.raw-overflow@example.invalid>"]],
+      "holds": ["date_header_unlocatable"],
+      "message_id": "<r2001.raw-overflow@example.invalid>",
+      "id_pointer": "/headers/1/1",
+      "date_resolved": false
+    },
+    {
+      "name": "stripped_dict_utc_overflow_date",
+      "shape": "stripped dictionary Date whose UTC normalization overflows",
+      "headers": {"Date": " Fri, 31 Dec 9999 23:59:59 -1400 ", "Message-ID": "<r2001.stripped-overflow@example.invalid>"},
+      "holds": ["date_header_unlocatable"],
+      "message_id": "<r2001.stripped-overflow@example.invalid>",
+      "id_pointer": "/headers/Message-ID",
+      "date_resolved": false
+    },
+    {
+      "name": "mixed_cited_raw_utc_overflow_date",
+      "shape": "cited pair Date plus raw Date whose UTC normalization overflows",
+      "headers": [["Date", "Tue, 04 Feb 2031 10:15:00 -0800"], "Date: Fri, 31 Dec 9999 23:59:59 -1400",
+                  ["Message-ID", "<r2001.mixed-overflow@example.invalid>"]],
+      "holds": ["date_header_unlocatable", "message_date_header_conflict"],
+      "message_id": "<r2001.mixed-overflow@example.invalid>",
+      "id_pointer": "/headers/2/1",
+      "date_resolved": false
     }
   ],
   "boundary_cases": [

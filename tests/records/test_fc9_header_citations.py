@@ -457,6 +457,52 @@ class MixedUnlocatableTests(unittest.TestCase):
         self.assertEqual(dated[0]["message_id_citation"]["json_pointer"], peer["id_pointer"])
 
 
+class UtcOverflowTests(unittest.TestCase):
+    """An unlocated Date whose UTC normalization overflows fails closed, never aborts."""
+
+    OVERFLOW_CASES = ("raw_utc_overflow_date", "stripped_dict_utc_overflow_date",
+                      "mixed_cited_raw_utc_overflow_date")
+    check_mixed = MixedUnlocatableTests.check_mixed
+
+    def test_raw_overflow_date_stays_unknown(self):
+        self.check_mixed(case_named("mixed_unlocatable_cases", "raw_utc_overflow_date"))
+
+    def test_stripped_overflow_date_stays_unknown(self):
+        self.check_mixed(case_named("mixed_unlocatable_cases", "stripped_dict_utc_overflow_date"))
+
+    def test_mixed_cited_raw_overflow_date_conflicts(self):
+        self.check_mixed(case_named("mixed_unlocatable_cases", "mixed_cited_raw_utc_overflow_date"))
+
+    def test_overflow_original_keeps_valid_peer(self):
+        peer = case_named("addressable_cases", "dict_scalar")
+        for name in self.OVERFLOW_CASES:
+            with self.subTest(case=name):
+                held = case_named("mixed_unlocatable_cases", name)
+                held_bundle = receipt_bundle(held["name"], held["headers"])
+                peer_bundle = receipt_bundle(peer["name"], peer["headers"], text=CASES["peer_body_text"])
+                bundle = merged_bundle(held_bundle, peer_bundle)
+                events = events_for(correspondence, bundle)
+                self.assertEqual(len(events), 2)
+                by_original = {event["source_original_sha256"]: event for event in events}
+                held_event = by_original[held_bundle["units"][0]["original_sha256"]]
+                peer_event = by_original[peer_bundle["units"][0]["original_sha256"]]
+                self.assertIsNone(held_event["message_date"])
+                self.assertIsNone(held_event["message_date_citation"])
+                self.assertEqual(held_event["message_date_status"], "unknown")
+                self.assertEqual(held_event["message_id"], held["message_id"])
+                self.assertEqual(sorted(h["reason"] for h in held_event["metadata_holds"]), sorted(held["holds"]))
+                self.assertEqual(peer_event["metadata_holds"], [])
+                self.assertEqual(peer_event["message_date"], CASES["date_normalized"])
+                assert_data_citation(self, peer_event["message_date_citation"], bundle, peer["date_pointer"],
+                                     CASES["date_value"])
+                tracked = correspondence.track(events, as_of=CASES["as_of"], bundle=bundle)
+                dated = [row for row in tracked["requests"][0]["timeline"] if row["message_date"]]
+                self.assertEqual([row["message_date"] for row in dated], [CASES["date_normalized"]])
+                self.assertEqual(dated[0]["message_id_citation"]["json_pointer"], peer["id_pointer"])
+                reasons = sorted(hold["reason"] for hold in tracked["holds"])
+                self.assertEqual(reasons, sorted(held["holds"] + ["event_order_uncertain"]))
+
+
 class TextBackedCompatibilityTests(unittest.TestCase):
     def check_text_backed(self, case):
         bundle = receipt_bundle(case["name"], case["headers"], text=case["text"])
