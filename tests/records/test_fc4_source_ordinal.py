@@ -27,37 +27,76 @@ import urllib.request
 SENTINEL_HITS = []
 APPLICATION_PRELOADED = sorted(name for name in sys.modules
                                if name.split(".")[0] == "campaign_tool")
+_ABSENT = object()
 
 
 def _sentinel(name):
     def refuse(*args, **kwargs):
         SENTINEL_HITS.append(name)
         raise OSError("fc4_offline_sentinel:" + name)
+    setattr(refuse, "fc4_offline_sentinel", name)
     return refuse
 
 
-SENTINELS = ((socket, "create_connection"), (socket, "getaddrinfo"),
-             (socket.socket, "connect"), (socket.socket, "connect_ex"),
-             (http.client.HTTPConnection, "connect"), (urllib.request, "urlopen"))
-for _owner, _attribute in SENTINELS:
-    setattr(_owner, _attribute, _sentinel(_owner.__name__ + "." + _attribute))
+# Process-global callables replaced only while this module imports the
+# application and while its own tests execute; every one is restored afterwards.
+NETWORK_TARGETS = ((socket, "create_connection"), (socket, "getaddrinfo"),
+                   (socket.socket, "connect"), (socket.socket, "connect_ex"),
+                   (http.client.HTTPConnection, "connect"), (urllib.request, "urlopen"))
+EXECUTION_TARGETS = NETWORK_TARGETS + ((subprocess, "Popen"),)
 
-REPO = Path(__file__).resolve().parents[2]
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
 
-from campaign_tool.records import extraction_ledger as extraction  # noqa: E402
-from campaign_tool.records import extraction_validation  # noqa: E402
-from campaign_tool.records.detectors import sources  # noqa: E402
-from campaign_tool.records.ledger import store  # noqa: E402
-from campaign_tool.records.ledger.migrations import stages_v001  # noqa: E402
+def _install(saved, targets):
+    """Record each owner's own attribute (or its absence), then install a sentinel."""
+    for owner, attribute in targets:
+        saved.append((owner, attribute, vars(owner).get(attribute, _ABSENT)))
+        setattr(owner, attribute, _sentinel(owner.__name__ + "." + attribute))
+
+
+def _restore(saved):
+    """Put back exactly what each owner held before; inherited methods are un-shadowed."""
+    failed = []
+    while saved:
+        owner, attribute, value = saved.pop()
+        try:
+            if value is _ABSENT:
+                if attribute in vars(owner):
+                    delattr(owner, attribute)
+            else:
+                setattr(owner, attribute, value)
+        except (AttributeError, TypeError) as caught:
+            failed.append(f"{owner.__name__}.{attribute}: {caught}")
+    if failed:
+        raise RuntimeError("fc4 sentinel restore failed: " + "; ".join(failed))
+
+
+def guards_active():
+    """Names of execution targets currently replaced by this module's sentinels."""
+    return sorted(owner.__name__ + "." + attribute for owner, attribute in EXECUTION_TARGETS
+                  if hasattr(getattr(owner, attribute), "fc4_offline_sentinel"))
+
+
+_import_guard = []
+_install(_import_guard, NETWORK_TARGETS)
+try:
+    REPO = Path(__file__).resolve().parents[2]
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+
+    from campaign_tool.records import extraction_ledger as extraction
+    from campaign_tool.records import extraction_validation
+    from campaign_tool.records.detectors import sources
+    from campaign_tool.records.ledger import store
+    from campaign_tool.records.ledger.migrations import stages_v001
+finally:
+    _restore(_import_guard)
 
 ARTIFACT_ENV = "FC4_SOURCE_ORDINAL_ARTIFACT_ROOT"
 SUMMARY_NAME = "valid-snapshot-summary.json"
+PAYLOAD_NAME = "valid-snapshot-revision-payload.json"
 LABEL = b"fc4-source-ordinal synthetic "
 SPEC = (("subject", 3), ("support", 2))
 MISSING = object()
-_saved_popen = None
 
 
 def artifact_root():
@@ -70,13 +109,11 @@ def artifact_root():
 
 
 def setUpModule():
-    global _saved_popen
-    _saved_popen = subprocess.Popen
-    subprocess.Popen = _sentinel("subprocess.Popen")
-
-
-def tearDownModule():
-    subprocess.Popen = _saved_popen
+    # Register the restore before installing, so a partial install still unwinds;
+    # module cleanups run after this module's tests whether they pass or fail.
+    saved = []
+    unittest.addModuleCleanup(_restore, saved)
+    _install(saved, EXECUTION_TARGETS)
 
 
 def labelled(*parts):
@@ -245,7 +282,28 @@ NON_NUMBERS = (MISSING, None, "1", "", [1], [], {"ordinal": 1}, {})
 INTEGER_POSITIONS = (("subject", 1), ("subject", 3), ("support", 2))
 
 
+def revision_payload(snapshot):
+    """The resolver's revision input rebuilt from a returned snapshot (evidence only).
+
+    The installed resolver hashes these fields, including its own source bytes
+    (resolver_code_sha256). Rebuilding them lets a base and a candidate snapshot
+    be compared field by field without altering that installed-code binding.
+    """
+    return {"schema": sources.VERSION, "subject_sha256": snapshot.subject_sha256,
+            "originals": extraction.decode(snapshot.originals_json),
+            "bindings": extraction.decode(snapshot.bindings_json),
+            "units": extraction.decode(snapshot.units_json),
+            "join_revision": snapshot.joins.revision_sha256, "join_rows": snapshot.joins.rows_json,
+            "resolver_code_sha256": store.file_hash(sources.__file__),
+            "join_adapter_code_sha256": store.file_hash(sources.structured_adapter.__file__)}
+
+
 class SourceOrdinalTest(unittest.TestCase):
+    def setUp(self):
+        self.assertEqual(guards_active(), sorted(owner.__name__ + "." + attribute
+                                                 for owner, attribute in EXECUTION_TARGETS),
+                         "offline sentinels must be active while this module's tests run")
+
     def tearDown(self):
         self.assertEqual(SENTINEL_HITS, [], "offline sentinel reached")
 
@@ -284,6 +342,13 @@ class SourceOrdinalTest(unittest.TestCase):
         snapshot = fixture.resolve()
         self.assertSnapshot(snapshot, fixture)
         self.assertEqual([row["unit_count"] for row in snapshot.originals], [3, 2])
+        # The rebuilt payload must hash to the returned revision at this code identity.
+        payload = revision_payload(snapshot)
+        self.assertEqual(sha(extraction.canonical(payload).encode()), snapshot.revision_sha256)
+        record = {"schema": "fc4-source-ordinal-revision-payload-v1",
+                  "revision_sha256": snapshot.revision_sha256, "payload": payload}
+        with open(artifact_root() / PAYLOAD_NAME, "x", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2, sort_keys=True)
         # An explicit exact integer at a first and a later position is the valid control.
         explicit = build({("subject", 1): 1, ("subject", 3): 3, ("support", 2): 2})
         self.assertEqual(explicit.resolve().revision_sha256, snapshot.revision_sha256)

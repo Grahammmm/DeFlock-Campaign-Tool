@@ -11,6 +11,7 @@ shell.
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import http.client  # noqa: F401  (guarded owners are read from these stdlib modules)
 import importlib
 import io
 import json
@@ -18,10 +19,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket  # noqa: F401
 import subprocess
 import sys
 import unittest
 from unittest import mock
+import urllib.request  # noqa: F401
 
 sys.dont_write_bytecode = True
 REPO = Path(__file__).resolve().parents[1]
@@ -34,6 +37,7 @@ TEST = "tests/records/test_fc4_source_ordinal.py"
 RUNNER = "tools/accept_fc4_source_ordinal.py"
 ALLOWED_CHANGES = (SOURCE, TEST, RUNNER)
 TEST_MODULE = "tests.records.test_fc4_source_ordinal"
+VALID_CONTROL = TEST_MODULE + ".SourceOrdinalTest.test_valid_integer_first_and_later_positions"
 REQUIRED_CASES = ("valid_integer_first_and_later_positions", "bool_not_integer", "float_not_integer",
                   "missing_null_string_container", "zero_negative_wrong_position",
                   "otherwise_valid_binding_isolation", "whole_snapshot_refusal",
@@ -139,11 +143,13 @@ def identity(run):
     record = {"repo": str(REPO), "git_available": head is not None, "head": head,
               "status_porcelain": status, "file_sha256": hashes}
     if head is not None:
-        # The candidate is at most one commit on the pinned base: if HEAD itself
-        # touches an FC4 file, its parent is the base; otherwise HEAD is the base.
-        own = set((git(run, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD") or "").split())
-        record["base"] = ((git(run, "rev-parse", "HEAD^") or "").strip() or None
-                          if own & set(ALLOWED_CHANGES) else head)
+        # The candidate commits are those since the first commit that added the
+        # new FC4 test/runner files; the base is that first commit's parent. If
+        # no commit has added them yet, HEAD itself is the base.
+        added = (git(run, "rev-list", "HEAD", "--", TEST, RUNNER) or "").split()
+        record["candidate_commits"] = added
+        record["base"] = ((git(run, "rev-parse", added[-1] + "^") or "").strip() or None
+                          if added else head)
         changed = set((git(run, "diff", "--name-only", record["base"], "HEAD") or "").split())
         record["committed_changes_from_base"] = sorted(changed)
         dirty = {line[3:] for line in (status or "").splitlines() if line}
@@ -226,13 +232,83 @@ def loaded_application_modules():
             if name.split(".")[0] in ("campaign_tool", "tests") and getattr(module, "__file__", None)}
 
 
+# Every process-global callable the test module may replace, read the same way
+# an unrelated consumer would see it. Captured before the test module is imported.
+GUARDED = (("socket", "create_connection"), ("socket", "getaddrinfo"), ("socket.socket", "connect"),
+           ("socket.socket", "connect_ex"), ("http.client.HTTPConnection", "connect"),
+           ("urllib.request", "urlopen"), ("subprocess", "Popen"))
+
+
+def _owner(dotted):
+    head, _, tail = dotted.partition(".")
+    owner = sys.modules[head]
+    for part in tail.split(".") if tail else ():
+        owner = getattr(owner, part)
+    return owner
+
+
+def guarded_identity():
+    """(own-dict value or None, resolved callable) per guarded name."""
+    state = {}
+    for dotted, attribute in GUARDED:
+        owner = _owner(dotted)
+        state[dotted + "." + attribute] = (vars(owner).get(attribute), getattr(owner, attribute))
+    return state
+
+
+def identity_diff(before, after):
+    return sorted(name for name in before if before[name][0] is not after[name][0]
+                  or before[name][1] is not after[name][1])
+
+
+class UnrelatedConsumer(unittest.TestCase):
+    """Runs after the FC4 module in one suite, as an unrelated discovered test would."""
+    expected = None
+    module = None
+
+    def test_sees_original_callables_and_no_new_hits(self):
+        hits = list(self.module.SENTINEL_HITS)
+        self.assertEqual(identity_diff(self.expected, guarded_identity()), [])
+        self.assertEqual(self.module.guards_active(), [])
+        self.assertEqual(self.module.SENTINEL_HITS, hits)
+
+
+def check_isolation(run, module, before):
+    """Inert import/execution/teardown regression: identity checks only, no I/O."""
+    run.require("import_guard_restored_after_import", identity_diff(before, guarded_identity()) == [],
+                identity_diff(before, guarded_identity()))
+    UnrelatedConsumer.expected, UnrelatedConsumer.module = before, module
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite([loader.loadTestsFromName("SourceOrdinalTest.test_whole_snapshot_refusal",
+                                                         module),
+                                loader.loadTestsFromTestCase(UnrelatedConsumer)])
+    stream = io.StringIO()
+    result = unittest.TextTestRunner(stream=stream, verbosity=2, resultclass=RecordingResult).run(suite)
+    run.save("isolation.unittest.txt", stream.getvalue())
+    summary = {"tests_run": result.testsRun, "successful": result.wasSuccessful(),
+               "outcomes": result.outcomes, "skipped": len(result.skipped)}
+    run.receipt.setdefault("unittest", {})["isolation"] = summary
+    run.require("isolation_guarded_case_then_unrelated_consumer_pass",
+                summary["successful"] and summary["tests_run"] == 2 and not summary["skipped"]
+                and summary["outcomes"] == {"test_whole_snapshot_refusal": "pass",
+                                            "test_sees_original_callables_and_no_new_hits": "pass"},
+                summary)
+    after = identity_diff(before, guarded_identity())
+    run.require("all_guarded_callables_restored_after_suite", after == [], after)
+    run.require("no_guards_left_active", module.guards_active() == [], module.guards_active())
+
+
 def check_focused(run):
     identity(run)
     artifacts = run.directory / "artifacts"
     artifacts.mkdir(mode=0o700)
     os.environ[ARTIFACT_ENV] = str(artifacts)
+    before = guarded_identity()
     module = load_test_module(run)
+    check_isolation(run, module, before)
     summary = run_cases(run, "focused", module, REQUIRED_CASES)
+    after = identity_diff(before, guarded_identity())
+    run.require("guarded_callables_restored_after_focused_suite", after == [], after)
     run.require("tests_ran", summary["tests_run"] == len(REQUIRED_CASES), summary["tests_run"])
     run.require("all_named_cases_pass",
                 {name: summary["outcomes"].get("test_" + name) for name in REQUIRED_CASES} ==
@@ -254,8 +330,16 @@ def check_focused(run):
     run.receipt["valid_snapshot"] = snapshot
     run.require("valid_snapshot_summary_recorded", snapshot is not None
                 and snapshot.get("resolver_code_sha256") == sha_file(REPO / SOURCE), snapshot)
+    payload_path = artifacts / module.PAYLOAD_NAME
+    payload = json.loads(payload_path.read_text()) if payload_path.is_file() else None
+    run.receipt["valid_revision_payload"] = payload
+    run.require("valid_revision_payload_recorded", payload is not None
+                and payload.get("payload", {}).get("resolver_code_sha256") == sha_file(REPO / SOURCE)
+                and snapshot is not None and payload.get("revision_sha256") == snapshot.get("revision_sha256"),
+                payload and payload.get("revision_sha256"))
     stray = sorted(str(path) for path in artifacts.iterdir()
-                   if path.name != module.SUMMARY_NAME and not path.name.startswith("ledger-"))
+                   if path.name not in (module.SUMMARY_NAME, module.PAYLOAD_NAME)
+                   and not path.name.startswith("ledger-"))
     run.require("synthetic_artifacts_only_in_run_directory", not stray, stray)
 
 
@@ -300,8 +384,71 @@ def parse_unittest(stderr):
             "detail": final[-1][1] if final else None}
 
 
+def valid_payload_run(run, label, repo, root):
+    """Run the valid-control case once in `repo` via the admitted unittest entry point."""
+    artifacts = root / (label + "-artifacts")
+    artifacts.mkdir(mode=0o700)
+    environment = dict(os.environ)
+    environment[ARTIFACT_ENV] = str(artifacts)
+    record, _, stderr = run.command(label, [sys.executable, "-B", "-m", "unittest", "-v", VALID_CONTROL],
+                                    cwd=repo, env=environment)
+    parsed = parse_unittest(stderr)
+    path = artifacts / "valid-snapshot-revision-payload.json"
+    payload = json.loads(path.read_text()) if path.is_file() else None
+    return {"exit": record["exit"], **parsed, "payload_path": str(path),
+            "payload_sha256": sha_file(path) if path.is_file() else None,
+            "resolver_file_sha256": sha_file(repo / SOURCE)}, payload
+
+
+def check_revision_across_change(run, record):
+    """Base vs candidate valid revision, with the installed-code binding kept intact.
+
+    The resolver's revision hashes its own source bytes, so base and candidate
+    revisions necessarily differ. This proves every other revision input is
+    identical, and that each revision is exactly the hash of its own inputs.
+    Nothing in production is frozen, removed or spoofed; the base resolver runs
+    from a copy under this run directory only.
+    """
+    base = record.get("base")
+    if not run.require("base_commit_known", bool(base), base):
+        return
+    shown, base_source, _ = run.command("git-show-base-source", ["git", "show", f"{base}:{SOURCE}"], cwd=REPO)
+    if not run.require("base_source_read", shown["exit"] == 0 and base_source, shown["exit"]):
+        return
+    copy = run.directory / "base-copy" / "repo"
+    shutil.copytree(REPO, copy, symlinks=True,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules"))
+    (copy / SOURCE).write_bytes(base_source)
+    base_info, base_payload = valid_payload_run(run, "base-valid-control", copy, run.directory)
+    head_info, head_payload = valid_payload_run(run, "head-valid-control", REPO, run.directory)
+    base_info["base_commit"] = base
+    base_info["git_show_sha256"] = sha_bytes(base_source)
+    comparison = {"base": base_info, "head": head_info}
+    run.receipt["revision_across_change"] = comparison
+    for side, info in comparison.items():
+        run.require(side + "_valid_control_ok", info["exit"] == 0 and info["final"] == "OK"
+                    and info["tests_run"] == 1 and not info["detail"], info)
+    if not run.require("both_revision_payloads_recorded", bool(base_payload and head_payload)):
+        return
+    left, right = dict(base_payload["payload"]), dict(head_payload["payload"])
+    comparison["base_revision_sha256"] = base_payload["revision_sha256"]
+    comparison["head_revision_sha256"] = head_payload["revision_sha256"]
+    comparison["base_resolver_code_sha256"] = left.pop("resolver_code_sha256")
+    comparison["head_resolver_code_sha256"] = right.pop("resolver_code_sha256")
+    differing = sorted(key for key in set(left) | set(right) if left.get(key) != right.get(key))
+    comparison["differing_inputs_other_than_resolver_code"] = differing
+    run.require("resolver_code_identities_are_the_actual_files",
+                comparison["base_resolver_code_sha256"] == sha_bytes(base_source)
+                and comparison["head_resolver_code_sha256"] == sha_file(REPO / SOURCE), comparison)
+    run.require("all_revision_inputs_identical_except_resolver_code", differing == [], differing)
+    comparison["revisions_equal"] = comparison["base_revision_sha256"] == comparison["head_revision_sha256"]
+    comparison["note"] = ("revision_sha256 binds resolver_code_sha256 (sources.py bytes) by design; it "
+                          "differs between base and candidate only through that binding. Exact-revision "
+                          "wording reconciliation is owned by the admission owner, not this runner.")
+
+
 def check_compatibility(run):
-    identity(run)
+    record_identity = identity(run)
     record, _, stderr = run.command("compatibility", [sys.executable, "-B", "-m", "unittest", "-v",
                                                       *COMPATIBILITY], cwd=REPO)
     parsed = parse_unittest(stderr)
@@ -309,6 +456,7 @@ def check_compatibility(run):
     run.require("compatibility_exit_zero", record["exit"] == 0, record["exit"])
     run.require("compatibility_tests_ran", parsed["tests_run"] > 0, parsed["tests_run"])
     run.require("compatibility_ok_without_skips", parsed["final"] == "OK" and not parsed["detail"], parsed)
+    check_revision_across_change(run, record_identity)
     run.receipt["full_discovery"] = "operator-run; scoped selector success is not full-suite success"
 
 
