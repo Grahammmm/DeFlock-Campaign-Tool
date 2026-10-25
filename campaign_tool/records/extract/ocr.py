@@ -180,7 +180,11 @@ def _publish_directory(source: Path, destination: Path) -> bool:
 
 def _confidence(tsv: str) -> float | None:
     values = []
-    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
+    reader = csv.DictReader(io.StringIO(tsv), delimiter="\t")
+    if (reader.fieldnames is None or reader.fieldnames.count("conf") != 1
+            or reader.fieldnames.count("text") != 1):
+        return None
+    for row in reader:
         if not row.get("text", "").strip():
             continue
         try:
