@@ -14,6 +14,13 @@ only from the command line and the operator source manifest.
 Every check is an explicit comparison recorded in receipt.json. The evidence
 manifest is sealed only after all child processes have exited. A pass is
 machine evidence for review only (REVIEW REQUIRED), not semantic acceptance.
+
+Every child that imports product code installs a child-local offline audit-hook
+sentinel and temporary-directory redirect first: the test module in script mode
+installs its own, and ordinary unittest/discovery children run through this
+runner's --child bootstrap, which records that no product module was loaded
+before the hook and that synthetic sys.audit probes were refused. No bare
+"python3 -m unittest" child is launched.
 """
 import argparse
 import datetime
@@ -52,6 +59,11 @@ def sha256_file(path):
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def is_bare_unittest(argv):
+    """True for a "python3 -m unittest" child that would import product code unguarded."""
+    return any(list(argv[i:i + 2]) == ["-m", "unittest"] for i in range(len(argv)))
 
 
 class Row:
@@ -101,6 +113,10 @@ class Row:
         return self.run(label, ["git", *args], cwd)
 
     def finish(self):
+        # Static sequencing check: every unittest child goes through the guarded bootstrap,
+        # never a bare "python3 -m unittest" that would import product code unguarded.
+        bare = [c["label"] for c in self.children if is_bare_unittest(c["argv"])]
+        self.check("no_unguarded_unittest_child", not bare, bare)
         ok = bool(self.checks) and all(c["ok"] for c in self.checks)
         self.data.update(ended_at=now(), checks=self.checks, children=self.children,
                          failed_checks=[c["name"] for c in self.checks if not c["ok"]],
@@ -199,6 +215,108 @@ def child_env(tmp_dir):
     return env
 
 
+GUARDED_UNITTEST = "guarded-unittest"
+BLOCKED_EVENTS = ("socket.connect", "socket.bind", "socket.getaddrinfo", "socket.sendto",
+                  "subprocess.Popen", "os.system", "os.posix_spawn", "os.exec", "os.spawn",
+                  "urllib.Request")
+# Synthetic audit events raised directly with sys.audit: no socket, process or request object is
+# created, so the probes prove the sentinel is live without touching any endpoint.
+GUARD_PROBES = (("socket.connect", (None, ("192.0.2.1", 9))),
+                ("socket.getaddrinfo", ("fc13-sentinel.invalid", 9, 0, 0, 0)),
+                ("subprocess.Popen", ("fc13-sentinel-probe", ["fc13-sentinel-probe"], None, None)),
+                ("urllib.Request", ("http://fc13-sentinel.invalid/", None, {}, "GET")))
+_GUARD_HITS = []
+
+
+def product_modules():
+    return sorted(m for m in sys.modules if m == "campaign_tool" or m.startswith("campaign_tool."))
+
+
+def install_child_guards(tmp_root):
+    """Child-local offline sentinels and temp redirection, installed before any product import.
+
+    Only the runner's dedicated child processes call this; the hook lives for that child's
+    lifetime. The returned record proves sequencing: no product module was loaded before the
+    hook, and every synthetic probe event was refused by it.
+    """
+    import tempfile
+    before = product_modules()
+    os.environ["TMPDIR"] = str(tmp_root)
+    tempfile.tempdir = str(tmp_root)
+
+    def hook(event, _args):
+        if event in BLOCKED_EVENTS:
+            _GUARD_HITS.append(event)
+            raise RuntimeError("fc13_offline_sentinel:" + event)
+
+    sys.addaudithook(hook)
+    probes = []
+    for event, args in GUARD_PROBES:
+        try:
+            sys.audit(event, *args)
+            outcome = "not_blocked"
+        except RuntimeError as exc:
+            outcome = "blocked" if str(exc) == "fc13_offline_sentinel:" + event else "other:" + str(exc)
+        probes.append({"event": event, "outcome": outcome})
+    return {"guard_installed": True, "product_modules_before_guard": before, "probes": probes,
+            "probe_hits": len(_GUARD_HITS), "tempfile_tempdir": tempfile.gettempdir()}
+
+
+def guarded_unittest_child(tmp_root, result_path, targets):
+    """Ordinary unittest run (same CLI semantics as python3 -m unittest) behind the guards."""
+    guard = install_child_guards(tmp_root)
+    # Mirror "python3 -m unittest": the cwd, not this tools/ directory, heads sys.path.
+    sys.path[0] = os.getcwd()
+    import unittest
+    program = unittest.main(module=None, argv=["python3 -m unittest", "-v", *targets], exit=False)
+    loaded = {m: getattr(sys.modules[m], "__file__", None) for m in product_modules()}
+    report = dict(guard, targets=list(targets), sys_path0=sys.path[0], product_modules_after=loaded,
+                  blocked_hits_after_probes=_GUARD_HITS[guard["probe_hits"]:],
+                  tests_run=program.result.testsRun, successful=program.result.wasSuccessful())
+    with open(result_path, "x", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, sort_keys=True)
+    return 0 if program.result.wasSuccessful() else 1
+
+
+def check_guard_record(row, label, report, import_root):
+    """Explicit checks that the child guarded itself before importing product code."""
+    if not row.check(label + ":guard_result_present", report is not None):
+        return
+    row.check(label + ":guard_installed_before_product_import",
+              report.get("guard_installed") is True and report.get("product_modules_before_guard") == [],
+              report.get("product_modules_before_guard"))
+    row.check(label + ":guard_probes_all_blocked",
+              [p["event"] for p in report.get("probes", [])] == [e for e, _ in GUARD_PROBES] and
+              all(p["outcome"] == "blocked" for p in report.get("probes", [])), report.get("probes"))
+    row.check(label + ":tempfile_redirected", report.get("tempfile_tempdir") == str(row.dir / (label + "-tmp")),
+              report.get("tempfile_tempdir"))
+    row.check(label + ":no_blocked_events_during_tests", report.get("blocked_hits_after_probes") == [],
+              report.get("blocked_hits_after_probes"))
+    if import_root is None:
+        return
+    loaded = report.get("product_modules_after") or {}
+    root = Path(import_root).resolve()
+    row.check(label + ":product_imported_after_guard_from_expected_root",
+              bool(loaded) and all(f and root in Path(f).resolve().parents for f in loaded.values()),
+              {"root": str(root), "modules": len(loaded),
+               "outside": sorted(m for m, f in loaded.items() if not f or root not in Path(f).resolve().parents)})
+
+
+def guarded_unittest(row, label, targets, cwd):
+    """Launch one guarded ordinary-unittest child; returns (exit, stderr, guard report)."""
+    tmp = row.dir / (label + "-tmp")
+    tmp.mkdir()
+    result = row.dir / (label + "-guard.json")
+    argv = [sys.executable, str(Path(__file__).resolve()), "--child", GUARDED_UNITTEST,
+            "--child-tmp-root", str(tmp), "--child-result", str(result)]
+    for target in targets:
+        argv += ["--child-target", target]
+    code, _, err = row.run(label, argv, cwd, env=child_env(tmp))
+    report = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else None
+    check_guard_record(row, label, report, cwd)
+    return code, err, report
+
+
 def fixture_cases():
     return json.loads((REPO / FIXTURE_REL).read_text(encoding="utf-8"))
 
@@ -262,7 +380,52 @@ def check_full_pass(row, label, code, report, expected):
                "skipped": report["skipped"]})
 
 
+def guard_check_self_test(row):
+    """Safe mock control: the guard checks must reject unguarded sequencing records.
+
+    Pure in-memory records only; no child, socket or endpoint. A record where product code
+    was imported before the hook, or where a probe was not refused, must fail the checks, and a
+    bare "python3 -m unittest" child argv must be caught by the static detector.
+    """
+    class Probe:
+        def __init__(self):
+            self.dir = row.dir
+            self.checks = []
+
+        def check(self, name, ok, detail=None):
+            self.checks.append((name, bool(ok)))
+            return bool(ok)
+
+    good = {"guard_installed": True, "product_modules_before_guard": [], "probe_hits": len(GUARD_PROBES),
+            "probes": [{"event": e, "outcome": "blocked"} for e, _ in GUARD_PROBES],
+            "tempfile_tempdir": str(row.dir / "mock-tmp"), "blocked_hits_after_probes": [],
+            "product_modules_after": {"campaign_tool": str(REPO / "campaign_tool" / "__init__.py")}}
+    mutants = {
+        "missing_record": None,
+        "product_imported_before_guard": dict(good, product_modules_before_guard=["campaign_tool"]),
+        "probe_not_blocked": dict(good, probes=[dict(p, outcome="not_blocked") for p in good["probes"]]),
+        "blocked_event_during_tests": dict(good, blocked_hits_after_probes=["socket.connect"]),
+        "product_from_other_root": dict(good, product_modules_after={"campaign_tool": "/fc13-elsewhere/x.py"}),
+    }
+    outcomes = {}
+    probe = Probe()
+    check_guard_record(probe, "mock", good, REPO)
+    outcomes["good"] = all(ok for _, ok in probe.checks)
+    for name, record in mutants.items():
+        probe = Probe()
+        check_guard_record(probe, "mock", record, REPO)
+        outcomes[name] = all(ok for _, ok in probe.checks)
+    row.check("guard_self_test:good_record_accepted", outcomes["good"] is True, outcomes)
+    row.check("guard_self_test:every_unguarded_mutant_rejected",
+              all(outcomes[n] is False for n in mutants), outcomes)
+    bare_argv = ["python3", "-m", "unittest", "-v", TEST_MODULE]
+    row.check("guard_self_test:static_detector_flags_bare_unittest_argv",
+              is_bare_unittest(bare_argv) and not is_bare_unittest(
+                  [sys.executable, RUNNER_REL, "--child", GUARDED_UNITTEST]), bare_argv)
+
+
 def phase_suite(row, manifest, head):
+    guard_check_self_test(row)
     cases = fixture_cases()
     expected = expected_test_names(cases)
     row.data["case_dimensions"] = case_dimensions(cases)
@@ -293,11 +456,8 @@ def phase_suite(row, manifest, head):
     # Restore (fresh process, unmutated) and rerun the genuine positive.
     code, report, _, _ = script_run(row, "restored-positive", row.dir)
     check_full_pass(row, "restored-positive", code, report, expected)
-    # Ordinary unittest invocation of the module only.
-    tmp = row.dir / "unittest-tmp"
-    tmp.mkdir()
-    code, _, err = row.run("unittest-module", [sys.executable, "-m", "unittest", "-v", TEST_MODULE], REPO,
-                           env=child_env(tmp))
+    # Ordinary unittest invocation of the module only, behind the runner's child-local guards.
+    code, err, _ = guarded_unittest(row, "unittest-module", [TEST_MODULE], REPO)
     ran = re.search(r"^Ran (\d+) tests? in", err, re.M)
     row.check("unittest-module:exit_zero_ok", code == 0 and re.search(r"^OK$", err, re.M) is not None, code)
     row.check("unittest-module:count", ran is not None and int(ran.group(1)) == len(expected),
@@ -324,10 +484,7 @@ def phase_compatibility(row, manifest, head):
     baseline = clone_at(row, "baseline-clone", base)
     outcomes = {}
     for label, cwd in (("baseline", baseline), ("final", REPO)):
-        tmp = row.dir / (label + "-tmp")
-        tmp.mkdir()
-        code, _, err = row.run(label + "-selector", [sys.executable, "-m", "unittest", "-v", COMPAT_SELECTOR], cwd,
-                               env=child_env(tmp))
+        code, err, _ = guarded_unittest(row, label + "-selector", [COMPAT_SELECTOR], cwd)
         ran = re.search(r"^Ran (\d+) tests? in", err, re.M)
         ids = sorted(re.findall(r"^(test_\w+) \(([\w.]+)\)", err, re.M))
         outcomes[label] = {"exit": code, "ran": ran and int(ran.group(1)), "ids": ids,
@@ -355,8 +512,9 @@ def ambient_snapshot():
             "sys_path": [p for p in sys.path if Path(p or ".").resolve() != REPO]}
 
 
-def discovery_child(result_path):
+def discovery_child(result_path, tmp_root):
     """Isolated child: sentinel tests before/after ordinary discovery of the new module only."""
+    guard = install_child_guards(tmp_root)
     import unittest
     before_import = ambient_snapshot()
     loader = unittest.TestLoader()
@@ -396,6 +554,9 @@ def discovery_child(result_path):
               "import_time_diff_keys": sorted(k for k in before_import if before_import[k] != after_import.get(k)),
               "run_time_ambient_unchanged": seen.get("before_run") == seen.get("after_run") and "after_run" in seen,
               "classifiers_restored": document._CLASSIFIERS is classifiers}
+    report.update(guard, product_modules_after={m: getattr(sys.modules[m], "__file__", None)
+                                                for m in product_modules()},
+                  blocked_hits_after_probes=_GUARD_HITS[guard["probe_hits"]:])
     with open(result_path, "x", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
     return 0 if result.wasSuccessful() else 1
@@ -418,10 +579,12 @@ def phase_portable(row, manifest, head):
     tmp.mkdir()
     result = row.dir / "discovery-result.json"
     code, _, _ = row.run("discovery-isolated", [sys.executable, str(Path(__file__).resolve()), "--child",
-                                                DISCOVERY_CHILD, "--child-result", str(result)],
+                                                DISCOVERY_CHILD, "--child-tmp-root", str(tmp),
+                                                "--child-result", str(result)],
                          cwd, env=child_env(tmp))
     report = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else None
     row.check("discovery:exit_zero", code == 0, code)
+    check_guard_record(row, "discovery", report, REPO)
     if row.check("discovery:result_present", report is not None):
         names = [short(i) for i in report["ids"]]
         row.check("discovery:sentinels_bracket_module",
@@ -532,11 +695,20 @@ def main(argv=None):
     parser.add_argument("--phase", choices=PHASES)
     parser.add_argument("--source-manifest", type=Path)
     parser.add_argument("--out-base", type=Path)
-    parser.add_argument("--child", choices=(DISCOVERY_CHILD,))
+    parser.add_argument("--child", choices=(DISCOVERY_CHILD, GUARDED_UNITTEST))
     parser.add_argument("--child-result", type=Path)
+    parser.add_argument("--child-tmp-root", type=Path)
+    parser.add_argument("--child-target", action="append", default=[])
     args = parser.parse_args(argv)
     if args.child:
-        return discovery_child(args.child_result)
+        tmp_root = args.child_tmp_root
+        if not (args.child_result and tmp_root and tmp_root.is_absolute() and tmp_root.is_dir()):
+            parser.error("--child needs --child-result and an existing absolute --child-tmp-root")
+        if args.child == GUARDED_UNITTEST:
+            if not args.child_target:
+                parser.error("--child guarded-unittest needs at least one --child-target")
+            return guarded_unittest_child(tmp_root, args.child_result, args.child_target)
+        return discovery_child(args.child_result, tmp_root)
     if not (args.phase and args.source_manifest and args.out_base):
         parser.error("--phase, --source-manifest and --out-base are required")
     out_base = args.out_base.resolve()
