@@ -306,6 +306,9 @@ def install_guards(run, allowed_extra=()):
                 "/proc/self", "/dev/fd", "/etc/localtime", "/usr/share/zoneinfo"]
     readable = sorted({os.path.realpath(item) for item in readable} | set(readable))
     allowed = {"writable": writable, "read_only": readable}
+    run_ancestors = {str(item) for item in Path(os.path.realpath(run)).parents}
+    run_ancestors |= {str(item) for item in Path(run).parents}
+    allowed["directory_sync_only"] = sorted(run_ancestors)
 
     def inside(path, roots):
         return any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
@@ -334,6 +337,11 @@ def install_guards(run, allowed_extra=()):
         if inside(absolute, writable):
             return
         if inside(absolute, readable) and read_only(mode, flags):
+            return
+        # Directory fsync of the run root's own ancestors (catalog_links syncs
+        # every output parent) is a read-only O_DIRECTORY open, never content.
+        if (absolute in run_ancestors and isinstance(flags, int) and flags & os.O_DIRECTORY
+                and read_only(None, flags)):
             return
         hits.append("live-file:" + absolute[:200])
         raise PermissionError("fa42 acceptance: path outside per-run roots refused")
