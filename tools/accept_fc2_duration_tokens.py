@@ -42,7 +42,8 @@ import tempfile
 REPO = Path(__file__).resolve().parents[1]
 CHECKS = ("focused", "compatibility", "negative", "portability", "credentials", "public-tree")
 BRIEF = {"card": "FC2-DURATION-TOKENS", "task": "t_150541a0",
-         "base_pin": "9c398829de32a73b2dd2c676b8798c4bdad9f737",
+         # short prefix only (no high-entropy literal); the full commit is resolved via git at run time
+         "base_pin_prefix": "9c398829",
          "acceptance": "A1-A6 as frozen in the t_150541a0 card body"}
 FOCUSED = "tests.runner.test_fc2_duration_tokens"
 FOCUSED_TEST_COUNT = 21
@@ -136,8 +137,11 @@ def install_offline_guards():
 
 
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
-WRITE_EVENTS = {"os.mkdir": 0, "os.rename": 1, "os.replace": 1, "os.remove": 0, "os.rmdir": 0,
-                "os.truncate": 0, "os.symlink": 1, "os.link": 1, "shutil.rmtree": 0, "sqlite3.connect": 0}
+# audit event -> ((path arg index, dir_fd arg index or None), ...)
+WRITE_EVENTS = {"os.mkdir": ((0, 2),), "os.rename": ((0, 2), (1, 3)), "os.replace": ((0, 2), (1, 3)),
+                "os.remove": ((0, 1),), "os.rmdir": ((0, 1),), "os.truncate": ((0, None),),
+                "os.symlink": ((1, 2),), "os.link": ((1, 3),), "shutil.rmtree": ((0, 1),),
+                "sqlite3.connect": ((0, None),)}
 REFUSED_PROC_EVENTS = ("os.system", "os.exec", "os.spawn", "os.fork", "os.forkpty", "pty.spawn", "os.startfile")
 
 
@@ -145,7 +149,7 @@ def install_hooks(run):
     """Refuse Python-level writes outside the run root and unlisted child processes."""
     root = os.path.realpath(run)
 
-    def inside(target):
+    def inside(target, dir_fd=None):
         if isinstance(target, int):
             return True
         text = os.fsdecode(target)
@@ -153,6 +157,11 @@ def install_hooks(run):
             return True
         if text.startswith("file:"):
             text = text[5:].split("?", 1)[0]
+        if isinstance(dir_fd, int) and dir_fd >= 0 and not os.path.isabs(text):
+            try:  # dir_fd-relative call (e.g. TemporaryDirectory cleanup): resolve via its directory
+                text = os.path.join(os.readlink(f"/proc/self/fd/{dir_fd}"), text)
+            except OSError:
+                return False  # unresolvable descriptor: fail closed
         resolved = os.path.realpath(text)
         return resolved == root or resolved.startswith(root + os.sep)
 
@@ -169,11 +178,12 @@ def install_hooks(run):
                 WRITE_HITS.append(f"open:{os.fsdecode(path)}")
                 raise PermissionError("acceptance write guard refused open outside per-run root")
         elif event in WRITE_EVENTS:
-            index = WRITE_EVENTS[event]
-            target = args[index] if index < len(args) else None
-            if target is not None and not inside(target):
-                WRITE_HITS.append(f"{event}:{os.fsdecode(target)}")
-                raise PermissionError(f"acceptance write guard refused {event} outside per-run root")
+            for p, d in WRITE_EVENTS[event]:
+                target = args[p] if p < len(args) else None
+                dir_fd = args[d] if d is not None and d < len(args) else None
+                if target is not None and not inside(target, dir_fd):
+                    WRITE_HITS.append(f"{event}:{os.fsdecode(target) if not isinstance(target, int) else target}")
+                    raise PermissionError(f"acceptance write guard refused {event} outside per-run root")
         elif event == "subprocess.Popen":
             argv = list(args[1]) if isinstance(args[1], (list, tuple)) else [args[1]]
             exe = args[0] if args[0] is not None else (argv[0] if argv else None)
@@ -291,8 +301,16 @@ def check_compatibility(run):
                       **save_raw(run, "unittest.txt", stream)}
 
 
+def resolve_base_pin():
+    full = git("rev-parse", "--verify", "--quiet", f"{BRIEF['base_pin_prefix']}^{{commit}}")
+    if full is None or not full.startswith(BRIEF["base_pin_prefix"]):
+        return None
+    return full
+
+
 def baseline_has_original_pattern():
-    blob = git("show", f"{BRIEF['base_pin']}:campaign_tool/digest/detectors.py")
+    base = resolve_base_pin()
+    blob = git("show", f"{base}:campaign_tool/digest/detectors.py") if base else None
     if blob is None:
         return None
     return f'DURATION = re.compile(r"{ORIGINAL_DURATION}")' in blob.splitlines()
@@ -493,7 +511,10 @@ def main(argv=None):
             details.setdefault("stop", name)
     guard.update({"refused_writes": list(WRITE_HITS), "refused_children": list(PROC_HITS),
                   "network_guard_hits": list(GUARD_HITS), "children_started": list(PROCS)})
+    base = resolve_base_pin() if before["git_checkout"] else None
+    ancestry = git("merge-base", "--is-ancestor", base, "HEAD") if base else None
     record = {"check": args.check, "brief": BRIEF, "argv": [sys.executable, *sys.argv], "cwd": os.getcwd(),
+              "base_pin_resolved": base, "base_pin_is_ancestor_of_head": ancestry is not None if base else None,
               "interpreter": sys.executable, "python": sys.version.split()[0], "run_dir": str(run),
               "guards": guard, "identity_before": before, "identity_after": after,
               "result": "PASS_REVIEW_REQUIRED" if ok else "FAIL", "exit": 0 if ok else 1, **details}
