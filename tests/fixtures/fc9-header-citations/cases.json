@@ -133,6 +133,55 @@
       "message_id": "<r2001.same-instant@example.invalid>"
     }
   ],
+  "mixed_unlocatable_cases": [
+    {
+      "name": "mixed_pair_raw_contradictory_dates",
+      "headers": [["Date", "Tue, 04 Feb 2031 10:15:00 -0800"], "Date: Wed, 05 Feb 2031 09:00:00 +0000",
+                  ["Message-ID", "<r2001.mixed-date@example.invalid>"]],
+      "holds": ["date_header_unlocatable", "message_date_header_conflict"],
+      "message_id": "<r2001.mixed-date@example.invalid>",
+      "id_pointer": "/headers/2/1",
+      "date_resolved": false
+    },
+    {
+      "name": "mixed_pair_raw_contradictory_ids",
+      "headers": [["Date", "Tue, 04 Feb 2031 10:15:00 -0800"], ["Message-ID", "<r2001.mixed-one@example.invalid>"],
+                  "Message-ID: <r2001.mixed-two@example.invalid>"],
+      "holds": ["message_id_header_unlocatable", "message_id_header_conflict"],
+      "message_id": null,
+      "date_pointer": "/headers/0/1",
+      "date_resolved": true
+    },
+    {
+      "name": "stripped_dict_list_contradictory_dates",
+      "headers": {"Date": ["Tue, 04 Feb 2031 10:15:00 -0800", " Wed, 05 Feb 2031 09:00:00 +0000 "],
+                  "Message-ID": "<r2001.stripped-conflict@example.invalid>"},
+      "holds": ["date_header_unlocatable", "message_date_header_conflict"],
+      "message_id": "<r2001.stripped-conflict@example.invalid>",
+      "id_pointer": "/headers/Message-ID",
+      "date_resolved": false
+    },
+    {
+      "name": "mixed_pair_raw_agreeing_date_positive",
+      "headers": [["Date", "Tue, 04 Feb 2031 10:15:00 -0800"], "Date: Tue, 04 Feb 2031 18:15:00 +0000",
+                  ["Message-ID", "<r2001.mixed-agree-date@example.invalid>"]],
+      "holds": ["date_header_unlocatable"],
+      "message_id": "<r2001.mixed-agree-date@example.invalid>",
+      "id_pointer": "/headers/2/1",
+      "date_pointer": "/headers/0/1",
+      "date_resolved": true
+    },
+    {
+      "name": "mixed_pair_raw_agreeing_id_positive",
+      "headers": [["Date", "Tue, 04 Feb 2031 10:15:00 -0800"], ["Message-ID", "<r2001.mixed-agree-id@example.invalid>"],
+                  "Message-ID: <r2001.mixed-agree-id@example.invalid>"],
+      "holds": ["message_id_header_unlocatable"],
+      "message_id": "<r2001.mixed-agree-id@example.invalid>",
+      "id_pointer": "/headers/1/1",
+      "date_pointer": "/headers/0/1",
+      "date_resolved": true
+    }
+  ],
   "boundary_cases": [
     {
       "name": "missing_date_and_id",

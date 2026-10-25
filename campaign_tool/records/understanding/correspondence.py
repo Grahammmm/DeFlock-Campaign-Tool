@@ -519,24 +519,35 @@ def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
         if not headers:
             continue
         original = unit.get("original_sha256")
-        row = {"message_ids": [], "dates": [], "unit_id": unit.get("unit_id")}
+        row = {"message_ids": [], "dates": [], "unlocated": [], "unit_id": unit.get("unit_id")}
         for header_index, key, value, pointer in headers:
             folded = key.casefold()
             if folded not in {"message-id", "date"}:
                 continue
             citation = _exact_header_citation(unit, value, bundle, pointer=pointer)
-            if citation is None:
-                holds.append({"original_sha256": original, "unit_id": unit.get("unit_id"),
-                               "reason": f"{folded.replace('-', '_')}_header_unlocatable"})
-                continue
-            if folded == "message-id":
-                row["message_ids"].append({"value": value, "citation": citation})
-            else:
-                parsed = None
+            parsed = None
+            if folded == "date":
                 try:
                     parsed = parsedate_to_datetime(value)
                 except (TypeError, ValueError, OverflowError):
                     pass
+            if citation is None:
+                holds.append({"original_sha256": original, "unit_id": unit.get("unit_id"),
+                               "reason": f"{folded.replace('-', '_')}_header_unlocatable"})
+                # Keep the uncited value for same-field reconciliation only: it
+                # can never become the resolved value, but a contradiction with
+                # it leaves that field unknown instead of promoting a peer.
+                if folded == "message-id":
+                    recon = value.casefold()
+                elif parsed is not None and parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    recon = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                else:
+                    recon = "raw:" + value
+                row["unlocated"].append((folded, recon))
+                continue
+            if folded == "message-id":
+                row["message_ids"].append({"value": value, "citation": citation})
+            else:
                 if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
                     status = "timezone_unknown" if parsed is not None else "invalid_date"
                     row["dates"].append({"value": value, "citation": citation, "normalized": None,
@@ -553,14 +564,17 @@ def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
         dates = [item for row in rows for item in row["dates"]]
         unique_ids = {item["value"].casefold(): item for item in ids}
         unique_dates = {item["normalized"] or ("raw:" + item["value"]): item for item in dates}
+        unlocated = {(field, key) for row in rows for field, key in row["unlocated"]}
+        id_keys = set(unique_ids) | {key for field, key in unlocated if field == "message-id"}
+        date_keys = set(unique_dates) | {key for field, key in unlocated if field == "date"}
         meta = {}
-        if len(unique_ids) == 1:
+        if len(unique_ids) == 1 and len(id_keys) == 1:
             meta["message_id"] = next(iter(unique_ids.values()))
-        elif len(unique_ids) > 1:
+        elif len(id_keys) > 1:
             holds.append({"original_sha256": original, "reason": "message_id_header_conflict"})
-        if len(unique_dates) == 1:
+        if len(unique_dates) == 1 and len(date_keys) == 1:
             meta["message_date"] = next(iter(unique_dates.values()))
-        elif len(unique_dates) > 1:
+        elif len(date_keys) > 1:
             holds.append({"original_sha256": original, "reason": "message_date_header_conflict"})
         result[original] = meta
     return result, holds

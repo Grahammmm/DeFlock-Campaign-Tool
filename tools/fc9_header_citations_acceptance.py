@@ -66,6 +66,12 @@ REQUIRED_TESTS = tuple("%s.%s" % pair for pair in (
     ("ConflictAndBoundaryTests", "test_same_instant_duplicates_are_one_date"),
     ("ConflictAndBoundaryTests", "test_missing_date_and_id_stay_unknown"),
     ("ConflictAndBoundaryTests", "test_timezone_unknown_clock_is_cited_but_not_ordered"),
+    ("MixedUnlocatableTests", "test_mixed_pair_raw_contradictory_dates_stay_unknown"),
+    ("MixedUnlocatableTests", "test_mixed_pair_raw_contradictory_ids_stay_unknown"),
+    ("MixedUnlocatableTests", "test_stripped_dict_list_contradictory_dates_stay_unknown"),
+    ("MixedUnlocatableTests", "test_mixed_agreeing_date_keeps_cited_value"),
+    ("MixedUnlocatableTests", "test_mixed_agreeing_id_keeps_cited_value"),
+    ("MixedUnlocatableTests", "test_mixed_conflict_original_keeps_valid_peer"),
     ("TextBackedCompatibilityTests", "test_text_backed_dict_headers_keep_text_span"),
     ("TextBackedCompatibilityTests", "test_text_backed_raw_strings_keep_text_span"),
     ("NegativeControlTests", "test_declared_negative_control_legacy_pointer_seam"),
@@ -97,6 +103,14 @@ CASE_MAP = {
     "duplicate contradictory headers": ["ConflictAndBoundaryTests.test_contradictory_duplicate_dates_hold",
                                         "ConflictAndBoundaryTests.test_contradictory_duplicate_ids_hold",
                                         "ConflictAndBoundaryTests.test_same_instant_duplicates_are_one_date"],
+    "mixed raw/stripped unlocatable + contradictory same-field duplicates -> field unknown": [
+        "MixedUnlocatableTests.test_mixed_pair_raw_contradictory_dates_stay_unknown",
+        "MixedUnlocatableTests.test_mixed_pair_raw_contradictory_ids_stay_unknown",
+        "MixedUnlocatableTests.test_stripped_dict_list_contradictory_dates_stay_unknown",
+        "MixedUnlocatableTests.test_mixed_conflict_original_keeps_valid_peer"],
+    "mixed unlocatable agreeing duplicate (positive control keeps cited value)": [
+        "MixedUnlocatableTests.test_mixed_agreeing_date_keeps_cited_value",
+        "MixedUnlocatableTests.test_mixed_agreeing_id_keeps_cited_value"],
     "valid clocks / clock boundary": ["AddressableHeaderTests.test_every_addressable_representation_cites_exact_pointer",
                                       "ConflictAndBoundaryTests.test_timezone_unknown_clock_is_cited_but_not_ordered"],
     "ordinary text-backed headers (exact text-span fallback)": [
@@ -278,7 +292,8 @@ def clean(result, required, prefix=""):
 
 def fixture_dimensions():
     cases = json.loads((REPO / FIXTURE).read_text(encoding="utf-8"))
-    groups = ("addressable_cases", "unresolved_cases", "conflict_cases", "boundary_cases",
+    groups = ("addressable_cases", "unresolved_cases", "conflict_cases", "mixed_unlocatable_cases",
+              "boundary_cases",
               "text_backed_cases", "pointer_token_cases", "escaped_key_cases")
     dims = {group: len(cases[group]) for group in groups}
     dims["addressable_shapes"] = sorted({case["shape"] for case in cases["addressable_cases"]})
