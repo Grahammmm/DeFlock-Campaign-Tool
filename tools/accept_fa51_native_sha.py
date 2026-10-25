@@ -202,6 +202,63 @@ def _audit(event, args):
                     raise PermissionError("acceptance write guard refused a write outside the per-run root")
 
 
+def make_refuse(name, hits):
+    """Network sentinel: record the attempt in `hits` and refuse it."""
+    def guard(*args, **kwargs):
+        hits.append(name)
+        raise OSError(f"offline acceptance guard refused {name}")
+    return guard
+
+
+def network_self_check(hits, probe_hits, attempt):
+    """Make one expected, inert sentinel attempt and account for it alone.
+
+    Only the single event this attempt adds is moved from `hits` to
+    `probe_hits`. Every event already in `hits` (an unexpected attempt, even
+    one that application code caught) stays there, so guards_quiet() and the
+    final verdict fail closed; nothing is cleared.
+    """
+    prior = list(hits)
+    try:
+        attempt()
+        refused = False
+    except OSError:
+        refused = True
+    added = hits[len(prior):]
+    expected = refused and hits[:len(prior)] == prior and added == ["socket.create_connection"]
+    if expected:
+        probe_hits.append("network:" + hits.pop())
+    return {"refused": refused, "expected_event_only": expected, "unexpected_prior_hits": prior,
+            "retained_hits": list(hits), "ok": expected and not prior and not hits}
+
+
+def network_self_check_regression():
+    """Inert regression for network_self_check using the real sentinel factory on private lists.
+
+    Negative: a caught pre-import hit already recorded must make the check fail
+    and must remain recorded. Positive: a clean record passes and ends empty.
+    """
+    def run_with(caught_before):
+        hits, probes = [], []
+        sentinel = make_refuse("socket.create_connection", hits)
+        if caught_before:  # an application attempt that was refused and then caught
+            try:
+                sentinel(("192.0.2.1", 9), timeout=0.01)
+            except OSError:
+                pass
+        result = network_self_check(hits, probes, lambda: sentinel(("192.0.2.1", 9), timeout=0.01))
+        return result, hits, probes
+    negative, neg_hits, neg_probes = run_with(True)
+    positive, pos_hits, pos_probes = run_with(False)
+    return {
+        "caught_prior_hit_fails": negative["ok"] is False and negative["expected_event_only"] is True,
+        "caught_prior_hit_retained": neg_hits == ["socket.create_connection"],
+        "caught_prior_hit_self_probe_accounted": neg_probes == ["network:socket.create_connection"],
+        "clean_positive_passes": positive["ok"] is True and pos_hits == []
+                                 and pos_probes == ["network:socket.create_connection"],
+    }
+
+
 def install_guards(run):
     """Sentinels and redirects; must run before any application import."""
     sys.dont_write_bytecode = True
@@ -214,10 +271,7 @@ def install_guards(run):
                       PYTHONDONTWRITEBYTECODE="1")
 
     def refuse(name):
-        def guard(*args, **kwargs):
-            GUARD_HITS.append(name)
-            raise OSError(f"offline acceptance guard refused {name}")
-        return guard
+        return make_refuse(name, GUARD_HITS)
     socket.socket.connect = refuse("socket.connect")
     socket.socket.connect_ex = refuse("socket.connect_ex")
     socket.create_connection = refuse("socket.create_connection")
@@ -423,12 +477,13 @@ def case_isolation(run, guard):
         "modules_from_repo": all_under(paths, REPO),
         "no_reachable_home_paths": not any(entry["under_home"] for entry in reach),
     }
-    try:
-        socket.create_connection(("192.0.2.1", 9), timeout=0.01)  # TEST-NET-1, never sent
-        checks["network_sentinel"] = False
-    except OSError:
-        checks["network_sentinel"] = GUARD_HITS[-1:] == ["socket.create_connection"]
-    GUARD_HITS.clear()
+    regression = network_self_check_regression()
+    checks.update({f"network_self_check_{key}": value for key, value in regression.items()})
+    # TEST-NET-1 target; the installed sentinel refuses it before anything is sent.
+    network = network_self_check(GUARD_HITS, PROBE_HITS,
+                                 lambda: socket.create_connection(("192.0.2.1", 9), timeout=0.01))
+    checks["network_sentinel"] = network["expected_event_only"]
+    checks["no_unexpected_network_hits"] = network["ok"]
     stream = io.StringIO()
     in_process = run_names([REGRESSION], stream)
     checks["in_process_focused_clean"] = clean(in_process)
@@ -454,7 +509,8 @@ def case_isolation(run, guard):
                                    and child.get("identity", {}).get("tree_sha256") == own["tree_sha256"]
                                    and child.get("identity", {}).get("head") == own["head"])
     ok = all(checks.values()) and guards_quiet()
-    return ok, {"checks": checks, "module_paths": paths, "reachable_absolute_paths": reach,
+    return ok, {"checks": checks, "network_self_check": network, "module_paths": paths,
+                "reachable_absolute_paths": reach,
                 "in_process_counts": in_process, "copy_child": {
                     "argv": child_argv, "cwd": str(copy_repo), "exit": done.returncode,
                     "stdout": "copy-child-stdout.txt", "stdout_sha256": sha256_bytes(done.stdout),
