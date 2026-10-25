@@ -489,8 +489,11 @@ def phase_suite(run, identity):
         found = [re.search(r"case='([^']+)'", row["subtest"]) for row in rows]
         run.check(f"mutant {killed} subtests carry case ids", all(found), len(found))
         failed_ids = sorted(match.group(1) for match in found if match)
-        run.check(f"mutant {killed} fails every pair case and only pair cases",
-                  failed_ids == sorted(dims["pair_ids"]), len(failed_ids))
+        expected_ids = list(dims["pair_ids"])
+        if killed == TRACK_TEST:
+            expected_ids += control["track_flips_beyond_pairs"]
+        run.check(f"mutant {killed} fails exactly the declared multi-marker cases",
+                  failed_ids == sorted(expected_ids), len(failed_ids))
         run.check(f"mutant {killed} failures are AssertionError",
                   all(row["kind"] == "failed" and row["exception"] == "AssertionError"
                       for row in rows), len(rows))

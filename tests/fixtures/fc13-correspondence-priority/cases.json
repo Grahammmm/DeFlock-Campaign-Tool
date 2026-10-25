@@ -1088,7 +1088,11 @@
     "selected_case": "pair:request-then-withdrawal",
     "expected": "withdrawal",
     "mutant_label": "request",
-    "mutation": "reverse MARKERS sequence in memory only"
+    "mutation": "reverse MARKERS sequence in memory only",
+    "classify_flips": "every pairs case",
+    "track_flips_beyond_pairs": [
+      "unknown:type-competing-pair"
+    ]
   },
   "expected_counts": {
     "single_positive": 34,

@@ -157,6 +157,10 @@ class FrozenContractTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["expected"], control["expected"])
         self.assertNotEqual(control["expected"], control["mutant_label"])
+        pair_ids = {case["id"] for case in CASES["pairs"]}
+        for extra in control["track_flips_beyond_pairs"]:
+            self.assertIn(extra, ids)
+            self.assertNotIn(extra, pair_ids)
 
     def test_each_phrase_hits_only_its_own_marker(self):
         for label, phrase in CASES["phrases"].items():
@@ -257,6 +261,9 @@ class NegativeControlTests(LabelAssertions, unittest.TestCase):
             flipped = [case["id"] for case in CASES["pairs"]
                        if correspondence._classify(case_event(case)) != case["expected"]]
             self.assertEqual(len(flipped), len(CASES["pairs"]))
+            flipped_all = sorted(case["id"] for case in all_cases()
+                                 if correspondence._classify(case_event(case)) != case["expected"])
+            self.assertEqual(flipped_all, sorted(flipped + control["track_flips_beyond_pairs"]))
             for group in ("explicit", "field_precedence", "single_positive", "near_misses"):
                 for case in CASES[group]:
                     with self.subTest(mutant_positive=case["id"]):
