@@ -102,6 +102,37 @@ class NumericRanges(_Base):
                 self.assert_uninterpreted(line)
 
 
+class NumericRangeWhitespace(_Base):
+    """A range stays one unsupported token whatever horizontal whitespace surrounds its dash."""
+
+    def test_variable_horizontal_whitespace_ranges(self):
+        gaps = (("", " "), (" ", ""), ("  ", " "), (" ", "  "), ("  ", "  "), ("   ", "   "),
+                ("\t", " "), (" \t", "\t "), ("\t\t", ""), ("", "\t"), ("\u00a0", "\u00a0"),
+                ("\u2009", "  "), ("\u202f ", " \u202f"))
+        for dash in ("-", "\u2013", "\u2014"):
+            for before, after in gaps:
+                for unit in ("days", "day period", "months", "years"):
+                    line = f"Data is retained for 30{before}{dash}{after}60 {unit}."
+                    with self.subTest(line=line):
+                        self.assert_uninterpreted(line)
+        for line in ("Data is retained for 1  /  2 year.", "Data is retained for 1\t/ 2 year.",
+                     "Data is retained for 30 -  60-day period.", "Data is retained for 30  -  60 - day period."):
+            with self.subTest(line=line):
+                self.assert_uninterpreted(line)
+
+    def test_range_then_supported_duration(self):
+        for line in ("Data is retained for 30 -  60 days; logs are kept 90 days.",
+                     "Data is retained for 30\t\u2013  60 days; logs are kept 90 days.",
+                     "Data is retained for 30  \u2014 60 days; logs are kept 90 days."):
+            with self.subTest(line=line):
+                self.assert_stated(line, [("90 days", 90, "exceeds_chp_60_days")])
+        # A complete duration followed by a dash and another complete duration is two tokens.
+        self.assert_stated("Data is retained 30 days -  60 days.",
+                           [("30 days", 30, "within_chp_60_days"), ("60 days", 60, "within_chp_60_days")])
+        # Whitespace between a word and the integer is not a range.
+        self.assert_stated("Data is retained for   \t 30 days.", [("30 days", 30, "within_chp_60_days")])
+
+
 class SupportedDurations(_Base):
     def test_days_months_years_weeks_hours(self):
         cases = [
@@ -226,6 +257,117 @@ class ConversionFactors(unittest.TestCase):
             "1 day 2 days 3 week 4 weeks 5 month 6 months 7 year 8 years 9 hour 10 hours 11 fortnights 12 decades")]
         self.assertEqual(found, ["day", "days", "week", "weeks", "month", "months",
                                  "year", "years", "hour", "hours"])
+
+
+def _load_runner():
+    """Load the acceptance runner from this checkout without running main()."""
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "tools" / "accept_fc2_duration_tokens.py"
+    spec = importlib.util.spec_from_file_location("fc2_acceptance_runner_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class RunnerContracts(unittest.TestCase):
+    """Pure checks of the acceptance runner's command policy and receipt shape; nothing is executed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = _load_runner()
+        cls.repo = str(cls.runner.REPO)
+
+    def test_command_policy_admits_only_registered_shapes(self):
+        policy = self.runner.CommandPolicy(self.runner.REPO, "9c398829")
+        scan = ["/opt/admitted/bin/detect-secrets", "scan", "--all-files", "--exclude-files", "^.git/", "--no-verify"]
+        policy.allow(scan, self.repo)
+        git = ["git", "--no-optional-locks", "-C", self.repo]
+        base = "9c398829" + "0" * 32
+        admitted = [(scan, self.repo), (git + ["rev-parse", "HEAD"], None), (git + ["status", "--porcelain"], None),
+                    (git + ["rev-parse", "--show-toplevel"], None),
+                    (git + ["rev-parse", "--verify", "--quiet", "9c398829^{commit}"], None),
+                    (git + ["show", base + ":campaign_tool/digest/detectors.py"], None),
+                    (git + ["merge-base", "--is-ancestor", base, "HEAD"], None)]
+        for argv, cwd in admitted:
+            with self.subTest(admitted=argv):
+                self.assertTrue(policy.permits(None, argv, cwd, None))
+        refused = [
+            (scan + ["--force-use-all-plugins"], self.repo, None, None),  # extra argument
+            (scan[:-1], self.repo, None, None),  # missing argument
+            (scan, "/", None, None),  # wrong cwd
+            (scan, self.repo, {"DETECT_SECRETS_X": "1"}, None),  # environment override
+            (scan, self.repo, None, "/bin/sh"),  # executable override
+            (" ".join(scan), self.repo, None, None),  # shell-style string
+            ([scan[0], "audit", "secret-scan.json"], self.repo, None, None),  # other subcommand
+            (git + ["push"], None, None, None), (git + ["fetch"], None, None, None),
+            (git + ["status"], None, None, None), (git + ["rev-parse", "HEAD", "--git-path", "x"], None, None, None),
+            (git + ["show", "deadbeef" + "0" * 32 + ":campaign_tool/digest/detectors.py"], None, None, None),
+            (git + ["show", base + ":tools/check_public_tree.py"], None, None, None),
+            (git + ["merge-base", "--is-ancestor", "HEAD", base], None, None, None),
+            (["git", "-C", self.repo, "rev-parse", "HEAD"], None, None, None),
+            (["git", "--no-optional-locks", "-C", "/", "rev-parse", "HEAD"], None, None, None),
+            (git + ["rev-parse", "HEAD"], "/", None, None),
+            ([self.runner.sys.executable, "-c", "pass"], self.repo, None, None),
+            ([self.runner.sys.executable, "-B", self.repo + "/tools/check_public_tree.py"], self.repo, None, None),
+            (["fc2-unlisted-probe"], None, None, None), ([], None, None, None),
+        ]
+        for argv, cwd, env, exe in refused:
+            with self.subTest(refused=argv, cwd=cwd, env=env, exe=exe):
+                self.assertFalse(policy.permits(exe, argv, cwd, env))
+
+    def test_guarded_child_shapes(self):
+        runner = self.runner
+        self.assertEqual(sorted(runner.GUARDED_TARGETS), ["public-tree", "secret-report"])
+        self.assertEqual(runner.GUARDED_TARGETS["public-tree"], "tools/check_public_tree.py")
+        self.assertEqual(runner.GUARDED_TARGETS["secret-report"], "tools/check_secret_report.py")
+        argv = runner.guarded_child_argv("public-tree", "/run/child-public-tree", [])
+        self.assertEqual(argv[:3], [runner.sys.executable, "-B",
+                                    str(runner.REPO / "tools" / "accept_fc2_duration_tokens.py")])
+        self.assertEqual(argv[3:], ["--guarded-child", "public-tree", "--child-run-dir", "/run/child-public-tree", "--"])
+        self.assertEqual(runner.guarded_child_allowed_commands("public-tree"),
+                         [(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], self.repo)])
+        self.assertEqual(runner.guarded_child_allowed_commands("secret-report"), [])
+        with self.assertRaises(ValueError):
+            runner.guarded_child_argv("other", "/run/x", [])
+        with self.assertRaises(ValueError):
+            runner.guarded_child_argv("public-tree", "/run/x", ["--strict"])
+        with self.assertRaises(ValueError):
+            runner.guarded_child_argv("secret-report", "/run/x", [])
+
+    def test_receipt_keeps_outer_invocation_for_all_six_modes(self):
+        runner = self.runner
+        self.assertEqual(runner.CHECKS, ("focused", "compatibility", "negative", "portability", "credentials",
+                                         "public-tree"))
+        for check in runner.CHECKS:
+            outer = [runner.sys.executable, f"{self.repo}/tools/accept_fc2_duration_tokens.py", "--check", check,
+                     "--output-root", "/out/root"]
+            colliding = {"argv": ["child"], "cwd": "/elsewhere", "exit": 99, "result": "CHILD", "check": "child",
+                         "invocation": {"argv": ["forged"]}, "children": [{"argv": ["child"], "exit": 0}]}
+            for ok in (True, False):
+                with self.subTest(check=check, ok=ok):
+                    record = runner.build_record(check, outer, "/cwd", ok, dict(colliding), {"brief": runner.BRIEF})
+                    want_exit = 0 if ok else 1
+                    self.assertEqual(record["invocation"], {"argv": outer, "cwd": "/cwd", "exit": want_exit,
+                                                            "result": "PASS_REVIEW_REQUIRED" if ok else "FAIL"})
+                    self.assertEqual((record["argv"], record["cwd"], record["exit"], record["check"]),
+                                     (outer, "/cwd", want_exit, check))
+                    self.assertEqual(record["details"]["argv"], ["child"])
+                    self.assertEqual(record["details"]["children"], [{"argv": ["child"], "exit": 0}])
+                    self.assertEqual(runner.validate_record(record, check, outer, "/cwd"), [])
+                    forged = json_copy(record)
+                    forged["argv"] = ["child"]
+                    self.assertNotEqual(runner.validate_record(forged, check, outer, "/cwd"), [])
+                    forged = json_copy(record)
+                    forged["invocation"]["exit"] = 1 - want_exit
+                    self.assertNotEqual(runner.validate_record(forged, check, outer, "/cwd"), [])
+                    self.assertNotEqual(runner.validate_record(record, "focused" if check != "focused" else "negative",
+                                                               outer, "/cwd"), [])
+
+
+def json_copy(value):
+    import json
+    return json.loads(json.dumps(value))
 
 
 if __name__ == "__main__":
