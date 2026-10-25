@@ -1,0 +1,14 @@
+{
+  "case_id": "FC16-LAW-SUMMARY-SNAPSHOT",
+  "provenance": {
+    "source_repository": "Grahammmm/DeFlock-Campaign-Tool",
+    "source_commit": "32eda30545fd0e5a1d83723939362d508ead8361",
+    "source_tree": "a9a693454f4db42b3b3235f40e322846efa27dcc",
+    "source_package": "jurisdictions/us-ca/package.json",
+    "shape": "synthetic package-shaped reviewer metadata only; no operational content"
+  },
+  "reviewer_values": ["Synthetic Reviewer A", "Synthetic Reviewer B", "Synthetic Reviewer C"],
+  "empty_reviewers": [],
+  "expected_status": "reviewed",
+  "expected_reviewed_at": "2026-01-02"
+}
