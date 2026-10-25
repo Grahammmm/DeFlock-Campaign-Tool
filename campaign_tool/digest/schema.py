@@ -8,7 +8,7 @@ Validation reuses the JSON-schema subset in :mod:`campaign_tool.law`.
 from ..law import validate
 
 CONFIDENCE = ["verified", "likely", "needs_attorney_review"]
-HEX64 = "^[0-9a-f]{64}$"
+HEX64 = r"^[0-9a-f]{64}\Z"
 
 SOURCE = {
     "type": "object",
@@ -51,7 +51,7 @@ DIGEST_SCHEMA = {
     "properties": {
         "schema_version": {"const": 1},
         "sha256": {"type": "string", "pattern": HEX64},
-        "jurisdiction": {"type": "string", "pattern": "^[a-z]{2}-[a-z]{2}$"},
+        "jurisdiction": {"type": "string", "pattern": r"^[a-z]{2}-[a-z]{2}\Z"},
         "law_package_version": {"type": "string", "minLength": 1},
         "privacy_tier": {"type": "string", "enum": ["redacted_cloud", "strict_local"]},
         "redaction_count": {"type": "integer", "minimum": 0},
