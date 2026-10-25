@@ -40,8 +40,9 @@ callable stays bound. Guarded children run with HOME/TMPDIR/XDG_* redirected
 to a fresh directory inside the run directory; the parent redirects its own
 temporary-directory default to the run directory before importing tests.
 Limits: these sentinels are not a hostile-code sandbox. Grandchild processes
-are not guarded: the existing scanner and checker scripts run under their
-existing admission.
+are not guarded: the compatibility selector's own extraction worker (enumerated
+argv, synthetic paths inside the isolated directory) and the existing scanner
+and checker scripts run under their existing admission.
 
 Reuse note: the guard, closure-scan, child and portability structure is
 adapted from the shipped tools/accept_fc4_row_page_state.py in this repository.
@@ -239,11 +240,26 @@ def _script_of(argv):
     return (Path(rest[0]).resolve(), rest[1:]) if rest and not rest[0].startswith("-") else (None, rest)
 
 
-def process_allowed(profile, root, argv):
+EXTRACTION_WORKER = ["-B", "-m", "campaign_tool.records.extraction_routes", "_worker"]
+HEX64 = re.compile(r"[0-9a-f]{64}")
+FORM = re.compile(r"[a-z0-9]{1,16}")
+
+
+def _within(value, directory):
+    return directory is not None and Path(value).is_absolute() and Path(value).resolve().is_relative_to(directory)
+
+
+def process_allowed(profile, root, argv, db_root=None):
     """Enumerated local subprocess allowances per guard profile (anything else is fatal)."""
     if not argv:
         return False
     exe = sys.executable
+    if profile == "compatibility":
+        # Exactly the subprocess the unchanged admitted selector starts: the extraction worker on its own
+        # disposable synthetic input/output paths inside this child's isolated directory.
+        return (len(argv) == 10 and argv[0] == exe and argv[1:5] == EXTRACTION_WORKER
+                and HEX64.fullmatch(argv[6]) is not None and FORM.fullmatch(argv[7]) is not None
+                and all(_within(argv[i], db_root) for i in (5, 8, 9)))
     if profile == "parent":
         if argv[0] == "git":
             return _git_subcommand(argv) in GIT_SUBCOMMANDS
@@ -258,7 +274,7 @@ def process_allowed(profile, root, argv):
         if SCANNER_PATH is not None and argv[0] == SCANNER_PATH:
             return argv[1:2] in (["scan"], ["--version"])
         return False
-    return False  # focused / compatibility / portability children: no subprocess at all.
+    return False  # focused / portability children: no subprocess at all.
 
 
 def _database_target(database):
@@ -317,7 +333,7 @@ class OfflineGuard:
             self._hit(event, repr(args))
         elif event == "subprocess.Popen":
             argv = _argv_list(args[1], args[0])
-            if process_allowed(self.profile, self.root, argv):
+            if process_allowed(self.profile, self.root, argv, self.db_root):
                 self.allowed.append(argv)
             else:
                 self._hit(event, repr(argv))
@@ -350,7 +366,7 @@ class OfflineGuard:
             if name.startswith("get"):
                 self._hit("subprocess." + name, repr(command)[:500])  # Shell helpers: never allowed.
             argv = _argv_list(command, kwargs.get("executable"))
-            if not process_allowed(self.profile, self.root, argv):
+            if not process_allowed(self.profile, self.root, argv, self.db_root):
                 self._hit("subprocess." + name, repr(argv))
             return original(*args, **kwargs)
         setattr(wrapper, SENTINEL_MARK, True)
@@ -422,7 +438,7 @@ class OfflineGuard:
 
         def guarded_init(popen, args, *rest, **kwargs):
             argv = _argv_list(args, kwargs.get("executable"))
-            if not process_allowed(guard.profile, guard.root, argv):
+            if not process_allowed(guard.profile, guard.root, argv, guard.db_root):
                 guard._hit("subprocess.Popen.__init__", repr(argv))
             guard._allowed_popen_depth += 1
             try:
@@ -1232,6 +1248,14 @@ def check_public_tree(run_dir, result):
     record = run_child(run_dir, "check-public-tree",
                        [sys.executable, "-B", REPO / "tools" / "check_public_tree.py"], REPO)
     result["children"].append(record)
+    # Diagnostic only (never changes the verdict): which findings the unchanged checker reported.
+    try:
+        report = json.loads(Path(record["stdout_path"]).read_text())
+        findings = report.get("findings") or []
+        result["public_tree"] = {"findings": findings, "scanned_files": report.get("scanned_files"),
+                                 "only_staged_venv_link_finding": findings == [[".venv", 0, "symlink_not_scanned"]]}
+    except (KeyError, OSError, ValueError, AttributeError):
+        result["public_tree"] = {"report_unparsed": True}
     return [] if record.get("exit") == 0 else ["public_tree_check_failed"]
 
 
