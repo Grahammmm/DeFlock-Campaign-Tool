@@ -48,6 +48,18 @@ def _utf8_offset(text: str, character_offset: int) -> int:
     return len(text[:character_offset].encode("utf-8"))
 
 
+_NUMERIC_OFFSET = re.compile(r"(?<=[0-9])[+-]([0-9]{2}):?([0-9]{2})$")
+
+
+def _offset_components_in_range(raw: str) -> bool:
+    """Check a supplied compact/colon numeric offset before parser normalization.
+
+    The parser would otherwise carry +01:60 into +02:00; such source text stays unresolved.
+    """
+    match = _NUMERIC_OFFSET.search(raw)
+    return match is None or (int(match.group(1)) <= 23 and int(match.group(2)) <= 59)
+
+
 def _date_value(raw: str) -> dict[str, Any]:
     candidate = {"raw": raw, "value": None, "time_basis": "unknown"}
     if "T" not in raw and "t" not in raw and " " not in raw:
@@ -55,6 +67,9 @@ def _date_value(raw: str) -> dict[str, Any]:
             candidate.update(value=date.fromisoformat(raw).isoformat(), time_basis="local_date_only")
         except ValueError:
             candidate["parse_status"] = "invalid_date"
+        return candidate
+    if not _offset_components_in_range(raw):
+        candidate["parse_status"] = "unparsed_date_time"
         return candidate
     normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
     # ISO permits compact offsets; normalize only for Python's parser.
