@@ -13,13 +13,17 @@ A3  A3PersistedReplay    persisted malformed status refused by _load_receipt, lo
 A4  A4GateControl        an isolated copy of the staged module with ONLY the new guard removed
                          must turn list/object refusals into TypeError (control detected)
 A5  A5Portability        authored sources carry no machine paths; module identity comes from
-                         one source tree; fixture roots stay below the active tempfile root
+                         one source tree; fixture roots stay below the active tempfile root;
+                         the runner's child-command guard refuses the pinned inline -c child
+                         shape and permits file/module children (inert: nothing is launched)
 """
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import types
 import unittest
@@ -407,6 +411,77 @@ class A5Portability(unittest.TestCase):
         active = Path(tempfile.gettempdir()).resolve()
         self.assertTrue(producer.root.resolve().is_relative_to(active))
         self.assertTrue(producer.final(receipt).resolve().is_relative_to(active))
+
+    # Inert coverage of the runner's child-command guard: argv lists are classified and fed to a
+    # detached Guard instance directly; nothing here launches a process.
+    def runner(self):
+        path = self.source_root() / "tools" / "accept_fa50_ocr_state.py"
+        spec = importlib.util.spec_from_file_location("fa50_acceptance_runner", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def detached_guard(self, runner, mode):
+        guard = runner.Guard(mode, [tempfile.gettempdir()], [])
+        guard.active = True
+        guard.current_test = self.id()
+        return guard
+
+    def test_a5_runner_refuses_the_pinned_inline_interpreter_child_shape(self):
+        runner = self.runner()
+        pinned_text = (self.source_root() / "tests/records/test_ocr.py").read_text(encoding="utf-8")
+        self.assertIn('subprocess.run([sys.executable, "-c", code]', pinned_text)  # the actual shape
+        shapes = {
+            "pinned_inline_source": [sys.executable, "-c", "import resource"],
+            "bundled_inline_source": [sys.executable, "-Bc", "pass"],
+            "after_value_option": [sys.executable, "-W", "ignore", "-c", "pass"],
+            "stdin_dash": [sys.executable, "-"],
+            "stdin_no_script": [sys.executable, "-B"],
+            "env_wrapped": ["/usr/bin/env", "python3", "-c", "pass"],
+            "shell_true": ["/bin/sh", "-c", "true"],
+            "shell_bundled": ["bash", "-ec", "true"],
+            "shell_stdin": ["bash"],
+            "shell_string": "true",
+        }
+        for name, argv in shapes.items():
+            with self.subTest(shape=name):
+                self.assertIsNotNone(runner.child_command_violation(argv))
+                guard = self.detached_guard(runner, "compat")
+                for event, args in (("subprocess.Popen", ("x", argv, None, None)),
+                                    ("os.posix_spawn", ("x", argv, {})), ("os.exec", ("x", argv, {}))):
+                    with self.assertRaises(PermissionError):
+                        guard(event, args)
+                self.assertEqual([r["event"] for r in guard.refusals], [runner.FORBIDDEN_CHILD] * 3)
+                self.assertTrue(all(r["test"] == self.id() for r in guard.refusals))
+        guard = self.detached_guard(runner, "compat")
+        with self.assertRaises(PermissionError):
+            guard("os.system", ("true",))
+        self.assertEqual(runner.child_command_violation(shapes["pinned_inline_source"]),
+                         "interpreter_inline_source")
+
+    def test_a5_runner_permits_file_and_module_children(self):
+        runner = self.runner()
+        stage_text = (self.source_root() / "tests/records/test_ocr_stage.py").read_text(encoding="utf-8")
+        self.assertIn('[sys.executable, "-B", "-m", "campaign_tool.records.ocr_stage"', stage_text)
+        permitted = {
+            "runner_child": [sys.executable, "-B", "tools/accept_fa50_ocr_state.py", "--limit-probe"],
+            "stage_module": [sys.executable, "-B", "-m", "campaign_tool.records.ocr_stage", "transcribe-png"],
+            "value_options": [sys.executable, "-W", "ignore", "-X", "dev", "script.py"],
+            "double_dash": [sys.executable, "--", "script.py"],
+            "tool": ["pdftoppm", "-r", "300", "-singlefile", "in.pdf", "page"],
+            "script_file": ["fixture-script.sh"],
+            "shell_script": ["bash", "fixture-script.sh"],
+        }
+        for name, argv in permitted.items():
+            with self.subTest(shape=name):
+                self.assertIsNone(runner.child_command_violation(argv))
+                compat = self.detached_guard(runner, "compat")
+                compat("subprocess.Popen", ("x", argv, None, None))
+                self.assertEqual(compat.refusals, [])
+                self.assertEqual(compat.children[-1]["verdict"], "permitted_file_or_module_child")
+                strict = self.detached_guard(runner, "strict")
+                with self.assertRaises(PermissionError):
+                    strict("subprocess.Popen", ("x", argv, None, None))
 
 
 if __name__ == "__main__":

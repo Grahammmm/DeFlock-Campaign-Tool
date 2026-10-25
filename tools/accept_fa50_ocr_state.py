@@ -22,8 +22,13 @@ refuses network, child processes, writes outside the child root and reads outsid
 tree, the interpreter and system directories; the OCR module's bound default runners are
 then replaced by refusing sentinels, and each sentinel is self-tested once in a recorded
 "sentinel-self-test" phase. Compatibility runs the unchanged suites with network and
-out-of-root writes refused (they start their own interpreter children). The guard is an
-offline guard for trusted synthetic tests, not a hostile-code sandbox.
+out-of-root writes refused (they start their own interpreter children). Every child command
+in compatibility is classified before launch: ordinary file- or module-based children run;
+inline interpreter source (-c), interpreter/shell stdin and shell bodies are refused before
+launch and recorded with the test that asked for them. A run whose only defects are such
+refusals exits 2 (UNMET, pending the existing operator's disposition) - never 0, and never a
+silent skip - and records a supplementary file-based limit probe as offered substitute
+evidence. The guard is an offline guard for trusted synthetic tests, not a hostile-code sandbox.
 
 A pass is REVIEW REQUIRED: scoped evidence, not full-repository CI, semantic, legal, human,
 stage or release acceptance.
@@ -79,6 +84,8 @@ REQUIRED_TESTS["isolation"] = REQUIRED_TESTS["behavior"] | REQUIRED_TESTS["negat
     CLASSES["A5"] + ".test_a5_authored_sources_contain_no_machine_paths",
     CLASSES["A5"] + ".test_a5_application_and_tests_come_from_the_same_source_tree",
     CLASSES["A5"] + ".test_a5_fixture_roots_stay_below_the_active_temporary_root",
+    CLASSES["A5"] + ".test_a5_runner_refuses_the_pinned_inline_interpreter_child_shape",
+    CLASSES["A5"] + ".test_a5_runner_permits_file_and_module_children",
 }
 EXPECTED_CONTROL = {("control", "list"): "TypeError", ("control", "object"): "TypeError",
                     ("control", "valid_blocked"): "passed", ("staged", "list"): "passed",
@@ -110,6 +117,95 @@ def repo_modules():
     return sorted(n for n in sys.modules if n.split(".")[0] in ("campaign_tool", "tests"))
 
 
+# ----------------------------------------------------------------------------- child commands
+
+FORBIDDEN_CHILD = "forbidden_child_command"
+UNMET_EXIT = 2  # compatibility only: forbidden child refused before launch; NOT a pass, awaits disposition
+FORK = object()  # marker: a process event without an argv (fork); never a command by itself
+INTERPRETER_NAME = re.compile(r"^(python|pypy)[0-9.]*[a-z]?$")
+SHELL_NAMES = ("sh", "bash", "dash", "zsh", "ksh", "ash", "fish")
+PYTHON_VALUE_FLAGS = "WX"  # short options whose value follows (attached or as the next argument)
+PYTHON_VALUE_LONG = ("--check-hash-based-pycs",)
+
+
+def process_argv(event, args):
+    """The argv a process audit event is about to run (subprocess/exec/spawn), or FORK."""
+    if event in ("os.fork", "os.forkpty"):
+        return FORK
+    if event in ("os.system", "os.startfile", "pty.spawn"):
+        return os.fsdecode(args[0]) if args and isinstance(args[0], (str, bytes)) else repr(args)[:120]
+    # subprocess.Popen: (executable, args, cwd, env); os.exec/os.posix_spawn/os.spawn: (path, argv, env)
+    command = args[1] if len(args) > 1 else None
+    if command is None:
+        return repr(args)[:120]
+    if isinstance(command, (str, bytes, os.PathLike)):
+        return os.fsdecode(command)
+    try:
+        return [os.fsdecode(a) for a in command]
+    except TypeError:
+        return repr(command)[:120]
+
+
+def child_command_violation(argv):
+    """None for an ordinary file- or module-based child; otherwise why it is forbidden.
+
+    Forbidden (frozen card contract: no inline interpreter source, no interpreter stdin or
+    heredoc, no nested shell bodies): an interpreter given -c (alone or bundled, e.g. -Bc),
+    an interpreter reading its program from stdin ('-' or no script), a shell given -c or
+    reading stdin, and any unparsed shell-string command. Inspection only; never executes.
+    """
+    if not isinstance(argv, list):
+        return "shell_string_command"
+    if not argv:
+        return "empty_argv"
+    name = os.path.basename(argv[0])
+    rest = list(argv[1:])
+    if name == "env":
+        while rest and (rest[0].startswith("-") or "=" in rest[0]):
+            rest.pop(0)
+        return child_command_violation(rest) if rest else "env_without_command"
+    if name in SHELL_NAMES:
+        for token in rest:
+            if token == "--" or not token.startswith("-"):
+                return None  # a script file
+            if not token.startswith("--") and "c" in token[1:]:
+                return "shell_inline_command"
+        return "shell_reads_stdin"
+    if not INTERPRETER_NAME.match(name):
+        return None  # an ordinary tool or script file
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        if token == "-":
+            return "interpreter_reads_stdin"
+        if token == "--":
+            return None if index + 1 < len(rest) else "interpreter_reads_stdin"
+        if not token.startswith("-"):
+            return None  # the script file
+        if token.startswith("--"):
+            index += 2 if token in PYTHON_VALUE_LONG else 1
+            continue
+        for position, flag in enumerate(token[1:], start=1):
+            if flag == "c":
+                return "interpreter_inline_source"
+            if flag == "m":
+                return None  # an importable module from the source tree, not inline source
+            if flag in PYTHON_VALUE_FLAGS:
+                if position == len(token) - 1:
+                    index += 1  # the value is the next argument
+                break
+        index += 1
+    return "interpreter_reads_stdin"
+
+
+def limit_probe():
+    """File-based child for the supplementary resource-limit evidence (no inline source)."""
+    import resource
+    sys.stdout.write("%d %d\n" % (resource.getrlimit(resource.RLIMIT_AS)[0],
+                                  resource.getrlimit(resource.RLIMIT_FSIZE)[0]))
+    return 0
+
+
 # ----------------------------------------------------------------------------- child
 
 class Guard:
@@ -133,6 +229,8 @@ class Guard:
         self.active = False
         self.phase = "setup"
         self.refusals = []
+        self.children = []
+        self.current_test = None
         self.local = threading.local()
 
     @property
@@ -161,7 +259,8 @@ class Guard:
             root.is_relative_to(path) for root in self.read_roots + self.write_roots)
 
     def refuse(self, event, detail):
-        self.refusals.append({"phase": self.phase, "event": event, "detail": str(detail)[:240]})
+        self.refusals.append({"phase": self.phase, "test": self.current_test, "event": event,
+                              "detail": str(detail)[:240]})
         raise PermissionError("FA50 offline guard refused " + event)
 
     LOOPBACK = ("127.0.0.1", "::1", "localhost")
@@ -208,6 +307,16 @@ class Guard:
         elif event in self.PROCESS or event.startswith("os.exec") or event.startswith("os.spawn"):
             if self.strict:
                 self.refuse(event, args[:1])
+            argv = process_argv(event, args)
+            reason = None if argv is FORK else child_command_violation(argv)  # an exec is checked itself
+            shown = argv if isinstance(argv, list) else ["<fork>" if argv is FORK else argv]
+            entry = {"phase": self.phase, "test": self.current_test, "event": event,
+                     "argv_head": [str(a)[:120] for a in shown[:3]],
+                     "verdict": reason or "permitted_file_or_module_child"}
+            self.children.append(entry)
+            if reason:
+                self.refuse(FORBIDDEN_CHILD, {"test": self.current_test, "reason": reason,
+                                              "argv_head": entry["argv_head"]})
         elif event == "open":
             path, mode, flags = args
             if isinstance(path, (str, bytes)) and not os.path.isabs(os.fsdecode(path)) and \
@@ -345,7 +454,21 @@ def child_main(spec_path):
     suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in spec["selectors"])
     selected = [test.id() for test in iter_tests(suite)]
     sys.stderr.write("selected %d tests from %s\n" % (len(selected), ", ".join(spec["selectors"])))
-    result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(suite)
+
+    class TrackingResult(unittest.TextTestResult):
+        def startTest(self, test):
+            guard.current_test = test.id()
+            super().startTest(test)
+
+        def stopTest(self, test):
+            super().stopTest(test)
+            guard.current_test = None
+
+    result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2, resultclass=TrackingResult).run(suite)
+    supplementary = None
+    if mode == "compat":
+        guard.phase = "supplementary-limit-probe"
+        supplementary = supplementary_limit_probe(ocr)
     guard.active = False
     counts = {"tests_run": result.testsRun, "selected": selected,
               "failures": [t.id() for t, _ in result.failures], "errors": [t.id() for t, _ in result.errors],
@@ -362,26 +485,61 @@ def child_main(spec_path):
         "counts": counts, "repo_modules_loaded": loaded, "modules_outside_source": outside,
         "ocr_module_file": os.path.realpath(ocr.__file__), "dont_write_bytecode": sys.dont_write_bytecode,
         "tempdir": tempfile.gettempdir(), "home": os.environ["HOME"], "sentinel_probes": probes,
-        "guard_refusals": guard.refusals,
+        "guard_refusals": guard.refusals, "child_commands": guard.children,
+        "supplementary_limit_probe": supplementary,
         "control_outcomes": list(getattr(fa50, "CONTROL_OUTCOMES", [])) if fa50 else [],
     })
     test_refusals = [r for r in guard.refusals if r["phase"] != "sentinel-self-test"]
+    forbidden = [r for r in test_refusals if r["event"] == FORBIDDEN_CHILD]
+    unmet = sorted({r["test"] for r in forbidden if r["test"]})
     probe_ok = mode != "strict" or (
         set(probes) == set(EXPECTED_PROBES)
         and all(p["outcome"] == "PermissionError" for p in probes.values())
         and all(p["guard_refusals"] == 1 for k, p in probes.items() if k != "bound_default")
         and len(guard.refusals) - len(test_refusals) == len(EXPECTED_PROBES) - 1)
-    facts["child_ok"] = bool(
-        result.testsRun > 0 and result.testsRun == len(selected) and not counts["failures"]
-        and not counts["errors"] and not counts["skipped"] and not counts["expected_failures"]
-        and not counts["unexpected_successes"] and not outside and not test_refusals and probe_ok
+    environment_ok = bool(
+        result.testsRun > 0 and result.testsRun == len(selected) and not counts["skipped"]
+        and not counts["expected_failures"] and not counts["unexpected_successes"] and not outside and probe_ok
         and facts["guard_installed_before_app_import"] and facts["probe_target_outside_roots"]
         and facts["dont_write_bytecode"] and Path(facts["tempdir"]).is_relative_to(root)
-        and Path(facts["ocr_module_file"]).is_relative_to(SOURCE))
+        and Path(facts["ocr_module_file"]).is_relative_to(SOURCE)
+        and (supplementary is None or supplementary.get("matches") is True))
+    facts["child_ok"] = bool(environment_ok and not counts["failures"] and not counts["errors"]
+                             and not test_refusals)
+    # Fail closed, distinctly: a run whose ONLY defects are guard-refused forbidden child commands
+    # (each refusal attributed to a test, those tests exactly the erroring set) is UNMET, not a pass.
+    facts["unmet_forbidden_child"] = {
+        "tests": unmet, "commands": [{"test": r["test"], "detail": r["detail"]} for r in forbidden],
+        "only_defect": bool(environment_ok and forbidden and len(forbidden) == len(test_refusals)
+                            and all(r["test"] for r in forbidden) and not counts["failures"]
+                            and sorted(counts["errors"]) == unmet)}
+    if facts["child_ok"]:
+        facts["status"] = "PASS"
+    elif facts["unmet_forbidden_child"]["only_defect"]:
+        facts["status"] = "UNMET_FORBIDDEN_CHILD_PENDING_OPERATOR_DISPOSITION"
+    else:
+        facts["status"] = "FAIL"
     Path(spec["result"]).write_text(json.dumps(facts, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    sys.stdout.write(json.dumps({"case": spec["case"], "child_ok": facts["child_ok"],
+    sys.stdout.write(json.dumps({"case": spec["case"], "child_ok": facts["child_ok"], "status": facts["status"],
                                  "tests_run": result.testsRun, "source_root": str(SOURCE)}, sort_keys=True) + "\n")
-    return 0 if facts["child_ok"] else 1
+    return 0 if facts["child_ok"] else (UNMET_EXIT if facts["status"].startswith("UNMET") else 1)
+
+
+def supplementary_limit_probe(ocr):
+    """Offered substitute evidence for the pinned -c limit test: an ordinary file-based child
+    (this file, --limit-probe) under the real ocr._limit_child. It does NOT replace or count as
+    the pinned test; it is recorded for the operator's admission disposition."""
+    argv = [sys.executable, "-B", str(SOURCE / SELF), "--limit-probe"]
+    try:
+        done = subprocess.run(argv, cwd=SOURCE, capture_output=True, text=True, check=False, timeout=120,
+                              preexec_fn=ocr._limit_child)
+    except Exception as error:  # recorded and failed closed
+        return {"argv": argv, "error": type(error).__name__ + ": " + str(error)[:200], "matches": False}
+    expected = [str(ocr.CHILD_MEMORY_BYTES), str(ocr.CHILD_FILE_BYTES)]
+    return {"label": "supplementary substitute evidence; not the pinned test_ocr assertion",
+            "argv": argv, "cwd": str(SOURCE), "exit": done.returncode, "stdout": done.stdout[:200],
+            "stderr_sha256": sha256_bytes(done.stderr.encode()), "expected": expected,
+            "matches": done.returncode == 0 and done.stdout.split() == expected}
 
 
 # ---------------------------------------------------------------------------- parent
@@ -472,12 +630,17 @@ def summarize(record):
     counts = record.get("result", {}).get("counts", {})
     return {"label": record["label"], "exit": record["exit"], "tests_run": counts.get("tests_run"),
             "failures": len(counts.get("failures", [])), "errors": len(counts.get("errors", [])),
-            "skipped": len(counts.get("skipped", [])), "child_ok": record.get("result", {}).get("child_ok")}
+            "skipped": len(counts.get("skipped", [])), "child_ok": record.get("result", {}).get("child_ok"),
+            "status": record.get("result", {}).get("status")}
 
 
-def child_passed(case, record, source_root):
+def child_passed(case, record, source_root, allow_unmet=False):
     result = record.get("result")
-    if record["exit"] != 0 or not result or not result.get("child_ok"):
+    expected_exit, expected_status = (UNMET_EXIT, "UNMET_FORBIDDEN_CHILD_PENDING_OPERATOR_DISPOSITION") \
+        if allow_unmet else (0, "PASS")
+    if record["exit"] != expected_exit or not result or result.get("status") != expected_status:
+        return False
+    if not allow_unmet and not result.get("child_ok"):
         return False
     selected = set(result["counts"]["selected"])
     if case in REQUIRED_TESTS and not REQUIRED_TESTS[case] <= selected:
@@ -572,6 +735,18 @@ def parent_main(case, output_parent):
             child = run_child(case, SOURCE, run_dir, "source", probe_target)
             record["children"].append(child)
             passed = child_passed(case, child, SOURCE)
+            if case == "compatibility" and not passed and child_passed(case, child, SOURCE, allow_unmet=True):
+                unmet = child["result"]["unmet_forbidden_child"]
+                record["unmet_requirement"] = {
+                    "status": child["result"]["status"], "tests": unmet["tests"], "commands": unmet["commands"],
+                    "executed_and_passed": child["result"]["counts"]["tests_run"] - len(unmet["tests"]),
+                    "supplementary_limit_probe": child["result"].get("supplementary_limit_probe"),
+                    "owner": "existing operator (admission disposition); full discovery and exact-head CI "
+                             "remain with their existing owners",
+                    "note": "pinned test left unedited and unskipped; its forbidden child was refused before "
+                            "launch, so this is NOT a full compatibility pass"}
+                log.append("compatibility UNMET (exit %d): forbidden child refused before launch in %s"
+                           % (UNMET_EXIT, ", ".join(unmet["tests"])))
             if case == "negative-control":
                 passed = passed and control_passed(child)
             if case == "isolation":
@@ -603,10 +778,21 @@ def parent_main(case, output_parent):
     record["probe_target_absent_after"] = not os.path.lexists(probe_target.parent)
     passed = bool(passed and record["prior_evidence_unchanged"] and not record["bytecode_written_in_source"]
                   and record["probe_target_absent_after"] and start == end)
-    record["exit"] = 0 if passed else 1
+    unmet_ok = bool("unmet_requirement" in record and record["prior_evidence_unchanged"]
+                    and not record["bytecode_written_in_source"] and record["probe_target_absent_after"]
+                    and start == end and "runner_fault" not in record)
+    record["exit"] = 0 if passed else (UNMET_EXIT if unmet_ok else 1)
     summary = {"case": case, "exit": record["exit"], "run_dir": str(run_dir), "head": end["head"],
                "clean_tree": end["clean_tree"], "children": [summarize(c) for c in record["children"]],
                "label": LABEL}
+    if case == "compatibility":
+        summary["compatibility_status"] = "PASS" if passed else (
+            record["unmet_requirement"]["status"] if unmet_ok else "FAIL")
+        if unmet_ok:
+            summary["unmet_tests"] = record["unmet_requirement"]["tests"]
+            summary["executed_and_passed"] = record["unmet_requirement"]["executed_and_passed"]
+            summary["supplementary_limit_probe_matches"] = \
+                (record["unmet_requirement"]["supplementary_limit_probe"] or {}).get("matches")
     if case == "credentials":
         summary["scan_exit"] = record.get("scan", {}).get("exit")
         summary["check_exit"] = record.get("check", {}).get("exit")
@@ -628,7 +814,12 @@ def main(argv=None):
     parser.add_argument("--case", choices=CASES)
     parser.add_argument("--output-parent")
     parser.add_argument("--child-spec", help=argparse.SUPPRESS)
+    parser.add_argument("--limit-probe", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.limit_probe:
+        if args.case or args.output_parent or args.child_spec:
+            parser.error("--limit-probe is used alone")
+        return limit_probe()
     if args.child_spec:
         if args.case or args.output_parent:
             parser.error("--child-spec is used alone")
