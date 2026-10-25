@@ -33,7 +33,7 @@ def malformed_sources():
 class Fixture(unittest.TestCase):
     def setUp(self):
         # The helper/CI must supply an inherited external temp root; no box paths.
-        parent = checked_output(os.environ["TMPDIR"])
+        parent = checked_output(os.environ.get("TMPDIR") or tempfile.gettempdir())
         if isinstance(self, (GateControl, Isolation)):
             # Control/child outputs are retained evidence, not fixture cleanup.
             self.base = Path(tempfile.mkdtemp(prefix="fa1302-controls-", dir=parent))
