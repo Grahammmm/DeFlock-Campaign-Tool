@@ -3,11 +3,7 @@
   "provenance": {
     "shape": "Pinned law-package.schema.json and law.deadline records_law fields; synthetic full package, no legal content copied.",
     "oracle": "Literal values frozen before implementation using bounded independent one-day enumeration (at most 38 days); weekdays are Python Monday=0, Saturday/Sunday only excluded.",
-    "source_pins": {
-      "campaign_tool/law.py": "4b605127b1e7098c07b066e0231a5e317ae2e0d66ffabf35651e74b480522f4b",
-      "tests/test_law.py": "d2e1e9d6dc3c10a55c01b320294ee566ed15423bbf9a721be759ac2ae3cf2665",
-      "campaign_tool/_resources/schemas/law-package.schema.json": "805f75f487a5caf4e90b458435f81858a9a8e98b6d358d4291833937fdc02422"
-    }
+    "source_pin_location": "Supplied source manifest pins the baseline head/tree; original source file SHA256 values are retained in the preflight and each acceptance receipt outside the public tree."
   },
   "package": {
     "schema_version": 1,

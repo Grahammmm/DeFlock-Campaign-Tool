@@ -13,16 +13,13 @@ import sys
 import traceback
 import uuid
 
-BASE = '32eda30545fd0e5a1d83723939362d508ead8361'
-BASE_TREE = 'a9a693454f4db42b3b3235f40e322846efa27dcc'
 OWNED = ('campaign_tool/law.py', 'tests/records/test_fc16_law_deadline_range.py',
          'tests/fixtures/fc16_law_deadline_range/cases.json', 'tools/fc16_law_deadline_range_accept.py')
 TEST = OWNED[1]
-PINS = {
-    'campaign_tool/law.py': '4b605127b1e7098c07b066e0231a5e317ae2e0d66ffabf35651e74b480522f4b',
-    'tests/test_law.py': 'd2e1e9d6dc3c10a55c01b320294ee566ed15423bbf9a721be759ac2ae3cf2665',
-    'campaign_tool/_resources/schemas/law-package.schema.json': '805f75f487a5caf4e90b458435f81858a9a8e98b6d358d4291833937fdc02422',
-}
+# Admission identities live in the supplied manifest, not duplicate scanner
+# exceptions in the public tree. Its exact Git tree binds these source bytes.
+PIN_PATHS = ('campaign_tool/law.py', 'tests/test_law.py',
+             'campaign_tool/_resources/schemas/law-package.schema.json')
 CHECKERS = ('tools/check_public_tree.py', 'campaign_tool/records/public_scan.py', 'tools/check_secret_report.py',
             'docs/records-gates-import.json', 'docs/records-intake-import.json', 'container/flock-ocr/pins.json')
 
@@ -44,6 +41,10 @@ class Recorder:
         self.manifest_path = args.manifest.resolve(strict=True)
         self.manifest_raw = self.manifest_path.read_bytes()
         self.manifest = json.loads(self.manifest_raw)
+        self.base = self.manifest['head']
+        self.base_tree = self.manifest['tree']
+        require(all(isinstance(pin, str) and re.fullmatch(r'[0-9a-f]{40}', pin)
+                    for pin in (self.base, self.base_tree)), 'source_pin_format')
         self.out_base = args.out_base.resolve()
         require(self.repo != self.out_base and self.repo not in self.out_base.parents, 'evidence_inside_repo')
         require(self.out_base == Path(self.manifest['write_root']) / 'out', 'output_root_mismatch')
@@ -101,18 +102,20 @@ class Recorder:
         m = self.manifest
         require(m['schema'] == 'agentorange.source-manifest/v1', 'manifest_schema')
         require(Path(m['repo']) == self.repo and Path(m['write_root']) == self.repo.parent, 'manifest_roots')
-        require(m['head'] == BASE and m['tree'] == BASE_TREE, 'source_manifest_pins')
-        require(self.git('rev-parse', BASE + '^{tree}') == BASE_TREE, 'source_tree_pin')
-        self.command('base-ancestry', ['git', 'merge-base', '--is-ancestor', BASE, 'HEAD'])
-        for relative, sha in PINS.items():
-            require(digest(self.command('source-pin', ['git', 'show', BASE + ':' + relative])) == sha, 'source_pin')
+        require(m['card'] == 'deflock-FC16-LAW-DEADLINE-RANGE', 'source_manifest_card')
+        require(self.git('rev-parse', self.base + '^{tree}') == self.base_tree, 'source_tree_pin')
+        self.command('base-ancestry', ['git', 'merge-base', '--is-ancestor', self.base, 'HEAD'])
+        self.report['source_pins'] = {}
+        for relative in PIN_PATHS:
+            sha = digest(self.command('source-pin', ['git', 'show', self.base + ':' + relative]))
+            self.report['source_pins'][relative] = sha
             if relative != OWNED[0]:
                 require(digest((self.repo / relative).read_bytes()) == sha, 'unchanged_source_pin')
-        changed = set(self.git('diff', '--name-only', BASE, 'HEAD').splitlines())
+        changed = set(self.git('diff', '--name-only', self.base, 'HEAD').splitlines())
         require(changed == set(OWNED), 'scope_diff')
-        self.command('complete-diff', ['git', 'diff', '--binary', BASE, 'HEAD'])
+        self.command('complete-diff', ['git', 'diff', '--binary', self.base, 'HEAD'])
         for relative in CHECKERS:
-            require(self.command('checker-base', ['git', 'show', BASE + ':' + relative]) == (self.repo / relative).read_bytes(), 'checker_changed')
+            require(self.command('checker-base', ['git', 'show', self.base + ':' + relative]) == (self.repo / relative).read_bytes(), 'checker_changed')
         runtime = m['runtime']
         link = self.repo / '.venv'
         require(link.is_symlink() and link.resolve() == Path(runtime['repo_venv']), 'runtime_link')
