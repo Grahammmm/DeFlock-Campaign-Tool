@@ -10,12 +10,25 @@ stdout/stderr, argv, cwd, exit codes, executed test counts/IDs and source
 hashes in ``run.json``. The process exits 0 only when every assertion of the
 selected check holds; an unknown mode is refused by argparse.
 
-The repository root is derived from this file. Import search paths are set
-only inside this script. Children are argument arrays without a shell; the
-interpreter is the one running this script. Temporary test data for children
-lives under the per-run directory. A passing result is machine validity only:
-REVIEW REQUIRED, never semantic/legal acceptance, activation or publication
-authority.
+Isolation. This parent never imports application code. Every context that
+imports application/test code (and every admitted local grandchild those tests
+start) is a child of this same script running under ``-I`` that installs a
+narrow offline/process guard before any application import: Python-level
+sentinels plus an audit hook cover socket creation for internet families,
+connect/connectionless sends/bind/listen/name resolution, and process
+creation. Only explicitly listed local children are admitted (git and the
+installed scanner from the parent; the repository's own check scripts and the
+records CLI module, which are re-launched under the same guard). Every guard
+event is appended to a per-process log in the run directory at the moment it
+happens, so a forbidden attempt fails the gate even when the caller catches
+the refusal. An inert negative control proves this on every run. This is an
+isolation check, not a hostile-code sandbox.
+
+Identity. A missing/invalid candidate HEAD, unavailable git status, a dirty
+tree or incomplete source hashes make the run FAIL (receipt still written).
+
+A passing result is machine validity only: REVIEW REQUIRED, never
+semantic/legal acceptance, activation or publication authority.
 """
 import argparse
 import ast
@@ -26,6 +39,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import secrets
 import shutil
 import subprocess
@@ -35,7 +49,9 @@ import unittest
 
 sys.dont_write_bytecode = True
 
-REPO = Path(__file__).resolve().parents[1]
+RUNNER = Path(__file__).resolve()
+REPO = RUNNER.parents[1]
+RUNNER_NAME = RUNNER.name
 BRIEF = "FC2-RETAINED-SCOPE: typed refusal for malformed retained unit scope identifiers (frozen card brief)"
 CHECKS = ("focused", "compatibility", "negative", "portability", "credentials", "public-tree")
 TARGET_PATH = "campaign_tool/records/retained_units.py"
@@ -58,6 +74,11 @@ HASHED_SOURCES = (
     "tools/check_secret_report.py",
     "tools/check_public_tree.py",
 )
+APP_PACKAGES = ("campaign_tool", "tests")
+# Local children that guarded contexts may start; each is re-launched under the guard.
+ADMITTED_MODULES = ("campaign_tool.records.understanding",)
+ADMITTED_SCRIPTS = ("tools/check_secret_report.py", "tools/check_public_tree.py")
+CHILD_MODES = ("--guarded-unittest", "--guarded-task", "--guarded-exec", "--guard-control")
 STATIC_SCANNED = (FOCUSED_PATH, "tools/accept_fc2_retained_scope.py")
 # Assembled from parts so this list does not match its own source text.
 BOX_SPECIFIC = ("/ho" + "me/", "agent" + "-work", "venv" + "-fullsuite", "/Us" + "ers/", ".her" + "mes",
@@ -85,6 +106,8 @@ NEGATIVE_POSITIVES = (
     "ReadCurrentUnitsTests.test_valid_current_import_accepted",
     "ReadCurrentUnitsTests.test_stale_current_pointer_code_preserved",
 )
+HEAD_FORM = re.compile(r"[0-9a-f]{40}")
+SHA256_FORM = re.compile(r"[0-9a-f]{64}")
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
 SUMMARY = re.compile(r"^(OK|FAILED)(?: \(([^)]*)\))?\s*$", re.M)
 VERBOSE = re.compile(r"^(test\w*) \(([\w.]+)\)(?:\n[^\n]*?)? \.\.\. (ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)$",
@@ -114,6 +137,208 @@ def new_run_dir(output_root, check):
     return run
 
 
+def app_modules_loaded():
+    return sorted(name for name in sys.modules if name.split(".")[0] in APP_PACKAGES)
+
+
+# ------------------------------------------------------------------ guard
+
+NET_EVENTS = frozenset({"socket.connect", "socket.sendto", "socket.sendmsg", "socket.bind", "socket.getaddrinfo",
+                        "socket.gethostbyname", "socket.gethostbyaddr", "socket.getnameinfo"})
+PROC_EVENTS = frozenset({"os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork", "os.forkpty",
+                         "os.startfile"})
+SOCKET_METHODS = ("connect", "connect_ex", "sendto", "sendmsg", "bind", "listen")
+SOCKET_FUNCTIONS = ("create_connection", "create_server", "getaddrinfo", "gethostbyname", "gethostbyname_ex",
+                    "gethostbyaddr", "getnameinfo")
+OS_FUNCTIONS = ("system", "execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe", "fork",
+                "forkpty", "posix_spawn", "posix_spawnp", "spawnv", "spawnve", "spawnvp", "spawnvpe", "spawnl",
+                "spawnle", "spawnlp", "spawnlpe")
+
+
+def describe(argv):
+    if isinstance(argv, (list, tuple)):
+        return json.dumps([os.fspath(a) if isinstance(a, (str, os.PathLike)) else repr(a) for a in argv])[:600]
+    return repr(argv)[:600]
+
+
+def local_python_target(rest, cwd):
+    """(kind, name, args) when ``rest`` (argv after the interpreter) names an admitted local target."""
+    rest = list(rest)
+    while rest and rest[0] in ("-B", "-I"):
+        rest = rest[1:]
+    if len(rest) >= 2 and rest[0] == "-m" and rest[1] in ADMITTED_MODULES:
+        return ("module", rest[1], rest[2:])
+    if rest and not rest[0].startswith("-"):
+        script = (Path(cwd or os.getcwd()) / rest[0]).resolve()
+        for relative in ADMITTED_SCRIPTS:
+            if script == (REPO / relative).resolve():
+                return ("script", str(script), rest[1:])
+    return None
+
+
+class Guard:
+    """Narrow offline/process sentinels with an append-on-event log (one file per process)."""
+
+    def __init__(self, guard_dir, context, allow):
+        self.guard_dir = Path(guard_dir).resolve()
+        self.guard_dir.mkdir(parents=True, exist_ok=True)
+        self.context = context
+        self.allow = frozenset(allow)
+        self.runner_paths = {str(RUNNER)}
+        self.scanner = None
+        self.hits = []
+        self.pending = 0
+        self.path = self.guard_dir / "{}-{}-{}.jsonl".format(context, os.getpid(), secrets.token_hex(4))
+        self._handle = open(self.path, "x", encoding="utf-8")
+
+    def record(self, kind, name, layer="", detail=""):
+        entry = {"kind": kind, "name": name, "layer": layer, "detail": str(detail)[:800], "pid": os.getpid(),
+                 "context": self.context}
+        if kind == "hit":
+            self.hits.append(entry)
+        self._handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        self._handle.flush()
+
+    def refuse(self, name, layer, detail=""):
+        self.record("hit", name, layer, detail)
+        raise PermissionError("offline sentinel: " + name)
+
+    def classify(self, argv, cwd):
+        if not isinstance(argv, (list, tuple)) or not argv:
+            return None
+        if not all(isinstance(a, (str, os.PathLike)) for a in argv):
+            return None
+        argv = [os.fspath(a) for a in argv]
+        if argv[0] == "git":
+            return "git"
+        if self.scanner is not None and argv[0] == self.scanner:
+            return "scanner"
+        if argv[0] != sys.executable:
+            return None
+        rest = argv[1:]
+        if len(rest) >= 4 and rest[0] == "-I" and rest[1] == "-B" and rest[2] in self.runner_paths \
+                and rest[3] in CHILD_MODES:
+            return "runner:" + rest[3]
+        return "local-python" if local_python_target(rest, cwd) else None
+
+    def allowed(self, kind):
+        return kind in self.allow or (kind.startswith("runner:") and "runner:*" in self.allow)
+
+
+def install_guard(guard_dir, context, allow):
+    """Install before any application import. Returns the Guard (its log already has a start record)."""
+    import socket
+    guard = Guard(guard_dir, context, allow)
+    guard.record("start", context, "install", json.dumps({"argv": sys.argv, "allow": sorted(guard.allow),
+                                                          "preloaded_app_modules": app_modules_loaded()}))
+    inet = {socket.AF_INET}
+    if hasattr(socket, "AF_INET6"):
+        inet.add(socket.AF_INET6)
+
+    def blocker(name):
+        def blocked(*_args, **_kwargs):
+            guard.refuse(name, "wrapper")
+        return blocked
+
+    for attr in SOCKET_METHODS:
+        setattr(socket.socket, attr, blocker("socket." + attr))
+    for attr in SOCKET_FUNCTIONS:
+        setattr(socket, attr, blocker("socket." + attr))
+    for attr in OS_FUNCTIONS:
+        if hasattr(os, attr):
+            setattr(os, attr, blocker("os." + attr))
+
+    original_init = subprocess.Popen.__init__
+
+    def guarded_init(popen, args, *rest, **kwargs):
+        if kwargs.get("executable") is not None or kwargs.get("shell") or (len(rest) >= 2 and rest[1] is not None):
+            guard.refuse("subprocess.Popen", "wrapper", describe(args))
+        kind = guard.classify(args, kwargs.get("cwd"))
+        if kind is None or not guard.allowed(kind):
+            guard.refuse("subprocess.Popen", "wrapper", describe(args))
+        if kind == "local-python":
+            args = [sys.executable, "-I", "-B", str(RUNNER), "--guarded-exec", str(guard.guard_dir), "--"] + \
+                   [os.fspath(a) for a in args[1:]]
+            guard.record("rewrite", kind, "wrapper", describe(args))
+        guard.record("admitted", kind, "wrapper", describe(args))
+        try:
+            return original_init(popen, args, *rest, **kwargs)
+        finally:
+            guard.pending = 0
+
+    subprocess.Popen.__init__ = guarded_init
+
+    def hook(event, args):
+        if event == "socket.__new__":
+            if len(args) > 1 and args[1] in inet:
+                guard.refuse(event, "audit", args[1])
+            return
+        if event in NET_EVENTS:
+            guard.refuse(event, "audit")
+        if event == "subprocess.Popen":
+            executable, argv, cwd = args[0], args[1], args[2]
+            kind = guard.classify(argv, cwd)
+            first = os.fspath(list(argv)[0]) if isinstance(argv, (list, tuple)) and argv else None
+            if kind is None or kind == "local-python" or not guard.allowed(kind) or \
+                    (executable is not None and os.fspath(executable) != first):
+                guard.refuse(event, "audit", describe(argv))
+            guard.pending += 1
+            return
+        if event in PROC_EVENTS:
+            if event in ("os.posix_spawn", "os.fork") and guard.pending > 0:
+                guard.pending -= 1
+                return
+            guard.refuse(event, "audit")
+
+    sys.addaudithook(hook)
+    return guard
+
+
+def guard_summary(guard_dir):
+    """Every guard log in ``guard_dir``: processes, admitted children, rewrites and hits."""
+    summary = {"dir": str(guard_dir), "files": [], "starts": [], "admitted": 0, "rewrites": 0, "hits": [],
+               "malformed": []}
+    for path in sorted(Path(guard_dir).glob("*.jsonl")) if Path(guard_dir).is_dir() else []:
+        summary["files"].append({"name": path.name, "sha256": sha256_file(path)})
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            try:
+                entry = json.loads(line)
+                kind = entry["kind"]
+            except (ValueError, KeyError, TypeError):
+                summary["malformed"].append({"file": path.name, "line": number})
+                continue
+            if kind == "start":
+                detail = json.loads(entry["detail"])
+                summary["starts"].append({"file": path.name, "context": entry["context"],
+                                          "preloaded_app_modules": detail.get("preloaded_app_modules")})
+            elif kind == "admitted":
+                summary["admitted"] += 1
+            elif kind == "rewrite":
+                summary["rewrites"] += 1
+            elif kind == "hit":
+                summary["hits"].append(dict(entry, file=path.name))
+    return summary
+
+
+def guard_gate_problems(summary):
+    """The single gate applied to ordinary runs (and, inverted, to the negative control)."""
+    problems = []
+    if summary["hits"]:
+        problems.append("guard_sentinel_hits")
+    if summary["malformed"]:
+        problems.append("guard_log_malformed")
+    if any(start["preloaded_app_modules"] for start in summary["starts"]):
+        problems.append("application_imported_before_guard")
+    if not summary["starts"]:
+        problems.append("guard_log_missing")
+    if len(summary["starts"]) != len(summary["files"]):
+        problems.append("guard_log_without_start")
+    return problems
+
+
+# ---------------------------------------------------------------- identity
+
+
 def source_hashes(root):
     hashes = {}
     for relative in HASHED_SOURCES:
@@ -122,28 +347,85 @@ def source_hashes(root):
     return hashes
 
 
-def git_identity():
-    identity = {}
-    for name, argv in (("head", ["git", "-C", str(REPO), "rev-parse", "HEAD"]),
-                       ("status_porcelain", ["git", "-C", str(REPO), "status", "--porcelain", "--untracked-files=all"])):
+def git_identity(repo=None, run=subprocess.run):
+    repo = repo or REPO
+    identity = {"repo": str(repo)}
+    for name, argv in (("head", ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"]),
+                       ("status_porcelain", ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"])):
         try:
-            done = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
+            done = run(argv, capture_output=True, text=True, timeout=60, check=False)
             identity[name] = done.stdout.strip() if done.returncode == 0 else None
             identity[name + "_exit"] = done.returncode
+            if done.returncode != 0:
+                identity[name + "_stderr"] = (done.stderr or "")[:500]
         except (OSError, subprocess.SubprocessError) as error:
             identity[name] = None
-            identity[name + "_error"] = type(error).__name__
+            identity[name + "_error"] = "{}: {}".format(type(error).__name__, error)[:500]
     identity["clean"] = identity.get("status_porcelain") == ""
     return identity
 
 
+def identity_problems(identity, hashes):
+    """Fail closed: required HEAD, status, cleanliness and every source hash must be present and valid."""
+    problems = []
+    head = identity.get("head")
+    if not isinstance(head, str) or not HEAD_FORM.fullmatch(head):
+        problems.append("git_head_unavailable_or_invalid")
+    status = identity.get("status_porcelain")
+    if not isinstance(status, str):
+        problems.append("git_status_unavailable")
+    elif status != "":
+        problems.append("worktree_not_clean")
+    if set(hashes) != set(HASHED_SOURCES) or not all(isinstance(v, str) and SHA256_FORM.fullmatch(v)
+                                                     for v in hashes.values()):
+        problems.append("source_hashes_incomplete")
+    return problems
+
+
+def identity_self_check(run_dir):
+    """Simulated identity failures must each FAIL; the ordinary exact-head identity must pass."""
+    def unavailable(*_args, **_kwargs):
+        raise FileNotFoundError("synthetic fault: git executable unavailable")
+
+    hashes = source_hashes(REPO)
+    ordinary = git_identity(REPO)
+    missing_hash = dict(hashes)
+    missing_hash[TARGET_PATH] = None
+    cases = {
+        "git_unavailable": (git_identity(REPO, run=unavailable), hashes, "git_head_unavailable_or_invalid"),
+        "git_failed": (git_identity(run_dir / "not-a-repository"), hashes, "git_head_unavailable_or_invalid"),
+        "invalid_head": (dict(ordinary, head="not-a-commit"), hashes, "git_head_unavailable_or_invalid"),
+        "status_unavailable": (dict(ordinary, status_porcelain=None), hashes, "git_status_unavailable"),
+        "dirty_tree": (dict(ordinary, status_porcelain=" M synthetic"), hashes, "worktree_not_clean"),
+        "missing_source_hash": (ordinary, missing_hash, "source_hashes_incomplete"),
+        "ordinary_exact_head": (ordinary, hashes, None),
+    }
+    report = {}
+    ok = True
+    for name, (identity, case_hashes, expected) in cases.items():
+        found = identity_problems(identity, case_hashes)
+        passed = (found == []) if expected is None else (expected in found)
+        ok = ok and passed
+        report[name] = {"problems": found, "expected": expected, "passed": passed,
+                        "head": identity.get("head")}
+    return {"cases": report, "ok": ok}
+
+
+# ------------------------------------------------------------- children
+
+
 def child_env(run_dir, label):
-    """Inherited environment with only temp/home data defaults redirected into the run directory."""
-    scratch = run_dir / (label + "-tmp")
+    """Inherited environment with temp/home/XDG data defaults redirected into the run directory."""
+    scratch = run_dir / (label + "-home")
     scratch.mkdir(mode=0o700)
     env = dict(os.environ)
-    env.update({"TMPDIR": str(scratch), "TEMP": str(scratch), "TMP": str(scratch)})
-    return env
+    for key in ("HOME", "TMPDIR", "TEMP", "TMP", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+        env[key] = str(scratch)
+    return env, scratch
+
+
+def guarded_argv(root, *mode_args):
+    return [sys.executable, "-I", "-B", str(Path(root) / "tools" / RUNNER_NAME)] + [str(a) for a in mode_args]
 
 
 def run_child(run_dir, label, argv, cwd, env=None, stdout_path=None, timeout=900):
@@ -168,6 +450,33 @@ def run_child(run_dir, label, argv, cwd, env=None, stdout_path=None, timeout=900
             record[key + "_path"] = str(path)
             record[key + "_sha256"] = sha256_file(path)
     return record
+
+
+def load_child_report(report, record, problems, prefix=""):
+    if not Path(report).is_file():
+        problems.append(prefix + "child_report_missing")
+        return None
+    try:
+        data = json.loads(Path(report).read_text())
+    except ValueError:
+        problems.append(prefix + "child_report_malformed")
+        return None
+    record["report_path"] = str(report)
+    record["report_sha256"] = sha256_file(report)
+    guard_file = data.get("guard_file")
+    if not guard_file or not Path(guard_file).is_file():
+        problems.append(prefix + "child_guard_not_recorded")
+    if data.get("sentinel_hits"):
+        problems.append(prefix + "child_sentinel_hits")
+    if data.get("preloaded_app_modules"):
+        problems.append(prefix + "child_application_imported_before_guard")
+    return data
+
+
+def defaults_redirected(data, scratch):
+    scratch = Path(scratch).resolve()
+    return all(isinstance(data.get(k), str) and Path(data[k]).resolve().is_relative_to(scratch)
+               for k in ("tempdir", "home"))
 
 
 def verbose_test_id(name, parenthesized):
@@ -229,28 +538,14 @@ def parser_self_check():
             "python_version": sys.version}
 
 
-def loaded_suite_ids(target, root):
-    """IDs of the suite unittest would execute for ``target`` (loaded, not run)."""
-    root_text = str(root)
-    if root_text not in sys.path:
-        sys.path.insert(0, root_text)
-    suite = unittest.TestLoader().loadTestsFromName(target)
-    ids = []
-
-    def walk(item):
-        if isinstance(item, unittest.TestSuite):
-            for child in item:
-                walk(child)
-        else:
-            ids.append(item.id())
-    walk(suite)
-    return ids
-
-
 def unittest_child(run_dir, label, target, root=None):
-    root = root or REPO
-    argv = [sys.executable, "-B", "-m", "unittest", "-v", target]
-    record = run_child(run_dir, label, argv, root, env=child_env(run_dir, label))
+    """Guarded unittest child; parsed verbose stream must match the child's loaded and started IDs."""
+    root = Path(root or REPO).resolve()
+    report = run_dir / (label + ".report.json")
+    env, scratch = child_env(run_dir, label)
+    argv = guarded_argv(root, "--guarded-unittest", target, "--child-report", report, "--guard-dir",
+                        run_dir / "guard")
+    record = run_child(run_dir, label, argv, root, env=env)
     stderr_text = Path(record["stderr_path"]).read_text(errors="replace") if "stderr_path" in record else ""
     parsed = parse_unittest(stderr_text)
     record.update(parsed)
@@ -258,17 +553,27 @@ def unittest_child(run_dir, label, target, root=None):
     record["parser_self_check"] = parser_self_check()
     if not record["parser_self_check"]["match"]:
         problems.append("parser_self_check_failed")
-    try:
-        expected_ids = loaded_suite_ids(target, root)
-    except Exception as error:  # Unloadable suite: fail closed, keep the class.
-        expected_ids = None
-        record["loaded_suite_error"] = repr(error)[:2000]
+    child = load_child_report(report, record, problems) or {}
+    expected_ids = child.get("loaded_suite_ids")
+    started_ids = child.get("started_ids")
     parsed_ids = [t["id"] for t in parsed["tests"]]
     record["loaded_suite_ids"] = expected_ids
-    record["parsed_ids_match_loaded_suite"] = (expected_ids is not None and len(parsed_ids) == len(set(parsed_ids))
-                                               and sorted(parsed_ids) == sorted(expected_ids))
+    record["parsed_ids_match_loaded_suite"] = (isinstance(expected_ids, list) and isinstance(started_ids, list)
+                                               and len(parsed_ids) == len(set(parsed_ids))
+                                               and sorted(parsed_ids) == sorted(expected_ids)
+                                               == sorted(started_ids))
     if not record["parsed_ids_match_loaded_suite"]:
         problems.append("parsed_ids_differ_from_loaded_suite")
+    record["child_repo_root"] = child.get("repo_root")
+    record["loaded_modules"] = child.get("loaded_modules")
+    record["modules_outside_root"] = child.get("modules_outside_root")
+    record["defaults"] = {k: child.get(k) for k in ("tempdir", "home")}
+    if child.get("repo_root") != str(root):
+        problems.append("child_used_wrong_root")
+    if child.get("modules_outside_root") or not child.get("loaded_modules"):
+        problems.append("application_modules_loaded_outside_root")
+    if not defaults_redirected(child, scratch):
+        problems.append("child_defaults_not_redirected")
     if record.get("exit") != 0:
         problems.append("unittest_exit_nonzero")
     if parsed["summary"] != "OK":
@@ -286,6 +591,31 @@ def unittest_child(run_dir, label, target, root=None):
     record["non_ok_test_ids"] = bad
     record["problems"] = problems
     return record, problems
+
+
+def task_child(run_dir, result, task):
+    """Guarded in-process task (baseline probe or negative control) in a child; returns its problems."""
+    report = run_dir / ("task-" + task + ".report.json")
+    env, scratch = child_env(run_dir, "task-" + task)
+    argv = guarded_argv(REPO, "--guarded-task", task, "--run-dir", run_dir, "--child-report", report,
+                        "--guard-dir", run_dir / "guard")
+    record = run_child(run_dir, "task-" + task, argv, REPO, env=env)
+    result["children"].append(record)
+    problems = []
+    data = load_child_report(report, record, problems, prefix=task + ":") or {}
+    result[task] = data.get("data")
+    if not isinstance(data.get("problems"), list):
+        problems.append(task + ":child_incomplete")
+    else:
+        problems.extend(task + ":" + p for p in data["problems"])
+    if record.get("exit") != 0:
+        problems.append(task + ":child_exit_nonzero")
+    if data and not defaults_redirected(data, scratch):
+        problems.append(task + ":child_defaults_not_redirected")
+    return problems
+
+
+# ------------------------------------------------- in-child application work
 
 
 def _load_in_process(root):
@@ -372,31 +702,6 @@ def baseline_probe(run_dir, result):
     return problems
 
 
-# ----------------------------------------------------------------- checks
-
-
-def check_focused(run_dir, result):
-    record, problems = unittest_child(run_dir, "focused-unittest", FOCUSED_MODULE)
-    result["children"].append(record)
-    try:
-        problems = problems + baseline_probe(run_dir, result)
-    except (subprocess.SubprocessError, OSError, KeyError, ValueError, RuntimeError, SyntaxError) as error:
-        problems = problems + ["baseline_probe_incomplete:" + type(error).__name__]
-        result["baseline_probe_error"] = repr(error)[:2000]
-    return problems
-
-
-def check_compatibility(run_dir, result):
-    problems = []
-    for index, target in enumerate(COMPAT_TARGETS, 1):
-        record, found = unittest_child(run_dir, "compatibility-{}".format(index), target)
-        result["children"].append(record)
-        problems.extend(target + ":" + p for p in found)
-    result["compatibility_total_tests"] = sum(c.get("tests_run", 0) for c in result["children"])
-    result["full_discovery"] = "operator-run (not executed by this runner)"
-    return problems
-
-
 def _run_cases(focused, names):
     loader = unittest.TestLoader()
     suite = unittest.TestSuite(loader.loadTestsFromName(name, focused) for name in names)
@@ -438,13 +743,9 @@ def mutant_segment(candidate_segment):
     return "\n".join(lines), {"member_line": i, "unique_line": j}
 
 
-def check_negative(run_dir, result):
+def negative_in_child(run_dir, result):
     """In-memory mutant: set() uniqueness moves ahead of member type validation; nothing on disk changes."""
     problems = []
-    import tempfile
-    in_process_tmp = run_dir / "in-process-tmp"
-    in_process_tmp.mkdir(mode=0o700)
-    tempfile.tempdir = str(in_process_tmp)  # In-process synthetic ledgers stay inside this run directory.
     disk_before = sha256_file(REPO / TARGET_PATH)
     retained_units, focused = _load_in_process(REPO)
     original = retained_units._scope
@@ -493,6 +794,227 @@ def check_negative(run_dir, result):
     return problems
 
 
+TASKS = {"baseline": baseline_probe, "negative": negative_in_child}
+
+
+def _child_common(guard, data):
+    import tempfile
+    data.update({"guard_file": str(guard.path), "sentinel_hits": guard.hits, "repo_root": str(REPO),
+                 "tempdir": os.path.realpath(tempfile.gettempdir()), "home": str(Path.home()),
+                 "preloaded_app_modules": json.loads(guard_start_detail(guard)).get("preloaded_app_modules")})
+
+
+def guard_start_detail(guard):
+    first = Path(guard.path).read_text(encoding="utf-8").splitlines()[0]
+    return json.loads(first)["detail"]
+
+
+class _StartedResult(unittest.TextTestResult):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started_ids = []
+
+    def startTest(self, test):
+        self.started_ids.append(test.id())
+        super().startTest(test)
+
+
+def guarded_unittest_main(target, report, guard_dir):
+    guard = install_guard(guard_dir, "unittest", allow={"local-python", "runner:--guarded-exec"})
+    sys.path[0] = str(REPO)
+    suite = unittest.TestLoader().loadTestsFromName(target)
+    loaded = []
+
+    def walk(item):
+        if isinstance(item, unittest.TestSuite):
+            for child in item:
+                walk(child)
+        else:
+            loaded.append(item.id())
+    walk(suite)
+    outcome = unittest.TextTestRunner(stream=sys.stderr, verbosity=2, resultclass=_StartedResult).run(suite)
+    modules = {}
+    outside = []
+    for name in app_modules_loaded():
+        path = getattr(sys.modules[name], "__file__", None)
+        if path is None:
+            continue
+        modules[name] = path
+        if not Path(path).resolve().is_relative_to(REPO):
+            outside.append(name)
+    data = {"target": target, "loaded_suite_ids": loaded, "started_ids": outcome.started_ids,
+            "tests_run": outcome.testsRun, "failures": [c.id() for c, _ in outcome.failures],
+            "errors": [c.id() for c, _ in outcome.errors], "skipped": [c.id() for c, _ in outcome.skipped],
+            "loaded_modules": modules, "modules_outside_root": outside}
+    _child_common(guard, data)
+    with open(report, "x") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+    ok = outcome.wasSuccessful() and outcome.testsRun > 0 and not outcome.skipped and not guard.hits \
+        and not outside
+    return 0 if ok else 1
+
+
+def guarded_task_main(task, run_dir, report, guard_dir):
+    guard = install_guard(guard_dir, "task-" + task, allow={"git"})
+    sys.path[0] = str(REPO)
+    data = {}
+    try:
+        problems = TASKS[task](Path(run_dir), data)
+    except Exception as error:  # Incomplete task: record the class, fail closed.
+        problems = ["task_incomplete:" + type(error).__name__]
+        data["exception_traceback"] = traceback.format_exc()[-4000:]
+    out = {"task": task, "data": data, "problems": problems}
+    _child_common(guard, out)
+    with open(report, "x") as handle:
+        json.dump(out, handle, indent=2, sort_keys=True, default=str)
+    return 0 if not problems and not guard.hits else 1
+
+
+def guarded_exec_main(guard_dir, rest):
+    """Run one admitted local script/module under the guard, emulating ``python [-B] script|-m module``."""
+    guard = install_guard(guard_dir, "exec", allow={"local-python", "runner:--guarded-exec"})
+    target = local_python_target(rest, os.getcwd())
+    if target is None:
+        guard.record("hit", "unadmitted_exec", "runner", describe(rest))
+        return 2
+    kind, name, args = target
+    if kind == "module":
+        sys.path[0] = os.getcwd()
+        sys.argv = [name] + list(args)
+        runpy.run_module(name, run_name="__main__", alter_sys=True)
+    else:
+        sys.path[0] = os.path.dirname(name)
+        sys.argv = [name] + list(args)
+        runpy.run_path(name, run_name="__main__")
+    return 0
+
+
+# Inert negative controls: every attempt targets a nonexistent local path, a numeric loopback-free lookup or an
+# unconnected socket, so nothing is sent or spawned even if a sentinel were missing.
+CONTROL_EXPECT = {
+    "sendto_connectionless": ("socket.sendto", "wrapper"),
+    "sendto_audit_layer": ("socket.sendto", "audit"),
+    "sendmsg": ("socket.sendmsg", "wrapper"),
+    "connect": ("socket.connect", "wrapper"),
+    "bind": ("socket.bind", "wrapper"),
+    "inet_socket_creation": ("socket.__new__", "audit"),
+    "getaddrinfo": ("socket.getaddrinfo", "wrapper"),
+    "unlisted_subprocess": ("subprocess.Popen", "wrapper"),
+    "unadmitted_local_python": ("subprocess.Popen", "wrapper"),
+    "posix_spawn": ("os.posix_spawn", "wrapper"),
+    "posix_spawn_audit_layer": ("os.posix_spawn", "audit"),
+    "execv": ("os.execv", "wrapper"),
+}
+
+
+def guard_control_main(report, guard_dir, scratch):
+    import socket
+    guard = install_guard(guard_dir, "control", allow=())
+    scratch = Path(scratch)
+    # Unique abstract-namespace AF_UNIX name that nothing listens on (short; no filesystem entry).
+    missing = b"\0fc2-guard-control-" + secrets.token_hex(8).encode()
+    program = str(scratch / "no-such-program")
+    attempts = {}
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    unbound = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    raw_sendto = getattr(socket, "_socket").socket.sendto
+    actions = {
+        "sendto_connectionless": lambda: left.sendto(b"inert", missing),
+        "sendto_audit_layer": lambda: raw_sendto(left, b"inert", missing),
+        "sendmsg": lambda: left.sendmsg([b"inert"], [], 0, missing),
+        "connect": lambda: unbound.connect(missing),
+        "bind": lambda: unbound.bind(missing),
+        "inet_socket_creation": lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM).close(),
+        "getaddrinfo": lambda: socket.getaddrinfo("0.0.0.0", None, flags=socket.AI_NUMERICHOST),
+        "unlisted_subprocess": lambda: subprocess.run([program], check=False),
+        "unadmitted_local_python": lambda: subprocess.run([sys.executable, "-I", "-B", program + ".py"], check=False),
+        "posix_spawn": lambda: os.posix_spawn(program, [program], {}),
+        "posix_spawn_audit_layer": lambda: __import__("posix").posix_spawn(program, [program], {}),
+        "execv": lambda: os.execv(program, [program]),
+    }
+    for label, action in actions.items():
+        before = len(guard.hits)
+        try:
+            action()  # Deliberately caught below: a caught attempt must still fail the gate.
+            raised = None
+        except Exception as error:
+            raised = type(error).__name__
+        attempts[label] = {"raised": raised, "hits": guard.hits[before:]}
+    for sock in (left, right, unbound):
+        sock.close()
+    data = {"attempts": attempts, "scratch_entries": sorted(p.name for p in scratch.iterdir())}
+    _child_common(guard, data)
+    with open(report, "x") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+    return 0 if not guard.hits else 1
+
+
+def run_guard_control(run_dir, result):
+    """The ordinary gate must FAIL on caught, inert forbidden attempts; returns problems if it does not."""
+    problems = []
+    control_dir = run_dir / "guard-control"
+    env, scratch = child_env(run_dir, "guard-control")
+    endpoints = run_dir / "guard-control-endpoints"
+    endpoints.mkdir(mode=0o700)
+    report = run_dir / "guard-control.report.json"
+    argv = guarded_argv(REPO, "--guard-control", "--child-report", report, "--guard-dir", control_dir,
+                        "--scratch", endpoints)
+    record = run_child(run_dir, "guard-control", argv, REPO, env=env)
+    result["children"].append(record)
+    data = {}
+    if report.is_file():
+        data = json.loads(report.read_text())
+        record["report_sha256"] = sha256_file(report)
+    else:
+        problems.append("guard_control:report_missing")
+    summary = guard_summary(control_dir)
+    gate = guard_gate_problems(summary)
+    checks = {}
+    for label, (name, layer) in CONTROL_EXPECT.items():
+        attempt = data.get("attempts", {}).get(label, {})
+        checks[label] = (attempt.get("raised") == "PermissionError"
+                         and any(h["name"] == name and h["layer"] == layer for h in attempt.get("hits", [])))
+    result["guard_control"] = {"exit": record.get("exit"), "checks": checks, "gate_problems": gate,
+                               "hits_logged": len(summary["hits"]), "scratch_entries": data.get("scratch_entries"),
+                               "starts": summary["starts"], "files": summary["files"]}
+    if not all(checks.values()) or set(checks) != set(CONTROL_EXPECT):
+        problems.append("guard_control:sentinel_missing_or_not_refused")
+    if "guard_sentinel_hits" not in gate or len(summary["hits"]) < len(CONTROL_EXPECT):
+        problems.append("guard_control:caught_attempts_not_failing_gate")
+    if record.get("exit") == 0:
+        problems.append("guard_control:child_exit_zero_despite_hits")
+    if data.get("scratch_entries"):
+        problems.append("guard_control:attempt_had_side_effect")
+    if sorted(p.name for p in endpoints.iterdir()):
+        problems.append("guard_control:endpoint_created")
+    return problems
+
+
+# ----------------------------------------------------------------- checks
+
+
+def check_focused(run_dir, result):
+    record, problems = unittest_child(run_dir, "focused-unittest", FOCUSED_MODULE)
+    result["children"].append(record)
+    return problems + task_child(run_dir, result, "baseline")
+
+
+def check_compatibility(run_dir, result):
+    problems = []
+    for index, target in enumerate(COMPAT_TARGETS, 1):
+        record, found = unittest_child(run_dir, "compatibility-{}".format(index), target)
+        result["children"].append(record)
+        problems.extend(target + ":" + p for p in found)
+    result["compatibility_total_tests"] = sum(c.get("tests_run", 0) for c in result["children"]
+                                              if c["label"].startswith("compatibility-"))
+    result["full_discovery"] = "operator-run (not executed by this runner)"
+    return problems
+
+
+def check_negative(run_dir, result):
+    return task_child(run_dir, result, "negative")
+
+
 def static_inspection(root):
     findings = []
     for relative in STATIC_SCANNED:
@@ -514,49 +1036,15 @@ def candidate_files():
     return sorted(set(names))
 
 
-def _first_prefix_child(run_dir):
-    """Focused tests from the original candidate prefix, in the same sentinel child mode."""
-    report = run_dir / "portability-original-prefix.json"
-    home = run_dir / "original-prefix-home"
-    home.mkdir(mode=0o700)
-    env = dict(os.environ)
-    env.update({"HOME": str(home), "TMPDIR": str(home), "TEMP": str(home), "TMP": str(home),
-                "XDG_CONFIG_HOME": str(home), "XDG_DATA_HOME": str(home), "XDG_CACHE_HOME": str(home)})
-    argv = [sys.executable, "-I", "-B", str(REPO / "tools" / "accept_fc2_retained_scope.py"),
-            "--portability-child-report", str(report)]
-    return run_child(run_dir, "portability-original-prefix", argv, REPO, env=env), report, REPO.resolve()
-
-
-def _judge_child(record, report, expected_root, problems, label):
-    if record.get("exit") != 0:
-        problems.append(label + ":portability_child_failed")
-    if not report.is_file():
-        problems.append(label + ":portability_report_missing")
-        return None
-    child = json.loads(report.read_text())
-    record["report_sha256"] = sha256_file(report)
-    summary = {k: child.get(k) for k in ("repo_root", "tests_run", "failures", "errors", "skipped",
-                                          "sentinel_hits", "modules_outside_root", "loaded_modules", "tempdir")}
-    if child.get("repo_root") != str(expected_root):
-        problems.append(label + ":child_used_wrong_root")
-    if not child.get("tests_run") or child.get("failures") or child.get("errors") or child.get("skipped"):
-        problems.append(label + ":child_focused_not_green")
-    if child.get("sentinel_hits"):
-        problems.append(label + ":network_or_process_sentinel_triggered")
-    if child.get("modules_outside_root") or not child.get("loaded_modules"):
-        problems.append(label + ":application_modules_loaded_outside_root")
-    return summary
-
-
 def check_portability(run_dir, result):
     problems = []
     findings = static_inspection(REPO)
     result["static_inspection"] = {"files": list(STATIC_SCANNED), "tokens": len(BOX_SPECIFIC), "findings": findings}
     if findings:
         problems.append("static_box_specific_or_inline_findings")
-    record, report, root = _first_prefix_child(run_dir)
+    record, found = unittest_child(run_dir, "portability-original-prefix", FOCUSED_MODULE, REPO)
     result["children"].append(record)
-    result["portability_original_prefix"] = _judge_child(record, report, root, problems, "original")
+    problems.extend("original:" + p for p in found)
     # Second, different absolute prefix: a preserved copy inside this run directory (never deleted).
     copy_root = run_dir / "relocated" / "candidate-source"
     copied = 0
@@ -573,71 +1061,20 @@ def check_portability(run_dir, result):
                                   "source_hashes_match": copy_hashes == result["source_hashes"]}
     if copy_hashes != result["source_hashes"]:
         problems.append("copy_hashes_differ")
-    home = run_dir / "relocated-home"
-    home.mkdir(mode=0o700)
-    env = dict(os.environ)
-    env.update({"HOME": str(home), "TMPDIR": str(home), "TEMP": str(home), "TMP": str(home),
-                "XDG_CONFIG_HOME": str(home), "XDG_DATA_HOME": str(home), "XDG_CACHE_HOME": str(home)})
-    copy_report = run_dir / "portability-relocated.json"
-    argv = [sys.executable, "-I", "-B", str(copy_root / "tools" / "accept_fc2_retained_scope.py"),
-            "--portability-child-report", str(copy_report)]
-    copy_record = run_child(run_dir, "portability-relocated", argv, copy_root, env=env)
+    PARENT["guard"].runner_paths.add(str((copy_root / "tools" / RUNNER_NAME).resolve()))
+    copy_record, found = unittest_child(run_dir, "portability-relocated", FOCUSED_MODULE, copy_root.resolve())
     result["children"].append(copy_record)
-    result["portability_relocated"] = _judge_child(copy_record, copy_report, copy_root.resolve(), problems,
-                                                   "relocated")
-    if result["portability_original_prefix"] and result["portability_relocated"]:
-        same = (result["portability_original_prefix"]["tests_run"] == result["portability_relocated"]["tests_run"])
-        result["portability_same_test_count"] = same
-        if not same:
-            problems.append("prefix_test_counts_differ")
+    problems.extend("relocated:" + p for p in found)
+    for key, rec in (("portability_original_prefix", record), ("portability_relocated", copy_record)):
+        result[key] = {k: rec.get(k) for k in ("child_repo_root", "tests_run", "non_ok_test_ids", "loaded_modules",
+                                                "modules_outside_root", "defaults")}
+    same = record.get("tests_run") == copy_record.get("tests_run") and record.get("tests_run", 0) > 0
+    result["portability_same_test_count"] = same
+    if not same:
+        problems.append("prefix_test_counts_differ")
+    if record.get("child_repo_root") == copy_record.get("child_repo_root"):
+        problems.append("prefixes_not_distinct")
     return problems
-
-
-def portability_child(report):
-    """Runs under -I: offline/process sentinels installed before any application import."""
-    import socket
-    import tempfile
-    hits = []
-
-    def refuse(name):
-        def blocked(*_args, **_kwargs):
-            hits.append(name)
-            raise PermissionError("offline sentinel: " + name)
-        return blocked
-
-    socket.socket.connect = refuse("socket.connect")
-    socket.socket.connect_ex = refuse("socket.connect_ex")
-    socket.create_connection = refuse("socket.create_connection")
-    socket.getaddrinfo = refuse("socket.getaddrinfo")
-    subprocess.Popen.__init__ = refuse("subprocess.Popen")
-    os.system = refuse("os.system")
-    for name in ("execv", "execve", "execvp", "execvpe", "fork", "forkpty", "posix_spawn", "posix_spawnp"):
-        if hasattr(os, name):
-            setattr(os, name, refuse("os." + name))
-    root = REPO.resolve()
-    sys.path.insert(0, str(root))
-    suite = unittest.TestLoader().loadTestsFromName(FOCUSED_MODULE)
-    stream = io.StringIO()
-    outcome = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
-    loaded = {}
-    outside = []
-    for name, module in sorted(sys.modules.items()):
-        if name.split(".")[0] not in ("campaign_tool", "tests"):
-            continue
-        path = getattr(module, "__file__", None)
-        if path is None:
-            continue
-        loaded[name] = path
-        if not Path(path).resolve().is_relative_to(root):
-            outside.append(name)
-    data = {"repo_root": str(root), "tests_run": outcome.testsRun, "tempdir": tempfile.gettempdir(),
-            "failures": [c.id() for c, _ in outcome.failures], "errors": [c.id() for c, _ in outcome.errors],
-            "skipped": [c.id() for c, _ in outcome.skipped], "sentinel_hits": hits,
-            "modules_outside_root": outside, "loaded_modules": loaded, "unittest_output": stream.getvalue()}
-    with open(report, "x") as handle:
-        json.dump(data, handle, indent=2, sort_keys=True)
-    ok = outcome.wasSuccessful() and outcome.testsRun > 0 and not outcome.skipped and not hits and not outside
-    return 0 if ok else 1
 
 
 def check_credentials(run_dir, result):
@@ -646,6 +1083,7 @@ def check_credentials(run_dir, result):
     if not scanner.is_file():
         result["scanner"] = {"path": str(scanner), "present": False}
         return ["detect_secrets_unavailable_adjacent_to_interpreter"]
+    PARENT["guard"].scanner = str(scanner)
     report = run_dir / "secret-scan.json"
     scan = run_child(run_dir, "detect-secrets-scan",
                      [scanner, "scan", "--all-files", "--exclude-files", "^.git/", "--no-verify"],
@@ -668,8 +1106,10 @@ def check_credentials(run_dir, result):
         return problems
     if result["secret_scan"]["hits_in_card_files"]:
         problems.append("raw_scanner_hits_in_card_files")
+    env, _ = child_env(run_dir, "check-secret-report")
     checker = run_child(run_dir, "check-secret-report",
-                        [sys.executable, "-B", REPO / "tools" / "check_secret_report.py", report], REPO)
+                        guarded_argv(REPO, "--guarded-exec", run_dir / "guard", "--", "-B",
+                                     REPO / "tools" / "check_secret_report.py", report), REPO, env=env)
     result["children"].append(checker)
     text = Path(checker["stdout_path"]).read_text(errors="replace") if "stdout_path" in checker else ""
     match = re.search(r"potential secrets: (\d+);", text)
@@ -683,41 +1123,83 @@ def check_credentials(run_dir, result):
 
 
 def check_public_tree(run_dir, result):
+    env, _ = child_env(run_dir, "check-public-tree")
     record = run_child(run_dir, "check-public-tree",
-                       [sys.executable, "-B", REPO / "tools" / "check_public_tree.py"], REPO)
+                       guarded_argv(REPO, "--guarded-exec", run_dir / "guard", "--", "-B",
+                                    REPO / "tools" / "check_public_tree.py"), REPO, env=env)
     result["children"].append(record)
     return [] if record.get("exit") == 0 else ["public_tree_check_failed"]
 
 
 HANDLERS = {"focused": check_focused, "compatibility": check_compatibility, "negative": check_negative,
             "portability": check_portability, "credentials": check_credentials, "public-tree": check_public_tree}
+PARENT = {}
+
+
+def child_main(argv):
+    mode = argv[0]
+    if mode == "--guarded-exec":
+        if len(argv) < 4 or argv[2] != "--":
+            raise SystemExit(2)
+        return guarded_exec_main(argv[1], argv[3:])
+    parser = argparse.ArgumentParser(prog=RUNNER_NAME + " " + mode)
+    parser.add_argument("--child-report", required=True)
+    parser.add_argument("--guard-dir", required=True)
+    if mode == "--guarded-unittest":
+        parser.add_argument("target")
+        args = parser.parse_args(argv[1:])
+        return guarded_unittest_main(args.target, args.child_report, args.guard_dir)
+    if mode == "--guarded-task":
+        parser.add_argument("task", choices=sorted(TASKS))
+        parser.add_argument("--run-dir", required=True)
+        args = parser.parse_args(argv[1:])
+        return guarded_task_main(args.task, args.run_dir, args.child_report, args.guard_dir)
+    parser.add_argument("--scratch", required=True)
+    args = parser.parse_args(argv[1:])
+    return guard_control_main(args.child_report, args.guard_dir, args.scratch)
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in CHILD_MODES:
+        return child_main(argv)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--check", choices=CHECKS)
-    parser.add_argument("--output-root")
-    parser.add_argument("--portability-child-report", help=argparse.SUPPRESS)
+    parser.add_argument("--check", choices=CHECKS, required=True)
+    parser.add_argument("--output-root", required=True)
     args = parser.parse_args(argv)
-    if args.portability_child_report:
-        if args.check or args.output_root:
-            parser.error("child mode takes no other arguments")
-        return portability_child(args.portability_child_report)
-    if not args.check or not args.output_root:
-        parser.error("--check and --output-root are required")
     run_dir = new_run_dir(args.output_root, args.check)
-    result = {"schema": "fc2-retained-scope-acceptance-v1", "brief": BRIEF, "check": args.check,
+    guard = install_guard(run_dir / "guard", "parent", allow={"git", "scanner", "runner:*"})
+    PARENT["guard"] = guard
+    result = {"schema": "fc2-retained-scope-acceptance-v2", "brief": BRIEF, "check": args.check,
               "argv": [sys.executable] + list(sys.argv),
               "cwd": os.getcwd(), "interpreter": sys.executable, "python_version": sys.version,
               "repo_root": str(REPO), "run_dir": str(run_dir), "started_utc": now(),
               "base_selector": BASE_SELECTOR, "git": git_identity(), "source_hashes": source_hashes(REPO),
-              "children": [], "acceptance": "REVIEW REQUIRED; machine validity only, not semantic/legal acceptance"}
+              "children": [], "acceptance": "REVIEW REQUIRED; machine validity only, not semantic/legal acceptance",
+              "full_discovery": "operator-run (not executed by this runner)"}
+    problems = identity_problems(result["git"], result["source_hashes"])
+    result["identity_problems"] = list(problems)
     try:
-        problems = HANDLERS[args.check](run_dir, result)
+        result["identity_self_check"] = identity_self_check(run_dir)
+        if not result["identity_self_check"]["ok"]:
+            problems.append("identity_self_check_failed")
+        problems.extend(run_guard_control(run_dir, result))
+        problems.extend(HANDLERS[args.check](run_dir, result))
     except Exception as error:  # Incomplete check: record the class, fail closed.
-        problems = ["check_incomplete:" + type(error).__name__]
+        problems.append("check_incomplete:" + type(error).__name__)
         result["exception"] = repr(error)[:2000]
         result["exception_traceback"] = traceback.format_exc()[-4000:]
+    result["git_end"] = git_identity()
+    if (result["git_end"].get("head"), result["git_end"].get("status_porcelain")) != \
+            (result["git"].get("head"), result["git"].get("status_porcelain")):
+        problems.append("identity_changed_during_run")
+    if source_hashes(REPO) != result["source_hashes"]:
+        problems.append("source_changed_during_run")
+    result["guard"] = guard_summary(run_dir / "guard")
+    problems.extend(guard_gate_problems(result["guard"]))
+    result["parent_app_modules"] = app_modules_loaded()
+    if result["parent_app_modules"]:
+        problems.append("parent_imported_application_code")
     result["finished_utc"] = now()
     result["problems"] = problems
     result["verdict"] = "PASS_REVIEW_REQUIRED" if not problems else "FAIL"
