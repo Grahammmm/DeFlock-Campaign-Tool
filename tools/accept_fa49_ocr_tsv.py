@@ -8,7 +8,13 @@ and must not pass through a symbolic link:
                     A2 malformed rows, A3 real extraction consumer and replay)
   compatibility     the unchanged OCR test files named in COMPATIBILITY, with a
                     receipt (argv, cwd, exit, captured stdout/stderr and their
-                    hashes) for every child process they start
+                    hashes) for every child process they start. An import-free
+                    static preflight first finds every test that starts an
+                    inline-interpreter child (python -c); that set must equal
+                    CI_ONLY_SELECTORS exactly (id and method-source hash) or the
+                    case fails before anything is imported. Those tests are not
+                    run locally and are reported UNMET-LOCAL / CI-owned; any
+                    other inline-interpreter child is refused before spawn
   negative-control  A4: the truncated-row and consumer regressions run against
                     the complete preserved baseline ocr.py (loaded in memory
                     from git history) must ERROR with AttributeError while the
@@ -44,6 +50,7 @@ hostile-code sandbox. A pass is REVIEW REQUIRED; it is not full-repository CI,
 semantic, human or release acceptance.
 """
 import argparse
+import ast
 import contextlib
 import datetime
 import hashlib
@@ -70,6 +77,25 @@ REGRESSION = "tests.records.test_fa49_ocr_tsv"
 COMPATIBILITY = ("tests.records.test_ocr", "tests.records.test_ocr_stage", "tests.records.test_run_pdf_ocr")
 # Real children the unchanged compatibility files must start (basename of argv[0]).
 COMPATIBILITY_REQUIRED_TOOLS = ("pdftoppm", "tesseract")
+# Unchanged compatibility tests that start an inline-interpreter child (python -c).
+# Inline interpreter source is forbidden for this local runner, so by the operator's
+# rule-29 disposition (2026-10-24 20:22 PDT, option A) each one stays a CI-only
+# obligation: it is never imported into the local run, is recorded as
+# UNMET-LOCAL / CI-owned by exact id plus the sha256 of its method source, and
+# the static preflight must find exactly this set before anything is imported.
+CI_ONLY_SELECTORS = {
+    "tests.records.test_ocr.OCRTests.test_child_limits_apply_address_space_and_file_size": {
+        "file": "tests/records/test_ocr.py",
+        "method_source_sha256": "138a9d3da9c095ed79f0f8f6af1bf9c7d206f0d13abcea3b9652f61a27eda2a1",
+    },
+}
+CI_ONLY_OWNERS = {
+    "disposition": "UNMET-LOCAL / CI-owned",
+    "full_discovery_owner": "existing operator (SD-15 full unittest discovery at the exact candidate head)",
+    "exact_head_ci_owner": "publication owner via bin/ship-queue (required exact-head CI)",
+    "admission_reference": "operator rule-29 checkpoint disposition 2026-10-24 20:22 PDT, option A",
+}
+INTERPRETER_PREFIXES = ("python",)
 NEG_BROKEN = (f"{REGRESSION}.MalformedConfidenceTests.test_a2_truncated_last_row_has_no_text_cell",
               f"{REGRESSION}.ConsumerTests.test_a3_truncated_page_blocked_while_peer_page_unreviewed")
 NEG_POSITIVE = f"{REGRESSION}.PositiveConfidenceTests.test_a1_two_valid_word_rows_mean"
@@ -407,9 +433,62 @@ def note_spawn(event, args):
                    "receipt": getattr(LOCAL, "in_popen", None)})
 
 
+def is_interpreter(program):
+    """True when program names a Python interpreter (this one or any python*)."""
+    if not isinstance(program, str) or not program:
+        return False
+    if os.path.realpath(program) == os.path.realpath(sys.executable):
+        return True
+    return os.path.basename(program).lower().startswith(INTERPRETER_PREFIXES)
+
+
+def inline_interpreter_argv(argv, executable=None, shell=False):
+    """True when argv starts a Python interpreter on inline source: -c (alone or in a
+    combined short-flag group such as -Bc) or a program read from stdin ("-").
+    ``python -m module`` and ``python script.py`` are ordinary file-based children."""
+    if not isinstance(argv, list) or not argv:
+        return False
+    if shell and len(argv) == 1:
+        import shlex
+        try:
+            argv = shlex.split(argv[0])
+        except ValueError:
+            argv = argv[0].split()  # unbalanced quotes: plain whitespace split
+        if not argv:
+            return False
+    if not is_interpreter(executable or argv[0]):
+        return False
+    rest = argv[1:]
+    position = 0
+    while position < len(rest):
+        arg = rest[position]
+        if not isinstance(arg, str):
+            return True  # cannot be attributed: fail closed
+        if arg == "-":
+            return True
+        if arg == "--" or not arg.startswith("-"):
+            return False
+        if arg.startswith("--"):
+            position += 1
+            continue
+        letters = arg[1:]
+        for offset, letter in enumerate(letters):
+            if letter == "c":
+                return True
+            if letter == "m":
+                return False
+            if letter in "WX":
+                if offset == len(letters) - 1:
+                    position += 1  # option value is the next argument
+                break
+        position += 1
+    return False
+
+
 class RecordingPopen(REAL_POPEN):
     """subprocess.Popen that keeps an external receipt of argv, cwd, stream
-    dispositions, captured stdout/stderr bytes (files + hashes) and the exit status."""
+    dispositions, captured stdout/stderr bytes (files + hashes) and the exit status.
+    An inline-interpreter child is refused (fatal ledger entry) before it is spawned."""
 
     def __init__(self, *args, **kwargs):
         bound = POPEN_SIGNATURE.bind(self, *args, **kwargs)
@@ -429,6 +508,11 @@ class RecordingPopen(REAL_POPEN):
                        "spawned": None, "exit": None, "communicate_timeouts": 0}
             RECEIPTS.append(receipt)
         self._fa49_receipt = receipt
+        if inline_interpreter_argv(receipt["argv"], receipt["executable"], receipt["shell"]):
+            receipt["spawned"] = False
+            receipt["spawn_error"] = "InlineInterpreterChildRefused"
+            receipt["inline_interpreter_refused"] = True
+            refuse("process", "inline_interpreter_child", (receipt["argv"] or [""])[0])
         previous = getattr(LOCAL, "in_popen", None)
         LOCAL.in_popen = receipt["index"]
         try:
@@ -492,6 +576,9 @@ def validate_receipts(receipts, spawns, run, required_tools=(), required_from=0)
         argv = receipt.get("argv")
         if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) and argv[0]):
             problems.append(f"receipt_bad_argv:{index}")
+        elif receipt.get("spawned") is True and inline_interpreter_argv(
+                argv, receipt.get("executable"), bool(receipt.get("shell"))):
+            problems.append(f"inline_interpreter_child_spawned:{index}")
         cwd = receipt.get("cwd")
         if not (isinstance(cwd, str) and os.path.isabs(cwd)):
             problems.append(f"receipt_bad_cwd:{index}")
@@ -760,6 +847,7 @@ def receipt_self_test(run):
                               ()),
         "receipt_without_spawn_event": ([receipt()], [], ()),
         "required_tool_missing": ([receipt()], spawn, ("pdftoppm",)),
+        "inline_interpreter_spawned": ([receipt(argv=["python3", "-c", "pass"])], spawn, ()),
         "empty": ([], [], ()),
     }
     results = {"complete_valid": validate_receipts([receipt()], spawn, run, ("synthetic-tool",)) == []}
@@ -799,13 +887,216 @@ def receipt_live_controls(run):
     return checks
 
 
+def static_argv(node):
+    """Literal argv of a list/tuple AST node: str constants as-is, ``sys.executable``
+    as this interpreter, anything else as an opaque non-option placeholder."""
+    argv = []
+    for element in node.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            argv.append(element.value)
+        elif (isinstance(element, ast.Attribute) and element.attr == "executable"
+              and isinstance(element.value, ast.Name) and element.value.id == "sys"):
+            argv.append(sys.executable)
+        else:
+            argv.append("<non-literal>")
+    return argv
+
+
+def inline_child_sites(node):
+    """Line numbers inside node of literal inline-interpreter command lines."""
+    lines = []
+    for sub in ast.walk(node):
+        if isinstance(sub, (ast.List, ast.Tuple)) and sub.elts:
+            if inline_interpreter_argv(static_argv(sub)):
+                lines.append(sub.lineno)
+        elif isinstance(sub, ast.Constant) and isinstance(sub.value, str) and " " in sub.value:
+            if inline_interpreter_argv([sub.value], shell=True):
+                lines.append(sub.lineno)
+    return sorted(set(lines))
+
+
+def scan_inline_children(source, module):
+    """Static, import-free scan of one test file. Returns (sites, unattributed):
+    sites maps a test id to its line numbers and method-source sha256; an inline
+    child outside a test method (helper, fixture, module level) is unattributed."""
+    tree = ast.parse(source)
+    sites, covered = {}, set()
+    for cls in tree.body:
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for func in cls.body:
+            if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) and func.name.startswith("test"):
+                found = inline_child_sites(func)
+                covered.update(range(func.lineno, (func.end_lineno or func.lineno) + 1))
+                if found:
+                    segment = ast.get_source_segment(source, func) or ""
+                    sites[f"{module}.{cls.name}.{func.name}"] = {
+                        "lines": found, "method_source_sha256": sha256_bytes(segment.encode())}
+    unattributed = [line for line in inline_child_sites(tree) if line not in covered]
+    return sites, unattributed
+
+
+def compare_ci_only(sites, unattributed, admitted):
+    """Problems unless the statically found inline-child tests are exactly the
+    admitted CI-only selectors with unchanged method source, and none is unattributed."""
+    problems = [f"inline_child_outside_test_method:line{line}" for line in unattributed]
+    for test_id in sorted(set(sites) - set(admitted)):
+        problems.append(f"unadmitted_inline_child_test:{test_id}")
+    for test_id in sorted(set(admitted) - set(sites)):
+        problems.append(f"admitted_ci_only_selector_not_found:{test_id}")
+    for test_id in sorted(set(sites) & set(admitted)):
+        if sites[test_id]["method_source_sha256"] != admitted[test_id]["method_source_sha256"]:
+            problems.append(f"ci_only_selector_source_changed:{test_id}")
+    return problems
+
+
+def compatibility_preflight():
+    """Scan the unchanged compatibility files without importing them."""
+    sites, unattributed, files = {}, [], {}
+    for module in COMPATIBILITY:
+        relative = module.replace(".", "/") + ".py"
+        data = (REPO / relative).read_bytes()
+        files[relative] = sha256_bytes(data)
+        found, loose = scan_inline_children(data.decode("utf-8"), module)
+        for test_id, site in found.items():
+            sites[test_id] = {**site, "file": relative}
+        unattributed += [f"{relative}:{line}" for line in loose]
+    problems = [f"inline_child_outside_test_method:{where}" for where in unattributed]
+    problems += compare_ci_only(sites, [], CI_ONLY_SELECTORS)
+    for test_id, site in sites.items():
+        if test_id in CI_ONLY_SELECTORS and site["file"] != CI_ONLY_SELECTORS[test_id]["file"]:
+            problems.append(f"ci_only_selector_file_mismatch:{test_id}")
+    unmet = [{"test_id": test_id, "file": site["file"], "lines": site["lines"],
+              "method_source_sha256": site["method_source_sha256"],
+              "file_sha256": files[site["file"]], **CI_ONLY_OWNERS}
+             for test_id, site in sorted(sites.items()) if test_id in CI_ONLY_SELECTORS]
+    return problems, unmet, files
+
+
+PREFLIGHT_POSITIVE = '''
+import subprocess, sys
+class T:
+    def test_script(self):
+        subprocess.run([sys.executable, "-B", "tool.py"], check=True)
+    def test_module(self):
+        subprocess.run([sys.executable, "-m", "pkg.mod", "-c", "conf"], check=True)
+    def test_warn_option(self):
+        subprocess.run((sys.executable, "-W", "ignore", "tool.py"), check=True)
+    def test_external_tool(self):
+        subprocess.run(["pdftoppm", "-r", "300", "in.pdf", "out"], check=True)
+        subprocess.run(["git", "-c", "core.x=y", "status"], check=True)
+    def test_variable_script(self):
+        subprocess.run([sys.executable, script, "-c"], check=True)
+'''
+
+PREFLIGHT_NEGATIVE = '''
+import subprocess, sys
+class T:
+    def test_inline(self):
+        subprocess.run([sys.executable, "-c", "print(1)"], check=True)
+    def test_combined_flags(self):
+        subprocess.run(["python3", "-Bc", "pass"], check=True)
+    def test_stdin_program(self):
+        subprocess.run([sys.executable, "-"], input="pass", text=True, check=True)
+    def test_shell_string(self):
+        subprocess.run("python3 -c pass", shell=True, check=True)
+    def test_ordinary(self):
+        subprocess.run([sys.executable, "-B", "tool.py"], check=True)
+def helper():
+    return [sys.executable, "-I", "-c", "pass"]
+'''
+
+
+def preflight_self_test(run):
+    """Inert controls: synthetic sources are parsed (never imported or run) and
+    synthetic argv lists are classified (never executed). The single live control
+    constructs a recorded child whose interpreter path does not exist, so even a
+    guard failure could not execute anything; it must be refused before spawn."""
+    results = {}
+    sites, loose = scan_inline_children(PREFLIGHT_POSITIVE, "synthetic.positive")
+    results["ordinary_children_not_flagged"] = sites == {} and loose == []
+    sites, loose = scan_inline_children(PREFLIGHT_NEGATIVE, "synthetic.negative")
+    expected = {f"synthetic.negative.T.{name}" for name in
+                ("test_inline", "test_combined_flags", "test_stdin_program", "test_shell_string")}
+    results["forbidden_children_flagged"] = set(sites) == expected
+    results["helper_inline_child_unattributed"] = len(loose) == 1
+    admitted = {test_id: {"file": "x", "method_source_sha256": site["method_source_sha256"]}
+                for test_id, site in sites.items()}
+    results["exact_exclusion_accepted"] = compare_ci_only(sites, [], admitted) == []
+    fewer = dict(admitted)
+    fewer.pop("synthetic.negative.T.test_inline")
+    results["extra_inline_test_rejected"] = bool(compare_ci_only(sites, [], fewer))
+    more = {**admitted, "synthetic.negative.T.test_ordinary": {"file": "x", "method_source_sha256": "0"}}
+    results["missing_admitted_selector_rejected"] = bool(compare_ci_only(sites, [], more))
+    changed = {**admitted, "synthetic.negative.T.test_inline": {"file": "x", "method_source_sha256": "0" * 64}}
+    results["changed_method_source_rejected"] = bool(compare_ci_only(sites, [], changed))
+    results["unattributed_rejected"] = bool(compare_ci_only(sites, loose, admitted))
+    ordinary = ([sys.executable, "-B", "tool.py"], [sys.executable, "-m", "campaign_tool.x"],
+                ["pdftoppm", "-c"], [sys.executable, "-X", "dev", "tool.py"], [sys.executable, "--version"])
+    forbidden = ([sys.executable, "-c", "pass"], ["python3", "-Ic", "pass"], ["/usr/bin/python3.12", "-c", "x"],
+                 [sys.executable, "-W", "ignore", "-c", "x"], [sys.executable, "-"])
+    results["argv_ordinary_allowed"] = not any(inline_interpreter_argv(list(a)) for a in ordinary)
+    results["argv_forbidden_detected"] = all(inline_interpreter_argv(list(a)) for a in forbidden)
+    results["argv_shell_string_detected"] = inline_interpreter_argv(["python3 -c pass"], shell=True)
+    results["argv_executable_override_detected"] = inline_interpreter_argv(["tool", "-c", "x"], sys.executable)
+    absent = os.path.join(os.path.realpath(run), "preflight-absent-interpreter", "python3")
+    before = len(RECEIPTS)
+    refused = False
+    with LEDGER.expect("process", "inline_interpreter_child", absent) as slot:
+        try:
+            subprocess.Popen([absent, "-c", "pass"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except PermissionError:
+            refused = True
+    receipt = RECEIPTS[before] if len(RECEIPTS) == before + 1 else {}
+    results["live_inline_child_refused_before_spawn"] = (
+        refused and slot["hits"] == 1 and receipt.get("spawned") is False
+        and receipt.get("inline_interpreter_refused") is True and "pid" not in receipt)
+    return results
+
+
+def ci_only_filtered(suite):
+    """(kept tests, excluded ids) after removing exactly the admitted CI-only ids."""
+    import unittest
+    kept, excluded = [], []
+
+    def walk(item):
+        if isinstance(item, unittest.TestSuite):
+            for child in item:
+                walk(child)
+        elif item.id() in CI_ONLY_SELECTORS:
+            excluded.append(item.id())
+        else:
+            kept.append(item)
+    walk(suite)
+    return unittest.TestSuite(kept), excluded
+
+
 def case_compatibility(run):
     setup = prepare(run, deny_process=False, work_in_run=False, record_children=True)
+    preflight_problems, unmet, compat_files = compatibility_preflight()
+    preflight = {"problems": preflight_problems, "unmet_local_ci_owned": unmet,
+                 "compatibility_file_sha256": compat_files}
+    if preflight_problems:
+        # fail closed before any compatibility module is imported or run
+        return False, {"setup": setup, "stop": "compatibility_preflight_failed", "preflight": preflight}
     self_test = receipt_self_test(run)
     live = receipt_live_controls(run)
+    controls = preflight_self_test(run)
+    preflight["self_test"] = controls
+    if not all(controls.values()):
+        return False, {"setup": setup, "stop": "compatibility_preflight_controls_failed",
+                       "preflight": preflight}
     start = len(RECEIPTS)
     stream = io.StringIO()
-    c, _ = run_names(COMPATIBILITY, stream)
+    import unittest
+    loaded = unittest.defaultTestLoader.loadTestsFromNames(list(COMPATIBILITY))
+    loaded_total = loaded.countTestCases()
+    suite, excluded = ci_only_filtered(loaded)
+    exclusion_exact = sorted(excluded) == sorted(CI_ONLY_SELECTORS)
+    selected = suite.countTestCases()
+    result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
+    c = counts(result)
+    c.update(selected=selected, loaded_before_exclusion=loaded_total, excluded_ci_only=len(excluded))
     finalize_receipts()
     STATE["record_children"] = False
     problems = validate_receipts(list(RECEIPTS), list(SPAWNS), run, COMPATIBILITY_REQUIRED_TOOLS, start)
@@ -817,9 +1108,14 @@ def case_compatibility(run):
     inside = all(p and under(os.path.realpath(p), str(REPO)) for p in paths.values())
     test_receipts = RECEIPTS[start:]
     ok = (clean(c) and c["selected"] == c["tests_run"] and guards_clear() and inside and not problems
+          and exclusion_exact and loaded_total == selected + len(CI_ONLY_SELECTORS)
           and all(self_test.values()) and all(live.values()) and bool(test_receipts))
     return ok, {"setup": setup, "modules": list(COMPATIBILITY), "counts": c, "module_paths": paths,
-                "module_paths_inside_repo": inside, "receipt_self_test": self_test,
+                "module_paths_inside_repo": inside, "preflight": preflight,
+                "excluded_ci_only_ids": sorted(excluded), "exclusion_exact": exclusion_exact,
+                "local_scope": "REVIEW REQUIRED; the UNMET-LOCAL / CI-owned selectors above are NOT "
+                               "locally verified and stay with their named owners",
+                "receipt_self_test": self_test,
                 "receipt_live_controls": live, "child_receipts": "child-receipts.json",
                 "child_receipts_sha256": sha256_bytes(raw), "child_receipt_problems": problems,
                 "child_receipts_total": len(RECEIPTS), "child_receipts_from_tests": len(test_receipts),
