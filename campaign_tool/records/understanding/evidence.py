@@ -76,14 +76,26 @@ def validate_bundle(value):
     for r in value["source_receipts"]:
         need(type(r)is dict and is_hash(r.get("original_sha256")) and is_hash(r.get("receipt_sha256")),"receipt_binding")
         key=(r["original_sha256"],r["receipt_sha256"]);need(key not in receipts,"duplicate_receipt");receipts[key]=r
-    ids=set()
+    ids=set();bound={}
     for u in value["units"]:
         need(type(u)is dict and u.get("authority_basis")=="receipt_bound_derivative_not_canonical","unit_authority")
         subject=u.get("original_sha256");need(subject in value["source_context"] and (subject,u.get("receipt_sha256")) in receipts,"unit_receipt_missing")
         raw={k:u.get(k) for k in ("kind","locator","text","data")}
         expected=unit(raw,subject,u["receipt_sha256"],u.get("ordinal"),u.get("attempt_kind"))
         need(u==expected,"unit_binding_mismatch");need(u["unit_id"] not in ids,"duplicate_unit");ids.add(u["unit_id"])
+        key=(subject,u["receipt_sha256"]);bound[key]=bound.get(key,0)+1
+    _check_receipt_counts(receipts,bound)
     return value
+RECEIPT_COUNT_CODES=("receipt_count_missing","receipt_count_type","receipt_count_negative","receipt_count_exceeds_declared","receipt_count_mismatch")
+def _check_receipt_counts(receipts,bound):
+    """Count conservation per original/receipt pair; numerical consistency is not completeness."""
+    for key,r in receipts.items():
+        need("declared_unit_count" in r and "normalized_unit_count" in r,"receipt_count_missing")
+        declared=r["declared_unit_count"];normalized=r["normalized_unit_count"]
+        need(type(declared)is int and type(normalized)is int,"receipt_count_type")
+        need(declared>=0 and normalized>=0,"receipt_count_negative")
+        need(normalized<=declared,"receipt_count_exceeds_declared")
+        need(normalized==bound.get(key,0),"receipt_count_mismatch")
 def citation(u,start_byte,end_byte):
     return grounded_evidence.span_support(u,start_byte,end_byte)
 def validate_citation(support,value):
