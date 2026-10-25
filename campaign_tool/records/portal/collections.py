@@ -42,6 +42,15 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _require_member_shape(member):
+    # Provider members are untrusted evidence: check the shape before any
+    # subscript or set membership, with a fixed code that never echoes values.
+    # Extra producer keys stay accepted and ignored; nothing is repaired.
+    if not isinstance(member, dict) or any(not isinstance(member.get(field), str)
+                                           for field in ("id", "kind", "url")):
+        raise PortalError("invalid_collection_member")
+
+
 def normalized(url):
     p = url_parts(url)
     # Do not reorder/decode a potentially signed query. Fragments, credentials,
@@ -244,6 +253,7 @@ class CollectionInventory:
             raise PortalError("collection_member_bound")
         plan, ids = [], set()
         for member in members:
+            _require_member_shape(member)
             key = identifier(member["id"])
             url = normalized(member["url"])
             kind = member["kind"]
