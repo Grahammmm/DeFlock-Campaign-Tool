@@ -5,10 +5,12 @@ One case per invocation; every invocation writes a new unique child of
 
   behavior          A1-A4 support cases in tests/records/test_fa1404.py
   compatibility     exactly four named SnapshotAcceptanceTests methods
-  negative-control  in-memory acceptance.SQL without ONLY the two added
-                    triggers: the deciding A1 test must fail on its
-                    preservation assertion, the unaffected positive must pass,
-                    then the restored candidate must pass
+  negative-control  two in-memory acceptance.SQL controls, each run against
+                    the deciding test for its predicate: (1) without ONLY the
+                    three added triggers, (2) without ONLY the reserved -1
+                    trigger. Each deciding test must fail on its preservation
+                    assertion, the unaffected positive must pass, then the
+                    restored candidate must pass
   isolation         second fresh temp prefix, source/module identity, and an
                     unrelated peer suite before/after with no global poisoning
   credential-scan   SOURCE-MANIFEST runtime detect-secrets scan, then the
@@ -43,6 +45,7 @@ REFERENCED = ("tests/records/test_ledger_catalog_acceptance.py", "tests/records/
 NEW = "tests.records.test_fa1404.FA1404NoReplaceTests."
 OLD = "tests.records.test_ledger_catalog_acceptance.SnapshotAcceptanceTests."
 DECIDING = NEW + "test_a1_replace_refused_recursive_triggers_off"
+RESERVED_DECIDING = NEW + "test_a2_reserved_row_auto_insert_continues_recursive_triggers_off"
 UNAFFECTED = NEW + "test_a2_noncolliding_inserts_and_pointer_cas_continue"
 PEER = "tests.records.test_ledger_catalog.OverlayTests"
 SELECTORS = {
@@ -51,8 +54,12 @@ SELECTORS = {
         "test_a1_legacy_database_gains_guards_on_next_acceptance",
         "test_a2_first_cas_and_exact_replay_one_event_each", "test_a2_response_loss_and_directory_sync_recovery",
         "test_a2_noncolliding_inserts_and_pointer_cas_continue",
+        "test_a2_reserved_row_auto_insert_continues_recursive_triggers_off",
+        "test_a2_reserved_row_auto_insert_continues_recursive_triggers_on",
+        "test_a1_explicit_reserved_sequence_refused",
         "test_a3_no_new_publication_or_semantic_authority",
-        "test_a4_control_variant_removes_only_added_guards")),
+        "test_a4_control_variant_removes_only_added_guards",
+        "test_a4_reserved_guard_is_load_bearing")),
     "compatibility": tuple(OLD + n for n in (
         "test_transactional_pointer_exact_bindings", "test_replay_same_receipt_one_event",
         "test_pointer_compare_and_swap_and_no_old_reactivation",
@@ -192,30 +199,43 @@ def case_selected(case, stream, record):
     return clean_pass(counts, SELECTORS[case])
 
 
+def control_detected(run, deciding, marker_suffix):
+    tb = run["failures"].get(deciding, "")
+    return (run["tests_run"] == 1 and run["selected"] == [deciding] and not run["errors"]
+            and list(run["failures"]) == [deciding] and marker_suffix in tb and not run["skipped"])
+
+
 def case_negative_control(stream, record):
     from unittest import mock
     from campaign_tool.records import ledger_catalog_acceptance as acceptance
     from tests.records import test_fa1404
     original = acceptance.SQL
-    variant = test_fa1404.without_added_guards(original)
+    marker = test_fa1404.PRESERVATION_MARKER
+    controls = (
+        ("all-added", test_fa1404.ADDED_TRIGGERS, DECIDING, marker + " recursive_triggers=False"),
+        ("reserved-only", (test_fa1404.RESERVED_TRIGGER,), RESERVED_DECIDING,
+         marker + " reserved sequence recursive_triggers=False"),
+    )
     record["control"] = {"candidate_sql_sha256": sha256_bytes(original.encode()),
-                         "variant_sql_sha256": sha256_bytes(variant.encode()),
-                         "removed_triggers": list(test_fa1404.ADDED_TRIGGERS),
-                         "source_on_disk_sha256_before": sha256_file(REPO / PRODUCT)}
-    with mock.patch.object(acceptance, "SQL", variant):
-        control = run_named((DECIDING,), stream, "control: deciding test with added guards removed")
-        positive = run_named((UNAFFECTED,), stream, "control: unaffected positive with added guards removed")
-    restored_ok = acceptance.SQL is original
-    restored = run_named((DECIDING, UNAFFECTED), stream, "restored candidate")
-    record["runs"] = [control, positive, restored]
-    tb = control["failures"].get(DECIDING, "")
-    detected = (control["tests_run"] == 1 and control["selected"] == [DECIDING] and not control["errors"]
-                and list(control["failures"]) == [DECIDING] and test_fa1404.PRESERVATION_MARKER in tb
-                and "recursive_triggers=False" in tb and not control["skipped"])
-    record["control"].update({"detected_expected_failure": detected, "restored_module_sql": restored_ok,
-                              "source_on_disk_sha256_after": sha256_file(REPO / PRODUCT)})
-    return (detected and clean_pass(positive, (UNAFFECTED,)) and restored_ok
-            and clean_pass(restored, (DECIDING, UNAFFECTED))
+                         "source_on_disk_sha256_before": sha256_file(REPO / PRODUCT), "variants": []}
+    runs, ok = [], True
+    for label, names, deciding, expected in controls:
+        variant = test_fa1404.without_added_guards(original, names)
+        with mock.patch.object(acceptance, "SQL", variant):
+            control = run_named((deciding,), stream, "control " + label + ": deciding test")
+            positive = run_named((UNAFFECTED,), stream, "control " + label + ": unaffected positive")
+        detected = control_detected(control, deciding, expected)
+        record["control"]["variants"].append({
+            "label": label, "removed_triggers": list(names), "deciding": deciding,
+            "variant_sql_sha256": sha256_bytes(variant.encode()), "detected_expected_failure": detected,
+            "restored_module_sql": acceptance.SQL is original})
+        runs += [control, positive]
+        ok = ok and detected and clean_pass(positive, (UNAFFECTED,)) and acceptance.SQL is original
+    restored_names = (DECIDING, RESERVED_DECIDING, UNAFFECTED)
+    restored = run_named(restored_names, stream, "restored candidate")
+    record["runs"] = runs + [restored]
+    record["control"]["source_on_disk_sha256_after"] = sha256_file(REPO / PRODUCT)
+    return (ok and clean_pass(restored, restored_names)
             and record["control"]["source_on_disk_sha256_before"] == record["control"]["source_on_disk_sha256_after"])
 
 
@@ -235,8 +255,8 @@ def case_isolation(run_root, guard, stream, record, blob):
     from campaign_tool.records import ledger_catalog_acceptance as acceptance
     module_file = Path(acceptance.__file__).resolve()
     sql_before = sha256_bytes(acceptance.SQL.encode())
-    fa = run_named((DECIDING, NEW + "test_a1_replace_refused_recursive_triggers_on", UNAFFECTED),
-                   stream, "candidate from second prefix")
+    fa_names = (DECIDING, NEW + "test_a1_replace_refused_recursive_triggers_on", RESERVED_DECIDING, UNAFFECTED)
+    fa = run_named(fa_names, stream, "candidate from second prefix")
     state_after = global_state()
     after_peer = run_named((PEER,), stream, "peer after")
     used_prefix = [p for p in guard.mkdirs if Path(p).resolve().is_relative_to(prefix.resolve())]
@@ -255,7 +275,7 @@ def case_isolation(run_root, guard, stream, record, blob):
     record["runs"] = [before_peer, fa, after_peer]
     return (all(checks.values()) and clean_pass(before_peer, before_peer["selected"])
             and clean_pass(after_peer, before_peer["selected"])
-            and clean_pass(fa, (DECIDING, NEW + "test_a1_replace_refused_recursive_triggers_on", UNAFFECTED)))
+            and clean_pass(fa, fa_names))
 
 
 def child(argv, run_root, name, record, stdout_path=None):

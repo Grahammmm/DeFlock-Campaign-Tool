@@ -15,31 +15,45 @@ store, catalog_links, H1, H2 = fixtures.store, fixtures.catalog_links, fixtures.
 from campaign_tool.records import ledger_catalog as catalog
 from campaign_tool.records import ledger_catalog_acceptance as acceptance
 
-ADDED_TRIGGERS = ("immutable_acceptances_insert_collision", "immutable_events_insert_collision")
+RESERVED_TRIGGER = "immutable_events_insert_reserved"
+ADDED_TRIGGERS = ("immutable_acceptances_insert_collision", "immutable_events_insert_collision",
+                  RESERVED_TRIGGER)
+ADDED_TABLES = {"immutable_acceptances_insert_collision": "snapshot_acceptances",
+                "immutable_events_insert_collision": "snapshot_events",
+                RESERVED_TRIGGER: "snapshot_events"}
 BASELINE_TRIGGERS = ("immutable_acceptances_update", "immutable_acceptances_delete",
                      "immutable_events_update", "immutable_events_delete")
 ACCEPTANCE_REFUSAL = "immutable snapshot acceptance insert collision"
 HISTORY_REFUSAL = "immutable snapshot history insert collision"
+RESERVED_REFUSAL = "immutable snapshot history reserved sequence"
+BASELINE_HISTORY_REFUSAL = "immutable snapshot history"
 PRESERVATION_MARKER = "FA1404-PRESERVATION history changed by colliding replacement"
+# SQLite hands a BEFORE INSERT trigger NEW.sequence=-1 both for an explicit -1
+# and for a not-yet-assigned AUTOINCREMENT value, so -1 is the reserved slot.
+RESERVED_SEQUENCE = -1
 RECEIPT_KEYS = {"schema_version", "snapshot_id", "run_id", "catalog_sha256", "manifest_sha256",
                 "accepted_at", "previous_snapshot_id", "source_check", "catalog_snapshot_accepted",
                 "stage_promotions", "document_review_approval", "publication_ready"}
 FRESH_ID = hashlib.sha256(b"fa1404 synthetic noncolliding snapshot").hexdigest()
 
 
-def without_added_guards(sql):
-    """Gate-control SQL: the candidate text minus ONLY the two added triggers.
+def without_added_guards(sql, names=ADDED_TRIGGERS):
+    """Gate-control SQL: the candidate text minus ONLY the named added triggers.
 
-    Raises ValueError unless exactly the two named statements are removed and
-    all four baseline update/delete guards remain byte-identical.
+    Raises ValueError unless exactly the named added statements are removed and
+    every other trigger (the four baseline update/delete guards and any added
+    trigger not named) remains byte-identical.
     """
-    pattern = re.compile(r"CREATE TRIGGER IF NOT EXISTS (" + "|".join(ADDED_TRIGGERS) +
-                         r")\b.*?\bEND;\n", re.S)
+    if not names or not set(names) <= set(ADDED_TRIGGERS):
+        raise ValueError("fa1404_control_variant_names:" + ",".join(names))
+    pattern = re.compile(r"CREATE TRIGGER IF NOT EXISTS (" + "|".join(names) + r")\b.*?\bEND;\n", re.S)
     removed = [m.group(1) for m in pattern.finditer(sql)]
-    if sorted(removed) != sorted(ADDED_TRIGGERS):
+    if sorted(removed) != sorted(names):
         raise ValueError("fa1404_control_variant_mismatch:" + ",".join(removed))
     variant = pattern.sub("", sql)
-    for name in BASELINE_TRIGGERS:
+    kept = BASELINE_TRIGGERS + tuple(n for n in ADDED_TRIGGERS if n not in names
+                                     and re.search(r"CREATE TRIGGER IF NOT EXISTS " + n + r"\b", sql))
+    for name in kept:
         original = re.search(r"CREATE TRIGGER IF NOT EXISTS " + name + r"\b.*?\bEND;", sql, re.S)
         if original is None or original.group(0) not in variant:
             raise ValueError("fa1404_control_variant_baseline_changed:" + name)
@@ -157,8 +171,7 @@ class FA1404NoReplaceTests(unittest.TestCase):
         self.assertFalse(set(ADDED_TRIGGERS) & set(self.triggers()))
         old_id, new_id = self.two_snapshots()
         installed = self.triggers()
-        self.assertEqual({name: installed.get(name) for name in ADDED_TRIGGERS},
-                         {ADDED_TRIGGERS[0]: "snapshot_acceptances", ADDED_TRIGGERS[1]: "snapshot_events"})
+        self.assertEqual({name: installed.get(name) for name in ADDED_TRIGGERS}, ADDED_TABLES)
         self.assertEqual(set(BASELINE_TRIGGERS) | set(ADDED_TRIGGERS), set(installed))
         before = self.history()
         attempts = self.replacement_attempts(old_id, new_id, False)
@@ -231,6 +244,62 @@ class FA1404NoReplaceTests(unittest.TestCase):
             "INSERT INTO snapshot_events(sequence,previous_snapshot_id,snapshot_id) VALUES(9,?,?)",
             (old_id, new_id), False))
 
+    # -- R1-MF1: the reserved sequence -1 slot --------------------------------
+    def seed_reserved_row(self, variant_names):
+        """History created under SQL lacking `variant_names`, holding an explicit -1 event."""
+        sql = without_added_guards(acceptance.SQL, variant_names) if variant_names else acceptance.SQL
+        with mock.patch.object(acceptance, "SQL", sql):
+            old_id, new_id = self.two_snapshots()
+            seeded = self.attempt("INSERT INTO snapshot_events(sequence,previous_snapshot_id,snapshot_id) "
+                                  "VALUES(?,NULL,?)", (RESERVED_SEQUENCE, old_id), False)
+        self.assertIsNone(seeded)
+        self.assertEqual(self.history()["events"][0], (RESERVED_SEQUENCE, None, old_id))
+        return old_id, new_id
+
+    def check_reserved_row(self, recursive):
+        present = tuple(n for n in ADDED_TRIGGERS
+                        if re.search(r"CREATE TRIGGER IF NOT EXISTS " + n + r"\b", acceptance.SQL))
+        old_id, new_id = self.seed_reserved_row(present)
+        acceptance._connect(self.output).close()  # real module install path adds the guards
+        self.assertEqual(set(self.triggers()), set(BASELINE_TRIGGERS) | set(present))
+        before, before_bytes = self.history(), self.history_db.read_bytes()
+        attempts = {verb: self.attempt(verb + " INTO snapshot_events(sequence,previous_snapshot_id,snapshot_id) "
+                                       "VALUES(?,?,?)", (RESERVED_SEQUENCE, old_id, new_id), recursive)
+                    for verb in ("INSERT OR REPLACE", "REPLACE", "INSERT")}
+        # Deciding assertion: the colliding explicit -1 replacement leaves history intact.
+        self.assertTrue(self.history() == before and self.history_db.read_bytes() == before_bytes,
+                        PRESERVATION_MARKER + " reserved sequence recursive_triggers=" + str(recursive))
+        replace_refusal = BASELINE_HISTORY_REFUSAL if recursive else RESERVED_REFUSAL
+        for verb, error in attempts.items():
+            with self.subTest(attempt=verb):
+                self.assertIsInstance(error, sqlite3.IntegrityError)
+                if verb != "INSERT":
+                    self.assertEqual(str(error), replace_refusal)
+        # Positive: a noncolliding automatic insert still gets the next sequence.
+        self.assertIsNone(self.attempt("INSERT INTO snapshot_events(previous_snapshot_id,snapshot_id) "
+                                       "VALUES(?,?)", (new_id, old_id), recursive))
+        self.assertEqual(self.history()["events"], before["events"] + [(3, new_id, old_id)])
+        self.assertEqual(self.history()["acceptances"], before["acceptances"])
+
+    def test_a2_reserved_row_auto_insert_continues_recursive_triggers_off(self):
+        self.check_reserved_row(False)
+
+    def test_a2_reserved_row_auto_insert_continues_recursive_triggers_on(self):
+        self.check_reserved_row(True)
+
+    def test_a1_explicit_reserved_sequence_refused(self):
+        old_id, new_id = self.two_snapshots()
+        before, before_bytes = self.history(), self.history_db.read_bytes()
+        for recursive in (False, True):
+            for verb in ("INSERT", "INSERT OR REPLACE"):
+                with self.subTest(recursive_triggers=recursive, verb=verb):
+                    error = self.attempt(verb + " INTO snapshot_events(sequence,previous_snapshot_id,snapshot_id) "
+                                         "VALUES(?,?,?)", (RESERVED_SEQUENCE, old_id, new_id), recursive)
+                    self.assertIsInstance(error, sqlite3.IntegrityError)
+                    self.assertEqual(str(error), RESERVED_REFUSAL)
+        self.assertEqual(self.history(), before)
+        self.assertEqual(self.history_db.read_bytes(), before_bytes)
+
     # -- A3 -------------------------------------------------------------------
     def test_a3_no_new_publication_or_semantic_authority(self):
         old, old_args = self.prepare()
@@ -274,6 +343,18 @@ class FA1404NoReplaceTests(unittest.TestCase):
         state = self.history()
         self.assertIn((1, None, new_id), state["events"])
         self.assertIn("replaced", [row[1] for row in state["acceptances"] if row[0] == old_id])
+
+    def test_a4_reserved_guard_is_load_bearing(self):
+        """Without only the reserved guard, the sequence<>-1 exemption reopens -1 replacement."""
+        variant = without_added_guards(acceptance.SQL, (RESERVED_TRIGGER,))
+        self.assertIn("immutable_events_insert_collision", variant)
+        self.assertNotIn(RESERVED_TRIGGER, variant)
+        old_id, new_id = self.seed_reserved_row((RESERVED_TRIGGER,))
+        self.assertFalse({RESERVED_TRIGGER} & set(self.triggers()))
+        replaced = self.attempt("INSERT OR REPLACE INTO snapshot_events(sequence,previous_snapshot_id,"
+                                "snapshot_id) VALUES(?,?,?)", (RESERVED_SEQUENCE, old_id, new_id), False)
+        self.assertIsNone(replaced)
+        self.assertIn((RESERVED_SEQUENCE, old_id, new_id), self.history()["events"])
 
 
 if __name__ == "__main__":
