@@ -75,6 +75,10 @@ def _child(args):
     blocked_import = {"openai", "anthropic", "ollama", "requests", "httpx", "urllib3", "aiohttp"}
     write_bits = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
     allowed_db = (run_dir / "db").resolve()
+    # Writes are confined to the run's disposable subdirectories and the child
+    # report; source copies created inside the run directory stay read-only.
+    write_roots = [(run_dir / sub).resolve() for sub in ("tmp", "home", "db")]
+    report_path = Path(os.path.abspath(args.report))
 
     def inside(path, root):
         try:
@@ -101,8 +105,10 @@ def _child(args):
             flags = hook_args[2] if len(hook_args) > 2 else 0
             writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or \
                       (isinstance(flags, int) and flags & write_bits)
-            if writing and not inside(os.fsdecode(hook_args[0]), run_dir):
-                reason = "write-outside-run-dir"
+            target = os.fsdecode(hook_args[0])
+            if writing and Path(os.path.abspath(target)) != report_path and \
+                    not any(inside(target, root) for root in write_roots):
+                reason = "write-outside-run-scratch"
         if reason:
             trips.append({"event": event, "reason": reason})
             raise RuntimeError(f"fc7 sentinel blocked {event} ({reason})")
@@ -553,7 +559,14 @@ def mode_credentials(evidence, checks, run_dir, manifest, base):
 def mode_public_tree(evidence, checks, run_dir, manifest, base):
     proc, _ = run_cmd(evidence, "check-public-tree",
                       [sys.executable, str(REPO / "tools" / "check_public_tree.py")], REPO, run_dir)
-    checks.add("public-tree: unchanged repo checker exit 0", proc.returncode == 0, proc.returncode)
+    try:
+        findings = json.loads(proc.stdout.decode("utf-8")).get("findings")
+    except ValueError:
+        findings = "unparseable"
+    # No exemption: any finding, including the staging .venv link, fails closed.
+    checks.add("public-tree: unchanged repo checker exit 0", proc.returncode == 0,
+               {"exit": proc.returncode, "findings": findings,
+                "staging_venv_is_symlink": (REPO / ".venv").is_symlink()})
 
 
 HANDLERS = {"focused": mode_focused, "compatibility": mode_compatibility, "negative": mode_negative,
