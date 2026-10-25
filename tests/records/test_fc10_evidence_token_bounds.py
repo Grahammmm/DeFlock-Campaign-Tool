@@ -389,6 +389,17 @@ def sentinel_discovery(report_path):
     return code
 
 
+def offline_guard():
+    # Script-mode process only: the admitted call graph is pure in-process API.
+    import socket
+
+    def refused(*_args, **_kwargs):
+        raise RuntimeError("offline_guard_network_refused")
+    socket.socket.connect = refused
+    socket.socket.bind = refused
+    socket.create_connection = refused
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("suite", "discovery"), default="suite")
@@ -397,6 +408,7 @@ def main():
     temp = Path(args.temp_root)
     expect(temp.is_absolute() and ".." not in temp.parts and temp.is_dir(), "literal_existing_temp_root")
     tempfile.tempdir = str(temp)  # before any product import
+    offline_guard()  # this fresh script process only; never installed at import time
     sys.path.insert(0, str(REPO))
     report = temp / "suite-summary.json"
     return sentinel_discovery(report) if args.mode == "discovery" else run_suite(report)
