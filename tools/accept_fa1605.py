@@ -86,9 +86,9 @@ def run_suite(ids, run, label, *, ordinary=False, expected_failure=False):
     module = importlib.import_module(NEW_TEST)
     fixture_root = run / (label + '-fixtures')
     fixture_root.mkdir(mode=0o700)
-    output = io.StringIO()
+    output, stdout = io.StringIO(), io.StringIO()
     ambient = (list(sys.path), tempfile.tempdir, socket_identity(), os.environ.copy())
-    with patch.object(tempfile, 'tempdir', str(fixture_root)), module.offline(fixture_root), redirect_stdout(output), redirect_stderr(output):
+    with patch.object(tempfile, 'tempdir', str(fixture_root)), module.offline(fixture_root), redirect_stdout(stdout), redirect_stderr(output):
         if ordinary:
             program = unittest.main(module=None, argv=['python3 -m unittest', '-v', *ids], exit=False, testRunner=unittest.TextTestRunner(stream=output, verbosity=2))
             result = program.result
@@ -98,6 +98,8 @@ def run_suite(ids, run, label, *, ordinary=False, expected_failure=False):
     require(ambient == (list(sys.path), tempfile.tempdir, socket_identity(), os.environ.copy()), 'ambient state leaked')
     raw = run / (label + '.unittest.txt')
     raw.write_text(output.getvalue())
+    (run / (label + '.stdout')).write_text(stdout.getvalue())
+    (run / (label + '.stderr')).write_text(output.getvalue())
     data = dict(selected_test_ids=ids, testsRun=result.testsRun,
                 failures=[(test.id(), text) for test, text in result.failures],
                 errors=[(test.id(), text) for test, text in result.errors],
