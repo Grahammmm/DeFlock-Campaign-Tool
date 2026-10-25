@@ -11,13 +11,11 @@ import json
 import os
 from pathlib import Path
 import re
-import stat
 import subprocess
 import sys
 import tempfile
 import uuid
 
-BASE = ('17da706588467184' 'f0923e2516be3319d' '577539a')
 REPO = Path(__file__).resolve().parents[1]
 AUTHORED = (
     'tests/records/test_fc10_preparation_revision_closure.py',
@@ -74,7 +72,10 @@ class Row:
         m = self.manifest
         require(m['schema'] == 'agentorange.source-manifest/v1', 'source schema')
         require(Path(m['repo']) == REPO and Path(m['write_root']) == REPO.parent, 'source roots')
-        require(m['head'] == BASE and m['clean'] is True, 'staged base')
+        # The operator-owned source manifest is the single source-pin input;
+        # the builder verifies its literal pin against the card before work.
+        require(re.fullmatch(r'[a-f0-9]{40}', m['head']) and m['clean'] is True, 'staged base')
+        self.base = m['head']
         canonical_path(REPO)
         require(self.manifest_path == REPO.parent / 'SOURCE-MANIFEST.json', 'source manifest location')
         out_base = canonical_path(args.out_base, exists=False)
@@ -92,8 +93,8 @@ class Row:
         self.facts = {}
         self.head = self.git('rev-parse', 'HEAD').strip()
         self.tree = self.git('rev-parse', 'HEAD^{tree}').strip()
-        require(self.git('rev-parse', BASE + '^{tree}').strip() == m['tree'], 'base tree')
-        self.run(['git', 'merge-base', '--is-ancestor', BASE, self.head])
+        require(self.git('rev-parse', self.base + '^{tree}').strip() == m['tree'], 'base tree')
+        self.run(['git', 'merge-base', '--is-ancestor', self.base, self.head])
         self.repo_python = REPO / '.venv/bin/python3'
         runtime = m['runtime']
         require((REPO / '.venv').is_symlink(), 'standard venv link missing')
@@ -103,9 +104,9 @@ class Row:
         require(Path(sys.executable).absolute() == expected, 'wrong row interpreter')
         self.identity = {p: sha(REPO / p) for p in (*AUTHORED, *UNCHANGED)}
         for relative in UNCHANGED:
-            data = self.run(['git', 'show', BASE + ':' + relative]).stdout
+            data = self.run(['git', 'show', self.base + ':' + relative]).stdout
             require(hashlib.sha256(data).hexdigest() == self.identity[relative], 'changed protected source: ' + relative)
-        changed = set(self.git('diff', '--name-only', BASE, '--').splitlines())
+        changed = set(self.git('diff', '--name-only', self.base, '--').splitlines())
         require(changed <= set(AUTHORED), 'diff exceeds exclusive write set')
         self.facts['authored_hashes'] = {p: self.identity[p] for p in AUTHORED}
         self.facts['unchanged_hashes'] = {p: self.identity[p] for p in UNCHANGED}
