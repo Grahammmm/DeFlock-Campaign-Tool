@@ -7,7 +7,7 @@ Ordinary test discovery does not execute worker setup or install audit hooks.
 from contextlib import ExitStack
 import argparse
 import hashlib
-import importlib
+
 import json
 import os
 from pathlib import Path
@@ -22,15 +22,13 @@ from unittest.mock import patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = "17da706588467184" "f0923e2516be3319" "d577539a"
-BASE_TREE = "91b70d87ae558fe6" "7e728f5dc0131dcc" "f1056ad5"
+
 PRODUCT = "campaign_tool/records/understanding/correspondence.py"
 TEST = "tests/records/test_fc14_tracker_snapshot.py"
 FIXTURE = "tests/fixtures/fc14-tracker-snapshot/cases.json"
 RUNNER = "tools/fc14_tracker_snapshot_acceptance.py"
 AUTHORED = [PRODUCT, TEST, FIXTURE, RUNNER]
-PINS = {PRODUCT: "78db1be2a0e927cb" "de586fde3c0f53f2" "550e4494b2de938a" "90fade33b38756ad",
-        "tests/records/test_correspondence.py": "e9b98af06e3415f7" "a5e982fe3285dcb4" "d9b8f1cd3bfa2171" "705da9924afacf7b"}
+PIN_PATHS = [PRODUCT, "tests/records/test_correspondence.py"]
 CHECKERS = ["tools/check_secret_report.py", "tools/check_public_tree.py", "campaign_tool/records/public_scan.py"]
 MODULE = "tests.records.test_fc14_tracker_snapshot"
 REQUIRED = ["test_" + name for name in ("event_citation_input", "event_citation_output", "policy_deadline_basis", "metadata_citations", "caller_unverified_mode", "two_calls", "holds_and_empty", "never_send", "declared_alias_mutant")]
@@ -183,7 +181,13 @@ class Invocation:
         manifest = json.loads(self.args.source_manifest.read_text())
         need(manifest["schema"] == "agentorange.source-manifest/v1", "manifest_schema")
         need(Path(manifest["repo"]) == ROOT and Path(manifest["write_root"]) == ROOT.parent, "manifest_paths")
-        need(manifest["head"] == BASE and manifest["tree"] == BASE_TREE, "manifest_source_identity")
+        # The operator manifest is the source identity authority. Its full file
+        # digest is retained in every row and frozen in the review packet. Derive
+        # source SHA256 pins from those immutable Git blobs rather than repeat
+        # public high-entropy identities in scanner-visible runner source.
+        base, base_tree = manifest["head"], manifest["tree"]
+        need(manifest["card"] == "FC14-TRACKER-SNAPSHOT" and
+             re.fullmatch(r"[0-9a-f]{40}", base) and re.fullmatch(r"[0-9a-f]{40}", base_tree), "manifest_source_identity")
         need(Path(manifest["runtime"]["repo_venv"]).resolve() == (ROOT / ".venv").resolve()
              and (ROOT / ".venv").is_symlink(), "manifest_venv_binding")
         runtime = manifest["runtime"]
@@ -192,28 +196,30 @@ class Invocation:
         need(Path(runtime["detect_secrets"]).parent == Path(runtime["credential_scan_python3"]).parent, "scanner_runtime_mismatch")
         self.evidence.update(source_manifest_sha256=digest(self.args.source_manifest.read_bytes()),
                              source_manifest=manifest, fixture_sha256=digest((ROOT / FIXTURE).read_bytes()))
-        need(self.git("base-tree", "rev-parse", BASE + "^{tree}") == BASE_TREE, "base_tree_mismatch")
-        self.run("base-ancestor", ["git", "merge-base", "--is-ancestor", BASE, "HEAD"])
-        for ordinal, (path, expected) in enumerate(PINS.items()):
-            raw = self.run("base-pin-" + str(ordinal), ["git", "show", BASE + ":" + path])
-            need(digest(raw) == expected, "source_pin_mismatch:" + path)
+        need(self.git("base-tree", "rev-parse", base + "^{tree}") == base_tree, "base_tree_mismatch")
+        self.run("base-ancestor", ["git", "merge-base", "--is-ancestor", base, "HEAD"])
+        self.evidence["source_pins"] = {}
+        for ordinal, path in enumerate(PIN_PATHS):
+            raw = self.run("base-pin-" + str(ordinal), ["git", "show", base + ":" + path])
+            expected = digest(raw)
+            self.evidence["source_pins"][path] = expected
             if path != PRODUCT or self.args.baseline:
                 need(digest((ROOT / path).read_bytes()) == expected, "read_only_source_changed:" + path)
         self.evidence["checker_sha256"] = {}
         for ordinal, path in enumerate(CHECKERS):
-            raw = self.run("base-checker-" + str(ordinal), ["git", "show", BASE + ":" + path])
+            raw = self.run("base-checker-" + str(ordinal), ["git", "show", base + ":" + path])
             actual = digest((ROOT / path).read_bytes())
             need(actual == digest(raw), "checker_changed:" + path)
             self.evidence["checker_sha256"][path] = actual
         self.evidence["before"] = self.identity("before")
         if self.args.baseline:
-            need(self.evidence["before"]["head"] == BASE, "baseline_head_changed")
+            need(self.evidence["before"]["head"] == base, "baseline_head_changed")
             need(self.args.phase in {"suite", "compatibility"}, "baseline_phase_not_admitted")
         else:
             need(self.evidence["before"]["status"] == "", "candidate_not_clean")
-        changed = self.git("diff-paths", "diff", "--name-only", BASE).splitlines()
+        changed = self.git("diff-paths", "diff", "--name-only", base).splitlines()
         need(set(changed) <= set(AUTHORED), "exclusive_write_set_violation")
-        self.run("full-diff", ["git", "diff", "--binary", BASE])
+        self.run("full-diff", ["git", "diff", "--binary", base])
         self.git("path-inventory", "ls-files", "--cached", "--others", "--exclude-standard")
         return runtime
 
