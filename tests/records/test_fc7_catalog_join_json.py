@@ -165,7 +165,7 @@ class CatalogJoinJsonTests(unittest.TestCase):
 
     def test_nonfinite_constants_and_overflow(self):
         base = '"source_sha256": "%s", "locator": "page:1"' % H1
-        for literal in ("NaN", "Infinity", "-Infinity", "1e400", "-1e400", "1.8e308", "123456789e999"):
+        for literal in ("NaN", "Infinity", "-Infinity", "1e400", "-1e400", "1.8e308", "2.5E+999"):
             for placement in ('{%s, "score": %s}', '{%s, "context": {"scores": [0, %s]}}'):
                 with self.subTest(literal=literal, placement=placement[-20:]):
                     self.assert_rejected(placement % (base, literal))

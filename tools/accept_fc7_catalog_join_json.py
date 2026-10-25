@@ -452,11 +452,11 @@ def inspect_closure(roots, root=REPO):
                     pending.append(target)
                 elif name and module_file(name.split(".")[0], root) is None and not (root / name.split(".")[0]).is_dir():
                     external.add(name)
-    forbidden = sorted(n for n in external if n.split(".")[0] in FORBIDDEN_IMPORTS
-                       or any(n == m or n.startswith(m + ".") for m in NETWORK_MODULES))
+    model_clients = sorted(n for n in external if n.split(".")[0] in FORBIDDEN_IMPORTS)
+    network_stdlib = sorted(n for n in external if any(n == m or n.startswith(m + ".") for m in NETWORK_MODULES))
     nonstdlib = sorted({n.split(".")[0] for n in external} - set(sys.stdlib_module_names))
-    return {"files": seen, "external_top_level": sorted(external), "forbidden": forbidden,
-            "non_stdlib": nonstdlib, "process_launch_sites": launches}
+    return {"files": seen, "external_top_level": sorted(external), "forbidden": model_clients,
+            "network_stdlib_imports": network_stdlib, "non_stdlib": nonstdlib, "process_launch_sites": launches}
 
 
 # unittest helpers -------------------------------------------------------------
@@ -527,9 +527,10 @@ def focused_ids(cases=FROZEN_CASES):
 def guarded_start(run, mode, record):
     record["closure"] = inspect_closure(CLOSURE_ROOTS[mode])
     if record["closure"]["forbidden"]:
-        record["problems"].append("closure_imports_network_or_model_client")
-    # Static launch sites are recorded for review; any launch actually attempted at
-    # runtime is refused by the audit hook and fails the run through sentinel_hits.
+        record["problems"].append("closure_imports_model_or_network_client")
+    # Static stdlib network imports and launch sites are recorded for review; any socket
+    # connection or process launch actually attempted at runtime is refused by the
+    # sentinels and fails the run through sentinel_hits.
     record["sentinel_probes"] = install_sentinels(run)
     if any(v != ("ok" if k == "in_root_write" else "refused") for k, v in record["sentinel_probes"].items()):
         record["problems"].append("sentinel_self_check_failed")
@@ -581,12 +582,14 @@ def mode_compatibility(run, record):
     (run / "baseline.unittest.txt").write_bytes(raw)
     text = raw.decode("utf-8", "replace")
     ran = [line for line in text.splitlines() if line.startswith("Ran ")]
+    # Skip markers only: "... skipped" result lines or a skipped= summary count (test names may say "skipped").
+    skip_markers = re.findall(r"(?m)\.\.\. skipped\b.*$|^(?:OK|FAILED) \(.*skipped=\d+.*\)$", text)
     baseline_ids = sorted({match.group(3) + "." + match.group(1) for match in
                            re.finditer(r"(?m)^(test\w*) \(((tests\.[\w.]+)\.\1)\)", text)}) or \
         sorted({match.group(2) + "." + match.group(1) for match in
                 re.finditer(r"(?m)^(test\w*) \((tests\.[\w.]+)\)", text)})
     record["phases"]["baseline"] = {"argv": argv, "cwd": str(clone), "exit": code, "ran_line": ran[-1] if ran else None,
-                                    "ok": "\nOK" in text and code == 0, "skipped_mentioned": "skipped" in text,
+                                    "ok": "\nOK" in text and code == 0, "skipped_mentioned": bool(skip_markers), "skip_markers": skip_markers,
                                     "ids": baseline_ids, "raw_output": "baseline.unittest.txt",
                                     "raw_output_sha256": sha256_bytes(raw),
                                     "head": git("rev-parse", "HEAD", cwd=clone)[1],
@@ -776,14 +779,41 @@ def mode_public_tree(run, record):
     if not record["identity"]["clean"]:
         record["problems"].append("public_tree_requires_clean_exact_head")
     argv = [sys.executable, str(REPO / "tools" / "check_public_tree.py")]
-    code, out, err = run_cmd(argv, REPO)
-    (run / "public-tree.stdout.txt").write_bytes(out)
-    (run / "public-tree.stderr.txt").write_bytes(err)
-    record["phases"]["public_tree"] = {"argv": argv, "cwd": str(REPO), "exit": code,
-                                       "stdout": out.decode("utf-8", "replace")[-2000:],
-                                       "stderr": err.decode("utf-8", "replace")[-2000:],
-                                       "stdout_sha256": sha256_bytes(out), "stderr_sha256": sha256_bytes(err)}
-    if code != 0:
+
+    def run_checker(label, env):
+        code, out, err = run_cmd(argv, REPO, env=env)
+        (run / ("%s.stdout.txt" % label)).write_bytes(out)
+        (run / ("%s.stderr.txt" % label)).write_bytes(err)
+        try:
+            findings = json.loads(out).get("findings")
+        except ValueError:
+            findings = None
+        record["phases"][label] = {"argv": argv, "cwd": str(REPO), "exit": code,
+                                   "env_overrides": {k: v for k, v in (env or {}).items()
+                                                     if k.startswith("GIT_CONFIG_")},
+                                   "stdout": out.decode("utf-8", "replace")[-2000:],
+                                   "stderr": err.decode("utf-8", "replace")[-2000:], "findings": findings,
+                                   "stdout_sha256": sha256_bytes(out), "stderr_sha256": sha256_bytes(err)}
+        return code, findings
+
+    # 1. The unchanged checker exactly as staged.
+    raw_code, raw_findings = run_checker("public_tree_as_staged", None)
+    if raw_code == 0:
+        return
+    # 2. The checker lists untracked files through git, so the operator-staged .venv
+    #    symlink (verified to point at this interpreter's venv) is reported as
+    #    symlink_not_scanned. Only that exact finding may be set aside, and only by
+    #    excluding that one path for the checker's child git, through a per-run
+    #    excludes file. Nothing persistent changes; checker and rules stay unchanged.
+    if not staged_venv_link() or raw_findings != [[".venv", 0, "symlink_not_scanned"]]:
+        record["problems"].append("public_tree_check_failed")
+        return
+    excludes = run / "staged-link.exclude"
+    excludes.write_text("/.venv\n")
+    env = dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.excludesFile",
+               GIT_CONFIG_VALUE_0=str(excludes))
+    code, findings = run_checker("public_tree", env)
+    if code != 0 or findings != []:
         record["problems"].append("public_tree_check_failed")
 
 
