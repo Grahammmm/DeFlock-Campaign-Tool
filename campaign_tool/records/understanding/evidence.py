@@ -40,17 +40,27 @@ def read_pinned(path,expected,limit=MAX_RECEIPT_BYTES):
         need((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns),"artifact_changed")
         raw=b"".join(chunks);need(sha(raw)==expected,"artifact_hash_mismatch");return raw
     finally:os.close(fd)
+def detach(value,_active=None):
+    """JSON-structural copy sharing no mutable container with the caller; canonical bytes are unchanged."""
+    if not isinstance(value,(dict,list,tuple)):return value
+    active=set() if _active is None else _active
+    need(id(value) not in active,"circular_reference");active.add(id(value))
+    try:
+        if isinstance(value,dict):return {k:detach(v,active) for k,v in value.items()}
+        items=[detach(v,active) for v in value]
+        return items if isinstance(value,list) else tuple(items)
+    finally:active.discard(id(value))
 def unit(raw,subject,receipt_sha256,ordinal,attempt_kind="native"):
     need(is_hash(subject) and is_hash(receipt_sha256),"unit_source_binding")
     need(type(raw)is dict and set(raw)=={"kind","locator","text","data"},"unit_shape")
     need(type(raw["text"])is str and type(raw["locator"])is dict and type(raw["data"])is dict and type(raw["kind"])is str,"unit_payload_shape")
     need(type(ordinal)is int and ordinal>0,"unit_ordinal")
-    payload=canonical(raw);need(len(payload)<=MAX_UNIT_BYTES,"unit_size_bound")
+    raw=detach(raw);payload=canonical(raw);need(len(payload)<=MAX_UNIT_BYTES,"unit_size_bound")
     imp=sha(["receipt-bound-derivative-v1",subject,receipt_sha256,attempt_kind])
     art=sha(payload)
     return {"unit_id":sha([imp,ordinal,art]),"original_sha256":subject,"import_id":imp,"artifact_sha256":art,"text_sha256":sha(raw["text"].encode()),**raw,"ordinal":ordinal,"receipt_sha256":receipt_sha256,"attempt_kind":attempt_kind,"authority_basis":"receipt_bound_derivative_not_canonical"}
 def bundle(units,source_context,source_receipts):
-    body={"schema":VERSION,"units":sorted(units,key=lambda u:(u["original_sha256"],u["receipt_sha256"],u["ordinal"])),"source_context":source_context,"source_receipts":sorted(source_receipts,key=lambda r:(r["original_sha256"],r["receipt_sha256"]))}
+    body={"schema":VERSION,"units":sorted((detach(u) for u in units),key=lambda u:(u["original_sha256"],u["receipt_sha256"],u["ordinal"])),"source_context":detach(source_context),"source_receipts":sorted((detach(r) for r in source_receipts),key=lambda r:(r["original_sha256"],r["receipt_sha256"]))}
     return validate_bundle({**body,"snapshot_sha256":sha(body)})
 def normalize_receipt(receipt,subject,receipt_sha256,format=None,extra_context=None):
     need(type(receipt)is dict and receipt.get("schema")=="format-extraction-v1" and receipt.get("original_sha256")==subject and receipt.get("original_changed")is False,"native_receipt_binding")
