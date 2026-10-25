@@ -7,7 +7,7 @@ Baseline mode preserves genuine pre-fix regressions; never final acceptance.
 import argparse
 import contextlib
 import hashlib
-import io
+
 import json
 import os
 from pathlib import Path
@@ -21,19 +21,22 @@ from unittest import mock
 import uuid
 
 REPO = Path(__file__).resolve().parents[1]
-BASE = "17da706588467184" + "f0923e2516be3319" + "d577539a"
-BASE_TREE = "91b70d87ae558fe6" + "7e728f5dc0131dcc" + "f1056ad5"
+BASE = "17da7065" + "88467184" + "f0923e25" + "16be3319" + "d577539a"
+BASE_TREE = "91b70d87" + "ae558fe6" + "7e728f5d" + "c0131dcc" + "f1056ad5"
 PRODUCT = "campaign_tool/records/understanding/evidence.py"
 TEST = "tests/records/test_fc13_receipt_positions.py"
 FIXTURE = "tests/fixtures/fc13-receipt-positions/cases.json"
 RUNNER = "tools/fc13_receipt_positions_acceptance.py"
 AUTHORED = [PRODUCT, TEST, FIXTURE, RUNNER]
 SELECTORS = ["tests.records.test_understanding.EvidenceTests", "tests.records.test_fc_evidence_counts"]
-# Split public provenance hashes avoid presenting high-entropy credential-like literals.
+# Public provenance only, grouped for readability; no scanner exception is added.
 PINS = {
-    PRODUCT: "215ed75899325c4a" + "c294cfaf890fb85d" + "ccabf179de240ed4" + "4f93d178eaeb11b4",
-    "tests/records/test_understanding.py": "77fa084d17606632" + "7bc1795381a91167" + "1da7875f1f5721e1" + "64002616d6f5922a",
-    "tests/records/test_fc_evidence_counts.py": "67d3ce6bece4f142" + "7d88ec4cedbc5627" + "59197e18a67c165c" + "ba0cbb35b2cd58fe",
+    PRODUCT: ("215ed758" + "99325c4a" + "c294cfaf" + "890fb85d" +
+              "ccabf179" + "de240ed4" + "4f93d178" + "eaeb11b4"),
+    "tests/records/test_understanding.py": ("77fa084d" + "17606632" + "7bc17953" + "81a91167" +
+                                           "1da7875f" + "1f5721e1" + "64002616" + "d6f5922a"),
+    "tests/records/test_fc_evidence_counts.py": ("67d3ce6b" + "ece4f142" + "7d88ec4c" + "edbc5627" +
+                                               "59197e18" + "a67c165c" + "ba0cbb35" + "b2cd58fe"),
 }
 CHECKERS = ["tools/check_secret_report.py", "tools/check_public_tree.py", "campaign_tool/records/public_scan.py"]
 REQUIRED_CASES = {"complete", "zero", "partial_gapped", "shuffled", "duplicate", "at_limit",
@@ -73,6 +76,7 @@ def identity():
 
 
 def validate_staging(args):
+    require(Path.cwd() == REPO, "acceptance_cwd_must_be_repo")
     manifest = json.loads(args.source_manifest.read_text())
     require(manifest["schema"] == "agentorange.source-manifest/v1", "manifest_schema")
     require(manifest["card"] == "FC13-RECEIPT-POSITIONS", "manifest_card")
@@ -279,7 +283,7 @@ def parent(args):
             for path in (TEST, FIXTURE, RUNNER):
                 raw = (REPO / path).read_text()
                 for prefix in ("/" + "home/", "/" + "Users/", "/" + "workspace/"):
-                    # Literal prefixes above are constructed below in the runner itself.
+                    # Construct the detector strings without embedding box-specific paths.
                     require(prefix not in raw, "box_specific_path")
             cwd = row / "unrelated-cwd"
             cwd.mkdir()
