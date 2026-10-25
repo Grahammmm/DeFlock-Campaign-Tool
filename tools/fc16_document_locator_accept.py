@@ -612,10 +612,10 @@ def discovery_child(report_path):
     loader = unittest.TestLoader()
     discovered = loader.discover(start_dir=str(REPO / "tests" / "records"), pattern="test_fc16_document_locator.py",
                                  top_level_dir=str(REPO))
+    ids = [t.id() for t in flatten(discovered)]  # before running: a run releases finished tests
     suite = unittest.TestSuite([PeerSentinel("test_peer_before"), discovered, PeerSentinel("test_peer_after")])
     stream = io.StringIO()
     result = unittest.TextTestRunner(stream=stream, verbosity=2, resultclass=RecordingResult).run(suite)
-    ids = [t.id() for t in flatten(discovered)]
     module = sys.modules.get(MODULE)
     loaded = os.path.realpath(module.__file__) if module else None
     expected = sorted(expected_ids())
