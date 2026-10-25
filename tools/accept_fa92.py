@@ -96,6 +96,7 @@ PROCESS_EVENTS = frozenset(("os.system", "os.exec", "os.fork", "os.forkpty", "os
 REDIRECTED_ENV = ("HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR")
 SENTINEL = "fa92_offline_sentinel"
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
+PARENT_GUARD = None
 
 
 def sha256_bytes(data):
@@ -629,7 +630,36 @@ def case_public_tree(run_dir, result):
     record = run_child(run_dir, "check-public-tree", [str(python), str(REPO / "tools" / "check_public_tree.py")],
                        REPO)
     result["children"].append(record)
-    return [] if record.get("exit") == 0 else ["public_tree_violations"]
+    problems = [] if record.get("exit") == 0 else ["public_tree_violations"]
+    findings = None
+    try:
+        findings = json.loads(Path(record["stdout_path"]).read_text())["findings"]
+    except (OSError, KeyError, ValueError, TypeError):
+        problems.append("public_tree_output_unparsed")
+    # Diagnostic only (never changes the verdict): is the sole finding the operator-staged .venv link, and is
+    # the committed HEAD tree clean when checked by the same unchanged checker in a link-free local clone?
+    diagnostic = {"findings": findings,
+                  "only_staged_venv_link_finding": findings == [[".venv", 0, "symlink_not_scanned"]]}
+    clone = run_dir / "head-clone"
+    head = result["identity"]["head"]
+    steps = (("head-clone", ["git", "clone", "-q", "--no-hardlinks", "--no-checkout", str(REPO), str(clone)]),
+             ("head-checkout", ["git", "-C", str(clone), "checkout", "-q", "--detach", head]))
+    for label, argv in steps:
+        step = run_child(run_dir, label, argv, run_dir)
+        result["children"].append(step)
+        if step.get("exit") != 0:
+            diagnostic["head_clone_error"] = label
+            break
+    else:
+        PARENT_GUARD.allowed_extra.append([str(python), str(clone / "tools" / "check_public_tree.py")])
+        clean = run_child(run_dir, "check-public-tree-head-clone",
+                          [str(python), str(clone / "tools" / "check_public_tree.py")], clone)
+        result["children"].append(clean)
+        diagnostic["head_clone_exit"] = clean.get("exit")
+    result["public_tree"] = diagnostic
+    if problems and diagnostic["only_staged_venv_link_finding"] and diagnostic.get("head_clone_exit") == 0:
+        problems.append("diagnostic:staging_only_venv_link_finding_head_tree_clean")
+    return problems
 
 
 HANDLERS = {"behavior": case_behavior, "compatibility": case_compatibility,
@@ -666,6 +696,8 @@ def main(argv=None):
         extra.append([runtime["credential_scan_python3"], str(REPO / "tools" / "check_secret_report.py")])
     extra.append([str(REPO / ".venv" / "bin" / "python3"), str(REPO / "tools" / "check_public_tree.py")])
     guard = Guard("parent", REPO, extra).install()
+    global PARENT_GUARD
+    PARENT_GUARD = guard
     result = {"schema": SCHEMA, "card": CARD, "case": args.case, "argv": [sys.executable] + list(sys.argv),
               "cwd": os.getcwd(), "interpreter": sys.executable, "python_version": sys.version,
               "repo": str(REPO), "run_dir": str(run_dir), "started_utc": now(),
