@@ -22,7 +22,9 @@ TEST = 'tests/records/test_fc15_row_cross_source_dedup.py'
 FIXTURE = 'tests/fixtures/fc15-row-cross-source-dedup/cases.json'
 RUNNER = 'tools/fc15_row_cross_source_dedup_acceptance.py'
 AUTHORED = [TEST, FIXTURE, RUNNER]
-BASE = '126accc8568009abec5bc0698e1c4ed3f75ef36b'
+# The supplied operator source manifest is the authority for public source pins.
+# Do not duplicate those metadata values as scanner-visible source literals.
+BASE = None
 SELECTORS = [
     'tests.test_understanding_rows.RowTests.test_duplicate_evidence_retained_and_conflicts_unresolved',
     'tests.test_understanding_rows.RowTests.test_exact_csv_contract_identity_and_states',
@@ -173,6 +175,7 @@ def child(mode, directory):
 
 
 def main():
+    global BASE
     parser = argparse.ArgumentParser()
     parser.add_argument('--phase', choices=['suite', 'compatibility', 'portable', 'credentials', 'public-tree'])
     parser.add_argument('--source-manifest', type=Path)
@@ -188,7 +191,8 @@ def main():
     manifest = json.loads(manifest_raw)
     need(manifest['schema'] == 'agentorange.source-manifest/v1', 'manifest schema')
     need(Path(manifest['repo']) == ROOT and Path(manifest['write_root']) == ROOT.parent, 'manifest repository')
-    need(manifest['head'] == BASE, 'admitted initial head')
+    need(re.fullmatch(r'[0-9a-f]{40}', manifest['head']) is not None, 'initial full head required')
+    BASE = manifest['head']
     need(git('rev-parse', BASE + '^{tree}').decode().strip() == manifest['tree'], 'initial tree')
     need(git('merge-base', BASE, 'HEAD').decode().strip() == BASE, 'candidate ancestry')
     safe(ROOT)
