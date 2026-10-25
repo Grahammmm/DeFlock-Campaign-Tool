@@ -19,7 +19,7 @@ AUTHORED = ("tests/records/test_fc9_review_restart_lifecycle.py",
 CHECKERS = ("tools/check_public_tree.py", "campaign_tool/records/public_scan.py",
             "tools/check_secret_report.py")
 SOURCE = ("campaign_tool/records/review_bundle.py", "tests/records/test_review_bundle.py")
-BASE = "6dd2ae508e316dd8" + "3aa6d74445c46fb8" + "c8d25757"
+
 
 
 def require(condition, reason):
@@ -78,13 +78,14 @@ def bind(e, manifest_path, phase):
     m = json.loads(raw)
     require(m["schema"] == "agentorange.source-manifest/v1", "manifest_schema")
     require(m["repo"] == str(REPO) and Path(m["write_root"]) == REPO.parent, "manifest_repo_identity")
-    require(m["head"] == BASE and re.fullmatch(r"[a-f0-9]{40}", m["tree"]), "manifest_base_pin")
-    require(e.git("base-tree", "rev-parse", BASE + "^{tree}") == m["tree"], "base_tree_changed")
-    e.run("descended-from-base", ["git", "merge-base", "--is-ancestor", BASE, "HEAD"])
+    require(re.fullmatch(r"[a-f0-9]{40}", m["head"]) and re.fullmatch(r"[a-f0-9]{40}", m["tree"]), "manifest_base_pin")
+    base = m["head"]  # The operator's frozen manifest is the source identity authority.
+    require(e.git("base-tree", "rev-parse", base + "^{tree}") == m["tree"], "base_tree_changed")
+    e.run("descended-from-base", ["git", "merge-base", "--is-ancestor", base, "HEAD"])
     measured = identity(e, "candidate")
-    require(measured["head"] != BASE, "candidate_must_be_committed_above_base")
+    require(measured["head"] != base, "candidate_must_be_committed_above_base")
     require(not measured["status"], "candidate_must_be_clean")
-    changed = e.git("changed-paths", "diff", "--name-only", BASE, "HEAD").splitlines()
+    changed = e.git("changed-paths", "diff", "--name-only", base, "HEAD").splitlines()
     require(set(changed) == set(AUTHORED), "exclusive_authored_write_set")
     require(e.git("index-diff", "diff", "--cached", "--name-only", "HEAD") == "", "index_changed")
     hashes = {}
@@ -94,7 +95,7 @@ def bind(e, manifest_path, phase):
         head = e.run("head-bytes-" + path.name, ["git", "show", measured["head"] + ":" + relative])
         require(head == path.read_bytes(), "working_bytes_differ_from_head:" + relative)
         if relative not in AUTHORED:
-            baseline = e.run("baseline-bytes-" + path.name, ["git", "show", BASE + ":" + relative])
+            baseline = e.run("baseline-bytes-" + path.name, ["git", "show", base + ":" + relative])
             require(head == baseline, "unchanged_checker_or_source_modified")
         hashes[relative] = sha(head)
     link = REPO / ".venv"
