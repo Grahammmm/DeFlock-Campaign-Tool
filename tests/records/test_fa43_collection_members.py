@@ -223,7 +223,7 @@ class CollectionMemberShapeTests(unittest.TestCase):
             ([{"id": "!bad", "kind": "document", "url": BASE + "/documents/B"}], "invalid_identity"),
             ([{"id": "", "kind": "document", "url": BASE + "/documents/B"}], "invalid_identity"),
             ([{"id": "B", "kind": "document", "url": "http://" + HOST + "/documents/B"}], "invalid_url"),
-            ([{"id": "B", "kind": "document", "url": "https://user:pw@" + HOST + "/documents/B"}], "invalid_url"),
+            ([{"id": "B", "kind": "document", "url": "https://fixture-user@" + HOST + "/documents/B"}], "invalid_url"),
             ([{"id": "B", "kind": "document", "url": BASE + "/documents/../B"}], "invalid_url"),
             ([{"id": "B", "kind": "document", "url": ""}], "invalid_url"),
             ([{"id": "B", "kind": "document", "url": "https://other.example.invalid/documents/B"}], "unapproved_origin"),
