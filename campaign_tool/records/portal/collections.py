@@ -187,19 +187,32 @@ class CollectionInventory:
                     # Retain an explicit exception without storing malformed raw
                     # values that might contain userinfo/credential material.
                     url, kind, reason = "sha256:" + digest_bytes(literal.encode()), "blocked", "invalid_url"
-                parsed = urlsplit(url)
-                stable_path = re.sub(r"(/documents/[A-Za-z0-9_-]+)/download$", r"\1", parsed.path)
-                stable_id = urlunsplit((parsed.scheme, parsed.netloc, stable_path, "", ""))
-                target = self._collection(url) if kind == "collection" else self._document(
-                    url, stable_id, row["eml_sha256"]) if kind == "document" else None
-                planned.append((event, part, ordinal, url, kind, target, reason))
+                planned.append((part, ordinal, url, kind, reason))
+        # Compare immutable declarations before materializing targets. Empty is
+        # a completed enumeration too; it is not the same as a pending event.
+        planned.sort(key=lambda r: (r[0], r[1]))
         with self.queue.lock(), self.queue.db:
             existing = [tuple(r) for r in self.queue.db.execute(
-                "SELECT event,part,ordinal,url_private,kind,target,reason FROM export_body_links "
+                "SELECT part,ordinal,url_private,kind,reason FROM export_body_links "
                 "WHERE event=? ORDER BY part,ordinal", (event,))]
-            if existing and existing != sorted(planned, key=lambda r: (r[1], r[2])):
-                raise PortalError("body_discovery_conflict")
-            self.queue.db.executemany("INSERT OR IGNORE INTO export_body_links VALUES(?,?,?,?,?,?,?)", planned)
+            if row["discovery"] == "enumerated" or existing:
+                if existing != planned:
+                    raise PortalError("body_discovery_conflict")
+                # A blocked event with saved declarations can recover without
+                # re-enrolling targets or resetting their independent lineage.
+                if row["discovery"] != "enumerated":
+                    self.queue.db.execute("UPDATE export_events SET discovery='enumerated' WHERE id=?", (event,))
+                return
+        targets = []
+        for part, ordinal, url, kind, reason in planned:
+            parsed = urlsplit(url)
+            stable_path = re.sub(r"(/documents/[A-Za-z0-9_-]+)/download$", r"\1", parsed.path)
+            stable_id = urlunsplit((parsed.scheme, parsed.netloc, stable_path, "", ""))
+            target = self._collection(url) if kind == "collection" else self._document(
+                url, stable_id, row["eml_sha256"]) if kind == "document" else None
+            targets.append((event, part, ordinal, url, kind, target, reason))
+        with self.queue.lock(), self.queue.db:
+            self.queue.db.executemany("INSERT OR IGNORE INTO export_body_links VALUES(?,?,?,?,?,?,?)", targets)
             self.queue.db.execute("UPDATE export_events SET discovery='enumerated' WHERE id=?", (event,))
 
     def discovery_failed(self, event):
