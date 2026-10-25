@@ -249,6 +249,9 @@ def run_suite(report_path, discovery=False):
 def sentinel_discovery(report_path):
     # Snapshot BEFORE ordinary discovery, then run an unrelated peer before/after.
     old_env, old_temp, old_path = dict(os.environ), tempfile.tempdir, list(sys.path)
+    import socket
+    import subprocess
+    old_hooks = (socket.socket.connect, socket.create_connection, socket.getaddrinfo, subprocess.Popen, os.system)
     sentinel_file = Path(tempfile.gettempdir()) / "sentinel-fixture.txt"
     sentinel_file.write_text("unrelated sentinel")
 
@@ -257,6 +260,9 @@ def sentinel_discovery(report_path):
             self.assertEqual(dict(os.environ), old_env)
             self.assertEqual(tempfile.tempdir, old_temp)
             self.assertEqual(sys.path, old_path)
+            # Discovery neither installs nor removes process-level hooks.
+            self.assertEqual((socket.socket.connect, socket.create_connection, socket.getaddrinfo,
+                              subprocess.Popen, os.system), old_hooks)
             self.assertEqual(sentinel_file.read_text(), "unrelated sentinel")
             with tempfile.TemporaryDirectory() as directory:
                 self.assertEqual(Path(directory).parent, Path(old_temp))
@@ -267,6 +273,74 @@ def sentinel_discovery(report_path):
     return code
 
 
+class OfflineGuardRefusal(RuntimeError):
+    pass
+
+
+class OfflineGuard:
+    """Script-child-only scoped refusal of network, listener and child-process calls.
+
+    Installed by main() before the product import; never at module import, so ordinary
+    unittest discovery stays inert. Probes refuse before any socket, DNS or process syscall.
+    """
+    PROBE_ADDRESS = ("192.0.2.1", 9)  # RFC 5737 documentation range; never contacted
+
+    def __init__(self):
+        import http.client
+        import socket
+        import subprocess
+        import urllib.request
+        self.modules = (socket, urllib.request, http.client, subprocess)
+        self.targets = [(socket.socket, "connect"), (socket.socket, "connect_ex"), (socket.socket, "bind"),
+                        (socket.socket, "listen"), (socket.socket, "sendto"), (socket, "create_connection"),
+                        (socket, "create_server"), (socket, "getaddrinfo"), (urllib.request, "urlopen"),
+                        (http.client.HTTPConnection, "connect"), (subprocess, "Popen"), (os, "system")]
+        self.saved, self.blocked, self.probes, self.report = [], [], [], {}
+
+    def _wrap(self, label):
+        def guarded(*_args, **_kwargs):
+            self.blocked.append(label)
+            raise OfflineGuardRefusal("offline_guard_refused:" + label)
+        return guarded
+
+    def __enter__(self):
+        preloaded = sorted(name for name in sys.modules if name.split(".")[0] in ("campaign_tool", "tests"))
+        expect(not preloaded, "product_or_test_imported_before_guard:" + ",".join(preloaded))
+        for owner, name in self.targets:
+            self.saved.append((owner, name, getattr(owner, name)))
+            setattr(owner, name, self._wrap(getattr(owner, "__name__", "?") + "." + name))
+        sock, request, client, subprocess = self.modules
+        for label, call in (("socket.create_connection", lambda: sock.create_connection(self.PROBE_ADDRESS, 0.01)),
+                            ("socket.getaddrinfo", lambda: sock.getaddrinfo("fc10.invalid", 9)),
+                            ("socket.create_server", lambda: sock.create_server(("127.0.0.1", 0))),
+                            ("urllib.request.urlopen", lambda: request.urlopen("http://192.0.2.1:9/", timeout=0.01)),
+                            ("http.client.HTTPConnection.connect",
+                             lambda: client.HTTPConnection(*self.PROBE_ADDRESS, timeout=0.01).connect()),
+                            ("subprocess.Popen", lambda: subprocess.Popen(["true"])),
+                            ("os.system", lambda: os.system("true"))):
+            try:
+                call()
+            except OfflineGuardRefusal as error:
+                self.probes.append({"probe": label, "refused": str(error)})
+            else:
+                raise AssertionError("offline_guard_probe_not_refused:" + label)
+        expect(len(self.blocked) == len(self.probes) == 7, "offline_guard_probe_accounting")
+        self.blocked = []
+        self.report = {"installed_before_imports": True, "preloaded_guarded_modules": preloaded,
+                       "patched": [getattr(o, "__name__", "?") + "." + n for o, n in self.targets],
+                       "self_probes": list(self.probes), "permitted_children": 0}
+        return self
+
+    def __exit__(self, *exc):
+        for owner, name, original in reversed(self.saved):
+            setattr(owner, name, original)
+        self.report.update(restored=all(getattr(o, n) is orig for o, n, orig in self.saved),
+                           unexpected_blocked=list(self.blocked),
+                           guarded_modules_imported_under_guard=sorted(
+                               name for name in sys.modules if name.split(".")[0] in ("campaign_tool", "tests")))
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("suite", "discovery"), default="suite")
@@ -275,9 +349,15 @@ def main():
     temp = Path(args.temp_root)
     expect(temp.is_absolute() and ".." not in temp.parts and temp.is_dir(), "literal_existing_temp_root")
     tempfile.tempdir = str(temp)  # fresh isolated script process; precedes product import
-    sys.path.insert(0, str(REPO))
-    report = temp / "suite-summary.json"
-    return sentinel_discovery(report) if args.mode == "discovery" else run_suite(report)
+    guard = OfflineGuard()
+    with guard:  # offline boundary precedes the product/test import graph
+        sys.path.insert(0, str(REPO))
+        report = temp / "suite-summary.json"
+        code = sentinel_discovery(report) if args.mode == "discovery" else run_suite(report)
+    save(temp / "offline-guard.json", guard.report)
+    if not guard.report["restored"] or guard.report["unexpected_blocked"]:
+        return 1
+    return code
 
 
 if __name__ == "__main__":

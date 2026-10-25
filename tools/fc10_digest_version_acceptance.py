@@ -27,6 +27,140 @@ SELECTORS = ("tests.runner.test_digest.BuildDigestTests.test_no_model_is_detecto
              "tests.test_law.LoadPackageValidationTests")
 BASE_DECLARATION = '"schema_version": {"const": 1},'
 FINAL_DECLARATION = '"schema_version": {"type": "integer", "const": 1},'
+GUARDED_PREFIXES = ("campaign_tool", "tests")
+ROW_INTERPRETER = {"credentials": "<credential_scan_python3>"}
+
+
+def _row_argv(phase):
+    return [ROW_INTERPRETER.get(phase, "<write_root>/repo/.venv/bin/python3"),
+            "<write_root>/repo/tools/fc10_digest_version_acceptance.py", "--phase", phase,
+            "--source-manifest", "<write_root>/SOURCE-MANIFEST.json", "--out-base", "<write_root>/out"]
+
+
+# Sanitized, durable representation of the card's frozen acceptance contract (R1-MF2).
+# Host paths are templated and source pins are bound through SOURCE-MANIFEST.json and git
+# blobs, never embedded hex. Every row writes these canonical bytes and records their SHA256.
+FROZEN_SPEC = {
+    "schema": "fc10-frozen-acceptance-spec/v1",
+    "card": "t_4bfd9a73",
+    "title": "FC10-DIGEST-VERSION Require an integer schema version before accepting a private digest.",
+    "source_pin": {"repository": "Grahammmm/DeFlock-Campaign-Tool", "branch": "main",
+                   "binding": "operator SOURCE-MANIFEST.json head/tree; initial HEAD equals manifest head; "
+                              "candidate descends from it"},
+    "frozen_behavior": "Add the missing integer domain to the digest schema_version declaration, retaining "
+                       "const 1. Through the existing law validator accept exact integer 1 and reject boolean, "
+                       "floating, null, string and container variants. No global schema-validator rewrite, no "
+                       "digest version bump, no change to the model-output contract or legal confidence rules.",
+    "frozen_test_experiment": ["integer_one", "bool_true_false", "float_one_fraction_nonfinite",
+                               "null_string_array_object", "integer_zero_two", "ordinary_empty_digest",
+                               "populated_digest_with_current_source", "same_object_and_bytes_preserved"],
+    "negative_control": "Remove only the new integer declaration in an in-memory copy of DIGEST_SCHEMA; the "
+                        "true/1.0 rejection tests must fail while integer 1 still passes; restore and rerun.",
+    "exclusive_write_set": list(AUTHORED),
+    "compatibility_selectors": list(SELECTORS),
+    "acceptance_cwd": "<write_root>/repo",
+    "rows": {phase: _row_argv(phase) for phase in ("suite", "compatibility", "portable", "credentials",
+                                                    "public-tree")},
+    "offline_guards": "scoped in-process refusal of network, listener and child-process calls installed "
+                      "before any product or test import; only the runner's literal git/scanner/test-script "
+                      "children are permitted; restored on exit",
+    "expected_result": "All five separate rows exit zero with genuine hashed receipts. In-place staging "
+                       "diagnostics are informational only. REVIEW REQUIRED, not semantic/legal/human/live "
+                       "acceptance.",
+    "limits": ["full discovery is operator-run", "remote push, PR and exact-head CI are OWED to the operator",
+               "no push, merge, publication, outbound communication or hold change"],
+}
+
+
+def frozen_spec_bytes():
+    return json.dumps(FROZEN_SPEC, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+class OfflineGuardRefusal(RuntimeError):
+    pass
+
+
+class OfflineGuard:
+    """Scoped, restorable refusal of in-process network, listener and child-process calls (R1-MF1).
+
+    Installed by main() before any product or test import; the runner's own literal git,
+    scanner and test-script children pass only inside permit_children(). Probes touch no
+    target: the patched callables refuse before any socket, DNS or process syscall.
+    """
+    PROBE_ADDRESS = ("192.0.2.1", 9)  # RFC 5737 documentation range; never contacted
+
+    def __init__(self):
+        import http.client
+        import socket
+        import urllib.request
+        self.socket, self.urllib_request, self.http_client = socket, urllib.request, http.client
+        self.targets = [(socket.socket, "connect"), (socket.socket, "connect_ex"), (socket.socket, "bind"),
+                        (socket.socket, "listen"), (socket.socket, "sendto"), (socket, "create_connection"),
+                        (socket, "create_server"), (socket, "getaddrinfo"), (urllib.request, "urlopen"),
+                        (http.client.HTTPConnection, "connect"), (subprocess, "Popen"), (os, "system")]
+        self.saved, self.blocked, self.permitted, self.probes = [], [], [], []
+        self.children_allowed = False
+        self.report = {}
+
+    def _wrap(self, label, original, child):
+        def guarded(*args, **kwargs):
+            if child and self.children_allowed:
+                self.permitted.append(label)
+                return original(*args, **kwargs)
+            self.blocked.append(label)
+            raise OfflineGuardRefusal("offline_guard_refused:" + label)
+        return guarded
+
+    def __enter__(self):
+        preloaded = sorted(name for name in sys.modules if name.split(".")[0] in GUARDED_PREFIXES)
+        require(not preloaded, "product_or_test_imported_before_guard:" + ",".join(preloaded))
+        for owner, name in self.targets:
+            original = getattr(owner, name)
+            label = getattr(owner, "__name__", "?") + "." + name
+            self.saved.append((owner, name, original))
+            setattr(owner, name, self._wrap(label, original, name in ("Popen", "system")))
+        sock, request, client = self.socket, self.urllib_request, self.http_client
+        for label, call in (("socket.create_connection", lambda: sock.create_connection(self.PROBE_ADDRESS, 0.01)),
+                            ("socket.getaddrinfo", lambda: sock.getaddrinfo("fc10.invalid", 9)),
+                            ("socket.create_server", lambda: sock.create_server(("127.0.0.1", 0))),
+                            ("urllib.request.urlopen", lambda: request.urlopen("http://192.0.2.1:9/", timeout=0.01)),
+                            ("http.client.HTTPConnection.connect",
+                             lambda: client.HTTPConnection(*self.PROBE_ADDRESS, timeout=0.01).connect()),
+                            ("subprocess.Popen", lambda: subprocess.Popen(["true"])),
+                            ("os.system", lambda: os.system("true"))):
+            try:
+                call()
+            except OfflineGuardRefusal as error:
+                self.probes.append({"probe": label, "refused": str(error)})
+            else:
+                raise RuntimeError("offline_guard_probe_not_refused:" + label)
+        require(len(self.blocked) == len(self.probes) == 7, "offline_guard_probe_accounting")
+        self.blocked = []
+        self.report = {"installed_before_imports": True, "preloaded_guarded_modules": preloaded,
+                       "patched": [getattr(o, "__name__", "?") + "." + n for o, n in self.targets],
+                       "self_probes": list(self.probes)}
+        return self
+
+    def permit_children(self):
+        guard = self
+
+        class Permit:
+            def __enter__(self):
+                guard.children_allowed = True
+
+            def __exit__(self, *exc):
+                guard.children_allowed = False
+        return Permit()
+
+    def __exit__(self, *exc):
+        for owner, name, original in reversed(self.saved):
+            setattr(owner, name, original)
+        restored = all(getattr(owner, name) is original for owner, name, original in self.saved)
+        self.report.update(restored=restored, unexpected_blocked=list(self.blocked),
+                           permitted_children=len(self.permitted),
+                           guarded_modules_imported_under_guard=sorted(
+                               name for name in sys.modules if name.split(".")[0] in GUARDED_PREFIXES))
+        return False
 
 
 def require(condition, reason):
@@ -52,15 +186,17 @@ def canonical(path):
 
 
 class Evidence:
-    def __init__(self, output):
+    def __init__(self, output, guard):
         self.output = output
+        self.guard = guard
         self.commands = []
 
     def run(self, label, argv, cwd=REPO, allowed=(0,)):
         require(isinstance(argv, list) and all(isinstance(a, str) for a in argv), "literal_argv_required")
         out = self.output / ("%03d-" % len(self.commands) + label)
         out.mkdir(mode=0o700)
-        run = subprocess.run(argv, cwd=cwd, capture_output=True, shell=False)
+        with self.guard.permit_children():  # only the runner's own literal, shell-disabled children
+            run = subprocess.run(argv, cwd=cwd, capture_output=True, shell=False)
         (out / "stdout.txt").write_bytes(run.stdout)
         (out / "stderr.txt").write_bytes(run.stderr)
         receipt = {"label": label, "argv": argv, "cwd": str(cwd), "exit": run.returncode,
@@ -181,6 +317,13 @@ def portable(e):
         summaries[mode] = json.loads((fresh / "suite-summary.json").read_text())
         require(not summaries[mode]["missing_dimensions"] and not summaries[mode]["skipped"],
                 "portable_required_coverage")
+        guard = json.loads((fresh / "offline-guard.json").read_text())
+        require(guard["installed_before_imports"] and not guard["preloaded_guarded_modules"]
+                and len(guard["self_probes"]) == 7 and guard["restored"] and not guard["unexpected_blocked"]
+                and guard["permitted_children"] == 0
+                and "campaign_tool.digest.model" in guard["guarded_modules_imported_under_guard"],
+                "portable_child_offline_guard")
+        summaries[mode]["offline_guard"] = guard
     require(summaries["suite"]["dimensions"] == summaries["discovery"]["dimensions"],
             "script_discovery_coverage_mismatch")
     return summaries
@@ -252,28 +395,54 @@ def main():
     temp = output / "temporary"
     temp.mkdir(mode=0o700)
     tempfile.tempdir = str(temp)  # precedes every product or test import
-    e = Evidence(output)
-    receipt = {"schema": "fc10-acceptance-row/v1", "phase": args.phase, "output": str(output),
+    guard = OfflineGuard()
+    e = Evidence(output, guard)
+    spec_raw = frozen_spec_bytes()
+    spec_path = output / "frozen-spec.json"
+    with spec_path.open("xb") as stream:
+        stream.write(spec_raw)
+    receipt = {"schema": "fc10-acceptance-row/v2", "phase": args.phase, "output": str(output),
                "invocation": {"argv": [sys.executable, *sys.argv], "cwd": str(Path.cwd()), "interpreter": sys.executable},
+               "frozen_spec": {"path": str(spec_path), "sha256": sha(spec_raw), "bytes": len(spec_raw),
+                               "origin": "tools/fc10_digest_version_acceptance.py FROZEN_SPEC at candidate HEAD"},
                "status": "FAILED", "semantic_acceptance": False, "remote_ci": "OWED",
                "full_discovery": "operator-run"}
     code = 1
     try:
-        require(Path.cwd() == REPO, "acceptance_cwd")
-        m, candidate = bind(e, Path(args.source_manifest), args.phase)
-        receipt["candidate"] = candidate
-        if args.phase == "suite":
-            result = suite(e, candidate)
-        elif args.phase == "compatibility":
-            result = compatibility(e)
-        elif args.phase == "portable":
-            result = portable(e)
-        elif args.phase == "credentials":
-            result = credentials(e, m)
+        with guard:  # offline boundary precedes bind() and every product/test import (R1-MF1)
+            receipt["offline_guard"] = guard.report
+            require(Path.cwd() == REPO, "acceptance_cwd")
+            m, candidate = bind(e, Path(args.source_manifest), args.phase)
+            receipt["candidate"] = candidate
+            template = {"<write_root>": str(REPO.parent),
+                        "<credential_scan_python3>": m["runtime"]["credential_scan_python3"]}
+            expected_argv = [template.get(part, part) for part in FROZEN_SPEC["rows"][args.phase]]
+            expected_argv = [part.replace("<write_root>", str(REPO.parent)) for part in expected_argv]
+            require(receipt["invocation"]["argv"] == expected_argv, "invocation_differs_from_frozen_spec_row")
+            require(spec_path.read_bytes() == spec_raw and json.loads(spec_raw) == FROZEN_SPEC, "frozen_spec_bytes")
+            receipt["frozen_spec"].update(row_argv_template=FROZEN_SPEC["rows"][args.phase], invocation_matches=True,
+                                          runner_sha256=candidate["source_hashes"][AUTHORED[3]],
+                                          fixture_sha256=candidate["source_hashes"][AUTHORED[2]])
+            if args.phase == "suite":
+                result = suite(e, candidate)
+            elif args.phase == "compatibility":
+                result = compatibility(e)
+            elif args.phase == "portable":
+                result = portable(e)
+            elif args.phase == "credentials":
+                result = credentials(e, m)
+            else:
+                result = public_tree(e, m, candidate)
+            require(identity(e, "final") == {key: candidate[key] for key in ("head", "tree", "status")},
+                    "final_identity_changed")
+            require(sha(Path(args.source_manifest).read_bytes()) == candidate["manifest_sha256"], "manifest_changed")
+        report = guard.report
+        require(report["restored"] and not report["unexpected_blocked"], "offline_guard_breached_or_not_restored")
+        if args.phase in ("suite", "compatibility"):
+            require("campaign_tool.digest.model" in report["guarded_modules_imported_under_guard"],
+                    "admitted_call_graph_not_imported_under_guard")
         else:
-            result = public_tree(e, m, candidate)
-        require(identity(e, "final") == {key: candidate[key] for key in ("head", "tree", "status")}, "final_identity_changed")
-        require(sha(Path(args.source_manifest).read_bytes()) == candidate["manifest_sha256"], "manifest_changed")
+            require(not report["guarded_modules_imported_under_guard"], "unexpected_in_process_product_import")
         receipt.update(status="PASS_REVIEW_REQUIRED", result=result)
         code = 0
     except Exception as error:
