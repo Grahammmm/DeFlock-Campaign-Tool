@@ -1,7 +1,9 @@
 """FA1609: full portal tuple identity is independent of URL aliases."""
 import copy
 import hashlib
+import socket
 import unittest
+from unittest import mock
 
 from tools import portal_reconcile as pr
 
@@ -33,7 +35,14 @@ def scenario():
         observation("decoy-request", request="req-beta"),
         observation("decoy-item", item="item-beta"),
     ]
-    queue = [queue_row(*target), queue_row("records.example.test", "req-unused", "item-unused")]
+    queue = [
+        queue_row(*target),
+        # Valid received rows that each differ from target in exactly one tuple field.
+        queue_row("archive2.example.test", "req-alpha", "item-alpha"),
+        queue_row("records.example.test", "req-gamma", "item-alpha"),
+        queue_row("records.example.test", "req-alpha", "item-gamma"),
+        queue_row("records.example.test", "req-unused", "item-unused"),
+    ]
     return rows, queue
 
 
@@ -45,15 +54,20 @@ def assert_identity_oracle(test, report):
     test.assertEqual(report["classes"]["unproven"], 3)
     test.assertEqual(report["detail"]["unproven"]["not_in_queue"], 3)
     test.assertEqual(report["detail"]["fetched_queue_items"], 1)
-    test.assertEqual(report["queue"]["items"], 2)
+    test.assertEqual(report["queue"]["items"], 5)
     test.assertEqual(report["queue"]["referenced_by_mail"], 1)
-    test.assertEqual(report["queue"]["not_referenced_by_mail"], 1)
-    test.assertEqual(report["queue"]["with_version_receipt"], 2)
+    test.assertEqual(report["queue"]["not_referenced_by_mail"], 4)
+    test.assertEqual(report["queue"]["with_version_receipt"], 5)
     test.assertEqual(report["mail"]["malformed_rows"], 0)
     test.assertEqual(report["queue"]["malformed_rows"], 0)
 
 
 class PortalTupleCardinalityTests(unittest.TestCase):
+    def setUp(self):
+        guard = mock.patch.object(socket, "socket", side_effect=AssertionError("network_forbidden_in_FA1609"))
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def test_identity_components_and_url_alias_cardinality(self):
         rows, queue = scenario()
         report = pr.reconcile(rows, queue)
@@ -100,23 +114,24 @@ class PortalTupleCardinalityTests(unittest.TestCase):
         correct = pr.reconcile(rows, queue)
         assert_identity_oracle(self, correct)
 
-        # Faulty, test-local variant: deliberately discards host and request.
-        item_index = {}
-        for row in queue:
-            item_index[row["item_id"]] = (row["state"], row["has_version"])
-        faulty_fetched = 0
-        for row in rows:
-            item = row.get("item_id")
-            if item is None:
-                item = "item-alpha" if row.get("path") == "/documents/item-alpha/download" else None
-            match = item_index.get(item)
-            if match is not None and match[1]:
-                faulty_fetched += 1
-        self.assertEqual(faulty_fetched, 4)
+        def item_only_classify(observation, items, ambiguous):
+            _, _, _, _, item_id, _ = observation
+            candidates = [entry for identity, entry in items.items() if identity[2] == item_id]
+            if candidates:
+                state, has_version, reason = candidates[0]
+                if has_version:
+                    return "fetched", ("item-only", item_id)
+                return "queued", state
+            return "unproven", "not_in_queue"
+
+        with mock.patch.object(pr, "classify", side_effect=item_only_classify):
+            faulty = pr.reconcile(rows, queue)
         with self.assertRaises(AssertionError) as caught:
-            self.assertEqual(faulty_fetched, correct["classes"]["fetched"])
+            assert_identity_oracle(self, faulty)
         self.assertIn("4 != 2", str(caught.exception))
-        self.assertEqual(correct["classes"]["fetched"], 2)
+        print("NEGATIVE_CONTROL_CAUGHT: " + str(caught.exception))
+        # The exact same oracle remains green against the unmodified API.
+        assert_identity_oracle(self, pr.reconcile(rows, queue))
         self.assertEqual(correct["detail"]["fetched_queue_items"], 1)
 
 
