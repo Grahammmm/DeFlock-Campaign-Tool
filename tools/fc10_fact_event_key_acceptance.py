@@ -98,9 +98,31 @@ def current_targets():
     return {t: getattr(*resolve_target(t)) for t in OFFLINE_TARGETS}
 
 
+def classify_guard(fn):
+    # Runner-owned guard, a test's own nested scoped offline guard, or the unguarded original.
+    if getattr(fn, "_fc10_offline_guard", False) is True:
+        return "runner_guard"
+    effect = getattr(fn, "side_effect", None) if isinstance(fn, mock.NonCallableMock) else None
+    if isinstance(effect, RuntimeError) and str(effect) == "offline_api_not_allowed":
+        return "nested_test_guard"
+    return "unguarded"
+
+
 def guard_state():
-    # True only for this runner's own inert guard objects (never invoked by these checks).
-    return {t: getattr(fn, "_fc10_offline_guard", False) is True for t, fn in current_targets().items()}
+    # Classification only; no guard or original target is ever invoked by these checks.
+    return {t: classify_guard(fn) for t, fn in current_targets().items()}
+
+
+def all_guarded(state):
+    return set(state) == set(OFFLINE_TARGETS) and all(v != "unguarded" for v in state.values())
+
+
+def runner_guarded(state):
+    return set(state) == set(OFFLINE_TARGETS) and all(v == "runner_guard" for v in state.values())
+
+
+def none_guarded(state):
+    return set(state) == set(OFFLINE_TARGETS) and all(v == "unguarded" for v in state.values())
 
 
 def make_guard(target):
@@ -172,11 +194,11 @@ def guard_selftest():
         pass
     inside = record["checkpoints"][0]["guards"]
     seen = [o for o in record.get("import_observations", []) if o["module"] == SELFTEST_PROBE]
-    ok = (all(inside.values()) and len(seen) >= 1 and all(all(o["guards"].values()) for o in seen)
+    ok = (runner_guarded(inside) and len(seen) >= 1 and all(runner_guarded(o["guards"]) for o in seen)
           and record["restored"] and record["observer_removed"] and record["exit_exception"] == "LookupError"
-          and not any(guard_state().values()))
+          and none_guarded(guard_state()))
     need(ok, "guard_selftest")
-    return {"inside_all_guarded": all(inside.values()), "observer_fired": len(seen),
+    return {"inside_all_guarded": runner_guarded(inside), "observer_fired": len(seen),
             "restored_after_exception": record["restored"], "observer_removed": record["observer_removed"]}
 
 
@@ -270,7 +292,7 @@ def child_main(args):
         scope.checkpoint("before_scope_exit")
     record["guards_after_exit"] = guard_state()
     emit_guard(args.child, record, selftest)
-    need(record["restored"] and record["observer_removed"] and not any(record["guards_after_exit"].values()),
+    need(record["restored"] and record["observer_removed"] and none_guarded(record["guards_after_exit"]),
          "guard_restore")
     return code
 
@@ -431,17 +453,18 @@ def check_guard(raw, child, root, tests_run, required_modules):
     need(st["inside_all_guarded"] and st["observer_fired"] >= 1 and st["restored_after_exception"]
          and st["observer_removed"], "guard_selftest:" + child)
     need(g["restored"] and g["observer_removed"] and g["exit_exception"] is None
-         and not any(g["guards_after_exit"].values()), "guard_restoration:" + child)
+         and none_guarded(g["guards_after_exit"]), "guard_restoration:" + child)
     labels = [c["label"] for c in g["checkpoints"]]
     need(labels[0] == "scope_entered_before_product_import" and labels[-1] == "before_scope_exit", "guard_span:" + child)
-    need(all(all(c["guards"].values()) and set(c["guards"]) == set(OFFLINE_TARGETS) for c in g["checkpoints"]),
-         "guard_checkpoint_unguarded:" + child)
+    # Checkpoints sit outside any test, so the runner's own guards must be the active ones.
+    need(all(runner_guarded(c["guards"]) for c in g["checkpoints"]), "guard_checkpoint_unguarded:" + child)
     imports = g["import_observations"]
-    need(imports and all(all(o["guards"].values()) for o in imports), "guard_import_unguarded:" + child)
+    need(imports and all(all_guarded(o["guards"]) for o in imports), "guard_import_unguarded:" + child)
     seen = {o["module"] for o in imports}
     need(set(required_modules) <= seen, "guard_import_coverage:" + child)
     need(any(m.split(".")[0] == "campaign_tool" for m in seen), "guard_product_import_observed:" + child)
-    need(len(g["runtime"]) == 2 * tests_run and all(all(r["guards"].values()) for r in g["runtime"]),
+    # Test start/stop sit outside setUp/cleanup nesting, so runner guards are active there too.
+    need(len(g["runtime"]) == 2 * tests_run and all(runner_guarded(r["guards"]) for r in g["runtime"]),
          "guard_runtime:" + child)
     write_json(root / ("guard-" + child + ".json"), g)
     return {"child": child, "import_observations": len(imports), "required_modules_observed": sorted(required_modules),
