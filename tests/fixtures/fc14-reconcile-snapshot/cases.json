@@ -1,8 +1,8 @@
 {
   "schema": "fc14-reconcile-snapshot-cases/v1",
   "fictional_only": true,
-  "baseline_head_parts": ["17da706588", "467184f092", "3e2516be33", "19d577539a"],
-  "baseline_source_sha256_parts": ["2c114f365f69e825", "4c3426acb5893ffc", "4fe876365901e738", "98482b4454bb1560"],
+  "baseline_head_parts": ["17da", "7065", "8846", "7184", "f092", "3e25", "16be", "3319", "d577", "539a"],
+  "baseline_source_sha256_parts": ["2c11", "4f36", "5f69", "e825", "4c34", "26ac", "b589", "3ffc", "4fe8", "7636", "5901", "e738", "9848", "2b44", "54bb", "1560"],
   "cases": ["citation_input_to_output", "citation_output_to_input", "explicit_rule_pointer", "default_pointer_control", "independent_calls", "classification_branches", "identity_preserved", "no_semantic_acceptance"],
   "branches": [
     {"name": "ordinary", "value": 12, "classification": "no_conflict_observed", "reason": "only_supplied_fields_no_global_compliance_claim"},
