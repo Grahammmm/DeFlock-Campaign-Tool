@@ -6,15 +6,18 @@ and must not pass through a symbolic link:
 
   behavior          tests/records/test_fa49_ocr_tsv.py (A1 positive/boundaries,
                     A2 malformed rows, A3 real extraction consumer and replay)
-  compatibility     the unchanged OCR test files named in COMPATIBILITY
+  compatibility     the unchanged OCR test files named in COMPATIBILITY, with a
+                    receipt (argv, cwd, exit, captured stdout/stderr and their
+                    hashes) for every child process they start
   negative-control  A4: the truncated-row and consumer regressions run against
                     the complete preserved baseline ocr.py (loaded in memory
                     from git history) must ERROR with AttributeError while the
                     normal two-row positive still passes; the same selection
                     then passes against the real candidate module
-  isolation         A5: guard/redirect self-probes, committed-source
-                    portability scan, then the behavior case rerun as a child
-                    process from a second complete source copy
+  isolation         A5: inert guard decision self-tests, real guard/redirect
+                    probes, committed-source portability scan, then the
+                    behavior case rerun as a child process from a second
+                    complete source copy
   credentials       A6: the detect-secrets installed next to this interpreter,
                     then the unchanged tools/check_secret_report.py on that
                     exact report
@@ -23,22 +26,28 @@ Before any repository module is imported this runner disables bytecode writes,
 redirects tempfile/TMPDIR into the per-run directory, and installs an audit
 hook that refuses non-loopback network lookups/connects (loopback connects are
 allowed only to sockets bound by this process or to ports with no host
-listener, so a host-local model service stays unreachable), absolute-path reads
-under the user's home outside the repository/run/interpreter roots, and
-Python-level writes outside the per-run directory. For the focused cases it
-also refuses process creation while tests run and replaces the OCR module's
-bound default runner/probe callables with refusing sentinels. The open() audit
-event carries no dir_fd, so relative-name opens cannot be attributed: they are
-counted, and a before/after content digest of the whole repository tree (minus
-.git) is the backstop. Focused cases work from a cwd inside the run directory;
-compatibility keeps the invocation cwd because unchanged production children
-are started with ``python -m``. This is a test guard, not a hostile-code
-sandbox. A pass is REVIEW REQUIRED; it is not full-repository CI, semantic,
-human or release acceptance.
+listener, so a host-local model service stays unreachable), reads under the
+user's home outside the repository/run/interpreter roots, and Python-level
+writes outside the per-run directory. Relative paths are resolved against the
+current working directory; ``os.open`` with ``dir_fd`` is wrapped so the name
+is resolved against that descriptor before the call, and a path that cannot be
+resolved is refused. For the focused cases it also refuses process creation
+while tests run and replaces the OCR module's bound default runner/probe
+callables with refusing sentinels.
+
+Every refusal is fatal unless it is the single exact (kind, event, target)
+announced by a deliberate self-probe phase; an announced probe that does not
+fire exactly once is also fatal. Focused cases work from a cwd inside the run
+directory; compatibility keeps the invocation cwd because unchanged production
+children are started with ``python -m``. This is a test guard, not a
+hostile-code sandbox. A pass is REVIEW REQUIRED; it is not full-repository CI,
+semantic, human or release acceptance.
 """
 import argparse
+import contextlib
 import datetime
 import hashlib
+import inspect
 import io
 import ipaddress
 import json
@@ -50,6 +59,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import weakref
 
@@ -58,6 +68,8 @@ OCR_MODULE = "campaign_tool.records.extract.ocr"
 OCR_SOURCE = "campaign_tool/records/extract/ocr.py"
 REGRESSION = "tests.records.test_fa49_ocr_tsv"
 COMPATIBILITY = ("tests.records.test_ocr", "tests.records.test_ocr_stage", "tests.records.test_run_pdf_ocr")
+# Real children the unchanged compatibility files must start (basename of argv[0]).
+COMPATIBILITY_REQUIRED_TOOLS = ("pdftoppm", "tesseract")
 NEG_BROKEN = (f"{REGRESSION}.MalformedConfidenceTests.test_a2_truncated_last_row_has_no_text_cell",
               f"{REGRESSION}.ConsumerTests.test_a3_truncated_page_blocked_while_peer_page_unreviewed")
 NEG_POSITIVE = f"{REGRESSION}.PositiveConfidenceTests.test_a1_two_valid_word_rows_mean"
@@ -70,10 +82,12 @@ PORTABILITY_NEEDLES = ("/" + "home" + "/", "/" + "Users" + "/", "agent" + "-work
                        "/" + "tmp" + "/", "kan" + "ban")
 PROBE_PREFIX = "fa49-probe-"
 
-STATE = {"run": None, "allowed_reads": (), "home": None, "deny_process": False, "bound": []}
-REFUSED = {"network": [], "write": [], "read": [], "process": []}
-PROBES = {"network": [], "write": [], "read": [], "process": []}
-UNATTRIBUTED = {"relative_write_opens": 0}
+STATE = {"run": None, "allowed_reads": (), "home": None, "deny_process": False, "bound": [],
+         "record_children": False, "children_dir": None}
+COUNTERS = {"dir_fd_opens_attributed": 0}
+LOCAL = threading.local()
+REAL_OS_OPEN = os.open
+REAL_POPEN = subprocess.Popen
 
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 # audit event -> ((path arg index, dir_fd arg index or None), ...)
@@ -87,34 +101,151 @@ NETWORK_EVENTS = ("socket.connect", "socket.getaddrinfo", "socket.gethostbyname"
                   "socket.gethostbyaddr", "socket.sendto", "socket.sendmsg", "socket.bind")
 PROCESS_EVENTS = ("subprocess.Popen", "os.posix_spawn", "os.spawn", "os.exec", "os.fork",
                   "os.forkpty", "os.system", "os.startfile", "pty.spawn")
+# Events whose final path component is acted on without following a symlink.
+NOFOLLOW_EVENTS = {"os.mkdir", "os.rename", "os.replace", "os.remove", "os.rmdir", "os.symlink",
+                   "os.link", "shutil.rmtree", "shutil.move"}
 
 
 def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def is_probe(text):
-    return PROBE_PREFIX in text
+class GuardLedger:
+    """Refusal accounting. A refusal counts as a probe only when it is the one exact
+    (kind, event, target) announced by the currently open expect() phase; every other
+    refusal, a second matching refusal, and an announced probe that never fires are fatal."""
+
+    KINDS = ("network", "write", "read", "process")
+
+    def __init__(self):
+        self.refused = {kind: [] for kind in self.KINDS}
+        self.probes = {kind: [] for kind in self.KINDS}
+        self.unmet = []
+        self.expected = None
+
+    @contextlib.contextmanager
+    def expect(self, kind, event, target):
+        if self.expected is not None:
+            raise RuntimeError("nested probe phase")
+        slot = {"kind": kind, "event": event, "target": target, "hits": 0}
+        self.expected = slot
+        try:
+            yield slot
+        finally:
+            self.expected = None
+            if slot["hits"] != 1:
+                self.unmet.append(f"{kind}:{event}:{target}")
+
+    def record(self, kind, event, target):
+        slot = self.expected
+        entry = f"{event}:{target}"
+        if (slot is not None and slot["hits"] == 0
+                and (slot["kind"], slot["event"], slot["target"]) == (kind, event, target)):
+            slot["hits"] = 1
+            self.probes[kind].append(entry)
+            return "probe"
+        self.refused[kind].append(entry)
+        return "refused"
+
+    def clear(self):
+        return not any(self.refused.values()) and not self.unmet
 
 
-def resolve(target, dir_fd=None, follow=True):
-    """Absolute real path of target; the final component is kept when follow is False."""
+LEDGER = GuardLedger()
+
+
+def resolve(target, dir_fd=None, follow=True, cwd=None):
+    """Absolute real path of target, or "" when it cannot be attributed (callers refuse).
+
+    Relative names are joined to the directory behind dir_fd when one is given,
+    otherwise to cwd (default: the process working directory). When follow is False
+    the final component is kept unresolved, as the nofollow syscalls act on it."""
     if isinstance(target, int):
         return None
     text = os.fsdecode(target)
-    if isinstance(dir_fd, int) and dir_fd >= 0 and not os.path.isabs(text):
-        try:
-            text = os.path.join(os.readlink(f"/proc/self/fd/{dir_fd}"), text)
-        except OSError:
-            return ""  # unresolvable descriptor: caller fails closed
+    if not os.path.isabs(text):
+        if dir_fd is not None:
+            if not isinstance(dir_fd, int) or isinstance(dir_fd, bool) or dir_fd < 0:
+                return ""
+            try:
+                base = os.readlink(f"/proc/self/fd/{dir_fd}")
+            except OSError:
+                return ""
+            if not os.path.isabs(base) or not os.path.isdir(base):
+                return ""
+        else:
+            base = cwd if cwd is not None else os.getcwd()
+        text = os.path.join(base, text)
     if follow:
         return os.path.realpath(text)
-    absolute = os.path.abspath(text)
-    return os.path.join(os.path.realpath(os.path.dirname(absolute)), os.path.basename(absolute))
+    head, tail = os.path.split(text)
+    if tail in ("", ".", ".."):
+        return os.path.realpath(text)
+    return os.path.join(os.path.realpath(head), tail)
 
 
 def under(path, root):
-    return path == root or path.startswith(root + os.sep)
+    return bool(path) and bool(root) and (path == root or path.startswith(root + os.sep))
+
+
+def decide_path(event, target, dir_fd, writing, state, cwd=None):
+    """None when allowed, else the refusal (kind, event, target text). Reads the
+    filesystem only to resolve the path; records nothing."""
+    if isinstance(target, int):
+        return None  # descriptor-based call: the descriptor was checked when it was opened
+    text = os.fsdecode(target)
+    if event == "sqlite3.connect":
+        if text.startswith("file:"):
+            text = text[5:].split("?", 1)[0]
+            if text.startswith("///"):
+                text = text[2:]
+            target = text
+        if text in ("", ":memory:"):
+            return None
+    if text == os.devnull:
+        return None
+    if text == "":
+        return None if not writing else ("write", event, text)
+    resolved = resolve(target, dir_fd, follow=event not in NOFOLLOW_EVENTS, cwd=cwd)
+    if resolved is None:
+        return None
+    if writing:
+        if under(resolved, state["run"]):
+            return None
+        if event == "os.mkdir" and resolved and os.path.lexists(resolved):
+            return None  # existing ancestor: the syscall itself fails with EEXIST, nothing is written
+        return ("write", event, text)
+    if not resolved:
+        return ("read", event, text)
+    home = state["home"]
+    if under(resolved, home) and not any(under(resolved, root) for root in state["allowed_reads"]):
+        if any(under(root, resolved) for root in state["allowed_reads"]):
+            return None  # an ancestor directory of an admitted root, opened to walk down by dir_fd
+        return ("read", event, text)
+    return None
+
+
+def decide(event, args, state, cwd=None, preattributed=None):
+    """Filesystem decision for one audit event: None or the first refusal."""
+    if event == "open":
+        path, mode, flags = (tuple(args) + (None, None, None))[:3]
+        if path is None or isinstance(path, int):
+            return None
+        writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+            isinstance(flags, int) and bool(flags & WRITE_FLAGS))
+        text = os.fsdecode(path)
+        if preattributed is not None and not os.path.isabs(text) and text == preattributed:
+            return None  # already decided against its dir_fd by guarded_os_open
+        return decide_path("open", path, None, writing, state, cwd)
+    if event in WRITE_EVENTS:
+        for p, d in WRITE_EVENTS[event]:
+            if p >= len(args) or args[p] is None:
+                continue
+            dir_fd = args[d] if d is not None and d < len(args) else None
+            refusal = decide_path(event, args[p], dir_fd, True, state, cwd)
+            if refusal:
+                return refusal
+    return None
 
 
 def loopback(host):
@@ -178,72 +309,241 @@ def network_allowed(event, args):
     return False
 
 
-# Events whose final path component is acted on without following a symlink.
-NOFOLLOW_EVENTS = {"os.mkdir", "os.rename", "os.replace", "os.remove", "os.rmdir", "os.symlink",
-                   "os.link", "shutil.rmtree", "shutil.move"}
+def network_target(event, args):
+    if event in ("socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyaddr") and args:
+        host = args[0]
+        return os.fsdecode(host) if isinstance(host, bytes) else str(host)
+    return repr(tuple(args)[1:])
+
+
+def process_target(event, args):
+    if event == "subprocess.Popen" and len(args) > 1:
+        executable, argv = args[0], args[1]
+        if executable:
+            return os.fsdecode(executable)
+        if isinstance(argv, (list, tuple)) and argv:
+            return os.fsdecode(argv[0])
+        if isinstance(argv, (str, bytes, os.PathLike)):
+            return os.fsdecode(argv)
+        return repr(argv)
+    return repr(args[0]) if args else ""
+
+
+def refuse(kind, event, target):
+    LEDGER.record(kind, event, target)
+    raise PermissionError(f"FA49 acceptance guard refused {kind} {event}")
 
 
 def audit(event, args):
-    run = STATE["run"]
-    if run is None:
+    if STATE["run"] is None:
         return
     if event in NETWORK_EVENTS:
-        if network_allowed(event, args):
-            return
-        detail = f"{event}:{args!r}"
-        (PROBES if is_probe(detail) else REFUSED)["network"].append(detail)
-        raise PermissionError(f"FA49 acceptance guard refused {event}")
-    if event in PROCESS_EVENTS and STATE["deny_process"]:
-        detail = f"{event}:{args!r}"
-        (PROBES if is_probe(detail) else REFUSED)["process"].append(detail)
-        raise PermissionError(f"FA49 acceptance guard refused {event}")
-    targets, writing = [], False
-    if event == "open":
-        path, mode, flags = (tuple(args) + (None, None, None))[:3]
-        if path is None or isinstance(path, int):
-            return
-        writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
-            isinstance(flags, int) and bool(flags & WRITE_FLAGS))
-        if not os.path.isabs(os.fsdecode(path)):
-            # The open event carries no dir_fd, so a relative name cannot be attributed.
-            # Count it; the before/after repository tree digest is the backstop.
-            if writing:
-                UNATTRIBUTED["relative_write_opens"] += 1
-            return
-        targets = [(path, None)]
-    elif event in WRITE_EVENTS:
-        writing = True
-        targets = [(args[p], args[d] if d is not None and d < len(args) else None)
-                   for p, d in WRITE_EVENTS[event] if p < len(args) and args[p] is not None]
-    else:
+        if not network_allowed(event, args):
+            refuse("network", event, network_target(event, args))
         return
-    for target, dir_fd in targets:
-        text = os.fsdecode(target) if not isinstance(target, int) else ""
-        if event == "sqlite3.connect" and text.startswith("file:"):
-            text = text[5:].split("?", 1)[0]
-            if text.startswith("///"):
-                text = text[2:]
-            target = text
-        if text in ("", ":memory:", os.devnull) and not writing:
-            continue
-        if text in (":memory:", os.devnull):
-            continue
-        resolved = resolve(target, dir_fd, follow=event not in NOFOLLOW_EVENTS)
-        if resolved is None:
-            continue
-        if writing:
-            if resolved and under(resolved, run):
-                continue
-            if event == "os.mkdir" and resolved and os.path.lexists(resolved):
-                continue  # existing ancestor: the syscall itself fails with EEXIST, nothing is written
-            (PROBES if is_probe(text) else REFUSED)["write"].append(f"{event}:{text}")
-            raise PermissionError(f"FA49 acceptance write guard refused {event} outside the run root")
-        home = STATE["home"]
-        if (os.path.isabs(text) and home and under(resolved, home)
-                and not any(under(resolved, root) for root in STATE["allowed_reads"])):
-            (PROBES if is_probe(text) else REFUSED)["read"].append(f"{event}:{text}")
-            raise PermissionError("FA49 acceptance live-file sentinel refused a read outside admitted roots")
+    if event in PROCESS_EVENTS:
+        if STATE["record_children"]:
+            note_spawn(event, args)
+        if STATE["deny_process"]:
+            refuse("process", event, process_target(event, args))
+        return
+    refusal = decide(event, args, STATE, preattributed=getattr(LOCAL, "preattributed", None))
+    if refusal:
+        refuse(*refusal)
 
+
+def guarded_os_open(path, flags, mode=0o777, *, dir_fd=None):
+    """os.open with the relative name attributed to its dir_fd before the call; the
+    open audit event that follows carries no dir_fd and is told it is already decided."""
+    if STATE["run"] is not None and dir_fd is not None and not isinstance(path, int):
+        text = os.fsdecode(path)
+        if not os.path.isabs(text):
+            refusal = decide_path("open", path, dir_fd, bool(flags & WRITE_FLAGS), STATE)
+            if refusal:
+                refuse(*refusal)
+            COUNTERS["dir_fd_opens_attributed"] += 1
+            previous = getattr(LOCAL, "preattributed", None)
+            LOCAL.preattributed = text
+            try:
+                return REAL_OS_OPEN(path, flags, mode, dir_fd=dir_fd)
+            finally:
+                LOCAL.preattributed = previous
+    return REAL_OS_OPEN(path, flags, mode, dir_fd=dir_fd)
+
+
+# ---------------------------------------------------------------- child receipts
+
+RECEIPTS = []
+SPAWNS = []
+POPENS = []
+RECEIPT_LOCK = threading.Lock()
+POPEN_SIGNATURE = inspect.signature(REAL_POPEN.__init__)
+DISPOSITIONS = ("inherit", "pipe", "devnull", "stdout", "file")
+
+
+def disposition(value):
+    if value is None:
+        return "inherit"
+    if value is subprocess.PIPE or value == subprocess.PIPE:
+        return "pipe"
+    if value == subprocess.DEVNULL:
+        return "devnull"
+    if value == subprocess.STDOUT:
+        return "stdout"
+    return "file"
+
+
+def argv_text(raw):
+    if isinstance(raw, (str, bytes, os.PathLike)):
+        return [os.fsdecode(raw)]
+    try:
+        return [os.fsdecode(item) for item in raw]
+    except TypeError:
+        return None
+
+
+def note_spawn(event, args):
+    SPAWNS.append({"event": event, "target": process_target(event, args),
+                   "receipt": getattr(LOCAL, "in_popen", None)})
+
+
+class RecordingPopen(REAL_POPEN):
+    """subprocess.Popen that keeps an external receipt of argv, cwd, stream
+    dispositions, captured stdout/stderr bytes (files + hashes) and the exit status."""
+
+    def __init__(self, *args, **kwargs):
+        bound = POPEN_SIGNATURE.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        given = bound.arguments
+        cwd = given.get("cwd")
+        with RECEIPT_LOCK:
+            receipt = {"index": len(RECEIPTS), "argv": argv_text(given.get("args")),
+                       "shell": bool(given.get("shell")),
+                       "executable": os.fsdecode(given["executable"]) if given.get("executable") else None,
+                       "cwd": os.path.realpath(os.fsdecode(cwd)) if cwd else os.getcwd(),
+                       "stdin": disposition(given.get("stdin")),
+                       "stdout": {"disposition": disposition(given.get("stdout")), "captured": []},
+                       "stderr": {"disposition": disposition(given.get("stderr")), "captured": []},
+                       "text": bool(given.get("text") or given.get("universal_newlines")
+                                    or given.get("encoding") or given.get("errors")),
+                       "spawned": None, "exit": None, "communicate_timeouts": 0}
+            RECEIPTS.append(receipt)
+        self._fa49_receipt = receipt
+        previous = getattr(LOCAL, "in_popen", None)
+        LOCAL.in_popen = receipt["index"]
+        try:
+            super().__init__(*args, **kwargs)
+        except BaseException as exc:
+            receipt["spawned"] = False
+            receipt["spawn_error"] = type(exc).__name__
+            raise
+        finally:
+            LOCAL.in_popen = previous
+        receipt["spawned"] = True
+        receipt["pid"] = self.pid
+        POPENS.append(self)
+
+    def communicate(self, input=None, timeout=None):
+        try:
+            out, err = super().communicate(input, timeout)
+        except subprocess.TimeoutExpired:
+            self._fa49_receipt["communicate_timeouts"] += 1
+            raise
+        store_streams(self._fa49_receipt, out, err)
+        return out, err
+
+
+def store_streams(receipt, out, err):
+    folder = STATE["children_dir"]
+    for name, data in (("stdout", out), ("stderr", err)):
+        if data is None or receipt[name]["disposition"] != "pipe" or folder is None:
+            continue
+        raw = data.encode() if isinstance(data, str) else bytes(data)
+        captured = receipt[name]["captured"]
+        path = Path(folder) / f"{receipt['index']:04d}-{name}-{len(captured)}.bin"
+        path.write_bytes(raw)
+        captured.append({"file": str(path.relative_to(STATE["run"])), "sha256": sha256_bytes(raw),
+                         "bytes": len(raw)})
+
+
+def finalize_receipts():
+    for proc in POPENS:
+        if proc.returncode is None:
+            proc.poll()
+        proc._fa49_receipt["exit"] = proc.returncode
+
+
+def validate_receipts(receipts, spawns, run, required_tools=(), required_from=0):
+    """Problems with a receipt set (empty list when complete and well-formed)."""
+    problems = []
+    run = os.path.realpath(run)
+    if not isinstance(receipts, list) or not receipts:
+        return ["no_child_receipts"]
+    indexes = set()
+    for position, receipt in enumerate(receipts):
+        if not isinstance(receipt, dict):
+            problems.append(f"receipt_not_object:{position}")
+            continue
+        index = receipt.get("index")
+        if not isinstance(index, int) or isinstance(index, bool) or index in indexes:
+            problems.append(f"receipt_bad_index:{position}")
+            continue
+        indexes.add(index)
+        argv = receipt.get("argv")
+        if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) and argv[0]):
+            problems.append(f"receipt_bad_argv:{index}")
+        cwd = receipt.get("cwd")
+        if not (isinstance(cwd, str) and os.path.isabs(cwd)):
+            problems.append(f"receipt_bad_cwd:{index}")
+        spawned = receipt.get("spawned")
+        if spawned is False:
+            if not receipt.get("spawn_error"):
+                problems.append(f"receipt_unspawned_without_error:{index}")
+            continue
+        if spawned is not True:
+            problems.append(f"receipt_spawn_state_unknown:{index}")
+            continue
+        if not isinstance(receipt.get("exit"), int) or isinstance(receipt.get("exit"), bool):
+            problems.append(f"receipt_missing_exit:{index}")
+        for name in ("stdout", "stderr"):
+            stream = receipt.get(name)
+            if not isinstance(stream, dict) or stream.get("disposition") not in DISPOSITIONS:
+                problems.append(f"receipt_bad_{name}:{index}")
+                continue
+            captured = stream.get("captured")
+            if not isinstance(captured, list):
+                problems.append(f"receipt_bad_{name}_capture:{index}")
+                continue
+            if stream["disposition"] == "pipe" and not captured and not receipt.get("communicate_timeouts"):
+                problems.append(f"receipt_{name}_pipe_not_captured:{index}")
+            for item in captured:
+                file = item.get("file") if isinstance(item, dict) else None
+                path = os.path.realpath(os.path.join(run, file)) if isinstance(file, str) else ""
+                if not under(path, run) or not os.path.isfile(path):
+                    problems.append(f"receipt_{name}_file_missing:{index}")
+                    continue
+                data = Path(path).read_bytes()
+                if item.get("sha256") != sha256_bytes(data) or item.get("bytes") != len(data):
+                    problems.append(f"receipt_{name}_hash_mismatch:{index}")
+    announced = set()
+    for spawn in spawns:
+        owner = spawn.get("receipt") if isinstance(spawn, dict) else None
+        if owner not in indexes:
+            problems.append(f"unreceipted_spawn:{spawn.get('event') if isinstance(spawn, dict) else spawn}")
+        elif spawn.get("event") == "subprocess.Popen":
+            announced.add(owner)
+    for receipt in receipts:
+        if isinstance(receipt, dict) and receipt.get("spawned") is True and receipt.get("index") not in announced:
+            problems.append(f"receipt_without_spawn_event:{receipt.get('index')}")
+    for tool in required_tools:
+        if not any(isinstance(r, dict) and isinstance(r.get("index"), int) and r["index"] >= required_from
+                   and r.get("spawned") is True and r.get("exit") == 0 and isinstance(r.get("argv"), list)
+                   and r["argv"] and os.path.basename(r["argv"][0]) == tool for r in receipts):
+            problems.append(f"required_child_missing:{tool}")
+    return problems
+
+
+# ---------------------------------------------------------------- run setup
 
 def safe_output_parent(raw):
     parent = Path(raw)
@@ -308,7 +608,7 @@ def identity():
             "source_sha256": hashes, "tree_sha256": tree_digest()}
 
 
-def prepare(run, *, deny_process, work_in_run=True):
+def prepare(run, *, deny_process, work_in_run=True, record_children=False):
     """Guards and redirects; must run before any repository import.
 
     Focused cases work from a cwd inside the run directory. The compatibility case
@@ -327,6 +627,14 @@ def prepare(run, *, deny_process, work_in_run=True):
     roots = {str(REPO), os.path.realpath(run), os.path.realpath(sys.prefix),
              os.path.realpath(sys.base_prefix), os.path.realpath(sys.exec_prefix)}
     STATE.update(run=os.path.realpath(run), home=home, allowed_reads=tuple(sorted(roots)))
+    if record_children:
+        children = run / "children"
+        children.mkdir(mode=0o700)
+        STATE["children_dir"] = str(children)
+        subprocess.Popen = RecordingPopen  # before any repository import binds subprocess.run
+        STATE["record_children"] = True
+    os.open = guarded_os_open
+    os.supports_dir_fd.add(guarded_os_open)
     sys.addaudithook(audit)
     if work_in_run:
         os.chdir(work)
@@ -334,7 +642,7 @@ def prepare(run, *, deny_process, work_in_run=True):
         sys.path.insert(0, str(REPO))
     STATE["deny_process"] = deny_process
     return {"tmp": str(tmp), "cwd": os.getcwd(), "allowed_read_roots": list(STATE["allowed_reads"]),
-            "process_creation_refused_during_tests": deny_process}
+            "process_creation_refused_during_tests": deny_process, "child_receipts": record_children}
 
 
 class SentinelError(RuntimeError):
@@ -343,7 +651,7 @@ class SentinelError(RuntimeError):
 
 def refusing(name):
     def sentinel(*args, **kwargs):
-        REFUSED["process"].append("bound_default:" + name)
+        LEDGER.record("process", "bound_default", name)
         raise SentinelError(f"FA49 bound-default sentinel refused {name}")
     sentinel.fa49_sentinel = name
     return sentinel
@@ -394,7 +702,7 @@ def module_paths(names):
 
 
 def guards_clear():
-    return not any(REFUSED.values())
+    return LEDGER.clear()
 
 
 def write_raw(run, stream):
@@ -417,6 +725,107 @@ def case_tests(run, names, *, focused):
     ok = clean(c) and c["selected"] == c["tests_run"] and guards_clear() and inside
     return ok, {"setup": setup, "modules": list(names), "counts": c, "module_paths": paths,
                 "module_paths_inside_repo": inside, **write_raw(run, stream)}
+
+
+def receipt_self_test(run):
+    """Synthetic receipt sets: a complete one must validate and each broken one must not."""
+    root = run / "receipt-self-test"
+    root.mkdir(mode=0o700)
+    data = b"synthetic child stdout\n"
+    (root / "out.bin").write_bytes(data)
+    rel = str((root / "out.bin").relative_to(run))
+
+    def receipt(**changes):
+        base = {"index": 0, "argv": ["synthetic-tool", "-v"], "cwd": str(root), "spawned": True, "exit": 0,
+                "stdout": {"disposition": "pipe", "captured": [{"file": rel, "sha256": sha256_bytes(data),
+                                                                 "bytes": len(data)}]},
+                "stderr": {"disposition": "devnull", "captured": []}, "communicate_timeouts": 0}
+        base.update(changes)
+        return base
+
+    spawn = [{"event": "subprocess.Popen", "target": "synthetic-tool", "receipt": 0}]
+    broken = {
+        "missing_exit": ([receipt(exit=None)], spawn, ()),
+        "hash_mismatch": ([receipt(stdout={"disposition": "pipe", "captured": [
+            {"file": rel, "sha256": "0" * 64, "bytes": len(data)}]})], spawn, ()),
+        "file_missing": ([receipt(stdout={"disposition": "pipe", "captured": [
+            {"file": "receipt-self-test/absent.bin", "sha256": sha256_bytes(data), "bytes": len(data)}]})],
+            spawn, ()),
+        "file_outside_run": ([receipt(stdout={"disposition": "pipe", "captured": [
+            {"file": "../outside.bin", "sha256": sha256_bytes(data), "bytes": len(data)}]})], spawn, ()),
+        "pipe_not_captured": ([receipt(stdout={"disposition": "pipe", "captured": []})], spawn, ()),
+        "bad_argv": ([receipt(argv=[])], spawn, ()),
+        "relative_cwd": ([receipt(cwd="relative")], spawn, ()),
+        "unreceipted_spawn": ([receipt()], spawn + [{"event": "os.posix_spawn", "target": "x", "receipt": None}],
+                              ()),
+        "receipt_without_spawn_event": ([receipt()], [], ()),
+        "required_tool_missing": ([receipt()], spawn, ("pdftoppm",)),
+        "empty": ([], [], ()),
+    }
+    results = {"complete_valid": validate_receipts([receipt()], spawn, run, ("synthetic-tool",)) == []}
+    for name, (receipts, spawns, required) in broken.items():
+        results[f"rejects_{name}"] = bool(validate_receipts(receipts, spawns, run, required))
+    return results
+
+
+def receipt_live_controls(run):
+    """Real recorded children of this interpreter: a success, a nonzero exit and a
+    spawn failure. Each receipt must carry the actual argv, cwd, exit and stream hash."""
+    checks = {}
+    cwd = os.path.realpath(run)
+    ok_argv = [sys.executable, "-B", "--version"]
+    done = subprocess.run(ok_argv, cwd=cwd, capture_output=True, check=False, timeout=60)
+    r = RECEIPTS[-1]
+    checks["success_receipt"] = (r["argv"] == ok_argv and r["cwd"] == cwd and r["spawned"] is True
+                                 and r["stdout"]["captured"]
+                                 and r["stdout"]["captured"][-1]["sha256"] == sha256_bytes(done.stdout)
+                                 and r["stderr"]["captured"][-1]["sha256"] == sha256_bytes(done.stderr)
+                                 and done.returncode == 0)
+    absent_script = os.path.join(cwd, "receipt-control-absent-script.py")
+    fail_argv = [sys.executable, "-B", absent_script]
+    done = subprocess.run(fail_argv, cwd=cwd, capture_output=True, check=False, timeout=60)
+    r = RECEIPTS[-1]
+    checks["nonzero_receipt"] = (r["argv"] == fail_argv and done.returncode != 0 and bool(done.stderr)
+                                 and r["stderr"]["captured"][-1]["sha256"] == sha256_bytes(done.stderr))
+    missing = os.path.join(cwd, "receipt-control-absent-executable")
+    try:
+        subprocess.run([missing], cwd=cwd, capture_output=True, check=False, timeout=60)
+        checks["spawn_error_receipt"] = False
+    except FileNotFoundError:
+        r = RECEIPTS[-1]
+        checks["spawn_error_receipt"] = r["argv"] == [missing] and r["spawned"] is False and bool(r["spawn_error"])
+    finalize_receipts()
+    checks["exits_recorded"] = [r["exit"] for r in RECEIPTS[:2]] == [0, 2]
+    return checks
+
+
+def case_compatibility(run):
+    setup = prepare(run, deny_process=False, work_in_run=False, record_children=True)
+    self_test = receipt_self_test(run)
+    live = receipt_live_controls(run)
+    start = len(RECEIPTS)
+    stream = io.StringIO()
+    c, _ = run_names(COMPATIBILITY, stream)
+    finalize_receipts()
+    STATE["record_children"] = False
+    problems = validate_receipts(list(RECEIPTS), list(SPAWNS), run, COMPATIBILITY_REQUIRED_TOOLS, start)
+    receipts_doc = {"receipts": RECEIPTS, "spawn_events": SPAWNS, "tests_start_index": start,
+                    "problems": problems}
+    raw = (json.dumps(receipts_doc, indent=2, sort_keys=True) + "\n").encode()
+    (run / "child-receipts.json").write_bytes(raw)
+    paths = module_paths(COMPATIBILITY)
+    inside = all(p and under(os.path.realpath(p), str(REPO)) for p in paths.values())
+    test_receipts = RECEIPTS[start:]
+    ok = (clean(c) and c["selected"] == c["tests_run"] and guards_clear() and inside and not problems
+          and all(self_test.values()) and all(live.values()) and bool(test_receipts))
+    return ok, {"setup": setup, "modules": list(COMPATIBILITY), "counts": c, "module_paths": paths,
+                "module_paths_inside_repo": inside, "receipt_self_test": self_test,
+                "receipt_live_controls": live, "child_receipts": "child-receipts.json",
+                "child_receipts_sha256": sha256_bytes(raw), "child_receipt_problems": problems,
+                "child_receipts_total": len(RECEIPTS), "child_receipts_from_tests": len(test_receipts),
+                "children_by_tool": sorted({os.path.basename(r["argv"][0]) for r in test_receipts
+                                            if r.get("argv")}),
+                **write_raw(run, stream)}
 
 
 def baseline_source():
@@ -489,60 +898,192 @@ def portability_scan():
     return hits
 
 
+def guard_self_test(run):
+    """Inert decision checks: synthetic paths and state, no access is attempted.
+
+    A synthetic home holds the synthetic run root and an outside sibling; real
+    descriptors are opened only on synthetic directories inside this run."""
+    base = run / "guard-self-test"
+    srun = base / "run"
+    deep = srun / "tmp" / "a" / "b"
+    deep.mkdir(parents=True, mode=0o700)
+    (srun / "cwd").mkdir(mode=0o700)
+    (base / "outside").mkdir(mode=0o700)
+    state = {"run": os.path.realpath(srun), "home": os.path.realpath(base),
+             "allowed_reads": (os.path.realpath(srun),)}
+    cwd = os.path.realpath(srun / "cwd")
+    outside_abs = os.path.join(os.path.realpath(base), "outside", "ordinary.txt")
+    rel_escape = os.path.join("..", "..", "outside", "ordinary.txt")
+    checks = {}
+
+    def write(name, dir_fd=None):
+        return decide_path("open", name, dir_fd, True, state, cwd)
+
+    def read(name, dir_fd=None):
+        return decide_path("open", name, dir_fd, False, state, cwd)
+
+    checks["relative_write_in_run_allowed"] = write("ordinary.txt") is None
+    checks["relative_read_in_run_allowed"] = read("ordinary.txt") is None
+    checks["relative_ancestor_write_refused"] = write(rel_escape) == ("write", "open", rel_escape)
+    checks["relative_ancestor_read_refused"] = read(rel_escape) == ("read", "open", rel_escape)
+    checks["ancestor_directory_walk_read_allowed"] = read(os.path.join("..", "..")) is None
+    checks["ancestor_directory_write_refused"] = write(os.path.join("..", "..")) is not None
+    checks["sibling_directory_of_ancestor_read_refused"] = read(os.path.join("..", "..", "outside")) is not None
+    checks["absolute_outside_write_refused"] = write(outside_abs) == ("write", "open", outside_abs)
+    checks["absolute_outside_read_refused"] = read(outside_abs) == ("read", "open", outside_abs)
+    checks["audit_open_relative_write_refused"] = decide(
+        "open", (rel_escape, "w", os.O_WRONLY | os.O_CREAT), state, cwd) == ("write", "open", rel_escape)
+    checks["audit_open_relative_read_refused"] = decide(
+        "open", (rel_escape, "r", os.O_RDONLY), state, cwd) == ("read", "open", rel_escape)
+    checks["audit_preattributed_name_only"] = (
+        decide("open", ("x.txt", "w", os.O_WRONLY), state, cwd, preattributed="x.txt") is None
+        and decide("open", (rel_escape, "w", os.O_WRONLY), state, cwd, preattributed="x.txt") is not None)
+    deep_fd = REAL_OS_OPEN(str(deep), os.O_RDONLY | os.O_DIRECTORY)
+    run_fd = REAL_OS_OPEN(str(srun), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # cwd attribution would refuse this in-run name and allow the escape below.
+        in_run = os.path.join("..", "..", "dirfd-positive.txt")
+        escape = os.path.join("..", "outside", "ordinary.txt")
+        checks["dir_fd_write_in_run_allowed"] = write(in_run, deep_fd) is None
+        checks["dir_fd_read_in_run_allowed"] = read(in_run, deep_fd) is None
+        checks["dir_fd_write_escape_refused"] = write(escape, run_fd) == ("write", "open", escape)
+        checks["dir_fd_read_escape_refused"] = read(escape, run_fd) == ("read", "open", escape)
+        checks["dir_fd_mkdir_escape_refused"] = decide(
+            "os.mkdir", (escape, 0o700, run_fd), state, cwd) == ("write", "os.mkdir", escape)
+        checks["dir_fd_replace_destination_escape_refused"] = decide(
+            "os.replace", ("a", escape, deep_fd, run_fd), state, cwd) == ("write", "os.replace", escape)
+        checks["dir_fd_replace_in_run_allowed"] = decide(
+            "os.replace", ("a", "b", deep_fd, deep_fd), state, cwd) is None
+    finally:
+        os.close(deep_fd)
+        os.close(run_fd)
+    closed = REAL_OS_OPEN(str(srun), os.O_RDONLY | os.O_DIRECTORY)
+    os.close(closed)
+    checks["dir_fd_unresolvable_write_refused"] = write("x.txt", closed) == ("write", "open", "x.txt")
+    checks["dir_fd_unresolvable_read_refused"] = read("x.txt", closed) == ("read", "open", "x.txt")
+    checks["dir_fd_negative_refused"] = write("x.txt", -5) == ("write", "open", "x.txt")
+    checks["nofollow_dotdot_refused"] = decide(
+        "os.rmdir", (str(srun / "tmp" / ".."), None), dict(state, run=os.path.realpath(srun / "tmp")),
+        cwd) is not None
+
+    ledger = GuardLedger()
+    with ledger.expect("write", "open", "/synthetic/fa49-probe-exact"):
+        outcome = ledger.record("write", "open", "/synthetic/fa49-probe-exact")
+    checks["ledger_exact_probe_in_phase_is_probe"] = outcome == "probe" and ledger.clear()
+    ledger = GuardLedger()
+    ledger.record("write", "open", "/synthetic/fa49-probe-unannounced.txt")
+    checks["ledger_same_prefix_out_of_phase_fatal"] = not ledger.clear() and not any(ledger.probes.values())
+    ledger = GuardLedger()
+    with ledger.expect("write", "open", "/synthetic/fa49-probe-exact"):
+        ledger.record("write", "open", "/synthetic/fa49-probe-other")
+    checks["ledger_same_prefix_other_target_fatal"] = not ledger.clear()
+    ledger = GuardLedger()
+    with ledger.expect("write", "open", "/synthetic/fa49-probe-exact"):
+        ledger.record("read", "open", "/synthetic/fa49-probe-exact")
+    checks["ledger_other_kind_fatal"] = not ledger.clear()
+    ledger = GuardLedger()
+    with ledger.expect("write", "open", "/synthetic/fa49-probe-exact"):
+        ledger.record("write", "open", "/synthetic/fa49-probe-exact")
+        ledger.record("write", "open", "/synthetic/fa49-probe-exact")
+    checks["ledger_extra_refusal_in_phase_fatal"] = not ledger.clear() and len(ledger.probes["write"]) == 1
+    ledger = GuardLedger()
+    with ledger.expect("process", "bound_default", "dependency_status.module_probe"):
+        pass
+    checks["ledger_unfired_probe_fatal"] = not ledger.clear() and bool(ledger.unmet)
+    ledger = GuardLedger()
+    with ledger.expect("process", "bound_default", "dependency_status.module_probe"):
+        ledger.record("process", "bound_default", "dependency_status.module_probe")
+    ledger.record("process", "bound_default", "dependency_status.module_probe")
+    checks["ledger_bound_default_after_phase_fatal"] = not ledger.clear()
+    return checks
+
+
+def refused_probe(kind, event, target, action):
+    """Run action inside an exact expect() phase; True only when the guard refused it
+    with a PermissionError and the ledger matched that exact refusal once."""
+    refused = False
+    with LEDGER.expect(kind, event, target) as slot:
+        try:
+            action()
+        except PermissionError:
+            refused = True
+        except OSError:
+            refused = False
+    return refused and slot["hits"] == 1
+
+
 def isolation_probes(run):
     import unittest
     probes = {}
     probes["bytecode_disabled"] = sys.dont_write_bytecode is True
     probes["tempdir_in_run"] = under(os.path.realpath(tempfile.gettempdir()), STATE["run"])
     probes["cwd_in_run"] = under(os.path.realpath(os.getcwd()), STATE["run"])
+    probes["os_open_wrapped"] = os.open is guarded_os_open
+    host = PROBE_PREFIX + "net.invalid"
+    probes["network_refused"] = refused_probe("network", "socket.getaddrinfo", host,
+                                              lambda: socket.getaddrinfo(host, 80))
+    absolute = os.path.join(os.sep, PROBE_PREFIX + secrets.token_hex(6), "write")
+    probes["write_outside_refused"] = refused_probe("write", "open", absolute,
+                                                    lambda: open(absolute, "w").close())
+    # cwd is <run>/cwd, so two levels up is the output parent, outside the run root.
+    relative = os.path.join("..", "..", PROBE_PREFIX + secrets.token_hex(6), "write")
+    probes["relative_ancestor_write_refused"] = refused_probe("write", "open", relative,
+                                                              lambda: open(relative, "w").close())
+    probes["relative_ancestor_read_refused"] = refused_probe("read", "open", relative,
+                                                             lambda: open(relative, "rb").close())
+    run_fd = os.open(str(run), os.O_RDONLY | os.O_DIRECTORY)
     try:
-        socket.getaddrinfo(PROBE_PREFIX + "net.invalid", 80)
-        probes["network_refused"] = False
-    except PermissionError:
-        probes["network_refused"] = len(PROBES["network"]) == 1
-    except OSError:
-        probes["network_refused"] = False
-    escape = os.path.join(os.sep, PROBE_PREFIX + secrets.token_hex(6), "write")
-    try:
-        open(escape, "w").close()
-        probes["write_outside_refused"] = False
-    except PermissionError:
-        probes["write_outside_refused"] = len(PROBES["write"]) == 1
-    except OSError:
-        probes["write_outside_refused"] = False
+        # From cwd this name would land inside the run root; from run_fd it is outside.
+        escape = os.path.join("..", PROBE_PREFIX + secrets.token_hex(6), "write")
+        probes["dir_fd_write_escape_refused"] = refused_probe(
+            "write", "open", escape,
+            lambda: os.close(os.open(escape, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=run_fd)))
+        probes["dir_fd_read_escape_refused"] = refused_probe(
+            "read", "open", escape, lambda: os.close(os.open(escape, os.O_RDONLY, dir_fd=run_fd)))
+    finally:
+        os.close(run_fd)
+    closed = os.open(str(run), os.O_RDONLY | os.O_DIRECTORY)
+    os.close(closed)
+    name = PROBE_PREFIX + "unresolvable"
+    probes["dir_fd_unresolvable_refused"] = refused_probe(
+        "write", "open", name, lambda: os.close(os.open(name, os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=closed)))
     inside = run / "write-guard-positive.txt"
     inside.write_text("in-run write allowed\n")
     probes["write_inside_allowed"] = inside.is_file()
-    live = os.path.join(STATE["home"], PROBE_PREFIX + secrets.token_hex(6))
+    with open("relative-guard-positive.txt", "w") as handle:
+        handle.write("relative in-run write allowed\n")
+    probes["relative_write_inside_allowed"] = (Path(os.getcwd()) / "relative-guard-positive.txt").is_file()
+    deep = run / "dirfd-positive" / "a" / "b"
+    deep.mkdir(parents=True, mode=0o700)
+    deep_fd = os.open(str(deep), os.O_RDONLY | os.O_DIRECTORY)
     try:
-        open(live, "rb").close()
-        probes["live_read_refused"] = False
-    except PermissionError:
-        probes["live_read_refused"] = len(PROBES["read"]) == 1
-    except OSError:
-        probes["live_read_refused"] = False
+        # From cwd this name would land outside the run root; from deep_fd it is inside.
+        handle = os.open(os.path.join("..", "..", "dirfd-positive.txt"),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=deep_fd)
+        os.write(handle, b"dir_fd in-run write allowed\n")
+        os.close(handle)
+    finally:
+        os.close(deep_fd)
+    probes["dir_fd_write_inside_allowed"] = (run / "dirfd-positive" / "dirfd-positive.txt").is_file()
+    live = os.path.join(STATE["home"], PROBE_PREFIX + secrets.token_hex(6))
+    probes["live_read_refused"] = refused_probe("read", "open", live, lambda: open(live, "rb").close())
     probes["repo_read_allowed"] = bool((REPO / OCR_SOURCE).read_bytes())
     ocr = redirect_bound_defaults()
     runner = ocr.extract_image_only_pages.__kwdefaults__["runner"]
     defaults = ocr.dependency_status.__defaults__
     probes["bound_defaults_redirected"] = (getattr(runner, "fa49_sentinel", None) is not None
                                           and all(getattr(d, "fa49_sentinel", None) for d in defaults))
-    before = len(REFUSED["process"])
-    try:
-        ocr.dependency_status()
-        probes["bound_default_sentinel_fires"] = False
-    except SentinelError:
-        probes["bound_default_sentinel_fires"] = True
-    REFUSED["process"][before:] = []  # the deliberate sentinel call is a probe, not a hit
-    PROBES["process"].append("bound_default:dependency_status")
+    fired = False
+    with LEDGER.expect("process", "bound_default", "dependency_status.module_probe") as slot:
+        try:
+            ocr.dependency_status()
+        except SentinelError:
+            fired = True
+    probes["bound_default_sentinel_fires"] = fired and slot["hits"] == 1
     STATE["deny_process"] = True
-    try:
-        subprocess.run([os.path.join(os.sep, PROBE_PREFIX + "process", "absent")], check=False)
-        probes["process_refused_during_tests"] = False
-    except PermissionError:
-        probes["process_refused_during_tests"] = len([p for p in PROBES["process"] if "subprocess" in p]) == 1
-    except OSError:
-        probes["process_refused_during_tests"] = False
+    absent = os.path.join(os.sep, PROBE_PREFIX + "process", "absent")
+    probes["process_refused_during_tests"] = refused_probe(
+        "process", "subprocess.Popen", absent, lambda: subprocess.run([absent], check=False))
     STATE["deny_process"] = False
     probes["ocr_module_path"] = getattr(ocr, "__file__", None)
     probes["ocr_module_inside_repo"] = under(os.path.realpath(ocr.__file__), str(REPO))
@@ -565,6 +1106,7 @@ def complete_copy(run):
 
 def case_isolation(run):
     setup = prepare(run, deny_process=False)
+    self_test = guard_self_test(run)
     probes, selected = isolation_probes(run)
     hits = portability_scan()
     copy, mismatched, same_listing, entries = complete_copy(run)
@@ -587,9 +1129,9 @@ def case_isolation(run):
                 and record.get("identity", {}).get("repo") == str(copy)
                 and bool(child_counts) and clean(child_counts)
                 and child_counts.get("tests_run") == selected and child_inside)
-    ok = (all(v for k, v in probes.items() if k != "ocr_module_path") and not hits and not mismatched
-          and same_listing and child_ok and guards_clear())
-    return ok, {"setup": setup, "probes": probes, "portability_hits": hits,
+    ok = (all(self_test.values()) and all(v for k, v in probes.items() if k != "ocr_module_path")
+          and not hits and not mismatched and same_listing and child_ok and guards_clear())
+    return ok, {"setup": setup, "guard_self_test": self_test, "probes": probes, "portability_hits": hits,
                 "copy_root": str(copy), "copy_entries": entries, "copy_listing_matches": same_listing,
                 "copy_hash_mismatches": mismatched, "focused_tests_selected": selected,
                 "child": {"argv": child_argv, "cwd": str(copy), "exit": child.returncode,
@@ -649,7 +1191,7 @@ def main(argv=None):
         if args.case == "behavior":
             ok, details = case_tests(run, [REGRESSION], focused=True)
         elif args.case == "compatibility":
-            ok, details = case_tests(run, COMPATIBILITY, focused=False)
+            ok, details = case_compatibility(run)
         elif args.case == "negative-control":
             ok, details = case_negative_control(run)
         elif args.case == "isolation":
@@ -659,6 +1201,7 @@ def main(argv=None):
     except Exception as exc:  # any unknown failure fails closed
         ok, details = False, {"stop": f"unknown_failure: {type(exc).__name__}: {exc}"}
     STATE["deny_process"] = False
+    STATE["record_children"] = False
     after = identity()
     if after != before:
         ok = False
@@ -668,8 +1211,8 @@ def main(argv=None):
         details.setdefault("stop", "guard_refusal_during_run")
     record = {"case": args.case, "argv": [sys.executable, *sys.argv], "invoked_cwd": invoked_cwd,
               "interpreter": sys.executable, "python": sys.version.split()[0], "run_dir": str(run),
-              "identity": before, "guard_refusals": REFUSED, "guard_probes": PROBES,
-              "guard_unattributed": UNATTRIBUTED,
+              "identity": before, "guard_refusals": LEDGER.refused, "guard_probes": LEDGER.probes,
+              "guard_unmet_probes": LEDGER.unmet, "guard_counters": COUNTERS,
               "result": "PASS_REVIEW_REQUIRED" if ok else "FAIL", "exit": 0 if ok else 1, **details}
     (run / "result.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
     print(json.dumps(record, indent=2, sort_keys=True))
