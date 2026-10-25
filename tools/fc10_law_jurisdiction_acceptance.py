@@ -13,8 +13,11 @@ imported, and records the literal argv, cwd, interpreter, candidate HEAD/tree,
 authored-file and fixture hashes, every child's exit and raw stdout/stderr with
 hashes, counts and limitations. Children are literal argument lists with the
 shell disabled and the inherited environment. Test children set their own
-temporary root inside the invocation directory and install offline sentinels
-before importing product code. Exit 0 means machine validity of that row only:
+temporary root inside the invocation directory and install terminal offline
+guards before importing product code: a genuine guard attempt ends that child
+at once (exit 86, typed refusal record), the parent launches no further child
+and the row STOPs with exit 3 for the existing attended guard owner. Exit 0
+means machine validity of that row only:
 REVIEW REQUIRED, never semantic, legal, human or live acceptance.
 """
 import argparse
@@ -71,8 +74,37 @@ def utc_now():
 
 
 # =========================================================================== children
+GUARD_REFUSAL_EXIT = 86
+GUARD_REFUSAL_KIND = "fc10_guard_refusal"
+SCRIPT_REFUSAL_MARK = "FC10-GUARD-REFUSAL "
+SCRIPT_CLEAN_MARK = re.compile(r"^FC10-GUARD installed=(\d+) attempts=0$", re.M)
+CHILD_CONTEXT = {}
+
+
+def terminal_refusal(label):
+    """A genuine guard attempt ends this child at once with a typed refusal record.
+
+    Nothing after this runs: no later test, test group or result aggregation.
+    The parent sees exit GUARD_REFUSAL_EXIT and the typed record and launches no
+    further child.
+    """
+    record = {"kind": GUARD_REFUSAL_KIND, "pass": False, "label": label,
+              "error": "offline guard refused " + label, "argv": list(sys.argv),
+              "pid": os.getpid(), "child": CHILD_CONTEXT.get("child"),
+              "run_identity": CHILD_CONTEXT.get("run_identity"),
+              "stack": "".join(traceback.format_stack(limit=25))}
+    raw = (json.dumps(record, indent=2, sort_keys=True, default=str) + "\n").encode()
+    try:
+        fd = os.open(CHILD_CONTEXT["result_json"], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, raw)
+        os.close(fd)
+    finally:
+        os.write(2, (SCRIPT_REFUSAL_MARK + label + "\n").encode())
+        os._exit(GUARD_REFUSAL_EXIT)
+
+
 def install_child_policy(temp_root):
-    """Before any product import: temporary root inside the run, offline sentinels."""
+    """Before any product import: temporary root inside the run, terminal offline guards."""
     import socket
     import subprocess as subprocess_module
     import tempfile
@@ -80,12 +112,12 @@ def install_child_policy(temp_root):
     temp_root = Path(temp_root)
     temp_root.mkdir(parents=True, exist_ok=True)
     tempfile.tempdir = str(temp_root)
-    attempts = []
+    attempts = []  # Stays empty: a guard attempt never returns (terminal_refusal).
 
     def sentinel(label):
         def refuse(*_args, **_kwargs):
             attempts.append(label)
-            raise RuntimeError("offline sentinel refused " + label)
+            terminal_refusal(label)
         return refuse
 
     socket.socket.connect = sentinel("socket.connect")
@@ -256,10 +288,16 @@ def child_compatibility(args):
 
 
 def ambient_snapshot():
+    import socket
+    import subprocess as subprocess_module
     import tempfile
+    guarded = {"socket.socket.connect": socket.socket.connect, "socket.getaddrinfo": socket.getaddrinfo,
+               "subprocess.Popen": subprocess_module.Popen, "os.fork": getattr(os, "fork", None),
+               "os.execv": getattr(os, "execv", None), "os.posix_spawn": getattr(os, "posix_spawn", None)}
     return {"environ": dict(os.environ), "tempfile_tempdir": tempfile.tempdir,
             "gettempdir": tempfile.gettempdir(), "cwd": os.getcwd(),
-            "umask": os.umask(os.umask(0o022)), "sys_path": list(sys.path)}
+            "umask": os.umask(os.umask(0o022)), "sys_path": list(sys.path),
+            "guarded_function_ids": {k: id(v) for k, v in guarded.items()}}
 
 
 def child_discover(args):
@@ -280,14 +318,18 @@ def child_discover(args):
     coverage, complete = fixture_coverage(summary)
     unchanged_import = before == after_import
     unchanged_run = before == after_run
+    module = sys.modules.get(FOCUSED)
+    import_installed_no_guards = module is not None and getattr(module, "SCRIPT_GUARDS", None) == []
     return {"suite": summary, "fixture_coverage": coverage, "coverage_complete": complete,
             "peer_before": peer_before, "peer_after": peer_after,
             "ambient_unchanged_after_import": unchanged_import,
             "ambient_unchanged_after_run": unchanged_run,
+            "import_installed_no_script_guards": import_installed_no_guards,
             "sentinel_attempts": attempts,
             "pass": (clean(summary) and complete and clean(peer_before) and clean(peer_after)
                      and peer_before["executed"] == peer_after["executed"]
-                     and unchanged_import and unchanged_run and not attempts)}
+                     and unchanged_import and unchanged_run and import_installed_no_guards
+                     and not attempts)}
 
 
 CHILDREN = {"suite": child_suite, "baseline": child_baseline, "negative": child_negative,
@@ -295,6 +337,8 @@ CHILDREN = {"suite": child_suite, "baseline": child_baseline, "negative": child_
 
 
 def child_main(args):
+    CHILD_CONTEXT.update({"child": args.child, "result_json": args.result_json,
+                          "run_identity": Path(args.result_json).parent.name})
     try:
         record = CHILDREN[args.child](args)
     except Exception:  # An exception is a failed child, never a killed mutation.
@@ -384,13 +428,35 @@ def preflight(phase, manifest_path):
             "pass": all(checks.values())}, manifest
 
 
+class GuardRefusal(Exception):
+    """A child reported a genuine offline-guard attempt: the row stops here."""
+
+    def __init__(self, info):
+        super().__init__(info.get("label"))
+        self.info = info
+
+
+def refusal_check(entry, label, record=None, stderr=b""):
+    """Raise GuardRefusal for a typed refusal record, the refusal exit or marker."""
+    text = stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else str(stderr)
+    typed = isinstance(record, dict) and record.get("kind") == GUARD_REFUSAL_KIND
+    marked = any(line.startswith(SCRIPT_REFUSAL_MARK) for line in text.splitlines())
+    if typed or marked or entry.get("exit") == GUARD_REFUSAL_EXIT:
+        entry["guard_refusal"] = True
+        raise GuardRefusal({"label": label, "argv": entry["argv"], "cwd": entry["cwd"],
+                            "exit": entry.get("exit"), "stderr_file": entry.get("stderr_file"),
+                            "refusal_record": record if typed else None,
+                            "refusal_lines": [line for line in text.splitlines()
+                                              if line.startswith(SCRIPT_REFUSAL_MARK)]})
+
+
 def runner_child(run, label, child, extra=(), cwd=REPO, script=None):
     result_name = f"{len(run.children):02d}-{label}.result.json"
     result_path = run.dir / result_name
     temp_root = run.work / ("tmp-" + label)
     argv = [sys.executable, script or (REPO / RUNNER), "--child", child,
             "--result-json", result_path, "--temp-root", temp_root, *extra]
-    entry, _, _ = run.child(label, argv, cwd)
+    entry, _, err = run.child(label, argv, cwd)
     try:
         record = json.loads(result_path.read_text())
         run.files.append(result_name)
@@ -399,6 +465,7 @@ def runner_child(run, label, child, extra=(), cwd=REPO, script=None):
     entry["result_json"] = result_name
     entry["result_sha256"] = sha256_file(result_path)
     entry["child_pass"] = entry["exit"] == 0 and record.get("pass") is True
+    refusal_check(entry, label, record, err)  # Stops all further scheduling.
     return entry, record
 
 
@@ -458,7 +525,10 @@ def phase_portable(run, prelim, manifest):
     fresh.mkdir()
     argv = [sys.executable, REPO / TEST, "--temp-root", run.work / "tmp-script", "-v"]
     s_entry, _, s_err = run.child("script-by-path", argv, fresh)
+    refusal_check(s_entry, "script-by-path", None, s_err)  # Stops before discovery.
     text = s_err.decode("utf-8", "replace")
+    guard_mark = SCRIPT_CLEAN_MARK.search(text)
+    guards_installed = int(guard_mark[1]) if guard_mark else 0
     ran = re.search(r"^Ran (\d+) tests? in ", text, re.M)
     ok_lines = re.findall(r"^(test_\w+) \(([\w.]+)\) \.\.\. ok$", text, re.M)
     cases = json.loads((REPO / FIXTURE).read_text(encoding="utf-8"))["dimensions"]
@@ -466,12 +536,15 @@ def phase_portable(run, prelim, manifest):
     expected_ids = {"__main__.JurisdictionGrammarTests.test_" + d for d in cases}
     expected_ids.add("__main__.JurisdictionGrammarTests.test_fixture_dimensions_all_covered")
     script_ok = (s_entry["exit"] == 0 and ran is not None and re.search(r"^OK$", text, re.M) is not None
-                 and script_ids == expected_ids and int(ran[1]) == len(expected_ids))
+                 and script_ids == expected_ids and int(ran[1]) == len(expected_ids)
+                 and guards_installed > 0)
     d_entry, d_record = runner_child(run, "discovery-isolated", "discover")
     static = static_scan()
     return {
         "script_mode": {"cwd": str(fresh), "tests_run": int(ran[1]) if ran else None,
                         "ok_test_ids": sorted(script_ids), "dimensions_expected": sorted(cases),
+                        "pre_import_guards_installed": guards_installed,
+                        "guard_attempts": 0 if guard_mark else None,
                         "pass": script_ok},
         "discovery": {"tests_run": d_record.get("suite", {}).get("tests_run"),
                       "fixture_coverage": d_record.get("fixture_coverage"),
@@ -480,8 +553,9 @@ def phase_portable(run, prelim, manifest):
                       "peer": PEER, "pass": d_entry["child_pass"]},
         "static_host_literal_findings": static,
         "tests_run": int(ran[1]) if ran else None,
-        "limitation": "Script mode is the test file's own __main__ (no runner sentinels); "
-                      "offline sentinels apply to the discovery child.",
+        "guard_note": "Script mode installs the test file's own terminal pre-import offline guards "
+                      "(script __main__ only) and must report attempts=0; the discovery child "
+                      "uses the runner's terminal guards.",
         "pass": script_ok and d_entry["child_pass"] and not any(static.values()),
     }
 
@@ -578,6 +652,75 @@ PHASE_FUNCTIONS = {"suite": phase_suite, "compatibility": phase_compatibility,
                    "public-tree": phase_public_tree}
 
 
+class RefusalDoubleRun(Run):
+    """Inert scheduling double: no subprocess; each child returns a scripted result.
+
+    Used only to qualify that a typed refusal stops scheduling and that an ordinary
+    failing child does not. No guarded function is called and no guard fires.
+    """
+
+    def __init__(self, root, script):
+        self.dir = root
+        self.dir.mkdir(mode=0o700)
+        self.work = self.dir / "work"
+        self.work.mkdir(mode=0o700)
+        self.children, self.files, self.script = [], [], list(script)
+
+    def child(self, label, argv, cwd, stdout_name=None):
+        kind = self.script.pop(0) if self.script else "ordinary-red"
+        entry = {"label": label, "argv": [str(a) for a in argv], "cwd": str(cwd), "shell": False,
+                 "double": kind, "stderr_file": f"{len(self.children):02d}-{label}.stderr"}
+        argv = entry["argv"]
+        result_path = Path(argv[argv.index("--result-json") + 1]) if "--result-json" in argv else None
+        err = b""
+        if kind == "typed-refusal":
+            entry["exit"] = GUARD_REFUSAL_EXIT
+            record = {"kind": GUARD_REFUSAL_KIND, "pass": False, "label": "synthetic.double",
+                      "error": "synthetic double, no guard fired", "argv": argv}
+            err = (SCRIPT_REFUSAL_MARK + "synthetic.double\n").encode()
+        elif kind == "script-refusal":
+            entry["exit"] = GUARD_REFUSAL_EXIT
+            record = None
+            err = (SCRIPT_REFUSAL_MARK + "synthetic.double\n").encode()
+        else:  # ordinary-red: an ordinary failing child (assertion failure, expected red)
+            entry["exit"] = 1
+            record = {"pass": False, "suite": {"tests_run": 1, "subtest_failures": [["x", "AssertionError"]]}}
+            err = b"FAIL: synthetic ordinary assertion\n"
+        if result_path is not None and record is not None:
+            result_path.write_text(json.dumps(record))
+        self.children.append(entry)
+        return entry, b"", err
+
+
+def qualify_refusal_scheduling(run, manifest):
+    """Qualify STOP scheduling with inert doubles (no real guard call or control)."""
+    scenarios = {
+        "suite_typed_refusal_first": (phase_suite, ["typed-refusal"], True, 1),
+        "suite_ordinary_red_continues": (phase_suite, ["ordinary-red"] * 3, False, 3),
+        "portable_script_refusal_first": (phase_portable, ["script-refusal"], True, 1),
+        "portable_ordinary_red_continues": (phase_portable, ["ordinary-red"] * 2, False, 2),
+    }
+    root = run.work / ("refusal-double-" + uuid.uuid4().hex)
+    root.mkdir(mode=0o700)
+    outcome = {}
+    for name, (function, script, expect_refusal, expect_children) in scenarios.items():
+        double = RefusalDoubleRun(root / name, script)
+        raised, verdict = None, None
+        try:
+            verdict = function(double, {}, manifest)
+        except GuardRefusal as refusal:
+            raised = refusal.info
+        launched = len(double.children)
+        outcome[name] = {"refusal_raised": raised is not None, "children_launched": launched,
+                         "verdict_pass": None if verdict is None else verdict.get("pass"),
+                         "pass": ((raised is not None) == expect_refusal and launched == expect_children
+                                  and (expect_refusal or (verdict or {}).get("pass") is False))}
+    return {"scenarios": outcome, "pass": all(s["pass"] for s in outcome.values())}
+
+
+QUALIFIED_PHASES = ("suite", "portable")
+
+
 def evidence_manifest(run):
     """Every output file outside work/ is declared exactly once and hash-valid."""
     walked = sorted(str(p.relative_to(run.dir)) for p in run.dir.rglob("*")
@@ -601,9 +744,23 @@ def parent_main(args):
     run = Run(args.phase, out_base)
     prelim, manifest = preflight(args.phase, args.source_manifest)
     before = identity()
+    refusal = None
     if prelim["pass"]:
+        qualification = None
         try:
+            if args.phase in QUALIFIED_PHASES:
+                qualification = qualify_refusal_scheduling(run, manifest)
             verdict = PHASE_FUNCTIONS[args.phase](run, prelim, manifest)
+            if qualification is not None:
+                verdict["refusal_scheduling_qualification"] = qualification
+                verdict["pass"] = verdict.get("pass") is True and qualification["pass"]
+        except GuardRefusal as stop:  # Genuine guard attempt: STOP, launch nothing more.
+            refusal = dict(stop.info, run_dir=str(run.dir), run_identity=run.dir.name,
+                           runner_argv=[sys.executable, *sys.argv],
+                           disposition="STOP: genuine offline-guard refusal; preserve for the "
+                                       "existing attended guard owner; do not retry")
+            verdict = {"pass": False, "guard_refusal": refusal,
+                       "refusal_scheduling_qualification": qualification}
         except Exception:  # An incomplete row is a failed row.
             verdict = {"pass": False, "exception": traceback.format_exc()}
     else:
@@ -626,7 +783,8 @@ def parent_main(args):
         "fixture_sha256": sha256_file(REPO / FIXTURE), "runner_sha256": sha256_file(REPO / RUNNER),
         "children": run.children, "verdict": verdict,
         "evidence_manifest_sha256": evidence_hash, "evidence_recheck": recheck,
-        "pass": passed, "exit": 0 if passed else 1, "review_required": True,
+        "pass": passed, "exit": 0 if passed else (3 if refusal else 1), "review_required": True,
+        "guard_refusal_stop": refusal,
         "semantic_assessment": "NOT_ASSESSED",
         "limitations": ["Machine validity only: REVIEW REQUIRED, not semantic/legal/human/live acceptance.",
                         "Full repository discovery and exact-head CI are operator-owned and OWED.",
@@ -637,6 +795,7 @@ def parent_main(args):
     print(json.dumps({"phase": args.phase, "pass": passed, "run_dir": str(run.dir),
                       "result_sha256": digest, "evidence_manifest_sha256": evidence_hash,
                       "tests_run": verdict.get("tests_run"), "head": after["head"],
+                      "guard_refusal_stop": refusal is not None,
                       "review_required": True}, sort_keys=True))
     return record["exit"]
 

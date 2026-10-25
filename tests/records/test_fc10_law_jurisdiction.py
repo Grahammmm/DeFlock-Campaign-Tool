@@ -14,9 +14,14 @@ invocation directory. Ordinary discovery changes no ambient setting:
     python3 -m unittest tests.records.test_fc10_law_jurisdiction -v
 
 Script mode (for a fresh cwd) accepts --temp-root DIR, applied before the
-product import, then ordinary unittest arguments.
+product import, then ordinary unittest arguments. Script mode also installs
+process-local offline guards before the product import: any network, process
+spawn or exec attempt prints one FC10-GUARD-REFUSAL line and ends the process
+at once with exit 86 (no later test runs). A clean script run ends with the
+line "FC10-GUARD installed=N attempts=0". Import and discovery install nothing.
 """
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -25,16 +30,45 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "fc10-law-jurisdiction" / "cases.json"
+GUARD_REFUSAL_EXIT = 86
+SCRIPT_GUARDS = []
+
+
+def install_script_guards():
+    """Script mode only: terminal offline guards for this process."""
+    import socket
+    import subprocess
+
+    def guard(owner, name, label):
+        def refuse(*_args, **_kwargs):
+            sys.stderr.write("FC10-GUARD-REFUSAL " + label + "\n")
+            sys.stderr.flush()
+            os._exit(GUARD_REFUSAL_EXIT)  # Terminal: nothing can catch or continue.
+        if hasattr(owner, name):
+            setattr(owner, name, refuse)
+            SCRIPT_GUARDS.append(label)
+
+    for name in ("connect", "connect_ex", "bind"):
+        guard(socket.socket, name, "socket.socket." + name)
+    for name in ("create_connection", "create_server", "getaddrinfo"):
+        guard(socket, name, "socket." + name)
+    guard(subprocess, "Popen", "subprocess.Popen")
+    for name in ("system", "fork", "forkpty", "execv", "execve", "execvp", "execvpe",
+                 "spawnv", "spawnve", "posix_spawn", "posix_spawnp", "popen"):
+        guard(os, name, "os." + name)
+
 
 if __name__ == "__main__":
-    # Script mode only: choose the temporary root and the import root before
-    # importing product code. Discovery leaves sys.path and tempfile untouched.
+    # Script mode only: choose the temporary root, install the offline guards
+    # and the import root before importing product code. Discovery leaves
+    # sys.path, tempfile and every guarded function untouched.
     if "--temp-root" in sys.argv:
         position = sys.argv.index("--temp-root")
         temp_root = Path(sys.argv[position + 1]).absolute()
         del sys.argv[position:position + 2]
         temp_root.mkdir(parents=True, exist_ok=True)
         tempfile.tempdir = str(temp_root)
+    install_script_guards()
     sys.path.insert(0, str(REPO_ROOT))
 
 from campaign_tool import law  # noqa: E402
@@ -202,4 +236,7 @@ class JurisdictionGrammarTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    PROGRAM = unittest.main(exit=False)
+    # Reached only when no guard fired (a guard ends the process at once).
+    sys.stderr.write(f"FC10-GUARD installed={len(SCRIPT_GUARDS)} attempts=0\n")
+    sys.exit(0 if PROGRAM.result.wasSuccessful() else 1)
