@@ -18,7 +18,7 @@ env:
   WP4_REVISION: '853ba723af29492b2c836e2f9c8f86f53577eb7a' # pragma: allowlist secret
 jobs:
   wp5:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
