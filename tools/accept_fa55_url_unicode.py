@@ -15,9 +15,11 @@ repository, no symlinked ancestor, not group/world writable):
                     candidate must pass the same tests
   isolation         A5: guard self-checks, redirected temp/home, no reachable
                     home-path data constants or bound defaults, no bytecode,
-                    unsafe output parents refused, and the focused tests rerun
-                    from a second complete source copy with module paths
-                    recorded
+                    unsafe output parents refused (symlinked component,
+                    untrusted or writable leaf, untrusted or writable existing
+                    intermediate ancestor) with no write, and the focused
+                    tests rerun from a second complete source copy with
+                    module paths recorded
   credentials       installed detect-secrets next to this interpreter, then the
                     unchanged tools/check_secret_report.py on that exact JSON
 
@@ -128,8 +130,57 @@ def identity():
             "source_root": str(REPO), "source_sha256": hashes, "tree_sha256": tree_digest()}
 
 
+_PRIVATE_GROUPS = {}
+
+
+def private_group(gid, owner_uid):
+    """True when gid is a user-private group whose only possible member is owner_uid.
+
+    Looked up once per (gid, owner) before the file guards are installed and
+    cached; an unknown group, user or lookup failure is not private (fail closed).
+    """
+    key = (gid, owner_uid)
+    if key not in _PRIVATE_GROUPS:
+        try:
+            import grp
+            import pwd
+            owner = pwd.getpwuid(owner_uid)
+            entry = grp.getgrgid(gid)
+            others_primary = [u.pw_name for u in pwd.getpwall() if u.pw_gid == gid and u.pw_uid != owner_uid]
+            _PRIVATE_GROUPS[key] = (owner.pw_gid == gid and not others_primary
+                                    and set(entry.gr_mem) <= {owner.pw_name})
+        except (ImportError, KeyError, OSError):
+            _PRIVATE_GROUPS[key] = False
+    return _PRIVATE_GROUPS[key]
+
+
+def unsafe_ancestor(info):
+    """Refusal code for an existing intermediate ancestor directory, else None.
+
+    Trusted: owned by root or by this user. World-writable only when root-owned
+    and sticky (for example /tmp). Group-writable only when sticky and
+    root-owned, or when the group is this owner's private group.
+    """
+    if not stat.S_ISDIR(info.st_mode):
+        return "output_parent_ancestor_not_directory"
+    if info.st_uid not in (0, os.geteuid()):
+        return "output_parent_ancestor_untrusted_owner"
+    root_sticky = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+    if info.st_mode & 0o002 and not root_sticky:
+        return "output_parent_ancestor_world_writable"
+    if info.st_mode & 0o020 and not (root_sticky or private_group(info.st_gid, info.st_uid)):
+        return "output_parent_ancestor_group_writable"
+    return None
+
+
 def unsafe_output_parent(parent):
-    """Return a refusal code for an unsafe evidence parent, else None."""
+    """Return a refusal code for an unsafe evidence parent, else None.
+
+    Checks the whole path: no symlinked component, not the repository, every
+    EXISTING intermediate ancestor trusted (unsafe_ancestor), and an existing
+    leaf a private directory owned by this user. Missing components are
+    allowed; fresh_run_dir re-validates after creating them.
+    """
     text = os.fspath(parent)
     if not os.path.isabs(text):
         return "output_parent_must_be_absolute"
@@ -144,6 +195,14 @@ def unsafe_output_parent(parent):
     real = Path(os.path.realpath(path))
     if real == REPO or REPO in real.parents:
         return "output_parent_inside_repository"
+    for ancestor in reversed(path.parents):
+        try:
+            info = ancestor.lstat()
+        except FileNotFoundError:
+            continue
+        refusal = unsafe_ancestor(info)
+        if refusal:
+            return refusal
     if path.exists():
         info = path.lstat()
         if not stat.S_ISDIR(info.st_mode):
@@ -530,15 +589,46 @@ def case_isolation(run, original_home, pycache_before):
     wide = run / "wide-parent"
     wide.mkdir(mode=0o700)
     os.chmod(wide, 0o777)
-    refusals = {"relative": unsafe_output_parent("evidence"),
-                "dotdot": unsafe_output_parent(str(run) + "/x/../y"),
-                "inside_repository": unsafe_output_parent(str(REPO / "evidence")),
-                "symlinked_ancestor": unsafe_output_parent(str(link / "child")),
-                "world_writable": unsafe_output_parent(str(wide)),
-                "safe_positive": unsafe_output_parent(str(run / "safe-parent"))}
-    refusal_ok = all(refusals[k] for k in refusals if k != "safe_positive") and refusals["safe_positive"] is None
-    refused_writes = list(link_target.iterdir()) + list(wide.iterdir())
-    os.chmod(wide, 0o700)
+    # Unsafe INTERMEDIATE ancestor: a private existing leaf and a missing leaf
+    # below a world-writable (non-sticky) directory must both be refused.
+    wide_ancestor = run / "wide-ancestor"
+    wide_ancestor.mkdir(mode=0o700)
+    private_leaf = wide_ancestor / "private-leaf"
+    private_leaf.mkdir(mode=0o700)
+    missing_leaf = wide_ancestor / "missing-leaf"
+    deep_missing = wide_ancestor / "missing-a" / "missing-b"
+    os.chmod(wide_ancestor, 0o777)
+    try:
+        refusals = {"relative": unsafe_output_parent("evidence"),
+                    "dotdot": unsafe_output_parent(str(run) + "/x/../y"),
+                    "inside_repository": unsafe_output_parent(str(REPO / "evidence")),
+                    "symlinked_ancestor": unsafe_output_parent(str(link / "child")),
+                    "world_writable": unsafe_output_parent(str(wide)),
+                    "private_leaf_under_writable_ancestor": unsafe_output_parent(str(private_leaf)),
+                    "missing_leaf_under_writable_ancestor": unsafe_output_parent(str(missing_leaf)),
+                    "deep_missing_under_writable_ancestor": unsafe_output_parent(str(deep_missing)),
+                    "safe_positive": unsafe_output_parent(str(run / "safe-parent"))}
+        # The real entry point must refuse before creating anything.
+        no_write = {}
+        for label, target in (("private_leaf", private_leaf), ("missing_leaf", missing_leaf),
+                              ("deep_missing", deep_missing), ("symlinked", link / "child"),
+                              ("world_writable", wide)):
+            try:
+                created = fresh_run_dir(str(target), "isolation-probe")
+                no_write[label] = "created:" + str(created)
+            except SystemExit as exc:
+                no_write[label] = str(exc.code)
+        refused_writes = (list(link_target.iterdir()) + list(wide.iterdir()) + list(private_leaf.iterdir())
+                          + sorted(p.name for p in wide_ancestor.iterdir() if p != private_leaf))
+    finally:
+        os.chmod(wide_ancestor, 0o700)
+        os.chmod(wide, 0o700)
+    expected = {"private_leaf_under_writable_ancestor": "output_parent_ancestor_world_writable",
+                "missing_leaf_under_writable_ancestor": "output_parent_ancestor_world_writable",
+                "deep_missing_under_writable_ancestor": "output_parent_ancestor_world_writable"}
+    refusal_ok = (all(refusals[k] for k in refusals if k != "safe_positive") and refusals["safe_positive"] is None
+                  and all(refusals[k] == v for k, v in expected.items())
+                  and all(v.startswith("output_parent_") for v in no_write.values()))
     # Second complete source copy; the child imports only from that copy.
     copy = run / "source-copy"
     shutil.copytree(REPO, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"), symlinks=True)
@@ -566,6 +656,7 @@ def case_isolation(run, original_home, pycache_before):
                 "tempdir": tf.gettempdir(), "tempdir_inside_run": temp_inside,
                 "reachable_home_path_bindings": home_bindings,
                 "output_parent_refusals": refusals, "output_parent_refusal_ok": refusal_ok,
+                "fresh_run_dir_no_write": no_write, "refused_parent_entries": [str(p) for p in refused_writes],
                 "pycache_before": pycache_before, "pycache_after": pycache_after,
                 "committed_source_machine_path_findings": findings,
                 "second_copy": {"root": str(copy), "tree_sha256": copy_tree,
