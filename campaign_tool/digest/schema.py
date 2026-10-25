@@ -49,7 +49,7 @@ DIGEST_SCHEMA = {
                  "limitations"],
     "additionalProperties": False,
     "properties": {
-        "schema_version": {"const": 1},
+        "schema_version": {"type": "integer", "const": 1},
         "sha256": {"type": "string", "pattern": HEX64},
         "jurisdiction": {"type": "string", "pattern": "^[a-z]{2}-[a-z]{2}$"},
         "law_package_version": {"type": "string", "minLength": 1},
