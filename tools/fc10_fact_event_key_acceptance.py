@@ -35,6 +35,8 @@ SUITE_TESTS = 10
 COMPATIBILITY_TESTS = 4
 OFFLINE_TARGETS = ("socket.socket.connect", "socket.socket.connect_ex", "socket.create_connection",
                    "sqlite3.connect", "subprocess.Popen")
+SELFTEST_PROBE = "fc10_guard_selftest_probe_absent"
+GUARDED_CHILDREN = ("suite", "compatibility", "baseline")
 
 
 def need(condition, label):
@@ -84,26 +86,138 @@ class Recorder:
         return self.run(label, ["git", *argv], cwd).decode().strip()
 
 
-def baseline_child(args, row):
+def resolve_target(target):
+    owner_name, attr = target.rsplit(".", 1)
+    owner = importlib.import_module(owner_name.split(".")[0])
+    for part in owner_name.split(".")[1:]:
+        owner = getattr(owner, part)
+    return owner, attr
+
+
+def current_targets():
+    return {t: getattr(*resolve_target(t)) for t in OFFLINE_TARGETS}
+
+
+def guard_state():
+    # True only for this runner's own inert guard objects (never invoked by these checks).
+    return {t: getattr(fn, "_fc10_offline_guard", False) is True for t, fn in current_targets().items()}
+
+
+def make_guard(target):
+    def guard(*args, **kwargs):
+        raise RuntimeError("offline_api_not_allowed:" + target)
+    guard._fc10_offline_guard = True
+    return guard
+
+
+class ImportObserver:
+    """Inert meta-path observer: records guard state when a product/test module is first located."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in ("campaign_tool", "tests", SELFTEST_PROBE):
+            self.log.append({"module": name, "guards": guard_state()})
+        return None
+
+
+class GuardScope:
+    """Child-owned scoped offline guards for pure-API paths; restored on every exit."""
+
+    def __init__(self, record):
+        self.record = record
+
+    def __enter__(self):
+        self.original = current_targets()
+        self.patches = [mock.patch(t, new=make_guard(t)) for t in OFFLINE_TARGETS]
+        self.started = []
+        try:
+            for p in self.patches:
+                p.start()
+                self.started.append(p)
+            self.observer = ImportObserver(self.record.setdefault("import_observations", []))
+            sys.meta_path.insert(0, self.observer)
+        except BaseException:
+            self.__exit__(*sys.exc_info())
+            raise
+        return self
+
+    def checkpoint(self, label):
+        self.record.setdefault("checkpoints", []).append({"label": label, "guards": guard_state()})
+
+    def __exit__(self, kind, value, tb):
+        observer = getattr(self, "observer", None)
+        if observer in sys.meta_path:
+            sys.meta_path.remove(observer)
+        for p in reversed(self.started):
+            p.stop()
+        restored = current_targets()
+        self.record["restored"] = all(restored[t] is self.original[t] for t in OFFLINE_TARGETS)
+        self.record["observer_removed"] = not any(isinstance(f, ImportObserver) for f in sys.meta_path)
+        self.record["exit_exception"] = None if kind is None else kind.__name__
+        return False
+
+
+def guard_selftest():
+    # Inert regression: guards install, the import observer fires, and an exceptional exit restores all.
+    record = {}
+    try:
+        with GuardScope(record) as scope:
+            scope.checkpoint("selftest_inside")
+            # Absent top-level name: walks sys.meta_path without importing any real package.
+            need(importlib.util.find_spec(SELFTEST_PROBE) is None, "selftest_probe_absent")
+            raise LookupError("synthetic_selftest_exit")
+    except LookupError:
+        pass
+    inside = record["checkpoints"][0]["guards"]
+    seen = [o for o in record.get("import_observations", []) if o["module"] == SELFTEST_PROBE]
+    ok = (all(inside.values()) and len(seen) >= 1 and all(all(o["guards"].values()) for o in seen)
+          and record["restored"] and record["observer_removed"] and record["exit_exception"] == "LookupError"
+          and not any(guard_state().values()))
+    need(ok, "guard_selftest")
+    return {"inside_all_guarded": all(inside.values()), "observer_fired": len(seen),
+            "restored_after_exception": record["restored"], "observer_removed": record["observer_removed"]}
+
+
+class GuardedResult(unittest.TextTestResult):
+    # Records guard presence at the start and stop of every executed test.
+    runtime = []
+
+    def startTest(self, test):
+        GuardedResult.runtime.append({"test": test.id(), "at": "start", "guards": guard_state()})
+        super().startTest(test)
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        GuardedResult.runtime.append({"test": test.id(), "at": "stop", "guards": guard_state()})
+
+
+def no_product_modules():
+    return not any(n.split(".")[0] == "campaign_tool" or n.startswith("tests.records") for n in sys.modules)
+
+
+def emit_guard(child, record, selftest):
+    print("FC10_GUARD " + json.dumps({"child": child, "selftest": selftest, **record}, sort_keys=True))
+
+
+def baseline_child(args, row, scope):
     # Observe every frozen variant against the pinned base product (from its git blob) and the candidate.
     source = safe_absolute(args.base_source)
     need(source.parent == row, "base_source_boundary")
+    scope.checkpoint("before_product_import")
     importlib.import_module("campaign_tool.records.understanding")
     evidence = importlib.import_module("campaign_tool.records.understanding.evidence")
     candidate = importlib.import_module("campaign_tool.records.understanding.reconcile")
     spec = importlib.util.spec_from_file_location("campaign_tool.records.understanding.fc10_base_reconcile", source)
     base = importlib.util.module_from_spec(spec)
+    scope.checkpoint("before_base_exec_module")
     spec.loader.exec_module(base)
     need(not hasattr(base, "valid_fact_event_key") and hasattr(candidate, "valid_fact_event_key"), "base_is_original")
     module = importlib.import_module(TEST_MODULE)
-    guards = [mock.patch(t, side_effect=RuntimeError("offline_api_not_allowed")) for t in OFFLINE_TARGETS]
-    for guard in guards:
-        guard.start()
-    try:
-        observed = {"baseline": module.observe_cases(evidence, base), "candidate": module.observe_cases(evidence, candidate)}
-    finally:
-        for guard in reversed(guards):
-            guard.stop()
+    scope.checkpoint("before_observations")
+    observed = {"baseline": module.observe_cases(evidence, base), "candidate": module.observe_cases(evidence, candidate)}
+    scope.checkpoint("after_observations")
     fixture = module.load_fixture()
     checks = []
     for case in fixture["cases"]:
@@ -138,16 +252,43 @@ def child_main(args):
     tempfile.tempdir = str(temp)
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(REPO))
-    if args.child == "baseline":
-        return baseline_child(args, row)
+    if args.child not in GUARDED_CHILDREN:
+        # Ordinary-discovery contamination check: its sentinel must see the unguarded originals,
+        # and the discovered tests install their own scoped guards before any product import.
+        return test_child(args, temp, None)
+    # Pure-API children: guards precede every product/test import and span execution and teardown.
+    need(no_product_modules(), "product_imported_before_guards")
+    selftest = guard_selftest()
+    record = {}
+    GuardedResult.runtime = record.setdefault("runtime", [])
+    with GuardScope(record) as scope:
+        scope.checkpoint("scope_entered_before_product_import")
+        if args.child == "baseline":
+            code = baseline_child(args, row, scope)
+        else:
+            code = test_child(args, temp, scope)
+        scope.checkpoint("before_scope_exit")
+    record["guards_after_exit"] = guard_state()
+    emit_guard(args.child, record, selftest)
+    need(record["restored"] and record["observer_removed"] and not any(record["guards_after_exit"].values()),
+         "guard_restore")
+    return code
+
+
+def test_child(args, temp, scope):
     fixture = json.loads((REPO / AUTHORED[1]).read_text())
     case_ids = [c["id"] for c in fixture["cases"]]
     loader = unittest.TestLoader()
     sentinel_checks = []
+    discovery_imports = None
     if args.child == "compatibility":
+        scope.checkpoint("before_compatibility_loader_import")
         suite = loader.loadTestsFromNames(list(COMPATIBILITY))
+        scope.checkpoint("after_compatibility_loader_import")
     elif args.child == "suite":
+        scope.checkpoint("before_suite_loader_import")
         suite = loader.loadTestsFromName(TEST_MODULE)
+        scope.checkpoint("after_suite_loader_import")
     else:
         # Snapshot before ordinary discovery and again after test execution.
         ambient = (dict(os.environ), tempfile.tempdir, list(sys.path), sys.dont_write_bytecode, os.getcwd())
@@ -169,10 +310,16 @@ def child_main(args):
         need(initial.wasSuccessful(), "pre_discovery_sentinel")
         suite = loader.discover(str(REPO / "tests/records"),
                                 pattern="test_fc10_fact_event_key.py", top_level_dir=str(REPO))
+        # Discovery is inert: no product module is imported until a guarded setUp runs.
+        discovery_imports = sorted(n for n in sys.modules if n.split(".")[0] == "campaign_tool")
+        need(discovery_imports == [], "product_imported_at_discovery")
         immediate = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([Sentinel()]))
         need(immediate.wasSuccessful(), "post_discovery_sentinel")
         suite = unittest.TestSuite([suite, Sentinel()])
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    runner = unittest.TextTestRunner(verbosity=2, resultclass=GuardedResult if scope else None)
+    result = runner.run(suite)
+    if scope:
+        scope.checkpoint("after_test_execution")
     need(result.wasSuccessful() and not result.skipped and not result.expectedFailures,
          "required_tests_not_all_green")
     if args.child == "compatibility":
@@ -186,7 +333,8 @@ def child_main(args):
     data = {"mode": args.child, "tests_run": result.testsRun, "case_ids": coverage,
             "fixture_dimensions": fixture["cases"] if coverage else [],
             "skipped": len(result.skipped), "successful": result.wasSuccessful(),
-            "sentinel_checks": sentinel_checks, "temporary_root": str(temp)}
+            "sentinel_checks": sentinel_checks, "temporary_root": str(temp),
+            "product_modules_after_discovery": discovery_imports}
     print("FC10_COVERAGE " + json.dumps(data, sort_keys=True))
     return 0
 
@@ -274,6 +422,32 @@ def public_tree(rec, identity, manifest):
             "not_a_staged_tree_pass": bool(informational["findings"])}, "scanned_files": result["scanned_files"]}
 
 
+def check_guard(raw, child, root, tests_run, required_modules):
+    # Parent-side validation of the child's scoped-guard evidence (import time, runtime, restoration).
+    rows = tagged(raw, "FC10_GUARD")
+    need(len(rows) == 1 and rows[0]["child"] == child, "guard_receipt:" + child)
+    g = rows[0]
+    st = g["selftest"]
+    need(st["inside_all_guarded"] and st["observer_fired"] >= 1 and st["restored_after_exception"]
+         and st["observer_removed"], "guard_selftest:" + child)
+    need(g["restored"] and g["observer_removed"] and g["exit_exception"] is None
+         and not any(g["guards_after_exit"].values()), "guard_restoration:" + child)
+    labels = [c["label"] for c in g["checkpoints"]]
+    need(labels[0] == "scope_entered_before_product_import" and labels[-1] == "before_scope_exit", "guard_span:" + child)
+    need(all(all(c["guards"].values()) and set(c["guards"]) == set(OFFLINE_TARGETS) for c in g["checkpoints"]),
+         "guard_checkpoint_unguarded:" + child)
+    imports = g["import_observations"]
+    need(imports and all(all(o["guards"].values()) for o in imports), "guard_import_unguarded:" + child)
+    seen = {o["module"] for o in imports}
+    need(set(required_modules) <= seen, "guard_import_coverage:" + child)
+    need(any(m.split(".")[0] == "campaign_tool" for m in seen), "guard_product_import_observed:" + child)
+    need(len(g["runtime"]) == 2 * tests_run and all(all(r["guards"].values()) for r in g["runtime"]),
+         "guard_runtime:" + child)
+    write_json(root / ("guard-" + child + ".json"), g)
+    return {"child": child, "import_observations": len(imports), "required_modules_observed": sorted(required_modules),
+            "checkpoints": labels, "runtime_observations": len(g["runtime"]), "restored": True}
+
+
 def run_phase(args, rec, identity, manifest):
     fixture = json.loads((REPO / AUTHORED[1]).read_text())
     required_ids = [c["id"] for c in fixture["cases"]]
@@ -282,6 +456,10 @@ def run_phase(args, rec, identity, manifest):
                                   "--row-root", rec.root], REPO)
         data = coverage(raw)
         need(data["case_ids"] == (required_ids if args.phase == "suite" else []), "required_case_coverage")
+        modules = (("tests.records.test_understanding", "campaign_tool.records.understanding.reconcile")
+                   if args.phase == "compatibility" else
+                   (TEST_MODULE, "campaign_tool.records.understanding.reconcile"))
+        data["guard"] = check_guard(raw, args.phase, rec.root, data["tests_run"], modules)
         if args.phase == "compatibility":
             return data
         # Separately preserved: injected control and final candidate observations from the suite.
@@ -300,6 +478,8 @@ def run_phase(args, rec, identity, manifest):
         base_raw = rec.run("baseline", [sys.executable, "-B", Path(__file__).resolve(), "--child", "baseline",
                                         "--row-root", rec.root, "--base-source", base_source], REPO)
         base_cov = coverage(base_raw)
+        data["baseline_guard"] = check_guard(base_raw, "baseline", rec.root, 0,
+                                             ("campaign_tool.records.understanding.reconcile", TEST_MODULE))
         baseline = tagged(base_raw, "FC10_BASELINE")
         need(len(baseline) == 1 and baseline[0]["base_source_sha256"] == digest(base_bytes), "baseline_receipt")
         variants = sum(len(c["variants"]) for c in fixture["cases"])
@@ -327,6 +507,7 @@ def run_phase(args, rec, identity, manifest):
         discovery = coverage(discovery_raw)
         need(script["case_ids"] == discovery["case_ids"] == required_ids, "portable_case_coverage")
         need(len(discovery["sentinel_checks"]) == 3, "sentinel_coverage")
+        need(discovery.get("product_modules_after_discovery") == [], "discovery_product_import")
         return {"script": script, "discovery": discovery, "static_findings": findings}
     if args.phase == "credentials":
         runtime = manifest["runtime"]
