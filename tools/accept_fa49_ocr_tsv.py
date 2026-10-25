@@ -80,13 +80,15 @@ COMPATIBILITY_REQUIRED_TOOLS = ("pdftoppm", "tesseract")
 # Unchanged compatibility tests that start an inline-interpreter child (python -c).
 # Inline interpreter source is forbidden for this local runner, so by the operator's
 # rule-29 disposition (2026-10-24 20:22 PDT, option A) each one stays a CI-only
-# obligation: it is never imported into the local run, is recorded as
-# UNMET-LOCAL / CI-owned by exact id plus the sha256 of its method source, and
-# the static preflight must find exactly this set before anything is imported.
+# obligation: it is never run locally, is recorded as UNMET-LOCAL / CI-owned by
+# exact id plus the sha256 of its method source, and the import-free static
+# preflight must find exactly this set, with each method byte-identical to the
+# pinned base revision (the newest first-parent ancestor without this helper),
+# before anything is imported. No digest literal is kept here: the base blob is
+# the reference, so the secret scan needs no new exemption.
 CI_ONLY_SELECTORS = {
     "tests.records.test_ocr.OCRTests.test_child_limits_apply_address_space_and_file_size": {
         "file": "tests/records/test_ocr.py",
-        "method_source_sha256": "138a9d3da9c095ed79f0f8f6af1bf9c7d206f0d13abcea3b9652f61a27eda2a1",
     },
 }
 CI_ONLY_OWNERS = {
@@ -860,6 +862,7 @@ def receipt_live_controls(run):
     """Real recorded children of this interpreter: a success, a nonzero exit and a
     spawn failure. Each receipt must carry the actual argv, cwd, exit and stream hash."""
     checks = {}
+    first = len(RECEIPTS)
     cwd = os.path.realpath(run)
     ok_argv = [sys.executable, "-B", "--version"]
     done = subprocess.run(ok_argv, cwd=cwd, capture_output=True, check=False, timeout=60)
@@ -883,7 +886,7 @@ def receipt_live_controls(run):
         r = RECEIPTS[-1]
         checks["spawn_error_receipt"] = r["argv"] == [missing] and r["spawned"] is False and bool(r["spawn_error"])
     finalize_receipts()
-    checks["exits_recorded"] = [r["exit"] for r in RECEIPTS[:2]] == [0, 2]
+    checks["exits_recorded"] = [r["exit"] for r in RECEIPTS[first:first + 2]] == [0, 2]
     return checks
 
 
@@ -950,27 +953,58 @@ def compare_ci_only(sites, unattributed, admitted):
     return problems
 
 
+def pinned_base_revision():
+    """Newest first-parent ancestor of HEAD in which this helper does not exist:
+    the pinned upstream base this card was built on. None when unavailable."""
+    listing = git("rev-list", "--first-parent", "HEAD")
+    if not listing:
+        return None
+    helper = "tools/accept_fa49_ocr_tsv.py"
+    for commit in listing.split():
+        if git("cat-file", "-e", f"{commit}:{helper}") is None:
+            return commit
+    return None
+
+
 def compatibility_preflight():
-    """Scan the unchanged compatibility files without importing them."""
-    sites, unattributed, files = {}, [], {}
+    """Scan the unchanged compatibility files without importing them. Each file
+    must be identical to the pinned base revision (working tree and HEAD), and the
+    admitted CI-only methods are compared with their base-revision source."""
+    sites, unattributed, files, problems = {}, [], {}, []
+    base = pinned_base_revision()
+    if base is None:
+        return ["pinned_base_revision_unavailable"], [], {}, None
     for module in COMPATIBILITY:
         relative = module.replace(".", "/") + ".py"
         data = (REPO / relative).read_bytes()
         files[relative] = sha256_bytes(data)
+        if git("diff", "--quiet", base, "--", relative) is None:
+            problems.append(f"compatibility_file_changed_from_base:{relative}")
         found, loose = scan_inline_children(data.decode("utf-8"), module)
         for test_id, site in found.items():
             sites[test_id] = {**site, "file": relative}
         unattributed += [f"{relative}:{line}" for line in loose]
-    problems = [f"inline_child_outside_test_method:{where}" for where in unattributed]
-    problems += compare_ci_only(sites, [], CI_ONLY_SELECTORS)
+    admitted = {}
+    for test_id, entry in CI_ONLY_SELECTORS.items():
+        module = test_id.rsplit(".", 2)[0]
+        base_text = git("show", f"{base}:{entry['file']}")
+        base_sites = scan_inline_children(base_text, module)[0] if base_text else {}
+        if test_id not in base_sites:
+            problems.append(f"ci_only_selector_missing_at_base:{test_id}")
+            continue
+        admitted[test_id] = {"file": entry["file"],
+                             "method_source_sha256": base_sites[test_id]["method_source_sha256"]}
+    problems += [f"inline_child_outside_test_method:{where}" for where in unattributed]
+    problems += compare_ci_only(sites, [], admitted)
     for test_id, site in sites.items():
         if test_id in CI_ONLY_SELECTORS and site["file"] != CI_ONLY_SELECTORS[test_id]["file"]:
             problems.append(f"ci_only_selector_file_mismatch:{test_id}")
     unmet = [{"test_id": test_id, "file": site["file"], "lines": site["lines"],
               "method_source_sha256": site["method_source_sha256"],
+              "base_method_source_sha256": admitted.get(test_id, {}).get("method_source_sha256"),
               "file_sha256": files[site["file"]], **CI_ONLY_OWNERS}
              for test_id, site in sorted(sites.items()) if test_id in CI_ONLY_SELECTORS]
-    return problems, unmet, files
+    return problems, unmet, files, base
 
 
 PREFLIGHT_POSITIVE = '''
@@ -1073,9 +1107,11 @@ def ci_only_filtered(suite):
 
 def case_compatibility(run):
     setup = prepare(run, deny_process=False, work_in_run=False, record_children=True)
-    preflight_problems, unmet, compat_files = compatibility_preflight()
+    preflight_problems, unmet, compat_files, base = compatibility_preflight()
     preflight = {"problems": preflight_problems, "unmet_local_ci_owned": unmet,
-                 "compatibility_file_sha256": compat_files}
+                 "compatibility_file_sha256": compat_files, "pinned_base_revision": base,
+                 "compatibility_files_identical_to_base": not any(
+                     p.startswith("compatibility_file_changed_from_base") for p in preflight_problems)}
     if preflight_problems:
         # fail closed before any compatibility module is imported or run
         return False, {"setup": setup, "stop": "compatibility_preflight_failed", "preflight": preflight}
