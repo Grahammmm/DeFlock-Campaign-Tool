@@ -159,12 +159,14 @@ def store_blob(root,raw):
     return digest,str(target)
 
 
-def _verify_adapter_schema(con):
+def _verify_adapter_schema(con,absent_ok=False):
     """Adapter-owned objects must equal SCHEMA itself, not merely carry its marker.
 
     The reference is built from SCHEMA in a private in-memory database; no other
     database is read. Only names declared by SCHEMA are compared, so unrelated WP1
     objects are ignored. Read-only: nothing is repaired, committed or rolled back.
+    Returns False only when absent_ok and no adapter object exists at all (fresh);
+    any partial or altered adapter state raises.
     """
     with closing(sqlite3.connect(":memory:")) as reference:
         reference.executescript(SCHEMA)
@@ -172,13 +174,15 @@ def _verify_adapter_schema(con):
     names=[row[1] for row in expected]
     actual=sorted(tuple(r) for r in con.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name IN (%s)"%",".join("?"*len(names)),names))
+    if absent_ok and not actual:return False
     if actual!=expected:raise ExtractionBindingError("adapter_schema_mismatch")
+    return True
 
 
 def ensure_schema(con):
-    found=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extraction_adapter_schema'").fetchone()
     digest=sha(SCHEMA.encode())
-    if not found:
+    # Definitions are verified before any marker column is read or any DDL runs.
+    if not _verify_adapter_schema(con,absent_ok=True):
         con.executescript("BEGIN IMMEDIATE;\n"+SCHEMA)
         con.execute("INSERT INTO extraction_adapter_schema VALUES(?,?)",(1,digest))
         try:_verify_adapter_schema(con)
@@ -187,7 +191,6 @@ def ensure_schema(con):
     else:
         rows=con.execute("SELECT version,checksum FROM extraction_adapter_schema").fetchall()
         if len(rows)!=1 or tuple(rows[0])!=(1,digest):raise ExtractionBindingError("adapter_schema_mismatch")
-        _verify_adapter_schema(con)
 
 
 def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):

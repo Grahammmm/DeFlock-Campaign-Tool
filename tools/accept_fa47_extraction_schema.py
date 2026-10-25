@@ -165,14 +165,14 @@ def modules_args(names):
 
 
 def marker_only_baseline(run):
-    """Most recent committed revision of the product whose bytes differ from the candidate."""
+    """Most recent committed revision of the product that has no object verifier at all."""
     candidate = (REPO / PRODUCT).read_bytes()
     code, revs = git("rev-list", "HEAD", "--", PRODUCT)
     if code != 0:
         return None
     for rev in revs.decode().split():
         code, blob = git("show", rev + ":" + PRODUCT)
-        if code == 0 and blob != candidate:
+        if code == 0 and blob != candidate and b"_verify_adapter_schema" not in blob:
             target = run.dir / "baseline" / "extraction_ledger_marker_only_baseline.py"
             target.parent.mkdir(mode=0o700)
             target.write_bytes(blob)
@@ -200,9 +200,12 @@ def case_negative_control(run):
     broken = run.test_child("control-broken", "control", ["--baseline", baseline["path"]])
     restored = run.test_child("control-restored", "unittest", modules_args([TEST_MODULE]))
     failed = set(broken.get("failure_ids", []))
+    errored = set(broken.get("error_ids", []))
     checks = {
         "deciding_regressions_fail_on_marker_only_control": set(DECIDING) <= failed,
-        "deciding_failures_are_assertions_not_errors": broken.get("errors") == 0,
+        # Other tests may crash with sqlite errors on the marker-only control (that is the
+        # round-1 defect); the deciding regressions must fail by assertion, not by error.
+        "deciding_failures_are_assertions_not_errors": not (set(DECIDING) & errored),
         "control_population_nonzero": (broken.get("tests_run") or 0) > 0,
         "control_child_reported": broken.get("mode") == "control" and broken.get("guard_violations") == [],
         "restored_candidate_passes": restored["pass"] is True,

@@ -35,6 +35,17 @@ TABLE_VARIANTS = {
                                   "import_id TEXT NOT NULL);"),
     "schema_checksum_nullable": ("checksum TEXT NOT NULL);", "checksum TEXT);"),
 }
+# Marker-table column corruption of an existing adapter; the stored marker values survive.
+_REBUILD = ("CREATE TABLE fa47_marker(%s); INSERT INTO fa47_marker SELECT %s FROM extraction_adapter_schema;"
+            "DROP TABLE extraction_adapter_schema; ALTER TABLE fa47_marker RENAME TO extraction_adapter_schema;")
+MARKER_COLUMN_VARIANTS = {
+    "checksum_renamed": ("ALTER TABLE extraction_adapter_schema RENAME COLUMN checksum TO stored_checksum;",
+                         (1, "DIGEST")),
+    "version_renamed": ("ALTER TABLE extraction_adapter_schema RENAME COLUMN version TO stored_version;",
+                        (1, "DIGEST")),
+    "checksum_missing": (_REBUILD % ("version INTEGER PRIMARY KEY", "version"), (1,)),
+    "version_missing": (_REBUILD % ("checksum TEXT NOT NULL", "checksum"), ("DIGEST",)),
+}
 
 
 def ensure(con):
@@ -206,6 +217,29 @@ class A2MarkerMatchesButObjectsDiffer(GeneratedStore):
                 self.raw(script)
                 self.assert_refused_unchanged()
 
+    def test_marker_columns_renamed_or_missing_refused(self):
+        # The marker values themselves stay original; only the marker table's columns change.
+        for label, (script, expected) in MARKER_COLUMN_VARIANTS.items():
+            with self.subTest(variant=label):
+                self.setUp()
+                self.ensure_store()
+                self.raw(script)
+                with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)) as con:
+                    kept = [tuple(r) for r in con.execute("SELECT * FROM extraction_adapter_schema")]
+                self.assertEqual(kept, [tuple(v if v != "DIGEST" else sha(SCHEMA.encode()) for v in expected)])
+                for _ in range(2):
+                    self.assert_refused_unchanged()
+
+    def test_missing_marker_table_with_remaining_adapter_objects_refused(self):
+        self.ensure_store()
+        self.raw("DROP TABLE extraction_adapter_schema;")
+        remaining = self.adapter_objects()
+        self.assertNotIn("extraction_adapter_schema", remaining)
+        self.assertIn("extraction_adapter_imports", remaining)
+        for _ in range(3):
+            self.assert_refused_unchanged()
+            self.assertEqual(self.adapter_objects(), remaining)
+
     def test_existing_marker_row_failures_stay_refused(self):
         digest = sha(SCHEMA.encode())
         for script in ("DELETE FROM extraction_adapter_schema;",
@@ -220,14 +254,15 @@ class A2MarkerMatchesButObjectsDiffer(GeneratedStore):
 
 
 class A3BoundaryAndNoRepair(GeneratedStore):
-    def caller_work_survives(self, corrupted):
+    def caller_work_survives(self, corruption):
         self.ensure_store()
-        if corrupted:
-            self.raw("DROP TRIGGER extraction_adapter_pages_delete;")
+        if corruption:
+            self.raw(corruption)
+        before = snapshot(self.database)
         with store.ledger(self.database) as con:
             con.execute("INSERT INTO ledger_meta VALUES('fa47_caller_work','pending')")
             self.assertTrue(con.in_transaction)
-            if corrupted:
+            if corruption:
                 with self.assertRaisesRegex(ExtractionBindingError, MISMATCH):
                     ensure(con)
             else:
@@ -240,12 +275,19 @@ class A3BoundaryAndNoRepair(GeneratedStore):
             con.rollback()
         with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)) as other:
             self.assertIsNone(other.execute("SELECT 1 FROM ledger_meta WHERE key='fa47_caller_work'").fetchone())
+        self.assertEqual(snapshot(self.database), before)
 
     def test_intact_check_neither_commits_nor_discards_caller_work(self):
-        self.caller_work_survives(False)
+        self.caller_work_survives(None)
 
     def test_refused_check_neither_commits_nor_discards_caller_work(self):
-        self.caller_work_survives(True)
+        corruptions = {"missing_trigger": "DROP TRIGGER extraction_adapter_pages_delete;",
+                       "missing_marker_table": "DROP TABLE extraction_adapter_schema;"}
+        corruptions.update((label, script) for label, (script, _) in MARKER_COLUMN_VARIANTS.items())
+        for label, script in corruptions.items():
+            with self.subTest(corruption=label):
+                self.setUp()
+                self.caller_work_survives(script)
 
     def test_detection_is_deterministic_on_reopen_and_never_repairs(self):
         self.ensure_store()
