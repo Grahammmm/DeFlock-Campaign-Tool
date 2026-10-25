@@ -334,7 +334,7 @@ class RecordingResult(unittest.TextTestResult):
 
 def run_suite(suite, report_path):
     result = unittest.TextTestRunner(verbosity=2, resultclass=RecordingResult).run(suite)
-    failed = {t.id() for t, _ in result.failures} | {t.id() for t, _ in result.errors}
+    failed = {getattr(t, 'test_case', t).id() for t, _ in result.failures + result.errors}
     report = {'tests': result.testsRun, 'ids': result.ids, 'subcases': result.subcases,
               'outcomes': {i: ('fail' if i in failed else 'pass') for i in result.ids},
               'skips': [(t.id(), reason) for t, reason in result.skipped],
