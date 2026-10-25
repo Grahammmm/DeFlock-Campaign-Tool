@@ -11,7 +11,12 @@ Phases (each invocation writes a fresh UUID directory under --out-base):
 
 The repository is derived from this file. Manifest and output paths are literal
 CLI arguments. Every child command is a literal argv list with shell disabled.
-Children install a scoped socket guard before any product import.
+Each phase verifies manifest/repo/head/tree/runtime identity first and stops at a
+fail-closed preflight barrier (failure receipt, exit 1) before any product or
+test import, child, scanner or clone; inert in-process controls prove failed
+identity never reaches a phase boundary and valid identity does. Unittest
+children and the standalone test script each install a scoped socket guard
+before any product import.
 Machine-valid output is REVIEW REQUIRED, never semantic, legal, human or live acceptance.
 """
 import argparse
@@ -149,8 +154,16 @@ def git(row, name, args, cwd=REPO):
 def identity(row, manifest_path):
     """Check manifest, repo, runtime and head identity against the staged checkout."""
     global BASE
-    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    runtime = manifest.get("runtime", {})
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        parsed = isinstance(manifest, dict)
+    except (OSError, ValueError) as exc:
+        manifest, parsed = None, str(exc)[:200]
+    row.check("manifest_json_parseable", parsed is True, None if parsed is True else parsed)
+    if not isinstance(manifest, dict):
+        manifest = {}
+    runtime = manifest.get("runtime") if isinstance(manifest.get("runtime"), dict) else {}
+    manifest["runtime"] = runtime
     row.check("manifest_schema", manifest.get("schema") == "agentorange.source-manifest/v1", manifest.get("schema"))
     row.check("manifest_repo_is_this_repo", Path(manifest.get("repo", "")).resolve() == REPO, manifest.get("repo"))
     BASE = str(manifest.get("head", ""))
@@ -182,7 +195,8 @@ def identity(row, manifest_path):
         if rel not in PRODUCT:
             row.check("pinned_read_only_unchanged_" + rel, sha256_file(REPO / rel) == base_pins[rel], rel)
     sources = {rel: sha256_file(REPO / rel) for rel in sorted(set(AUTHORED) | set(PINNED)) if (REPO / rel).is_file()}
-    row.receipt.update({"manifest": str(manifest_path), "manifest_sha256": sha256_file(manifest_path),
+    row.receipt.update({"manifest": str(manifest_path),
+                        "manifest_sha256": sha256_file(manifest_path) if Path(manifest_path).is_file() else None,
                         "base": BASE, "candidate_head": head, "candidate_tree": tree,
                         "fixture_sha256": sha256_file(REPO / FIXTURE) if (REPO / FIXTURE).is_file() else None,
                         "source_sha256": sources, "candidate_commits": [c.split("\x1f")[0] for c in commits],
@@ -191,9 +205,150 @@ def identity(row, manifest_path):
 
 
 def staged_interpreter(row, manifest):
-    venv = Path(manifest["runtime"]["repo_venv"]).resolve()
-    row.check("interpreter_is_staged_repo_venv", Path(sys.prefix).resolve() == venv
+    declared = manifest.get("runtime", {}).get("repo_venv")
+    venv = Path(declared).resolve() if declared else None
+    row.check("interpreter_is_staged_repo_venv", venv is not None and Path(sys.prefix).resolve() == venv
               and Path(sys.executable) == REPO / ".venv" / "bin" / "python3", sys.executable)
+
+
+# ----------------------------------------------------------------- preflight barrier
+class PreflightRefused(Exception):
+    """Raised after a failure receipt is written; carries the phase exit code."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def preflight_gate(row, stage):
+    """Fail closed: any failed identity/runtime/tool check stops the phase here.
+
+    Only read-only git identity commands may run before this point. Nothing past
+    it (product or test import, unittest child, script run, scanner, clone) is
+    reached unless every recorded check passed.
+    """
+    failed = [item["check"] for item in row.checks if not item["pass"]]
+    ok = bool(row.checks) and not failed
+    row.check("preflight_barrier_" + stage, ok, failed)
+    row.receipt["preflight"] = {"stage": stage, "passed": ok, "failed_checks": failed,
+                                "pre_gate_commands": [entry["name"] for entry in row.commands]}
+    if not ok:
+        row.receipt["preflight"]["note"] = ("fail-closed: no product/test import, phase child, "
+                                            "script run, scanner or clone was started")
+        raise PreflightRefused(row.finish())
+
+
+class _BoundaryReached(Exception):
+    pass
+
+
+IDENTITY_COMMANDS = ("git-", "base-blob-")
+_CONTROLS = {"active": False}
+
+
+def _variants(phase):
+    def set_key(key, value):
+        return lambda m: m.__setitem__(key, value)
+
+    def set_runtime(key, value):
+        return lambda m: m.setdefault("runtime", {}).__setitem__(key, value)
+    out = [("valid_positive", None, None),
+           ("malformed_json", "RAW", "manifest_json_parseable"),
+           ("schema", set_key("schema", "agentorange.source-manifest/v0"), "manifest_schema"),
+           ("repo", set_key("repo", "fc11-not-this-repo"), "manifest_repo_is_this_repo"),
+           ("head", set_key("head", "f" * 40), "manifest_head_is_full_commit_in_repo"),
+           ("tree", set_key("tree", "0" * 40), "manifest_tree_is_base_tree"),
+           ("runtime_repo_venv", set_runtime("repo_venv", "fc11-not-the-venv"), "staged_venv_link_is_manifest_venv")]
+    if phase == "credentials":
+        out += [("runtime_credential_python3", set_runtime("credential_scan_python3", "fc11-not-python3"),
+                 "interpreter_is_manifest_credential_scan_python3"),
+                ("runtime_detect_secrets", set_runtime("detect_secrets", "fc11-not-a-scanner"),
+                 "scanner_is_manifest_detect_secrets")]
+    return out
+
+
+def preflight_controls(row, args, phase):
+    """Inert controls: failed identity/runtime never reaches a phase boundary; valid does.
+
+    Each variant reruns this phase in-process against an output-local manifest
+    copy. Every command except the read-only identity git calls, and every
+    unittest child, is replaced by a recorder that raises before anything runs,
+    so no product, test, scanner or clone is executed by a control.
+    """
+    if _CONTROLS["active"]:
+        return
+    import argparse as _argparse
+    import contextlib
+    import copy
+    from unittest.mock import patch
+    saved_base, saved_tmp = BASE, tempfile.tempdir
+    module = sys.modules[__name__]
+    phase_fn = PHASES[phase]
+    real = json.loads(Path(args.source_manifest).read_text(encoding="utf-8"))
+    root = row.dir / "preflight-controls"
+    root.mkdir()
+    results = []
+    original_run = Row.run
+    _CONTROLS["active"] = True
+    try:
+        for name, mutate, expected in _variants(phase):
+            vdir = root / name
+            vdir.mkdir()
+            mpath = vdir / "manifest.json"
+            if mutate == "RAW":
+                mpath.write_text("{fc11 synthetic malformed manifest\n", encoding="utf-8")
+            else:
+                data = copy.deepcopy(real)
+                if mutate is not None:
+                    mutate(data)
+                mpath.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            reached = []
+
+            def guarded_run(self, cname, argv, cwd, timeout=3600, _reached=reached):
+                if cname.startswith(IDENTITY_COMMANDS):
+                    return original_run(self, cname, argv, cwd, timeout)
+                _reached.append(cname)
+                raise _BoundaryReached(cname)
+
+            def guarded_child(crow, cname, names, cwd=REPO, root=REPO, _reached=reached):
+                _reached.append("unittest_child:" + cname)
+                raise _BoundaryReached(cname)
+            outcome, code = None, None
+            log = vdir / "control.stdout"
+            with open(log, "w", encoding="utf-8") as stream, contextlib.redirect_stdout(stream), \
+                    patch.object(Row, "run", guarded_run), patch.object(module, "unittest_child", guarded_child):
+                try:
+                    phase_fn(_argparse.Namespace(source_manifest=str(mpath), out_base=str(vdir / "out")))
+                    outcome = "returned_without_gate_or_boundary"
+                except PreflightRefused as exc:
+                    outcome, code = "preflight_refused", exc.code
+                except _BoundaryReached:
+                    outcome = "boundary_reached"
+            receipts = sorted((vdir / "out").glob("*/receipt.json"))
+            receipt = json.loads(receipts[0].read_text(encoding="utf-8")) if len(receipts) == 1 else {}
+            failed = (receipt.get("preflight") or {}).get("failed_checks", [])
+            if mutate is None:
+                ok = outcome == "boundary_reached" and len(reached) == 1 and receipts == []
+            else:
+                ok = (outcome == "preflight_refused" and code == 1 and reached == []
+                      and receipt.get("pass") is False and expected in failed
+                      and receipt.get("preflight", {}).get("passed") is False)
+            results.append({"variant": name, "expected_failed_check": expected, "outcome": outcome,
+                            "exit": code, "boundaries_reached": list(reached), "failed_checks": failed,
+                            "manifest_sha256": sha256_file(mpath),
+                            "receipt": str(receipts[0]) if receipts else None,
+                            "receipt_sha256": sha256_file(receipts[0]) if receipts else None, "pass": ok})
+            row.check("preflight_control_" + name, ok, results[-1])
+    finally:
+        _CONTROLS["active"] = False
+        globals()["BASE"] = saved_base
+        tempfile.tempdir = saved_tmp
+    row.check("preflight_controls_restored", Row.run is original_run and BASE == saved_base
+              and tempfile.tempdir == saved_tmp and module.unittest_child is unittest_child_impl, None)
+    row.receipt["preflight_controls"] = {
+        "label": "inert: commands other than read-only identity git calls and every unittest child are "
+                 "replaced by recorders that raise before execution",
+        "results": results}
 
 
 def unittest_child(row, name, names, cwd=REPO, root=REPO):
@@ -204,6 +359,9 @@ def unittest_child(row, name, names, cwd=REPO, root=REPO):
     data = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else {}
     entry["result"] = str(result_path)
     return proc, data
+
+
+unittest_child_impl = unittest_child
 
 
 def load_cases():
@@ -402,6 +560,8 @@ def phase_suite(args):
     row = Row("suite", args.out_base)
     manifest, head, _ = identity(row, args.source_manifest)
     staged_interpreter(row, manifest)
+    preflight_gate(row, "identity_runtime")
+    preflight_controls(row, args, "suite")
     cases = load_cases()
     # 1. Original baseline: pinned base product, candidate test + fixture. Must be red for the right reasons.
     clone, overlay = baseline_clone(row, head)
@@ -468,6 +628,8 @@ def phase_compatibility(args):
     row = Row("compatibility", args.out_base)
     manifest, _, _ = identity(row, args.source_manifest)
     staged_interpreter(row, manifest)
+    preflight_gate(row, "identity_runtime")
+    preflight_controls(row, args, "compatibility")
     proc, data = unittest_child(row, "compat-selectors", COMPAT)
     row.check("compat_exit_zero", proc.returncode == 0, proc.returncode)
     row.check("compat_no_failures_or_errors", not data.get("failures") and not data.get("errors"),
@@ -484,6 +646,8 @@ def phase_portable(args):
     row = Row("portable", args.out_base)
     manifest, _, _ = identity(row, args.source_manifest)
     staged_interpreter(row, manifest)
+    preflight_gate(row, "identity_runtime")
+    preflight_controls(row, args, "portable")
     cwd = row.dir / "fresh-cwd-script"
     cwd.mkdir()
     coverage = row.dir / "script-coverage.json"
@@ -497,6 +661,14 @@ def phase_portable(args):
     row.check("script_zero_skipped_failures", script_data.get("skipped") == 0
               and script_data.get("failures") == 0 and script_data.get("errors") == 0, None)
     row.check("script_ran_all_tests", script_data.get("tests_run") == 14, script_data.get("tests_run"))
+    guard = script_data.get("offline_guard") or {}
+    observed = guard.get("import_observations") or []
+    row.check("script_guard_installed_before_product_import", guard.get("installed_before_product_import") is True
+              and guard.get("every_product_lookup_saw_active_guard") is True
+              and bool(observed) and observed[0][0] == "campaign_tool", observed[:3])
+    row.check("script_guard_active_through_run_then_restored", guard.get("active_after_product_import") is True
+              and guard.get("active_after_run") is True and guard.get("restored") is True, None)
+    row.check("script_guard_not_tripped", guard.get("trips") == [], guard.get("trips"))
     dcwd = row.dir / "fresh-cwd-discovery"
     dcwd.mkdir()
     result_path = row.dir / "discovery.result.json"
@@ -540,6 +712,8 @@ def phase_credentials(args):
     scanner = Path(runtime.get("detect_secrets", ""))
     row.check("scanner_is_manifest_detect_secrets", scanner.is_file() and REPO not in scanner.resolve().parents,
               str(scanner))
+    preflight_gate(row, "identity_runtime_tools")
+    preflight_controls(row, args, "credentials")
     proc, entry = row.run("detect-secrets", [scanner, "scan", "--all-files", "--exclude-files", "^.git/",
                                              "--no-verify"], REPO)
     row.check("detect_secrets_exit_zero", proc.returncode == 0, proc.returncode)
@@ -566,6 +740,8 @@ def phase_public_tree(args):
     row = Row("public-tree", args.out_base)
     manifest, head, tree = identity(row, args.source_manifest)
     staged_interpreter(row, manifest)
+    preflight_gate(row, "identity_runtime")
+    preflight_controls(row, args, "public-tree")
     for rel in AUTHORED:
         code, _ = git(row, "ls-files-" + rel.replace("/", "_"), ["ls-files", "--error-unmatch", "--", rel])
         row.check("authored_tracked_" + rel, code == 0, rel)
@@ -652,9 +828,14 @@ def main():
         return child_discovery(args)
     if not args.source_manifest or not args.out_base:
         parser.error("--source-manifest and --out-base are required")
-    phases = {"suite": phase_suite, "compatibility": phase_compatibility, "portable": phase_portable,
-              "credentials": phase_credentials, "public-tree": phase_public_tree}
-    return phases[args.phase](args)
+    try:
+        return PHASES[args.phase](args)
+    except PreflightRefused as exc:
+        return exc.code
+
+
+PHASES = {"suite": phase_suite, "compatibility": phase_compatibility, "portable": phase_portable,
+          "credentials": phase_credentials, "public-tree": phase_public_tree}
 
 
 if __name__ == "__main__":

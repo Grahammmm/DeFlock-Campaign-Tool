@@ -6,9 +6,10 @@ person or source. Machine-valid results are REVIEW REQUIRED, never semantic,
 legal, human or live acceptance.
 
 Script mode (portable row): ``python3 test_fc11_event_offset.py --temp-root DIR
-[--coverage-out FILE]``. Those two arguments are consumed before any product
-import; ordinary unittest discovery imports this module without changing
-sys.path, the environment or tempfile settings.
+[--coverage-out FILE]``. Those two arguments are consumed, and a scoped socket
+guard is installed, before any product import; the guard is restored before
+exit. Ordinary unittest discovery imports this module without changing
+sys.path, the environment, sockets or tempfile settings.
 """
 import copy
 import hashlib
@@ -19,6 +20,7 @@ import unittest
 from unittest.mock import patch
 
 if __name__ == "__main__":
+    import socket
     import tempfile
     import uuid
 
@@ -35,11 +37,46 @@ if __name__ == "__main__":
         _tmp = _TEMP_ROOT / ("tmp-" + uuid.uuid4().hex)
         _tmp.mkdir(parents=True)
         tempfile.tempdir = str(_tmp)
+    # Scoped offline guard for this standalone script process only, installed
+    # before the first product import. Ordinary discovery never runs this block.
+    _GUARD_TRIPS = []
+
+    def _refuse(*args, **kwargs):
+        _GUARD_TRIPS.append(repr(args)[:200])
+        raise OSError("fc11 script mode: network access refused")
+    _GUARDED = [(socket.socket, "connect"), (socket.socket, "connect_ex"), (socket.socket, "bind"),
+                (socket, "create_connection"), (socket, "getaddrinfo")]
+    _GUARD_ORIGINALS = [(owner, name, getattr(owner, name)) for owner, name in _GUARDED]
+    for _owner, _name in _GUARDED:
+        setattr(_owner, _name, _refuse)
+
+    def _guards_active():
+        return all(getattr(owner, name) is _refuse for owner, name in _GUARDED)
+
+    class _ImportOrderProbe:
+        """Inert meta-path seam: records guard state when a product module is first looked up."""
+        seen = []
+
+        def find_spec(self, name, path=None, target=None):
+            if name.split(".")[0] == "campaign_tool":
+                self.seen.append([name, _guards_active()])
+            return None
+    _GUARD_FACTS = {"installed_before_product_import": _guards_active() and not any(
+        name.split(".")[0] == "campaign_tool" for name in sys.modules)}
+    _PROBE = _ImportOrderProbe()
+    sys.meta_path.insert(0, _PROBE)
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from datetime import date, datetime, timedelta, timezone  # noqa: E402
 
 from campaign_tool.records.detectors import core  # noqa: E402
+
+if __name__ == "__main__":
+    sys.meta_path.remove(_PROBE)
+    _GUARD_FACTS.update({"import_observations": list(_PROBE.seen),
+                         "every_product_lookup_saw_active_guard": bool(_PROBE.seen)
+                         and all(active for _, active in _PROBE.seen),
+                         "active_after_product_import": _guards_active()})
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "fc11-event-offset" / "cases.json"
 CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -341,11 +378,17 @@ def case_dimensions():
 
 if __name__ == "__main__":
     _program = unittest.main(argv=_argv, exit=False, verbosity=2)
+    _GUARD_FACTS["active_after_run"] = _guards_active()
+    _GUARD_FACTS["trips"] = list(_GUARD_TRIPS)
+    for _owner, _name, _original in _GUARD_ORIGINALS:
+        setattr(_owner, _name, _original)
+    _GUARD_FACTS["restored"] = all(getattr(owner, name) is original for owner, name, original in _GUARD_ORIGINALS)
     if _COVERAGE_OUT is not None:
         _COVERAGE_OUT.write_text(json.dumps({
             "tests_run": _program.result.testsRun,
             "failures": len(_program.result.failures), "errors": len(_program.result.errors),
             "skipped": len(_program.result.skipped),
             "exercised_case_ids": sorted(EXERCISED), "fixture_case_ids": fixture_case_ids(),
-            "case_dimensions": case_dimensions()}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    sys.exit(0 if _program.result.wasSuccessful() else 1)
+            "case_dimensions": case_dimensions(), "offline_guard": _GUARD_FACTS},
+            indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    sys.exit(0 if _program.result.wasSuccessful() and not _GUARD_TRIPS else 1)
