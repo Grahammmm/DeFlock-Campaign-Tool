@@ -80,13 +80,23 @@ def _text(value, code, maximum=1000):
     return value
 
 
+def _reject_duplicate_members(pairs):
+    """JSON object hook: a repeated member is ambiguous, so neither declaration is chosen."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_member")
+        result[key] = value
+    return result
+
+
 def _header_parent(message):
     """Only root EML header evidence; subject similarity is never a join."""
     raw = message["headers"]
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_HEADER_BYTES:
         return None, "header_projection_invalid"
     try:
-        obj = json.loads(raw)
+        obj = json.loads(raw, object_pairs_hook=_reject_duplicate_members)
         if not isinstance(obj, dict) or obj.get("schema") != "verified-eml-headers-v1":
             return None, "thread_headers_unsupported"
         if obj.get("source_original_sha256") != message["eml_sha256"] or obj.get("parser_defects"):
