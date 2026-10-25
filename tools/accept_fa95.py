@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -266,7 +267,13 @@ def main():
         rows.append(invoke(run, "checker", [runtime["credential_scan_python3"],
                     str(REPO / "tools/check_secret_report.py"), str(report)], context))
         data = json.loads(report.read_text())
-        potential = sum(len(items) for items in data["results"].values())
+        context["raw_scan_hits"] = sum(len(items) for items in data["results"].values())
+        # Only the unchanged checker classifies exact approved provenance pins.
+        # Raw detector hits are not equivalent to potential secrets.
+        checker_text = Path(rows[-1]["stdout_path"]).read_text()
+        summary = re.search(r"^Verified provenance hash hits: ([0-9]+); potential secrets: ([0-9]+); manual privacy review is still required\.$",
+                            checker_text, re.MULTILINE)
+        potential = int(summary[2]) if summary else None
         code = int(any(row["exit"] != 0 for row in rows) or potential != 0)
         context["potential_secrets"] = potential
     else:
