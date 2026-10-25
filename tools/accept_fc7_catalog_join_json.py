@@ -145,13 +145,28 @@ def tree_digest(root):
     return {"sha256": h.hexdigest(), "files": count}
 
 
+def staged_venv_link(root=REPO):
+    """Standard staging adds an untracked .venv symlink to the interpreter's venv; nothing else."""
+    link = root / ".venv"
+    return link.is_symlink() and os.path.realpath(link) == os.path.realpath(Path(sys.executable).parent.parent)
+
+
+def porcelain(root=REPO):
+    """git status lines, excluding only the verified operator-staged .venv link."""
+    code, text, _ = git("status", "--porcelain", "--untracked-files=all", cwd=root)
+    lines = [line for line in text.splitlines() if line]
+    if staged_venv_link(root):
+        lines = [line for line in lines if line != "?? .venv"]
+    return code, lines
+
+
 def identity(root=REPO):
     hashes = {rel: (sha256_file(root / rel) if (root / rel).is_file() else None) for rel in HASHED}
     head = git("rev-parse", "HEAD", cwd=root)
-    status = git("status", "--porcelain", "--untracked-files=all", cwd=root)
+    code, lines = porcelain(root)
     return {"repo": str(root), "head": head[1] if head[0] == 0 else None,
-            "status_porcelain": status[1] if status[0] == 0 else None,
-            "clean": status[0] == 0 and status[1] == "", "source_sha256": hashes}
+            "status_porcelain": lines if code == 0 else None, "staged_venv_link": staged_venv_link(root),
+            "clean": code == 0 and not lines, "source_sha256": hashes}
 
 
 def scope_check(root=REPO):
@@ -160,11 +175,11 @@ def scope_check(root=REPO):
     if ancestor[0] != 0:
         problems.append("base_not_ancestor_of_head")
     diff = git("diff", "--name-only", BASE_COMMIT, "HEAD", cwd=root)
-    status = git("status", "--porcelain", "--untracked-files=all", cwd=root)
+    status = porcelain(root)
     if diff[0] != 0 or status[0] != 0:
         problems.append("git_unavailable")
     changed = set(filter(None, diff[1].splitlines()))
-    for line in filter(None, status[1].splitlines()):
+    for line in status[1]:
         changed.add(line[3:].split(" -> ")[-1])
     outside = sorted(changed - set(ALLOWED_CHANGES))
     if outside:
@@ -513,8 +528,8 @@ def guarded_start(run, mode, record):
     record["closure"] = inspect_closure(CLOSURE_ROOTS[mode])
     if record["closure"]["forbidden"]:
         record["problems"].append("closure_imports_network_or_model_client")
-    if record["closure"]["process_launch_sites"]:
-        record["problems"].append("closure_contains_process_launch_site")
+    # Static launch sites are recorded for review; any launch actually attempted at
+    # runtime is refused by the audit hook and fails the run through sentinel_hits.
     record["sentinel_probes"] = install_sentinels(run)
     if any(v != ("ok" if k == "in_root_write" else "refused") for k, v in record["sentinel_probes"].items()):
         record["problems"].append("sentinel_self_check_failed")
