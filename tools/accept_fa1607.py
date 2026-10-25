@@ -7,7 +7,9 @@ or public-tree. Every invocation creates a fresh exclusive ``<case>-<utc>-<pid>`
 child of DIR (DIR must be absolute, outside this repository and free of symlinked
 ancestors) holding output.txt and result.json: argv, cwd, interpreter, full HEAD,
 tree, base, source/test hashes, selected test IDs, counts, skips, child-process argv
-and exits, and the final exit.
+and exits, and the final exit. Every child process also leaves its exact raw
+stdout/stderr and a per-child receipt under ``children/``; launch, clone, checkout,
+case and sealing failures are recorded as fatal problems and the run is still sealed.
 
 Before any repository module is imported the launcher disables bytecode writes,
 redirects tempfile/TMPDIR/HOME into the run directory and refuses IPv4/IPv6
@@ -45,7 +47,16 @@ BEHAVIOR = [MATRIX + name for name in (
     "test_frame_count_over_limit_refused_before_any_seek_or_load",
     "test_local_pixels_over_limit_refused_before_offending_load",
     "test_cumulative_pixels_over_limit_refused_before_offending_load",
-)] + [NEW + "FA1607SeamHygieneTests.test_setup_and_teardown_restore_real_pil_global_and_open"]
+)] + [NEW + "FA1607SeamHygieneTests.test_setup_and_teardown_restore_real_pil_global_and_open"] + [
+    NEW + "FA1607LauncherEvidenceTests." + name for name in (
+        "test_completed_child_streams_are_retained_byte_for_byte",
+        "test_launch_failure_is_recorded_not_raised",
+        "test_failed_clone_stops_before_checkout",
+        "test_failed_checkout_stops_before_dependent_checks",
+        "test_case_exception_becomes_fatal_problem",
+        "test_main_seals_nonzero_result_when_setup_and_seal_fail",
+        "test_seal_flags_launch_failure_receipt",
+    )]
 COMPATIBILITY = ["tests.records.test_extraction_routes.ReadOutputTests.test_each_image_frame_has_a_locator"]
 CONTROL = [NEW + "FA1607FaultyReaderControlTests.test_faulty_reader_fails_only_cumulative_check"]
 CASES = ("behavior", "compatibility", "negative-control", "isolation", "credential-scan", "public-tree")
@@ -62,13 +73,57 @@ def sha256(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+LAUNCH_FAILED = -1  # returncode sentinel when the child could not be started at all
+
+
 def run_child(argv, cwd, record, env=None):
-    done = subprocess.run(argv, cwd=cwd, capture_output=True, check=False, env=env)
-    record.setdefault("subprocesses", []).append({
-        "argv": [str(a) for a in argv], "cwd": str(cwd), "exit": done.returncode,
-        "stdout_sha256": sha256(done.stdout), "stderr_sha256": sha256(done.stderr),
-        "stdout_bytes": len(done.stdout), "stderr_bytes": len(done.stderr)})
+    """Run one literal-argv child and retain its exact raw streams before returning.
+
+    Each child gets ``children/NN-stdout.bin``, ``NN-stderr.bin`` and ``NN.json``
+    under the checked run directory. A launch failure (missing cwd/program) is
+    recorded with ``exit: null`` and ``launch_error`` and returned with the
+    LAUNCH_FAILED returncode instead of escaping before the run is sealed.
+    """
+    entries = record.setdefault("subprocesses", [])
+    index = len(entries)
+    folder = Path(record["run_directory"]) / "children"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    entry = {"index": index, "argv": [str(a) for a in argv], "cwd": str(cwd)}
+    entries.append(entry)
+    try:
+        done = subprocess.run(argv, cwd=cwd, capture_output=True, check=False, env=env)
+    except OSError as exc:
+        entry.update(exit=None, launch_error="{}: {}".format(type(exc).__name__, exc),
+                     stdout_path=None, stderr_path=None)
+        done = subprocess.CompletedProcess(argv, LAUNCH_FAILED, b"", b"")
+    else:
+        entry["exit"] = done.returncode
+        for label, raw in (("stdout", done.stdout), ("stderr", done.stderr)):
+            path = folder / "{:02d}-{}.bin".format(index, label)
+            path.write_bytes(raw)
+            entry.update({label + "_path": str(path), label + "_sha256": sha256(raw),
+                          label + "_bytes": len(raw)})
+    (folder / "{:02d}.json".format(index)).write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
     return done
+
+
+def child_ok(done):
+    return done.returncode == 0
+
+
+def record_abort(problems, stream, exc, where):
+    """Turn an exception into a truthful fatal problem so the run is still sealed."""
+    import traceback
+    problems.append("aborted:{}:{}:{}".format(where, type(exc).__name__, exc))
+    stream.write("== aborted during {} ==\n".format(where))
+    stream.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+
+
+def run_case(function, problems, stream, *args):
+    try:
+        function(*args)
+    except (Exception, SystemExit) as exc:
+        record_abort(problems, stream, exc, getattr(function, "__name__", "case"))
 
 
 def git(*args, cwd=REPO):
@@ -282,8 +337,15 @@ def scan_checkout(run, name, record, problems):
     """Fresh local no-hardlink clone at the literal HEAD, verified against the candidate."""
     dest = run / name
     head = record["candidate_head"]
-    run_child(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", str(REPO), str(dest)], run, record)
-    run_child(["git", "checkout", "--quiet", "--detach", head], dest, record)
+    clone = run_child(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", str(REPO), str(dest)],
+                      run, record)
+    if not child_ok(clone) or not dest.is_dir():
+        problems.append("scan_checkout_clone_failed:" + name)
+        return None
+    checkout = run_child(["git", "checkout", "--quiet", "--detach", head], dest, record)
+    if not child_ok(checkout):
+        problems.append("scan_checkout_checkout_failed:" + name)
+        return None
     checks = {
         "head": git("rev-parse", "HEAD", cwd=dest).strip() == head,
         "tree": git("rev-parse", "HEAD^{tree}", cwd=dest).strip() == record["candidate_tree"],
@@ -305,7 +367,7 @@ def case_credential_scan(run, record, stream, problems, runtime):
         problems.append("missing_declared_runtime:credential_scan_python3/detect_secrets")
         return
     dest = scan_checkout(run, "scan-checkout", record, problems)
-    if problems:
+    if dest is None or problems:
         return
     report = run / "detect-secrets.json"
     done = run_child([python, scanner, "scan", "--all-files", "--exclude-files", "^.git/", "--no-verify"],
@@ -332,7 +394,7 @@ def case_credential_scan(run, record, stream, problems, runtime):
 def case_public_tree(run, record, stream, problems, runtime):
     base = record["manifest"]["head"]
     dest = scan_checkout(run, "public-tree-checkout", record, problems)
-    if problems:
+    if dest is None or problems:
         return
     python = str(REPO / ".venv" / "bin" / "python3")
     done = run_child([python, str(dest / "tools" / "check_public_tree.py")], dest, record)
@@ -361,6 +423,30 @@ def case_public_tree(run, record, stream, problems, runtime):
         problems.append("diff_check_failed")
 
 
+def seal(run, record, problems, stream, scratch, attempts):
+    """Final checks; any failure here is itself recorded so result.json is always written."""
+    record["network_attempts"] = attempts
+    if attempts:
+        problems.append("network_attempted")
+    try:
+        if scratch is not None and any(scratch.iterdir()):
+            problems.append("temporary_residue")
+        for child in record.get("subprocesses", []):
+            if child["exit"] != 0:
+                problems.append("child_process_failed:" + " ".join(child["argv"][:3]))
+        suites = record.get("suites", [])
+        record["tests_run"] = sum(s["tests_run"] for s in suites)
+        record["skipped"] = sum(len(s["skipped"]) for s in suites)
+        record["status_after"] = git("status", "--porcelain", "--untracked-files=all").splitlines()
+        if record["status_after"] != record.get("status_before"):
+            problems.append("repository_changed_during_acceptance")
+        if hashes() != record.get("source_sha256"):
+            problems.append("source_changed_during_acceptance")
+    except (Exception, SystemExit) as exc:
+        record_abort(problems, stream, exc, "seal")
+    record["problems"] = problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--case", required=True, choices=CASES)
@@ -368,50 +454,33 @@ def main(argv=None):
     args = parser.parse_args(argv)
     _, run = make_run_directory(args.output_root, args.case)
     record = {"case": args.case, "argv": [sys.executable, *sys.argv], "cwd": os.getcwd(),
-              "interpreter": sys.executable, "python": sys.version.split()[0],
-              "candidate_head": git("rev-parse", "HEAD").strip(),
-              "candidate_tree": git("rev-parse", "HEAD^{tree}").strip(),
-              "status_before": git("status", "--porcelain", "--untracked-files=all").splitlines(),
-              "source_sha256": hashes(), "run_directory": str(run),
+              "interpreter": sys.executable, "python": sys.version.split()[0], "run_directory": str(run),
               "full_discovery": "operator-owned (not part of this scoped acceptance)",
               "disposition": "REVIEW REQUIRED - scoped offline acceptance, not full CI or semantic acceptance"}
     problems = []
     stream = io.StringIO()
-    manifest, runtime = load_manifest(record)
-    base = manifest.get("head")
-    if subprocess.run(["git", "merge-base", "--is-ancestor", str(base), "HEAD"], cwd=REPO).returncode != 0:
-        problems.append("head_does_not_descend_from_manifest_base")
-    scratch, attempts = guard(run, record)
+    scratch, attempts, runtime = None, [], {}
+    cases = {"behavior": (case_behavior,), "compatibility": (case_compatibility,),
+             "negative-control": (case_negative_control,), "isolation": (case_isolation, True),
+             "credential-scan": (case_credential_scan, True), "public-tree": (case_public_tree, True)}
+    try:
+        record.update(candidate_head=git("rev-parse", "HEAD").strip(),
+                      candidate_tree=git("rev-parse", "HEAD^{tree}").strip(),
+                      status_before=git("status", "--porcelain", "--untracked-files=all").splitlines(),
+                      source_sha256=hashes())
+        manifest, runtime = load_manifest(record)
+        ancestry = run_child(["git", "merge-base", "--is-ancestor", str(manifest.get("head")), "HEAD"],
+                             REPO, record)
+        if not child_ok(ancestry):
+            problems.append("head_does_not_descend_from_manifest_base")
+        scratch, attempts = guard(run, record)
+    except (Exception, SystemExit) as exc:
+        record_abort(problems, stream, exc, "setup")
     if not problems:
-        if args.case == "behavior":
-            case_behavior(run, record, stream, problems)
-        elif args.case == "compatibility":
-            case_compatibility(run, record, stream, problems)
-        elif args.case == "negative-control":
-            case_negative_control(run, record, stream, problems)
-        elif args.case == "isolation":
-            case_isolation(run, record, stream, problems, runtime)
-        elif args.case == "credential-scan":
-            case_credential_scan(run, record, stream, problems, runtime)
-        else:
-            case_public_tree(run, record, stream, problems, runtime)
-    record["network_attempts"] = attempts
-    if attempts:
-        problems.append("network_attempted")
-    if any(scratch.iterdir()):
-        problems.append("temporary_residue")
-    for child in record.get("subprocesses", []):
-        if child["exit"] != 0:
-            problems.append("child_process_failed:" + " ".join(child["argv"][:3]))
-    suites = record.get("suites", [])
-    record["tests_run"] = sum(s["tests_run"] for s in suites)
-    record["skipped"] = sum(len(s["skipped"]) for s in suites)
-    record["status_after"] = git("status", "--porcelain", "--untracked-files=all").splitlines()
-    if record["status_after"] != record["status_before"]:
-        problems.append("repository_changed_during_acceptance")
-    if hashes() != record["source_sha256"]:
-        problems.append("source_changed_during_acceptance")
-    record["problems"] = problems
+        function, *wants_runtime = cases[args.case]
+        extra = (runtime,) if wants_runtime else ()
+        run_case(function, problems, stream, run, record, stream, problems, *extra)
+    seal(run, record, problems, stream, scratch, attempts)
     code = 1 if problems else 0
     raw = stream.getvalue().encode("utf-8")
     (run / "output.txt").write_bytes(raw)

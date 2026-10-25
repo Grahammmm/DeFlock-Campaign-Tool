@@ -14,8 +14,16 @@ Limits under test (campaign_tool/records/extraction_routes.py ``_image``):
 at most 1000 frames, at most 40000000 pixels per frame, at most 160000000
 pixels summed over frames, each checked before that frame's ``load()``.
 """
+import contextlib
+import hashlib
+import importlib.util
 import io
+import json
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 from PIL import Image as PILImage
 
@@ -267,6 +275,138 @@ POSITIVE_TESTS = (
     "test_exactly_total_pixel_limit_across_safe_frames_is_accepted",
     "test_mixed_frame_dimensions_follow_seek_and_load_after_check",
 )
+
+
+def load_acceptance_helper():
+    """Load tools/accept_fa1607.py by path (not registered in sys.modules)."""
+    path = Path(__file__).resolve().parents[2] / "tools" / "accept_fa1607.py"
+    spec = importlib.util.spec_from_file_location("fa1607_acceptance_helper_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FA1607LauncherEvidenceTests(unittest.TestCase):
+    """Launcher evidence contract with mocked children only; no child process is started."""
+
+    def setUp(self):
+        self.helper = load_acceptance_helper()
+        holder = tempfile.TemporaryDirectory(prefix="fa1607-launcher-")
+        self.addCleanup(holder.cleanup)
+        self.run_dir = Path(holder.name)
+        self.record = {"run_directory": str(self.run_dir), "candidate_head": "fa1607-fictional-head"}
+        self.calls = []
+        self.answers = []
+        patcher = mock.patch.object(self.helper.subprocess, "run", side_effect=self.fake_run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_run(self, argv, **kwargs):
+        self.calls.append((list(argv), kwargs.get("cwd")))
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        if callable(answer):
+            return answer(argv)
+        return subprocess.CompletedProcess(argv, *answer)
+
+    def assert_retained(self, entry, stdout, stderr):
+        for label, raw in (("stdout", stdout), ("stderr", stderr)):
+            path = Path(entry[label + "_path"])
+            self.assertEqual(path.parent, self.run_dir / "children")
+            self.assertEqual(path.read_bytes(), raw)
+            self.assertEqual(entry[label + "_bytes"], len(raw))
+            self.assertEqual(entry[label + "_sha256"], hashlib.sha256(raw).hexdigest())
+        receipt = self.run_dir / "children" / "{:02d}.json".format(entry["index"])
+        self.assertEqual(json.loads(receipt.read_text()), entry)
+
+    def test_completed_child_streams_are_retained_byte_for_byte(self):
+        good = (b"fa1607 fictional stdout\n\x00\xff", b"fa1607 fictional warning\n")
+        bad = (b"fa1607 partial output", b"fa1607 fictional failure detail\n")
+        self.answers = [(0, *good), (7, *bad)]
+        first = self.helper.run_child(["fictional-tool", "ok"], self.run_dir, self.record)
+        second = self.helper.run_child(["fictional-tool", "fail"], self.run_dir, self.record)
+        self.assertEqual((first.returncode, second.returncode), (0, 7))
+        entries = self.record["subprocesses"]
+        self.assertEqual([(e["index"], e["exit"]) for e in entries], [(0, 0), (1, 7)])
+        self.assert_retained(entries[0], *good)
+        self.assert_retained(entries[1], *bad)
+
+    def test_launch_failure_is_recorded_not_raised(self):
+        self.answers = [FileNotFoundError("fa1607 fictional missing cwd")]
+        done = self.helper.run_child(["fictional-tool"], self.run_dir / "absent", self.record)
+        self.assertEqual(done.returncode, self.helper.LAUNCH_FAILED)
+        entry = self.record["subprocesses"][0]
+        self.assertIsNone(entry["exit"])
+        self.assertIn("FileNotFoundError: fa1607 fictional missing cwd", entry["launch_error"])
+        receipt = json.loads((self.run_dir / "children" / "00.json").read_text())
+        self.assertEqual(receipt, entry)
+
+    def test_failed_clone_stops_before_checkout(self):
+        self.answers = [(128, b"", b"fatal: fa1607 fictional clone failure\n")]
+        problems = []
+        dest = self.helper.scan_checkout(self.run_dir, "scan-checkout", self.record, problems)
+        self.assertIsNone(dest)
+        self.assertEqual(problems, ["scan_checkout_clone_failed:scan-checkout"])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][0][:2], ["git", "clone"])
+        self.assert_retained(self.record["subprocesses"][0], b"", b"fatal: fa1607 fictional clone failure\n")
+
+    def test_failed_checkout_stops_before_dependent_checks(self):
+        def clone(argv):
+            Path(argv[-1]).mkdir()
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        self.answers = [clone, (1, b"", b"error: fa1607 fictional checkout failure\n")]
+        problems = []
+        with mock.patch.object(self.helper, "git", side_effect=AssertionError("no dependent git check")):
+            dest = self.helper.scan_checkout(self.run_dir, "public-tree-checkout", self.record, problems)
+        self.assertIsNone(dest)
+        self.assertEqual(problems, ["scan_checkout_checkout_failed:public-tree-checkout"])
+        self.assertEqual([c[0][:2] for c in self.calls], [["git", "clone"], ["git", "checkout"]])
+        self.assertEqual(self.calls[1][1], self.run_dir / "public-tree-checkout")
+        self.assert_retained(self.record["subprocesses"][1], b"", b"error: fa1607 fictional checkout failure\n")
+
+    def test_case_exception_becomes_fatal_problem(self):
+        problems, stream = [], io.StringIO()
+
+        def broken_case():
+            raise RuntimeError("fa1607 fictional case failure")
+
+        def exiting_case():
+            raise SystemExit("fa1607 fictional exit")
+
+        self.helper.run_case(broken_case, problems, stream)
+        self.helper.run_case(exiting_case, problems, stream)
+        self.assertEqual(problems, ["aborted:broken_case:RuntimeError:fa1607 fictional case failure",
+                                    "aborted:exiting_case:SystemExit:fa1607 fictional exit"])
+        self.assertIn("Traceback", stream.getvalue())
+        self.assertIn("fa1607 fictional case failure", stream.getvalue())
+
+    def test_main_seals_nonzero_result_when_setup_and_seal_fail(self):
+        failing_git = mock.patch.object(self.helper, "git", side_effect=SystemExit("git_failed:fa1607 fictional"))
+        fixed_run = mock.patch.object(self.helper, "make_run_directory", return_value=(self.run_dir, self.run_dir))
+        printed = io.StringIO()
+        with failing_git, fixed_run, contextlib.redirect_stdout(printed):
+            code = self.helper.main(["--case", "behavior", "--output-root", str(self.run_dir)])
+        self.assertEqual(code, 1)
+        self.assertEqual(self.calls, [])
+        result = json.loads((self.run_dir / "result.json").read_text())
+        self.assertEqual(result["exit"], 1)
+        self.assertEqual(result["problems"], ["aborted:setup:SystemExit:git_failed:fa1607 fictional",
+                                              "aborted:seal:SystemExit:git_failed:fa1607 fictional"])
+        output = (self.run_dir / "output.txt").read_bytes()
+        self.assertEqual(result["output_sha256"], hashlib.sha256(output).hexdigest())
+        self.assertIn(b"aborted during setup", output)
+
+    def test_seal_flags_launch_failure_receipt(self):
+        problems = []
+        record = {"subprocesses": [{"argv": ["fictional-tool"], "exit": None}],
+                  "status_before": [], "source_sha256": {}}
+        with mock.patch.object(self.helper, "git", return_value=""), \
+                mock.patch.object(self.helper, "hashes", return_value={}):
+            self.helper.seal(self.run_dir, record, problems, io.StringIO(), None, [])
+        self.assertEqual(problems, ["child_process_failed:fictional-tool"])
+        self.assertEqual(record["problems"], problems)
 
 
 if __name__ == "__main__":
