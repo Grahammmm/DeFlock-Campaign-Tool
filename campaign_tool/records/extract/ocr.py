@@ -286,7 +286,8 @@ def _validate_receipt(receipt: dict, identity: dict, directory: Path) -> tuple[s
             or receipt["source"] != {"kind": "preserved_blob", "sha256": identity["source_sha256"]}
             or receipt["locator"] != {"page": identity["page"]}
             or type(receipt["page_count"]) is not int or receipt["page_count"] < identity["page"]
-            or receipt["status"] not in STATES or receipt["review_status"] != "not_reviewed"
+            or type(receipt["status"]) is not str or receipt["status"] not in STATES
+            or receipt["review_status"] != "not_reviewed"
             or receipt["visual_check_status"] != "not_done" or receipt["fidelity_status"] != "not_checked"
             or receipt["confidence_basis"] != "tesseract_word_tsv_mean"
             or type(receipt["visual_check_required"]) is not bool
