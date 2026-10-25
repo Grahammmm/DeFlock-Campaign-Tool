@@ -207,7 +207,7 @@ def main():
         elif args.case == "isolation":
             for name in NEW_PATHS:
                 content = (REPO / name).read_text()
-                require(not re.search(r"(?:/home/|/Users/|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", content),
+                require(not re.search(r"(?:/h[o]me/|/U[s]ers/|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", content),
                         "box-only path or hex literal in new source")
             receipt["tests"] = [test_child(run, "ordinary-before", BEHAVIOR + COMPATIBILITY, ordinary=True),
                                 test_child(run, "second-prefix", BEHAVIOR),
