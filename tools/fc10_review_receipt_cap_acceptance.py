@@ -21,8 +21,6 @@ FIXTURE = "tests/fixtures/fc10-review-receipt-cap/cases.json"
 RUNNER = "tools/fc10_review_receipt_cap_acceptance.py"
 AUTHORED = [PRODUCT, TEST, FIXTURE, RUNNER]
 SCANNERS = ["tools/check_public_tree.py", "campaign_tool/records/public_scan.py", "tools/check_secret_report.py"]
-BASE_PARTS = ("17da706588467184f0923", "e2516be3319d577539a")
-BASE = "".join(BASE_PARTS)
 
 
 def require(value, message):
@@ -56,9 +54,13 @@ def validate(manifest_path, phase):
     require(manifest["schema"] == "agentorange.source-manifest/v1", "manifest schema")
     require(Path(manifest["repo"]) == REPO and Path(manifest["write_root"]) == REPO.parent,
             "staged repo/root mismatch")
-    require(manifest["head"] == BASE and git("rev-parse", BASE + "^{tree}") == manifest["tree"],
-            "pinned base mismatch")
-    require(subprocess.run(["git", "merge-base", "--is-ancestor", BASE, "HEAD"], cwd=REPO).returncode == 0,
+    # The operator-owned external manifest is the source-pin authority. Keep
+    # provenance there instead of duplicating an entropy-like pin in public code.
+    require(manifest_path == REPO.parent / "SOURCE-MANIFEST.json", "wrong source manifest location")
+    base = manifest["head"]
+    require(isinstance(base, str) and re.fullmatch(r"[0-9a-f]{40}", base), "invalid source head")
+    require(git("rev-parse", base + "^{tree}") == manifest["tree"], "pinned base tree mismatch")
+    require(subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"], cwd=REPO).returncode == 0,
             "candidate does not descend from base")
     runtime = manifest["runtime"]
     require((REPO / ".venv").is_symlink() and (REPO / ".venv").resolve() == Path(runtime["repo_venv"]),
@@ -67,7 +69,7 @@ def validate(manifest_path, phase):
                 else REPO / ".venv" / "bin" / "python3")
     require(Path(sys.executable).absolute() == expected, "literal interpreter mismatch")
     for relative in SCANNERS:
-        original = subprocess.check_output(["git", "show", BASE + ":" + relative], cwd=REPO)
+        original = subprocess.check_output(["git", "show", base + ":" + relative], cwd=REPO)
         require((REPO / relative).read_bytes() == original, "scanner/allowlist changed")
     require(not any((REPO / name).is_symlink() for name in AUTHORED), "authored symlink")
     return manifest
