@@ -1,0 +1,5 @@
+Agency,Request ID,Request Scope,Date Sent,Request Received Date,Determination Date,Determination Due,Production Date,Records Received,Withheld,Missing,Extension,Status
+Fable Bay Police,FB-01,ALPR retention policy,2030-01-01,,,,2030-01-05,One policy PDF,None,Sharing list,No,partial
+Fable Bay Police,FB-02,Audit logs,2030-01-01,,,,,,,,Yes,open
+Juniper County Sheriff,FB-01,Training rosters,2030-01-01,,2030-01-06,,2030-01-08,Training roster CSV,None,None,No,complete
+Quartz Town Clerk,QT-09,Vendor contract,2030-01-01,,,,,,,,,open

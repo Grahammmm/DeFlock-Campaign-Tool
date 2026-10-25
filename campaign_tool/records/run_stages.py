@@ -907,6 +907,8 @@ def stage_outputs(args):
     old = os.umask(0o077)
     try:
         directory.mkdir(mode=0o700, exist_ok=True)
+        from .outcomes.register import write_for_run
+        write_for_run(args.project, args.run_id)
         name = "".join(ch for ch in args.run_id if ch.isalnum() or ch in "-_.") or "run"
         target = directory / f"{name}.json"
         temporary = directory / f".{name}.json.tmp"
