@@ -190,6 +190,16 @@ class DigestVersionTests(unittest.TestCase):
         self.coverage.append("negative_control_killed")
         self.assertIs(self.schema.DIGEST_SCHEMA, declared)
         restored = self.nested()
+        # Retained per-run observation (row-local tempdir under the runner); never cleaned up.
+        save(Path(tempfile.mkdtemp(prefix="fc10-control-")) / "control-observation.json", {
+            "label": "INJECTED_CONTROL_INFORMATIONAL",
+            "control_declaration": control["properties"]["schema_version"],
+            "candidate_declaration": declared["properties"]["schema_version"],
+            "mutant": {"tests_run": mutant.testsRun, "killed_case_ids": killed,
+                       "failure_messages": [text.strip().splitlines()[-1] for _t, text in mutant.failures],
+                       "errors": len(mutant.errors)},
+            "restored": {"tests_run": restored.testsRun, "failures": len(restored.failures),
+                         "errors": len(restored.errors), "skipped": len(restored.skipped)}})
         self.assertEqual((restored.failures, restored.errors, restored.skipped), ([], [], []))
         self.assertEqual(restored.testsRun, len(CASE_TESTS))
         self.coverage.append("negative_control_restored")

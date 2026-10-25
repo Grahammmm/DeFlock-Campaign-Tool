@@ -144,7 +144,13 @@ def suite(e, candidate):
     summary = json.loads((e.output / "suite-summary.json").read_text())
     require(code == 0, "suite_requirements_failed")
     require(summary["skipped"] == 0 and not summary["missing_dimensions"], "suite_required_coverage")
-    return {"summary": summary, "product_delta": delta}
+    controls = sorted((e.output / "temporary").glob("fc10-control-*/control-observation.json"))
+    require(len(controls) == 1, "single_control_observation")
+    control = json.loads(controls[0].read_text())
+    require(control["mutant"]["killed_case_ids"] == ["bool_true", "float_one"] and control["mutant"]["errors"] == 0
+            and control["restored"]["failures"] == 0, "control_observation_shape")
+    return {"summary": summary, "product_delta": delta, "control_observation": {
+        "path": str(controls[0]), "sha256": sha(controls[0].read_bytes()), "content": control}}
 
 
 def compatibility(e):
