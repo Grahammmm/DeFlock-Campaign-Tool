@@ -85,7 +85,18 @@ def validate_bundle(value):
         need(u==expected,"unit_binding_mismatch");need(u["unit_id"] not in ids,"duplicate_unit");ids.add(u["unit_id"])
         key=(subject,u["receipt_sha256"]);bound[key]=bound.get(key,0)+1
     _check_receipt_counts(receipts,bound)
+    _check_receipt_positions(receipts,value["units"])
     return value
+
+def _check_receipt_positions(receipts,units):
+    """Sparse positions are legitimate, but must be unique and within their receipt."""
+    seen={}
+    for u in units:
+        key=(u["original_sha256"],u["receipt_sha256"]);ordinal=u["ordinal"]
+        positions=seen.setdefault(key,set())
+        need(ordinal not in positions,"receipt_ordinal_duplicate")
+        need(ordinal<=receipts[key]["declared_unit_count"],"receipt_ordinal_out_of_range")
+        positions.add(ordinal)
 RECEIPT_COUNT_CODES=("receipt_count_missing","receipt_count_type","receipt_count_negative","receipt_count_exceeds_declared","receipt_count_mismatch")
 def _check_receipt_counts(receipts,bound):
     """Count conservation per original/receipt pair; numerical consistency is not completeness."""
