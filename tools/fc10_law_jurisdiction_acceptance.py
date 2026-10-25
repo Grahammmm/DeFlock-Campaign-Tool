@@ -520,7 +520,8 @@ def phase_public_tree(run, prelim, manifest):
     worktree_clean = git(["diff", "--quiet"])[0] == 0
     venv = REPO / ".venv"
     venv_ok = venv.is_symlink() and os.readlink(venv) == runtime["repo_venv"]
-    source_ok = (status == "?? .venv" and visible_untracked == [".venv"] and venv_ok
+    # Only the verified standard .venv link may be untracked (git may also ignore it).
+    source_ok = (status in ("", "?? .venv") and visible_untracked in ([], [".venv"]) and venv_ok
                  and all(authored_tracked.values()) and index_clean and worktree_clean)
     inventory = {"head": head, "tree": tree, "status": status, "scan_visible_untracked": visible_untracked,
                  "authored_tracked": authored_tracked, "index_matches_head": index_clean,
