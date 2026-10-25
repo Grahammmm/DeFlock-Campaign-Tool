@@ -1,0 +1,18 @@
+{
+  "schema": "fc10-review-receipt-cap/v1",
+  "limit": 256,
+  "directories": ["reviews", "owners"],
+  "cases": [
+    "reviews_at_255_256_257",
+    "owners_at_255_256_257",
+    "exact_replay_at_capacity",
+    "unique_refusal_preserves_names_hashes_and_assessment",
+    "separate_directories_not_combined",
+    "abandoned_staging_not_counted",
+    "invalid_inventory_refused",
+    "existing_overfull_stays_refused"
+  ],
+  "negative_control": "bypass_only_append_capacity_preflight",
+  "authority": "synthetic_test_only",
+  "limits": "Offline fixtures; no semantic, legal, human, live or publication acceptance."
+}

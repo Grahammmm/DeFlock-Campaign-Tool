@@ -380,6 +380,24 @@ def review_target(root, bundle_id, *, authority):
                 "checked_public_artifacts": finding["public_artifacts"]}
 
 
+def _append_capacity(directory):
+    """Match the reader's inventory grammar before allocating a new receipt.
+
+    Call under the existing root lock, after the exact-replay check. Abandoned
+    staging directories are not committed history and do not consume capacity.
+    """
+    count = 0
+    with os.scandir(directory) as paths:
+        for path in paths:
+            if path.name.startswith(".receipt-"):
+                require(path.is_dir(follow_symlinks=False), "invalid_receipt_staging")
+                continue
+            require(count < MAX_ITEMS and path.name.endswith(".json")
+                    and gate.valid_hash(path.name[:-5]), "receipt_inventory")
+            count += 1
+    require(count < MAX_ITEMS, "receipt_inventory")
+
+
 def _append(directory, envelope):
     raw = encoded(envelope)
     name = sha(raw) + ".json"
@@ -388,6 +406,7 @@ def _append(directory, envelope):
     if target.exists() or target.is_symlink():
         require(_read(target) == raw, "receipt_replay_conflict")
         return name[:-5], True
+    _append_capacity(directory)
     # Under the root lock, a fsynced temporary and rename expose only a full receipt.
     with tempfile.TemporaryDirectory(prefix=".receipt-", dir=directory) as temporary:
         staged = Path(temporary) / "receipt.json"
