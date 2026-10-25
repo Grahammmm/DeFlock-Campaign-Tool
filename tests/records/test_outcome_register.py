@@ -6,7 +6,7 @@ Local run residue stays under .git; no retained evidence is deleted by tests.
 import contextlib
 import copy
 import csv
-from datetime import timedelta
+from datetime import date, timedelta
 import io
 import json
 import os
@@ -102,11 +102,33 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(clock["state"], "running")
         self.assertEqual(self.report()["requests"][1]["next_action"], "wait")
 
+    def test_weekend_last_days_roll_to_monday_for_both_periods(self):
+        # Literal dates are independent expectations: Jan 12/26 are Saturdays,
+        # Jan 13/27 are Sundays; Jan 14/28 are Mondays.
+        for start in ("2030-01-02", "2030-01-03"):
+            for extension, due in (("No", "2030-01-14"), ("Yes", "2030-01-28")):
+                for offset, state, action in ((-1, "running", "wait"),
+                                              (0, "due_today", "follow up"),
+                                              (1, "past_due_reminder", "follow up")):
+                    with self.subTest(start=start, extension=extension, offset=offset):
+                        day = date.fromisoformat(due) + timedelta(days=offset)
+                        source = data()
+                        source["requests"] = [request(submitted_at=start)]
+                        tracker = [{"agency": "a1", "request_id": "FB-01", "asked": "Audit logs",
+                                    "extension": extension, "source": {"file": "synthetic.csv", "row": 2}}]
+                        row = register.build_register(source, tracker, as_of=day.isoformat())["requests"][0]
+                        self.assertEqual(row["deadline"]["base_due"], "2030-01-14")
+                        self.assertEqual(row["deadline"]["extended_due"], "2030-01-28")
+                        self.assertEqual(row["deadline"]["due"], due)
+                        self.assertEqual(row["deadline"]["state"], state)
+                        self.assertEqual(row["next_action"], action)
+                        self.assertEqual(row["issues"], [])
+
     def test_receipt_not_send_proxy_and_no_production_deadline(self):
         issues = []
         clock = register.deadline({"received_at": "2030-01-03", "submitted_at": "2030-01-01",
                                    "production_at": "2030-01-05"}, register._day(TODAY), issues)
-        self.assertEqual(clock["due"], "2030-01-13")
+        self.assertEqual(clock["due"], "2030-01-14")
         self.assertEqual(clock["basis"], "recorded_receipt")
         self.assertTrue(clock["running"], "production alone never proves determination")
         determined = register.deadline({"submitted_at": "2030-01-01", "determination_at": "2030-01-10"},
@@ -269,6 +291,69 @@ class RegisterIntegrationTests(unittest.TestCase):
         self.assertEqual(snapshot["mail_messages"], 0)
         self.assertEqual(self.ledger.read_bytes(), before)
         self.assertEqual(set(self.processing.iterdir()), entries)
+
+    def test_bad_tracker_warns_without_suppressing_existing_snapshot(self):
+        for index, text in enumerate((
+                "Agency,Request ID,Status,Request Status\nSecret Agency,S-01,open,open\n",
+                "Agency,Request ID\nSecret Agency,S-01,extra\n",
+                "Agency,Request ID\nSecret Agency\n",
+                "Agency,Agency,Request ID\nSecret Agency,A,S-01\n",
+                "Agency,Request ID\n\"unclosed",
+                "Agency,Request ID\nSecret Agency,\xff\n")):
+            with self.subTest(index=index):
+                self.tracker.write_bytes(text.encode("latin-1"))
+                self.assert_register_warning(f"bad-tracker-{index}")
+
+    def assert_register_warning(self, run_id):
+        before = self.ledger.read_bytes()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = run_stages.main(["outputs", "--project", str(self.project), "--run-id", run_id])
+        line = json.loads(out.getvalue())
+        snapshot_path = self.project / "run-outputs" / f"{run_id}.json"
+        self.assertTrue(snapshot_path.is_file(), "register errors must not suppress the counts snapshot")
+        self.assertEqual(json.loads(snapshot_path.read_text()), {
+            "snapshot_version": 1, "run_id": run_id, "stage_state": {},
+            "mail_messages": 0, "originals": 0, "portal_items": 0, "portal_refusals": 0})
+        self.assertEqual(stat.S_IMODE(snapshot_path.stat().st_mode), 0o600)
+        self.assertEqual(code, 0)
+        self.assertEqual(line["status"], "warn")
+        self.assertEqual(line["error_code"], "OUTPUTS_REGISTER_UNAVAILABLE")
+        self.assertEqual(line["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 0})
+        self.assertNotIn("Secret", out.getvalue())
+        self.assertNotIn(str(self.project), out.getvalue())
+        self.assertFalse((self.project / "run-outputs" / run_id).exists())
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_register_read_write_and_unexpected_errors_are_isolated(self):
+        for index, error in enumerate((PermissionError("Secret source path"),
+                                       ValueError("Secret malformed data"),
+                                       RuntimeError("Secret unexpected failure"))):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(register, "read_tracker", side_effect=error):
+                    self.assert_register_warning(f"read-error-{index}")
+        with mock.patch.object(register.os, "rename", side_effect=OSError("Secret output path")):
+            self.assert_register_warning("write-error")
+
+    def test_register_timeout_preserves_snapshot_but_keeps_timeout_failure(self):
+        out = io.StringIO()
+        with mock.patch.object(register, "write_for_run", side_effect=run_stages.StageTimeout):
+            with contextlib.redirect_stdout(out):
+                code = run_stages.main(["outputs", "--project", str(self.project), "--run-id", "timeout"])
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out.getvalue())["error_code"], "STAGE_CONTAINER_TIMEOUT")
+        self.assertTrue((self.project / "run-outputs" / "timeout.json").is_file())
+
+    def test_snapshot_write_failure_keeps_original_code_and_skips_register(self):
+        out = io.StringIO()
+        with mock.patch.object(run_stages.os, "replace", side_effect=OSError("Secret snapshot failure")):
+            with mock.patch.object(register, "write_for_run") as write_register:
+                with contextlib.redirect_stdout(out):
+                    code = run_stages.main(["outputs", "--project", str(self.project), "--run-id", "snapshot-failure"])
+                write_register.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out.getvalue())["error_code"], "OUTPUTS_WRITE_FAILED")
+        self.assertNotIn("Secret", out.getvalue())
 
     def test_missing_tracker_and_count_only_legacy_schema_are_explicit(self):
         missing, gaps = register.read_tracker(self.project / "absent.csv")

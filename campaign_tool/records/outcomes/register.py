@@ -44,7 +44,7 @@ COLUMNS = {
 LIMITS = [
     "Private; REVIEW REQUIRED. Recorded assertions are not semantic or legal acceptance.",
     "Gov. Code 7922.535: provisional determination reminder, not a production deadline.",
-    "10 calendar days from recorded receipt (otherwise submission proxy); an explicitly recorded extension adds 14 days. Receipt, holiday rules and lawful written extension require human verification.",
+    "10 calendar days from recorded receipt (otherwise submission proxy); an explicitly recorded extension adds 14 days. Weekend last days roll forward to Monday (CCP 12a/12b). Receipt, holiday rules and lawful written extension require human verification.",
     "Mail/attachments prove recorded delivery only, not what responsive records were fulfilled. Unknown scope, withholding and missing items remain unknown.",
 ]
 
@@ -136,7 +136,12 @@ def read_ledger(path):
     return data, gaps
 
 
+def _roll_weekend(day):
+    return day + timedelta(days=7 - day.weekday()) if day.weekday() >= 5 else day
+
+
 def deadline(row, today, issues):
+    """Running means a clock started with no recorded determination, even if overdue."""
     start = _day(row.get("received_at")) or _day(row.get("submitted_at"))
     determination = _day(row.get("determination_at"))
     extension_text = _text(row.get("extension")).casefold()
@@ -151,8 +156,8 @@ def deadline(row, today, issues):
     if determination and (determination > today or (start and determination < start)):
         issues.append("determination_date_inconsistent")
         determination = None
-    base = start + timedelta(days=10) if start else None
-    maximum = start + timedelta(days=24) if start else None
+    base = _roll_weekend(start + timedelta(days=10)) if start else None
+    maximum = _roll_weekend(start + timedelta(days=24)) if start else None
     computed = maximum if extension else base
     recorded = _day(row.get("determination_due_at"))
     # Keep the recorded date visible; do not silently treat a longer date as a lawful extension.

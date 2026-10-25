@@ -907,8 +907,6 @@ def stage_outputs(args):
     old = os.umask(0o077)
     try:
         directory.mkdir(mode=0o700, exist_ok=True)
-        from .outcomes.register import write_for_run
-        write_for_run(args.project, args.run_id)
         name = "".join(ch for ch in args.run_id if ch.isalnum() or ch in "-_.") or "run"
         target = directory / f"{name}.json"
         temporary = directory / f".{name}.json.tmp"
@@ -918,6 +916,14 @@ def stage_outputs(args):
         return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
     finally:
         os.umask(old)
+    # The additive register must never suppress the existing counts snapshot.
+    try:
+        from .outcomes.register import write_for_run
+        write_for_run(args.project, args.run_id)
+    except StageTimeout:
+        raise  # Preserve the run's hard deadline, not a recoverable register warning.
+    except Exception:  # noqa: BLE001 - isolate register errors; never expose private exception text
+        return result("warn", {"input": 1, "output": 1}, "OUTPUTS_REGISTER_UNAVAILABLE"), 0
     return result("ok", {"input": 1, "output": 1}), 0
 
 
