@@ -8,8 +8,10 @@ import importlib
 import json
 import os
 import re
+import sqlite3
 import stat
 import tempfile
+from contextlib import closing
 from datetime import datetime,timezone
 from pathlib import Path
 from . import extraction_routes as routes
@@ -157,15 +159,35 @@ def store_blob(root,raw):
     return digest,str(target)
 
 
+def _verify_adapter_schema(con):
+    """Adapter-owned objects must equal SCHEMA itself, not merely carry its marker.
+
+    The reference is built from SCHEMA in a private in-memory database; no other
+    database is read. Only names declared by SCHEMA are compared, so unrelated WP1
+    objects are ignored. Read-only: nothing is repaired, committed or rolled back.
+    """
+    with closing(sqlite3.connect(":memory:")) as reference:
+        reference.executescript(SCHEMA)
+        expected=sorted(tuple(r) for r in reference.execute("SELECT type,name,tbl_name,sql FROM sqlite_master"))
+    names=[row[1] for row in expected]
+    actual=sorted(tuple(r) for r in con.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name IN (%s)"%",".join("?"*len(names)),names))
+    if actual!=expected:raise ExtractionBindingError("adapter_schema_mismatch")
+
+
 def ensure_schema(con):
     found=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extraction_adapter_schema'").fetchone()
     digest=sha(SCHEMA.encode())
     if not found:
         con.executescript("BEGIN IMMEDIATE;\n"+SCHEMA)
-        con.execute("INSERT INTO extraction_adapter_schema VALUES(?,?)",(1,digest));con.commit()
+        con.execute("INSERT INTO extraction_adapter_schema VALUES(?,?)",(1,digest))
+        try:_verify_adapter_schema(con)
+        except ExtractionBindingError:con.rollback();raise
+        con.commit()
     else:
         rows=con.execute("SELECT version,checksum FROM extraction_adapter_schema").fetchall()
         if len(rows)!=1 or tuple(rows[0])!=(1,digest):raise ExtractionBindingError("adapter_schema_mismatch")
+        _verify_adapter_schema(con)
 
 
 def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
