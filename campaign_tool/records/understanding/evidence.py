@@ -75,11 +75,14 @@ def validate_bundle(value):
     receipts={}
     for r in value["source_receipts"]:
         need(type(r)is dict and is_hash(r.get("original_sha256")) and is_hash(r.get("receipt_sha256")),"receipt_binding")
+        need(type(r.get("attempt_kind"))is str and r["attempt_kind"].strip()!="","receipt_attempt_kind_invalid")
         key=(r["original_sha256"],r["receipt_sha256"]);need(key not in receipts,"duplicate_receipt");receipts[key]=r
     ids=set();bound={}
     for u in value["units"]:
         need(type(u)is dict and u.get("authority_basis")=="receipt_bound_derivative_not_canonical","unit_authority")
         subject=u.get("original_sha256");need(subject in value["source_context"] and (subject,u.get("receipt_sha256")) in receipts,"unit_receipt_missing")
+        need(type(u.get("attempt_kind"))is str and u["attempt_kind"].strip()!="","unit_attempt_kind_invalid")
+        need(u["attempt_kind"]==receipts[(subject,u["receipt_sha256"])]["attempt_kind"],"receipt_attempt_kind_mismatch")
         raw={k:u.get(k) for k in ("kind","locator","text","data")}
         expected=unit(raw,subject,u["receipt_sha256"],u.get("ordinal"),u.get("attempt_kind"))
         need(u==expected,"unit_binding_mismatch");need(u["unit_id"] not in ids,"duplicate_unit");ids.add(u["unit_id"])
