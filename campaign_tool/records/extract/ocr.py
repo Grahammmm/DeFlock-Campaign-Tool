@@ -181,7 +181,9 @@ def _publish_directory(source: Path, destination: Path) -> bool:
 def _confidence(tsv: str) -> float | None:
     values = []
     for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
-        if not row.get("text", "").strip():
+        # A truncated row has no text cell (None); it is unusable evidence, like empty text.
+        text = row.get("text")
+        if not isinstance(text, str) or not text.strip():
             continue
         try:
             value = float(row["conf"])
