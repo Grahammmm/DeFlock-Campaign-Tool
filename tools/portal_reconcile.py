@@ -54,6 +54,7 @@ network connection, database, mailbox, ledger, allowlist or queue store.
 Exit 0 means the report was produced; it is not acceptance of the counts.
 """
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -123,12 +124,63 @@ class InputError(Exception):
     """Fatal input problem; the message is a fixed code, never input text."""
 
 
-def read_json(path, schema, list_key):
-    """Read one bounded regular JSON file; refuse symlinks and FIFOs."""
+# Directory components are opened without following them. O_PATH needs only
+# search permission and never blocks on a FIFO; O_NONBLOCK covers platforms
+# without it.
+_DIR_FLAGS = (getattr(os, "O_PATH", os.O_RDONLY | os.O_NONBLOCK) | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _open_child_dir(parent_fd, name):
+    """Open one existing directory entry of parent_fd; refuse symlinks."""
+    fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.ENOTDIR, "path_component_not_directory")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_parent(path):
+    """Return (dir_fd, leaf) for path's parent, reached without any alias.
+
+    Every existing directory component is opened relative to the previous
+    descriptor with O_NOFOLLOW, so a symlinked ancestor is refused rather than
+    resolved and later renames cannot redirect the operation. Explicit ".."
+    is refused; empty and "." components (a "./" prefix, "a//b") are skipped.
+    Missing parents are never created. Raises OSError with a fixed message.
+    """
+    text = os.fsdecode(path)
+    parts = text.split("/")
+    leaf = parts.pop()
+    components = [part for part in parts if part not in ("", ".")]
+    if not text or "\0" in text or leaf in ("", ".", "..") or ".." in components:
+        raise OSError(errno.EINVAL, "path_refused")
+    fd = os.open("/" if text.startswith("/") else ".", _DIR_FLAGS)
+    try:
+        for name in components:
+            child = _open_child_dir(fd, name)
+            os.close(fd)
+            fd = child
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, leaf
+
+
+def read_json(path, schema, list_key):
+    """Read one bounded regular JSON file; refuse symlinks (any component) and FIFOs."""
+    try:
+        parent_fd, leaf = _open_parent(path)
     except OSError:
         raise InputError("input_unreadable") from None
+    try:
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    except OSError:
+        raise InputError("input_unreadable") from None
+    finally:
+        os.close(parent_fd)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -419,8 +471,12 @@ def render(report):
 
 
 def write_new(path, text):
-    """Create a new 0600 file; never overwrite or follow a symlink."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    """Create a new 0600 file; never overwrite or follow a symlink (any component)."""
+    parent_fd, leaf = _open_parent(path)
+    try:
+        fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
     with os.fdopen(fd, "w", encoding="ascii") as handle:
         handle.write(text)
         handle.flush()
