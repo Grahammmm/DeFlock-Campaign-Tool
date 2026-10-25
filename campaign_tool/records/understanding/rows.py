@@ -19,6 +19,7 @@ from ..detectors.pipeline import KNOWN_TYPES, NORMALIZED_SCHEMA, _sources
 VERSION = "explicit-csv-text-rows-v1"
 MAPPING_SCHEMA = "agency-row-mapping-v1"
 TEXT_KINDS = {"text_line", "pdf_page"}
+PAGE_OK = "ok"
 FIELD_NAMES = frozenset({
     "user_id", "purpose", "training_completed_at", "access_enabled",
     "recipient_level", "recipient_jurisdiction", "retention_mode", "retention_days",
@@ -137,6 +138,14 @@ def _values(unit, mapping):
     return parsed[0]
 
 
+def _page_clear(page):
+    # Producer page vocabulary (extraction_routes.page_manifest): only "ok" is clear;
+    # a present needs_visual_review must be exactly False. Unknown stays not clear.
+    if not (type(page.get("status")) is str and page["status"] == PAGE_OK):
+        return False
+    return "needs_visual_review" not in page or page["needs_visual_review"] is False
+
+
 def _normalize(*, run_id, receipts, source_bindings, mappings):
     """Return existing normalized/source-bindings shapes plus separate diagnostics.
 
@@ -144,6 +153,8 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
     Expected hashes and mappings are producer/owner inputs, not self-attestations.
     No authoritative inventory is generated from the worker's emitted units.
     Incomplete/unknown/conflicting inputs keep complete=false for all consumers.
+    Explicit page entries must be objects; any page not "ok", or whose present
+    needs_visual_review is not exactly False, keeps complete=false (rows kept).
     Integrity failures raise RowsError and yield no partially accepted output.
     """
     require(type(run_id) is str and 0 < len(run_id.strip()) <= 256, "run_id_required")
@@ -188,6 +199,11 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
         require(len(units) + len(receipt["units"]) <= MAX_UNITS, "unit_count_bound")
         if receipt["status"] != "complete" or receipt["issues"]:
             upstream.append({"artifact_sha256": subject, "reason": "upstream_not_clear"})
+        for page in receipt["pages"]:
+            require(type(page) is dict, "receipt_page_shape")
+        # Explicit page states only; an empty list proves nothing and infers nothing.
+        if not all(_page_clear(page) for page in receipt["pages"]):
+            upstream.append({"artifact_sha256": subject, "reason": "upstream_pages_not_clear"})
         for ordinal, raw_unit in enumerate(receipt["units"], 1):
             try:
                 unit = evidence.unit(raw_unit, subject, expected, ordinal)
