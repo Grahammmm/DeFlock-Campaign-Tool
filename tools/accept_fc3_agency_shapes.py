@@ -58,7 +58,7 @@ CHECKS = ("focused", "compatibility", "negative", "portability", "credentials", 
 PRODUCTION = "campaign_tool/records/agency_reconciliation.py"
 FOCUSED_PATH = "tests/records/test_fc3_agency_shapes.py"
 RUNNER_PATH = "tools/accept_fc3_agency_shapes.py"
-SECRET_CHECKER = "tools/check_secret_report.py"
+REPORT_CHECKER = "tools/check_secret_report.py"
 ALLOWED_CHANGES = (PRODUCTION, FOCUSED_PATH, RUNNER_PATH)
 FOCUSED_MODULE = "tests.records.test_fc3_agency_shapes"
 COMPAT_SELECTORS = (
@@ -78,7 +78,7 @@ HASHED_SOURCES = ALLOWED_CHANGES + (
     "tests/records/test_agency_reconciliation_io.py",
     "tests/test_secret_report.py",
     "tests/test_public_tree.py",
-    SECRET_CHECKER,
+    REPORT_CHECKER,
     "tools/check_public_tree.py",
 )
 APPLICATION_ROOTS = ("campaign_tool", "tests", "tools")
@@ -230,7 +230,7 @@ class Guard:
         self.repo_root = Path(repo_root).resolve()
         self.isolated = isolated
         self.temp_root = Path(temp_root).resolve()
-        self.allowed_script = self.repo_root / SECRET_CHECKER
+        self.allowed_script = self.repo_root / REPORT_CHECKER
         self.hits = []
         self.allowed_children = []
         self.temp_dirs = []
@@ -777,7 +777,7 @@ def parent_state(parent):
 def refusal_table():
     """Inert parent-side regression of the pure child-specification check (nothing runs)."""
     temp = Path("/") / "fc3-runner-temp-root"
-    interpreter, checker = "/fc3/interpreter", "/fc3/repo/" + SECRET_CHECKER
+    interpreter, checker = "/fc3/interpreter", "/fc3/repo/" + REPORT_CHECKER
     allowed = ([interpreter, checker, str(temp / "case" / "report.json")], (), {})
     refused = {
         "positional_popen_options": ([interpreter, checker, str(temp / "r.json")], (0,), {}),
@@ -860,7 +860,7 @@ def verify_guard_report(label, spec, report):
     if any(not d.get("under_temp_root") for d in report.get("temp_dirs_created") or []):
         problems.append("temporary_directory_escaped_run_root" + tag)
     for argv in report.get("allowed_children") or []:
-        if child_spec_refusal(argv, (), {}, report.get("interpreter"), Path(spec["repo_root"]) / SECRET_CHECKER,
+        if child_spec_refusal(argv, (), {}, report.get("interpreter"), Path(spec["repo_root"]) / REPORT_CHECKER,
                               temp_root):
             problems.append("unexpected_child_recorded_as_allowed" + tag)
     if report.get("modules_outside_root") or not report.get("loaded_application_modules"):
@@ -1085,7 +1085,7 @@ def check_credentials(run_dir, result):
     except (OSError, ValueError, AttributeError):
         return problems + ["secret_report_malformed"]
     checker = run_child(run_dir, "check-secret-report",
-                        [sys.executable, "-B", REPO / SECRET_CHECKER, report], REPO, env=env)
+                        [sys.executable, "-B", REPO / REPORT_CHECKER, report], REPO, env=env)
     result["children"].append(checker)
     text = Path(checker["stdout_path"]).read_text(errors="replace") if "stdout_path" in checker else ""
     match = re.search(r"potential secrets: (\d+);", text)
