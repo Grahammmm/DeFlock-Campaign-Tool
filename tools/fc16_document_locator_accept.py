@@ -18,6 +18,14 @@ Exactly one --phase per invocation:
   public-tree    local exact committed-tree clone checked by the unchanged
                  tools/check_public_tree.py, plus one in-place informational run
 
+Every child that imports product or test code (baseline, compatibility, script
+and discovery) is this same file re-entered in a guarded mode: the scoped
+offline sentinels and the temporary-root redirect are started BEFORE any
+product/test import, the child writes a guard report (establishment state,
+preloaded modules, hits, restoration) and the parent gates on it. Inert doubles
+written into the fresh run directory qualify the ordering; no real forbidden
+target is ever probed.
+
 Each invocation writes a fresh UUID directory below --out-base (outside the
 repository) and never touches earlier outputs. Children are argument lists with
 no shell. Repository paths are derived from this file; runtime paths come from
@@ -38,6 +46,7 @@ import json
 import os
 import platform
 import re
+import runpy
 import socket
 import subprocess
 import sys
@@ -75,6 +84,7 @@ MUTANT_MEMBERSHIP = "page_units = [u for u, unit_page, _ in located if " + ORIGI
 FIXED_GAP = 'gaps.add("unit_page_locator_invalid")'
 CHILD_TIMEOUT = 900
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
+ARGS = None  # parsed command line; set in main()
 # Box-specific or inline-interpreter markers, split so this file does not match itself.
 BOX_MARKERS = ("/ho" + "me/", "/Us" + "ers/", "agent" + "-work", "/t" + "mp/", ".her" + "mes", "kan" + "ban",
                "venv-" + "fullsuite", "PYTHON" + "PATH", "shell" + "=True", "<<" + "EOF")
@@ -326,22 +336,178 @@ def sentinel(label):
     def refuse(*args, **kwargs):
         HITS.append(label)
         raise PermissionError("fc16 acceptance sentinel refused " + label)
+    refuse._fc16_sentinel = label
     return refuse
+
+
+# (label, owner, attribute) for every guarded effect entry point.
+GUARD_TARGETS = (("socket.connect", socket.socket, "connect"), ("socket.connect_ex", socket.socket, "connect_ex"),
+                 ("socket.bind", socket.socket, "bind"), ("socket.create_connection", socket, "create_connection"),
+                 ("socket.getaddrinfo", socket, "getaddrinfo"), ("subprocess.Popen", subprocess.Popen, "__init__"),
+                 ("os.system", os, "system"))
 
 
 def scoped_sentinels(tmp):
     """Context managers that are all restored on exit; no audit hook is installed."""
     tmp.mkdir(parents=True, exist_ok=True)
     patches = [mock.patch.object(tempfile, "tempdir", str(tmp)),
-               mock.patch.dict(os.environ, {"TMPDIR": str(tmp)}),
-               mock.patch.object(socket.socket, "connect", sentinel("socket.connect")),
-               mock.patch.object(socket.socket, "connect_ex", sentinel("socket.connect_ex")),
-               mock.patch.object(socket.socket, "bind", sentinel("socket.bind")),
-               mock.patch.object(socket, "create_connection", sentinel("socket.create_connection")),
-               mock.patch.object(socket, "getaddrinfo", sentinel("socket.getaddrinfo")),
-               mock.patch.object(subprocess.Popen, "__init__", sentinel("subprocess.Popen")),
-               mock.patch.object(os, "system", sentinel("os.system"))]
+               mock.patch.dict(os.environ, {"TMPDIR": str(tmp)})]
+    patches += [mock.patch.object(owner, attr, sentinel(label)) for label, owner, attr in GUARD_TARGETS]
     return patches
+
+
+def guard_objects():
+    return {label: getattr(owner, attr) for label, owner, attr in GUARD_TARGETS}
+
+
+def product_modules():
+    """Product/test modules currently imported, with their files."""
+    found = {}
+    for name, module in list(sys.modules.items()):
+        if name.split(".")[0] in ("campaign_tool", "tests") or name.startswith("fc16_inert_"):
+            found[name] = os.path.realpath(getattr(module, "__file__", None) or "") or None
+    return found
+
+
+def guarded_child(args):
+    """Re-entered child: start guards, then (only then) import and run tests; report and restore."""
+    report_path = Path(args.guarded_child)
+    tmp = Path(args.guard_temp_root)
+    originals = guard_objects()
+    tempdir_before, tmpdir_env_before = tempfile.tempdir, os.environ.get("TMPDIR")
+    preloaded = product_modules()
+    patches = scoped_sentinels(tmp)
+    for patch in patches:
+        patch.start()
+    active = {label: getattr(obj, "_fc16_sentinel", None) == label for label, obj in guard_objects().items()}
+    established = {"tempfile_tempdir": tempfile.tempdir, "environ_TMPDIR": os.environ.get("TMPDIR"),
+                   "gettempdir": tempfile.gettempdir()}
+    exit_code, error, mode = None, None, None
+    try:
+        if args.guarded_script:
+            # Same semantics as `python3 /abs/script.py ARGS`: argv and sys.path[0] from the script.
+            mode = "script"
+            script = os.path.abspath(args.guarded_script)
+            sys.argv = [script] + list(args.child_arg or [])
+            sys.path[0] = os.path.dirname(script)
+            try:
+                runpy.run_path(script, run_name="__main__")
+                exit_code = 0
+            except SystemExit as exc:
+                exit_code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        else:
+            # Same semantics as `python3 -m unittest ARGS`: sys.path[0] is the cwd.
+            mode = "unittest"
+            sys.path[0] = os.getcwd()
+            program = unittest.main(module=None, argv=["python -m unittest"] + list(args.child_arg or []), exit=False)
+            exit_code = 0 if program.result.wasSuccessful() else 1
+    except BaseException as exc:  # recorded; the parent treats any error as a failure
+        error = "%s: %s" % (type(exc).__name__, str(exc)[:300])
+        exit_code = 2
+    finally:
+        for patch in reversed(patches):
+            patch.stop()
+    after = guard_objects()
+    report = {"mode": mode, "cwd": os.getcwd(), "child_args": list(args.child_arg or []),
+              "guards_started_before_product_import": not preloaded, "preloaded_product_modules": preloaded,
+              "guards_active_at_establishment": active, "temp_redirect": established,
+              "hits": list(HITS), "error": error, "exit": exit_code,
+              "tempdir_restored": tempfile.tempdir == tempdir_before and os.environ.get("TMPDIR") == tmpdir_env_before,
+              "guard_objects_restored": {label: after[label] is originals[label] for label in originals},
+              "loaded_modules": product_modules()}
+    sys.stderr.flush()
+    with open(report_path, "x", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, sort_keys=True)
+    return exit_code
+
+
+def guarded(run, record, name, cwd, unittest_args=(), script=None, script_args=()):
+    """Run tests in a guarded child of this recorder; returns (exit, stderr text, guard report)."""
+    report = run / (name + ".guard.json")
+    tmp = run / (name + "-guard-tmp")
+    argv = [sys.executable, "-B", str(REPO / RECORDER), "--phase", record["phase"], "--repo", str(ARGS.repo),
+            "--manifest", str(ARGS.manifest), "--out-base", str(ARGS.out_base),
+            "--guarded-child", str(report), "--guard-temp-root", str(tmp)]
+    if script is not None:
+        argv += ["--guarded-script", str(script)]
+    argv += ["--child-arg=" + str(a) for a in (list(unittest_args) + list(script_args))]
+    code, _, err = child(run, record, name, argv, cwd, env=python_env(run / (name + "-env-tmp")))
+    data = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else None
+    record.setdefault("guards", {})[name] = {"report": report.name,
+                                             "report_sha256": sha256_file(report), "data": data}
+    return code, err, data
+
+
+def guard_ok(data, root, expect_hits=()):
+    """Guards started before any product/test import, were active, saw exactly the expected hits, restored."""
+    if not data:
+        return False
+    loaded_ok = all(path and path.startswith(str(root) + os.sep) for path in data["loaded_modules"].values())
+    return (data["guards_started_before_product_import"] and not data["preloaded_product_modules"]
+            and all(data["guards_active_at_establishment"].values())
+            and data["temp_redirect"]["tempfile_tempdir"] == data["temp_redirect"]["environ_TMPDIR"]
+            and data["error"] is None and data["hits"] == list(expect_hits) and data["tempdir_restored"]
+            and all(data["guard_objects_restored"].values()) and loaded_ok)
+
+
+INERT_GUARD_DOUBLE = '''"""Inert double: import-time calls into guarded entry points with NO arguments.
+
+Guarded, each call is refused by a sentinel (PermissionError). Unguarded, each
+raises TypeError for the missing arguments before any effect, so nothing real
+is ever contacted or spawned.
+"""
+import socket
+import subprocess
+import unittest
+
+IMPORT_TIME = []
+for call in (socket.create_connection, subprocess.Popen):
+    try:
+        call()
+    except Exception as exc:  # inert either way
+        IMPORT_TIME.append(type(exc).__name__)
+
+
+class InertGuardDouble(unittest.TestCase):
+    def test_import_time_calls_were_refused_by_guards(self):
+        self.assertEqual(IMPORT_TIME, ["PermissionError", "PermissionError"])
+'''
+
+INERT_ENV_DOUBLE = '''"""Inert double: mutates only a synthetic environment marker at import time."""
+import os
+import unittest
+
+os.environ["FC16_INERT_IMPORT_MARKER"] = "1"
+
+
+class InertEnvDouble(unittest.TestCase):
+    def test_inert(self):
+        self.assertEqual(os.environ.get("FC16_INERT_IMPORT_MARKER"), "1")
+'''
+
+
+def guard_controls(run, record):
+    """Qualify guard ordering with an inert double; returns problems."""
+    problems = []
+    root = run / "guard-control"
+    root.mkdir()
+    (root / "fc16_inert_guard_double.py").write_text(INERT_GUARD_DOUBLE, encoding="utf-8")
+    code, _, data = guarded(run, record, "guard-control-guarded", root, ["-v", "fc16_inert_guard_double"])
+    expected_hits = ("socket.create_connection", "subprocess.Popen")
+    controls = record["guard_controls"] = {
+        "guarded": {"exit": code, "hits": data and data["hits"],
+                    "accepted_with_expected_hits": guard_ok(data, root, expected_hits),
+                    "rejected_by_zero_hit_gate": not guard_ok(data, root, ())}}
+    if code != 0 or not controls["guarded"]["accepted_with_expected_hits"] or not controls["guarded"]["rejected_by_zero_hit_gate"]:
+        problems.append("guard_control_import_time_hits_not_detected")
+    # Discrimination: the same inert double without guards fails (TypeError, no effect).
+    code, _, err = child(run, record, "guard-control-unguarded", [sys.executable, "-B", "-m", "unittest", "-v",
+                                                                  "fc16_inert_guard_double"],
+                         root, env=python_env(run / "guard-control-unguarded-tmp"))
+    controls["unguarded"] = {"exit": code, "type_error_seen": "TypeError" in err}
+    if code == 0 or "TypeError" not in err:
+        problems.append("guard_control_does_not_discriminate")
+    return problems
 
 
 def static_closure():
@@ -416,8 +582,9 @@ def phase_suite(run, record, manifest):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(blob)
     base_doc = sha256_file(clone / DOCUMENT)
-    code, _, err = child(run, record, "baseline-red", [sys.executable, "-B", "-m", "unittest", "-v", MODULE], clone,
-                         env=python_env(run / "baseline" / "tmp"))
+    code, err, guard = guarded(run, record, "baseline-red", clone, ["-v", MODULE])
+    if not guard_ok(guard, clone):
+        problems.append("baseline_guard_not_clean")
     parsed = parse_verbose(err)
     deciding = re.search(r"FAIL: test_contradiction \([\w.]+\) \(subcase='page1_then_page_no2'\)\n-+\n"
                          r"(?:.*\n)*?AssertionError: Lists differ: \[1, 1\] != \[0, 0\]", err)
@@ -436,7 +603,9 @@ def phase_suite(run, record, manifest):
         problems.append("baseline_ordinary_control_not_green")
     if "errors=" in (parsed["final"] or "") or re.search(r"(?m)^ERROR: ", err):
         problems.append("baseline_has_errors_not_failures")
-    # 2. candidate matrix under scoped sentinels.
+    # 2. guard ordering qualification with an inert import-time double (no real target).
+    problems.extend(guard_controls(run, record))
+    # 3. candidate matrix under scoped sentinels.
     closure = record["closure"] = static_closure()
     if closure["non_stdlib"] or closure["network"]:
         problems.append("import_closure_not_offline_stdlib")
@@ -515,8 +684,9 @@ def phase_compatibility(run, record, manifest):
         problems.append("original_clone_failed")
         return
     for label, root in (("original", clone), ("final", REPO)):
-        code, _, err = child(run, record, "compat-" + label, [sys.executable, "-B", "-m", "unittest", "-v", COMPAT_SELECTOR],
-                             root, env=python_env(run / ("tmp-" + label)))
+        code, err, guard = guarded(run, record, "compat-" + label, root, ["-v", COMPAT_SELECTOR])
+        if not guard_ok(guard, root):
+            problems.append("compatibility_guard_not_clean:" + label)
         parsed = parse_verbose(err)
         # unittest -v prints "name (module.Class.name)"; normalize to selector ids.
         normalized, sub_failures = {}, []
@@ -555,8 +725,10 @@ def phase_portable(run, record, manifest, args):
     cwd.mkdir()
     temp_root = run / "script-temp-root"
     temp_root.mkdir()
-    code, _, err = child(run, record, "script", [sys.executable, "-B", str(REPO / TEST_FILE), "--temp-root", str(temp_root)],
-                         cwd, env=python_env(run / "script-env-tmp"))
+    code, err, guard = guarded(run, record, "script", cwd, script=REPO / TEST_FILE,
+                               script_args=["--temp-root", str(temp_root)])
+    if not guard_ok(guard, REPO):
+        problems.append("script_guard_not_clean")
     parsed = parse_verbose(err)
     names = sorted({r["test"].rsplit(".", 1)[-1] for r in parsed["results"]})
     # Verbose unittest prints passing subtests silently, so every frozen subcase is
@@ -571,28 +743,55 @@ def phase_portable(run, record, manifest, args):
             or any(r["subtest"] is not None for r in parsed["results"]) \
             or not record["phases"]["script"]["main_module_ids"]:
         problems.append("script_run_not_clean")
-    report = run / "discovery-report.json"
-    code, _, _ = child(run, record, "discovery", [sys.executable, "-B", str(REPO / RECORDER), "--phase", "portable",
-                                                  "--repo", str(args.repo), "--manifest", str(args.manifest),
-                                                  "--out-base", str(args.out_base), "--discovery-child", str(report)],
-                       REPO, env=python_env(run / "discovery-tmp"))
-    data = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else None
-    record["phases"]["discovery"] = data
-    if code != 0 or not data or not data.get("passed"):
+    # Genuine discovery positive, then the same child with an inert import-time
+    # environment mutation as the negative: the gate must reject only the latter.
+    control_root = run / "discovery-control"
+    control_root.mkdir()
+    (control_root / CONTROL_ENV_FILE).write_text(INERT_ENV_DOUBLE, encoding="utf-8")
+    discovery = record["phases"]["discovery"] = {}
+    for label, extra in (("genuine", []), ("import_mutation_control", ["--discovery-control", str(control_root)])):
+        report = run / ("discovery-%s-report.json" % label)
+        code, _, _ = child(run, record, "discovery-" + label,
+                           [sys.executable, "-B", str(REPO / RECORDER), "--phase", "portable", "--repo", str(args.repo),
+                            "--manifest", str(args.manifest), "--out-base", str(args.out_base),
+                            "--discovery-child", str(report), "--guard-temp-root", str(run / ("discovery-%s-guard-tmp" % label)),
+                            *extra],
+                           REPO, env=python_env(run / ("discovery-%s-tmp" % label)))
+        data = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else None
+        discovery[label] = {"exit": code, "report": report.name, "report_sha256": sha256_file(report), "data": data}
+    genuine = discovery["genuine"]
+    if genuine["exit"] != 0 or not genuine["data"] or not genuine["data"].get("passed"):
         problems.append("discovery_isolation_failed")
+    control = discovery["import_mutation_control"]
+    cdata = control["data"] or {}
+    control_ok = (control["exit"] == 1 and cdata.get("passed") is False and cdata.get("tests_all_ok") is True
+                  and cdata.get("changed_dimensions") == ["environ"]
+                  and cdata.get("changed_environ_keys") == ["FC16_INERT_IMPORT_MARKER"]
+                  and cdata.get("peer_only_comparison_changed") is False)
+    discovery["import_mutation_control_detected"] = control_ok
+    if not control_ok:
+        problems.append("discovery_import_mutation_not_detected")
 
 
-SNAPSHOT_KEYS = ("environ", "tempdir", "gettempdir", "sys_path", "cwd", "meta_path", "socket_connect", "popen_init")
+SNAPSHOT_KEYS = ("environ", "tempdir", "gettempdir", "sys_path", "cwd", "meta_path", "socket_connect", "popen_init",
+                 "guard_ids")
+CONTROL_ENV_FILE = "test_fc16_inert_env_double.py"
+CONTROL_ENV_ID = "test_fc16_inert_env_double.InertEnvDouble.test_inert"
 
 
 def snapshot():
     return {"environ": dict(os.environ), "tempdir": tempfile.tempdir, "gettempdir": tempfile.gettempdir(),
             "sys_path": list(sys.path), "cwd": os.getcwd(), "meta_path": len(sys.meta_path),
-            "socket_connect": id(socket.socket.connect), "popen_init": id(subprocess.Popen.__init__)}
+            "socket_connect": id(socket.socket.connect), "popen_init": id(subprocess.Popen.__init__),
+            "guard_ids": {label: id(obj) for label, obj in guard_objects().items()}}
+
+
+def changed_keys(a, b):
+    return [key for key in SNAPSHOT_KEYS if a[key] != b[key]]
 
 
 class PeerSentinel(unittest.TestCase):
-    """Inert peer: records process state before and checks it after the discovered module."""
+    """Inert unrelated peer run before and after the discovered module; it must stay green."""
     state = {}
 
     def test_peer_before(self):
@@ -600,34 +799,66 @@ class PeerSentinel(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps({"peer": [1, 2]})), {"peer": [1, 2]})
 
     def test_peer_after(self):
-        after = snapshot()
-        PeerSentinel.state["after"] = after
-        before = PeerSentinel.state.get("before")
-        self.assertIsNotNone(before)
-        for key in SNAPSHOT_KEYS:
-            self.assertEqual(after[key], before[key], key)
+        PeerSentinel.state["after"] = snapshot()
+        self.assertIsNotNone(PeerSentinel.state.get("before"))
+        self.assertEqual(json.loads(json.dumps({"peer": [1, 2]})), {"peer": [1, 2]})
 
 
-def discovery_child(report_path):
-    # Prime the stdlib tempdir cache from the inherited TMPDIR so the peer
-    # snapshot itself (which calls gettempdir) is not mistaken for poisoning.
-    tempfile.gettempdir()
-    loader = unittest.TestLoader()
-    discovered = loader.discover(start_dir=str(REPO / "tests" / "records"), pattern="test_fc16_document_locator.py",
-                                 top_level_dir=str(REPO))
-    ids = [t.id() for t in flatten(discovered)]  # before running: a run releases finished tests
-    suite = unittest.TestSuite([PeerSentinel("test_peer_before"), discovered, PeerSentinel("test_peer_after")])
-    stream = io.StringIO()
-    result = unittest.TextTestRunner(stream=stream, verbosity=2, resultclass=RecordingResult).run(suite)
+def discovery_child(args):
+    """Guards and deliberate runner setup first, then the ambient baseline, THEN discovery/import."""
+    report_path = args.discovery_child
+    control_root = args.discovery_control
+    preloaded = product_modules()
+    patches = scoped_sentinels(Path(args.guard_temp_root))
+    for patch in patches:
+        patch.start()
+    try:
+        # Deliberate runner setup (what discover itself would do): top-level dirs on sys.path,
+        # stdlib tempdir cache primed under the redirect.
+        roots = [str(REPO)] + ([control_root] if control_root else [])
+        for root in roots:
+            if root not in sys.path:
+                sys.path.insert(0, root)
+        tempfile.gettempdir()
+        baseline = snapshot()  # BEFORE loader.discover imports anything
+        parts = [unittest.TestLoader().discover(start_dir=str(REPO / "tests" / "records"),
+                                                pattern="test_fc16_document_locator.py", top_level_dir=str(REPO))]
+        if control_root:
+            parts.append(unittest.TestLoader().discover(start_dir=control_root, pattern=CONTROL_ENV_FILE,
+                                                        top_level_dir=control_root))
+        after_discovery = snapshot()
+        discovered = unittest.TestSuite(parts)
+        ids = [t.id() for t in flatten(discovered)]  # before running: a run releases finished tests
+        suite = unittest.TestSuite([PeerSentinel("test_peer_before"), discovered, PeerSentinel("test_peer_after")])
+        stream = io.StringIO()
+        result = unittest.TextTestRunner(stream=stream, verbosity=2, resultclass=RecordingResult).run(suite)
+        after_run = snapshot()
+    finally:
+        for patch in reversed(patches):
+            patch.stop()
     module = sys.modules.get(MODULE)
     loaded = os.path.realpath(module.__file__) if module else None
-    expected = sorted(expected_ids())
-    passed = (result.wasSuccessful() and not result.skipped and sorted(ids) == expected
-              and result.testsRun == len(expected) + 2 and loaded == str(REPO / TEST_FILE))
-    report = {"passed": passed, "discovered_ids": sorted(ids), "expected_ids": expected, "tests_run": result.testsRun,
-              "failures": [t.id() for t, _ in result.failures], "errors": [t.id() for t, _ in result.errors],
-              "skipped": [t.id() for t, _ in result.skipped], "loaded_test_module": loaded,
-              "peer_state_keys": list(SNAPSHOT_KEYS), "events": result.events,
+    expected = sorted(expected_ids() + ([CONTROL_ENV_ID] if control_root else []))
+    changed = sorted(set(changed_keys(baseline, after_discovery)) | set(changed_keys(baseline, after_run)))
+    env_keys = sorted(k for k in set(baseline["environ"]) | set(after_run["environ"])
+                      if baseline["environ"].get(k) != after_run["environ"].get(k))
+    peer = PeerSentinel.state
+    peer_changed = changed_keys(peer["before"], peer["after"]) if "before" in peer and "after" in peer else None
+    tests_all_ok = (result.wasSuccessful() and not result.skipped and sorted(ids) == expected
+                    and result.testsRun == len(expected) + 2)
+    passed = (tests_all_ok and not changed and not HITS and not preloaded and loaded == str(REPO / TEST_FILE))
+    report = {"passed": passed, "tests_all_ok": tests_all_ok, "control_root": control_root,
+              "baseline_taken_before_discovery": True, "preloaded_product_modules": preloaded,
+              "changed_dimensions": changed, "changed_environ_keys": env_keys,
+              "changed_by_discovery": changed_keys(baseline, after_discovery),
+              "changed_by_run": changed_keys(after_discovery, after_run),
+              "peer_only_comparison_changed": bool(peer_changed) if peer_changed is not None else None,
+              "sentinel_hits": list(HITS), "discovered_ids": sorted(ids), "expected_ids": expected,
+              "tests_run": result.testsRun, "failures": [t.id() for t, _ in result.failures],
+              "errors": [t.id() for t, _ in result.errors], "skipped": [t.id() for t, _ in result.skipped],
+              "loaded_test_module": loaded, "state_dimensions": list(SNAPSHOT_KEYS), "events": result.events,
+              "guard_objects_restored_after": all(getattr(o, "_fc16_sentinel", None) is None
+                                                  for o in guard_objects().values()),
               "unittest_output": stream.getvalue()}
     with open(report_path, "x", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
@@ -740,11 +971,22 @@ def main(argv=None):
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--out-base", required=True)
     parser.add_argument("--discovery-child", help=argparse.SUPPRESS)
+    parser.add_argument("--discovery-control", help=argparse.SUPPRESS)
+    parser.add_argument("--guarded-child", help=argparse.SUPPRESS)
+    parser.add_argument("--guard-temp-root", help=argparse.SUPPRESS)
+    parser.add_argument("--guarded-script", help=argparse.SUPPRESS)
+    parser.add_argument("--child-arg", action="append", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    global ARGS
+    ARGS = args
+    if args.guarded_child:
+        if not args.guard_temp_root:
+            parser.error("--guarded-child requires --guard-temp-root")
+        return guarded_child(args)
     if args.discovery_child:
-        if args.phase != "portable":
+        if args.phase != "portable" or not args.guard_temp_root:
             parser.error("--discovery-child is internal to the portable phase")
-        return discovery_child(args.discovery_child)
+        return discovery_child(args)
     out_base = Path(args.out_base)
     if not out_base.is_absolute():
         parser.error("--out-base must be absolute")
