@@ -152,6 +152,27 @@ class Behavior(WriterCase):
         for marker in ("example.test", "r1", "i1", "private-input-marker"):
             self.assertNotIn(marker, self.output.read_text())
 
+    def test_symlinked_containing_directory_succeeds_with_order_and_reload(self):
+        real = self.root / "real-parent"
+        real.mkdir()
+        link = self.root / "linked-parent"
+        link.symlink_to(real, target_is_directory=True)
+        link_inode = link.lstat().st_ino
+        sentinel = real / "prior.json"
+        sentinel.write_bytes(b"prior-report")
+        self.output = link / "report.json"
+        with self.traced():
+            result = self.invoke()
+        self.assertEqual(result, (0, "", ""))
+        self.assertEqual(self.events, ["write", "flush", "file-sync", "file-close",
+                                       "parent-open", "parent-sync", "parent-close"])
+        self.assert_saved()
+        self.assertEqual((real / "report.json").read_bytes(), self.text.encode("ascii"))
+        self.assertEqual(stat.S_IMODE((real / "report.json").stat().st_mode), 0o600)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.lstat().st_ino, link_inode)
+        self.assertEqual(sentinel.read_bytes(), b"prior-report")
+
     def test_write_failure_preserves_partial_bytes_and_refuses_retry(self):
         self.failure_contract("write")
         self.assertEqual(self.events, ["write", "file-close"])

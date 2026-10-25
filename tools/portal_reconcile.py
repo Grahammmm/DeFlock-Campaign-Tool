@@ -420,7 +420,7 @@ def render(report):
 
 def _sync_parent(path):
     """Confirm the new report name's containing directory is durable."""
-    fd = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
     finally:
