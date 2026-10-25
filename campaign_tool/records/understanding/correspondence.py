@@ -445,32 +445,47 @@ def track(events: Iterable[dict], *, as_of: str | datetime, deadline_rules: Iter
             "semantic_assessment": "NOT_ASSESSED", "review_acceptance": False}
 
 
-def _header_pairs(unit: dict) -> list[tuple[int, str, str]]:
+def _json_pointer_token(key: str) -> str:
+    """Escape one JSON-pointer reference token (RFC 6901: ``~`` then ``/``)."""
+    return key.replace("~", "~0").replace("/", "~1")
+
+
+def _header_pairs(unit: dict) -> list[tuple[int, str, str, str | None]]:
+    """Return (index, name, value, retained data pointer or None) header rows.
+
+    The pointer addresses the exact scalar the value was read from inside
+    ``unit["data"]``. Raw ``"Name: value"`` strings have no value-only scalar
+    and therefore carry no pointer.
+    """
     data = unit.get("data") if isinstance(unit.get("data"), dict) else {}
     headers = data.get("headers")
-    rows: list[tuple[int, str, str]] = []
+    rows: list[tuple[int, str, str, str | None]] = []
     if isinstance(headers, dict):
         for index, (key, value) in enumerate(headers.items()):
+            base = "/headers/" + _json_pointer_token(str(key))
             values = value if isinstance(value, list) else [value]
-            for item in values:
+            for position, item in enumerate(values):
+                path = base + "/" + str(position) if isinstance(value, list) else base
                 if isinstance(item, str):
-                    rows.append((index, str(key).strip(), item.strip()))
+                    rows.append((index, str(key).strip(), item.strip(), path))
                 elif isinstance(item, dict):
-                    header_value = item.get("value") or item.get("raw")
+                    field = "value" if item.get("value") else "raw"
+                    header_value = item.get(field)
                     if isinstance(header_value, str):
-                        rows.append((index, str(key).strip(), header_value.strip()))
+                        rows.append((index, str(key).strip(), header_value.strip(), path + "/" + field))
     elif isinstance(headers, list):
         for index, item in enumerate(headers):
             if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(part, str) for part in item):
-                rows.append((index, item[0].strip(), item[1].strip()))
+                rows.append((index, item[0].strip(), item[1].strip(), "/headers/%d/1" % index))
             elif isinstance(item, str) and ":" in item:
                 key, value = item.split(":", 1)
-                rows.append((index, key.strip(), value.strip()))
+                rows.append((index, key.strip(), value.strip(), None))
             elif isinstance(item, dict):
                 key = item.get("name") or item.get("key")
-                value = item.get("value") or item.get("raw")
+                field = "value" if item.get("value") else "raw"
+                value = item.get(field)
                 if isinstance(key, str) and isinstance(value, str):
-                    rows.append((index, key.strip(), value.strip()))
+                    rows.append((index, key.strip(), value.strip(), "/headers/%d/%s" % (index, field)))
     return rows
 
 
@@ -484,10 +499,16 @@ def _exact_header_citation(unit: dict, value: str, bundle: dict,
                                      len(text[:start + len(value)].encode("utf-8")))
             evidence.validate_citation(cite, bundle)
             return cite
-    if pointer:
-        cite = evidence.grounded_evidence.data_pointer_support(unit, pointer)
-        evidence.grounded_evidence.validate_support(cite, bundle)
-        return cite
+    if pointer and value:
+        # A missing path, non-scalar target or transformed (e.g. stripped)
+        # value has no exact projection: the caller holds it as unlocatable.
+        try:
+            cite = evidence.grounded_evidence.data_pointer_support(unit, pointer)
+            evidence.grounded_evidence.validate_support(cite, bundle)
+            pointed = json.loads(cite["quote"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return cite if isinstance(pointed, str) and pointed == value else None
     return None
 
 def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
@@ -499,12 +520,11 @@ def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
             continue
         original = unit.get("original_sha256")
         row = {"message_ids": [], "dates": [], "unit_id": unit.get("unit_id")}
-        for header_index, key, value in headers:
+        for header_index, key, value, pointer in headers:
             folded = key.casefold()
             if folded not in {"message-id", "date"}:
                 continue
-            citation = _exact_header_citation(
-                unit, value, bundle, pointer=f"/headers/{header_index}/1")
+            citation = _exact_header_citation(unit, value, bundle, pointer=pointer)
             if citation is None:
                 holds.append({"original_sha256": original, "unit_id": unit.get("unit_id"),
                                "reason": f"{folded.replace('-', '_')}_header_unlocatable"})

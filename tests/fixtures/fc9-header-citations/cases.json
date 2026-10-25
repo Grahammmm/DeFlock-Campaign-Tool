@@ -1,0 +1,185 @@
+{
+  "schema": "fc9-header-citations-cases-v1",
+  "notice": "Every value here is invented for FC9-HEADER-CITATIONS tests. No agency, person, mailbox, message or request is real.",
+  "agency_id": "example-agency",
+  "request_number": "R-2001",
+  "peer_request_number": "R-2002",
+  "as_of": "2031-03-01T00:00:00Z",
+  "body_text": "Public records request R-2001 for synthetic audit log exports.",
+  "peer_body_text": "Public records request R-2001 follow-up about synthetic retention notes.",
+  "date_value": "Tue, 04 Feb 2031 10:15:00 -0800",
+  "date_normalized": "2031-02-04T18:15:00Z",
+  "addressable_cases": [
+    {
+      "name": "dict_scalar",
+      "shape": "dictionary scalar leaves",
+      "headers": {"Subject": "Synthetic request", "Date": "Tue, 04 Feb 2031 10:15:00 -0800",
+                  "Message-ID": "<r2001.dict-scalar@example.invalid>"},
+      "date_pointer": "/headers/Date",
+      "id_pointer": "/headers/Message-ID",
+      "message_id": "<r2001.dict-scalar@example.invalid>"
+    },
+    {
+      "name": "dict_list",
+      "shape": "dictionary list leaves",
+      "headers": {"Date": ["Tue, 04 Feb 2031 10:15:00 -0800"],
+                  "Message-ID": ["<r2001.dict-list@example.invalid>"],
+                  "Received": ["synthetic hop one", "synthetic hop two"]},
+      "date_pointer": "/headers/Date/0",
+      "id_pointer": "/headers/Message-ID/0",
+      "message_id": "<r2001.dict-list@example.invalid>"
+    },
+    {
+      "name": "dict_object",
+      "shape": "dictionary value/raw object leaves",
+      "headers": {"Date": {"value": "Tue, 04 Feb 2031 10:15:00 -0800"},
+                  "Message-ID": {"raw": "<r2001.dict-object@example.invalid>"}},
+      "date_pointer": "/headers/Date/value",
+      "id_pointer": "/headers/Message-ID/raw",
+      "message_id": "<r2001.dict-object@example.invalid>"
+    },
+    {
+      "name": "dict_object_empty_value_uses_raw",
+      "shape": "dictionary object whose empty value falls back to raw",
+      "headers": {"Date": {"value": "", "raw": "Tue, 04 Feb 2031 10:15:00 -0800"},
+                  "Message-ID": {"value": "<r2001.dict-object-raw@example.invalid>", "raw": "ignored synthetic raw"}},
+      "date_pointer": "/headers/Date/raw",
+      "id_pointer": "/headers/Message-ID/value",
+      "message_id": "<r2001.dict-object-raw@example.invalid>"
+    },
+    {
+      "name": "dict_list_object",
+      "shape": "dictionary list of value/raw objects",
+      "headers": {"Date": [{"value": "Tue, 04 Feb 2031 10:15:00 -0800"}],
+                  "Message-ID": [{"raw": "<r2001.dict-list-object@example.invalid>"}]},
+      "date_pointer": "/headers/Date/0/value",
+      "id_pointer": "/headers/Message-ID/0/raw",
+      "message_id": "<r2001.dict-list-object@example.invalid>"
+    },
+    {
+      "name": "dict_key_needs_no_escape_but_casefolds",
+      "shape": "dictionary scalar leaves with lower-case keys",
+      "headers": {"date": "Tue, 04 Feb 2031 10:15:00 -0800",
+                  "message-id": "<r2001.lower-keys@example.invalid>"},
+      "date_pointer": "/headers/date",
+      "id_pointer": "/headers/message-id",
+      "message_id": "<r2001.lower-keys@example.invalid>"
+    },
+    {
+      "name": "pair_array",
+      "shape": "pair arrays",
+      "headers": [["Subject", "Synthetic request"], ["Date", "Tue, 04 Feb 2031 10:15:00 -0800"],
+                  ["Message-ID", "<r2001.pair-array@example.invalid>"]],
+      "date_pointer": "/headers/1/1",
+      "id_pointer": "/headers/2/1",
+      "message_id": "<r2001.pair-array@example.invalid>"
+    },
+    {
+      "name": "object_list",
+      "shape": "list of name/key objects with value/raw",
+      "headers": [{"name": "Date", "value": "Tue, 04 Feb 2031 10:15:00 -0800"},
+                  {"key": "Message-ID", "raw": "<r2001.object-list@example.invalid>"}],
+      "date_pointer": "/headers/0/value",
+      "id_pointer": "/headers/1/raw",
+      "message_id": "<r2001.object-list@example.invalid>"
+    }
+  ],
+  "unresolved_cases": [
+    {
+      "name": "raw_header_strings",
+      "shape": "list of raw 'Name: value' strings with no exact value projection",
+      "headers": ["Date: Tue, 04 Feb 2031 10:15:00 -0800", "Message-ID: <r2001.raw-string@example.invalid>"],
+      "holds": ["date_header_unlocatable", "message_id_header_unlocatable"],
+      "message_id": null
+    },
+    {
+      "name": "stripped_dict_value",
+      "shape": "dictionary scalar whose retained value carries whitespace that the reader strips",
+      "headers": {"Date": "  Tue, 04 Feb 2031 10:15:00 -0800  ",
+                  "Message-ID": "<r2001.stripped@example.invalid>"},
+      "holds": ["date_header_unlocatable"],
+      "message_id": "<r2001.stripped@example.invalid>",
+      "id_pointer": "/headers/Message-ID"
+    },
+    {
+      "name": "stripped_pair_value",
+      "shape": "pair array whose retained value carries whitespace that the reader strips",
+      "headers": [["Date", "Tue, 04 Feb 2031 10:15:00 -0800"], ["Message-ID", " <r2001.stripped-pair@example.invalid>"]],
+      "holds": ["message_id_header_unlocatable"],
+      "message_id": null,
+      "date_pointer": "/headers/0/1"
+    }
+  ],
+  "conflict_cases": [
+    {
+      "name": "dict_list_contradictory_dates",
+      "headers": {"Date": ["Tue, 04 Feb 2031 10:15:00 -0800", "Wed, 05 Feb 2031 09:00:00 +0000"],
+                  "Message-ID": "<r2001.conflict-date@example.invalid>"},
+      "holds": ["message_date_header_conflict"],
+      "message_id": "<r2001.conflict-date@example.invalid>"
+    },
+    {
+      "name": "pair_array_contradictory_ids",
+      "headers": [["Date", "Tue, 04 Feb 2031 10:15:00 -0800"], ["Message-ID", "<r2001.first@example.invalid>"],
+                  ["Message-ID", "<r2001.second@example.invalid>"]],
+      "holds": ["message_id_header_conflict"],
+      "message_id": null
+    },
+    {
+      "name": "dict_list_same_instant_is_not_conflict",
+      "headers": {"Date": ["Tue, 04 Feb 2031 10:15:00 -0800", "Tue, 04 Feb 2031 18:15:00 +0000"],
+                  "Message-ID": "<r2001.same-instant@example.invalid>"},
+      "holds": [],
+      "message_id": "<r2001.same-instant@example.invalid>"
+    }
+  ],
+  "boundary_cases": [
+    {
+      "name": "missing_date_and_id",
+      "headers": {"Subject": "Synthetic request without chronology"},
+      "holds": [],
+      "message_id": null
+    },
+    {
+      "name": "timezone_unknown_clock",
+      "headers": {"Date": "Tue, 04 Feb 2031 10:15:00 -0000", "Message-ID": "<r2001.tz-unknown@example.invalid>"},
+      "holds": ["message_date_timezone_unknown"],
+      "message_id": "<r2001.tz-unknown@example.invalid>",
+      "date_pointer": "/headers/Date"
+    }
+  ],
+  "text_backed_cases": [
+    {
+      "name": "text_backed_dict",
+      "text": "Date: Tue, 04 Feb 2031 10:15:00 -0800\nMessage-ID: <r2001.text-dict@example.invalid>\n\nPublic records request R-2001 for synthetic audit log exports.",
+      "headers": {"Date": "Tue, 04 Feb 2031 10:15:00 -0800", "Message-ID": "<r2001.text-dict@example.invalid>"},
+      "message_id": "<r2001.text-dict@example.invalid>"
+    },
+    {
+      "name": "text_backed_raw_strings",
+      "text": "Date: Tue, 04 Feb 2031 10:15:00 -0800\nMessage-ID: <r2001.text-raw@example.invalid>\n\nPublic records request R-2001 for synthetic audit log exports.",
+      "headers": ["Date: Tue, 04 Feb 2031 10:15:00 -0800", "Message-ID: <r2001.text-raw@example.invalid>"],
+      "message_id": "<r2001.text-raw@example.invalid>"
+    }
+  ],
+  "pointer_token_cases": [
+    ["Date", "Date"],
+    ["a/b", "a~1b"],
+    ["m~n", "m~0n"],
+    ["~/", "~0~1"],
+    ["/~", "~1~0"],
+    ["~1", "~01"],
+    ["", ""]
+  ],
+  "escaped_key_cases": [
+    {
+      "name": "slash_and_tilde_keys_resolve",
+      "headers": {"X-Path/Hint": "synthetic slash", "X~Tilde": "synthetic tilde",
+                  "Date": "Tue, 04 Feb 2031 10:15:00 -0800", "Message-ID": "<r2001.escaped@example.invalid>"},
+      "pointers": {"X-Path/Hint": "/headers/X-Path~1Hint", "X~Tilde": "/headers/X~0Tilde"},
+      "date_pointer": "/headers/Date",
+      "id_pointer": "/headers/Message-ID",
+      "message_id": "<r2001.escaped@example.invalid>"
+    }
+  ]
+}
