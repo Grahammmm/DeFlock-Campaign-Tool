@@ -27,7 +27,9 @@ agency-alpha  req-alpha-1  awaiting_production  2026-07-03T16:00:00Z  2026-07-20
 agency-bravo  req-bravo-1  open                 2026-08-05            -                     -                     -         1                2026-08-05T15:00:00Z
 
 GAPS
+ancestry_invalid_messages=0
 ancestry_invalid_occurrences=0
+ancestry_invalid_portal_items=0
 distinct_attachment_originals=3
 mail_messages_total=9
 scope_excluded_joins=1

@@ -91,11 +91,13 @@ def instant(value):
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
-    except (ValueError, OverflowError):
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        # UTC normalization itself can overflow at the calendar bounds
+        # (e.g. 0001-01-01T00:00:00+01:00); that is an invalid date, not a crash.
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError, TypeError):
         return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed.astimezone(timezone.utc)
 
 
 def iso(moment):
@@ -110,22 +112,28 @@ def direction(folder):
 
 
 def _chains(occurrences):
-    """Ancestry chain per occurrence id; None when missing/cyclic/over-deep."""
+    """Per occurrence id: (encountered links, valid?).
+
+    The encountered links are kept even when the lineage is invalid (missing
+    parent, cycle or deeper than MAX_ANCESTRY), so an excluded ancestor met
+    before the failure still excludes the occurrence (fail closed). An invalid
+    lineage is never used as agency evidence.
+    """
     result = {}
     for oid, row in occurrences.items():
-        chain, seen, current = [], set(), row
+        chain, seen, current, valid = [], set(), row, True
         while current is not None:
             if current["id"] in seen or len(seen) >= MAX_ANCESTRY:
-                chain = None
+                valid = False
                 break
             seen.add(current["id"])
             chain.append(current)
             parent = current["parent_occurrence_id"]
             if parent and parent not in occurrences:
-                chain = None
+                valid = False
                 break
             current = occurrences.get(parent) if parent else None
-        result[oid] = chain
+        result[oid] = (chain, valid)
     return result
 
 
@@ -141,16 +149,19 @@ def build(data):
     gaps = {"mail_messages_total": len(data["mail_messages"]), "visible_messages": 0,
             "scope_excluded_messages": 0, "scope_excluded_occurrences": 0,
             "scope_excluded_joins": 0, "ancestry_invalid_occurrences": 0,
+            "ancestry_invalid_messages": 0, "ancestry_invalid_portal_items": 0,
             "distinct_attachment_originals": 0, "withheld_values": 0, "unparseable_dates": 0}
 
-    excluded_occurrences = set()
-    for oid, chain in chains.items():
-        if chain is None:
-            gaps["ancestry_invalid_occurrences"] += 1
-            continue
+    # Exclusion is decided over every encountered link, valid lineage or not, and
+    # takes precedence. Invalid, non-excluded lineage is withheld (fail closed).
+    excluded_occurrences, invalid_occurrences = set(), set()
+    for oid, (chain, valid) in chains.items():
         if any(link["original_sha256"] in excluded_originals for link in chain):
             excluded_occurrences.add(oid)
+        elif not valid:
+            invalid_occurrences.add(oid)
     gaps["scope_excluded_occurrences"] = len(excluded_occurrences)
+    gaps["ancestry_invalid_occurrences"] = len(invalid_occurrences)
 
     # Typed agency (and request) context per original. A typed join only counts
     # when its agency exists and any named request belongs to that agency.
@@ -195,9 +206,12 @@ def build(data):
         if oid in excluded_occurrences or sha not in originals or sha in excluded_originals:
             gaps["scope_excluded_messages"] += 1
             continue
-        # A mail row without a usable occurrence chain (absent, or counted once in
-        # ancestry_invalid_occurrences) is attributed by its own original only.
-        chain = chains.get(oid) or [{"original_sha256": sha}]
+        # A mail row whose occurrence is absent or whose lineage is invalid is
+        # never attributed by its own original: it is withheld and counted.
+        if oid not in chains or oid in invalid_occurrences:
+            gaps["ancestry_invalid_messages"] += 1
+            continue
+        chain = chains[oid][0]
         gaps["visible_messages"] += 1
         agency, conflict = context(chain)
         row = rows[agency]
@@ -218,16 +232,21 @@ def build(data):
 
     attachment_originals = set()
     for oid, occurrence in occurrences.items():
-        chain = chains[oid]
-        if occurrence["kind"] != "attachment" or chain is None or oid in excluded_occurrences:
+        if (occurrence["kind"] != "attachment" or oid in excluded_occurrences
+                or oid in invalid_occurrences):
             continue
-        agency, _ = context(chain)
+        agency, _ = context(chains[oid][0])
         rows[agency]["attachment_occurrences"] += 1
         attachment_originals.add(occurrence["original_sha256"])
     gaps["distinct_attachment_originals"] = len(attachment_originals)
 
     for item in data["portal_items"]:
-        if item["notice_occurrence_id"] in excluded_occurrences or item["original_sha256"] in excluded_originals:
+        notice = item["notice_occurrence_id"]
+        if notice in excluded_occurrences or item["original_sha256"] in excluded_originals:
+            continue
+        # A recorded notice occurrence must have a valid lineage (fail closed).
+        if notice is not None and (notice not in chains or notice in invalid_occurrences):
+            gaps["ancestry_invalid_portal_items"] += 1
             continue
         agency = item["agency_id"] if item["agency_id"] in agencies else None
         rows[agency]["portal_items"] += 1
@@ -270,11 +289,12 @@ def build(data):
         for month in row["months"]:
             merged[month["month"]]["sent"] += month["sent"]
             merged[month["month"]]["received"] += month["received"]
-    firsts = [row["first_contact_at"] for row in output if row["first_contact_at"]]
-    lasts = [row["last_contact_at"] for row in output if row["last_contact_at"]]
+    # Overall first/last contact compares datetime instants, never the
+    # variable-width ISO strings (fractional seconds sort wrongly as text).
+    moments = [moment for row in rows.values() for moment in row["times"]]
     totals.update(agency_rows=len(output), months=[{"month": m, **merged[m]} for m in sorted(merged)],
-                  first_contact_at=min(firsts) if firsts else None,
-                  last_contact_at=max(lasts) if lasts else None)
+                  first_contact_at=iso(min(moments)) if moments else None,
+                  last_contact_at=iso(max(moments)) if moments else None)
     gaps["withheld_values"] = withheld.values
     gaps["unparseable_dates"] = withheld.dates
     return {"schema": SCHEMA, "review_required": True, "semantic_assessment": "NOT_ASSESSED",

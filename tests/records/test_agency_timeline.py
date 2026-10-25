@@ -6,6 +6,7 @@ network, model, credential, subprocess or live path is used.
 """
 import ast
 from contextlib import contextmanager, redirect_stdout
+import copy
 import hashlib
 import importlib.util
 import io
@@ -193,7 +194,8 @@ class FocusedTimelineTests(LedgerCase):
         totals = result["totals"]
         self.assertEqual(dated, totals["messages_sent"] + totals["messages_received"] - totals["undated_messages"])
         self.assertEqual(totals["messages_sent"] + totals["messages_received"], result["gaps"]["visible_messages"])
-        self.assertEqual(result["gaps"]["visible_messages"] + result["gaps"]["scope_excluded_messages"],
+        self.assertEqual(result["gaps"]["visible_messages"] + result["gaps"]["scope_excluded_messages"]
+                         + result["gaps"]["ancestry_invalid_messages"],
                          result["gaps"]["mail_messages_total"])
         self.assertEqual(totals["request_count"], sum(len(r["requests"]) for r in result["agencies"]))
         self.assertEqual((totals["first_contact_at"], totals["last_contact_at"]),
@@ -461,6 +463,208 @@ class EdgeTests(unittest.TestCase):
                           ("Sent", "[Synthetic]/Sent Mail", "INBOX.Sent Items", "sent messages",
                            "INBOX", "Sent/Archive", "Unsent", None)],
                          ["sent", "sent", "sent", "sent", "received", "received", "received", "received"])
+
+
+class LineageFailClosedTests(LedgerCase):
+    """Round-1 return item 1: invalid or excluded ancestry is never agency evidence."""
+
+    def snapshot(self):
+        return copy.deepcopy(agency_timeline.read_snapshot(self.path))
+
+    @staticmethod
+    def occurrence(data, oid):
+        return next(item for item in data["occurrences"] if item["id"] == oid)
+
+    def assert_mail_partition(self, result):
+        gaps = result["gaps"]
+        self.assertEqual(gaps["visible_messages"] + gaps["scope_excluded_messages"]
+                         + gaps["ancestry_invalid_messages"], gaps["mail_messages_total"])
+        totals = result["totals"]
+        self.assertEqual(totals["messages_sent"] + totals["messages_received"], gaps["visible_messages"])
+        for name in agency_timeline.ROW_COUNTS:
+            self.assertEqual(totals[name], sum(r[name] for r in result["agencies"]), name)
+
+    def test_cycle_through_an_encountered_excluded_ancestor_excludes_the_descendant(self):
+        self.execute("UPDATE occurrences SET parent_occurrence_id='m9' WHERE id='m1'")
+        self.execute("UPDATE occurrences SET parent_occurrence_id='m1' WHERE id='m9'")
+        result = agency_timeline.report(self.path)
+        alpha = row(result, "agency-alpha")
+        self.assertEqual((alpha["messages_sent"], alpha["messages_received"]), (0, 2))
+        self.assertEqual(alpha["requests"][0]["linked_messages"], 1)
+        self.assertEqual(alpha["first_contact_at"], "2026-07-05T17:00:00Z")
+        self.assertEqual(result["gaps"]["scope_excluded_messages"], 2)
+        self.assertEqual(result["gaps"]["scope_excluded_occurrences"], 3)
+        self.assertEqual(result["gaps"]["ancestry_invalid_occurrences"], 0)
+        self.assertEqual(result["gaps"]["ancestry_invalid_messages"], 0)
+        # Valid ordinary shared-attachment control is unaffected.
+        self.assertEqual({r["agency_id"]: r["attachment_occurrences"] for r in result["agencies"]},
+                         {"agency-alpha": 2, "agency-bravo": 1, "agency-charlie": 0, None: 1})
+        self.assert_mail_partition(result)
+
+    def test_cycle_without_excluded_ancestor_is_withheld_and_counted(self):
+        self.execute("UPDATE occurrences SET parent_occurrence_id='m2' WHERE id='m1'")
+        self.execute("UPDATE occurrences SET parent_occurrence_id='m1' WHERE id='m2'")
+        result = agency_timeline.report(self.path)
+        alpha = row(result, "agency-alpha")
+        self.assertEqual((alpha["messages_sent"], alpha["messages_received"]), (0, 1))
+        self.assertEqual(alpha["requests"][0]["linked_messages"], 0)
+        self.assertEqual(alpha["attachment_occurrences"], 0)
+        self.assertEqual(row(result, None)["messages_received"], 1)
+        self.assertEqual(result["gaps"]["ancestry_invalid_messages"], 2)
+        self.assertEqual(result["gaps"]["ancestry_invalid_occurrences"], 4)
+        # att-shared-b under the valid m5 still counts for bravo.
+        self.assertEqual(row(result, "agency-bravo")["attachment_occurrences"], 1)
+        self.assertEqual(result["gaps"]["distinct_attachment_originals"], 2)
+        self.assert_mail_partition(result)
+
+    def test_missing_parent_never_falls_back_to_the_own_original(self):
+        data = self.snapshot()
+        self.occurrence(data, "m1")["parent_occurrence_id"] = "ghost-occurrence"
+        result = agency_timeline.build(data)
+        alpha = row(result, "agency-alpha")
+        self.assertEqual(alpha["messages_sent"], 0)
+        self.assertEqual(alpha["requests"][0]["linked_messages"], 1)
+        self.assertEqual(result["gaps"]["ancestry_invalid_messages"], 1)
+        self.assertEqual(result["gaps"]["ancestry_invalid_occurrences"], 1)
+        self.assert_mail_partition(result)
+
+    def test_missing_parent_after_an_excluded_ancestor_is_excluded(self):
+        data = self.snapshot()
+        self.occurrence(data, "m1")["parent_occurrence_id"] = "m9"
+        self.occurrence(data, "m9")["parent_occurrence_id"] = "ghost-occurrence"
+        result = agency_timeline.build(data)
+        self.assertEqual(row(result, "agency-alpha")["messages_sent"], 0)
+        self.assertEqual(result["gaps"]["scope_excluded_messages"], 2)
+        self.assertEqual(result["gaps"]["ancestry_invalid_messages"], 0)
+        self.assert_mail_partition(result)
+
+    def test_mail_row_without_an_occurrence_is_withheld(self):
+        data = self.snapshot()
+        data["occurrences"] = [item for item in data["occurrences"] if item["id"] != "m3"]
+        result = agency_timeline.build(data)
+        self.assertEqual(row(result, "agency-alpha")["messages_received"], 1)
+        self.assertEqual(result["gaps"]["ancestry_invalid_messages"], 1)
+        self.assert_mail_partition(result)
+
+    def deep_chain(self, data, links, root_original):
+        template = self.occurrence(data, "m1")
+        parent = None
+        for index in range(links):
+            node = dict(template, id="deep-%03d" % index, kind="mail", parent_occurrence_id=parent,
+                        original_sha256=root_original if index == 0 else template["original_sha256"])
+            data["occurrences"].append(node)
+            parent = node["id"]
+        template["parent_occurrence_id"] = parent
+
+    def test_depth_bound_fails_closed_and_the_bound_itself_is_valid(self):
+        excluded = digest_for("mail-9")
+        ordinary = digest_for("attachment-alpha")
+        within = self.snapshot()
+        self.deep_chain(within, agency_timeline.MAX_ANCESTRY - 1, ordinary)
+        result = agency_timeline.build(within)
+        self.assertEqual(row(result, "agency-alpha")["messages_sent"], 1)
+        self.assertEqual(result["gaps"]["ancestry_invalid_messages"], 0)
+        for root in (ordinary, excluded):
+            beyond = self.snapshot()
+            self.deep_chain(beyond, agency_timeline.MAX_ANCESTRY, root)
+            result = agency_timeline.build(beyond)
+            self.assertEqual(row(result, "agency-alpha")["messages_sent"], 0)
+            self.assertEqual(result["gaps"]["ancestry_invalid_messages"], 1)
+            self.assert_mail_partition(result)
+        # An excluded ancestor met inside the bound excludes rather than withholds.
+        seen = self.snapshot()
+        self.deep_chain(seen, agency_timeline.MAX_ANCESTRY - 1, excluded)
+        result = agency_timeline.build(seen)
+        self.assertEqual(row(result, "agency-alpha")["messages_sent"], 0)
+        self.assertEqual(result["gaps"]["scope_excluded_messages"], 2)
+
+    def test_portal_notice_lineage_fails_closed(self):
+        data = self.snapshot()
+        items = {item["id"]: item for item in data["portal_items"]}
+        items["p1"]["notice_occurrence_id"] = "ghost-occurrence"
+        items["p2"]["notice_occurrence_id"] = "m9"
+        result = agency_timeline.build(data)
+        self.assertEqual(row(result, "agency-alpha")["portal_items"], 0)
+        self.assertEqual(row(result, "agency-bravo")["portal_items"], 0)
+        self.assertEqual(row(result, None)["portal_items"], 1)
+        self.assertEqual(result["gaps"]["ancestry_invalid_portal_items"], 1)
+
+
+class DateOrderingAndBoundsTests(unittest.TestCase):
+    """Round-1 return items 2 and 3: chronological totals and overflow-safe UTC."""
+
+    def setUp(self):
+        holder, self.base = private_dir("synthetic-n3-dates-")
+        self.addCleanup(holder.cleanup)
+
+    def ledger_with(self, mutate):
+        spec = load_spec()
+        mutate(spec)
+        return build_ledger(self.base / "ledger.sqlite", spec)
+
+    def test_totals_compare_instants_with_mixed_fractional_seconds(self):
+        def mutate(spec):
+            for message in spec["mail"]:
+                message["received_at"] = None
+            mail = {item["id"]: item for item in spec["mail"]}
+            mail["m1"]["received_at"] = "2026-07-03T16:05:00Z"
+            mail["m4"]["received_at"] = "2026-07-03T16:05:00.100000Z"
+            mail["m3"]["received_at"] = "2026-07-03T16:05:00.050000+00:00"
+        path = self.ledger_with(mutate)
+        result = agency_timeline.report(path)
+        totals = result["totals"]
+        self.assertEqual((totals["first_contact_at"], totals["last_contact_at"]),
+                         ("2026-07-03T16:05:00Z", "2026-07-03T16:05:00.100000Z"))
+        alpha, bravo = row(result, "agency-alpha"), row(result, "agency-bravo")
+        self.assertEqual((alpha["first_contact_at"], alpha["last_contact_at"]),
+                         ("2026-07-03T16:05:00Z", "2026-07-03T16:05:00.050000Z"))
+        self.assertEqual(alpha["months"], [{"month": "2026-07", "sent": 1, "received": 1}])
+        self.assertEqual(bravo["months"], [{"month": "2026-07", "sent": 1, "received": 0}])
+        self.assertEqual(totals["months"], [{"month": "2026-07", "sent": 2, "received": 1}])
+        total_line = next(line for line in agency_timeline.render_table(result).splitlines()
+                          if line.startswith("TOTAL ") and "2026-07-03T16:05:00Z" in line)
+        self.assertLess(total_line.index("2026-07-03T16:05:00Z"),
+                        total_line.index("2026-07-03T16:05:00.100000Z"))
+        self.assertEqual(canonical(result), canonical(agency_timeline.report(path)))
+
+    def test_utc_conversion_overflow_is_undated_and_ordinary_offsets_still_convert(self):
+        for bound in ("0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"):
+            self.assertIsNone(agency_timeline.instant(bound), bound)
+        self.assertEqual(agency_timeline.iso(agency_timeline.instant("2026-07-05T10:00:00-07:00")),
+                         "2026-07-05T17:00:00Z")
+
+        def mutate(spec):
+            mail = {item["id"]: item for item in spec["mail"]}
+            mail["m1"]["received_at"] = "0001-01-01T00:00:00+01:00"
+            mail["m3"]["received_at"] = "9999-12-31T23:59:59-01:00"
+            request = spec["requests"][0]
+            request["submitted_at"] = "0001-01-01T00:00:00+01:00"
+            request["determination_due_at"] = "9999-12-31T23:59:59-01:00"
+        path = self.ledger_with(mutate)
+        result = agency_timeline.report(path)
+        alpha = row(result, "agency-alpha")
+        self.assertEqual((alpha["messages_sent"], alpha["messages_received"], alpha["undated_messages"]),
+                         (1, 2, 2))
+        self.assertEqual(alpha["months"], [{"month": "2026-07", "sent": 0, "received": 1}])
+        self.assertEqual((alpha["first_contact_at"], alpha["last_contact_at"]),
+                         ("2026-07-05T17:00:00Z", "2026-07-05T17:00:00Z"))
+        request = alpha["requests"][0]
+        self.assertEqual((request["submitted_at"], request["determination_due_at"], request["determination_at"]),
+                         (None, None, "2026-07-18T17:30:00Z"))
+        self.assertEqual((request["linked_messages"], request["last_linked_message_at"]),
+                         (2, "2026-07-05T17:00:00Z"))
+        self.assertEqual(result["gaps"]["unparseable_dates"], 2)
+
+        holder, outputs = private_dir("synthetic-n3-out-")
+        self.addCleanup(holder.cleanup)
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = load_tool().main(["--ledger", str(path), "--output-dir", str(outputs / "report")])
+        self.assertEqual(code, 0)
+        self.assertNotIn("Traceback", stream.getvalue())
+        self.assertEqual(json.loads(stream.getvalue())["status"], "review_required")
+        document = json.loads((outputs / "report" / "agency-timeline.json").read_text(encoding="utf-8"))
+        self.assertEqual(row(document, "agency-alpha")["undated_messages"], 2)
 
 
 if __name__ == "__main__":

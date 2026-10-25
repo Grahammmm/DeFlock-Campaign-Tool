@@ -69,8 +69,11 @@ JSON (`agency-timeline-report-v1`):
 - `gaps` holds `mail_messages_total`, `visible_messages`,
   `scope_excluded_messages`, `scope_excluded_occurrences`,
   `scope_excluded_joins`, `ancestry_invalid_occurrences`,
+  `ancestry_invalid_messages`, `ancestry_invalid_portal_items`,
   `distinct_attachment_originals` (not a row sum), `withheld_values` and
-  `unparseable_dates`.
+  `unparseable_dates`. Mail rows partition exactly:
+  `visible_messages + scope_excluded_messages + ancestry_invalid_messages =
+  mail_messages_total`.
 
 The text table renders the same report in four parts: `CONTACTS` with a
 `TOTAL` row, `MONTHS (UTC)`, `REQUESTS` and `GAPS`.
@@ -80,7 +83,22 @@ The text table renders the same report in four parts: `CONTACTS` with a
 - Contact: a visible `mail_messages` row. Its time is `received_at`, and
   only a timezone-aware value counts. Months are UTC `YYYY-MM`. A missing,
   naive or invalid time is still counted as a message, but it is undated:
-  it gets no month and does not count toward first or last contact.
+  it gets no month and does not count toward first or last contact. A
+  value whose UTC normalization overflows the calendar (for example
+  `0001-01-01T00:00:00+01:00`) is invalid in the same way, for messages and
+  request dates alike. First and last contact, per row and in `totals`, are
+  chosen by comparing instants, never ISO text.
+- Ancestry (fail closed): each occurrence's parent chain is followed up to
+  100 links. If any link met on the way, valid lineage or not, has a
+  scope-excluded original, the occurrence and everything under it is
+  excluded (counted in `scope_excluded_*`). Otherwise a missing parent, a
+  cycle or a chain over the bound makes the lineage invalid: the occurrence
+  is withheld from every row and counted in `ancestry_invalid_occurrences`.
+  A mail row whose occurrence is absent or invalid is never attributed by
+  its own original; it is counted in `ancestry_invalid_messages`. A portal
+  item whose recorded notice occurrence is absent or invalid is counted in
+  `ancestry_invalid_portal_items`, and one whose notice is excluded is
+  dropped.
 - Direction: derived from the folder name only. If the last hierarchy
   segment, split on `/` or `.` and case-folded, is `sent`, `sent mail`,
   `sent items` or `sent messages`, the message counts as sent. Everything
