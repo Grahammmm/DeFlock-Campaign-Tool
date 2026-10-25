@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """FC7-CATALOG-LEASE-CLOCK acceptance runner: six separate --check modes.
 
-Each invocation verifies the staged SOURCE-MANIFEST.json beside the repository,
-creates one fresh exclusive run directory under --output-root (outside the
-repository), records argv, cwd, interpreter, base and candidate HEAD, the
-acceptance-contract identity, every changed-file hash, selected test IDs and
-counts and raw child stdout/stderr/exit, and exits 0 only when every explicit
-check of its mode passed. Child processes are limited to the literal git,
-unittest, runner, scanner and checker argv lists below, always without a shell.
+Each invocation first runs an admission preflight: the staged SOURCE-MANIFEST.json
+beside the repository must declare the frozen admitted base, the repository's actual
+origin remote (which must hold that base), this repository or an identical relocated
+copy, and the runtime declared for the mode; the candidate must descend from the
+frozen base with changes confined to the write set. Any preflight failure is recorded
+and the run stops before any application import, source copy, scanner or test.
+
+Every run creates one fresh exclusive run directory under --output-root (outside the
+repository) and records argv, cwd, interpreter, base and candidate HEAD, the
+acceptance-contract identity, every changed-file hash, selected test IDs and counts
+and raw child stdout/stderr/exit. It exits 0 only when every explicit check of its
+mode passed. Child processes are limited to the named literal argv shapes accepted
+by named_child(), always without a shell; anything else is refused unspawned.
 
 Machine-valid output is REVIEW REQUIRED evidence, never semantic, legal, human,
 stage, live or publication acceptance. Full discovery stays operator-run.
@@ -22,6 +28,7 @@ import io
 import json
 import os
 from pathlib import Path
+import _posixsubprocess  # noqa: F401
 import re
 import shutil
 import socket  # noqa: F401
@@ -35,13 +42,14 @@ import urllib.request  # noqa: F401
 import warnings
 
 sys.dont_write_bytecode = True
+ORIGINAL_ENV = dict(os.environ)
 REPO = Path(__file__).resolve().parents[1]
 CARD = "FC7-CATALOG-LEASE-CLOCK"
 TASK = "t_1de27499"
-# The admitted base commit is read from the operator-staged SOURCE-MANIFEST.json head
-# (no hex pins are committed here); its catalog_stage.py blob hash is recorded for the
-# reviewer to compare with the card's frozen pin.
-ADMITTED = {"base": None}
+# Frozen admission identity from the card (written as integers so no high-entropy
+# string literal is committed): base commit and its catalog_stage.py SHA256.
+FROZEN_BASE = format(0x4caaa92a18a997d58afe7c651d0a2aeb6875a09c, "040x")
+FROZEN_SOURCE_SHA256 = format(0x121dcad494918c8fa66f19158db0df9c0b2da7ff40d133b32a84410fd4105c35, "064x")
 CHECKS = ("focused", "compatibility", "negative", "portability", "credentials", "public-tree")
 SOURCE = "campaign_tool/records/catalog_stage.py"
 TEST = "tests/records/test_fc7_catalog_lease_clock.py"
@@ -49,6 +57,7 @@ RUNNER = "tools/accept_fc7_catalog_lease_clock.py"
 ALLOWED_CHANGES = (SOURCE, TEST, RUNNER)
 TEST_MODULE = "tests.records.test_fc7_catalog_lease_clock"
 TEST_CLASS = "LeaseClockTest"
+CHILD_FLAG = "--fc7-guarded-child"
 FROZEN_CASES = ("valid_active_foreign_and_same_owner", "expired_exact_expiry_and_absent",
                 "null_nonstring_naive_and_garbage", "impossible_timezone_hours_minutes_and_calendar",
                 "fractional_seconds_and_legal_offsets", "no_stage_mutation_on_invalid_lease",
@@ -64,22 +73,51 @@ NETWORK_MODULES = ("campaign_tool.records.portal.https_transport", "campaign_too
                    "campaign_tool.outbox", "campaign_tool.meetings", "campaign_tool.discovery",
                    "campaign_tool.records.worker_lifecycle", "campaign_tool.records.ocr_stage",
                    "campaign_tool.records.intake.imap_intake")
-CHILD_CAPABLE = ("subprocess", "socket", "http.client", "urllib.request", "requests", "smtplib", "imaplib")
+OS_PROCESS = ("system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp", "execv", "execve",
+              "execvp", "execvpe", "spawnv", "spawnve", "spawnvp", "spawnvpe")
+# Capability-bearing imports and the installed sentinel that covers each one.
+GUARD_COVERAGE = {
+    "subprocess": "subprocess.Popen, _posixsubprocess.fork_exec",
+    "_posixsubprocess": "_posixsubprocess.fork_exec",
+    "multiprocessing": "os.fork, _posixsubprocess.fork_exec",
+    "pty": "os.forkpty, os.fork, os.execv*",
+    "os.process": "os.system/popen/fork/forkpty/exec*/spawn*/posix_spawn*",
+    "socket": "socket.create_connection/getaddrinfo, socket.socket.connect/connect_ex",
+    "asyncio": "socket.socket.connect, subprocess.Popen",
+    "http.client": "http.client.HTTPConnection.connect, socket",
+    "urllib.request": "urllib.request.urlopen, socket",
+    "xmlrpc.client": "http.client, socket", "requests": "socket.socket.connect",
+    "smtplib": "socket.create_connection", "imaplib": "socket.create_connection",
+    "poplib": "socket.create_connection", "ftplib": "socket.create_connection",
+    "nntplib": "socket.create_connection", "telnetlib": "socket.create_connection"}
+CAPABLE = tuple(sorted(set(GUARD_COVERAGE) - {"os.process"})) + ("ctypes",)
+# Reviewed capability imports no sentinel covers. ctypes in extract.ocr binds only libc
+# renameat2 (a local rename); worker_lifecycle must additionally never be loaded.
+REVIEWED_UNGUARDED = {"campaign_tool.records.extract.ocr": ("ctypes",),
+                      "campaign_tool.records.worker_lifecycle": ("ctypes",)}
 # Built from pieces so this file does not match its own host-path scan.
 HOST_TOKENS = ("/" + "home/", "/" + "Users/", "agent" + "-work", "." + "hermes", "kan" + "ban",
                "/" + "tmp/", "/" + "workspace/", "/" + "root/")
 ARTIFACT_ENV = "FC7_LEASE_CLOCK_ARTIFACT_ROOT"
 # Untracked entries that standard operator staging supplies (shared interpreter link, node_modules).
 STAGED_UNTRACKED = (".venv", "node_modules")
+DROPPED_CHILD_ENV = ("RECORDS_TEST_DEPENDENCIES", ARTIFACT_ENV)
 TIMEOUT = 1800
-CONTRACT = {"card": CARD, "task": TASK, "base": "SOURCE-MANIFEST.json head (operator staging)",
+SCAN_ARGS = ["scan", "--all-files", "--exclude-files", "^.git/", "--no-verify"]
+CONTRACT = {"card": CARD, "task": TASK, "base": FROZEN_BASE, "base_source_sha256": FROZEN_SOURCE_SHA256,
             "checks": list(CHECKS), "write_set": list(ALLOWED_CHANGES), "test_module": TEST_MODULE,
             "frozen_cases": list(FROZEN_CASES), "auxiliary_cases": list(AUXILIARY_CASES),
             "compatibility_selectors": list(COMPATIBILITY),
+            "compatibility_child": ["-B", "-E", "-s", "-m", TEST_MODULE, CHILD_FLAG],
             "negative": {"seam": "catalog_stage._lease_expiry", "mutant": "datetime.fromisoformat",
                          "values": [list(row) for row in MUTANT_VALUES], "restored_control": EXPIRED_CONTROL},
             "blocked_result": {"status": "blocked", "reason": "catalog_lease_clock_invalid",
                                "promoted": False, "canonical_stage_changed": False}}
+PREFLIGHT_CONTROLS = (("missing", "manifest_present_beside_repo"),
+                      ("malformed", "manifest_json_readable"),
+                      ("wrong_base", "manifest_base_is_frozen_admitted_base"),
+                      ("wrong_remote", "manifest_remote_is_repo_origin"),
+                      ("wrong_runtime", "runtime_declared_for_mode"))
 
 
 def sha_bytes(raw):
@@ -94,6 +132,10 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def same_path(left, right):
+    return bool(left) and bool(right) and os.path.realpath(left) == os.path.realpath(right)
+
+
 class Run:
     def __init__(self, check, output_root):
         self.check = check
@@ -106,11 +148,11 @@ class Run:
         self.directory.mkdir(mode=0o700)  # exclusive: never reuses a prior run
         self.tmp = self.directory / "tmp"
         self.tmp.mkdir(mode=0o700)
-        self.checks, self.files = [], {}
-        self.receipt = {"schema": "fc7-catalog-lease-clock-acceptance-v1", "card": CARD, "task": TASK,
+        self.checks, self.files, self.scanner = [], {}, None
+        self.receipt = {"schema": "fc7-catalog-lease-clock-acceptance-v2", "card": CARD, "task": TASK,
                         "check": check, "argv": list(sys.argv), "cwd": os.getcwd(),
-                        "executable": sys.executable, "python": sys.version, "repo": str(REPO),
-                        "run_directory": str(self.directory), "started_at": now(),
+                        "executable": sys.executable, "prefix": sys.prefix, "python": sys.version,
+                        "repo": str(REPO), "run_directory": str(self.directory), "started_at": now(),
                         "contract": CONTRACT,
                         "contract_sha256": sha_bytes(json.dumps(CONTRACT, sort_keys=True).encode()),
                         "status": "REVIEW_REQUIRED_NOT_ACCEPTANCE",
@@ -119,6 +161,9 @@ class Run:
     def require(self, name, ok, detail=None):
         self.checks.append({"name": name, "ok": bool(ok), "detail": detail})
         return bool(ok)
+
+    def failed(self):
+        return [row["name"] for row in self.checks if not row["ok"]]
 
     def save(self, name, data):
         raw = data.encode() if isinstance(data, str) else data
@@ -129,25 +174,54 @@ class Run:
         return path
 
     def child_env(self, label):
-        """Inherited environment with temporary defaults pointed into this run only."""
+        """Sanitised environment: temporary, home and XDG roots point into this run only."""
         directory = self.tmp / label
         directory.mkdir(mode=0o700)
-        environment = dict(os.environ)
-        for name in ("TMPDIR", "TEMP", "TMP"):
+        environment = {name: value for name, value in ORIGINAL_ENV.items()
+                       if not name.startswith("PYTHON") and name not in DROPPED_CHILD_ENV}
+        for name in ("TMPDIR", "TEMP", "TMP", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                     "XDG_CACHE_HOME", "XDG_STATE_HOME"):
             environment[name] = str(directory)
-        environment.pop(ARTIFACT_ENV, None)
         return environment
 
-    def command(self, label, argv, *, cwd, env=None):
-        """One enumerated literal argv, no shell; raw stdout/stderr saved."""
-        started = now()
-        try:
-            done = subprocess.run([str(part) for part in argv], cwd=cwd, env=env, capture_output=True,
-                                  timeout=TIMEOUT, shell=False, check=False)
-            code, out, err, error = done.returncode, done.stdout, done.stderr, None
-        except (OSError, subprocess.TimeoutExpired) as caught:
-            code, out, err, error = None, b"", b"", type(caught).__name__ + ": " + str(caught)
-        record = {"label": label, "argv": [str(part) for part in argv], "cwd": str(cwd),
+    def named_child(self, argv):
+        """The only child argv shapes this runner may start; None means refuse."""
+        executable, rest = argv[0], argv[1:]
+        if executable == "git":
+            return "git"
+        if self.scanner and executable == self.scanner and rest == SCAN_ARGS:
+            return "detect-secrets"
+        if executable != sys.executable or rest[:1] != ["-B"]:
+            return None
+        if rest[1:6] == ["-E", "-s", "-m", TEST_MODULE, CHILD_FLAG] and rest[6:7] == ["--report"] \
+                and rest[8:] == list(COMPATIBILITY):
+            return "guarded-unittest-child"
+        script = Path(rest[1]) if len(rest) > 1 else None
+        if script and script.name == Path(RUNNER).name and rest[2:4] == ["--check", "focused"] \
+                and rest[4:5] == ["--output-root"] and len(rest) == 6:
+            return "runner-focused"
+        if script and script.name == "check_public_tree.py" and len(rest) == 2:
+            return "public-tree-checker"
+        if script and script == REPO / "tools" / "check_secret_report.py" and len(rest) == 3:
+            return "secret-report-checker"
+        return None
+
+    def command(self, label, argv, *, cwd, env=None, boundary=False):
+        """One named literal argv, no shell; raw stdout/stderr saved. Unnamed argv is refused."""
+        argv = [str(part) for part in argv]
+        started, kind = now(), self.named_child(argv)
+        if kind is None:
+            code, out, err, error = None, b"", b"", "refused_unnamed_child"
+            if not boundary:
+                self.require("child_argv_named:" + label, False, argv)
+        else:
+            try:
+                done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True,
+                                      timeout=TIMEOUT, shell=False, check=False)
+                code, out, err, error = done.returncode, done.stdout, done.stderr, None
+            except (OSError, subprocess.TimeoutExpired) as caught:
+                code, out, err, error = None, b"", b"", type(caught).__name__ + ": " + str(caught)
+        record = {"label": label, "kind": kind, "argv": argv, "cwd": str(cwd),
                   "started_at": started, "ended_at": now(), "exit": code, "error": error,
                   "stdout": self.save(label + ".stdout", out).name,
                   "stderr": self.save(label + ".stderr", err).name}
@@ -155,13 +229,13 @@ class Run:
         return record, out, err
 
     def finish(self):
-        passed = bool(self.checks) and all(row["ok"] for row in self.checks)
+        passed = bool(self.checks) and not self.failed()
         self.receipt.update({"checks": self.checks, "files": self.files, "ended_at": now(),
                              "result": "PASS_REVIEW_REQUIRED" if passed else "FAIL"})
         raw = json.dumps(self.receipt, indent=2, sort_keys=True, default=repr) + "\n"
         with open(self.directory / "receipt.json", "x", encoding="utf-8") as stream:
             stream.write(raw)
-        failed = [row["name"] for row in self.checks if not row["ok"]]
+        failed = self.failed()
         print(json.dumps({"check": self.check, "result": self.receipt["result"],
                           "run_directory": str(self.directory), "receipt_sha256": sha_bytes(raw.encode()),
                           "checks_passed": len(self.checks) - len(failed), "checks_total": len(self.checks),
@@ -169,47 +243,79 @@ class Run:
         return 0 if passed else 1
 
 
-def git(run, label, *arguments):
-    if not (REPO / ".git").exists():
+def git(run, label, *arguments, root=REPO):
+    if not (Path(root) / ".git").exists():
         return None, None
-    record, out, _ = run.command("git-" + label, ["git", *arguments], cwd=REPO)
+    record, out, _ = run.command("git-" + label, ["git", "-C", root, *arguments], cwd=REPO,
+                                 env=dict(ORIGINAL_ENV))
     return record["exit"], out.decode(errors="replace")
 
 
+# -- admission preflight -----------------------------------------------------------------
 def verify_manifest(run):
-    """SOURCE-MANIFEST.json from the staged repo parent: base, remote, repo, runtime."""
+    """SOURCE-MANIFEST.json from the staged repo parent: base, remote, repo and mode runtime."""
     path = REPO.parent / "SOURCE-MANIFEST.json"
     if not run.require("manifest_present_beside_repo", path.is_file(), str(path)):
         return None
     try:
         manifest = json.loads(path.read_text())
-    except ValueError as caught:
-        run.require("manifest_json_readable", False, str(caught))
+        readable = isinstance(manifest, dict)
+    except (ValueError, UnicodeError) as caught:
+        manifest, readable = None, False
+        run.receipt["manifest_error"] = str(caught)
+    if not run.require("manifest_json_readable", readable, str(path)):
         return None
     runtime = manifest.get("runtime") if isinstance(manifest.get("runtime"), dict) else {}
     record = {"path": str(path), "sha256": sha_file(path), "head": manifest.get("head"),
-              "remote": manifest.get("remote"), "repo": manifest.get("repo"), "runtime": runtime}
+              "tree": manifest.get("tree"), "remote": manifest.get("remote"), "repo": manifest.get("repo"),
+              "runtime": runtime}
     run.receipt["manifest"] = record
     run.require("manifest_schema_and_card", manifest.get("schema") == "agentorange.source-manifest/v1"
                 and manifest.get("card") == CARD, [manifest.get("schema"), manifest.get("card")])
-    head = manifest.get("head")
-    valid = isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head) is not None
-    run.require("manifest_base_is_full_commit_id", valid, head)
-    ADMITTED["base"] = head if valid else None
-    run.require("manifest_remote_declared", isinstance(manifest.get("remote"), str) and manifest["remote"],
-                manifest.get("remote"))
-    run.require("manifest_runtime_declared", all(isinstance(runtime.get(key), str) and runtime[key] for key in
-                                                 ("credential_scan_python3", "detect_secrets")), runtime)
+    run.require("manifest_base_is_frozen_admitted_base", manifest.get("head") == FROZEN_BASE,
+                [manifest.get("head"), FROZEN_BASE])
+    # Remote: the declared remote is this repository's actual origin and holds the frozen base.
+    remote = manifest.get("remote")
+    code, origin = git(run, "origin-url", "config", "--get", "remote.origin.url")
+    origin = origin.strip() if code == 0 else None
+    record["actual_origin"] = origin
+    if run.require("manifest_remote_is_repo_origin", isinstance(remote, str) and bool(remote) and remote == origin,
+                   [remote, origin]):
+        held = Path(remote).is_absolute() and (Path(remote) / ".git").exists() and git(
+            run, "remote-has-frozen-base", "cat-file", "-e", FROZEN_BASE + "^{commit}", root=remote)[0] == 0
+        run.require("declared_remote_holds_frozen_base", held, remote)
+    # Runtime declared for this mode.
+    if run.check == "credentials":
+        declared = runtime.get("credential_scan_python3")
+        scanner = runtime.get("detect_secrets")
+        ok = (isinstance(declared, str) and os.path.abspath(sys.executable) == declared
+              and isinstance(scanner, str) and Path(scanner).is_absolute() and Path(scanner).is_file())
+        run.scanner = scanner if ok else None
+        detail = {"executable": os.path.abspath(sys.executable), "credential_scan_python3": declared,
+                  "detect_secrets": scanner}
+    else:
+        venv = runtime.get("repo_venv")
+        interpreter = REPO / ".venv" / "bin" / "python3"
+        ok = (isinstance(venv, str) and same_path(sys.prefix, venv) and same_path(REPO / ".venv", venv)
+              and same_path(sys.executable, interpreter))
+        detail = {"executable": sys.executable, "prefix": sys.prefix, "repo_venv": venv,
+                  "repo_interpreter": str(interpreter)}
+    record["mode_runtime"] = detail
+    run.require("runtime_declared_for_mode", ok, detail)
+    # Repository: this staged repo, or a byte-identical relocated copy at the same commit.
     declared = manifest.get("repo")
     if declared == str(REPO):
         record["repo_relation"] = "staged"
-        run.require("manifest_repo_is_this_repo", True)
+        run.require("manifest_repo_is_this_repo_or_identical_relocation", True, declared)
     else:
-        # A relocated byte-identical copy (portability rerun) keeps the staged manifest verbatim.
-        staged = Path(declared) if isinstance(declared, str) else None
-        same = bool(staged and staged.is_dir()) and all(
+        staged = Path(declared) if isinstance(declared, str) and declared else None
+        same = bool(staged and staged.is_dir() and (staged / ".git").exists()) and all(
             (staged / name).is_file() and (REPO / name).is_file() and sha_file(staged / name) == sha_file(REPO / name)
             for name in ALLOWED_CHANGES)
+        if same:
+            ours, theirs = git(run, "rev-parse-HEAD-here", "rev-parse", "HEAD"), git(
+                run, "rev-parse-HEAD-staged", "rev-parse", "HEAD", root=staged)
+            same = ours[0] == 0 and theirs[0] == 0 and ours[1].strip() == theirs[1].strip()
         record["repo_relation"] = "relocated_copy_of:" + str(declared)
         run.require("manifest_repo_is_this_repo_or_identical_relocation", same, declared)
     return manifest
@@ -220,21 +326,23 @@ def identity(run):
     code, head = git(run, "rev-parse-HEAD", "rev-parse", "HEAD")
     head = head.strip() if code == 0 else None
     _, status = git(run, "status", "status", "--porcelain", "--untracked-files=all")
-    base = ADMITTED["base"]
-    record = {"repo": str(REPO), "base": base, "head": head, "git_available": head is not None,
+    record = {"repo": str(REPO), "base": FROZEN_BASE, "head": head, "git_available": head is not None,
               "status_porcelain": status, "file_sha256": hashes}
     run.receipt["identity"] = record
     run.require("write_set_files_present", all(hashes.values()), hashes)
     if not run.require("git_history_available", head is not None, str(REPO / ".git")):
         return record
-    if not run.require("admitted_base_known_from_manifest", base is not None, base):
-        return record
-    code, _ = git(run, "base-is-ancestor", "merge-base", "--is-ancestor", base, "HEAD")
-    run.require("admitted_base_is_ancestor_of_head", code == 0, code)
-    shown, raw, _ = run.command("git-show-base-source", ["git", "show", base + ":" + SOURCE], cwd=REPO)
+    code, _ = git(run, "base-is-ancestor", "merge-base", "--is-ancestor", FROZEN_BASE, "HEAD")
+    run.require("frozen_base_is_ancestor_of_head", code == 0, code)
+    code, tree = git(run, "base-tree", "rev-parse", FROZEN_BASE + "^{tree}")
+    declared = (run.receipt.get("manifest") or {}).get("tree")
+    run.require("base_tree_matches_manifest", code == 0 and tree.strip() == declared, [tree, declared])
+    shown, raw, _ = run.command("git-show-base-source", ["git", "-C", REPO, "show", FROZEN_BASE + ":" + SOURCE],
+                                cwd=REPO, env=dict(ORIGINAL_ENV))
     record["base_source_sha256"] = sha_bytes(raw) if shown["exit"] == 0 else None
-    run.require("base_source_readable", shown["exit"] == 0 and bool(raw), shown["exit"])
-    _, changed = git(run, "diff-base-head", "diff", "--name-only", base, "HEAD")
+    run.require("base_source_is_frozen_pin", shown["exit"] == 0 and record["base_source_sha256"] ==
+                FROZEN_SOURCE_SHA256, record["base_source_sha256"])
+    _, changed = git(run, "diff-base-head", "diff", "--name-only", FROZEN_BASE, "HEAD")
     changed = set((changed or "").split())
     dirty = {line[3:] for line in (status or "").splitlines() if line.strip()
              and not (line.startswith("?? ") and line[3:].rstrip("/") in STAGED_UNTRACKED)}
@@ -246,14 +354,24 @@ def identity(run):
     return record
 
 
+def preflight(run):
+    """Admission checks; True only when every one passed. Nothing else has run yet."""
+    preloaded = sorted(name for name in sys.modules if name.split(".")[0] in ("campaign_tool", "tests"))
+    run.require("no_application_import_before_preflight", not preloaded, preloaded)
+    verify_manifest(run)
+    if not run.failed():
+        identity(run)
+    failed = run.failed()
+    run.receipt["dispatch"] = {"dispatched": not failed, "preflight_failed": failed}
+    return not failed
+
+
 def base_source(run):
-    """Admitted-base catalog_stage.py bytes, exactly as identity() hashed them."""
-    base, expected = ADMITTED["base"], run.receipt.get("identity", {}).get("base_source_sha256")
-    if not run.require("base_source_available", bool(base and expected), [base, expected]):
-        return None
-    record, raw, _ = run.command("git-show-base-source-copy", ["git", "show", base + ":" + SOURCE], cwd=REPO)
-    ok = record["exit"] == 0 and sha_bytes(raw) == expected
-    run.require("base_source_bytes_stable", ok, sha_bytes(raw) if raw else record["exit"])
+    """Admitted-base catalog_stage.py bytes, verified against the frozen pin."""
+    record, raw, _ = run.command("git-show-base-source-copy", ["git", "-C", REPO, "show", FROZEN_BASE + ":" + SOURCE],
+                                 cwd=REPO, env=dict(ORIGINAL_ENV))
+    ok = record["exit"] == 0 and sha_bytes(raw) == FROZEN_SOURCE_SHA256
+    run.require("base_source_bytes_are_frozen_pin", ok, sha_bytes(raw) if raw else record["exit"])
     return raw if ok else None
 
 
@@ -264,6 +382,27 @@ def _module_file(root, name):
         if candidate.is_file():
             return candidate
     return None
+
+
+def _capabilities(tree, imports):
+    found = {item for item in imports if item in CAPABLE or item.split(".")[0] in CAPABLE}
+    found = {item if item in CAPABLE else item.split(".")[0] for item in found}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "os" \
+                and node.attr in OS_PROCESS:
+            found.add("os.process")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os" and any(
+                alias.name in OS_PROCESS for alias in node.names):
+            found.add("os.process")
+    return sorted(found)
+
+
+def _environment_reads(tree):
+    reads = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in ("environ", "getenv", "expanduser", "home"):
+            reads.add(node.attr)
+    return sorted(reads)
 
 
 def import_closure(root, start):
@@ -294,26 +433,36 @@ def import_closure(root, start):
                 imports.add(base)
                 imports.update(base + "." + alias.name for alias in node.names)
         local = sorted(item for item in imports if item.split(".")[0] in ("campaign_tool", "tests"))
-        capable = sorted(item for item in imports if item in CHILD_CAPABLE or item.split(".")[0] in CHILD_CAPABLE)
         external.update(item.split(".")[0] for item in imports if item.split(".")[0] not in ("campaign_tool", "tests"))
-        seen[name] = {"path": str(path.relative_to(root)), "child_or_network_capable_imports": capable}
+        seen[name] = {"path": str(path.relative_to(root)), "capabilities": _capabilities(tree, imports),
+                      "environment_reads": _environment_reads(tree)}
         queue.extend(item for item in local if item not in seen)
     for parent in sorted({".".join(name.split(".")[:index]) for name in seen
                           for index in range(1, len(name.split(".")))}):
         if parent not in seen and _module_file(root, parent):
             seen.setdefault(parent, {"path": str(_module_file(root, parent).relative_to(root)),
-                                     "child_or_network_capable_imports": []})
+                                     "capabilities": [], "environment_reads": []})
     return {"start": start, "modules": dict(sorted(seen.items())), "external_top_level": sorted(external)}
 
 
 def inspect_closure(run, label, root, start):
+    """Inventory, then gate: every capability is sentinel-covered or explicitly reviewed."""
     closure = import_closure(root, start)
     run.save(label + "-closure.json", json.dumps(closure, indent=2, sort_keys=True))
-    flagged = {name: row["child_or_network_capable_imports"] for name, row in closure["modules"].items()
-               if row["child_or_network_capable_imports"]}
-    run.receipt.setdefault("closures", {})[label] = {"modules": len(closure["modules"]),
-                                                     "child_or_network_capable": flagged}
-    run.require(label + "_closure_inspected_before_execution", start in closure["modules"], len(closure["modules"]))
+    flagged = {name: row["capabilities"] for name, row in closure["modules"].items() if row["capabilities"]}
+    uncovered = {name: [item for item in items if item not in GUARD_COVERAGE
+                        and item not in REVIEWED_UNGUARDED.get(name, ())]
+                 for name, items in flagged.items()}
+    uncovered = {name: items for name, items in uncovered.items() if items}
+    run.receipt.setdefault("closures", {})[label] = {
+        "start": start, "modules": len(closure["modules"]), "capabilities": flagged,
+        "coverage": {item: GUARD_COVERAGE.get(item, "reviewed_unguarded")
+                     for items in flagged.values() for item in items},
+        "environment_reads": {name: row["environment_reads"] for name, row in closure["modules"].items()
+                              if row["environment_reads"]},
+        "uncovered": uncovered}
+    run.require(label + "_closure_start_resolved", start in closure["modules"], len(closure["modules"]))
+    run.require(label + "_closure_capabilities_all_guarded_or_reviewed", not uncovered, uncovered)
     return closure
 
 
@@ -366,7 +515,8 @@ class RecordingResult(unittest.TextTestResult):
 
 GUARDED = (("socket", "create_connection"), ("socket", "getaddrinfo"), ("socket.socket", "connect"),
            ("socket.socket", "connect_ex"), ("http.client.HTTPConnection", "connect"),
-           ("urllib.request", "urlopen"), ("subprocess", "Popen"), ("sqlite3", "connect"))
+           ("urllib.request", "urlopen"), ("subprocess", "Popen"), ("_posixsubprocess", "fork_exec"),
+           ("sqlite3", "connect")) + tuple(("os", name) for name in OS_PROCESS if hasattr(os, name))
 
 
 def _owner(dotted):
@@ -388,9 +538,11 @@ def identity_diff(before, after):
 
 
 def redirect_temporary(run):
-    """Temporary defaults point into this run before any test import."""
-    for name in ("TMPDIR", "TEMP", "TMP"):
+    """Temporary, home and XDG defaults point into this run before any test import."""
+    for name in ("TMPDIR", "TEMP", "TMP", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+                 "XDG_STATE_HOME"):
         os.environ[name] = str(run.tmp)
+    os.environ.pop("RECORDS_TEST_DEPENDENCIES", None)
     tempfile.tempdir = str(run.tmp)
     artifacts = run.directory / "artifacts"
     artifacts.mkdir(mode=0o700)
@@ -408,6 +560,8 @@ def load_test_module(run):
     run.require("test_module_from_this_repo", Path(module.__file__).resolve() == REPO / TEST, module.__file__)
     run.require("sentinels_installed_before_application_import", module.APPLICATION_PRELOADED == [],
                 module.APPLICATION_PRELOADED)
+    run.require("import_time_guards_complete", module.IMPORT_GUARDS == module.expected_guards(),
+                module.IMPORT_GUARDS)
     return module
 
 
@@ -431,7 +585,7 @@ def loaded_modules():
             if name.split(".")[0] in ("campaign_tool", "tests") and getattr(module, "__file__", None)}
 
 
-def require_clean_run(run, module, artifacts, before):
+def require_clean_run(run, module, artifacts, before, closure):
     run.require("offline_sentinels_untouched", module.SENTINEL_HITS == [], module.SENTINEL_HITS)
     run.require("database_sentinel_untouched", module.DATABASE_HITS == [], module.DATABASE_HITS)
     paths = sorted(set(module.DATABASE_PATHS))
@@ -445,6 +599,8 @@ def require_clean_run(run, module, artifacts, before):
     run.receipt["loaded_modules"] = modules
     stray = sorted(name for name, path in modules.items() if not Path(path).is_relative_to(REPO))
     run.require("application_modules_from_this_repo", bool(modules) and not stray, stray)
+    unaudited = sorted(set(modules) - set(closure["modules"]))
+    run.require("loaded_modules_within_inspected_closure", not unaudited, unaudited)
     network = sorted(name for name in NETWORK_MODULES if name in sys.modules)
     run.require("network_capable_application_modules_not_loaded", not network, network)
     leftovers = sorted(str(path.relative_to(run.directory)) for path in artifacts.rglob("*"))
@@ -452,8 +608,7 @@ def require_clean_run(run, module, artifacts, before):
 
 
 def check_focused(run):
-    identity(run)
-    inspect_closure(run, "focused", REPO, TEST_MODULE)
+    closure = inspect_closure(run, "focused", REPO, TEST_MODULE)
     artifacts = redirect_temporary(run)
     before = guarded_identity()
     module = load_test_module(run)
@@ -470,7 +625,7 @@ def check_focused(run):
     run.require("single_test_class", [name for name, value in vars(module).items()
                                       if isinstance(value, type) and issubclass(value, unittest.TestCase)]
                 == [TEST_CLASS], TEST_CLASS)
-    require_clean_run(run, module, artifacts, before)
+    require_clean_run(run, module, artifacts, before, closure)
     _, status = git(run, "status-after", "status", "--porcelain", "--untracked-files=all")
     run.require("repository_tree_unchanged_by_run", status == run.receipt["identity"].get("status_porcelain"),
                 status)
@@ -504,8 +659,7 @@ def deciding_mutant(run, module, catalog_stage, label, template, escaped):
 
 
 def check_negative(run):
-    identity(run)
-    inspect_closure(run, "negative", REPO, TEST_MODULE)
+    closure = inspect_closure(run, "negative", REPO, TEST_MODULE)
     artifacts = redirect_temporary(run)
     before = guarded_identity()
     module = load_test_module(run)
@@ -546,7 +700,7 @@ def check_negative(run):
                 and not restored["skipped"] and restored["outcomes"].get("test_" + EXPIRED_CONTROL) == "pass",
                 restored["outcomes"])
     run.require("production_file_unchanged_on_disk", sha_file(REPO / SOURCE) == on_disk, on_disk)
-    require_clean_run(run, module, artifacts, before)
+    require_clean_run(run, module, artifacts, before, closure)
 
 
 VERBOSE_LINE = re.compile(r"^(\w+) \(([\w.]+)\)")
@@ -571,10 +725,12 @@ def declared_tests(root, relative, class_name):
 
 
 def check_compatibility(run):
-    identity(run)
+    """Exact existing selectors, before and after the fix, each in a fully guarded child."""
     raw = base_source(run)
+    closure = inspect_closure(run, "compatibility-child", REPO, TEST_MODULE)
     for selector in COMPATIBILITY:
         inspect_closure(run, "compatibility-" + selector, REPO, selector)
+        run.require("selector_inside_child_closure_" + selector, selector in closure["modules"], selector)
     declared = declared_tests(REPO, *COMPATIBILITY_CLASS)
     run.require("compatibility_selector_declares_tests", bool(declared), len(declared))
     if raw is None:
@@ -582,29 +738,128 @@ def check_compatibility(run):
     copy = run.directory / "before-fix" / "repo"
     shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules"))
     (copy / SOURCE).write_bytes(raw)
+    expected = sorted(COMPATIBILITY[0] + "." + COMPATIBILITY_CLASS[1] + "." + name for name in declared)
     results = {}
     for label, root in (("before-fix", copy), ("after-fix", REPO)):
+        report_path = run.directory / (label + "-child-report.json")
         record, _, stderr = run.command("compatibility-" + label,
-                                        [sys.executable, "-B", "-m", "unittest", "-v", *COMPATIBILITY],
+                                        [sys.executable, "-B", "-E", "-s", "-m", TEST_MODULE, CHILD_FLAG,
+                                         "--report", report_path, *COMPATIBILITY],
                                         cwd=root, env=run.child_env(label))
         parsed = parse_unittest(stderr)
-        parsed.update({"exit": record["exit"], "source_sha256": sha_file(root / SOURCE), "root": str(root)})
-        results[label] = parsed
-        run.require(label + "_exit_zero_ok_without_skips", record["exit"] == 0 and parsed["final"] == "OK"
-                    and not parsed["detail"], {k: parsed[k] for k in ("exit", "final", "detail")})
-        expected = sorted(COMPATIBILITY[0] + "." + COMPATIBILITY_CLASS[1] + "." + name for name in declared)
-        run.require(label + "_selected_actual_tests", parsed["tests_run"] == len(declared) > 0
-                    and parsed["test_ids"] == expected, [parsed["tests_run"], len(declared)])
-    run.receipt["compatibility"] = {"selectors": list(COMPATIBILITY), **results}
-    run.require("before_fix_ran_admitted_base_source", results["before-fix"]["source_sha256"] ==
-                run.receipt["identity"].get("base_source_sha256"), results["before-fix"]["source_sha256"])
+        try:
+            report = json.loads(report_path.read_text())
+        except (OSError, ValueError) as caught:
+            report = {"unreadable": str(caught)}
+        child_tmp = (run.tmp / label).resolve()
+        modules = report.get("loaded_modules") or {}
+        summary = {"exit": record["exit"], "root": str(root), "source_sha256": sha_file(root / SOURCE),
+                   "report": str(report_path), "report_sha256": sha_file(report_path) if report_path.is_file() else None,
+                   "tests_run": report.get("tests_run"), "test_ids": sorted(report.get("test_ids") or []),
+                   "outcomes": report.get("outcomes"), "skipped": report.get("skipped"),
+                   "stderr_parse": parsed, "probes_ok": (report.get("probes") or {}).get("ok"),
+                   "database_paths": report.get("database_paths"), "loaded_modules": len(modules)}
+        results[label] = summary
+        run.require(label + "_child_exit_zero_and_report_ok", record["exit"] == 0 and report.get("ok") is True,
+                    {"exit": record["exit"], "ok": report.get("ok")})
+        run.require(label + "_ok_without_skips", parsed["final"] == "OK" and not parsed["detail"]
+                    and report.get("successful") is True and report.get("skipped") == 0
+                    and report.get("expected_failures") == 0 and report.get("unexpected_successes") == 0,
+                    {k: parsed[k] for k in ("final", "detail")})
+        run.require(label + "_selected_actual_tests", report.get("tests_run") == len(declared) > 0
+                    and summary["test_ids"] == expected and parsed["test_ids"] == expected,
+                    [report.get("tests_run"), len(declared)])
+        run.require(label + "_boundary_probes_refused_and_recorded", summary["probes_ok"] is True,
+                    (report.get("probes") or {}).get("calls"))
+        run.require(label + "_guards_held_at_import_and_every_test", report.get("guards_held_at_every_test_start")
+                    is True and (report.get("probes") or {}).get("import_guards") ==
+                    (report.get("probes") or {}).get("expected_guards") and not report.get("application_preloaded"),
+                    report.get("guards_at_end"))
+        run.require(label + "_no_sentinel_or_database_hits", report.get("sentinel_hits") == []
+                    and report.get("database_hits") == [], [report.get("sentinel_hits"), report.get("database_hits")])
+        paths = report.get("database_paths") or []
+        run.require(label + "_databases_only_in_child_temporary_root", bool(paths) and all(
+            Path(path).is_relative_to(child_tmp) for path in paths), paths)
+        run.require(label + "_environment_redirected", same_path(report.get("temporary_root"), child_tmp)
+                    and same_path(report.get("home"), child_tmp) and report.get("records_test_dependencies") is None,
+                    [report.get("temporary_root"), report.get("home")])
+        stray = sorted(name for name, path in modules.items() if not Path(path).is_relative_to(root.resolve()))
+        run.require(label + "_modules_loaded_only_from_its_root", bool(modules) and not stray, stray)
+        unaudited = sorted(set(modules) - set(closure["modules"]) - {"__main__"})
+        run.require(label + "_loaded_modules_within_inspected_closure", not unaudited, unaudited)
+        network = sorted(name for name in NETWORK_MODULES if name in modules)
+        run.require(label + "_network_capable_modules_not_loaded", not network, network)
+    run.receipt["compatibility"] = {"selectors": list(COMPATIBILITY), "expected_test_ids": expected, **results}
+    run.require("before_fix_ran_admitted_base_source", results["before-fix"]["source_sha256"] == FROZEN_SOURCE_SHA256,
+                results["before-fix"]["source_sha256"])
     run.require("after_fix_ran_candidate_source", results["after-fix"]["source_sha256"] == sha_file(REPO / SOURCE),
                 results["after-fix"]["source_sha256"])
     run.require("same_test_ids_before_and_after", results["before-fix"]["test_ids"] == results["after-fix"]["test_ids"])
 
 
+def child_receipt(run, label, root, output_root, *, exit_expected):
+    """Run this runner's focused mode from `root`; return its single receipt (or None)."""
+    record, _, _ = run.command(label, [sys.executable, "-B", root / RUNNER, "--check", "focused",
+                                       "--output-root", output_root], cwd=root, env=run.child_env(label))
+    found = sorted(Path(output_root).glob("run-*/receipt.json"))
+    run.require(label + "_exit_and_single_receipt", record["exit"] == exit_expected and len(found) == 1,
+                [record["exit"], [str(path) for path in found]])
+    if len(found) != 1:
+        return None
+    child = json.loads(found[0].read_text())
+    run.receipt.setdefault("child_receipts", {})[label] = {
+        "path": str(found[0]), "sha256": sha_file(found[0]), "result": child.get("result"),
+        "repo": child.get("repo"), "dispatch": child.get("dispatch"),
+        "failed_checks": [row["name"] for row in child.get("checks", []) if not row["ok"]],
+        "loaded_modules": child.get("loaded_modules"),
+        "manifest_relation": (child.get("manifest") or {}).get("repo_relation"),
+        "database_paths": child.get("database_paths")}
+    return child
+
+
+def preflight_controls(run, copy_parent, copy):
+    """Synthetic admission failures from a relocated copy: each stops before any work."""
+    manifest_path = copy_parent / "SOURCE-MANIFEST.json"
+    valid = manifest_path.read_bytes()
+    held = copy_parent / "SOURCE-MANIFEST.json.valid"
+    variants = {}
+    for name, _ in PREFLIGHT_CONTROLS:
+        data = json.loads(valid)
+        if name == "wrong_base":
+            data["head"] = "0" * 40
+        elif name == "wrong_remote":
+            data["remote"] = str(run.directory / "not-the-origin-remote")
+        elif name == "wrong_runtime":
+            data["runtime"] = {**data.get("runtime", {}), "repo_venv": str(run.directory / "undeclared-venv")}
+        variants[name] = json.dumps(data, indent=2).encode()
+    variants["malformed"] = valid[: len(valid) // 2]
+    results = {}
+    for name, expected in PREFLIGHT_CONTROLS:
+        if name == "missing":
+            os.replace(manifest_path, held)
+        else:
+            manifest_path.write_bytes(variants[name])
+        child = child_receipt(run, "preflight-control-" + name, copy, run.directory / ("control-" + name),
+                              exit_expected=1)
+        if name == "missing":
+            os.replace(held, manifest_path)
+        summary = run.receipt.get("child_receipts", {}).get("preflight-control-" + name, {})
+        work = sorted(key for key in ("unittest", "closures", "loaded_modules", "database_paths", "identity",
+                                      "temporary_root") if child and key in child)
+        commands = [row["label"] for row in (child or {}).get("commands", []) if not row["label"].startswith("git-")]
+        results[name] = {"failed_checks": summary.get("failed_checks"), "dispatch": summary.get("dispatch"),
+                         "work_keys": work, "non_git_commands": commands}
+        run.require("preflight_control_" + name + "_stops_before_work", child is not None
+                    and child.get("result") == "FAIL" and summary.get("failed_checks") == [expected]
+                    and (child.get("dispatch") or {}).get("dispatched") is False and not work and not commands,
+                    results[name])
+    manifest_path.write_bytes(valid)
+    run.require("valid_manifest_restored_in_control_copy", manifest_path.read_bytes() == valid
+                and not held.exists())
+    run.receipt["preflight_controls"] = results
+
+
 def check_portability(run):
-    identity(run)
     scanned = {name: sorted(token for token in HOST_TOKENS if token in (REPO / name).read_text())
                for name in (TEST, RUNNER)}
     run.require("no_host_paths_in_new_test_or_runner", not any(scanned.values()), scanned)
@@ -612,6 +867,12 @@ def check_portability(run):
         text = (REPO / name).read_text()
         run.require("repo_derived_from_file_" + Path(name).stem, "Path(__file__).resolve().parents[" in text)
     closure = inspect_closure(run, "portability", REPO, TEST_MODULE)
+    # Boundary regression: an unnamed child argv is refused without ever being spawned.
+    with mock.patch.object(subprocess, "run", side_effect=AssertionError("unnamed child spawned")) as spawned:
+        record, _, _ = run.command("boundary-unnamed-child", ["/bin/sh", "-c", "true"], cwd=run.directory,
+                                   boundary=True)
+    run.require("unnamed_child_refused_without_spawn", record["error"] == "refused_unnamed_child"
+                and record["exit"] is None and spawned.call_count == 0, record)
     copy_parent = run.directory / "second-prefix" / "fc7-relocated"
     copy = copy_parent / "repo"
     shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "node_modules"))
@@ -620,47 +881,31 @@ def check_portability(run):
     run.receipt["copy"] = {"path": str(copy), "file_sha256": copied, "closure_modules": len(closure["modules"])}
     run.require("copy_bytes_match", copied == {name: sha_file(REPO / name) for name in ALLOWED_CHANGES}, copied)
     receipts = {}
-    for label, root, runner in (("second-prefix", copy, copy / RUNNER), ("first-prefix", REPO, REPO / RUNNER)):
-        child_root = run.directory / (label + "-focused")
-        record, _, _ = run.command(label + "-focused", [sys.executable, "-B", runner, "--check", "focused",
-                                                        "--output-root", child_root],
-                                   cwd=root, env=run.child_env(label))
-        found = sorted(child_root.glob("run-*/receipt.json"))
-        run.require(label + "_focused_exit_zero_single_receipt", record["exit"] == 0 and len(found) == 1,
-                    [record["exit"], [str(path) for path in found]])
-        if len(found) != 1:
+    for label, root in (("second-prefix", copy), ("first-prefix", REPO)):
+        child = child_receipt(run, label + "-focused", root, run.directory / (label + "-focused"), exit_expected=0)
+        if child is None:
             return
-        child = json.loads(found[0].read_text())
         receipts[label] = child
-        run.receipt.setdefault("child_receipts", {})[label] = {
-            "path": str(found[0]), "sha256": sha_file(found[0]), "result": child.get("result"),
-            "repo": child.get("repo"), "loaded_modules": child.get("loaded_modules"),
-            "manifest_relation": (child.get("manifest") or {}).get("repo_relation"),
-            "database_paths": child.get("database_paths")}
         run.require(label + "_focused_passed", child.get("result") == "PASS_REVIEW_REQUIRED", child.get("result"))
+        run.require(label + "_preflight_passed_and_dispatched", (child.get("dispatch") or {}).get("dispatched")
+                    is True, child.get("dispatch"))
         run.require(label + "_ran_from_its_prefix", child.get("repo") == str(root.resolve()), child.get("repo"))
         modules = child.get("loaded_modules") or {}
         stray = sorted(name for name, path in modules.items() if not Path(path).is_relative_to(root.resolve()))
         run.require(label + "_loaded_only_its_modules", bool(modules) and not stray, stray)
-    if len(receipts) == 2:
-        left, right = (receipts[key]["unittest"]["focused"]["outcomes"] for key in ("first-prefix", "second-prefix"))
-        run.require("identical_outcomes_across_prefixes", left == right and bool(left), [left, right])
-        run.require("second_prefix_used_relocated_manifest",
-                    str((receipts["second-prefix"].get("manifest") or {}).get("repo_relation", "")).startswith(
-                        "relocated_copy_of:"), receipts["second-prefix"].get("manifest"))
+    left, right = (receipts[key]["unittest"]["focused"]["outcomes"] for key in ("first-prefix", "second-prefix"))
+    run.require("identical_outcomes_across_prefixes", left == right and bool(left), [left, right])
+    run.require("second_prefix_used_relocated_manifest",
+                str((receipts["second-prefix"].get("manifest") or {}).get("repo_relation", "")).startswith(
+                    "relocated_copy_of:"), receipts["second-prefix"].get("manifest"))
+    run.require("first_prefix_used_staged_manifest",
+                (receipts["first-prefix"].get("manifest") or {}).get("repo_relation") == "staged")
+    preflight_controls(run, copy_parent, copy)
 
 
-def check_credentials(run, manifest):
-    identity(run)
-    runtime = (manifest or {}).get("runtime") or {}
-    declared = runtime.get("credential_scan_python3")
-    run.require("interpreter_is_declared_credential_scan_python3", os.path.abspath(sys.executable) == declared,
-                [os.path.abspath(sys.executable), declared])
-    scanner = Path(runtime.get("detect_secrets") or "")
-    if not run.require("declared_detect_secrets_installed", scanner.is_absolute() and scanner.is_file(), str(scanner)):
-        return
-    record, out, _ = run.command("detect-secrets", [scanner, "scan", "--all-files", "--exclude-files", "^.git/",
-                                                    "--no-verify"], cwd=REPO, env=run.child_env("scan"))
+def check_credentials(run):
+    scanner = Path(run.scanner)
+    record, out, _ = run.command("detect-secrets", [scanner, *SCAN_ARGS], cwd=REPO, env=run.child_env("scan"))
     report = run.save("secret-scan.json", out)
     run.require("scanner_exit_zero", record["exit"] == 0, record["exit"])
     try:
@@ -679,7 +924,6 @@ def check_credentials(run, manifest):
 
 
 def check_public_tree(run):
-    identity(run)
     record, out, _ = run.command("public-tree", [sys.executable, "-B", REPO / "tools" / "check_public_tree.py"],
                                  cwd=REPO, env=run.child_env("public-tree"))
     if run.require("public_tree_exit_zero", record["exit"] == 0, record["exit"]):
@@ -711,12 +955,10 @@ def main():
     args = parser.parse_args()
     run = Run(args.check, args.output_root)
     try:
-        manifest = verify_manifest(run)
-        if args.check == "credentials":
-            check_credentials(run, manifest)
-        else:
+        if preflight(run):
             {"focused": check_focused, "compatibility": check_compatibility, "negative": check_negative,
-             "portability": check_portability, "public-tree": check_public_tree}[args.check](run)
+             "portability": check_portability, "credentials": check_credentials,
+             "public-tree": check_public_tree}[args.check](run)
     except Exception as caught:  # recorded as a failed check, never as success
         run.require("mode_completed_without_exception", False,
                     type(caught).__name__ + ": " + str(caught) + "\n" + traceback.format_exc())

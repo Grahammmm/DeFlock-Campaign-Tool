@@ -53,9 +53,10 @@ def _decode(raw):
 
 
 # Stored lease expiry: RFC3339-style date-time with explicit Z or signed HH:MM.
-# ASCII digits only; up to six fractional digits (the precision datetime holds).
+# ASCII digits only; any number of fractional digits, truncated to the microseconds
+# datetime holds exactly as the previous fromisoformat parse did (no new precision cap).
 _LEASE_CLOCK = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})"
-                          r"(?:\.([0-9]{1,6}))?(?:(Z)|([+-])([0-9]{2}):([0-9]{2}))")
+                          r"(?:\.([0-9]+))?(?:(Z)|([+-])([0-9]{2}):([0-9]{2}))")
 
 
 def _decision_instant():
@@ -73,7 +74,7 @@ def _lease_expiry(value):
         hours=int(offset_hours), minutes=int(offset_minutes))
     try:
         return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second),
-                        int((fraction or "0").ljust(6, "0")), tzinfo=timezone(offset))
+                        int((fraction or "0")[:6].ljust(6, "0")), tzinfo=timezone(offset))
     except ValueError as error:
         raise CatalogStageError("catalog_lease_clock_invalid") from error
 

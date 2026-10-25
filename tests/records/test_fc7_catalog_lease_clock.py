@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 import http.client
 import os
 from pathlib import Path
+import _posixsubprocess
 import socket
 import sqlite3
 import subprocess
@@ -82,7 +83,14 @@ guarded_connect.fc7_offline_sentinel = "sqlite3.connect"
 NETWORK_TARGETS = ((socket, "create_connection"), (socket, "getaddrinfo"),
                    (socket.socket, "connect"), (socket.socket, "connect_ex"),
                    (http.client.HTTPConnection, "connect"), (urllib.request, "urlopen"))
-EXECUTION_TARGETS = NETWORK_TARGETS + ((subprocess, "Popen"),)
+# Process creation: subprocess.Popen plus the os-level entry points that bypass it and the
+# fork_exec primitive behind subprocess and multiprocessing's spawn/forkserver helpers.
+PROCESS_TARGETS = ((subprocess, "Popen"), (_posixsubprocess, "fork_exec")) + tuple(
+    (os, name) for name in ("system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp",
+                            "execv", "execve", "execvp", "execvpe", "spawnv", "spawnve", "spawnvp", "spawnvpe")
+    if hasattr(os, name))
+EXECUTION_TARGETS = NETWORK_TARGETS + PROCESS_TARGETS
+CHILD_FLAG = "--fc7-guarded-child"
 
 
 def _install(saved, targets, database=True):
@@ -110,6 +118,10 @@ def _restore(saved):
         raise RuntimeError("fc7 sentinel restore failed: " + "; ".join(failed))
 
 
+def expected_guards():
+    return sorted([owner.__name__ + "." + attribute for owner, attribute in EXECUTION_TARGETS] + ["sqlite3.connect"])
+
+
 def guards_active():
     names = [owner.__name__ + "." + attribute for owner, attribute in EXECUTION_TARGETS
              if hasattr(getattr(owner, attribute), "fc7_offline_sentinel")]
@@ -118,8 +130,13 @@ def guards_active():
     return sorted(names)
 
 
+# Network, process and database sentinels cover every application import. As the
+# guarded unittest child (python -m <this module> --fc7-guarded-child ...) they are
+# held for the whole process lifetime instead of being restored after import.
+_HOLD_FOR_PROCESS = __name__ == "__main__" and CHILD_FLAG in sys.argv[1:]
 _import_guard = []
-_install(_import_guard, NETWORK_TARGETS)
+_install(_import_guard, EXECUTION_TARGETS)
+IMPORT_GUARDS = guards_active()
 try:
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
@@ -127,7 +144,8 @@ try:
     from tests.records import test_catalog_stage as shipped
     from campaign_tool.records.ledger import store, stages
 finally:
-    _restore(_import_guard)
+    if not _HOLD_FOR_PROCESS:
+        _restore(_import_guard)
 
 BLOCKED = {"status": "blocked", "reason": "catalog_lease_clock_invalid", "promoted": False,
            "canonical_stage_changed": False}
@@ -373,7 +391,9 @@ class LeaseClockTest(unittest.TestCase):
                       "2026-10-25 00:00:00+00:00", "2026-10-25t00:00:00Z", "2026-10-25T00:00:00z",
                       "20261025T000000Z", "2026-10-25T00:00:00+0000", "2026-10-25T00:00:00+00",
                       "2026-10-25T00:00:00UTC", " 2026-10-25T00:00:00Z", "2026-10-25T00:00:00Z\n",
-                      "2026-10-25T00:00:00.Z", "2026-10-25T00:00:00,5Z", "2026-10-25T00:00:00.1234567Z",
+                      "2026-10-25T00:00:00.Z", "2026-10-25T00:00:00,5Z", "2026-10-25T00:00:00.12a4Z",
+                      "2026-10-25T00:00:00..5Z", "2026-10-25T00:00:00.\uff11Z", "2026-10-25T00:00:00.5 Z",
+                      "2026-10-25T00:00:00.1234567", "2026-10-25T00:00:00.-5Z",
                       "\uff12026-10-25T00:00:00Z", "2026-10-25T00:00:00\u00b100:00",
                       "+2026-10-25T00:00:00Z", "12026-10-25T00:00:00Z"):
             with self.subTest(stored=repr(value)):
@@ -409,22 +429,42 @@ class LeaseClockTest(unittest.TestCase):
                          datetime(2026, 10, 25, 1, 2, 3, 456789, tzinfo=utc))
         for value in ("2026-10-25T00:00:00Z", "2026-10-25T00:00:00.5+05:30", "2026-10-24T16:00:00-08:00"):
             self.assertIsNotNone(parse(value).utcoffset())
+        # Longer fractions keep the previous fromisoformat semantics: any digit count,
+        # truncated to the microseconds datetime holds. No new precision cap.
+        self.assertEqual(parse("2099-10-25T00:00:00.1234567Z"), datetime(2099, 10, 25, 0, 0, 0, 123456, tzinfo=utc))
+        self.assertEqual(parse("2099-10-25T00:00:00.123456700+05:30"),
+                         datetime(2099, 10, 24, 18, 30, 0, 123456, tzinfo=utc))
+        for value in ("2099-10-25T00:00:00.1234567Z", "2099-10-25T00:00:00.123456700+05:30",
+                      "2026-10-25T00:00:00.9999999Z", "2026-10-25T00:00:00.0000005Z",
+                      "2026-10-25T00:00:00." + "7" * 30 + "-08:00", "2026-10-25T00:00:00.000000000+00:00"):
+            with self.subTest(previous_semantics=value):
+                self.assertEqual(parse(value), datetime.fromisoformat(value))
         # Through process(): legal forms one microsecond after the instant stay active ...
         later = self.instant + timedelta(microseconds=1)
-        forms = (later.astimezone(timezone(timedelta(hours=5, minutes=30))).isoformat(),
+        india = timezone(timedelta(hours=5, minutes=30))
+        forms = (later.astimezone(india).isoformat(),
                  later.astimezone(timezone(-timedelta(hours=8))).isoformat(),
-                 later.strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+                 later.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                 later.strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z",
+                 later.astimezone(india).strftime("%Y-%m-%dT%H:%M:%S.%f") + "7+05:30",
+                 "2099-10-25T00:00:00.1234567Z", "2099-10-25T00:00:00.123456700+05:30")
         self.foreign_lease()
         for text in forms:
             with self.subTest(active=text):
                 self.store_expiry(text)
                 with self.no_mutation():
                     self.assertEqual(self.attempt(), FOREIGN)
-        # ... and the exact instant in any legal form is expired, so the stage completes.
-        for text in (self.instant.astimezone(timezone(timedelta(hours=5, minutes=30))).isoformat(),
+        # ... and the exact instant in any legal form is expired, so the stage completes;
+        # sub-microsecond digits truncate onto the instant, as fromisoformat did.
+        for text in (self.instant.astimezone(india).isoformat(),
                      self.instant.astimezone(timezone(-timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S.000-08:00"),
-                     self.instant.strftime("%Y-%m-%dT%H:%M:%SZ")):
-            with self.subTest(exact=text):
+                     self.instant.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     self.instant.strftime("%Y-%m-%dT%H:%M:%S") + ".000000000Z",
+                     self.instant.strftime("%Y-%m-%dT%H:%M:%S") + ".0000009Z",
+                     (self.instant - timedelta(microseconds=1)).strftime("%Y-%m-%dT%H:%M:%S.%f") + "999Z",
+                     (self.instant - timedelta(seconds=1)).astimezone(india).strftime("%Y-%m-%dT%H:%M:%S.%f")
+                     + "0000+05:30"):
+            with self.subTest(exact_or_expired=text):
                 self.fresh()
                 self.foreign_lease()
                 self.store_expiry(text)
@@ -504,13 +544,131 @@ class LeaseClockTest(unittest.TestCase):
         self.assertEqual(self.catalog_status(), "done")
 
     def test_offline_sentinels_held(self):
-        self.assertEqual(guards_active(), sorted([owner.__name__ + "." + attribute
-                                                  for owner, attribute in EXECUTION_TARGETS] +
-                                                 ["sqlite3.connect"]))
+        # Test-body guards, import-time guards and a fail-closed sentinel call (inert:
+        # the sentinel raises before any real target could be reached).
+        self.assertEqual(guards_active(), expected_guards())
+        self.assertEqual(IMPORT_GUARDS, expected_guards())
         self.assertEqual(SENTINEL_HITS, [])
         self.assertEqual(DATABASE_HITS, [])
         self.assertTrue(DATABASE_PATHS)
 
 
+def boundary_probes():
+    """Inert boundary regressions: every guard refuses, and is recorded, before any real target.
+
+    A target is only called when it is the installed sentinel, so a missing guard is
+    reported as a failure without ever reaching a real socket, process or database.
+    """
+    expected = expected_guards()
+    calls, ok = {}, True
+    mark = (len(SENTINEL_HITS), len(DATABASE_HITS), len(DATABASE_PATHS))
+    for owner, attribute in EXECUTION_TARGETS:
+        name, target = owner.__name__ + "." + attribute, getattr(owner, attribute)
+        if not hasattr(target, "fc7_offline_sentinel"):
+            calls[name], ok = "not_guarded_not_called", False
+            continue
+        try:
+            target()
+            calls[name], ok = "not_refused", False
+        except OSError as caught:
+            calls[name] = "refused" if str(caught) == "fc7_offline_sentinel:" + name else "other:" + str(caught)
+            ok = ok and calls[name] == "refused"
+    outside = REPO / ".fc7-boundary-probe-must-not-exist.sqlite3"
+    database = {"outside": str(outside), "inside": None}
+    if hasattr(sqlite3.connect, "fc7_offline_sentinel"):
+        try:
+            sqlite3.connect(outside.as_uri() + "?mode=ro", uri=True).close()
+            database["outside_result"], ok = "not_refused", False
+        except PermissionError as caught:
+            database["outside_result"] = "refused" if str(caught).startswith("fc7_database_sentinel:") else str(caught)
+            ok = ok and database["outside_result"] == "refused"
+        inside = Path(tempfile.gettempdir()) / "fc7-boundary-probe.sqlite3"
+        sqlite3.connect(inside).close()
+        database.update({"inside": str(inside.resolve()), "inside_result": "allowed"})
+    else:
+        database["outside_result"], ok = "not_guarded_not_called", False
+    database["outside_exists_after"] = outside.exists()
+    hits = SENTINEL_HITS[mark[0]:]
+    recorded = {"sentinel_hits": hits, "database_hits": DATABASE_HITS[mark[1]:],
+                "database_paths": DATABASE_PATHS[mark[2]:]}
+    ok = (ok and hits == [owner.__name__ + "." + attribute for owner, attribute in EXECUTION_TARGETS]
+          and len(recorded["database_hits"]) == 1 and recorded["database_paths"] == [database["inside"]]
+          and not database["outside_exists_after"] and IMPORT_GUARDS == expected and guards_active() == expected)
+    # The probe's own deliberate hits are kept in its record, not in the run's tallies.
+    del SENTINEL_HITS[mark[0]:], DATABASE_HITS[mark[1]:], DATABASE_PATHS[mark[2]:]
+    return {"ok": ok, "expected_guards": expected, "import_guards": IMPORT_GUARDS,
+            "guards_now": guards_active(), "calls": calls, "database": database, "recorded": recorded}
+
+
+class _GuardedResult(unittest.TextTestResult):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ids, self.outcomes, self.guards_at_start = [], {}, {}
+
+    def startTest(self, test):
+        super().startTest(test)
+        self.ids.append(test.id())
+        self.guards_at_start[test.id()] = guards_active()
+
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        self.outcomes.setdefault(test.id(), "pass")
+
+    def addFailure(self, test, err):
+        super().addFailure(test, err)
+        self.outcomes[test.id()] = "fail"
+
+    def addError(self, test, err):
+        super().addError(test, err)
+        self.outcomes[getattr(test, "id", lambda: str(test))()] = "error"
+
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        self.outcomes[test.id()] = "skip"
+
+    def addSubTest(self, test, subtest, err):
+        super().addSubTest(test, subtest, err)
+        if err is not None:
+            self.outcomes[test.id()] = "fail"
+
+
+def guarded_child(argv):
+    """Run named unittest selectors with every sentinel held for the whole process."""
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(prog="fc7-guarded-child")
+    parser.add_argument(CHILD_FLAG, action="store_true", required=True)
+    parser.add_argument("--report", required=True)
+    parser.add_argument("selectors", nargs="+")
+    args = parser.parse_args(argv)
+    probes = boundary_probes()
+    suite = unittest.defaultTestLoader.loadTestsFromNames(args.selectors)
+    result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2, resultclass=_GuardedResult).run(suite)
+    expected = expected_guards()
+    modules = {name: str(Path(module.__file__).resolve()) for name, module in sorted(sys.modules.items())
+               if name.split(".")[0] in ("campaign_tool", "tests") and getattr(module, "__file__", None)}
+    report = {"selectors": args.selectors, "repo": str(REPO), "executable": sys.executable,
+              "prefix": sys.prefix, "temporary_root": tempfile.gettempdir(), "home": os.environ.get("HOME"),
+              "records_test_dependencies": os.environ.get("RECORDS_TEST_DEPENDENCIES"),
+              "application_preloaded": APPLICATION_PRELOADED, "probes": probes,
+              "tests_run": result.testsRun, "test_ids": result.ids, "outcomes": result.outcomes,
+              "failures": len(result.failures), "errors": len(result.errors), "skipped": len(result.skipped),
+              "expected_failures": len(result.expectedFailures),
+              "unexpected_successes": len(result.unexpectedSuccesses), "successful": result.wasSuccessful(),
+              "guards_held_at_every_test_start": bool(result.ids) and all(
+                  result.guards_at_start.get(test_id) == expected for test_id in result.ids),
+              "guards_at_end": guards_active(), "sentinel_hits": list(SENTINEL_HITS),
+              "database_hits": list(DATABASE_HITS), "database_paths": sorted(set(DATABASE_PATHS)),
+              "loaded_modules": modules}
+    report["ok"] = bool(probes["ok"] and result.wasSuccessful() and result.testsRun and not result.skipped
+                        and report["guards_held_at_every_test_start"] and report["guards_at_end"] == expected
+                        and not SENTINEL_HITS and not DATABASE_HITS and not APPLICATION_PRELOADED)
+    with open(args.report, "x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+    return 0 if report["ok"] else 1
+
+
 if __name__ == "__main__":
+    if _HOLD_FOR_PROCESS:
+        sys.exit(guarded_child(sys.argv[1:]))
     unittest.main()
