@@ -16,7 +16,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT = REPO.parent
-BASE = "17da706588467184f0923e2516be3319d577539a"
+
 AUTHORED = ("tests/records/test_fc10_persistence_fault_prefixes.py",
             "tests/fixtures/fc10-persistence-fault-prefixes/cases.json",
             "tools/fc10_persistence_fault_prefixes_acceptance.py")
@@ -58,7 +58,9 @@ class Row:
         require(self.manifest_path == ROOT / "SOURCE-MANIFEST.json" and self.out_base == ROOT / "out", "staging_paths_mismatch")
         self.source = json.loads(self.manifest_path.read_text())
         require(self.source["schema"] == "agentorange.source-manifest/v1", "source_manifest_schema")
-        require(self.source["head"] == BASE and Path(self.source["repo"]) == REPO
+        # The staged operator-owned manifest is the base-pin authority; receipts bind its full file hash.
+        self.base = self.source["head"]
+        require(re.fullmatch(r"[0-9a-f]{40}", self.base) and Path(self.source["repo"]) == REPO
                 and Path(self.source["write_root"]) == ROOT, "source_manifest_identity")
         canonical_path(REPO)
         self.runtime = self.source["runtime"]
@@ -79,17 +81,17 @@ class Row:
         self.details = {}
         self.head = self.git("rev-parse", "HEAD").strip()
         self.tree = self.git("rev-parse", "HEAD^{tree}").strip()
-        require(self.git("rev-parse", BASE + "^{tree}").strip() == self.source["tree"], "base_tree_mismatch")
-        self.git("merge-base", "--is-ancestor", BASE, self.head)
+        require(self.git("rev-parse", self.base + "^{tree}").strip() == self.source["tree"], "base_tree_mismatch")
+        self.git("merge-base", "--is-ancestor", self.base, self.head)
         if args.phase == "baseline":
-            require(self.head == BASE, "initial_head_must_equal_pinned_base")
+            require(self.head == self.base, "initial_head_must_equal_pinned_base")
         else:
-            require(self.head != BASE, "final_candidate_commit_required")
+            require(self.head != self.base, "final_candidate_commit_required")
         self.initial_status = self.git("status", "--porcelain=v1", "--untracked-files=all")
         self.validate_tree(args.phase == "baseline")
         self.hashes = {name: sha(REPO / name) for name in AUTHORED + UNCHANGED}
         for name in UNCHANGED:
-            original = self.run(["git", "show", BASE + ":" + name], REPO)[1]
+            original = self.run(["git", "show", self.base + ":" + name], REPO)[1]
             require(hashlib.sha256(original).hexdigest() == self.hashes[name], "read_only_source_changed:" + name)
         self.spec_sha = sha(REPO / AUTHORED[1])
         self.source_sha = sha(self.manifest_path)
@@ -122,7 +124,7 @@ class Row:
     def validate_tree(self, baseline=False):
         require(not self.git("diff", "--name-only"), "tracked_worktree_dirty")
         require(not self.git("diff", "--cached", "--name-only"), "index_dirty")
-        changed = set(self.git("diff", "--name-only", BASE, self.head).splitlines())
+        changed = set(self.git("diff", "--name-only", self.base, self.head).splitlines())
         require(changed == (set() if baseline else set(AUTHORED)), "exclusive_write_set_mismatch")
         visible = set(self.git("ls-files", "--others", "--exclude-standard").splitlines())
         require(visible <= ({".venv", *AUTHORED} if baseline else {".venv"}), "unexpected_scan_visible_untracked:" + repr(visible))
@@ -166,7 +168,7 @@ class Row:
         for name in AUTHORED:
             text = (REPO / name).read_text()
             # Reject host-specific roots without embedding such a literal in authored sources.
-            for prefix in ("/" + "home/", "/" + "Users/", "/" + "workspace/", "/" + "tmp/", "/" + "var/tmp/"):
+            for prefix in ("/" + "home/", "/" + "Users/", "/" + "workspace/", "/" + "tmp/", "/" + "var" + "/" + "tmp/"):
                 if prefix in text:
                     literals.append((name, prefix))
         require(not literals, "host_only_literals:" + repr(literals))
@@ -214,7 +216,7 @@ class Row:
         receipt = {"schema": "fc10.acceptance-row/v1", "phase": self.args.phase,
                    "invocation": {"argv": [sys.executable, *sys.argv], "cwd": str(Path.cwd()), "interpreter": sys.executable},
                    "source_manifest": str(self.manifest_path), "source_manifest_sha256": getattr(self, "source_sha", None),
-                   "head": self.head, "tree": self.tree, "base": BASE,
+                   "head": self.head, "tree": self.tree, "base": self.base,
                    "authored_and_unchanged_hashes": self.hashes, "fixture_spec_sha256": self.spec_sha,
                    "exit": int(error is not None), "error": error, "calls": self.calls, "details": self.details,
                    "author_runtime": {"model": "gpt-6.1-sol", "provider": "openai-codex", "profile": "sol-reviewer", "card": "t_8e497b27", "run": 1848},
