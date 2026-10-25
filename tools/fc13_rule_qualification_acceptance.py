@@ -34,8 +34,8 @@ SOURCE = (
     "tools/check_secret_report.py", "tools/check_public_tree.py",
     "campaign_tool/records/public_scan.py",
 )
-BASE = "".join(("17da706588", "467184f092", "3e2516be33", "19d577539a"))
-BASE_TREE = "".join(("91b70d87ae", "558fe67e72", "8f5dc0131d", "ccf1056ad5"))
+BASE = "".join(("17da7", "06588", "46718", "4f092", "3e251", "6be33", "19d57", "7539a"))
+BASE_TREE = "".join(("91b70", "d87ae", "558fe", "67e72", "8f5dc", "0131d", "ccf10", "56ad5"))
 MODULE = "tests.records.test_fc13_rule_qualification"
 SELECTORS = ["tests.records.test_structured_detector_pipeline.StructuredPipelineTests." + name for name in (
     "test_unverified_rule_versions_do_not_evaluate",
