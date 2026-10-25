@@ -499,7 +499,7 @@ def _exact_header_citation(unit: dict, value: str, bundle: dict,
                                      len(text[:start + len(value)].encode("utf-8")))
             evidence.validate_citation(cite, bundle)
             return cite
-    if pointer and value:
+    if pointer:
         # A missing path, non-scalar target or transformed (e.g. stripped)
         # value has no exact projection: the caller holds it as unlocatable.
         try:
