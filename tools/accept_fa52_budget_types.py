@@ -19,7 +19,12 @@ Cases (each invocation runs exactly one, in a fresh unique child directory of
 Repository code is only imported by file-launched child interpreters (argv
 arrays, no shell) that disable bytecode writes, redirect HOME/TMPDIR/tempfile and
 install network, process, live-file and out-of-root write sentinels BEFORE any
-application import. The parent records every child's argv, cwd, exit, stdout and
+application import. Compatibility tests launch Python descendants (extraction and
+folder workers, the mail_delta CLI); only those admitted forms may start, each is
+rewritten to this runner's guarded bootstrap (same sentinels before the real
+module/script runs) and every descendant refusal, even one the application
+catches, fails the launching child. The parent records every child's argv, cwd,
+exit, stdout and
 stderr with hashes. A pass is REVIEW REQUIRED scoped evidence only: not
 full-repository CI, semantic, legal, human, stage or release acceptance.
 Full discovery = operator-run.
@@ -348,14 +353,20 @@ def case_isolation(run):
     original_paths = original.get("module_paths", {})
     original_inside = bool(original_paths) and all(
         p is not None and Path(p).resolve().is_relative_to(REPO) for p in original_paths.values())
+    descendants = run.test_child("isolation-descendants", "descendant-probe", child_root=run.dir / "descendant-run")
+    copy_descendants = (run.test_child("isolation-copy-descendants", "descendant-probe", repo=copy,
+                                       child_root=run.dir / "copy-descendant-run")
+                        if copy is not None else {"pass": False, "error": "no_copy"})
     verdict.update(portability_hits=hits, ancestry_refusals=ancestry, original=original, second_copy=second,
-                   copy=copy_info, original_module_paths_inside_repo=original_inside)
+                   copy=copy_info, original_module_paths_inside_repo=original_inside,
+                   descendant_guards=descendants, copy_descendant_guards=copy_descendants)
     verdict["pass"] = (not hits and ancestry_ok and original_inside and original.get("pass") is True
                        and clean_counts(original) and second.get("pass") is True and clean_counts(second)
                        and copy is not None and copy_info.get("unchanged") is True
                        and copy_info.get("module_paths_inside_copy") is True
                        and copy_info.get("module_paths_outside_original") is True
-                       and original.get("tests_run") == second.get("tests_run"))
+                       and original.get("tests_run") == second.get("tests_run")
+                       and descendants.get("pass") is True and copy_descendants.get("pass") is True)
     return verdict
 
 
@@ -423,17 +434,70 @@ def parent_main(args):
 # ---------------------------------------------------------------- child side
 
 
-def install_guards(run_dir, sentinel_root, allow_processes):
-    """Audit-hook sentinels: network, model/HTTP clients, process launch, live files, writes."""
+DESCENDANT_FLAG = "--fa52-guarded-descendant"
+PROBE_FLAG = "--fa52-descendant-probe"
+APP_PACKAGES = ("campaign_tool", "tests")
+
+
+def descendant_target(argv, repo=REPO):
+    """Classify an admitted Python descendant launch; anything else returns None.
+
+    Admitted forms (exactly what the unchanged compatibility closure launches):
+      [this interpreter, -B..., -m, campaign_tool.<dotted module>, args...]
+      [this interpreter, -B..., <absolute .py script under repo/campaign_tool>, args...]
+      [this interpreter, -B..., <this runner>, PROBE_FLAG, args...]   (inert self-probe)
+    """
+    if not isinstance(argv, (list, tuple)):
+        return None
+    try:
+        argv = [os.fsdecode(os.fspath(a)) for a in argv]
+    except TypeError:
+        return None
+    if not argv or os.path.realpath(argv[0]) != os.path.realpath(sys.executable):
+        return None
+    index = 1
+    while index < len(argv) and argv[index] == "-B":
+        index += 1
+    rest = argv[index:]
+    if len(rest) >= 2 and rest[0] == "-m":
+        parts = rest[1].split(".")
+        if parts[0] == "campaign_tool" and len(parts) > 1 and all(p.isidentifier() for p in parts):
+            return {"kind": "module", "target": rest[1], "args": rest[2:], "form": rest}
+        return None
+    if rest and os.path.isabs(rest[0]) and rest[0].endswith(".py"):
+        script = Path(os.path.realpath(rest[0]))
+        repo = Path(repo).resolve()
+        if script.is_file() and script.is_relative_to(repo / "campaign_tool"):
+            return {"kind": "script", "target": rest[0], "args": rest[1:], "form": rest}
+        if script == (repo / RUNNER_FILE).resolve() and rest[1:2] == [PROBE_FLAG]:
+            return {"kind": "probe", "target": rest[0], "args": rest[1:], "form": rest}
+    return None
+
+
+def install_guards(run_dir, sentinel_root, allow_processes, violations_fd=None):
+    """Audit-hook sentinels: network, model/HTTP clients, process launch, live files, writes.
+
+    With allow_processes, only admitted Python descendants (descendant_target) may launch,
+    and each is rewritten to start through this runner's guarded bootstrap, which installs
+    the same sentinels before any application import and streams every refusal (caught or
+    not) to a per-descendant violations file that the launching child verifies.
+    Every other launch form and every direct fork_exec stays refused.
+    """
+    import threading
     root = Path(run_dir).resolve()
     sentinel = Path(sentinel_root).resolve() if sentinel_root else None
     readable = [root, REPO.resolve()] + [Path(p).resolve() for p in (
         sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix,
         os.path.dirname(os.path.realpath(sys.executable))) if p]
     readable += [Path(p).resolve() for p in sys.path if p and os.path.isabs(p)]
-    record = {"violations": [], "processes": [], "probes": []}
+    record = {"violations": [], "processes": [], "probes": [], "descendants": [],
+              "descendant_dir": str(root / "descendants")}
     write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
     probing = []
+    local = threading.local()
+
+    def approved():
+        return allow_processes and not probing and getattr(local, "approved", 0) > 0
 
     def resolve(path, dir_fd=None):
         if isinstance(path, int):
@@ -468,7 +532,12 @@ def install_guards(run_dir, sentinel_root, allow_processes):
 
     def refuse(event, detail):
         entry = {"event": event, "detail": repr(detail)[:240]}
-        (record["probes"] if probing else record["violations"]).append(entry)
+        if probing:
+            record["probes"].append(entry)
+        else:
+            record["violations"].append(entry)
+            if violations_fd is not None:  # survives application code catching the refusal
+                os.write(violations_fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
         raise PermissionError("fa52 acceptance guard refused " + event)
 
     mutations = {"os.mkdir": ((0, 2),), "os.remove": ((0, 1),), "os.rmdir": ((0, 1),),
@@ -480,13 +549,15 @@ def install_guards(run_dir, sentinel_root, allow_processes):
                 "os.forkpty", "pty.spawn")
 
     def hook(event, args):
+        if event == "fa52.sentinel_probe":  # inert presence check used by descendant bootstraps
+            raise PermissionError("fa52 acceptance guard present")
         if event.startswith("socket.") and event not in ("socket.__new__", "socket.sethostname"):
             refuse(event, args)
         elif event in ("urllib.Request", "http.client.connect", "webbrowser.open", "ftplib.connect",
                        "smtplib.connect", "imaplib.open", "poplib.connect", "nntplib.connect"):
             refuse(event, args)
         elif event in launches:
-            if allow_processes and not probing:
+            if approved():
                 record["processes"].append({"event": event, "detail": repr(args)[:240]})
             else:
                 refuse(event, args)
@@ -513,6 +584,46 @@ def install_guards(run_dir, sentinel_root, allow_processes):
                     refuse(event, args[index])
 
     sys.addaudithook(hook)
+
+    import _posixsubprocess
+    original_fork_exec = _posixsubprocess.fork_exec
+
+    def gated_fork_exec(*a, **k):
+        """fork_exec is not audited itself (multiprocessing spawn calls it directly)."""
+        if not approved():
+            refuse("_posixsubprocess.fork_exec", a[0] if a else None)
+        return original_fork_exec(*a, **k)
+
+    _posixsubprocess.fork_exec = gated_fork_exec
+    subprocess._fork_exec = gated_fork_exec
+
+    original_init = subprocess.Popen.__init__
+
+    def guarded_init(self, args, *positional, **kwargs):
+        target = None
+        if not positional and kwargs.get("executable") is None and not kwargs.get("shell"):
+            target = descendant_target(args)
+        if target is None:
+            refuse("unsupported-descendant", args)
+        if probing or not allow_processes:
+            refuse("subprocess.Popen", args)
+        token = secrets.token_hex(8)
+        ddir = Path(record["descendant_dir"])
+        ddir.mkdir(mode=0o700, exist_ok=True)
+        rewritten = [sys.executable, "-B", str(REPO / RUNNER_FILE), DESCENDANT_FLAG, "--run-dir", str(root),
+                     "--sentinel-root", str(sentinel) if sentinel else "", "--descendant-dir", str(ddir),
+                     "--token", token, "--", *target["form"]]
+        record["descendants"].append({"token": token, "kind": target["kind"], "target": target["target"],
+                                      "dir": str(ddir), "original_argv": [os.fsdecode(a) for a in args],
+                                      "cwd": str(kwargs.get("cwd") or os.getcwd())})
+        local.approved = getattr(local, "approved", 0) + 1
+        try:
+            original_init(self, rewritten, **kwargs)
+        finally:
+            local.approved -= 1
+
+    if allow_processes:
+        subprocess.Popen.__init__ = guarded_init
     return record, probing
 
 
@@ -668,6 +779,223 @@ def negative_control(stream):
             "expected_failures": 0, "unexpected_successes": 0, "pass": all(checks.values())}
 
 
+def _write_json_exclusive(path, data):
+    with open(path, "x") as stream:
+        stream.write(json.dumps(data, indent=2, sort_keys=True, default=str) + "\n")
+
+
+def descendant_main(argv):
+    """Guarded bootstrap for one admitted descendant: sentinels first, then the real target.
+
+    argv: --run-dir R --sentinel-root S --descendant-dir D --token T -- <original form>
+    Preserves module (-m) / script semantics: sys.argv, sys.path[0], __main__ run name,
+    exit status and stdout/stderr. Nothing from the application is imported before the
+    guards and the start record exist; a missing guard or preloaded module fails closed.
+    """
+    if "--" not in argv:
+        return 70
+    split = argv.index("--")
+    options, form = argv[:split], argv[split + 1:]
+    keys = ["--run-dir", "--sentinel-root", "--descendant-dir", "--token"]
+    if len(options) != 8 or options[0::2] != keys:
+        return 70
+    values = dict(zip(options[0::2], options[1::2]))
+    run_dir = Path(values["--run-dir"]).resolve()
+    ddir = Path(values["--descendant-dir"]).resolve()
+    token = values["--token"]
+    sentinel_root = values["--sentinel-root"] or None
+    if not ddir.is_relative_to(run_dir) or not (len(token) == 16 and all(c in "0123456789abcdef" for c in token)):
+        return 70
+    preloaded = sorted(m for m in sys.modules if m.split(".")[0] in APP_PACKAGES)
+    sys.dont_write_bytecode = True
+    import tempfile
+    if (run_dir / "tmp").is_dir():
+        tempfile.tempdir = str(run_dir / "tmp")
+        os.environ["TMPDIR"] = str(run_dir / "tmp")
+    if (run_dir / "home").is_dir():
+        for key in ("HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+            os.environ[key] = str(run_dir / "home")
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    violations_fd = os.open(ddir / (token + ".violations.jsonl"),
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
+    install_guards(run_dir, sentinel_root, False, violations_fd=violations_fd)
+    try:
+        sys.audit("fa52.sentinel_probe")
+        guards_active = False
+    except PermissionError:
+        guards_active = True
+    target = descendant_target([sys.executable, *form])
+    start = {"token": token, "pid": os.getpid(), "cwd": os.getcwd(), "form": form,
+             "kind": target and target["kind"], "target": target and target["target"],
+             "guards_active_before_target": guards_active, "app_modules_before_guard": preloaded,
+             "app_modules_at_start": sorted(m for m in sys.modules if m.split(".")[0] in APP_PACKAGES),
+             "bytecode_disabled": sys.dont_write_bytecode, "tempdir": tempfile.gettempdir(),
+             "home": os.path.expanduser("~")}
+    _write_json_exclusive(ddir / (token + ".start.json"), start)
+    if target is None or not guards_active or preloaded or start["app_modules_at_start"]:
+        return 70
+    status = "exception"
+    try:
+        if target["kind"] == "module":
+            sys.argv = [target["target"], *target["args"]]
+            sys.path[0] = os.getcwd()  # what ``python -m`` puts first
+            import runpy
+            runpy.run_module(target["target"], run_name="__main__", alter_sys=True)
+        else:
+            script = target["target"]
+            sys.argv = [script, *target["args"]]
+            sys.path[0] = os.path.dirname(os.path.realpath(script))  # what ``python script.py`` puts first
+            import runpy
+            runpy.run_path(script, run_name="__main__")
+        status = 0
+    except SystemExit as stop:
+        status = stop.code
+        raise
+    finally:
+        try:
+            _write_json_exclusive(ddir / (token + ".end.json"), {"token": token, "exit": repr(status)})
+        except OSError:
+            pass
+    return 0
+
+
+def descendant_probe_main(args):
+    """Inert self-probe run through the guarded bootstrap: audit events only, all caught."""
+    try:
+        sys.audit("fa52.sentinel_probe")
+        present = False
+    except PermissionError:
+        present = True
+    caught = {}
+    token = secrets.token_hex(6)
+    for label, event, event_args in (
+            ("network", "socket.getaddrinfo", ("fa52-probe-%s.invalid" % token, 443, 0, 0, 0, 0)),
+            ("process", "subprocess.Popen", ("fa52-nonexistent-" + token, ["fa52-nonexistent-" + token], None, None)),
+            ("escape_write", "open", (os.path.join(os.sep, "fa52-escape-" + token, "probe"), "w", 0))):
+        try:
+            sys.audit(event, *event_args)  # reports the event to hooks; performs no operation
+            caught[label] = False
+        except PermissionError:  # deliberately swallowed, as application code might
+            caught[label] = True
+    print(json.dumps({"sentinel_present": present, "caught_refusals": caught, "argv": sys.argv,
+                      "main_name": __name__}, sort_keys=True))
+    sys.stdout.flush()
+    return int(args[0]) if args and args[0].isdigit() else 0
+
+
+EXPECTED_PROBE_EVENTS = ["socket.getaddrinfo", "subprocess.Popen", "open"]
+
+
+def read_descendant(entry):
+    ddir = Path(entry["dir"])
+    token = entry["token"]
+    out = {"token": token, "kind": entry["kind"], "target": entry["target"]}
+    try:
+        start = json.loads((ddir / (token + ".start.json")).read_text())
+    except (OSError, ValueError):
+        start = None
+    out["start"] = start
+    try:
+        lines = (ddir / (token + ".violations.jsonl")).read_text().splitlines()
+        out["violations"] = [json.loads(line) for line in lines if line.strip()]
+        out["violations_file_present"] = True
+    except (OSError, ValueError):
+        out["violations"] = None
+        out["violations_file_present"] = False
+    end = ddir / (token + ".end.json")
+    out["end"] = json.loads(end.read_text()) if end.is_file() else None
+    out["bootstrapped"] = (isinstance(start, dict) and start.get("token") == token
+                           and start.get("guards_active_before_target") is True
+                           and start.get("app_modules_before_guard") == []
+                           and start.get("app_modules_at_start") == []
+                           and start.get("kind") == entry["kind"] and start.get("target") == entry["target"]
+                           and start.get("bytecode_disabled") is True)
+    return out
+
+
+def verify_descendants(guards, require_forms=()):
+    """Every admitted launch bootstrapped under guards; no descendant refusal, even if caught."""
+    ddir = Path(guards["descendant_dir"])
+    entries = [e for e in guards["descendants"] if Path(e["dir"]) == ddir]
+    results = [read_descendant(e) for e in entries]
+    expected = {e["token"] + suffix for e in entries for suffix in (".start.json", ".violations.jsonl",
+                                                                    ".end.json")}
+    present = sorted(p.name for p in ddir.iterdir()) if ddir.is_dir() else []
+    unexpected_files = sorted(set(present) - expected)
+    forms = sorted({e["kind"] for e in entries})
+    checks = {"all_bootstrapped_under_guards": all(r["bootstrapped"] for r in results),
+              "no_descendant_violations": all(r["violations"] == [] for r in results),
+              "no_unexpected_descendant_files": not unexpected_files,
+              "required_forms_seen": all(f in forms for f in require_forms)}
+    return {"launched": len(entries), "forms": forms, "unexpected_files": unexpected_files,
+            "descendants": results, "checks": checks, "pass": all(checks.values())}
+
+
+def descendant_probes(guards, probing, run_dir):
+    """A5 descendant coverage: unsupported forms refused pre-launch; admitted form guarded."""
+    token = secrets.token_hex(6)
+    runner = str(REPO / RUNNER_FILE)
+    checks = {}
+    refusals = {}
+    unsupported = (
+        ("interpreter_flag", [sys.executable, "-E", runner, PROBE_FLAG, "0"], {}),
+        ("module_outside_application", [sys.executable, "-B", "-m", "json.tool"], {}),
+        ("script_outside_application", [sys.executable, "-B", str(REPO / "tools" / "check_public_tree.py")], {}),
+        ("relative_script", [sys.executable, "-B", "campaign_tool/records/intake/folder.py"], {}),
+        ("other_executable", ["fa52-nonexistent-" + token], {}),
+        ("shell_string", "fa52-nonexistent-" + token, {"shell": True}),
+        ("explicit_executable", [sys.executable, "-B", runner, PROBE_FLAG, "0"], {"executable": sys.executable}))
+    probing.append(True)
+    try:
+        for label, argv, kwargs in unsupported:
+            before, launched = len(guards["probes"]), len(guards["descendants"])
+            try:
+                subprocess.run(argv, check=False, capture_output=True, **kwargs)
+                checks["refused_" + label] = False
+            except PermissionError:
+                last = guards["probes"][-1] if len(guards["probes"]) == before + 1 else {}
+                refusals[label] = last
+                checks["refused_" + label] = (last.get("event") == "unsupported-descendant"
+                                              and len(guards["descendants"]) == launched)
+        import _posixsubprocess
+        before = len(guards["probes"])
+        try:  # multiprocessing-style direct fork_exec: refused before the real call runs
+            _posixsubprocess.fork_exec([b"fa52-nonexistent-" + token.encode()])
+            checks["refused_direct_fork_exec"] = False
+        except PermissionError:
+            checks["refused_direct_fork_exec"] = (len(guards["probes"]) == before + 1 and
+                                                  guards["probes"][-1]["event"] == "_posixsubprocess.fork_exec")
+    finally:
+        probing.clear()
+    default_dir = guards["descendant_dir"]
+    guards["descendant_dir"] = str(Path(run_dir).resolve() / "descendant-probes")
+    before = len(guards["descendants"])
+    try:
+        done = subprocess.run([sys.executable, "-B", runner, PROBE_FLAG, "7"], cwd=str(REPO),
+                              capture_output=True, check=False)
+    finally:
+        guards["descendant_dir"] = default_dir
+    entries = guards["descendants"][before:]
+    try:
+        report = json.loads(done.stdout)
+    except ValueError:
+        report = {}
+    detail = read_descendant(entries[0]) if len(entries) == 1 else None
+    events = [v.get("event") for v in (detail or {}).get("violations") or []]
+    checks.update(
+        admitted_probe_launched_once=len(entries) == 1,
+        probe_exit_status_preserved=done.returncode == 7,
+        probe_stdout_preserved=report.get("main_name") == "__main__" and report.get("argv", [None])[0] == runner,
+        probe_sentinel_present_before_target=report.get("sentinel_present") is True
+        and bool(detail) and detail["bootstrapped"],
+        probe_refusals_raised_in_descendant=report.get("caught_refusals") == {
+            "network": True, "process": True, "escape_write": True},
+        caught_descendant_refusals_propagated=events == EXPECTED_PROBE_EVENTS)
+    return {"refusals": refusals, "probe_exit": done.returncode, "probe_stdout": done.stdout.decode(errors="replace"),
+            "probe_stdout_sha256": sha256_bytes(done.stdout), "probe_stderr_sha256": sha256_bytes(done.stderr),
+            "probe_descendant": detail, "checks": checks, "pass": all(checks.values())}
+
+
 def child_main(args):
     run_dir = Path(args.run_dir).resolve()
     tmp = run_dir / "tmp"
@@ -675,7 +1003,8 @@ def child_main(args):
     import tempfile
     tempfile.tempdir = str(tmp)
     sys.dont_write_bytecode = True
-    allow = args.child == "unittest" and list(args.module) == list(COMPATIBILITY)
+    allow = args.child == "descendant-probe" or (
+        args.child == "unittest" and list(args.module) == list(COMPATIBILITY))
     guards, probing = install_guards(run_dir, args.sentinel_root, allow)
     checks = self_check(guards, probing, run_dir, args.sentinel_root) if args.sentinel_root else {}
     if str(REPO) in sys.path:
@@ -687,12 +1016,25 @@ def child_main(args):
     checks["tempdir_redirected"] = Path(tempfile.gettempdir()).resolve().is_relative_to(run_dir)
     checks["home_redirected"] = Path(os.path.expanduser("~")).resolve().is_relative_to(run_dir)
     stream = sys.stderr
-    record = {"mode": args.child, "environment": environment, "guard_checks": checks}
+    record = {"mode": args.child, "environment": environment, "guard_checks": checks,
+              "descendants_admitted": allow}
+    if allow:
+        # Inert descendant coverage before any application import or test.
+        record["descendant_probes"] = descendant_probes(guards, probing, run_dir)
+        checks["descendant_probes"] = record["descendant_probes"]["pass"]
+        checks["no_application_import_before_tests"] = not any(
+            m.split(".")[0] in APP_PACKAGES for m in sys.modules)
     if args.child == "negative-control":
         record.update(negative_control(stream))
+    elif args.child == "descendant-probe":
+        record["pass"] = True
     else:
         record.update(run_tests(args.module, stream))
         record["pass"] = record.pop("successful") and clean_counts(record)
+    if allow:
+        required = ("module", "script") if args.child == "unittest" else ()
+        record["descendant_verification"] = verify_descendants(guards, required)
+        record["pass"] = record["pass"] is True and record["descendant_verification"]["pass"]
     if args.child == "isolation-probe":
         from campaign_tool.records.intake import mail_delta, mail_wire, native_receipt
         test_module = sys.modules[TEST_MODULE]
@@ -710,10 +1052,15 @@ def child_main(args):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == [DESCENDANT_FLAG]:  # guarded bootstrap; must precede any application import
+        return descendant_main(argv[1:])
+    if argv[:1] == [PROBE_FLAG]:
+        return descendant_probe_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--case", choices=CASES)
     parser.add_argument("--output-parent")
-    parser.add_argument("--child", choices=("unittest", "negative-control", "isolation-probe"))
+    parser.add_argument("--child", choices=("unittest", "negative-control", "isolation-probe", "descendant-probe"))
     parser.add_argument("--run-dir")
     parser.add_argument("--result-json")
     parser.add_argument("--sentinel-root")
@@ -722,7 +1069,7 @@ def main(argv=None):
     if args.child:
         if not (args.run_dir and args.result_json and args.sentinel_root):
             parser.error("--child requires --run-dir, --result-json and --sentinel-root")
-        if args.child != "negative-control" and not args.module:
+        if args.child not in ("negative-control", "descendant-probe") and not args.module:
             parser.error("--child %s requires --module" % args.child)
         return child_main(args)
     if not args.case or not args.output_parent:
