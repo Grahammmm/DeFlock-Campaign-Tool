@@ -12,6 +12,10 @@ brief hashes, selector counts and ``run.json``. The exit status is computed from
 explicit checks (never from ``assert``): 0 only when every check of the suite
 holds. The repository root is derived from this file; import search paths are
 set only inside this script; children are argument arrays without a shell.
+The internal ``--isolation-child REPORT HOME`` entry (launched only by the
+isolation suite) is validated the same way before any resolve, import or
+write: both paths must be the link-free ``isolation-child.json`` and empty
+``isolated-home`` of one unique isolation run directory outside the repository.
 
 A passing result is machine validity only: REVIEW REQUIRED, never semantic,
 source, legal or live acceptance, request fulfillment or publication authority.
@@ -94,6 +98,45 @@ def new_run_dir(root, suite):
     run = root / "{}-{}-{}-{}".format(suite, now(), os.getpid(), secrets.token_hex(4))
     run.mkdir(exist_ok=False)
     return run
+
+
+ISOLATION_RUN_NAME = re.compile(r"^isolation-\d{8}T\d{6}\.\d{6}Z-\d+-[0-9a-f]{8}$")
+CHILD_REPORT_NAME = "isolation-child.json"
+CHILD_HOME_NAME = "isolated-home"
+
+
+def checked_child_paths(report, home):
+    """Validate the internal isolation-child entry before any resolve, import or write.
+
+    The report and home must be exactly ``<run>/isolation-child.json`` and
+    ``<run>/isolated-home`` of one unique isolation run directory whose parent is
+    an acceptable output root (link-free at every level, outside REPO). The run
+    directory and home must be real (unlinked) directories, the home must be
+    empty and the report must not yet exist. Raises RootRefused otherwise.
+    """
+    report_path = Path(os.path.abspath(report))
+    home_path = Path(os.path.abspath(home))
+    for path in (report_path, home_path):
+        for candidate in (path, *path.parents):
+            if candidate.is_symlink():
+                raise RootRefused("isolation_child_path_linked")
+    repo = REPO.resolve()
+    for path in (report_path, home_path):
+        if path == repo or repo in path.parents:
+            raise RootRefused("isolation_child_path_inside_repository")
+    run = report_path.parent
+    if report_path.name != CHILD_REPORT_NAME or home_path.name != CHILD_HOME_NAME or home_path.parent != run:
+        raise RootRefused("isolation_child_layout_mismatch")
+    if not ISOLATION_RUN_NAME.match(run.name):
+        raise RootRefused("isolation_child_not_in_unique_run_directory")
+    checked_output_root(run.parent)
+    if not run.is_dir() or not home_path.is_dir():
+        raise RootRefused("isolation_child_directories_missing")
+    if any(home_path.iterdir()):
+        raise RootRefused("isolation_child_home_not_empty")
+    if os.path.lexists(report_path):
+        raise RootRefused("isolation_child_report_exists")
+    return report_path, home_path
 
 
 def source_hashes(root=REPO):
@@ -379,6 +422,84 @@ def rejection_probes(run_dir):
     return probes
 
 
+def fake_isolation_run(parent, home=True):
+    run = parent / "isolation-{}-{}-{}".format(now(), os.getpid(), secrets.token_hex(4))
+    run.mkdir()
+    if home:
+        (run / CHILD_HOME_NAME).mkdir()
+    return run
+
+
+def child_entry_probes(run_dir):
+    """Internal ``--isolation-child`` entry refusals plus the legitimate-layout positive.
+
+    Every link and path is generated inside this run directory (or is a
+    never-created repository path). Each refusal must exit 2 with the expected
+    reason and leave its watched directories unchanged; nothing is imported.
+    """
+    runner = REPO / RUNNER_PATH
+    root = run_dir / "child-probe-root"
+    root.mkdir()
+    real_run = fake_isolation_run(root)
+    alias_root = run_dir / "child-probe-alias"
+    alias_root.symlink_to(root, target_is_directory=True)
+    linked_run = root / "isolation-{}-{}-{}".format(now(), os.getpid(), secrets.token_hex(4))
+    linked_run.symlink_to(real_run, target_is_directory=True)
+    home_link_run = fake_isolation_run(root, home=False)
+    home_target = run_dir / "child-probe-home-target"
+    home_target.mkdir()
+    (home_link_run / CHILD_HOME_NAME).symlink_to(home_target, target_is_directory=True)
+    plain = root / "not-a-run-directory"
+    plain.mkdir()
+    (plain / CHILD_HOME_NAME).mkdir()
+    inside = REPO / ("out-bm1-child-probe-" + secrets.token_hex(4))
+    inside_run = inside / "isolation-{}-{}-{}".format(now(), os.getpid(), secrets.token_hex(4))
+
+    def layout(run):
+        return [str(run / CHILD_REPORT_NAME), str(run / CHILD_HOME_NAME)]
+
+    real_entries = lambda: (sorted(p.name for p in real_run.iterdir()),  # noqa: E731
+                            sorted(p.name for p in (real_run / CHILD_HOME_NAME).iterdir()))
+    untouched = ([CHILD_HOME_NAME], [])
+    cases = (
+        ("child-linked-root", layout(alias_root / real_run.name), "isolation_child_path_linked",
+         lambda: real_entries() == untouched),
+        ("child-linked-intermediate", layout(linked_run), "isolation_child_path_linked",
+         lambda: real_entries() == untouched),
+        ("child-linked-home", layout(home_link_run), "isolation_child_path_linked",
+         lambda: sorted(p.name for p in home_link_run.iterdir()) == [CHILD_HOME_NAME]
+         and not any(home_target.iterdir())),
+        ("child-repository-contained", layout(inside_run), "isolation_child_path_inside_repository",
+         lambda: not os.path.lexists(inside)),
+        ("child-layout-mismatch", [str(real_run / "report.json"), str(real_run / CHILD_HOME_NAME)],
+         "isolation_child_layout_mismatch", lambda: real_entries() == untouched),
+        ("child-not-unique-run", layout(plain), "isolation_child_not_in_unique_run_directory",
+         lambda: sorted(p.name for p in plain.iterdir()) == [CHILD_HOME_NAME]
+         and not any((plain / CHILD_HOME_NAME).iterdir())),
+    )
+    probes = []
+    for label, args, reason, unchanged in cases:
+        record = run_child(run_dir, "refusal-" + label, [sys.executable, "-I", "-B", runner, "--isolation-child", *args])
+        try:
+            record["refusal_reason"] = json.loads(Path(record["stderr_path"]).read_text()).get("reason")
+        except (KeyError, OSError, ValueError, AttributeError):
+            record["refusal_reason"] = None
+        record["expected_reason"] = reason
+        record["refused_without_write"] = record.get("exit") == 2 and record["refusal_reason"] == reason \
+            and unchanged()
+        record["passed"] = record["refused_without_write"]
+        probes.append(record)
+    # Legitimate positive: the same generated layout, unlinked, is accepted by the gate (no write, no import).
+    try:
+        accepted = [str(p) for p in checked_child_paths(*layout(real_run))]
+        positive = {"label": "child-legitimate-layout-accepted", "accepted": accepted == layout(real_run)}
+    except RootRefused as error:
+        positive = {"label": "child-legitimate-layout-accepted", "accepted": False, "reason": str(error)}
+    positive["passed"] = positive["accepted"] and real_entries() == untouched
+    probes.append(positive)
+    return probes
+
+
 def suite_isolation(run_dir, result):
     problems = []
     findings = static_inspection()
@@ -390,6 +511,15 @@ def suite_isolation(run_dir, result):
     for probe in probes:
         if not probe["refused_without_write"]:
             problems.append("refusal_probe_failed:" + probe["label"])
+    child_probes = child_entry_probes(run_dir)
+    result["children"].extend(child_probes)
+    result["child_entry_probes"] = [{"label": p["label"], "passed": p["passed"],
+                                     "reason": p.get("refusal_reason", p.get("reason"))} for p in child_probes]
+    if len(child_probes) != 7:
+        problems.append("child_entry_probe_count_invalid")
+    for probe in child_probes:
+        if not probe["passed"]:
+            problems.append("child_entry_probe_failed:" + probe["label"])
     isolated = run_dir / "isolated-home"
     isolated.mkdir()
     report = run_dir / "isolation-child.json"
@@ -425,7 +555,7 @@ def isolation_child(report, isolated):
     """File-launched with -I: guards and redirects precede every project import."""
     preloaded = sorted(name for name in sys.modules if name.split(".")[0] in ("campaign_tool", "tests"))
     real_home = os.path.expanduser("~")
-    isolated = str(Path(isolated).resolve())
+    isolated = str(isolated)  # Already validated link-free, absolute and outside REPO by checked_child_paths.
     for name in ("HOME", "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
                  "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
         os.environ[name] = isolated
@@ -579,7 +709,13 @@ def main(argv=None):
         if len(argv) != 3:
             print("isolation child takes exactly a report path and an isolated home", file=sys.stderr)
             return 2
-        return isolation_child(argv[1], argv[2])
+        try:
+            report, home = checked_child_paths(argv[1], argv[2])
+        except (RootRefused, OSError) as error:
+            print(json.dumps({"entry": "isolation-child", "verdict": "REFUSED",
+                              "reason": str(error) or type(error).__name__}), file=sys.stderr)
+            return 2
+        return isolation_child(report, home)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--suite", choices=SUITES, required=True)
     parser.add_argument("--output-root", required=True)
