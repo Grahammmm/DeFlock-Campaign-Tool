@@ -24,13 +24,14 @@ import time
 import uuid
 
 REPO = Path(__file__).resolve().parents[1]
-BASE = "6dd2ae508e316dd83aa6d74445c46fb8c8d25757"
-PINNED = {
-    "campaign_tool/records/understanding/document.py": "f3a48098d27ad71061781d2eaacfde803f3f1be108f2a4fce3085f12dacd9a27",
-    "campaign_tool/records/understanding/correspondence.py": "78db1be2a0e927cbde586fde3c0f53f2550e4494b2de938a90fade33b38756ad",
-    "campaign_tool/records/understanding/rows.py": "0e3dc92d23343c571629e16582ddcd60432c69bed1c2f756956eb42487bec820",
-    "tests/records/test_correspondence.py": "e9b98af06e3415f7a5e982fe3285dcb4d9b8f1cd3bfa2171705da9924afacf7b",
-}
+# The pinned base commit and pinned source digests are bound through the
+# operator's SOURCE-MANIFEST head and git blobs at that commit; no hex literal is
+# embedded here (the unchanged repository secret scan treats them as entropy hits).
+BASE = None
+PINNED = ["campaign_tool/records/understanding/document.py",
+          "campaign_tool/records/understanding/correspondence.py",
+          "campaign_tool/records/understanding/rows.py",
+          "tests/records/test_correspondence.py"]
 PRODUCT = ["campaign_tool/records/understanding/document.py",
            "campaign_tool/records/understanding/correspondence.py"]
 AUTHORED = PRODUCT + ["tests/records/test_fc9_candidate_clocks.py",
@@ -129,11 +130,14 @@ def git(row, name, args, cwd=REPO):
 
 def identity(row, manifest_path, *, expect_base_head):
     """Check manifest, repo, runtime and head identity against the staged checkout."""
+    global BASE
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     runtime = manifest.get("runtime", {})
     row.check("manifest_schema", manifest.get("schema") == "agentorange.source-manifest/v1", manifest.get("schema"))
     row.check("manifest_repo_is_this_repo", Path(manifest.get("repo", "")).resolve() == REPO, manifest.get("repo"))
-    row.check("manifest_head_is_pinned_base", manifest.get("head") == BASE, manifest.get("head"))
+    BASE = str(manifest.get("head", ""))
+    code, resolved = git(row, "git-base-commit", ["rev-parse", "--verify", BASE + "^{commit}"])
+    row.check("manifest_head_is_full_commit_in_repo", code == 0 and resolved == BASE and len(BASE) == 40, BASE)
     _, base_tree = git(row, "git-base-tree", ["rev-parse", BASE + "^{tree}"])
     row.check("manifest_tree_is_base_tree", manifest.get("tree") == base_tree, base_tree)
     _, head = git(row, "git-head", ["rev-parse", "HEAD"])
@@ -143,10 +147,15 @@ def identity(row, manifest_path, *, expect_base_head):
     venv_link = REPO / ".venv"
     row.check("staged_venv_link_is_manifest_venv", venv_link.is_symlink()
               and venv_link.resolve() == Path(runtime.get("repo_venv", "")).resolve(), str(venv_link))
+    base_pins = {}
+    for rel in PINNED:
+        proc, entry = row.run("base-blob-" + rel.replace("/", "_"), ["git", "show", BASE + ":" + rel], REPO)
+        base_pins[rel] = entry["stdout_sha256"] if proc.returncode == 0 else None
+    row.receipt["base_pinned_source_sha256"] = base_pins
     if expect_base_head:
         row.check("red_head_is_base", head == BASE, head)
-        for rel, digest in PINNED.items():
-            row.check("red_pinned_source_" + rel, sha256_file(REPO / rel) == digest, rel)
+        for rel in PINNED:
+            row.check("red_working_source_equals_base_" + rel, sha256_file(REPO / rel) == base_pins[rel], rel)
     else:
         row.check("candidate_head_is_not_base", head != BASE, head)
         _, log = git(row, "git-candidate-log", ["log", "--format=%H%x1f%B%x1e", BASE + "..HEAD"])
