@@ -405,11 +405,20 @@ def _run_cases(focused, names):
     return outcome, stream.getvalue()
 
 
+def _parent_id(case):
+    """A subTest failure reports a _SubTest; attribute it to its owning test method."""
+    return getattr(case, "test_case", case).id()
+
+
 def _summarise(outcome):
+    unhashable = {}
+    for case, text in outcome.errors:
+        unhashable.setdefault(_parent_id(case), []).append(bool(UNHASHABLE.search(text)))
     return {"tests_run": outcome.testsRun,
-            "failures": [case.id() for case, _ in outcome.failures],
-            "errors": [case.id() for case, _ in outcome.errors],
-            "error_unhashable_typeerror": {case.id(): bool(UNHASHABLE.search(text)) for case, text in outcome.errors},
+            "failures": sorted({_parent_id(case) for case, _ in outcome.failures}),
+            "errors": sorted({_parent_id(case) for case, _ in outcome.errors}),
+            "error_entries": [case.id() for case, _ in outcome.errors],
+            "error_unhashable_typeerror": {k: all(v) for k, v in unhashable.items()},
             "skipped": [case.id() for case, _ in outcome.skipped],
             "unexpected_successes": [case.id() for case in outcome.unexpectedSuccesses],
             "successful": outcome.wasSuccessful()}
