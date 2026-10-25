@@ -58,7 +58,10 @@ RUNNER_CONTROL_TESTS = ("test_invalid_manifest_stops_before_any_child_or_phase",
                         "test_ordinary_nonzero_exit_is_not_terminal",
                         "test_terminal_child_in_phase_finalizes_without_more_children",
                         "test_public_tree_stops_dependent_clone_checkout_and_scans",
-                        "test_credentials_scanner_failure_stops_checker")
+                        "test_credentials_scanner_failure_stops_checker",
+                        "test_failed_identity_status_stops_before_phase",
+                        "test_failed_final_identity_cannot_pass",
+                        "test_failed_required_manifest_git_query_stops_before_phase")
 # Frozen experiment behaviour -> named tests (case tests are test_case_<fixture id>).
 BEHAVIOUR_MAP = {
     "zero/below/at/above for classifications": ["test_case_classifications_" + b for b in ("zero", "below", "at", "above")],
@@ -163,7 +166,14 @@ class Run:
         return Path(record[f"{stream}_path"]).read_text(encoding="utf-8", errors="replace")
 
     def git(self, name: str, *args: str, cwd: Path = REPO) -> tuple[int | None, str]:
+        """Required git query: any nonzero exit is a recorded prerequisite failure.
+
+        Queries whose nonzero exit is an ordinary, explicitly judged outcome
+        (diff --quiet, merge-base --is-ancestor, ls-files --error-unmatch) use
+        ``child`` directly and are evaluated by their caller instead."""
         record = self.child(name, ["git", *args], cwd)
+        self.need(record["exit"] == 0, f"required git query {name!r} failed: exit {record['exit']} "
+                                       f"argv={record['argv']} cwd={record['cwd']}")
         return record["exit"], self.text(record)
 
     def need(self, ok: bool, message: str) -> bool:
@@ -190,6 +200,9 @@ def identity(run: Run, label: str) -> dict:
     _, head = run.git(f"{label}-rev-parse-head", "rev-parse", "HEAD")
     _, tree = run.git(f"{label}-rev-parse-tree", "rev-parse", "HEAD^{tree}")
     code, status = run.git(f"{label}-status", "status", "--porcelain=v1", "--untracked-files=all")
+    # A failed or unusable query is never evidence of identity (or of a clean tree).
+    run.need(bool(_HEX40.fullmatch(head.strip())), f"{label}: candidate HEAD unavailable from git")
+    run.need(bool(_HEX40.fullmatch(tree.strip())), f"{label}: candidate tree unavailable from git")
     return {"head": head.strip(), "tree": tree.strip(), "status_exit": code, "status_porcelain": status,
             "authored_sha256": {rel: sha256_file(REPO / rel) for rel in AUTHORED},
             "pinned_sha256": {rel: sha256_file(REPO / rel) for rel in PINNED_SOURCES}}
@@ -248,7 +261,9 @@ def check_manifest_git(run: Run, facts: dict) -> dict:
     run.need(facts["measured_base_tree"] == base_tree, "manifest tree does not match the base commit tree")
     _, head = run.git("candidate-head", "rev-parse", "HEAD")
     head = head.strip()
+    run.need(bool(_HEX40.fullmatch(head)), "candidate HEAD unavailable from git")
     run.need(head != base, "HEAD is still the pinned base; no candidate commit")
+    run.gate("manifest-git-identity")  # no ancestry/commit/diff queries against an unproven base or HEAD
     ancestor = run.child("base-is-ancestor", ["git", "merge-base", "--is-ancestor", base, head], REPO)
     run.need(ancestor["exit"] == 0, "candidate HEAD does not descend from the pinned base")
     _, revs = run.git("candidate-commits", "rev-list", "--reverse", f"{base}..{head}")

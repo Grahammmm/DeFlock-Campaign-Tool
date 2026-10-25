@@ -624,6 +624,8 @@ class FC9RunnerStopGateTests(unittest.TestCase):
         def respond(argv):
             if argv[0] == "refused-tool":
                 return PermissionError(13, "refused (inert mock)")
+            if argv[:2] == ["git", "rev-parse"]:
+                return 0, ("6" * 40 if argv[2].endswith("^{tree}") else "5" * 40) + "\n"
             return 0, ""
 
         def inside(run):
@@ -688,6 +690,111 @@ class FC9RunnerStopGateTests(unittest.TestCase):
         with self.assertRaises(self.runner.Halt):
             self.runner.phase_credentials(run, {"runtime": {"detect_secrets": str(self.tmp / "absent")}}, {})
         self.assertEqual((run.stopped_at, launcher.calls), ("credentials-scanner-available", []))
+
+    # Required git identity/inventory queries: a failed query is never a proven identity.
+    @staticmethod
+    def identity_respond(status_exits):
+        """Valid rev-parse values; ``git status`` exits come from ``status_exits`` in order."""
+        exits = list(status_exits)
+
+        def respond(argv):
+            if argv[:2] == ["git", "rev-parse"]:
+                return 0, ("6" * 40 if argv[2].endswith("^{tree}") else "5" * 40) + "\n"
+            if argv[:2] == ["git", "status"]:
+                code = exits.pop(0) if exits else 0
+                return code, ""  # empty stdout: on failure this must NOT read as a clean tree
+            return 0, ""
+        return respond
+
+    def test_failed_identity_status_stops_before_phase(self):
+        for code in (128, 1):
+            with self.subTest(status_exit=code):
+                self.entered.clear()
+                run, launcher = self.make_run(self.identity_respond([code]), name=f"status-{code}")
+                record = self.runner.execute(run, "suite", self.tmp / "unused.json", {},
+                                             phases=self.marker_phases(), check=lambda r, p, ph: {})
+                self.assertEqual(self.entered, [])
+                self.assertFalse(record["phase_entered"])
+                self.assertFalse(record["passed"])
+                self.assertEqual(record["stopped"]["stage"], "identity-before")
+                self.assertEqual(record["identity_before"]["status_exit"], code)
+                self.assertNotIn("identity_after", record)
+                self.assertTrue(any("'before-status' failed" in p for p in record["problems"]), record["problems"])
+                names = [c["name"] for c in record["children"]]
+                self.assertEqual(names[-1], "before-status")
+                self.assertEqual(len(launcher.calls), len(names))
+                saved = json.loads((run.run_dir / "result.json").read_text(encoding="utf-8"))
+                self.assertFalse(saved["passed"])
+
+    def test_failed_final_identity_cannot_pass(self):
+        cases = {"after-status": self.identity_respond([0, 128])}
+
+        def bad_after_head(argv, seen=[]):
+            if argv[:3] == ["git", "rev-parse", "HEAD"]:
+                seen.append(1)
+                return (0, "5" * 40 + "\n") if len(seen) == 1 else (128, "")
+            return self.identity_respond([])(argv)
+        cases["after-rev-parse-head"] = bad_after_head
+        for label, respond in cases.items():
+            with self.subTest(label=label):
+                self.entered.clear()
+                run, launcher = self.make_run(respond, name=label)
+                record = self.runner.execute(run, "suite", self.tmp / "unused.json", {},
+                                             phases=self.marker_phases(), check=lambda r, p, ph: {})
+                self.assertEqual(self.entered, ["phase"])
+                self.assertIn("identity_after", record)
+                self.assertFalse(record["passed"])
+                self.assertTrue(any(f"'{label}' failed" in p for p in record["problems"]), record["problems"])
+
+    def test_failed_required_manifest_git_query_stops_before_phase(self):
+        base, base_tree, head = "2" * 40, "3" * 40, "4" * 40
+        failing = {  # git query name that fails: (argv prefix, gate stage)
+            "candidate-head": (["git", "rev-parse", "HEAD"], "manifest-git-identity"),
+            "candidate-commits": (["git", "rev-list"], "manifest-git"),
+            "changed-paths": (["git", "diff", "--name-only"], "manifest-git"),
+        }
+        for name, (prefix, stage) in failing.items():
+            with self.subTest(query=name):
+                self.entered.clear()
+
+                def respond(argv, prefix=prefix):
+                    if argv[:len(prefix)] == prefix:
+                        return 128, ""
+                    if argv[:2] == ["git", "rev-parse"]:
+                        return 0, (base_tree if argv[2].endswith("^{tree}") else head) + "\n"
+                    if argv[:2] == ["git", "rev-list"]:
+                        return 0, "7" * 40 + "\n"
+                    if argv[:2] == ["git", "log"]:
+                        return 0, "subject\n\nSigned-off-by: Test <t@example.invalid>\n"
+                    if argv[:3] == ["git", "diff", "--name-only"]:
+                        return 0, "\n".join(self.runner.AUTHORED) + "\n"
+                    return 0, ""
+
+                def check(run, manifest_path, phase):
+                    run.manifest_facts.update(base=base, base_tree=base_tree)
+                    return self.runner.check_manifest_git(run, run.manifest_facts)
+
+                run, launcher = self.make_run(respond, name=f"query-{name}")
+                record = self.runner.execute(run, "suite", self.tmp / "unused.json", {},
+                                             phases=self.marker_phases(), check=check)
+                self.assertEqual(self.entered, [])
+                self.assertFalse(record["passed"])
+                self.assertEqual(record["stopped"]["stage"], stage)
+                self.assertTrue(any(f"'{name}' failed" in p for p in record["problems"]), record["problems"])
+                names = [c["name"] for c in record["children"]]
+                self.assertFalse(any(n.startswith("before-") for n in names), names)
+                if stage == "manifest-git-identity":
+                    self.assertEqual(names[-1], "candidate-head")
+        # Control: the same responses with nothing failing pass both git gates.
+        run, launcher = self.make_run(lambda argv: (
+            (0, (base_tree if argv[2].endswith("^{tree}") else head) + "\n") if argv[:2] == ["git", "rev-parse"]
+            else (0, "7" * 40 + "\n") if argv[:2] == ["git", "rev-list"]
+            else (0, "subject\n\nSigned-off-by: Test <t@example.invalid>\n") if argv[:2] == ["git", "log"]
+            else (0, "\n".join(self.runner.AUTHORED) + "\n") if argv[:3] == ["git", "diff", "--name-only"]
+            else (0, "")), name="query-control")
+        run.manifest_facts.update(base=base, base_tree=base_tree)
+        self.runner.check_manifest_git(run, run.manifest_facts)
+        self.assertEqual(run.problems, [])
 
 
 if __name__ == "__main__":
