@@ -6,11 +6,13 @@ Frozen case IDs (one test method each):
     original_target_and_residue_evidence, symlink_and_nonregular_target_refusal.
 
 Ordinary positives use fresh report paths under the temporary-directory default
-(the acceptance runner points it at a fresh run directory). Cleanup-failure
-controls replace the module's OS calls with an in-memory fake, so they open,
-delete and leak nothing real. Real-filesystem cases that inject a failure keep a
-test-only safety net: any directory descriptor the finalizer leaves open is
-recorded as a failure and then closed by the test, never leaked past it.
+(the acceptance runner points it at a fresh run directory). Every cleanup-failure
+control (an unlink that raises) replaces the module's OS calls with an in-memory
+fake, including the target/residue evidence case, whose directory entries,
+inodes, bytes and modes are modelled in memory; those cases open, delete and
+leak nothing real. The only real-filesystem fault case is the write/fsync
+failure whose cleanup succeeds; it keeps a test-only safety net that reports
+and closes any directory descriptor the finalizer leaves open.
 """
 import os
 from pathlib import Path
@@ -123,6 +125,63 @@ class FakeOS:
                 "unclosed_directories": [fd for fd in self.directories if fd not in self.closed],
                 "unlinks": self.named("unlink"), "raised": repr(raised),
                 "context": repr(raised.__context__) if raised is not None else None}
+
+
+class Inode:
+    """In-memory file body shared by every directory entry that links to it."""
+
+    def __init__(self, text, mode):
+        self.text, self.mode = text, mode
+
+
+class StatefulFile(FakeFile):
+    def __init__(self, owner, fd, inode):
+        super().__init__(owner, fd)
+        self.inode = inode
+
+    def write(self, text):
+        self.inode.text += text
+        return super().write(text)
+
+
+class StatefulFakeOS(FakeOS):
+    """FakeOS whose leaf directory holds in-memory entries, so target and residue
+    state can be inspected without a real file, directory or descriptor."""
+
+    def __init__(self, entries, **failures):
+        super().__init__(**failures)
+        self.entries, self.inodes = dict(entries), {}
+
+    def open(self, path, flags, mode=0o777, *, dir_fd=None):
+        if flags & os.O_DIRECTORY:
+            return super().open(path, flags, mode, dir_fd=dir_fd)
+        if flags & os.O_EXCL and path in self.entries:
+            raise FileExistsError(path)
+        fd = super().open(path, flags, mode, dir_fd=dir_fd)
+        self.inodes[fd] = self.entries[path] = Inode("", mode)
+        return fd
+
+    def stat(self, name, *, dir_fd, follow_symlinks):
+        self.calls.append(("stat", name, dir_fd, follow_symlinks))
+        if name not in self.entries:
+            raise FileNotFoundError(name)
+        return os.stat_result((stat.S_IFREG | self.entries[name].mode,) + (0,) * 9)
+
+    def fdopen(self, fd, mode, encoding):
+        self.calls.append(("fdopen", fd, mode, encoding))
+        return StatefulFile(self, fd, self.inodes[fd])
+
+    def fchmod(self, fd, mode):
+        super().fchmod(fd, mode)
+        self.inodes[fd].mode = mode
+
+    def replace(self, source, target, *, src_dir_fd, dst_dir_fd):
+        super().replace(source, target, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        self.entries[target] = self.entries.pop(source)
+
+    def unlink(self, name, *, dir_fd):
+        super().unlink(name, dir_fd=dir_fd)
+        del self.entries[name]
 
 
 class RealTracker:
@@ -326,37 +385,39 @@ class ReportCloseTest(unittest.TestCase):
                     self.assertEqual(fake.named("unlink"), [("unlink", SYNTHETIC_TEMPORARY, 1002)])
 
     def test_original_target_and_residue_evidence(self):
-        target = self.root / "report.json"
-        target.write_text("old")
-        target.chmod(0o644)
-        alias = self.root / "alias.json"
-        os.link(target, alias)
-        inode = target.stat().st_ino
-        original = OSError("synthetic replace failure")
-        cleanup = OSError("synthetic cleanup failure")
-        tracker = RealTracker(replace_failure=original, unlink_failure=cleanup)
-        raised, leaked = self.real(tracker, target, "new")
-        residue = self.residue()
-        self.observe("original_target_and_residue_evidence",
-                     {"acquired": tracker.acquired, "closed": tracker.closed, "leaked": leaked,
-                      "unlinks": tracker.unlinks, "residue": residue, "raised": repr(raised),
-                      "context": repr(getattr(raised, "__context__", None))})
+        # Fully synthetic: the leaf directory, its hardlinked target and the
+        # temporary residue exist only in memory; no real descriptor is opened.
+        original_inode = Inode("old", 0o644)
+        fake = StatefulFakeOS({"report.json": original_inode, "alias.json": original_inode},
+                              replace=OSError("synthetic replace failure"),
+                              unlink=OSError("synthetic cleanup failure"))
+        original, cleanup = fake.failures["replace"], fake.failures["unlink"]
+        raised = call_mocked(fake)
+        evidence = fake.evidence(raised)
+        evidence.update({"entries": {name: {"text": inode.text, "mode": oct(inode.mode),
+                                            "is_original_inode": inode is original_inode}
+                                     for name, inode in sorted(fake.entries.items())},
+                         "file_closes": [call[1] for call in fake.named("file-close")]})
+        self.observe("original_target_and_residue_evidence", evidence)
         self.assertIs(raised, cleanup)
         self.assertIs(raised.__context__, original)
-        self.assertEqual(leaked, [])
-        self.assertEqual(sorted(tracker.acquired), sorted(tracker.closed))
-        self.assertEqual(len(tracker.replaces), 1)
-        self.assertEqual(tracker.unlinks, residue)
-        self.assertEqual(len(residue), 1)
-        left = self.root / residue[0]
-        self.assertEqual(left.read_text(), "new")
-        self.assertEqual(stat.S_IMODE(left.stat().st_mode), 0o600)
-        self.assertEqual(target.read_text(), "old")
-        self.assertEqual(target.stat().st_ino, inode)
-        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
-        self.assertEqual(alias.read_text(), "old")
-        self.assertEqual(sorted(path.name for path in self.root.iterdir()),
-                         sorted(["alias.json", "report.json", residue[0]]))
+        self.assertEqual(fake.directories, [1000, 1001, 1002])
+        self.assertEqual(fake.files, [1003])
+        self.assertEqual(evidence["unclosed_directories"], [])
+        self.assertEqual(fake.closed, [1000, 1001, 1002])
+        self.assertEqual(fake.calls[-1], ("close", 1002))
+        self.assertEqual(evidence["file_closes"], [1003])
+        self.assertEqual(fake.named("fsync"), [("fsync", 1003)])
+        self.assertEqual(fake.named("replace"),
+                         [("replace", SYNTHETIC_TEMPORARY, "report.json", 1002, 1002)])
+        self.assertEqual(fake.named("unlink"), [("unlink", SYNTHETIC_TEMPORARY, 1002)])
+        self.assertEqual(sorted(fake.entries), sorted(["alias.json", "report.json", SYNTHETIC_TEMPORARY]))
+        self.assertIs(fake.entries["report.json"], original_inode)
+        self.assertIs(fake.entries["alias.json"], original_inode)
+        self.assertEqual((original_inode.text, original_inode.mode), ("old", 0o644))
+        residue = fake.entries[SYNTHETIC_TEMPORARY]
+        self.assertIsNot(residue, original_inode)
+        self.assertEqual((residue.text, residue.mode), ("new", 0o600))
 
     def test_symlink_and_nonregular_target_refusal(self):
         original = self.root / "original"
