@@ -25,6 +25,7 @@ import unittest
 from unittest import mock
 
 from tools import portal_reconcile
+from tools import accept_fa41_pointer_json as runner
 from tools.portal_reconcile import InputError, read_json, reconcile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -395,6 +396,237 @@ class CliIntegrationTests(unittest.TestCase):
             result = invoke("--observations", str(rows), "--queue-export", str(QUEUE))
         self.assertEqual((result.returncode, result.stderr), (0, ""))
         self.assertEqual(json.loads(result.stdout)["mail"]["malformed_reasons"], {"unknown_field": 1})
+
+
+# --- acceptance-runner fail-closed controls ---------------------------------
+# These pin tools/accept_fa41_pointer_json.py verdicts. Synthetic unittest
+# outcomes and synthetic child-report text only; NOTHING here is real CI
+# evidence and no repository discovery is run.
+
+SYNTH = "SyntheticControl"
+
+
+def synthetic_id(name):
+    return f"{__name__}.{SYNTH}.{name}"
+
+
+def run_synthetic(methods):
+    """Run an in-memory TestCase; return (loaded ids, runner outcome summary)."""
+    case = type(SYNTH, (unittest.TestCase,), dict(methods, __module__=__name__))
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(case)
+    loaded = sorted(t.id() for t in runner.iter_tests(suite))
+    result = unittest.TestResult()
+    suite.run(result)
+    return loaded, runner.outcome_summary(result)
+
+
+def refused(self):
+    with self.assertRaises(InputError):  # same refusal assertion as the deciding tests
+        pass
+
+
+def passing(self):
+    pass
+
+
+def wrong_code(self):
+    self.assertEqual("input_schema_mismatch", DUPLICATE)  # same as assert_refused's code check
+
+
+def unrelated_error(self):
+    raise RuntimeError("synthetic unrelated control error")
+
+
+def other_assertion(self):
+    self.assertEqual(1, 2)
+
+
+def skipping(self):
+    self.skipTest("synthetic skip")
+
+
+class AcceptanceRunnerNegativeControlTests(unittest.TestCase):
+    """A4 runner verdict: only real refusal-assertion detection counts."""
+
+    NAMES = ("test_a", "test_b")
+
+    def verdict(self, broken_methods, expected=None, restored_methods=None, hook_restored=True):
+        expected = expected or [synthetic_id(n) for n in self.NAMES]
+        loaded, broken = run_synthetic(broken_methods)
+        _, positive = run_synthetic({"test_positive": passing})
+        _, restored = run_synthetic(restored_methods or {n: passing for n in self.NAMES})
+        phases = {"broken": broken, "broken_positive": positive, "restored": restored,
+                  "restored_positive": positive}
+        return runner.negative_control_verdict(loaded, phases, hook_restored, expected=expected,
+                                               contradiction=synthetic_id("test_a"))
+
+    def test_decisive_control_is_accepted(self):
+        self.assertEqual(self.verdict({"test_a": refused, "test_b": refused}), (True, []))
+        # The fixed-code refusal assertion is detection too (last value wins).
+        self.assertEqual(self.verdict({"test_a": refused, "test_b": wrong_code}), (True, []))
+
+    def test_unrelated_errors_are_not_detection(self):
+        ok, reasons = self.verdict({"test_a": unrelated_error, "test_b": unrelated_error})
+        self.assertFalse(ok)
+        self.assertIn("broken_control_errors", reasons)
+        self.assertIn("broken_control_not_detected_by_every_deciding_test", reasons)
+        self.assertIn("broken_control_failures_not_refusal_assertions", reasons)
+
+    def test_one_unrelated_error_is_rejected(self):
+        ok, reasons = self.verdict({"test_a": refused, "test_b": unrelated_error})
+        self.assertFalse(ok)
+        self.assertIn("broken_control_errors", reasons)
+
+    def test_partial_detection_is_rejected(self):
+        ok, reasons = self.verdict({"test_a": refused, "test_b": passing})
+        self.assertFalse(ok)
+        self.assertIn("broken_control_not_detected_by_every_deciding_test", reasons)
+
+    def test_other_assertion_is_not_detection(self):
+        ok, reasons = self.verdict({"test_a": refused, "test_b": other_assertion})
+        self.assertFalse(ok)
+        self.assertIn("broken_control_failures_not_refusal_assertions", reasons)
+
+    def test_skip_is_rejected(self):
+        ok, reasons = self.verdict({"test_a": refused, "test_b": skipping})
+        self.assertFalse(ok)
+        self.assertIn("broken_control_skipped", reasons)
+
+    def test_incomplete_population_is_rejected(self):
+        expected = [synthetic_id(n) for n in (*self.NAMES, "test_c")]
+        ok, reasons = self.verdict({"test_a": refused, "test_b": refused}, expected=expected)
+        self.assertFalse(ok)
+        self.assertIn("deciding_population_mismatch", reasons)
+        self.assertIn("broken_population_incomplete", reasons)
+
+    def test_unclean_restore_or_hook_is_rejected(self):
+        ok, reasons = self.verdict({"test_a": refused, "test_b": refused},
+                                   restored_methods={"test_a": passing, "test_b": unrelated_error})
+        self.assertFalse(ok)
+        self.assertIn("restored_not_clean", reasons)
+        ok, reasons = self.verdict({"test_a": refused, "test_b": refused}, hook_restored=False)
+        self.assertEqual((ok, reasons), (False, ["hook_not_restored"]))
+
+    def test_real_case_rejects_injected_error_and_accepts_decisive_control(self):
+        # Real deciding tests and real held/restored controls; only the broken
+        # phase hook is replaced in memory by one raising an unrelated error.
+        original = runner.run_suite
+        calls = []
+
+        def run_with_unrelated_error(names, stream):
+            calls.append(names)
+            if len(calls) == 1:
+                with mock.patch.object(portal_reconcile, "_pairs_recorder",
+                                       side_effect=RuntimeError("synthetic unrelated control error")):
+                    return original(names, stream)
+            return original(names, stream)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(runner, "run_suite", side_effect=run_with_unrelated_error):
+                ok, details = runner.case_negative_control(Path(tmp))
+            self.assertFalse(ok)
+            self.assertEqual(details["broken_control_error_ids"], list(runner.DECIDING_TESTS))
+            self.assertGreaterEqual(details["broken_control"]["errors"], len(runner.DECIDING_TESTS))
+            self.assertEqual(details["broken_control"]["failures"], 0)
+            self.assertFalse(details["contradictory_allowlisted_detected"])
+            self.assertIn("broken_control_errors", details["verdict_reasons"])
+            self.assertIs(portal_reconcile._pairs_recorder, original_hook)
+            ok, details = runner.case_negative_control(Path(tmp))
+        self.assertTrue(ok, details["verdict_reasons"])
+        self.assertEqual(details["broken_control_assertion_failure_ids"], list(runner.DECIDING_TESTS))
+        self.assertEqual(details["broken_control"]["errors"], 0)
+        self.assertTrue(details["contradictory_allowlisted_detected"])
+
+
+original_hook = portal_reconcile._pairs_recorder
+NEW = (runner.R + "X.test_one", runner.R + "X.test_two")
+
+
+def verbose(*lines, final="OK", ran=None):
+    body = "".join(f"{tid.rsplit('.', 1)[1]} ({tid}) ... {outcome}\n" for tid, outcome in lines)
+    return body + f"\n{'-' * 70}\nRan {ran if ran is not None else len(lines)} tests in 0.001s\n\n{final}\n"
+
+
+class AcceptanceRunnerFullCiAggregationTests(unittest.TestCase):
+    """full-ci aggregation fails closed; synthetic report text only, NOT real CI."""
+
+    def records(self, text, code=0):
+        return runner.aggregate_command("ci_records_discovery", code, text, list(NEW))
+
+    def test_complete_clean_reports_pass(self):
+        complete = verbose(*((tid, "ok") for tid in NEW), (runner.COMPATIBILITY[0] + ".T.test_x", "ok"))
+        self.assertTrue(self.records(complete)[0])
+        for label in ("sd15_discovery", "ci_s3a"):
+            self.assertTrue(runner.aggregate_command(label, 0, "Ran 3 tests in 0.1s\n\nOK\n", list(NEW))[0])
+
+    def test_skips_and_expected_failures_fail_every_population(self):
+        for final, reason in (("OK (skipped=1)", "unqualified_skipped"),
+                              ("OK (expected failures=1)", "unqualified_expected_failures"),
+                              ("OK (unexpected successes=1)", "unqualified_unexpected_successes")):
+            for label in ("sd15_discovery", "ci_s3a"):
+                with self.subTest(label=label, final=final):
+                    passed, entry = runner.aggregate_command(label, 0, f"Ran 2 tests in 0.1s\n\n{final}\n", list(NEW))
+                    self.assertFalse(passed)
+                    self.assertIn(reason, entry["verdict_reasons"])
+            with self.subTest(label="ci_records_discovery", final=final):
+                passed, entry = self.records(verbose(*((tid, "ok") for tid in NEW), final=final))
+                self.assertFalse(passed)
+                self.assertIn(reason, entry["verdict_reasons"])
+
+    def test_unqualified_unrelated_skip_line_fails(self):
+        text = verbose(*((tid, "ok") for tid in NEW),
+                       ("tests.synthetic_unqualified.Required.test_required", "skipped 'synthetic'"),
+                       final="OK (skipped=1)")
+        passed, entry = self.records(text)
+        self.assertFalse(passed)
+        self.assertIn("unqualified_skip_or_expected_failure_lines", entry["verdict_reasons"])
+        self.assertEqual(len(entry["skip_or_expected_failure_inventory"]), 1)
+
+    def test_incomplete_new_collection_fails(self):
+        passed, entry = self.records(verbose((NEW[0], "ok")))
+        self.assertFalse(passed)
+        self.assertIn("new_regression_tests_not_all_collected_ok", entry["verdict_reasons"])
+        self.assertEqual(entry["new_regression_tests_missing"], [NEW[1]])
+
+    def test_duplicate_or_unknown_new_ids_fail(self):
+        for lines in (((NEW[0], "ok"), (NEW[1], "ok"), (NEW[1], "ok")),
+                      ((NEW[0], "ok"), (NEW[1], "ok"), (runner.R + "X.test_unknown", "ok"))):
+            with self.subTest(lines=len(lines)):
+                passed, entry = self.records(verbose(*lines))
+                self.assertFalse(passed)
+                self.assertIn("new_regression_population_mismatch", entry["verdict_reasons"])
+
+    def test_missing_report_nonzero_exit_and_empty_population_fail(self):
+        self.assertIn("missing_or_malformed_report", self.records("no summary\n")[1]["verdict_reasons"])
+        self.assertIn("nonzero_exit", self.records(verbose(*((t, "ok") for t in NEW)), code=1)[1]["verdict_reasons"])
+        self.assertIn("timeout", str(runner.aggregate_command("ci_s3a", "timeout", "", list(NEW))[1]["exit"]))
+        self.assertIn("empty_population", runner.aggregate_command(
+            "ci_s3a", 0, "Ran 0 tests in 0.0s\n\nOK\n", list(NEW))[1]["verdict_reasons"])
+        self.assertIn("expected_new_population_empty",
+                      runner.aggregate_command("ci_records_discovery", 0, verbose(), [])[1]["verdict_reasons"])
+
+    def test_frozen_new_population_matches_loaded_module(self):
+        loaded, reasons = runner.expected_new_test_ids()
+        self.assertEqual(reasons, [])
+        self.assertEqual(len(loaded), runner.EXPECTED_NEW_TEST_COUNT)
+        self.assertTrue(set(runner.DECIDING_TESTS) <= set(loaded))
+
+    def test_case_full_ci_rejects_synthetic_skip_protocol(self):
+        # The child processes are replaced by synthetic report text; no
+        # discovery runs. Every required command must FAIL.
+        def child(argv, **kwargs):
+            if "-v" in argv:
+                text = verbose((NEW[0], "ok"), ("tests.synthetic_unqualified.Required.test_required",
+                                                "skipped 'synthetic unqualified skip'"), final="OK (skipped=1)")
+            else:
+                text = "Ran 2 tests in 0.001s\n\nOK (skipped=1)\n"
+            return subprocess.CompletedProcess(argv, 0, b"", text.encode())
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(runner.subprocess, "run", side_effect=child):
+            ok, details = runner.case_full_ci(Path(tmp), 1)
+        self.assertFalse(ok)
+        self.assertEqual({label: entry["result"] for label, entry in details["commands"].items()},
+                         {"sd15_discovery": "FAIL", "ci_s3a": "FAIL", "ci_records_discovery": "FAIL"})
 
 
 if __name__ == "__main__":

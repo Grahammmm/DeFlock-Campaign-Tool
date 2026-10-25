@@ -9,13 +9,20 @@ symlink-free path outside this repository:
   compatibility     the unchanged tests/test_portal_reconcile.py
   negative-control  A4: the deciding duplicate-refusal tests run with ONLY the
                     new duplicate rejection disabled by an in-memory double
-                    (each must fail) while the held-observation positive still
-                    passes; then the real hook is restored and both rerun clean
+                    (the complete frozen population must fail through the
+                    refusal assertions alone: any error, skip or other
+                    outcome fails the control) while the held-observation
+                    positive still passes; then the real hook is restored
+                    and both rerun clean
   isolation         A6: a second complete source copy inside the run directory
                     runs the focused suites; loaded module paths, runtime path
                     constants/bound defaults and sentinel self-checks recorded
   full-ci           complete repository discovery (SD-15 argv and the committed
-                    records.yml argv) plus the CI S3a module invocation
+                    records.yml argv) plus the CI S3a module invocation; every
+                    population must have zero failures, errors, skips,
+                    expected failures and unexpected successes (no skip
+                    exemption), and the verbose discovery must report every
+                    new regression test ok
   credentials       installed detect-secrets scan + unchanged
                     tools/check_secret_report.py on that exact JSON report
 
@@ -107,9 +114,38 @@ ROWS = {
         R + "CliIntegrationTests.test_cli_fixture_totals_and_byte_identical_repeats",
         R + "SeparateRowAccountingTests.test_separate_held_observation_remains_held",
     ],
+    "runner_fail_closed_controls": [
+        R + "AcceptanceRunnerNegativeControlTests.test_decisive_control_is_accepted",
+        R + "AcceptanceRunnerNegativeControlTests.test_unrelated_errors_are_not_detection",
+        R + "AcceptanceRunnerNegativeControlTests.test_real_case_rejects_injected_error_and_accepts_decisive_control",
+        R + "AcceptanceRunnerFullCiAggregationTests.test_complete_clean_reports_pass",
+        R + "AcceptanceRunnerFullCiAggregationTests.test_skips_and_expected_failures_fail_every_population",
+        R + "AcceptanceRunnerFullCiAggregationTests.test_unqualified_unrelated_skip_line_fails",
+        R + "AcceptanceRunnerFullCiAggregationTests.test_incomplete_new_collection_fails",
+        R + "AcceptanceRunnerFullCiAggregationTests.test_frozen_new_population_matches_loaded_module",
+        R + "AcceptanceRunnerFullCiAggregationTests.test_case_full_ci_rejects_synthetic_skip_protocol",
+    ],
 }
 DECIDING_CLASS = R + "ReadJsonDuplicateRefusalTests"
 DECIDING_CONTRADICTION = DECIDING_CLASS + ".test_contradictory_allowlisted_false_true_refused"
+# The complete frozen deciding population: every one must FAIL (assertion,
+# not error) when only the duplicate rejection is disabled.
+DECIDING_TESTS = tuple(sorted(DECIDING_CLASS + "." + name for name in (
+    "test_contradictory_allowlisted_false_true_refused",
+    "test_contradictory_allowlisted_true_false_refused",
+    "test_identical_duplicate_values_refused",
+    "test_every_observation_case_refused",
+    "test_every_queue_case_refused",
+    "test_queue_state_and_has_version_refused",
+    "test_ignored_nested_object_refused",
+    "test_duplicate_refused_at_existing_row_bound",
+)))
+# The refusal assertions the deciding tests make: assertRaises(InputError)
+# and the fixed-code check on the raised error (assert_refused).
+REFUSAL_FAILURE = re.compile(r"^AssertionError: (?:InputError not raised|'[a-z_]+' != 'duplicate_json_key')$", re.M)
+# Complete population of the new regression module; full-ci requires every
+# one of them to be collected and reported ok by the records.yml discovery.
+EXPECTED_NEW_TEST_COUNT = 45
 HELD_POSITIVE = R + "SeparateRowAccountingTests.test_separate_held_observation_remains_held"
 FOCUSED_MODULES = ("tools.portal_reconcile", REGRESSION, "tests.test_portal_reconcile",
                    "campaign_tool.records.portal.notice", "campaign_tool.records.portal.policy",
@@ -442,19 +478,70 @@ def case_negative_control(run):
     restored = run_suite([DECIDING_CLASS], stream)
     stream.write("=== restored hook: held-observation positive ===\n")
     restored_positive = run_suite([HELD_POSITIVE], stream)
-    broken_failing = failing_ids(broken)
-    every_deciding_detected = bool(deciding) and broken_failing == deciding
-    ok = (every_deciding_detected and DECIDING_CONTRADICTION in broken_failing
-          and clean(counts(broken_positive)) and restored_hook
-          and clean(counts(restored)) and clean(counts(restored_positive)) and not GUARD_HITS)
-    return ok, {"deciding_tests": deciding, "broken_control": counts(broken),
-                "broken_control_failing_ids": broken_failing,
-                "every_deciding_test_detected_broken_control": every_deciding_detected,
-                "contradictory_allowlisted_detected": DECIDING_CONTRADICTION in broken_failing,
-                "broken_held_positive": counts(broken_positive), "hook_restored": restored_hook,
-                "restored": counts(restored), "restored_held_positive": counts(restored_positive),
-                "module_paths": module_paths(FOCUSED_MODULES),
+    phases = {"broken": outcome_summary(broken), "broken_positive": outcome_summary(broken_positive),
+              "restored": outcome_summary(restored), "restored_positive": outcome_summary(restored_positive)}
+    ok, reasons = negative_control_verdict(deciding, phases, restored_hook)
+    ok = ok and not GUARD_HITS
+    broken_failing = phases["broken"]["failure_ids"]
+    return ok, {"deciding_tests": deciding, "expected_deciding_tests": list(DECIDING_TESTS),
+                "broken_control": phases["broken"]["counts"],
+                "broken_control_assertion_failure_ids": broken_failing,
+                "broken_control_error_ids": phases["broken"]["error_ids"],
+                "broken_control_failures_are_refusal_assertions": phases["broken"]["failures_are_refusal_assertions"],
+                "every_deciding_test_detected_broken_control": broken_failing == list(DECIDING_TESTS),
+                "contradictory_allowlisted_detected": DECIDING_CONTRADICTION in broken_failing
+                and phases["broken"]["failures_are_refusal_assertions"],
+                "broken_held_positive": phases["broken_positive"]["counts"], "hook_restored": restored_hook,
+                "restored": phases["restored"]["counts"],
+                "restored_held_positive": phases["restored_positive"]["counts"],
+                "verdict_reasons": reasons, "module_paths": module_paths(FOCUSED_MODULES),
                 "raw_output": "unittest.txt", "raw_output_sha256": write_raw(run, "unittest.txt", stream.getvalue())}
+
+
+def outcome_summary(result):
+    """Counts plus assertion-failure and error ids, kept apart."""
+    return {"counts": counts(result),
+            "failure_ids": sorted({parent_id(t) for t, _ in result.failures}),
+            "error_ids": sorted({parent_id(t) for t, _ in result.errors}),
+            "failures_are_refusal_assertions": bool(result.failures) and all(
+                REFUSAL_FAILURE.search(tb) for _, tb in result.failures)}
+
+
+def negative_control_verdict(loaded, phases, hook_restored, expected=DECIDING_TESTS,
+                             positive_count=1, contradiction=DECIDING_CONTRADICTION):
+    """A4 verdict; returns (ok, reasons). Fails closed on anything but detection.
+
+    The broken phase must run the complete expected deciding population and
+    every test must fail ONLY through the refusal assertion: any error, skip,
+    expected failure, unexpected success, pass or other assertion is a
+    failed control, never detection. The held positive must pass in both
+    phases and the restored deciding population must pass completely.
+    """
+    expected = sorted(expected)
+    reasons = []
+    broken = phases["broken"]
+    bc = broken["counts"]
+    if not expected or sorted(loaded) != expected:
+        reasons.append("deciding_population_mismatch")
+    if bc["tests_run"] != len(expected):
+        reasons.append("broken_population_incomplete")
+    for key in ("errors", "skipped", "expected_failures", "unexpected_successes"):
+        if bc[key]:
+            reasons.append(f"broken_control_{key}")
+    if broken["failure_ids"] != expected:
+        reasons.append("broken_control_not_detected_by_every_deciding_test")
+    if not broken["failures_are_refusal_assertions"]:
+        reasons.append("broken_control_failures_not_refusal_assertions")
+    if contradiction not in broken["failure_ids"]:
+        reasons.append("contradictory_allowlisted_not_detected")
+    for name, population in (("broken_positive", positive_count), ("restored", len(expected)),
+                             ("restored_positive", positive_count)):
+        c = phases[name]["counts"]
+        if not clean(c) or c["tests_run"] != population:
+            reasons.append(f"{name}_not_clean")
+    if not hook_restored:
+        reasons.append("hook_not_restored")
+    return not reasons, reasons
 
 
 def iter_tests(suite):
@@ -562,6 +649,79 @@ def parse_unittest(text):
             "unexpected_successes": int(fields.get("unexpected successes", 0))}
 
 
+def verbose_id(name, location):
+    """Test id from a verbose line; Python >= 3.11 prints the full id."""
+    return location if location.endswith("." + name) else f"{location}.{name}"
+
+
+def expected_new_test_ids():
+    """Complete loaded population of the new regression module, checked
+    against the frozen count and every named acceptance/deciding test."""
+    import unittest
+    loaded = sorted(t.id() for t in iter_tests(unittest.defaultTestLoader.loadTestsFromName(REGRESSION)))
+    named = {name for names in ROWS.values() for name in names} | set(DECIDING_TESTS)
+    reasons = []
+    if len(loaded) != EXPECTED_NEW_TEST_COUNT or len(set(loaded)) != len(loaded):
+        reasons.append("new_test_population_count_mismatch")
+    if not named <= set(loaded):
+        reasons.append("named_acceptance_tests_not_loaded")
+    return loaded, reasons
+
+
+def aggregate_command(label, code, text, expected_new):
+    """Fail-closed verdict for one full-ci child; returns (passed, entry).
+
+    Every required population must exit 0, report OK with a nonzero count and
+    ZERO failures, errors, skips, expected failures and unexpected successes;
+    there is no skip exemption here (any qualification belongs to the existing
+    owner). The verbose records.yml discovery must additionally report every
+    expected new regression test exactly once, each ok.
+    """
+    parsed = parse_unittest(text)
+    reasons = []
+    if code != 0:
+        reasons.append("nonzero_exit")
+    if parsed is None:
+        reasons.append("missing_or_malformed_report")
+    else:
+        if parsed["status"] != "OK":
+            reasons.append("status_not_ok")
+        if parsed["tests_run"] <= 0:
+            reasons.append("empty_population")
+        for key in ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"):
+            if parsed[key]:
+                reasons.append(f"unqualified_{key}")
+    entry = {"exit": code, "counts": parsed}
+    if label == "ci_records_discovery":
+        outcomes = [(verbose_id(name, location), outcome) for name, location, outcome in VERBOSE_RESULT.findall(text)]
+        new = [(tid, outcome) for tid, outcome in outcomes if tid.startswith(R)]
+        new_ok = sorted(tid for tid, outcome in new if outcome == "ok")
+        not_ok = sorted(f"{tid}: {outcome}" for tid, outcome in outcomes
+                        if outcome != "ok" and tid.startswith((R, COMPATIBILITY[0] + ".")))
+        skipped = sorted(f"{tid}: {outcome}" for tid, outcome in outcomes
+                         if outcome.startswith("skipped") or outcome in ("expected failure", "unexpected success"))
+        expected = sorted(expected_new)
+        missing = sorted(set(expected) - set(new_ok))
+        unexpected_new = sorted({tid for tid, _ in new} - set(expected))
+        if not expected:
+            reasons.append("expected_new_population_empty")
+        if missing:
+            reasons.append("new_regression_tests_not_all_collected_ok")
+        if len(new) != len(expected) or unexpected_new:
+            reasons.append("new_regression_population_mismatch")
+        if not_ok:
+            reasons.append("focused_not_ok")
+        if skipped:
+            reasons.append("unqualified_skip_or_expected_failure_lines")
+        entry.update({"new_regression_tests_expected": len(expected),
+                      "new_regression_tests_collected_ok": len(new_ok),
+                      "new_regression_tests_missing": missing, "new_regression_tests_unexpected": unexpected_new,
+                      "focused_not_ok": not_ok, "skip_or_expected_failure_inventory": skipped})
+    entry["verdict_reasons"] = reasons
+    entry["result"] = "PASS" if not reasons else "FAIL"
+    return not reasons, entry
+
+
 def case_full_ci(run, timeout):
     tmp = run / "tmp-full-ci"
     tmp.mkdir(mode=0o700)
@@ -572,9 +732,11 @@ def case_full_ci(run, timeout):
         "ci_records_discovery": [sys.executable, "-B", "-W", "error::ResourceWarning", "-m", "unittest",
                                  "discover", "-v"],
     }
+    expected_new, population_reasons = expected_new_test_ids()
     details = {"env_overrides": {"TMPDIR": str(tmp), "PYTHONDONTWRITEBYTECODE": "1"}, "cwd": str(REPO),
+               "expected_new_tests": expected_new, "expected_new_population_reasons": population_reasons,
                "commands": {}}
-    ok = True
+    ok = not population_reasons
     for label, argv in commands.items():
         try:
             done = subprocess.run(argv, cwd=REPO, env=env, capture_output=True, timeout=timeout, check=False)
@@ -583,23 +745,8 @@ def case_full_ci(run, timeout):
             stdout, stderr, code = exc.stdout or b"", exc.stderr or b"", "timeout"
         (run / f"{label}.stdout.txt").write_bytes(stdout)
         (run / f"{label}.stderr.txt").write_bytes(stderr)
-        text = stderr.decode(errors="replace")
-        parsed = parse_unittest(text)
-        entry = {"argv": argv, "exit": code, "counts": parsed,
-                 "stdout_sha256": sha256_bytes(stdout), "stderr_sha256": sha256_bytes(stderr)}
-        passed = (code == 0 and parsed is not None and parsed["status"] == "OK" and parsed["tests_run"] > 0
-                  and parsed["failures"] == 0 and parsed["errors"] == 0 and parsed["unexpected_successes"] == 0)
-        if label == "ci_records_discovery" and parsed is not None:
-            outcomes = VERBOSE_RESULT.findall(text)
-            focused = [o for o in outcomes if o[1].startswith((REGRESSION, COMPATIBILITY[0]))]
-            new_collected = sum(1 for o in focused if o[1].startswith(REGRESSION) and o[2] == "ok")
-            skipped = sorted(f"{o[1]}.{o[0]}: {o[2]}" for o in outcomes if o[2].startswith("skipped"))
-            unexpected_skips = [s for s in skipped if s.startswith((REGRESSION, COMPATIBILITY[0]))]
-            entry.update({"new_regression_tests_collected_ok": new_collected,
-                          "focused_not_ok": sorted(f"{o[1]}.{o[0]}" for o in focused if o[2] != "ok"),
-                          "skipped_inventory": skipped, "unexpected_focused_skips": unexpected_skips})
-            passed = passed and new_collected > 0 and not entry["focused_not_ok"] and not unexpected_skips
-        entry["result"] = "PASS" if passed else "FAIL"
+        passed, entry = aggregate_command(label, code, stderr.decode(errors="replace"), expected_new)
+        entry.update({"argv": argv, "stdout_sha256": sha256_bytes(stdout), "stderr_sha256": sha256_bytes(stderr)})
         details["commands"][label] = entry
         ok = ok and passed
     return ok, details
