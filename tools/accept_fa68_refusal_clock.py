@@ -164,6 +164,8 @@ def inspect_closure(repo, selector):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         seen[rel] = digest(path)
+        parts = name.split(".")
+        todo.extend(".".join(parts[:index]) for index in range(1, len(parts)))
         package = name if path.name == "__init__.py" else name.rpartition(".")[0]
         if package:
             todo.append(package)
