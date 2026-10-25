@@ -1,0 +1,1104 @@
+{
+  "schema": "fc13-correspondence-priority-cases/v1",
+  "provenance": "Invented synthetic text for FC13 tests. No agency, person, request number or record is real. Expected labels follow the frozen brief order only; lexical candidates are not intent classification or request-state proof.",
+  "marker_order": [
+    "withdrawal",
+    "partial_delivery",
+    "delivery",
+    "promise",
+    "determination",
+    "clarification",
+    "acknowledgment",
+    "request"
+  ],
+  "explicit_types": [
+    "acknowledgment",
+    "clarification",
+    "delivery",
+    "determination",
+    "other",
+    "partial_delivery",
+    "promise",
+    "request",
+    "withdrawal"
+  ],
+  "agency_id": "fc13-example-agency",
+  "request_number_prefix": "FC13-",
+  "timestamp_base": "2030-04-01T09:00:00-07:00",
+  "as_of": "2030-06-01T00:00:00-07:00",
+  "phrases": {
+    "withdrawal": "We withdraw the earlier ask.",
+    "partial_delivery": "Some of the files are ready.",
+    "delivery": "The spreadsheet is attached.",
+    "promise": "Staff will send the files soon.",
+    "determination": "A determination is pending.",
+    "clarification": "Please clarify the date range.",
+    "acknowledgment": "We received your message today.",
+    "request": "Please provide the audit logs."
+  },
+  "single_positive": [
+    {
+      "id": "single:withdrawal:withdraw",
+      "text": "Note for the file: withdraw on Tuesday.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "single:withdrawal:withdrawn",
+      "text": "Note for the file: withdrawn on Tuesday.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "single:withdrawal:cancel-the-request",
+      "text": "Note for the file: cancel the request on Tuesday.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "single:withdrawal:canceled-the-request",
+      "text": "Note for the file: canceled the request on Tuesday.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "single:withdrawal:cancelled-the-request",
+      "text": "Note for the file: cancelled the request on Tuesday.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "single:partial_delivery:partial",
+      "text": "Note for the file: partial on Tuesday.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "single:partial_delivery:partially",
+      "text": "Note for the file: partially on Tuesday.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "single:partial_delivery:some-of",
+      "text": "Note for the file: some of on Tuesday.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "single:partial_delivery:portion-of",
+      "text": "Note for the file: portion of on Tuesday.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "single:partial_delivery:remaining-records",
+      "text": "Note for the file: remaining records on Tuesday.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "single:partial_delivery:will-follow",
+      "text": "Note for the file: will follow on Tuesday.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "single:delivery:attached",
+      "text": "Note for the file: attached on Tuesday.",
+      "expected": "delivery"
+    },
+    {
+      "id": "single:delivery:enclosed",
+      "text": "Note for the file: enclosed on Tuesday.",
+      "expected": "delivery"
+    },
+    {
+      "id": "single:delivery:provided",
+      "text": "Note for the file: provided on Tuesday.",
+      "expected": "delivery"
+    },
+    {
+      "id": "single:delivery:produced",
+      "text": "Note for the file: produced on Tuesday.",
+      "expected": "delivery"
+    },
+    {
+      "id": "single:delivery:responsive-records",
+      "text": "Note for the file: responsive records on Tuesday.",
+      "expected": "delivery"
+    },
+    {
+      "id": "single:delivery:records-are-available",
+      "text": "Note for the file: records are available on Tuesday.",
+      "expected": "delivery"
+    },
+    {
+      "id": "single:promise:will-provide",
+      "text": "Note for the file: will provide on Tuesday.",
+      "expected": "promise"
+    },
+    {
+      "id": "single:promise:will-send",
+      "text": "Note for the file: will send on Tuesday.",
+      "expected": "promise"
+    },
+    {
+      "id": "single:promise:expect-to-provide",
+      "text": "Note for the file: expect to provide on Tuesday.",
+      "expected": "promise"
+    },
+    {
+      "id": "single:promise:will-respond-by",
+      "text": "Note for the file: will respond by on Tuesday.",
+      "expected": "promise"
+    },
+    {
+      "id": "single:determination:determination",
+      "text": "Note for the file: determination on Tuesday.",
+      "expected": "determination"
+    },
+    {
+      "id": "single:determination:estimated-response-date",
+      "text": "Note for the file: estimated response date on Tuesday.",
+      "expected": "determination"
+    },
+    {
+      "id": "single:clarification:please-clarify",
+      "text": "Note for the file: please clarify on Tuesday.",
+      "expected": "clarification"
+    },
+    {
+      "id": "single:clarification:clarification",
+      "text": "Note for the file: clarification on Tuesday.",
+      "expected": "clarification"
+    },
+    {
+      "id": "single:clarification:narrow-your-request",
+      "text": "Note for the file: narrow your request on Tuesday.",
+      "expected": "clarification"
+    },
+    {
+      "id": "single:acknowledgment:received-your-request",
+      "text": "Note for the file: received your request on Tuesday.",
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "single:acknowledgment:acknowledge-receipt",
+      "text": "Note for the file: acknowledge receipt on Tuesday.",
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "single:acknowledgment:request-has-been-received",
+      "text": "Note for the file: request has been received on Tuesday.",
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "single:acknowledgment:we-received",
+      "text": "Note for the file: we received on Tuesday.",
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "single:request:public-records-request",
+      "text": "Note for the file: public records request on Tuesday.",
+      "expected": "request"
+    },
+    {
+      "id": "single:request:records-request",
+      "text": "Note for the file: records request on Tuesday.",
+      "expected": "request"
+    },
+    {
+      "id": "single:request:request-the-following",
+      "text": "Note for the file: request the following on Tuesday.",
+      "expected": "request"
+    },
+    {
+      "id": "single:request:please-provide",
+      "text": "Note for the file: please provide on Tuesday.",
+      "expected": "request"
+    }
+  ],
+  "pairs": [
+    {
+      "id": "pair:withdrawal-then-partial_delivery",
+      "first": "withdrawal",
+      "second": "partial_delivery",
+      "text": "We withdraw the earlier ask. Some of the files are ready.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:withdrawal-then-delivery",
+      "first": "withdrawal",
+      "second": "delivery",
+      "text": "We withdraw the earlier ask. The spreadsheet is attached.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:withdrawal-then-promise",
+      "first": "withdrawal",
+      "second": "promise",
+      "text": "We withdraw the earlier ask. Staff will send the files soon.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:withdrawal-then-determination",
+      "first": "withdrawal",
+      "second": "determination",
+      "text": "We withdraw the earlier ask. A determination is pending.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:withdrawal-then-clarification",
+      "first": "withdrawal",
+      "second": "clarification",
+      "text": "We withdraw the earlier ask. Please clarify the date range.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:withdrawal-then-acknowledgment",
+      "first": "withdrawal",
+      "second": "acknowledgment",
+      "text": "We withdraw the earlier ask. We received your message today.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:withdrawal-then-request",
+      "first": "withdrawal",
+      "second": "request",
+      "text": "We withdraw the earlier ask. Please provide the audit logs.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:partial_delivery-then-withdrawal",
+      "first": "partial_delivery",
+      "second": "withdrawal",
+      "text": "Some of the files are ready. We withdraw the earlier ask.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:partial_delivery-then-delivery",
+      "first": "partial_delivery",
+      "second": "delivery",
+      "text": "Some of the files are ready. The spreadsheet is attached.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:partial_delivery-then-promise",
+      "first": "partial_delivery",
+      "second": "promise",
+      "text": "Some of the files are ready. Staff will send the files soon.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:partial_delivery-then-determination",
+      "first": "partial_delivery",
+      "second": "determination",
+      "text": "Some of the files are ready. A determination is pending.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:partial_delivery-then-clarification",
+      "first": "partial_delivery",
+      "second": "clarification",
+      "text": "Some of the files are ready. Please clarify the date range.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:partial_delivery-then-acknowledgment",
+      "first": "partial_delivery",
+      "second": "acknowledgment",
+      "text": "Some of the files are ready. We received your message today.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:partial_delivery-then-request",
+      "first": "partial_delivery",
+      "second": "request",
+      "text": "Some of the files are ready. Please provide the audit logs.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:delivery-then-withdrawal",
+      "first": "delivery",
+      "second": "withdrawal",
+      "text": "The spreadsheet is attached. We withdraw the earlier ask.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:delivery-then-partial_delivery",
+      "first": "delivery",
+      "second": "partial_delivery",
+      "text": "The spreadsheet is attached. Some of the files are ready.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:delivery-then-promise",
+      "first": "delivery",
+      "second": "promise",
+      "text": "The spreadsheet is attached. Staff will send the files soon.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:delivery-then-determination",
+      "first": "delivery",
+      "second": "determination",
+      "text": "The spreadsheet is attached. A determination is pending.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:delivery-then-clarification",
+      "first": "delivery",
+      "second": "clarification",
+      "text": "The spreadsheet is attached. Please clarify the date range.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:delivery-then-acknowledgment",
+      "first": "delivery",
+      "second": "acknowledgment",
+      "text": "The spreadsheet is attached. We received your message today.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:delivery-then-request",
+      "first": "delivery",
+      "second": "request",
+      "text": "The spreadsheet is attached. Please provide the audit logs.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:promise-then-withdrawal",
+      "first": "promise",
+      "second": "withdrawal",
+      "text": "Staff will send the files soon. We withdraw the earlier ask.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:promise-then-partial_delivery",
+      "first": "promise",
+      "second": "partial_delivery",
+      "text": "Staff will send the files soon. Some of the files are ready.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:promise-then-delivery",
+      "first": "promise",
+      "second": "delivery",
+      "text": "Staff will send the files soon. The spreadsheet is attached.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:promise-then-determination",
+      "first": "promise",
+      "second": "determination",
+      "text": "Staff will send the files soon. A determination is pending.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:promise-then-clarification",
+      "first": "promise",
+      "second": "clarification",
+      "text": "Staff will send the files soon. Please clarify the date range.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:promise-then-acknowledgment",
+      "first": "promise",
+      "second": "acknowledgment",
+      "text": "Staff will send the files soon. We received your message today.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:promise-then-request",
+      "first": "promise",
+      "second": "request",
+      "text": "Staff will send the files soon. Please provide the audit logs.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:determination-then-withdrawal",
+      "first": "determination",
+      "second": "withdrawal",
+      "text": "A determination is pending. We withdraw the earlier ask.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:determination-then-partial_delivery",
+      "first": "determination",
+      "second": "partial_delivery",
+      "text": "A determination is pending. Some of the files are ready.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:determination-then-delivery",
+      "first": "determination",
+      "second": "delivery",
+      "text": "A determination is pending. The spreadsheet is attached.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:determination-then-promise",
+      "first": "determination",
+      "second": "promise",
+      "text": "A determination is pending. Staff will send the files soon.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:determination-then-clarification",
+      "first": "determination",
+      "second": "clarification",
+      "text": "A determination is pending. Please clarify the date range.",
+      "expected": "determination"
+    },
+    {
+      "id": "pair:determination-then-acknowledgment",
+      "first": "determination",
+      "second": "acknowledgment",
+      "text": "A determination is pending. We received your message today.",
+      "expected": "determination"
+    },
+    {
+      "id": "pair:determination-then-request",
+      "first": "determination",
+      "second": "request",
+      "text": "A determination is pending. Please provide the audit logs.",
+      "expected": "determination"
+    },
+    {
+      "id": "pair:clarification-then-withdrawal",
+      "first": "clarification",
+      "second": "withdrawal",
+      "text": "Please clarify the date range. We withdraw the earlier ask.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:clarification-then-partial_delivery",
+      "first": "clarification",
+      "second": "partial_delivery",
+      "text": "Please clarify the date range. Some of the files are ready.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:clarification-then-delivery",
+      "first": "clarification",
+      "second": "delivery",
+      "text": "Please clarify the date range. The spreadsheet is attached.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:clarification-then-promise",
+      "first": "clarification",
+      "second": "promise",
+      "text": "Please clarify the date range. Staff will send the files soon.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:clarification-then-determination",
+      "first": "clarification",
+      "second": "determination",
+      "text": "Please clarify the date range. A determination is pending.",
+      "expected": "determination"
+    },
+    {
+      "id": "pair:clarification-then-acknowledgment",
+      "first": "clarification",
+      "second": "acknowledgment",
+      "text": "Please clarify the date range. We received your message today.",
+      "expected": "clarification"
+    },
+    {
+      "id": "pair:clarification-then-request",
+      "first": "clarification",
+      "second": "request",
+      "text": "Please clarify the date range. Please provide the audit logs.",
+      "expected": "clarification"
+    },
+    {
+      "id": "pair:acknowledgment-then-withdrawal",
+      "first": "acknowledgment",
+      "second": "withdrawal",
+      "text": "We received your message today. We withdraw the earlier ask.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:acknowledgment-then-partial_delivery",
+      "first": "acknowledgment",
+      "second": "partial_delivery",
+      "text": "We received your message today. Some of the files are ready.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:acknowledgment-then-delivery",
+      "first": "acknowledgment",
+      "second": "delivery",
+      "text": "We received your message today. The spreadsheet is attached.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:acknowledgment-then-promise",
+      "first": "acknowledgment",
+      "second": "promise",
+      "text": "We received your message today. Staff will send the files soon.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:acknowledgment-then-determination",
+      "first": "acknowledgment",
+      "second": "determination",
+      "text": "We received your message today. A determination is pending.",
+      "expected": "determination"
+    },
+    {
+      "id": "pair:acknowledgment-then-clarification",
+      "first": "acknowledgment",
+      "second": "clarification",
+      "text": "We received your message today. Please clarify the date range.",
+      "expected": "clarification"
+    },
+    {
+      "id": "pair:acknowledgment-then-request",
+      "first": "acknowledgment",
+      "second": "request",
+      "text": "We received your message today. Please provide the audit logs.",
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "pair:request-then-withdrawal",
+      "first": "request",
+      "second": "withdrawal",
+      "text": "Please provide the audit logs. We withdraw the earlier ask.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "pair:request-then-partial_delivery",
+      "first": "request",
+      "second": "partial_delivery",
+      "text": "Please provide the audit logs. Some of the files are ready.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "pair:request-then-delivery",
+      "first": "request",
+      "second": "delivery",
+      "text": "Please provide the audit logs. The spreadsheet is attached.",
+      "expected": "delivery"
+    },
+    {
+      "id": "pair:request-then-promise",
+      "first": "request",
+      "second": "promise",
+      "text": "Please provide the audit logs. Staff will send the files soon.",
+      "expected": "promise"
+    },
+    {
+      "id": "pair:request-then-determination",
+      "first": "request",
+      "second": "determination",
+      "text": "Please provide the audit logs. A determination is pending.",
+      "expected": "determination"
+    },
+    {
+      "id": "pair:request-then-clarification",
+      "first": "request",
+      "second": "clarification",
+      "text": "Please provide the audit logs. Please clarify the date range.",
+      "expected": "clarification"
+    },
+    {
+      "id": "pair:request-then-acknowledgment",
+      "first": "request",
+      "second": "acknowledgment",
+      "text": "Please provide the audit logs. We received your message today.",
+      "expected": "acknowledgment"
+    }
+  ],
+  "neutral": [
+    {
+      "id": "neutral:plain",
+      "event": {
+        "text": "Thank you for your patience."
+      },
+      "expected": "other"
+    },
+    {
+      "id": "neutral:empty",
+      "event": {
+        "text": ""
+      },
+      "expected": "other"
+    },
+    {
+      "id": "neutral:whitespace",
+      "event": {
+        "text": "   \n\t "
+      },
+      "expected": "other"
+    },
+    {
+      "id": "neutral:missing-text",
+      "event": {},
+      "expected": "other"
+    },
+    {
+      "id": "neutral:null-text",
+      "event": {
+        "text": null
+      },
+      "expected": "other"
+    },
+    {
+      "id": "neutral:number-text",
+      "event": {
+        "text": 42
+      },
+      "expected": "other"
+    },
+    {
+      "id": "neutral:list-text",
+      "event": {
+        "text": [
+          "withdraw"
+        ]
+      },
+      "expected": "other"
+    },
+    {
+      "id": "neutral:object-text",
+      "event": {
+        "text": {
+          "body": "withdrawn"
+        }
+      },
+      "expected": "other"
+    }
+  ],
+  "case_variants": [
+    {
+      "id": "case:01:withdrawal",
+      "text": "THE REQUESTER HAS WITHDRAWN.",
+      "expected": "withdrawal"
+    },
+    {
+      "id": "case:02:partial_delivery",
+      "text": "Remaining Records go out later.",
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "case:03:delivery",
+      "text": "Files ENCLOSED here.",
+      "expected": "delivery"
+    },
+    {
+      "id": "case:04:promise",
+      "text": "Staff Will Respond By Friday.",
+      "expected": "promise"
+    },
+    {
+      "id": "case:05:determination",
+      "text": "Estimated Response Date: next month.",
+      "expected": "determination"
+    },
+    {
+      "id": "case:06:clarification",
+      "text": "PLEASE CLARIFY scope.",
+      "expected": "clarification"
+    },
+    {
+      "id": "case:07:acknowledgment",
+      "text": "We Acknowledge Receipt of this.",
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "case:08:request",
+      "text": "This is a PUBLIC RECORDS REQUEST.",
+      "expected": "request"
+    },
+    {
+      "id": "case:09:withdrawal",
+      "text": "pAiD staff wItHdRaW nothing.",
+      "expected": "withdrawal"
+    }
+  ],
+  "near_misses": [
+    {
+      "id": "near-miss:withdrawals",
+      "text": "Several withdrawals were logged.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:withdrawing",
+      "text": "Staff are withdrawing funds.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:cancelled-request",
+      "text": "A cancelled request form.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:partiality",
+      "text": "No partiality is shown.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:unattached",
+      "text": "The unattached cover page.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:reproduced",
+      "text": "The figure was reproduced.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:providers",
+      "text": "Two providers replied.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:redetermination",
+      "text": "A redetermination is scheduled.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:determinations",
+      "text": "Prior determinations differ.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:clarifications",
+      "text": "Several clarifications arrived.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:clarify-alone",
+      "text": "Could you clarify?",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:records-requested",
+      "text": "The records requested earlier.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:we-receive",
+      "text": "We receive mail daily.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:will-provider",
+      "text": "We will provider support.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:acknowledgement",
+      "text": "An acknowledgement letter.",
+      "expected": "other"
+    },
+    {
+      "id": "near-miss:portions",
+      "text": "The portions differ.",
+      "expected": "other"
+    }
+  ],
+  "explicit": [
+    {
+      "id": "explicit:event_type:acknowledgment",
+      "event": {
+        "event_type": "acknowledgment",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "explicit:kind:acknowledgment",
+      "event": {
+        "kind": "acknowledgment",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "explicit:event_type:clarification",
+      "event": {
+        "event_type": "clarification",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "clarification"
+    },
+    {
+      "id": "explicit:kind:clarification",
+      "event": {
+        "kind": "clarification",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "clarification"
+    },
+    {
+      "id": "explicit:event_type:delivery",
+      "event": {
+        "event_type": "delivery",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "delivery"
+    },
+    {
+      "id": "explicit:kind:delivery",
+      "event": {
+        "kind": "delivery",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "delivery"
+    },
+    {
+      "id": "explicit:event_type:determination",
+      "event": {
+        "event_type": "determination",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "determination"
+    },
+    {
+      "id": "explicit:kind:determination",
+      "event": {
+        "kind": "determination",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "determination"
+    },
+    {
+      "id": "explicit:event_type:other",
+      "event": {
+        "event_type": "other",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "other"
+    },
+    {
+      "id": "explicit:kind:other",
+      "event": {
+        "kind": "other",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "other"
+    },
+    {
+      "id": "explicit:event_type:partial_delivery",
+      "event": {
+        "event_type": "partial_delivery",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "explicit:kind:partial_delivery",
+      "event": {
+        "kind": "partial_delivery",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "explicit:event_type:promise",
+      "event": {
+        "event_type": "promise",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "promise"
+    },
+    {
+      "id": "explicit:kind:promise",
+      "event": {
+        "kind": "promise",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "promise"
+    },
+    {
+      "id": "explicit:event_type:request",
+      "event": {
+        "event_type": "request",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "request"
+    },
+    {
+      "id": "explicit:kind:request",
+      "event": {
+        "kind": "request",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "request"
+    },
+    {
+      "id": "explicit:event_type:withdrawal",
+      "event": {
+        "event_type": "withdrawal",
+        "text": "Please provide the audit logs."
+      },
+      "expected": "withdrawal"
+    },
+    {
+      "id": "explicit:kind:withdrawal",
+      "event": {
+        "kind": "withdrawal",
+        "text": "Please provide the audit logs."
+      },
+      "expected": "withdrawal"
+    },
+    {
+      "id": "explicit:normalized:upper-padded",
+      "event": {
+        "event_type": "  DELIVERY  ",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "delivery"
+    },
+    {
+      "id": "explicit:normalized:mixed-case",
+      "event": {
+        "kind": "Partial_Delivery",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "partial_delivery"
+    },
+    {
+      "id": "explicit:other-beats-all-markers",
+      "event": {
+        "event_type": "other",
+        "text": "We withdraw the earlier ask. Some of the files are ready. The spreadsheet is attached. Staff will send the files soon. A determination is pending. Please clarify the date range. We received your message today. Please provide the audit logs."
+      },
+      "expected": "other"
+    }
+  ],
+  "unknown_explicit": [
+    {
+      "id": "unknown:status-update-withdrawal-text",
+      "event": {
+        "event_type": "status_update",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "withdrawal"
+    },
+    {
+      "id": "unknown:kind-followup-clarify-text",
+      "event": {
+        "kind": "followup",
+        "text": "Please clarify the date range."
+      },
+      "expected": "clarification"
+    },
+    {
+      "id": "unknown:spaced-partial-delivery",
+      "event": {
+        "event_type": "partial delivery",
+        "text": "The spreadsheet is attached."
+      },
+      "expected": "delivery"
+    },
+    {
+      "id": "unknown:plural-type-neutral-text",
+      "event": {
+        "event_type": "deliveries",
+        "text": "Thank you for your patience."
+      },
+      "expected": "other"
+    },
+    {
+      "id": "unknown:type-no-text",
+      "event": {
+        "event_type": "unknown"
+      },
+      "expected": "other"
+    },
+    {
+      "id": "unknown:type-competing-pair",
+      "event": {
+        "kind": "misc",
+        "text": "Please provide the audit logs. Staff will send the files soon."
+      },
+      "expected": "promise"
+    }
+  ],
+  "field_precedence": [
+    {
+      "id": "field:event-type-over-kind",
+      "event": {
+        "event_type": "promise",
+        "kind": "withdrawal",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "promise"
+    },
+    {
+      "id": "field:empty-event-type-uses-kind",
+      "event": {
+        "event_type": "",
+        "kind": "delivery",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "delivery"
+    },
+    {
+      "id": "field:null-event-type-uses-kind",
+      "event": {
+        "event_type": null,
+        "kind": "acknowledgment",
+        "text": "Please provide the audit logs."
+      },
+      "expected": "acknowledgment"
+    },
+    {
+      "id": "field:false-event-type-uses-kind",
+      "event": {
+        "event_type": false,
+        "kind": "promise",
+        "text": "We withdraw the earlier ask."
+      },
+      "expected": "promise"
+    },
+    {
+      "id": "field:unknown-event-type-shadows-kind-neutral",
+      "event": {
+        "event_type": "bogus",
+        "kind": "delivery",
+        "text": "Thank you for your patience."
+      },
+      "expected": "other"
+    },
+    {
+      "id": "field:unknown-event-type-shadows-kind-text",
+      "event": {
+        "event_type": "bogus",
+        "kind": "delivery",
+        "text": "Please clarify the date range."
+      },
+      "expected": "clarification"
+    },
+    {
+      "id": "field:whitespace-event-type-shadows-kind",
+      "event": {
+        "event_type": "   ",
+        "kind": "delivery",
+        "text": "Thank you for your patience."
+      },
+      "expected": "other"
+    },
+    {
+      "id": "field:numeric-event-type-shadows-kind",
+      "event": {
+        "event_type": 7,
+        "kind": "delivery",
+        "text": "Thank you for your patience."
+      },
+      "expected": "other"
+    }
+  ],
+  "negative_control": {
+    "selected_case": "pair:request-then-withdrawal",
+    "expected": "withdrawal",
+    "mutant_label": "request",
+    "mutation": "reverse MARKERS sequence in memory only"
+  },
+  "expected_counts": {
+    "single_positive": 34,
+    "pairs": 56,
+    "neutral": 8,
+    "case_variants": 9,
+    "near_misses": 16,
+    "explicit": 21,
+    "unknown_explicit": 6,
+    "field_precedence": 8,
+    "total": 158
+  }
+}
