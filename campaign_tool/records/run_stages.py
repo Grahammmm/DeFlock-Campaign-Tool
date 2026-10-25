@@ -887,6 +887,26 @@ def stage_digest_gates(args):
 
 
 def stage_outputs(args):
+    # F-043 in-process seam. F-046 owns plan/CLI/handoff composition. Validate
+    # all enabled digest inputs/roots BEFORE snapshot reads or any output write.
+    prepared_digest = None
+    digest_context = getattr(args, "digest_context", None)
+    if digest_context is not None:
+        from .understanding import digest as usage_digest
+        try:
+            if usage_digest.enabled(digest_context.get("plan")):
+                usage_digest.need(digest_context.get("run_id") == args.run_id,
+                                  "digest_run_mismatch")
+                usage_digest.need(str(digest_context.get("admitted_root")) == str(args.project),
+                                  "digest_project_root_mismatch")
+                # Existing snapshot IO also stays inside the synthetic project.
+                for relative in ("processing-v1/ledger.sqlite", "portal-queue-v1/portal.sqlite",
+                                 "run-outputs", f"run-outputs/{args.run_id}.json",
+                                 f"run-outputs/.{args.run_id}.json.tmp"):
+                    usage_digest._root(str(Path(args.project) / relative))
+            prepared_digest = usage_digest.prepare_digest(**digest_context)
+        except (usage_digest.DigestRefused, TypeError, ValueError):
+            return result("fail", {"failed": 1}, "OUTPUTS_DIGEST_REFUSED"), 1
     mail, processing, portal = paths(args.project)
     try:
         with ledger_ro(processing) as db:
@@ -916,6 +936,15 @@ def stage_outputs(args):
         return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
     finally:
         os.umask(old)
+    if prepared_digest is not None:
+        try:
+            digest_outcome = usage_digest.commit_digest(prepared_digest)
+        except (OSError, usage_digest.DigestRefused):
+            return result("fail", {"input": 1, "output": 1, "failed": 1},
+                          "OUTPUTS_DIGEST_WRITE_FAILED"), 1
+        if digest_outcome["status"] == "unresolved":
+            return result("warn", {"input": 1, "output": 3}, "OUTPUTS_DIGEST_UNRESOLVED"), 0
+        return result("ok", {"input": 1, "output": 3}), 0
     return result("ok", {"input": 1, "output": 1}), 0
 
 
