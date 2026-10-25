@@ -123,8 +123,28 @@ class InputError(Exception):
     """Fatal input problem; the message is a fixed code, never input text."""
 
 
+def _pairs_recorder(duplicates):
+    """Return a json object_pairs_hook that notes any repeated member name.
+
+    The standard decoder keeps the last of repeated names, so a row such as
+    {"allowlisted": false, "allowlisted": true} would silently read as
+    allowlisted. Repeats (even with identical values) are recorded here and
+    refused by read_json once the whole document has decoded.
+    """
+    def hook(pairs):
+        document = dict(pairs)
+        if len(document) != len(pairs):
+            duplicates.append(True)
+        return document
+    return hook
+
+
 def read_json(path, schema, list_key):
-    """Read one bounded regular JSON file; refuse symlinks and FIFOs."""
+    """Read one bounded regular JSON file; refuse symlinks and FIFOs.
+
+    Any object anywhere in the file that repeats a member name is refused
+    (duplicate_json_key) before the schema or rows are looked at.
+    """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
@@ -141,10 +161,13 @@ def read_json(path, schema, list_key):
         os.close(fd)
     if len(raw) > MAX_INPUT_BYTES:
         raise InputError("input_too_large")
+    duplicates = []
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_recorder(duplicates))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise InputError("input_not_json") from None
+    if duplicates:
+        raise InputError("duplicate_json_key")
     if not isinstance(document, dict) or document.get("schema") != schema:
         raise InputError("input_schema_mismatch")
     rows = document.get(list_key)
