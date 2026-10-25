@@ -47,7 +47,14 @@ def parse(receipt):
         part = delta.short_text(item.get("part"), "invalid_part")
         need(part not in used, "duplicate_or_invalid_part")
         used.add(part)
+        _native_source_digest(item)
     return receipt, identity, items
+
+
+def _native_source_digest(item):
+    """A native item names its received source original by an accepted SHA-256."""
+    from . import mail_delta as delta
+    return delta.digest(item.get("source_original_sha256"))
 
 
 def export(raw, *, mail_root, account, mailbox, uidvalidity, uid, original_format):
