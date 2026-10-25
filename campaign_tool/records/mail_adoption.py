@@ -367,6 +367,11 @@ def _occurrence_groups(con, wanted):
                            "WHERE kind IN ('mail','attachment')"):
         try:
             source = json.loads(row["source_ref"])
+            if not isinstance(source, dict):
+                continue
+            if (not isinstance(source.get("account"), str)
+                    or not isinstance(source.get("folder"), str)):
+                continue
             key = (source["account"], source["folder"], str(source["uidvalidity"]), str(source["uid"]))
         except (ValueError, KeyError, TypeError):
             continue
