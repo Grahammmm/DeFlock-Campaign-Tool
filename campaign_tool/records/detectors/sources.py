@@ -55,6 +55,14 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _exact_ordinal(value, ordinal):
+    """Stored unit ordinals are exact ints at their one-based inventory position.
+
+    bool and float compare equal to int in Python; neither is coerced here.
+    """
+    return type(value) is int and value == ordinal
+
+
 @dataclass(frozen=True)
 class SourceSnapshot:
     subject_sha256: str
@@ -202,7 +210,7 @@ def resolve_sources(*, database, original_root, derived_root, subject_sha256,
                     require(type(locator) is dict and locator and type(payload) is dict
                             and type(payload.get("text")) is str, "current_unit_shape")
                     require(provenance.get("extraction_import_id") == current["id"]
-                            and provenance.get("ordinal") == ordinal
+                            and _exact_ordinal(provenance.get("ordinal"), ordinal)
                             and provenance.get("receipt_sha256") == manifest["receipt_sha256"]
                             and provenance.get("payload_sha256") == sha(payload_raw)
                             and unit["text_sha256"] == sha(payload["text"].encode())
