@@ -114,6 +114,11 @@ _GATE = threading.local()
 _ORIGINAL_POPEN_INIT = subprocess.Popen.__init__
 _ORIGINAL = {}
 APP_PREFIXES = ("campaign_tool", "tests")
+# Enumerated descendants of guarded children. The report checker is re-bootstrapped with guards;
+# the public-tree scanner's own file listing is a local git child allowed only with this exact argv.
+REPORT_CHECKER_ROLE = "descendant:report-checker"
+GIT_LIST_ROLE = "descendant:git-ls-files"
+GIT_LIST_ARGV = ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
 
 
 # ---------------------------------------------------------------- utilities
@@ -210,6 +215,10 @@ def match_descendant(argv, kwargs, templates):
     if argv is None or kwargs.get("shell") or kwargs.get("executable") is not None:
         return None
     for template in templates:
+        if "exact_argv" in template:
+            if argv == list(template["exact_argv"]):
+                return template
+            continue
         prefix = list(template["argv_prefix"])
         if len(argv) != len(prefix) + template["extra_args"] or argv[:len(prefix)] != prefix:
             continue
@@ -252,7 +261,12 @@ def _guarded_popen_init(self, args, *rest, **kwargs):
             launch = argv
         else:
             template = match_descendant(argv, kwargs, DESCENDANT_TEMPLATES)
-            if template is not None:
+            if template is not None and "exact_argv" in template:
+                launch = argv
+                append_jsonl(STATE["spec"]["launches_file"], {
+                    "parent_pid": os.getpid(), "role": template["role"], "requested_argv": argv,
+                    "launched_argv": launch, "spec": None, "cwd": str(kwargs.get("cwd"))})
+            elif template is not None:
                 launch = descendant_bootstrap(template, argv)
     if launch is None:
         _record_hit("subprocess:" + repr(args)[:200])
@@ -428,6 +442,7 @@ def startup_probes():
     script = str(REPO / "tools" / "check_secret_report.py")
     template = {"role": "probe", "argv_prefix": [sys.executable, script], "extra_args": 1, "arg_under": str(temp)}
     inside = str(temp / "probe-report.json")
+    exact = {"role": "probe-exact", "exact_argv": list(GIT_LIST_ARGV)}
     matcher = {
         "allows_enumerated_descendant": match_descendant([sys.executable, script, inside], {}, [template])
         is template,
@@ -446,6 +461,11 @@ def startup_probes():
         "refuses_interpreter_flag": match_descendant([sys.executable, "-I", script, inside], {}, [template])
         is None,
         "refuses_without_templates": match_descendant([sys.executable, script, inside], {}, []) is None,
+        "allows_exact_descendant": match_descendant(list(GIT_LIST_ARGV), {}, [exact]) is exact,
+        "refuses_exact_with_extra_argument": match_descendant(GIT_LIST_ARGV + ["--", NO_PATH], {}, [exact])
+        is None,
+        "refuses_exact_reordered": match_descendant(GIT_LIST_ARGV[:2] + GIT_LIST_ARGV[:1:-1], {}, [exact]) is None,
+        "refuses_exact_shell_flag": match_descendant(list(GIT_LIST_ARGV), {"shell": True}, [exact]) is None,
     }
     module = types.ModuleType("fc3_redirect_probe")
     module.PROBE_ENDPOINT = "http://127.0.0.1:9/fc3-probe"
@@ -560,17 +580,22 @@ def guarded_child(spec_path):
 
 
 def guarded_launch(run_dir, label, role, target, descendants=()):
-    """Launch a fresh guarded child of this runner; descendants are (role, script) pairs."""
+    """Launch a fresh guarded child of this runner with its enumerated descendants."""
     base = run_dir / ("child-" + label)
     home, temp = base / "home", base / "tmp"
     home.mkdir(mode=0o700, parents=True)
     temp.mkdir(mode=0o700)
     (run_dir / "guard-receipts").mkdir(mode=0o700, exist_ok=True)
+    templates = []
+    for item in descendants:
+        if "exact_argv" in item:
+            templates.append({"role": item["role"], "exact_argv": list(item["exact_argv"])})
+        else:
+            templates.append({"role": item["role"], "argv_prefix": [sys.executable, item["script"]],
+                              "extra_args": 1, "arg_under": str(temp)})
     spec = {"role": role, "run_dir": str(run_dir), "home": str(home), "tmp": str(temp),
             "hits_file": str(run_dir / "guard-hits.jsonl"), "launches_file": str(run_dir / "guard-launches.jsonl"),
-            "receipts_dir": str(run_dir / "guard-receipts"), "target": target,
-            "descendants": [{"role": d_role, "argv_prefix": [sys.executable, str(script)], "extra_args": 1,
-                             "arg_under": str(temp)} for d_role, script in descendants]}
+            "receipts_dir": str(run_dir / "guard-receipts"), "target": target, "descendants": templates}
     spec_path = base / "spec.json"
     write_new(spec_path, json.dumps(spec, indent=2, sort_keys=True) + "\n")
     child = run_child(run_dir, label, bootstrap_argv(spec_path), REPO, env=child_env(home, temp))
@@ -579,7 +604,7 @@ def guarded_launch(run_dir, label, role, target, descendants=()):
     return child
 
 
-def verify_guarded(run_dir, expected_roles):
+def verify_guarded(run_dir, expected_roles, exact_roles=()):
     """Every guarded process left a passing receipt; descendants match their recorded launches."""
     reasons, receipts = [], []
     receipt_dir = run_dir / "guard-receipts"
@@ -603,7 +628,16 @@ def verify_guarded(run_dir, expected_roles):
     if unknown:
         reasons.append("unexpected_guarded_roles:" + ",".join(sorted(unknown)))
     receipt_specs = {receipt["spec"] for receipt in receipts}
+    for role in exact_roles:
+        if not any(launch["role"] == role for launch in launches):
+            reasons.append("descendant_not_exercised:" + role)
     for launch in launches:
+        if launch["spec"] is None:
+            if launch["role"] not in exact_roles or launch["launched_argv"] != launch["requested_argv"]:
+                reasons.append("unexpected_exact_descendant:" + launch["role"])
+            continue
+        if launch["role"] not in expected_roles:
+            reasons.append("unexpected_bootstrapped_descendant:" + launch["role"])
         if launch["spec"] not in receipt_specs:
             reasons.append("descendant_launch_without_receipt:" + launch["spec"])
         if launch["launched_argv"][:4] != [sys.executable, "-I", str(RUNNER), "--guarded-child"]:
@@ -819,14 +853,14 @@ def check_compatibility(run_dir, record):
     reasons = probe_reasons(record["sentinels"])
     child = guarded_launch(run_dir, "compatibility", "compatibility",
                            {"kind": "module", "name": "unittest", "argv": ["unittest", "-v", *COMPAT_SELECTORS]},
-                           descendants=[("descendant:check_secret_report",
-                                         REPO / "tools" / "check_secret_report.py")])
+                           descendants=[{"role": REPORT_CHECKER_ROLE,
+                                         "script": str(REPO / "tools" / "check_secret_report.py")}])
     record["children"] = [child]
     parsed = parse_unittest_stream(Path(child["stderr_path"]).read_text(errors="replace")) \
         if "stderr_path" in child else {}
     record["compatibility"] = parsed
     guard_reasons, record["guarded_processes"] = verify_guarded(
-        run_dir, {"compatibility": 1, "descendant:check_secret_report": "launches"})
+        run_dir, {"compatibility": 1, REPORT_CHECKER_ROLE: "launches"})
     reasons += guard_reasons
     if child.get("exit") != 0:
         reasons.append("compatibility_exit_%s" % child.get("exit"))
@@ -1022,9 +1056,11 @@ def check_public_tree(run_dir, record):
     reasons += probe_reasons(record["sentinels"])
     script = REPO / "tools" / "check_public_tree.py"
     child = guarded_launch(run_dir, "public-tree", "public-tree",
-                           {"kind": "script", "path": str(script), "argv": [str(script)]})
+                           {"kind": "script", "path": str(script), "argv": [str(script)]},
+                           descendants=[{"role": GIT_LIST_ROLE, "exact_argv": GIT_LIST_ARGV}])
     record["children"] = [child]
-    guard_reasons, record["guarded_processes"] = verify_guarded(run_dir, {"public-tree": 1})
+    guard_reasons, record["guarded_processes"] = verify_guarded(run_dir, {"public-tree": 1},
+                                                                exact_roles=(GIT_LIST_ROLE,))
     reasons += guard_reasons
     if child.get("exit") != 0:
         reasons.append("public_tree_exit_%s" % child.get("exit"))
