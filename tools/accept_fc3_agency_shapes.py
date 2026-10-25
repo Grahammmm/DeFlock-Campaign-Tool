@@ -313,12 +313,19 @@ def run_names(module, names):
 
 
 def summarise(outcome, prefix=""):
-    strip = (lambda ident: ident[len(prefix):] if prefix and ident.startswith(prefix) else ident)
+    """Per-test outcome IDs; failing subtests are folded into their parent test ID."""
+    def ident(case):
+        value = getattr(case, "test_case", case).id()
+        return value[len(prefix):] if prefix and value.startswith(prefix) else value
+
+    def subtests(pairs):
+        return sum(1 for case, _ in pairs if hasattr(case, "test_case"))
     return {"tests_run": outcome.testsRun,
-            "failures": sorted(strip(c.id()) for c, _ in outcome.failures),
-            "errors": sorted(strip(c.id()) for c, _ in outcome.errors),
-            "skipped": sorted(strip(c.id()) for c, _ in outcome.skipped),
-            "unexpected_successes": sorted(strip(c.id()) for c in outcome.unexpectedSuccesses),
+            "failures": sorted({ident(c) for c, _ in outcome.failures}),
+            "errors": sorted({ident(c) for c, _ in outcome.errors}),
+            "failing_subtests": subtests(outcome.failures) + subtests(outcome.errors),
+            "skipped": sorted({ident(c) for c, _ in outcome.skipped}),
+            "unexpected_successes": sorted({ident(c) for c in outcome.unexpectedSuccesses}),
             "successful": outcome.wasSuccessful()}
 
 
@@ -396,7 +403,7 @@ def baseline_differential(run_dir, result):
         focused.reconcile = candidate
     (run_dir / "baseline-differential.txt").write_text(text)
     summary = summarise(outcome, FOCUSED_MODULE + ".")
-    red = sorted(summary["failures"] + summary["errors"])
+    red = sorted(set(summary["failures"] + summary["errors"]))
     diff = {"base_commit": base_commit, "base_production_sha256": base_sha, "tests_run": outcome.testsRun,
             "base_red": red, "expected_base_red": sorted(BASELINE_RED), "base_variant_outcomes": observed,
             "candidate_variant_outcomes": variant_observations(focused, candidate),
@@ -472,7 +479,7 @@ def check_negative(run_dir, result):
         name = "negative-{}.txt".format(bypass)
         (run_dir / name).write_text(text)
         summary = summarise(outcome, FOCUSED_MODULE + ".")
-        detected = sorted(summary["failures"] + summary["errors"])
+        detected = sorted(set(summary["failures"] + summary["errors"]))
         expected = sorted(BYPASS_DETECTORS[bypass])
         phase.update(summary=summary, detected=detected, expected_detectors=expected,
                      positives_green=sorted(set(names) - set(detected)), output_sha256=sha256_file(run_dir / name),
