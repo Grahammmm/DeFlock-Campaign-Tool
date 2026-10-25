@@ -247,9 +247,8 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
 
 def _source_kind(unit: dict) -> str:
     kind = str(unit.get("kind", "")).lower()
-    attempt = str(unit.get("attempt_kind", "")).lower()
     data = unit.get("data") if isinstance(unit.get("data"), dict) else {}
-    if _is_ocr(unit) or "ocr" in kind or "ocr" in attempt:
+    if _is_ocr(unit):
         return "ocr"
     if kind in {"visual", "image", "visual_page"} or data.get("visual_review") is True:
         return "visual"
@@ -258,7 +257,9 @@ def _source_kind(unit: dict) -> str:
 
 def _is_ocr(unit: dict) -> bool:
     data = unit.get("data") if isinstance(unit.get("data"), dict) else {}
-    return bool("ocr" in str(unit.get("attempt_kind", "")).lower() or data.get("ocr_receipt_id") or data.get("ocr") is True or unit.get("ocr") is True)
+    return bool("ocr" in str(unit.get("kind", "")).lower()
+                or "ocr" in str(unit.get("attempt_kind", "")).lower()
+                or data.get("ocr_receipt_id") or data.get("ocr") is True or unit.get("ocr") is True)
 
 
 def _extract(bundle: dict) -> dict:
