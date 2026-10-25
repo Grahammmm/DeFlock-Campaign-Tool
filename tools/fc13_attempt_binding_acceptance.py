@@ -81,7 +81,9 @@ class Run:
         row = {"label": label, "argv": argv, "cwd": str(cwd), "interpreter": argv[0], "exit": r.returncode,
                "stdout": label + ".stdout", "stdout_sha256": out, "stdout_bytes": len(r.stdout),
                "stderr": label + ".stderr", "stderr_sha256": err, "stderr_bytes": len(r.stderr),
-               "tests_run": int(ran.group(1)) if ran else None, "results": results,
+               "tests_run": int(ran.group(1)) if ran else None,
+               "tests_run_all": [int(x) for x in re.findall(r"^Ran (\d+) tests? in", text, re.MULTILINE)],
+               "results": results,
                "failing": [x["id"] for x in results if x["status"] in ("FAIL", "ERROR", "unexpected success")],
                "skipped": [x["id"] for x in results if x["status"].startswith("skipped") or x["status"] == "expected failure"],
                "summary_ok": bool(re.search(r"^OK$", text, re.MULTILINE))}
@@ -183,20 +185,28 @@ def phase_suite(run, py, ident):
 
 
 def phase_compatibility(run, py, ident):
-    final = run.child("compat-final", [py, "-m", "unittest", "-v", *SELECTORS], REPO, test_env(run.root))
+    controls_ok, controls = run_boundary_controls(run)
+    final = run.child("compat-final", [py, REPO / RUNNER, "--guarded-unittest", *SELECTORS], REPO,
+                      test_env(run.root))
     base_clone = run.root / "base-clone"
     clone = run.child("base-clone", ["git", "clone", "--local", "--no-hardlinks", "--no-checkout",
                                      "--no-recurse-submodules", REPO, base_clone], run.root)
     checkout = run.child("base-checkout", ["git", "checkout", "--detach", ident["base"]], base_clone)
     _, clone_head = git(base_clone, "rev-parse", "HEAD")
-    baseline = run.child("compat-baseline", [py, "-m", "unittest", "-v", *SELECTORS], base_clone,
+    baseline = run.child("compat-baseline", [py, REPO / RUNNER, "--guarded-unittest", *SELECTORS], base_clone,
                          test_env(run.root, "baseline-tmp"))
+    final_rep, base_rep = read_report(run, final), read_report(run, baseline)
     final_ids = sorted(x["id"] for x in final["results"])
     base_ids = sorted(x["id"] for x in baseline["results"])
-    passed = (unittest_clean(final) and unittest_clean(baseline) and clone["exit"] == 0 and checkout["exit"] == 0
+    boundaries_ok = all(isinstance(r, dict) and boundary_ok(r.get("boundary")) and r.get("product_origin_under_cwd")
+                        for r in (final_rep, base_rep))
+    passed = (controls_ok and boundaries_ok and unittest_clean(final) and unittest_clean(baseline)
+              and clone["exit"] == 0 and checkout["exit"] == 0
               and clone_head == ident["base"] and final_ids == base_ids)
     return passed, {"selectors": list(SELECTORS), "final_ids": final_ids, "baseline_ids": base_ids,
                     "baseline_head": clone_head, "same_ids": final_ids == base_ids,
+                    "pre_import_boundary": {"final": final_rep, "baseline": base_rep, "all_ok": boundaries_ok,
+                                            "controls": controls, "controls_ok": controls_ok},
                     "intentional_fixture_or_behavior_deltas": [],
                     "scope_note": "scoped compatibility only; mandatory full discovery and exact-head required CI remain OWED to the existing shipping operator"}
 
@@ -212,33 +222,186 @@ def snapshot():
             "argv": list(sys.argv)}
 
 
+_CHILD_NETWORK_CALLS = []
+PRODUCT_ROOTS = ("campaign_tool",)
+
+
+def _child_offline(*args, **kwargs):
+    _CHILD_NETWORK_CALLS.append("network")
+    raise OSError("fc13_runner_offline_sentinel")
+
+
+def _socket_now():
+    import socket
+    return (socket.socket.connect, socket.socket.connect_ex, socket.create_connection, socket.getaddrinfo)
+
+
+class _BoundaryStop(ImportError):
+    pass
+
+
+class BoundaryProbe:
+    """Meta-path observer: records socket guard state at the first product import.
+
+    It never supplies a spec (returns None), so normal import continues; in
+    stop mode it refuses the first product import before any product code runs.
+    """
+
+    def __init__(self, originals, stop=False):
+        self.originals = originals
+        self.stop = stop
+        self.first = None
+
+    def find_spec(self, name, path=None, target=None):
+        if self.first is None and name.split(".")[0] in PRODUCT_ROOTS:
+            changed = [a is not b for a, b in zip(self.originals, _socket_now())]
+            self.first = {"module": name, "socket_functions_guarded": changed, "all_guarded": all(changed)}
+            if self.stop:
+                raise _BoundaryStop("fc13_boundary_probe_stop:" + name)
+        return None
+
+
+def _product_modules():
+    return sorted(m for m in sys.modules if m.split(".")[0] in PRODUCT_ROOTS)
+
+
+def install_child_guards(stop=False, guards=True):
+    """Install scoped process-local offline sentinels plus the boundary probe BEFORE any product import."""
+    from unittest import mock
+    preloaded = _product_modules()
+    originals = _socket_now()
+    import socket
+    patches = []
+    if guards:
+        for owner, name in ((socket.socket, "connect"), (socket.socket, "connect_ex"),
+                            (socket, "create_connection"), (socket, "getaddrinfo")):
+            p = mock.patch.object(owner, name, _child_offline)
+            p.start()
+            patches.append(p)
+    probe = BoundaryProbe(originals, stop=stop)
+    sys.meta_path.insert(0, probe)
+    return {"preloaded": preloaded, "originals": originals, "patches": patches, "probe": probe}
+
+
+def remove_child_guards(state):
+    if state["probe"] in sys.meta_path:
+        sys.meta_path.remove(state["probe"])
+    while state["patches"]:
+        state["patches"].pop().stop()
+    first = state["probe"].first
+    return {"product_preloaded_before_guards": state["preloaded"], "first_product_import": first,
+            "guarded_at_first_product_import": bool(first and first["all_guarded"]),
+            "network_calls": len(_CHILD_NETWORK_CALLS),
+            "socket_restored": all(a is b for a, b in zip(state["originals"], _socket_now()))}
+
+
+def boundary_ok(b):
+    return (isinstance(b, dict) and b.get("product_preloaded_before_guards") == []
+            and b.get("guarded_at_first_product_import") is True and b.get("network_calls") == 0
+            and b.get("socket_restored") is True)
+
+
+def _as_python_m(cwd):
+    """Mirror python -m path setup: cwd first, the runner's own tools dir removed."""
+    tools_dir = os.path.abspath(str(REPO / "tools"))
+    sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != tools_dir]
+    sys.path.insert(0, cwd)
+
+
+def guarded_unittest_child(selectors):
+    """Exact-selector unittest run whose offline sentinels precede every product import."""
+    import unittest
+    cwd = os.getcwd()
+    _as_python_m(cwd)
+    state = install_child_guards()
+    try:
+        prog = unittest.main(module=None, argv=["unittest", "-v", *selectors], exit=False)
+        result = prog.result
+    finally:
+        boundary = remove_child_guards(state)
+    origin = getattr(sys.modules.get("campaign_tool"), "__file__", None)
+    origin_ok = bool(origin) and Path(origin).resolve().is_relative_to(Path(cwd).resolve())
+    report = {"selectors": list(selectors), "cwd": cwd, "boundary": boundary, "product_origin": origin,
+              "product_origin_under_cwd": origin_ok, "tests_run": result.testsRun,
+              "successful": result.wasSuccessful(), "skipped": len(result.skipped)}
+    sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
+    ok = boundary_ok(boundary) and origin_ok and result.wasSuccessful() and result.testsRun > 0 and not result.skipped
+    return 0 if ok else 1
+
+
+def boundary_control_child(mode):
+    """Deciding control for the boundary probe: refuse the first product import, run no product code."""
+    _as_python_m(os.getcwd())
+    state = install_child_guards(stop=True, guards=(mode == "guarded"))
+    stopped = False
+    try:
+        __import__("campaign_tool.records.understanding.evidence")
+    except _BoundaryStop:
+        stopped = True
+    finally:
+        boundary = remove_child_guards(state)
+    report = {"mode": mode, "stopped_at_boundary": stopped, "boundary": boundary,
+              "product_modules_after": _product_modules()}
+    sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
+    expect = mode == "guarded"
+    ok = (stopped and report["product_modules_after"] == [] and boundary["first_product_import"] is not None
+          and boundary["guarded_at_first_product_import"] is expect and boundary["network_calls"] == 0
+          and boundary["socket_restored"] and boundary["product_preloaded_before_guards"] == [])
+    return 0 if ok else 1
+
+
+def run_boundary_controls(run):
+    rows = {}
+    for mode in ("unguarded", "guarded"):
+        row = run.child("boundary-control-" + mode, [sys.executable, REPO / RUNNER, "--boundary-control", mode], REPO)
+        try:
+            rep = json.loads((run.root / row["stdout"]).read_text())
+        except ValueError:
+            rep = None
+        rows[mode] = {"exit": row["exit"], "report": rep}
+    ok = all(r["exit"] == 0 and isinstance(r["report"], dict) for r in rows.values())
+    return ok, rows
+
+
+def read_report(run, row):
+    try:
+        return json.loads((run.root / row["stdout"]).read_text())
+    except ValueError:
+        return None
+
+
 def discovery_child():
     """In-process discovery isolation probe (run as a separate child by phase portable)."""
     import unittest
     sys.path.insert(0, str(REPO))
-    stream = io.StringIO()
-    runner = unittest.TextTestRunner(stream=stream, verbosity=2)
-    loader = unittest.TestLoader()
-    s0 = snapshot()
-    before = runner.run(loader.loadTestsFromName(SENTINEL))
-    s1 = snapshot()
-    suite = loader.discover(start_dir=str(REPO / "tests" / "records"), pattern="test_fc13_attempt_binding.py",
-                            top_level_dir=str(REPO))
-    s2 = snapshot()
-    from campaign_tool.records.understanding import evidence
-    pinned_reader = id(evidence.read_pinned)
-    mid = runner.run(suite)
-    s3 = snapshot()
-    after = runner.run(loader.loadTestsFromName(SENTINEL))
-    s4 = snapshot()
+    state = install_child_guards()
+    try:
+        stream = io.StringIO()
+        runner = unittest.TextTestRunner(stream=stream, verbosity=2)
+        loader = unittest.TestLoader()
+        s0 = snapshot()
+        before = runner.run(loader.loadTestsFromName(SENTINEL))
+        s1 = snapshot()
+        suite = loader.discover(start_dir=str(REPO / "tests" / "records"), pattern="test_fc13_attempt_binding.py",
+                                top_level_dir=str(REPO))
+        s2 = snapshot()
+        from campaign_tool.records.understanding import evidence
+        pinned_reader = id(evidence.read_pinned)
+        mid = runner.run(suite)
+        s3 = snapshot()
+        after = runner.run(loader.loadTestsFromName(SENTINEL))
+        s4 = snapshot()
+    finally:
+        boundary = remove_child_guards(state)
     report = {"sentinel_before": [before.testsRun, len(before.failures), len(before.errors), len(before.skipped)],
               "discovered": [mid.testsRun, len(mid.failures), len(mid.errors), len(mid.skipped)],
               "sentinel_after": [after.testsRun, len(after.failures), len(after.errors), len(after.skipped)],
               "import_time_unchanged": s1 == s2, "run_unchanged": s2 == s3 and s3 == s4 and s0 == s1,
-              "read_pinned_restored": id(evidence.read_pinned) == pinned_reader}
+              "read_pinned_restored": id(evidence.read_pinned) == pinned_reader, "boundary": boundary}
     sys.stderr.write(stream.getvalue())
     sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
     ok = (report["import_time_unchanged"] and report["run_unchanged"] and report["read_pinned_restored"]
+          and boundary_ok(boundary)
           and before.wasSuccessful() and mid.wasSuccessful() and after.wasSuccessful() and mid.testsRun > 0
           and before.testsRun > 0 and not mid.skipped and not before.skipped and not after.skipped)
     return 0 if ok else 1
@@ -263,9 +426,15 @@ def phase_portable(run, py, ident):
         box[path] = [t for t in BOX_TOKENS if t in text]
     no_box = not any(box.values())
     disc_methods = [x["method"] for x in disc["results"] if x["id"].startswith(TEST)]
+    controls_ok, controls = run_boundary_controls(run)
+    disc_boundary_ok = isinstance(disc_report, dict) and boundary_ok(disc_report.get("boundary"))
     passed = (unittest_clean(script, want) and disc["exit"] == 0 and isinstance(disc_report, dict)
+              and disc_boundary_ok and controls_ok
               and sorted(disc_methods) == sorted(want) and no_box and not disc["failing"] and not disc["skipped"])
     return passed, {"unrelated_cwd": str(cwd), "temporary_root": str(tmp_root), "temporary_root_leftovers": leftovers,
+                    "discovery_pre_import_boundary_ok": disc_boundary_ok, "boundary_controls": controls,
+                    "boundary_controls_ok": controls_ok,
+                    "script_mode_boundary_note": "script mode binds the temp root and repo path in the module's __main__ block; product import occurs in setUpModule after its own offline sentinels",
                     "script_count": script["tests_run"], "discovery_report": disc_report,
                     "discovery_new_module_methods": len(disc_methods), "box_path_tokens_found": box, "no_box_paths": no_box}
 
@@ -360,6 +529,10 @@ def seal(run_root):
 def main():
     if sys.argv[1:] == ["--discovery-child"]:
         return discovery_child()
+    if sys.argv[1:2] == ["--guarded-unittest"] and len(sys.argv) > 2:
+        return guarded_unittest_child(sys.argv[2:])
+    if sys.argv[1:2] == ["--boundary-control"] and sys.argv[2:] in (["guarded"], ["unguarded"]):
+        return boundary_control_child(sys.argv[2])
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", choices=PHASES, required=True)
     ap.add_argument("--source-manifest", required=True)
