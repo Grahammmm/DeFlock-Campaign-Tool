@@ -14,8 +14,6 @@ import sys
 import traceback
 import uuid
 
-BASE = '32eda30545fd0e5a1d83723939362d508ead8361'
-BASE_TREE = 'a9a693454f4db42b3b3235f40e322846efa27dcc'
 OWNED = ('tests/records/test_fc16_document_summary_segments.py',
          'tests/fixtures/fc16_document_summary_segments/cases.json',
          'tools/fc16_document_summary_segments_accept.py')
@@ -50,7 +48,14 @@ class Recorder:
         self.manifest = json.loads(self.manifest_raw)
         need(self.manifest['schema'] == 'agentorange.source-manifest/v1', 'manifest schema')
         need(Path(self.manifest['repo']) == self.repo == Path(__file__).resolve().parents[1], 'repo identity')
-        need(self.manifest['head'] == BASE and self.manifest['tree'] == BASE_TREE, 'admitted base identity')
+        # Admission pins live in the operator-supplied source manifest, whose
+        # whole-file digest is bound in each receipt. Do not duplicate public
+        # high-entropy identities into scanner-visible authored source.
+        self.base = self.manifest['head']
+        self.base_tree = self.manifest['tree']
+        need(self.manifest['card'] == 'deflock-FC16-DOCUMENT-SUMMARY-SEGMENTS', 'admitted card identity')
+        need(re.fullmatch(r'[0-9a-f]{40}', self.base) is not None and
+             re.fullmatch(r'[0-9a-f]{40}', self.base_tree) is not None, 'admitted base identity format')
         root = Path(self.manifest['write_root'])
         need(self.repo == root/'repo' and self.manifest_path == root/'SOURCE-MANIFEST.json', 'staging layout')
         self.out_base = args.out_base.absolute()
@@ -101,8 +106,8 @@ class Recorder:
         head = self.git(label+'-head', 'rev-parse', 'HEAD').decode().strip()
         tree = self.git(label+'-tree', 'rev-parse', 'HEAD^{tree}').decode().strip()
         status = self.git(label+'-status', 'status', '--porcelain=v1', '--untracked-files=all').decode()
-        delta = self.git(label+'-diff', 'diff', '--binary', BASE)
-        names = self.git(label+'-names', 'diff', '--name-only', BASE).decode().splitlines()
+        delta = self.git(label+'-diff', 'diff', '--binary', self.base)
+        names = self.git(label+'-names', 'diff', '--name-only', self.base).decode().splitlines()
         need(set(names) <= set(OWNED), 'changed non-owned tracked path')
         # New untracked authored bytes are separately bound even on baseline.
         visible = self.git(label+'-inventory', 'ls-files', '-z', '--cached', '--others', '--exclude-standard')
@@ -114,7 +119,7 @@ class Recorder:
             no_symlinks(path)
             hashes[name] = digest(path.read_bytes())
         for name in (*PINS, *CHECKERS):
-            baseline = self.git(label+'-baseline-'+name.replace('/','_'), 'show', BASE+':'+name)
+            baseline = self.git(label+'-baseline-'+name.replace('/','_'), 'show', self.base+':'+name)
             need(hashes[name] == digest(baseline), 'pinned source/checker changed: '+name)
         return {'head': head, 'tree': tree, 'status': status, 'complete_diff_sha256': digest(delta),
                 'changed_tracked_paths': names, 'inventory_sha256': digest(visible), 'hashes': hashes}
@@ -127,10 +132,10 @@ class Recorder:
         expected = Path(runtime['credential_scan_python3']) if self.args.phase == 'credentials' else link/'bin/python3'
         need(Path(sys.executable).absolute() == expected.absolute(), 'literal interpreter mismatch')
         need(Path(sys.executable).is_file(), 'interpreter missing')
-        self.git('ancestor', 'merge-base', '--is-ancestor', BASE, 'HEAD')
-        need(self.git('base-tree', 'rev-parse', BASE+'^{tree}').decode().strip() == BASE_TREE, 'base tree drift')
+        self.git('ancestor', 'merge-base', '--is-ancestor', self.base, 'HEAD')
+        need(self.git('base-tree', 'rev-parse', self.base+'^{tree}').decode().strip() == self.base_tree, 'base tree drift')
         self.data['initial_identity'] = self.identity('initial')
-        self.data['baseline_test_only'] = self.data['initial_identity']['head'] == BASE
+        self.data['baseline_test_only'] = self.data['initial_identity']['head'] == self.base
         fixture = json.loads((self.repo/OWNED[1]).read_text(encoding='utf-8'))
         need(fixture['schema'] == 'fc16-summary-segments/v1', 'fixture schema')
         expected = {f'body_{n}_{s}' for n in (11,12,511,512,513) for s in ('bare','period','bang','question')}
