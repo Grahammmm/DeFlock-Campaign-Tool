@@ -705,7 +705,7 @@ def parent_main(argv):
         else:
             phase_public_tree(run, identity)
         verdict = "PASS"
-    except (AcceptanceFailure, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+    except Exception as exc:  # seal every failure, including unexpected ones
         error = f"{type(exc).__name__}: {exc}"
     digest = run.seal(verdict, error)
     print(json.dumps({"phase": args.phase, "verdict": verdict, "error": error,
