@@ -50,8 +50,18 @@ def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root, vision_ids
     acceptance of the whole original.
     """
     entries = receipt.get("ocr_receipts")
-    require(isinstance(entries, list) and entries and
-            sorted(e.get("receipt_id") for e in entries if isinstance(e, dict)) == ocr_ids, "ocr_receipts_binding")
+    require(isinstance(entries, list) and entries, "ocr_receipts_binding")
+    # Structural preflight of the complete list before any identifier sort or CAS read:
+    # one receipt per page and per receipt id, so no page can be silently overwritten.
+    for entry in entries:
+        require(isinstance(entry, dict) and set(entry) == {"page", "receipt_id", "receipt_sha256", "status"} and
+                type(entry["page"]) is int and entry["page"] > 0 and
+                all(isinstance(entry[key], str) and re.fullmatch(r"[a-f0-9]{64}", entry[key])
+                    for key in ("receipt_id", "receipt_sha256")), "ocr_receipt_entry_shape")
+    entry_pages = [entry["page"] for entry in entries]
+    entry_ids = [entry["receipt_id"] for entry in entries]
+    require(len(set(entry_pages)) == len(entries) and len(set(entry_ids)) == len(entries) and
+            sorted(entry_ids) == ocr_ids, "ocr_receipts_binding")
     root = receipt.get("ocr_output_root")
     require(isinstance(root, str) and os.path.isabs(root), "ocr_output_root_unbound")
     visions = receipt.get("vision_receipts", [])
