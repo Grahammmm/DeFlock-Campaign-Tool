@@ -155,8 +155,13 @@ def _semantic_checks(package, jurisdiction):
             raise ValueError(f"{where}.rule_ids: unknown rule id(s) {unknown}")
 
 
+def _valid_jurisdiction(jurisdiction):
+    """True only for a whole lowercase ``cc-ss`` string (no trailing newline)."""
+    return isinstance(jurisdiction, str) and JURISDICTION_PATTERN.fullmatch(jurisdiction) is not None
+
+
 def package_path(jurisdiction, base=None):
-    if not isinstance(jurisdiction, str) or not JURISDICTION_PATTERN.match(jurisdiction):
+    if not _valid_jurisdiction(jurisdiction):
         raise ValueError(f"Jurisdiction must look like 'us-ca', got {jurisdiction!r}")
     return Path(base or JURISDICTIONS) / jurisdiction / "package.json"
 
