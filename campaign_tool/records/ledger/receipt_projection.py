@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 
 from . import store
@@ -166,6 +167,32 @@ def register(con):
     for name,(arity,fn) in functions.items(): con.create_function(name,arity,fn,deterministic=True)
 
 
+# Every sqlite_master object named in, or attached to a table in, the rp_ namespace.
+# LIKE is ASCII case-insensitive, matching SQLite identifier rules.
+_RP_OBJECTS=("SELECT type,name,tbl_name,sql FROM sqlite_master "
+             "WHERE name LIKE 'rp\\_%' ESCAPE '\\' OR tbl_name LIKE 'rp\\_%' ESCAPE '\\'")
+
+
+def _schema_objects(con):
+    return {(t,n.lower()):(tbl.lower(),sql) for t,n,tbl,sql in con.execute(_RP_OBJECTS).fetchall()}
+
+
+def _expected_schema_objects(*scripts):
+    """SQLite-normalized rp_ objects from the unchanged migrations, built in a private in-memory reference."""
+    ref=sqlite3.connect(':memory:')
+    try:
+        register(ref)
+        for script in scripts: ref.executescript(script)
+        return _schema_objects(ref)
+    finally: ref.close()
+
+
+def _check_schema_objects(con,scripts):
+    # Read-only: never repairs, drops or rewrites; refuses before any capture or guard write.
+    if _schema_objects(con)!=_expected_schema_objects(*scripts):
+        raise ValueError('sidecar schema objects mismatch')
+
+
 def install(con):
     register(con)
     checksum=digest(migration.SQL.encode())
@@ -180,6 +207,7 @@ def install(con):
         con.execute('INSERT INTO rp_schema VALUES(?,?)',(VERSION,checksum)); con.commit()
         installed=base
     if installed==base:
+        _check_schema_objects(con,(migration.SQL,))
         # Only append protection and its identity; historical evidence is untouched.
         try:
             con.executescript('BEGIN IMMEDIATE;\n'+source_guard.SQL)
@@ -192,6 +220,7 @@ def install(con):
                            (source_guard.TRIGGER,)).fetchone()
         if actual is None or actual[0].strip().rstrip(';')!=source_guard.SQL.strip().rstrip(';'):
             raise ValueError('receipt source guard missing or changed')
+        _check_schema_objects(con,(migration.SQL,source_guard.SQL))
 
 
 def secure_fd(root,relative):
