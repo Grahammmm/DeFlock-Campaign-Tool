@@ -5,12 +5,13 @@ coercing builder intentionally reproduces the four-line pinned-base builder;
 it is a mutation, not the implementation tested by Regression.
 """
 import argparse
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 import io
 import json
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -218,38 +219,80 @@ def control_run(label):
     stream = io.StringIO()
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(_DecidingAssertions)
     result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
-    print("FA65 CONTROL " + label + "\n" + stream.getvalue())
-    return result
+    diagnostics = "FA65 CONTROL " + label + "\n" + stream.getvalue()
+    return result, diagnostics
 
 
 class GateControl(unittest.TestCase):
     def test_unchecked_constructor_and_coercion_detected_and_restored(self):
         with offline(), mock.patch.object(stage.Quality, "__post_init__", lambda self: None), \
              mock.patch.object(stage, "build_stage", coercing_builder):
-            result = control_run("unchecked-constructor-and-coercing-builder")
-        self.assertEqual(result.testsRun, 7)
-        self.assertEqual(len(result.errors), 0)
+            result, output = control_run("unchecked-constructor-and-coercing-builder")
+        self.assertEqual(result.testsRun, 7, output)
+        self.assertEqual(len(result.errors), 0, output)
         self.assertEqual({case._testMethodName for case, _ in result.failures},
                          {"test_constructor_bool", "test_constructor_fractional", "test_constructor_nan",
-                          "test_builder_bool", "test_builder_fractional", "test_builder_nan"})
-        self.assertEqual(result.skipped, [])
+                          "test_builder_bool", "test_builder_fractional", "test_builder_nan"}, output)
+        self.assertEqual(result.skipped, [], output)
         with offline():
-            restored = control_run("restored-constructor")
-        self.assertTrue(restored.wasSuccessful())
-        self.assertEqual(restored.testsRun, 7)
+            restored, output = control_run("restored-constructor")
+        self.assertTrue(restored.wasSuccessful(), output)
+        self.assertEqual(restored.testsRun, 7, output)
 
     def test_coercing_builder_detected_and_restored(self):
         with offline(), mock.patch.object(stage, "build_stage", coercing_builder):
-            result = control_run("coercing-builder")
-        self.assertEqual(result.testsRun, 7)
-        self.assertEqual(len(result.errors), 0)
+            result, output = control_run("coercing-builder")
+        self.assertEqual(result.testsRun, 7, output)
+        self.assertEqual(len(result.errors), 0, output)
         self.assertEqual({case._testMethodName for case, _ in result.failures},
-                         {"test_builder_bool", "test_builder_fractional"})
-        self.assertEqual(result.skipped, [])
+                         {"test_builder_bool", "test_builder_fractional"}, output)
+        self.assertEqual(result.skipped, [], output)
         with offline():
-            restored = control_run("restored-builder")
-        self.assertTrue(restored.wasSuccessful())
-        self.assertEqual(restored.testsRun, 7)
+            restored, output = control_run("restored-builder")
+        self.assertTrue(restored.wasSuccessful(), output)
+        self.assertEqual(restored.testsRun, 7, output)
+
+
+class ControlOutputRegression(unittest.TestCase):
+    def test_expected_negative_controls_are_silent_and_pass(self):
+        stdout, stderr, report = io.StringIO(), io.StringIO(), io.StringIO()
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(GateControl)
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = unittest.TextTestRunner(stream=report, verbosity=2).run(suite)
+        self.assertTrue(result.wasSuccessful(), report.getvalue())
+        self.assertEqual(result.testsRun, 2, report.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_unexpected_inner_result_fails_outer_process_with_diagnostics(self):
+        # Use a real script/process, not an inline interpreter or a mock exit.
+        # Remove one deciding refusal: the outer exact-failure-set assertion
+        # must reject the now one-failure mutation result and report its output.
+        with tempfile.TemporaryDirectory(prefix="fa65-control-output-") as root:
+            script = Path(root) / "unexpected_control.py"
+            script.write_text(
+                "import sys\n"
+                f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n"
+                "import unittest\n"
+                "from unittest import mock\n"
+                "from tests.records import test_fa65_quality_config as controls\n"
+                "suite = unittest.TestSuite([controls.GateControl(\n"
+                "    'test_coercing_builder_detected_and_restored')])\n"
+                "with mock.patch.object(controls._DecidingAssertions,\n"
+                "                       'test_builder_bool', lambda self: None):\n"
+                "    result = unittest.TextTestRunner(verbosity=2).run(suite)\n"
+                "sys.exit(0 if result.wasSuccessful() else 1)\n",
+                encoding="utf-8")
+            completed = subprocess.run([sys.executable, str(script)],
+                                       capture_output=True, text=True, timeout=60)
+        output = completed.stdout + completed.stderr
+        self.assertEqual(completed.returncode, 1, output)
+        self.assertIn("FA65 CONTROL coercing-builder", output)
+        self.assertIn("FAIL: test_builder_fractional", output)
+        self.assertIn("FAILED (failures=1)", output)
+        self.assertIn("FAIL: test_coercing_builder_detected_and_restored", output)
+        self.assertIn("Items in the second set but not the first:", output)
+        self.assertIn("'test_builder_bool'", output)
 
 
 if __name__ == "__main__":
