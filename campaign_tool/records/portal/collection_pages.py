@@ -1,7 +1,7 @@
-"""Typed page acquisition and operator-selected parsers; no live provider profile.
+"""Typed page acquisition and operator-selected offline parser profiles.
 
-The sole built-in profile is deliberately synthetic and restricted to .invalid
-hosts. Importing this module opens no connection and reads no configuration.
+Importing this module opens no connection and reads no configuration. Provider
+recognition never grants permission to fetch or to promote documents.
 """
 from dataclasses import dataclass
 import hashlib
@@ -154,11 +154,17 @@ class SyntheticProfile:
 
 
 # Trusted source registry, never a module name or executable selected from mail.
-PROFILES = MappingProxyType({"synthetic-archive-v1": SyntheticProfile()})
+from .nextrequest import NextRequestProfile
+
+PROFILES = MappingProxyType({"synthetic-archive-v1": SyntheticProfile(),
+                           "nextrequest-v1": NextRequestProfile()})
 
 
 def _binding(profile):
-    return PageBinding(profile.id, hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+    material = Path(__file__).read_bytes()
+    if profile.id == "nextrequest-v1":
+        material += b"\x00nextrequest.py\x00" + Path(__file__).with_name("nextrequest.py").read_bytes()
+    return PageBinding(profile.id, hashlib.sha256(material).hexdigest())
 
 
 def run_collection_pages(inventory, event, *, profile_id, apply=False, approval_loader=None,
@@ -214,7 +220,7 @@ def run_collection_pages(inventory, event, *, profile_id, apply=False, approval_
                 elif reason in {"retry_exhausted", "transient_http", "timeout", "transport_or_storage_failure"}:
                     disposition = "retry_exhausted"
                 else:
-                    disposition = "unsupported_navigation"
+                    disposition = "inaccessible" if profile.id == "nextrequest-v1" else "unsupported_navigation"
                 inventory.block(work["collection"], disposition)
             continue
         try:
@@ -226,7 +232,9 @@ def run_collection_pages(inventory, event, *, profile_id, apply=False, approval_
             parsed = profile.parse(raw, url)
             inventory.accept_page(work["collection"], cursor=url, source_sha256=fetched["sha256"],
                 source_bytes=fetched["bytes"], parser_sha256=binding.parser_sha256,
-                members=[{"id": m.id, "kind": m.kind, "url": m.url} for m in parsed.members],
+                members=[{"id": m.id, "kind": m.kind, "url": m.url,
+                          **({"filename": m.filename, "released_date": m.released_date}
+                             if hasattr(m, "filename") else {})} for m in parsed.members],
                 next_cursor=parsed.next_cursor, expected_total=parsed.expected_total, event=event)
             outcome["indexed"] += 1
         except PortalError as exc:
@@ -236,7 +244,11 @@ def run_collection_pages(inventory, event, *, profile_id, apply=False, approval_
             with queue.lock(), queue.db:
                 queue.db.execute("UPDATE portal_items SET state='blocked',reason=? WHERE id=?", (reason, item))
                 queue.db.execute("UPDATE portal_versions SET ledger_state='collection_blocked' WHERE id=?", (fetched["version"],))
-            inventory.block(work["collection"], "authorization_required" if reason == "authorization_required" else "unsupported_navigation")
+            disposition = reason if reason in {"authorization_required", "expired_link", "inaccessible",
+                                                "pagination_loop_or_bound"} else "unsupported_navigation"
+            if reason == "collection_denominator_mismatch":
+                disposition = "missing_or_conflicting_members"
+            inventory.block(work["collection"], disposition)
             outcome["blocked"] += 1
     outcome["retrieval_complete"] = inventory.readiness(event)["retrieval_complete"]
     return outcome
