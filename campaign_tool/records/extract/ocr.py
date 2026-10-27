@@ -271,14 +271,25 @@ def _hold(page_dir: Path, source_sha256: str, page: int, requested: bool) -> boo
     return True
 
 
+def _exact_page(value: object) -> bool:
+    """Page identities are exact positive ints; bool and integral floats are not aliases."""
+    return type(value) is int and value >= 1
+
+
 def _validate_receipt(receipt: dict, identity: dict, directory: Path) -> tuple[str, str]:
     # Legacy receipts remain readable. Cache-policy migration is staged in X6
     # phase 2; phase 1 must not be deployed over existing result roots.
     if not isinstance(receipt, dict) or set(receipt) not in (RECEIPT_KEYS, RECEIPT_KEYS | {'eligibility'}):
         raise ValueError("ocr_receipt_schema_mismatch")
+    stated, locator = receipt["identity"], receipt["locator"]
+    if (not isinstance(identity, dict) or not _exact_page(identity.get("page"))
+            or not isinstance(stated, dict) or not _exact_page(stated.get("page"))
+            or not isinstance(locator, dict) or not _exact_page(locator.get("page"))):
+        raise ValueError("ocr_receipt_state_mismatch")
     if 'eligibility' in receipt:
         evidence = receipt['eligibility']
-        if (not isinstance(evidence, dict) or evidence.get('source_sha256') != identity['source_sha256']
+        if (not isinstance(evidence, dict) or not _exact_page(evidence.get('page'))
+                or evidence.get('source_sha256') != identity['source_sha256']
                 or evidence.get('page') != identity['page'] or evidence.get('policy') != pdf_eligibility.POLICY
                 or evidence.get('probe') != pdf_eligibility.PROBE
                 or (receipt['status'] == 'skipped_machine_text' and evidence.get('decision') != 'native_sufficient')):
@@ -377,7 +388,7 @@ def load_page_receipt(output_root: str | Path, source_sha256: str, page: int,
         raise ValueError("ocr_receipt_missing") from None
     identity = raw.get("identity") if isinstance(raw, dict) else None
     if (not isinstance(identity, dict) or identity.get("source_sha256") != source_sha256
-            or identity.get("page") != page):
+            or not _exact_page(identity.get("page")) or identity.get("page") != page):
         raise ValueError("ocr_receipt_identity_mismatch")
     if identity.get("version") != VERSION:
         raise ValueError("ocr_receipt_schema_mismatch")
