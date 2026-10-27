@@ -1,0 +1,1140 @@
+{
+ "schema": "fc9-document-candidate-counts-cases/v1",
+ "synthetic": true,
+ "note": "Invented synthetic cases only; no real record, agency or person. Counts are the number of generated source candidates per family; expect blocks are frozen arithmetic over these counts and frozen_caps, never derived from analyze output. REVIEW REQUIRED.",
+ "frozen_caps": {
+  "MAX_CLASSIFICATIONS": 500,
+  "MAX_ENTITIES": 500,
+  "MAX_DATES": 1000,
+  "MAX_SUMMARY_FACTS": 20,
+  "MAX_KEY_GROUPS": 512,
+  "MAX_CROSS_RECORD_KEYS": 200
+ },
+ "family_caps": {
+  "classifications": "MAX_CLASSIFICATIONS",
+  "entity_candidates": "MAX_ENTITIES",
+  "date_mentions": "MAX_DATES",
+  "summary_facts": "MAX_SUMMARY_FACTS",
+  "cross_record_key_candidates": "MAX_CROSS_RECORD_KEYS"
+ },
+ "cases": [
+  {
+   "id": "classifications_zero",
+   "dimension": "classifications",
+   "boundary": "zero",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "classifications": 0
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "classifications_below",
+   "dimension": "classifications",
+   "boundary": "below",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "classifications": 499
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 499,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 499,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "classifications_at",
+   "dimension": "classifications",
+   "boundary": "at",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "classifications": 500
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 500,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 500,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "classifications_above",
+   "dimension": "classifications",
+   "boundary": "above",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "classifications": 501
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 501,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 500,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 1,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "entity_candidates_zero",
+   "dimension": "entity_candidates",
+   "boundary": "zero",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "entity_candidates": 0
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "entity_candidates_below",
+   "dimension": "entity_candidates",
+   "boundary": "below",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "entity_candidates": 499
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 499,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 499,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "entity_candidates_at",
+   "dimension": "entity_candidates",
+   "boundary": "at",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "entity_candidates": 500
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 500,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 500,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "entity_candidates_above",
+   "dimension": "entity_candidates",
+   "boundary": "above",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "entity_candidates": 501
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 501,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 500,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 1,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "date_mentions_zero",
+   "dimension": "date_mentions",
+   "boundary": "zero",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "date_mentions": 0
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "date_mentions_below",
+   "dimension": "date_mentions",
+   "boundary": "below",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "date_mentions": 999
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 999,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 999,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "date_mentions_at",
+   "dimension": "date_mentions",
+   "boundary": "at",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "date_mentions": 1000
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 1000,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 1000,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "date_mentions_above",
+   "dimension": "date_mentions",
+   "boundary": "above",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "date_mentions": 1001
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 1001,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 1000,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 1,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "summary_facts_zero",
+   "dimension": "summary_facts",
+   "boundary": "zero",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "summary_facts": 0
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "summary_facts_below",
+   "dimension": "summary_facts",
+   "boundary": "below",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "summary_facts": 19
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 19,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 19,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "summary_facts_at",
+   "dimension": "summary_facts",
+   "boundary": "at",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "summary_facts": 20
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 20,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 20,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "summary_facts_above",
+   "dimension": "summary_facts",
+   "boundary": "above",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "summary_facts": 21
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 21,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 20,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 1,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "cross_record_key_candidates_zero",
+   "dimension": "cross_record_key_candidates",
+   "boundary": "zero",
+   "originals": 2,
+   "interleave": false,
+   "counts": {
+    "cross_record_keys": 0
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 0,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "cross_record_key_candidates_below",
+   "dimension": "cross_record_key_candidates",
+   "boundary": "below",
+   "originals": 2,
+   "interleave": false,
+   "counts": {
+    "cross_record_keys": 199
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 199
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 199
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 199,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "cross_record_key_candidates_at",
+   "dimension": "cross_record_key_candidates",
+   "boundary": "at",
+   "originals": 2,
+   "interleave": false,
+   "counts": {
+    "cross_record_keys": 200
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 200
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 200
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 200,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "cross_record_key_candidates_above",
+   "dimension": "cross_record_key_candidates",
+   "boundary": "above",
+   "originals": 2,
+   "interleave": false,
+   "counts": {
+    "cross_record_keys": 201
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 201
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 200
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 1,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 201,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "key_groups_at",
+   "dimension": "key_occurrences_not_tracked",
+   "boundary": "at",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "single_original_keys": 512
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 512,
+    "partial_understanding": false,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "key_groups_above",
+   "dimension": "key_occurrences_not_tracked",
+   "boundary": "above",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "single_original_keys": 513
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 1
+    },
+    "tracked_key_groups": 512,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "key_groups_above_repeated_untracked",
+   "dimension": "key_occurrences_not_tracked",
+   "boundary": "above",
+   "originals": 1,
+   "interleave": false,
+   "counts": {
+    "single_original_keys": 513,
+    "repeat_last_single_key": 2
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 0,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 3
+    },
+    "tracked_key_groups": 512,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "summary_facts_cap_amid_other_candidates",
+   "dimension": "summary_facts",
+   "boundary": "above",
+   "originals": 1,
+   "interleave": true,
+   "counts": {
+    "summary_facts": 21,
+    "classifications": 10,
+    "entity_candidates": 10,
+    "date_mentions": 10,
+    "single_original_keys": 10
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 10,
+     "entity_candidates": 10,
+     "date_mentions": 10,
+     "summary_facts": 21,
+     "cross_record_key_candidates": 0
+    },
+    "emitted_lengths": {
+     "classifications": 10,
+     "entity_candidates": 10,
+     "date_mentions": 10,
+     "summary_facts": 20,
+     "cross_record_key_candidates": 0
+    },
+    "candidate_omissions": {
+     "classifications": 0,
+     "entity_candidates": 0,
+     "date_mentions": 0,
+     "summary_facts": 1,
+     "cross_record_key_candidates": 0,
+     "key_occurrences_not_tracked": 0
+    },
+    "tracked_key_groups": 10,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  },
+  {
+   "id": "all_families_above_interleaved",
+   "dimension": "all",
+   "boundary": "above",
+   "originals": 2,
+   "interleave": true,
+   "counts": {
+    "classifications": 501,
+    "entity_candidates": 501,
+    "date_mentions": 1001,
+    "summary_facts": 21,
+    "cross_record_keys": 201,
+    "single_original_keys": 312
+   },
+   "expect": {
+    "candidate_totals": {
+     "classifications": 501,
+     "entity_candidates": 501,
+     "date_mentions": 1001,
+     "summary_facts": 21,
+     "cross_record_key_candidates": 201
+    },
+    "emitted_lengths": {
+     "classifications": 500,
+     "entity_candidates": 500,
+     "date_mentions": 1000,
+     "summary_facts": 20,
+     "cross_record_key_candidates": 200
+    },
+    "candidate_omissions": {
+     "classifications": 1,
+     "entity_candidates": 1,
+     "date_mentions": 1,
+     "summary_facts": 1,
+     "cross_record_key_candidates": 1,
+     "key_occurrences_not_tracked": 1
+    },
+    "tracked_key_groups": 512,
+    "partial_understanding": true,
+    "gaps": [],
+    "review_acceptance": false,
+    "semantic_assessment": "NOT_ASSESSED"
+   }
+  }
+ ],
+ "malformed_specs": [
+  {
+   "id": "negative_count",
+   "case": {
+    "id": "m1",
+    "dimension": "classifications",
+    "boundary": "zero",
+    "originals": 1,
+    "interleave": false,
+    "counts": {
+     "classifications": -1
+    }
+   },
+   "error": "case_count_invalid"
+  },
+  {
+   "id": "boolean_count",
+   "case": {
+    "id": "m2",
+    "dimension": "classifications",
+    "boundary": "zero",
+    "originals": 1,
+    "interleave": false,
+    "counts": {
+     "classifications": true
+    }
+   },
+   "error": "case_count_invalid"
+  },
+  {
+   "id": "unknown_count_family",
+   "case": {
+    "id": "m3",
+    "dimension": "classifications",
+    "boundary": "zero",
+    "originals": 1,
+    "interleave": false,
+    "counts": {
+     "keywords": 1
+    }
+   },
+   "error": "case_count_unknown"
+  },
+  {
+   "id": "unknown_dimension",
+   "case": {
+    "id": "m4",
+    "dimension": "pages",
+    "boundary": "zero",
+    "originals": 1,
+    "interleave": false,
+    "counts": {}
+   },
+   "error": "case_dimension_unknown"
+  },
+  {
+   "id": "two_originals_without_cross_keys",
+   "case": {
+    "id": "m5",
+    "dimension": "classifications",
+    "boundary": "zero",
+    "originals": 2,
+    "interleave": false,
+    "counts": {}
+   },
+   "error": "case_originals_invalid"
+  },
+  {
+   "id": "cross_keys_with_one_original",
+   "case": {
+    "id": "m6",
+    "dimension": "cross_record_key_candidates",
+    "boundary": "at",
+    "originals": 1,
+    "interleave": false,
+    "counts": {
+     "cross_record_keys": 3
+    }
+   },
+   "error": "case_originals_invalid"
+  },
+  {
+   "id": "key_numbers_exhausted",
+   "case": {
+    "id": "m7",
+    "dimension": "key_occurrences_not_tracked",
+    "boundary": "above",
+    "originals": 1,
+    "interleave": false,
+    "counts": {
+     "single_original_keys": 1000
+    }
+   },
+   "error": "case_key_space_exhausted"
+  },
+  {
+   "id": "cross_keys_exceed_group_cap",
+   "case": {
+    "id": "m8",
+    "dimension": "cross_record_key_candidates",
+    "boundary": "above",
+    "originals": 2,
+    "interleave": false,
+    "counts": {
+     "cross_record_keys": 513
+    }
+   },
+   "error": "case_cross_keys_untrackable"
+  },
+  {
+   "id": "missing_id",
+   "case": {
+    "dimension": "classifications",
+    "boundary": "zero",
+    "originals": 1,
+    "interleave": false,
+    "counts": {}
+   },
+   "error": "case_shape_invalid"
+  },
+  {
+   "id": "unknown_boundary",
+   "case": {
+    "id": "m10",
+    "dimension": "classifications",
+    "boundary": "edge",
+    "originals": 1,
+    "interleave": false,
+    "counts": {}
+   },
+   "error": "case_boundary_unknown"
+  }
+ ]
+}
