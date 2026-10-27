@@ -30,7 +30,10 @@ def _s(value: Any) -> str:
 
 
 def _id(agency: str, number: str) -> str:
-    return agency.casefold() + "::" + number.casefold()
+    def escape(component: str) -> str:
+        return component.casefold().replace("%", "%25").replace(":", "%3a")
+
+    return escape(agency) + "::" + escape(number)
 
 
 _NUMERIC_OFFSET = re.compile(r"(?<=[0-9])[+-]([0-9]{2}):?([0-9]{2})$")
@@ -352,7 +355,7 @@ def track(events: Iterable[dict], *, as_of: str | datetime, deadline_rules: Iter
             event_for_key.pop("message_id", None)
             event_for_key.pop("event_id", None)
         event_key = _event_key(event_for_key)
-        group_key = request_id + "|" + event_key
+        group_key = (request_id, event_key)
         occurrence = {"occurrence_id": _s(event.get("occurrence_id")) or f"input:{index}",
                       "occurred_at": event.get("occurred_at") if isinstance(event.get("occurred_at"), str) else None,
                       "time_status": time_status, "source_id": _s(event.get("source_id")) or None}

@@ -276,7 +276,7 @@ class DigestIdentityTests(unittest.TestCase):
             self.assertEqual(encoded(subject), before)
         self.assertEqual(encoded(self.schema.DIGEST_SCHEMA), schema_before)
         self.assertEqual(encoded(self.schema.MODEL_OUTPUT_SCHEMA), model_before)
-        self.assertEqual(self.schema.DIGEST_SCHEMA["properties"]["schema_version"], {"const": 1})
+        self.assertEqual(self.schema.DIGEST_SCHEMA["properties"]["schema_version"], {"type": "integer", "const": 1})
         self.assertNotIn("sha256", self.schema.MODEL_OUTPUT_SCHEMA["properties"])
         self.coverage.append("inputs_unchanged")
 

@@ -46,8 +46,12 @@ Held classes are decided before any queue lookup, so a held pointer is never
 reported as fetched even when a queue row with the same identity exists.
 Malformed rows are counted by reason and never silently dropped. Duplicate
 observations of the same URL are counted once; conflicting duplicates are
-counted as conflicting URLs. Output is canonical JSON (sorted keys, no
-timestamps), so identical inputs give byte-identical output.
+counted as conflicting URLs. A malformed row whose url_sha256 is itself well
+formed taints that URL: if the URL also has a fully valid observation it is a
+conflicting URL and is not classified. Malformed-only URLs are not counted as
+unique URLs, and malformed rows never supply host policy or identity. Output
+is canonical JSON (sorted keys, no timestamps), so identical inputs give
+byte-identical output.
 
 This tool reads two files and writes one new file or stdout. It opens no
 network connection, database, mailbox, ledger, allowlist or queue store.
@@ -284,6 +288,16 @@ MALFORMED_CODES = frozenset({
 })
 
 
+def _declared_url_sha256(row):
+    """The row's url_sha256 when it is syntactically valid, whatever the other fields hold; else None."""
+    if not isinstance(row, dict):
+        return None
+    value = row.get("url_sha256")
+    if isinstance(value, str) and SHA256.fullmatch(value):
+        return value
+    return None
+
+
 def _count(mapping, key, amount=1):
     mapping[key] = mapping.get(key, 0) + amount
 
@@ -346,10 +360,16 @@ def reconcile(observation_rows, queue_rows):
     duplicates = 0
     by_url = {}
     conflicting = set()
+    tainted = set()
     for row in observation_rows:
         observation, code = _normalized(normalize_observation, row)
         if observation is None:
             _count(malformed, code)
+            # A malformed row still declares its URL when the hash itself is
+            # well formed; it never contributes host policy or identity.
+            declared = _declared_url_sha256(row)
+            if declared is not None:
+                tainted.add(declared)
             continue
         previous = by_url.get(observation[0])
         if previous is None:
@@ -359,6 +379,9 @@ def reconcile(observation_rows, queue_rows):
         else:
             duplicates += 1
             conflicting.add(observation[0])
+    # A URL with a fully valid observation and a malformed one is conflicting
+    # and stays unclassified. Malformed-only URLs are not unique URLs.
+    conflicting.update(tainted.intersection(by_url))
 
     classes = {name: 0 for name in CLASSES}
     by_host_class = {name: {cls: 0 for cls in CLASSES} for name in sorted(HOST_CLASSES)}
@@ -441,13 +464,29 @@ def render(report):
     return json.dumps(report, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
 
 
+def _sync_parent(path):
+    """Confirm the new report name's containing directory is durable."""
+    fd = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_new(path, text):
-    """Create a new 0600 file; never overwrite or follow a symlink."""
+    """Exclusively create a 0600 report and sync both its bytes and name.
+
+    OSError propagates on failure. A complete but not durability-confirmed
+    file may remain after directory sync fails; it is never removed or reused.
+    A same-name retry still refuses, so the caller must inspect the residue or
+    explicitly choose a different output name. No parent directory is created.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="ascii") as handle:
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
+    _sync_parent(path)
 
 
 class _CodedArgumentParser(argparse.ArgumentParser):
