@@ -107,7 +107,13 @@ class NextRequestProfile:
 
     def accepts(self, url):
         p = url_parts(url)
-        return (p.hostname or "").endswith(".nextrequest.com") and bool(REQUEST_PATH.fullmatch(p.path))
+        if not (p.hostname or "").endswith(".nextrequest.com") or not REQUEST_PATH.fullmatch(p.path):
+            return False
+        try:
+            _query(url)
+        except PortalError:
+            return False
+        return True
 
     def parse(self, raw, url):
         # Import lazily: registry initialization in collection_pages imports us.

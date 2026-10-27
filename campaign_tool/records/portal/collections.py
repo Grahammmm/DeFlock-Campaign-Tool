@@ -53,8 +53,14 @@ def _require_member_shape(member):
 
 def normalized(url):
     p = url_parts(url)
-    # Do not reorder/decode a potentially signed query. Fragments, credentials,
-    # non-HTTPS and unsafe paths are rejected by the existing portal policy.
+    # Reject unsafe NextRequest request queries before discovery persists even
+    # excluded/blocked links. Only the profile's bounded page cursor is valid.
+    # Import lazily to keep collection/profile registry initialization acyclic.
+    from .nextrequest import REQUEST_PATH, _query
+    if (p.hostname or "").endswith(".nextrequest.com") and REQUEST_PATH.fullmatch(p.path):
+        _query(url)
+    # Other providers retain their existing signed-query policy. Fragments,
+    # credentials, non-HTTPS and unsafe paths are rejected by url_parts.
     return urlunsplit(("https", p.hostname, p.path or "/", p.query, ""))
 
 

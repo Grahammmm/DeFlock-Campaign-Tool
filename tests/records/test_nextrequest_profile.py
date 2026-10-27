@@ -2,9 +2,12 @@
 
 No fixture proves live-layout qualification. Network calls fail the tests.
 """
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import html
+import io
 import json
+import logging
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -128,6 +131,16 @@ class NextRequestParserTests(Offline):
             with self.subTest(cursor=cursor):
                 self.reject(page(2, row("D1"), cursor), reason)
 
+    def test_request_query_is_rejected_by_prefetch_profile_gate(self):
+        profile = NextRequestProfile()
+        for query in ("token=SYNTHETIC-SECRET", "page=2&token=SYNTHETIC-SECRET",
+                      "page=2&page=3", "page=", "page=0", "page=10000", "token"):
+            with self.subTest(query=query):
+                self.assertFalse(profile.accepts(URL + "?" + query))
+                self.reject(SINGLE, "unsupported_provider", URL + "?" + query)
+        for query in ("", "?page=1", "?page=2", "?page=9999"):
+            self.assertTrue(profile.accepts(URL + query))
+
     def test_inert_content_is_not_membership(self):
         raw = page(1, row("D1"), extra='<template><section id="documents">'
                    '<a href="/documents/FAKE">Fake</a></section></template>')
@@ -196,6 +209,55 @@ class NextRequestInventoryTests(Offline):
         self.assertFalse(result["publication_authorized"])
         again = self.run_pages(value, existing.Transport({}))
         self.assertEqual(again["attempted"], 0)
+
+    def test_emailed_request_queries_are_hash_only_without_storage_logs_or_fetch(self):
+        queries = ("token=SYNTHETIC-SECRET", "page=2&token=SYNTHETIC-SECRET",
+                   "page=2&page=3", "page=", "page=0", "page=10000", "token")
+        addresses = [BASE + path + "?" + query
+                     for path in ("/requests/26-001", "/requests/26-001/documents")
+                     for query in queries]
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        logger = logging.getLogger()
+        logger.addHandler(handler)
+        sql = []
+        self.queue.db.set_trace_callback(sql.append)
+        transport = existing.Transport({})
+        try:
+            with redirect_stdout(output), redirect_stderr(output):
+                value = self.enroll("\n".join(addresses))
+                result = self.run_pages(value, transport)
+        finally:
+            logger.removeHandler(handler)
+            self.queue.db.set_trace_callback(None)
+        links = self.queue.db.execute("SELECT url_private,kind,reason FROM export_body_links").fetchall()
+        self.assertEqual(len(links), len(addresses))
+        for link, address in zip(links, addresses):
+            self.assertEqual(tuple(link), ("sha256:" + hashlib.sha256(address.encode()).hexdigest(),
+                                           "blocked", "invalid_url"))
+        for table in ("export_collections", "export_collection_pages", "portal_items"):
+            self.assertEqual(self.count(table), 0)
+        # Inspect the entire sidecar (including SQL trace), not the immutable
+        # source email/CAS: original evidence remains preserved by the bridge.
+        stored = "\n".join(self.queue.db.iterdump())
+        for text in (stored, output.getvalue(), "\n".join(sql), repr(result)):
+            self.assertNotIn("SYNTHETIC-SECRET", text)
+            self.assertNotIn("token", text)
+            self.assertNotIn("?", text)
+        self.assertEqual(transport.calls, [])
+        self.assertEqual(result["attempted"], 0)
+        self.assertFalse(result["retrieval_complete"])
+
+    def test_unsafe_pending_cursor_is_refused_before_queue_or_transport(self):
+        value = self.enroll()
+        transport = existing.Transport({})
+        pending = [{"collection": self.node()["id"], "url_private": URL + "?token=SYNTHETIC-SECRET"}]
+        with patch.object(self.inventory, "pending_pages", return_value=pending):
+            with self.assertRaisesRegex(PortalError, "^unsupported_provider$"):
+                self.run_pages(value, transport)
+        self.assertEqual(transport.calls, [])
+        self.assertEqual(self.count("portal_items"), 0)
+        self.assertEqual(self.count("export_collection_pages"), 0)
 
     def test_count_mismatch_blocks_instead_of_claiming_complete(self):
         value = self.enroll()
