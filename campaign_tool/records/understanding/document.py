@@ -134,6 +134,20 @@ def _page_entry_id(entry: Any) -> Any:
     return entry if _positive_int(entry) else None
 
 
+def _unit_page(unit: Any) -> tuple[int | None, bool]:
+    """Resolve a unit locator's page aliases to (page, invalid).
+
+    Uses the same rule as inventory entries via _page_entry_id. A locator with
+    neither alias is non-page evidence (None, False); a present but malformed
+    or contradictory alias set covers no page and is reported as invalid.
+    """
+    locator = unit.get("locator") if isinstance(unit, dict) else None
+    if not isinstance(locator, dict) or not any(k in locator for k in _PAGE_ID_KEYS):
+        return None, False
+    page = _page_entry_id(locator)
+    return page, page is None
+
+
 def _page_inventory(context: Any) -> tuple[list[int], dict, set[str]]:
     """Validate the supplied page inventory against any declared total.
 
@@ -208,8 +222,12 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
                                 for p in raw_pages) if isinstance(raw_pages, list) else False
         if source_visual_claim or page_visual_claim:
             gaps.add("claimed_visual_review_unverified")
+        located = [(u, *_unit_page(u)) for u in source_units]
+        if any(invalid for _, _, invalid in located):
+            # Reported even when valid peers cover every inventoried page.
+            gaps.add("unit_page_locator_invalid")
         for page in page_numbers:
-            page_units = [u for u in source_units if page in (u.get("locator", {}).get("page"), u.get("locator", {}).get("page_no"))]
+            page_units = [u for u, unit_page, _ in located if unit_page == page]
             text_units = [u for u in page_units if isinstance(u.get("text"), str) and bool(u["text"].strip())]
             ocr = any(_is_ocr(u) for u in text_units)
             state = "text_unit_present" if text_units else "no_text_unit"
