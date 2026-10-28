@@ -1,13 +1,12 @@
 name: Records native mail completion
 on:
-  pull_request:
   push:
     branches: [main]
 permissions:
   contents: read
 jobs:
   native:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     env:
       REQUIRE_NATIVE_MSG: "1"
     steps:
