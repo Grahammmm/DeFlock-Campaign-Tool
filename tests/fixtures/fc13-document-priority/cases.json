@@ -1,0 +1,110 @@
+{
+  "schema": "fc13-document-priority-cases/v1",
+  "note": "Fictional ASCII inputs only. No text here describes a real record, agency, person or source. The expected values are a frozen oracle authored independently of the product regexes.",
+  "priority_order": [
+    "policy",
+    "agreement",
+    "audit_or_search_log",
+    "records_request_or_response",
+    "invoice_or_fee_record"
+  ],
+  "synonyms": {
+    "policy": ["policy", "procedure", "standard", "guideline"],
+    "agreement": ["agreement", "memorandum of understanding", "MOU", "contract"],
+    "audit_or_search_log": ["audit log", "search log", "query log", "access log"],
+    "records_request_or_response": ["public records request", "records request", "responsive records", "records search"],
+    "invoice_or_fee_record": ["invoice", "fee estimate", "cost estimate", "amount due"]
+  },
+  "pair_template": "Item {first} then item {second} end.",
+  "single_template": "Note on {term} here.",
+  "case_positives": [
+    {"category": "policy", "term": "POLICY"},
+    {"category": "policy", "term": "Guideline"},
+    {"category": "agreement", "term": "Mou"},
+    {"category": "agreement", "term": "MEMORANDUM OF UNDERSTANDING"},
+    {"category": "audit_or_search_log", "term": "Audit Log"},
+    {"category": "records_request_or_response", "term": "Records Request"},
+    {"category": "invoice_or_fee_record", "term": "INVOICE"},
+    {"category": "invoice_or_fee_record", "term": "Amount Due"}
+  ],
+  "boundary_negatives": [
+    "policyholder",
+    "Policies",
+    "procedures",
+    "substandard",
+    "guidelines",
+    "agreements",
+    "contractor",
+    "MOUs",
+    "auditlog",
+    "audit-log",
+    "search logs",
+    "records-request",
+    "recordsrequest",
+    "responsive record",
+    "invoices",
+    "invoiced",
+    "fee-estimate",
+    "amount dues"
+  ],
+  "neutral_texts": [
+    "Plain synthetic note without category words.",
+    "Records officer reviewed the log.",
+    ""
+  ],
+  "repeated_cases": [
+    {
+      "name": "winner_repeated_after_lower_first",
+      "competing": true,
+      "text": "An invoice precedes the policy text and a second policy line.",
+      "expected_category": "policy",
+      "expected_quote": "policy"
+    },
+    {
+      "name": "winner_first_synonym_in_source_order",
+      "competing": false,
+      "text": "The procedure, then the policy, then the procedure again.",
+      "expected_category": "policy",
+      "expected_quote": "procedure"
+    },
+    {
+      "name": "same_term_repeated_selects_first",
+      "competing": false,
+      "text": "Contract terms; see contract appendix.",
+      "expected_category": "agreement",
+      "expected_quote": "Contract"
+    }
+  ],
+  "multi_unit_texts": [
+    {"text": "Guideline for camera retention.", "expected_category": "policy", "expected_quote": "Guideline"},
+    {"text": "Plain synthetic note without category words.", "expected_category": null, "expected_quote": null},
+    {"text": "Query log export attached.", "expected_category": "audit_or_search_log", "expected_quote": "Query log"},
+    {"text": "Cost estimate for copies.", "expected_category": "invoice_or_fee_record", "expected_quote": "Cost estimate"},
+    {"text": "Responsive records follow.", "expected_category": "records_request_or_response", "expected_quote": "Responsive records"},
+    {"text": "Memorandum of understanding draft.", "expected_category": "agreement", "expected_quote": "Memorandum of understanding"}
+  ],
+  "slots": [
+    {"original": "original-a", "receipt": "receipt-a1", "ordinal": 1},
+    {"original": "original-a", "receipt": "receipt-a1", "ordinal": 2},
+    {"original": "original-a", "receipt": "receipt-a2", "ordinal": 1},
+    {"original": "original-b", "receipt": "receipt-b1", "ordinal": 1},
+    {"original": "original-b", "receipt": "receipt-b1", "ordinal": 2},
+    {"original": "original-b", "receipt": "receipt-b1", "ordinal": 3}
+  ],
+  "text_rotations": [0, 1, 2, 3, 4, 5],
+  "input_orders": [
+    [0, 1, 2, 3, 4, 5],
+    [5, 4, 3, 2, 1, 0],
+    [3, 0, 4, 1, 5, 2],
+    [1, 3, 5, 0, 2, 4]
+  ],
+  "negative_control": {
+    "mutation": "reverse document._CLASSIFIERS in memory only",
+    "failure_tag": "FC13_PRIORITY_MISMATCH",
+    "expected_failing_test_patterns": [
+      "FC13PairPriorityTests.test_pair_*",
+      "FC13RepeatedTermTests.test_winner_repeated_after_lower_first",
+      "FC13NegativeControlTests.test_reversed_classifiers_kill_competing_assertion"
+    ]
+  }
+}

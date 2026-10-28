@@ -1,0 +1,19 @@
+{
+  "schema": "fc10-normalization-tail-cases/v1",
+  "authority": "synthetic_only_not_accepted",
+  "cases": [
+    {"id":"empty","cap":10000,"declared":0,"failed":[],"normalized":0,"tail":0},
+    {"id":"below_real_cap","cap":10000,"declared":9999,"failed":[],"normalized":9999,"tail":0},
+    {"id":"at_real_cap","cap":10000,"declared":10000,"failed":[],"normalized":10000,"tail":0},
+    {"id":"above_real_cap_no_failure","cap":10000,"declared":10001,"failed":[],"normalized":10000,"tail":1},
+    {"id":"failure_first_real_cap","cap":10000,"declared":10001,"failed":[1],"normalized":9999,"tail":1},
+    {"id":"failure_middle_real_cap","cap":10000,"declared":10001,"failed":[5000],"normalized":9999,"tail":1},
+    {"id":"failure_last_real_cap","cap":10000,"declared":10001,"failed":[10000],"normalized":9999,"tail":1},
+    {"id":"several_failures_real_cap","cap":10000,"declared":10001,"failed":[1,5000,10000],"normalized":9997,"tail":1},
+    {"id":"all_processed_failures","cap":5,"declared":7,"failed":[1,2,3,4,5],"normalized":0,"tail":2},
+    {"id":"multiple_tail_units","cap":5,"declared":9,"failed":[1,3,5],"normalized":2,"tail":4},
+    {"id":"failures_without_tail","cap":5,"declared":5,"failed":[1,3,5],"normalized":2,"tail":0},
+    {"id":"all_failures_without_tail","cap":5,"declared":5,"failed":[1,2,3,4,5],"normalized":0,"tail":0},
+    {"id":"unprocessed_invalid_tail","cap":5,"declared":7,"failed":[2],"invalid_tail":[6,7],"normalized":4,"tail":2}
+  ]
+}

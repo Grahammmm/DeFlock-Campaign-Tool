@@ -30,7 +30,27 @@ def _s(value: Any) -> str:
 
 
 def _id(agency: str, number: str) -> str:
-    return agency.casefold() + "::" + number.casefold()
+    def escape(component: str) -> str:
+        return component.casefold().replace("%", "%25").replace(":", "%3a")
+
+    return escape(agency) + "::" + escape(number)
+
+
+_NUMERIC_OFFSET = re.compile(r"(?<=[0-9])[+-]([0-9]{2}):?([0-9]{2})$")
+
+
+def _offset_components_in_range(raw: str) -> bool:
+    """Check a supplied compact/colon numeric offset before parser normalization."""
+    match = _NUMERIC_OFFSET.search(raw)
+    return match is None or (int(match.group(1)) <= 23 and int(match.group(2)) <= 59)
+
+
+def _to_utc(parsed: datetime) -> datetime | None:
+    """Bounded UTC conversion: an unrepresentable instant is unresolved, never an escaping error."""
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:
+        return None
 
 
 def _time(value: Any) -> tuple[datetime | None, str]:
@@ -43,6 +63,8 @@ def _time(value: Any) -> tuple[datetime | None, str]:
             return None, "date_only_timezone_unknown"
         except ValueError:
             return None, "invalid_time"
+    if not _offset_components_in_range(raw):
+        return None, "invalid_time"
     raw = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
     raw = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", raw)
     try:
@@ -51,15 +73,18 @@ def _time(value: Any) -> tuple[datetime | None, str]:
         return None, "invalid_time"
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None, "timezone_unknown"
-    return parsed.astimezone(timezone.utc), "explicit_offset"
+    utc = _to_utc(parsed)
+    return (utc, "explicit_offset") if utc is not None else (None, "invalid_time")
 
 
 def _asof(value: str | datetime) -> tuple[datetime, str, str]:
     if isinstance(value, datetime):
         if value.tzinfo is None or value.utcoffset() is None:
             return datetime.min.replace(tzinfo=timezone.utc), "timezone_unknown", value.isoformat()
-        value = value.astimezone(timezone.utc)
-        return value, "explicit_offset", value.isoformat().replace("+00:00", "Z")
+        utc = _to_utc(value)
+        if utc is None:
+            return datetime.min.replace(tzinfo=timezone.utc), "invalid_time", value.isoformat()
+        return utc, "explicit_offset", utc.isoformat().replace("+00:00", "Z")
     parsed, status = _time(value)
     return (parsed or datetime.min.replace(tzinfo=timezone.utc), status, value if isinstance(value, str) else "")
 
@@ -233,7 +258,10 @@ def _verified_message_date(event: dict, bundle: dict | None) -> tuple[str | None
         return None, "invalid_date", citation
     if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
         return None, "timezone_unknown", citation
-    normalized = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    utc = _to_utc(parsed)
+    if utc is None:
+        return None, "invalid_date", citation
+    normalized = utc.isoformat().replace("+00:00", "Z")
     supplied = event.get("message_date")
     if supplied is not None and supplied != normalized:
         return None, "source_value_mismatch", citation
@@ -327,7 +355,7 @@ def track(events: Iterable[dict], *, as_of: str | datetime, deadline_rules: Iter
             event_for_key.pop("message_id", None)
             event_for_key.pop("event_id", None)
         event_key = _event_key(event_for_key)
-        group_key = request_id + "|" + event_key
+        group_key = (request_id, event_key)
         occurrence = {"occurrence_id": _s(event.get("occurrence_id")) or f"input:{index}",
                       "occurred_at": event.get("occurred_at") if isinstance(event.get("occurred_at"), str) else None,
                       "time_status": time_status, "source_id": _s(event.get("source_id")) or None}
@@ -517,14 +545,19 @@ def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
                     parsed = parsedate_to_datetime(value)
                 except (TypeError, ValueError, OverflowError):
                     pass
-                if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
+                utc = None
+                if parsed is not None and parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    utc = _to_utc(parsed)
+                    if utc is None:
+                        parsed = None  # unrepresentable UTC instant: hold as invalid_date
+                if utc is None:
                     status = "timezone_unknown" if parsed is not None else "invalid_date"
                     row["dates"].append({"value": value, "citation": citation, "normalized": None,
                                          "status": status})
                     holds.append({"original_sha256": original, "reason": "message_date_" + status})
                 else:
                     row["dates"].append({"value": value, "citation": citation,
-                                         "normalized": parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                         "normalized": utc.isoformat().replace("+00:00", "Z"),
                                          "status": "explicit_offset"})
         by_original.setdefault(original, []).append(row)
     result = {}
