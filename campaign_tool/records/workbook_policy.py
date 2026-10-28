@@ -109,7 +109,8 @@ class NativeWorkbookPolicy:
             require(type(unit) is dict and type(unit.get('locator')) is dict and type(unit.get('data')) is dict,
                     "workbook_unit_shape")
             name = unit['locator'].get('sheet')
-            require(name in by_name, "workbook_unit_sheet_unbound")
+            require(type(name) is str and bool(name) and name in by_name,
+                    "workbook_unit_sheet_unbound")
             if unit.get('kind') == 'workbook_sheet':
                 require(name not in declared and unit['data'].get('state') == by_name[name]['state'],
                         "workbook_sheet_unit_mismatch")
