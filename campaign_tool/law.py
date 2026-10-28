@@ -210,15 +210,36 @@ def rules_in_force(package, event_date):
 
 
 def _add_days(start, days, day_type):
+    # Compare integers before constructing timedelta: schema-valid counts have
+    # no upper limit, whereas both date and timedelta have finite ranges.
+    available = date.max.toordinal() - start.toordinal()
     if day_type == "calendar":
+        if days > available:
+            raise ValueError("law_deadline_out_of_range")
         return start + timedelta(days=days)
-    current = start
-    remaining = days
-    while remaining > 0:
-        current += timedelta(days=1)
-        if current.weekday() < 5:
-            remaining -= 1
-    return current
+
+    # Count weekdays remaining in the date domain, with at most six integer
+    # remainder checks and no date stepping, even for an impossible huge count.
+    weeks, tail = divmod(available, 7)
+    weekday = start.weekday()
+    capacity = weeks * 5 + sum((weekday + offset) % 7 < 5
+                               for offset in range(1, tail + 1))
+    if days > capacity:
+        raise ValueError("law_deadline_out_of_range")
+    if days == 0:
+        return start
+
+    # A weekend start reaches Monday as its first counted business day.
+    offset = 0
+    if weekday >= 5:
+        offset = 7 - weekday
+        weekday = 0
+        days -= 1
+    weeks, remainder = divmod(days, 5)
+    offset += weeks * 7 + remainder
+    if weekday + remainder >= 5:
+        offset += 2
+    return start + timedelta(days=offset)
 
 
 def deadline(package, sent_date, extension=False):
