@@ -1,0 +1,42 @@
+{
+  "schema": "fc10-preparation-revision-closure/v1",
+  "authority": "test_only",
+  "dimensions": [
+    "five_by_three_valid_descriptor_changes",
+    "pinned_model_revision",
+    "pinned_prompt_revision",
+    "disabled_model_control",
+    "unchanged_replay",
+    "reconstruct_provider_inputs",
+    "stale_source_revision_blocked",
+    "exact_descriptor_json_retained",
+    "evaluation_result_invariant_for_metadata_only_change"
+  ],
+  "descriptor_paths": [
+    ["normalization", "revision"],
+    ["normalization", "code_sha256"],
+    ["normalization", "receipt_sha256"],
+    ["support", "revision"],
+    ["support", "code_sha256"],
+    ["support", "receipt_sha256"],
+    ["dates", "revision"],
+    ["dates", "code_sha256"],
+    ["dates", "receipt_sha256"],
+    ["policy", "revision"],
+    ["policy", "code_sha256"],
+    ["policy", "receipt_sha256"],
+    ["provider", "revision"],
+    ["provider", "code_sha256"],
+    ["provider", "receipt_sha256"]
+  ],
+  "model_paths": [["provider", "model", "revision_sha256"], ["provider", "model", "prompt_sha256"]],
+  "negative_control": {"omit_descriptor": "support", "expected_failing_fields": ["revision", "code_sha256", "receipt_sha256"]},
+  "synthetic": {
+    "detector": "purpose-quality",
+    "revision_replacement": "fc10-synthetic-v2",
+    "hash_replacement_seed": "fc10 synthetic changed assertion",
+    "model_revision_seed": "fc10 synthetic pinned model",
+    "prompt_seed": "fc10 synthetic pinned prompt"
+  },
+  "limits": "Trusted host assertions only; no authentication, semantic, legal, human, provider qualification or live acceptance."
+}
