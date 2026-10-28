@@ -1,0 +1,37 @@
+{
+  "schema": "fc9-review-restart-lifecycle/v1",
+  "synthetic_only": true,
+  "profile_id": "fc9-fictional-restart-profile",
+  "fictional_key_material": "FC9 fictional repeatable fixture material, never a production authority",
+  "principals": {
+    "author": {"identity": "fc9-fictional-author", "provider": "fictional", "model": "fixture-author", "roles": ["author"]},
+    "factual": {"identity": "fc9-fictional-factual", "provider": "fictional", "model": "fixture-factual", "roles": ["factual"]},
+    "privacy": {"identity": "fc9-fictional-privacy", "provider": "fictional", "model": "fixture-privacy", "roles": ["privacy"]},
+    "owner": {"identity": "fc9-fictional-owner", "provider": "fictional", "model": "fixture-owner", "roles": ["owner"]}
+  },
+  "public": {"title": "Fictional FC9 document", "claim": "Fictional bounded documentary observation", "limitations": ["Synthetic test only; no real records or acceptance"]},
+  "artifacts": {"originals": "Fictional original line one\n", "units": "Fictional unit line one\n", "digests": "Fictional digest line one\n", "sources": "Fictional source line one\n"},
+  "steps": ["create", "factual", "privacy", "owner", "challenge"],
+  "prefixes": {
+    "empty": {"reviews": [], "owner": false, "complete": false, "owner_approval": "awaiting_owner", "blockers": []},
+    "create": {"reviews": [], "owner": false, "complete": false, "owner_approval": "awaiting_owner", "blockers": ["at least two distinct independent reviewers required", "missing independent roles: factual, privacy"]},
+    "factual": {"reviews": ["factual"], "owner": false, "complete": false, "owner_approval": "awaiting_owner", "blockers": ["at least two distinct independent reviewers required", "missing independent roles: privacy"]},
+    "privacy": {"reviews": ["factual", "privacy"], "owner": false, "complete": true, "owner_approval": "awaiting_owner", "blockers": []},
+    "owner": {"reviews": ["factual", "privacy"], "owner": true, "complete": true, "owner_approval": "approved", "blockers": []},
+    "challenge": {"reviews": ["factual", "privacy", "challenge"], "owner": true, "complete": false, "owner_approval": "awaiting_owner", "blockers": ["owner_approval_review_set_changed", "unresolved reviewer challenge or block"]}
+  },
+  "malformed": [
+    {"id": "null-role", "changes": {"role": null}, "error": "review_role"},
+    {"id": "missing-coverage", "changes": {"coverage": []}, "error": "exact_receipt_coverage_required"},
+    {"id": "bad-time", "changes": {"reviewed_at": "2026-01-01"}, "error": "review_evidence_required"},
+    {"id": "missing-primary", "changes": {"reviewed_primary": false}, "error": "review_evidence_required"}
+  ],
+  "required_dimensions": [
+    "root-one:create", "root-one:factual", "root-one:privacy", "root-one:owner", "root-one:challenge",
+    "root-two:create", "root-two:factual", "root-two:privacy", "root-two:owner", "root-two:challenge",
+    "replay:create", "replay:factual", "replay:privacy", "replay:owner", "replay:challenge",
+    "negative:challenge-hidden", "negative:real-inventory-restored", "negative:stale-owner",
+    "boundary:owner-at-create", "boundary:owner-at-factual",
+    "malformed:null-role", "malformed:missing-coverage", "malformed:bad-time", "malformed:missing-primary"
+  ]
+}

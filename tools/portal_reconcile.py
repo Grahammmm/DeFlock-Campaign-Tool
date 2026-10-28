@@ -46,8 +46,12 @@ Held classes are decided before any queue lookup, so a held pointer is never
 reported as fetched even when a queue row with the same identity exists.
 Malformed rows are counted by reason and never silently dropped. Duplicate
 observations of the same URL are counted once; conflicting duplicates are
-counted as conflicting URLs. Output is canonical JSON (sorted keys, no
-timestamps), so identical inputs give byte-identical output.
+counted as conflicting URLs. A malformed row whose url_sha256 is itself well
+formed taints that URL: if the URL also has a fully valid observation it is a
+conflicting URL and is not classified. Malformed-only URLs are not counted as
+unique URLs, and malformed rows never supply host policy or identity. Output
+is canonical JSON (sorted keys, no timestamps), so identical inputs give
+byte-identical output.
 
 This tool reads two files and writes one new file or stdout. It opens no
 network connection, database, mailbox, ledger, allowlist or queue store.
@@ -123,8 +127,28 @@ class InputError(Exception):
     """Fatal input problem; the message is a fixed code, never input text."""
 
 
+def _pairs_recorder(duplicates):
+    """Return a json object_pairs_hook that notes any repeated member name.
+
+    The standard decoder keeps the last of repeated names, so a row such as
+    {"allowlisted": false, "allowlisted": true} would silently read as
+    allowlisted. Repeats (even with identical values) are recorded here and
+    refused by read_json once the whole document has decoded.
+    """
+    def hook(pairs):
+        document = dict(pairs)
+        if len(document) != len(pairs):
+            duplicates.append(True)
+        return document
+    return hook
+
+
 def read_json(path, schema, list_key):
-    """Read one bounded regular JSON file; refuse symlinks and FIFOs."""
+    """Read one bounded regular JSON file; refuse symlinks and FIFOs.
+
+    Any object anywhere in the file that repeats a member name is refused
+    (duplicate_json_key) before the schema or rows are looked at.
+    """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
@@ -141,10 +165,13 @@ def read_json(path, schema, list_key):
         os.close(fd)
     if len(raw) > MAX_INPUT_BYTES:
         raise InputError("input_too_large")
+    duplicates = []
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_recorder(duplicates))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise InputError("input_not_json") from None
+    if duplicates:
+        raise InputError("duplicate_json_key")
     if not isinstance(document, dict) or document.get("schema") != schema:
         raise InputError("input_schema_mismatch")
     rows = document.get(list_key)
@@ -261,29 +288,74 @@ MALFORMED_CODES = frozenset({
 })
 
 
+def _declared_url_sha256(row):
+    """The row's url_sha256 when it is syntactically valid, whatever the other fields hold; else None."""
+    if not isinstance(row, dict):
+        return None
+    value = row.get("url_sha256")
+    if isinstance(value, str) and SHA256.fullmatch(value):
+        return value
+    return None
+
+
 def _count(mapping, key, amount=1):
     mapping[key] = mapping.get(key, 0) + amount
 
 
+def _queue_identity(row):
+    """Return the row's (host, request_id, item_id) when each field is valid
+    on its own, independent of the rest of the row; otherwise None.
+
+    A missing or invalid identity field is never inferred or repaired.
+    """
+    try:
+        if not isinstance(row, dict):
+            return None
+        hostname(row.get("host"))
+        identifier(row.get("request_id"))
+        identifier(row.get("item_id"))
+        return (row["host"], row["request_id"], row["item_id"])
+    except Exception:  # noqa: BLE001 - any identity failure means "unidentifiable"
+        return None
+
+
 def build_queue(rows):
+    """Return (items, ambiguous identities, malformed reason counts, malformed row count).
+
+    Identities are collected before row-content validation, so a row that is
+    malformed outside its identity fields still occupies its identity. Any
+    identity seen more than once is withheld from items and marked ambiguous,
+    whatever the validity of its rows. malformed_rows counts each intrinsically
+    invalid row once plus the surplus fully valid rows of each identity group;
+    duplicate_identity (group size minus one) is an overlap diagnostic.
+    """
     malformed = {}
-    seen = {}
+    invalid_rows = 0
+    groups = {}  # identity -> [valid entries, invalid row count]
     for row in rows:
+        identity = _queue_identity(row)
         normalized, code = _normalized(normalize_queue_row, row)
         if normalized is None:
             _count(malformed, code)
+            invalid_rows += 1
+            if identity is not None:
+                groups.setdefault(identity, [[], 0])[1] += 1
             continue
         identity, state, has_version, reason = normalized
-        seen.setdefault(identity, []).append((state, has_version, reason))
+        groups.setdefault(identity, [[], 0])[0].append((state, has_version, reason))
     items = {}
     ambiguous = set()
-    for identity, entries in seen.items():
-        if len(entries) > 1:
-            _count(malformed, "duplicate_identity", len(entries) - 1)
+    surplus_valid = 0
+    for identity, (entries, invalid) in groups.items():
+        size = len(entries) + invalid
+        if size > 1:
+            _count(malformed, "duplicate_identity", size - 1)
             ambiguous.add(identity)
+            surplus_valid += max(len(entries) - 1, 0)
             continue
-        items[identity] = entries[0]
-    return items, ambiguous, malformed
+        if entries:
+            items[identity] = entries[0]
+    return items, ambiguous, malformed, invalid_rows + surplus_valid
 
 
 def classify(observation, items, ambiguous):
@@ -317,16 +389,22 @@ def classify(observation, items, ambiguous):
 
 
 def reconcile(observation_rows, queue_rows):
-    items, ambiguous, queue_malformed = build_queue(queue_rows)
+    items, ambiguous, queue_malformed, queue_malformed_rows = build_queue(queue_rows)
 
     malformed = {}
     duplicates = 0
     by_url = {}
     conflicting = set()
+    tainted = set()
     for row in observation_rows:
         observation, code = _normalized(normalize_observation, row)
         if observation is None:
             _count(malformed, code)
+            # A malformed row still declares its URL when the hash itself is
+            # well formed; it never contributes host policy or identity.
+            declared = _declared_url_sha256(row)
+            if declared is not None:
+                tainted.add(declared)
             continue
         previous = by_url.get(observation[0])
         if previous is None:
@@ -336,6 +414,9 @@ def reconcile(observation_rows, queue_rows):
         else:
             duplicates += 1
             conflicting.add(observation[0])
+    # A URL with a fully valid observation and a malformed one is conflicting
+    # and stays unclassified. Malformed-only URLs are not unique URLs.
+    conflicting.update(tainted.intersection(by_url))
 
     classes = {name: 0 for name in CLASSES}
     by_host_class = {name: {cls: 0 for cls in CLASSES} for name in sorted(HOST_CLASSES)}
@@ -401,7 +482,7 @@ def reconcile(observation_rows, queue_rows):
         },
         "queue": {
             "rows": len(queue_rows),
-            "malformed_rows": sum(queue_malformed.values()),
+            "malformed_rows": queue_malformed_rows,
             "malformed_reasons": dict(sorted(queue_malformed.items())),
             "items": len(items),
             "ambiguous_identities": len(ambiguous),
@@ -418,13 +499,29 @@ def render(report):
     return json.dumps(report, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
 
 
+def _sync_parent(path):
+    """Confirm the new report name's containing directory is durable."""
+    fd = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_new(path, text):
-    """Create a new 0600 file; never overwrite or follow a symlink."""
+    """Exclusively create a 0600 report and sync both its bytes and name.
+
+    OSError propagates on failure. A complete but not durability-confirmed
+    file may remain after directory sync fails; it is never removed or reused.
+    A same-name retry still refuses, so the caller must inspect the residue or
+    explicitly choose a different output name. No parent directory is created.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="ascii") as handle:
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
+    _sync_parent(path)
 
 
 class _CodedArgumentParser(argparse.ArgumentParser):
