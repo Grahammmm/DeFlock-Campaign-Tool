@@ -1,0 +1,80 @@
+{
+  "schema": "fc11-digest-identities/v1",
+  "synthetic_only": true,
+  "note": "Fictional digest inputs. The valid root hash is the sha256 of original_text, derived at test time; no real record is used. Every malformed token is the valid token changed by exactly one listed operation.",
+  "base": {
+    "original_text": "Fictional synthetic original for the FC11 digest identity experiment.",
+    "jurisdiction": "us-ca",
+    "law_package_version": "fictional-package-1",
+    "privacy_tier": "strict_local",
+    "detector_version": "fictional-detector-1"
+  },
+  "populated": {
+    "model_id": "fictional-model",
+    "scope": "Fictional retention policy scope",
+    "actors": ["Fictional agency"],
+    "dates": [{"date": "2026-01-01", "locator": {"unit": 1}, "note": "fictional"}],
+    "statements": [{"text": "A fictional retention statement.", "locator": {"unit": 1}}],
+    "conclusions": [{"text": "A fictional verified observation.", "confidence": "verified",
+                     "locator": {"unit": 1}, "rule_id": null}]
+  },
+  "other_original_text": "A different fictional original used only for the mismatch control.",
+  "hash_targets": {
+    "root": {"where": "$.sha256", "doc": "otherwise-valid empty digest with a malformed root hash"},
+    "pair": {"where": "$.sha256", "doc": "populated digest whose root and conclusion source carry the SAME malformed hash, so the original-binding gate cannot mask grammar acceptance"},
+    "source": {"where": "$.sha256", "doc": "the real conclusion SOURCE schema validated directly with a malformed hash"}
+  },
+  "jurisdiction_target": {"where": "$.jurisdiction", "doc": "otherwise-valid empty digest with a malformed jurisdiction"},
+  "hash_mutations": [
+    {"id": "lf", "dimension": "lf", "op": "suffix", "text": "\n", "new_gate": true},
+    {"id": "cr", "dimension": "cr", "op": "suffix", "text": "\r", "new_gate": false},
+    {"id": "crlf", "dimension": "crlf", "op": "suffix", "text": "\r\n", "new_gate": false},
+    {"id": "space_suffix", "dimension": "space", "op": "suffix", "text": " ", "new_gate": false},
+    {"id": "space_prefix", "dimension": "space", "op": "prefix", "text": " ", "new_gate": false},
+    {"id": "tab_suffix", "dimension": "tab", "op": "suffix", "text": "\t", "new_gate": false},
+    {"id": "lf_prefix", "dimension": "prefix_junk", "op": "prefix", "text": "\n", "new_gate": false},
+    {"id": "letter_prefix", "dimension": "prefix_junk", "op": "prefix", "text": "x", "new_gate": false},
+    {"id": "letter_suffix", "dimension": "suffix_junk", "op": "suffix", "text": "z", "new_gate": false},
+    {"id": "nul_suffix", "dimension": "suffix_junk", "op": "suffix", "text": "\u0000", "new_gate": false},
+    {"id": "upper_all", "dimension": "uppercase", "op": "upper", "new_gate": false},
+    {"id": "short_63", "dimension": "wrong_length", "op": "drop_last", "new_gate": false},
+    {"id": "long_65", "dimension": "wrong_length", "op": "suffix", "text": "0", "new_gate": false},
+    {"id": "empty", "dimension": "wrong_length", "op": "literal", "text": "", "new_gate": false},
+    {"id": "fullwidth_zero", "dimension": "non_ascii_lookalike", "op": "replace_last", "text": "\uff10", "new_gate": false},
+    {"id": "arabic_indic_one", "dimension": "non_ascii_lookalike", "op": "replace_last", "text": "\u0661", "new_gate": false},
+    {"id": "cyrillic_a", "dimension": "non_ascii_lookalike", "op": "replace_last", "text": "\u0430", "new_gate": false}
+  ],
+  "jurisdiction_mutations": [
+    {"id": "lf", "dimension": "lf", "op": "suffix", "text": "\n", "new_gate": true},
+    {"id": "cr", "dimension": "cr", "op": "suffix", "text": "\r", "new_gate": false},
+    {"id": "crlf", "dimension": "crlf", "op": "suffix", "text": "\r\n", "new_gate": false},
+    {"id": "space_suffix", "dimension": "space", "op": "suffix", "text": " ", "new_gate": false},
+    {"id": "space_prefix", "dimension": "space", "op": "prefix", "text": " ", "new_gate": false},
+    {"id": "tab_suffix", "dimension": "tab", "op": "suffix", "text": "\t", "new_gate": false},
+    {"id": "lf_prefix", "dimension": "prefix_junk", "op": "prefix", "text": "\n", "new_gate": false},
+    {"id": "letter_prefix", "dimension": "prefix_junk", "op": "prefix", "text": "x", "new_gate": false},
+    {"id": "letter_suffix", "dimension": "suffix_junk", "op": "suffix", "text": "x", "new_gate": false},
+    {"id": "path_suffix", "dimension": "suffix_junk", "op": "suffix", "text": "/x", "new_gate": false},
+    {"id": "upper_all", "dimension": "uppercase", "op": "upper", "new_gate": false},
+    {"id": "upper_region", "dimension": "uppercase", "op": "literal", "text": "us-CA", "new_gate": false},
+    {"id": "three_letter_country", "dimension": "wrong_length", "op": "literal", "text": "usa-ca", "new_gate": false},
+    {"id": "one_letter_country", "dimension": "wrong_length", "op": "literal", "text": "u-ca", "new_gate": false},
+    {"id": "three_letter_region", "dimension": "wrong_length", "op": "literal", "text": "us-cal", "new_gate": false},
+    {"id": "no_hyphen", "dimension": "wrong_length", "op": "literal", "text": "usca", "new_gate": false},
+    {"id": "empty", "dimension": "wrong_length", "op": "literal", "text": "", "new_gate": false},
+    {"id": "cyrillic_a", "dimension": "non_ascii_lookalike", "op": "replace_last", "text": "\u0430", "new_gate": false},
+    {"id": "fullwidth_u", "dimension": "non_ascii_lookalike", "op": "literal", "text": "\uff55s-ca", "new_gate": false},
+    {"id": "unicode_hyphen", "dimension": "non_ascii_lookalike", "op": "literal", "text": "us\u2010ca", "new_gate": false}
+  ],
+  "mismatch_control": {"error": "conclusions[0]: source sha256 does not match the digested original"},
+  "confidence": {
+    "accepted": ["verified", "likely", "needs_attorney_review"],
+    "rejected": ["certain", "Verified", "verified\n"],
+    "rejected_error_prefix": "$.conclusions[0].confidence: "
+  },
+  "required_dimensions": ["valid_exact", "lf", "cr", "crlf", "space", "tab", "prefix_junk", "suffix_junk",
+                          "uppercase", "wrong_length", "non_ascii_lookalike", "mismatch_control",
+                          "ordinary_matching_source", "confidence_unchanged", "inputs_unchanged",
+                          "negative_control_killed", "negative_control_restored"],
+  "expected_case_counts": {"hash": 51, "jurisdiction": 20}
+}
