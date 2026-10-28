@@ -80,6 +80,7 @@ class SupportIdentityMatrix(unittest.TestCase):
         bundle = self.ev.bundle(units, {target["original_sha256"]: {"fictional": True}},
                                 [{"original_sha256": target["original_sha256"],
                                   "receipt_sha256": target["receipt_sha256"],
+                                  "attempt_kind": "native",
                                   "declared_unit_count": 3, "normalized_unit_count": 3}])
         if representation == "text_span":
             start = raw["text"].encode().index(f["span_quote"].encode())
