@@ -46,6 +46,9 @@ def offline(root):
 
     def connect(value, *args, **kwargs):
         text = os.fspath(value)
+        # Schema verification uses a private database with no filesystem access.
+        if text == ':memory:':
+            return original_connect(value, *args, **kwargs)
         if text.startswith('file:'):
             from urllib.parse import unquote, urlsplit
             owned(unquote(urlsplit(text).path))
@@ -203,6 +206,18 @@ class ReceiptLineBytesTests(unittest.TestCase):
         for position in (0, 1):
             for key in ('id', 'evidence_sha'):
                 self.assertEqual(len({items[position][key] for _, items in captures}), len(captures))
+
+    def test_database_guard_allows_only_private_memory_or_owned_files(self):
+        with sqlite3.connect(':memory:') as con:
+            self.assertEqual(con.execute('SELECT 1').fetchone(), (1,))
+        outside = self.root.parent / (self.root.name + '-outside.sqlite')
+        for value, uri in ((outside, False),
+                           (outside.as_uri(), True),
+                           (':memory:outside', False)):
+            with self.subTest(value=str(value)):
+                with self.assertRaisesRegex(RuntimeError, 'nonfixture data access'):
+                    sqlite3.connect(value, uri=uri)
+        self.assertFalse(outside.exists())
 
     def test_crlf_oracle_positive(self):
         self.capture('crlf-oracle-positive', self.spans(endings=(b'\r\n', b'\r\n')))
