@@ -121,6 +121,26 @@ class QueueRuntimeTests(unittest.TestCase):
         self.assertEqual(second["cursor_sequence"], 21)
         self.assertEqual(self.claim_count(), 1)
 
+    def test_starvation_priority_cannot_override_cursor_after_restart(self):
+        healthy = self.subjects[-1]
+        self.prepare(healthy)
+        facts = {subject: {"document_type": "policy", "severity3_hits": 2,
+                           "new_production_open_request": True}
+                 for subject in self.subjects if subject != healthy}
+        instance = self.open()
+        first = instance.advance(facts=facts)
+        self.assertEqual(len(first["attempts"]), 20)
+        self.assertEqual({a["subject"] for a in first["attempts"]}, set(facts))
+        self.assertTrue(all(a["state"] == "blocked" and a["reason"] == "current_content_required"
+                            for a in first["attempts"]))
+        instance = self.reopen(instance)
+        second = instance.advance(max_attempts=1, facts=facts)
+        self.assertEqual(len(second["attempts"]), 1)
+        self.assertEqual(second["attempts"][0]["subject"], healthy)
+        self.assertEqual(second["attempts"][0]["state"], "packet_ready")
+        self.assertEqual(second["cursor_sequence"], 21)
+        self.assertEqual(self.claim_count(), 1)
+
     def test_starvation_pending_packet_retries_do_not_hide_healthy_21st(self):
         healthy = self.subjects[-1]
         for subject in self.subjects:
