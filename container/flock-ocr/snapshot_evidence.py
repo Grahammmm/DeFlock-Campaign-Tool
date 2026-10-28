@@ -44,6 +44,21 @@ data. It has three subcommands:
       not a SQLite file or has another hash is an error. Without the flag
       nothing changes.
 
+  survey ROOT [--accept-malformed RELPATH=SHA256 ...]
+      Read-only preflight survey of a LIVE mount (the rootless driver runs it
+      in a helper with the mount read-only, before anything is stopped). No
+      file is hashed except pinned databases. Prints a JSON report: entry and
+      byte counts, space estimates for one tar archive and one extracted copy
+      (space_estimate), special files, entries owned by the overflow ID
+      65534, and every SQLite database with an integrity_check result. A
+      database is opened only as file:...?mode=ro&immutable=1, so SQLite takes
+      no lock, never reads or replays a -wal and never creates a sidecar; a
+      database being written at that moment can therefore read as malformed
+      (a false refusal before any change, never a false pass of S2: the
+      snapshot evidence at S2/A2 still runs on the isolated copy). A pinned
+      database whose bytes hash to its pin is never opened. Exit 0 when the
+      survey completed (findings are in the report), 2 when it could not.
+
 SQLite databases are found by their 16-byte file header, not by name.
 """
 import argparse
@@ -293,6 +308,115 @@ def sqlite_evidence(copy_root, out_dir, live_roots, accepted=None):
             "ok": all(item["ok"] for item in report.values())}
 
 
+TAR_BLOCK, TAR_RECORD, FS_BLOCK = 512, 10240, 4096
+OVERFLOW_ID = "65534"
+
+
+def _round_up(value, unit):
+    return -(-value // unit) * unit
+
+
+def space_estimate(entries):
+    """Upper-bound bytes for one GNU tar archive and one extracted copy of entries.
+
+    entries maps relpath -> {"type", "size"?, "target"?} (a manifest's or a
+    survey's entries). tar, per entry: its 512-byte header, a reserve of two
+    blocks for a pax extended header (--acls/--xattrs), a GNU long-name (and
+    long-link) header plus name blocks when the archived name ("./" + path,
+    "/" for directories) or a symlink target is 100 bytes or longer, and file
+    data padded to 512; then the end-of-archive blocks, rounded up to the
+    10240-byte record. Extract: file data rounded up to 4 KiB blocks plus one
+    block per directory.
+    """
+    def long_name(value):
+        n = len(value.encode())
+        return 0 if n < 100 else TAR_BLOCK * (1 + _round_up(n + 1, TAR_BLOCK) // TAR_BLOCK)
+
+    tar = TAR_BLOCK * 2
+    extract = 0
+    for rel, entry in entries.items():
+        kind = entry.get("type")
+        tar += TAR_BLOCK * 3 + long_name("./" + rel + ("/" if kind == "d" else ""))
+        if kind == "f":
+            size = int(entry.get("size") or 0)
+            tar += _round_up(size, TAR_BLOCK)
+            extract += _round_up(size, FS_BLOCK)
+        elif kind == "d":
+            extract += FS_BLOCK
+        elif kind == "l":
+            tar += long_name(str(entry.get("target") or ""))
+    return {"tar_bytes": _round_up(tar, TAR_RECORD), "extract_bytes": extract}
+
+
+def _integrity_ro(path):
+    """PRAGMA integrity_check on a live file without locks, WAL or sidecars."""
+    uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro&immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        return [row[0] for row in conn.execute("PRAGMA integrity_check")]
+    finally:
+        conn.close()
+
+
+def survey(root, accepted=None):
+    """Read-only preflight survey of a live mount (see the module docstring)."""
+    accepted = dict(accepted or {})
+    entries, special, overflow, databases = {}, {}, [], []
+    total = 0
+    for path, rel in _walk(root):
+        try:
+            info = os.lstat(path)
+        except OSError as error:
+            raise InspectionError(f"cannot stat {rel}: {_why(error)}")
+        kind = _KINDS.get(stat.S_IFMT(info.st_mode), "other")
+        entry: dict = {"type": kind}
+        if OVERFLOW_ID in (str(info.st_uid), str(info.st_gid)):
+            overflow.append(rel)
+        if kind == "other":
+            special[rel] = _SPECIAL.get(stat.S_IFMT(info.st_mode), "unknown")
+        elif kind == "f":
+            entry["size"] = info.st_size
+            total += info.st_size
+            if is_sqlite(path):
+                databases.append((path, rel, info.st_size))
+        elif kind == "l":
+            entry["target"] = os.readlink(path)
+        entries[rel] = entry
+    report, sqlite_bytes, pins = {}, 0, {}
+    for path, rel, size in databases:
+        wal = entries.get(rel + "-wal", {}).get("size", 0)
+        sqlite_bytes += size + wal
+        item = {"size": size, "wal_size": wal}
+        if rel in accepted:
+            try:
+                digest = _sha256(path)
+            except OSError as error:
+                raise InspectionError(f"cannot read {rel}: {_why(error)}")
+            if digest == accepted[rel]:
+                item["status"] = "accepted_malformed"
+                pins[rel] = "accepted"
+                report[rel] = item
+                continue
+            pins[rel] = "hash_differs"
+        try:
+            result = _integrity_ro(path)
+            item["status"] = "ok" if result == ["ok"] else "malformed"
+            if result != ["ok"]:
+                item["detail"] = result[:5]
+        except sqlite3.Error as error:
+            item["status"], item["detail"] = "malformed", [str(error)]
+        report[rel] = item
+    for rel in accepted:
+        if rel not in pins:
+            pins[rel] = "not_sqlite" if entries.get(rel, {}).get("type") == "f" else "absent"
+    estimate = space_estimate(entries)
+    return {"survey_version": 1, "entries": len(entries),
+            "files": sum(e["type"] == "f" for e in entries.values()), "bytes": total,
+            **estimate, "sqlite_bytes": sqlite_bytes, "sqlite": dict(sorted(report.items())),
+            "non_archivable": dict(sorted(special.items())), "overflow_owned": sorted(overflow),
+            "pins": dict(sorted(pins.items()))}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Source-preserving snapshot evidence.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -307,8 +431,14 @@ def main(argv=None):
     p_sqlite.add_argument("--live", action="append", default=[])
     p_sqlite.add_argument("--accept-malformed", action="append", default=[], metavar="RELPATH=SHA256",
                           help="exempt one hash-pinned, intentionally corrupt database (repeatable)")
+    p_survey = sub.add_parser("survey")
+    p_survey.add_argument("root")
+    p_survey.add_argument("--accept-malformed", action="append", default=[], metavar="RELPATH=SHA256")
     args = parser.parse_args(argv)
     try:
+        if args.command == "survey":
+            print(json.dumps(survey(args.root, parse_accepted(args.accept_malformed)), indent=1, sort_keys=True))
+            return 0
         if args.command == "manifest":
             print(json.dumps(manifest(args.root), indent=1, sort_keys=True))
             return 0
