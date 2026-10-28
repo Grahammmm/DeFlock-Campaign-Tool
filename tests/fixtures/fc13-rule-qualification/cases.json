@@ -1,0 +1,47 @@
+{
+  "schema": "fc13-rule-qualification/v1",
+  "authorship": "Independently authored fictional cases by gpt-6.1-sol / openai-codex; producer vocabulary inspected in pinned public core and existing tests, no planner probes copied.",
+  "bindings": ["bound", "unbound"],
+  "version_flags": ["true", "false", "integer_one", "null", "missing"],
+  "applicabilities": ["yes", "no", "unknown", "missing"],
+  "expected_matrix_cases": 280,
+  "detectors": {
+    "search-before-training": {
+      "record_type": "search-log", "event_at": "2020-02-12T12:00:00+00:00",
+      "fields": {"user_id": "fictional-user", "purpose": "fictional incident follow-up"},
+      "parameters": {}, "expected_hits": 1,
+      "training_completed_at": "2020-02-13T12:00:00+00:00"
+    },
+    "purpose-quality": {
+      "record_type": "search-log", "event_at": "2020-02-12T12:00:00+00:00",
+      "fields": {"user_id": "fictional-user", "purpose": "routine"},
+      "parameters": {"generic_reasons": ["routine"]}, "expected_hits": 2
+    },
+    "external-sharing": {
+      "record_type": "sharing-list", "event_at": "2020-02-12T12:00:00+00:00",
+      "fields": {"access_enabled": true, "recipient_level": "federal", "recipient_jurisdiction": "BB"},
+      "parameters": {"home_jurisdiction": "AA"}, "expected_hits": 1
+    },
+    "retention-over-policy": {
+      "record_type": "retention-setting", "event_at": "2020-02-12T12:00:00+00:00",
+      "fields": {"retention_mode": "days", "retention_days": 46},
+      "parameters": {"maximum_days": 45, "unit": "calendar_days"}, "expected_hits": 1
+    },
+    "audit-gap": {
+      "record_type": "audit", "event_at": "2020-02-12T12:00:00+00:00",
+      "fields": {"period_start": "2020-02-01", "period_end": "2020-02-12", "production_complete": true, "audit_dates": []},
+      "parameters": {"frequency_days": 7, "first_due": "2020-02-07"}, "expected_hits": 1
+    },
+    "cpra-deadline": {
+      "record_type": "request", "event_at": "2020-02-01T12:00:00+00:00",
+      "fields": {"request_received": "2020-02-01", "determination_state": "pending", "extension_claimed": false, "production_at": "2020-02-02"},
+      "parameters": {"counting": "calendar", "exclude_received_day": true, "determination_days": 10, "extension_days_max": 14, "reminder_days": 3, "weekend_days": [5, 6], "roll_due": "next_business_day", "extension_allowed_bases": ["fictional-basis"], "extension_notice_deadline": "base_due", "extension_calculation": "from_base_due"},
+      "holiday_table": {"version": "fictional-calendar-v1", "coverage_start": "2020-01-01", "coverage_end": "2020-12-31", "dates": []}, "expected_hits": 1
+    },
+    "volume-anomaly": {
+      "record_type": "search-log", "event_at": "2020-02-12T02:00:00+00:00",
+      "fields": {"user_id": "fictional-user", "purpose": "fictional incident follow-up"},
+      "parameters": {"timezone_offset_minutes": 0, "daily_count_threshold": 20, "off_hours_threshold": 0, "business_hours": [9, 17]}, "expected_hits": 1
+    }
+  }
+}
