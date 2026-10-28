@@ -59,6 +59,21 @@ def valid_sha(value):
     return type(value) is str and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
 
 
+def _unique_members(pairs):
+    # Keys arrive already unescaped, so "hold" and "h\u006fld" compare equal.
+    members = {}
+    for key, value in pairs:
+        if key in members:
+            raise ValueError("duplicate_safety_member")
+        members[key] = value
+    return members
+
+
+def _decode_state(raw):
+    """Saved state with a repeated member at any object depth is ambiguous, never last-wins."""
+    return json.loads(raw, object_pairs_hook=_unique_members)
+
+
 @dataclass(frozen=True)
 class RunSafetyPolicy:
     max_originals: int = 200
@@ -82,7 +97,7 @@ class RunSafety:
             row = con.execute("SELECT value FROM ledger_meta WHERE key=?", (STATE_KEY,)).fetchone()
         if row:
             try:
-                state = json.loads(row[0])
+                state = _decode_state(row[0])
                 if set(state) != set(self.state) or state["schema"] != STATE_KEY:
                     raise ValueError()
                 if state["hold"] is not None and state["hold"] not in ALL_CODES:

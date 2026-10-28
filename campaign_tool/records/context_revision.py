@@ -212,6 +212,15 @@ def invalidation_plan(previous, current):
             "revision_sha256": current["revision_sha256"]}
 
 
+def _snapshot(result):
+    """Detached JSON copy: no mutable descendant is shared with inputs or other results.
+
+    Validated with the same strict canonical rules; key order is preserved.
+    """
+    canonical(result)
+    return json.loads(json.dumps(result, ensure_ascii=True, allow_nan=False))
+
+
 def resolve_applicability(rule_id, rules, context, bases=()):
     """Resolve one duty family, conservatively, using source-bound sidecar bases.
 
@@ -234,7 +243,7 @@ def resolve_applicability(rule_id, rules, context, bases=()):
               "context_sha256": context_hash, "rule_revision_sha256": None,
               "event_role": None, "event_period": None, "reasons": []}
     if not candidates:
-        return {**result, "reasons": ["rule_version_missing"]}
+        return _snapshot({**result, "reasons": ["rule_version_missing"]})
     covering, excluded, gaps, roles = [], [], [], set()
     for revision, rule in sorted(candidates.items()):
         matching = [b for b in bases if isinstance(b, dict) and
@@ -295,17 +304,18 @@ def resolve_applicability(rule_id, rules, context, bases=()):
     if len(covering) > 1:
         gaps.append("overlapping_rule_versions")
     if gaps:
-        return {**result, "reasons": sorted(set(gaps))}
+        return _snapshot({**result, "reasons": sorted(set(gaps))})
     if not covering:
-        return {**result, "reasons": ["historical_version_or_coverage_unresolved"],
-                "excluded_revision_sha256s": excluded}
+        return _snapshot({**result, "reasons": ["historical_version_or_coverage_unresolved"],
+                          "excluded_revision_sha256s": excluded})
     revision, basis, period = covering[0]
     applies = basis["scope"] == "applies"
-    return {**result, "classification": "LEGAL_REVIEW_REQUIRED" if applies else "NOT_APPLICABLE",
-            "applicability": "applies" if applies else "does_not_apply",
-            "rule_revision_sha256": revision, "event_role": basis["event_role"],
-            "event_period": period, "basis_sha256": fingerprint(basis),
-            "reasons": ["source_bound_scope_requires_legal_review" if applies else "source_bound_scope_exclusion"]}
+    return _snapshot({**result, "classification": "LEGAL_REVIEW_REQUIRED" if applies else "NOT_APPLICABLE",
+                      "applicability": "applies" if applies else "does_not_apply",
+                      "rule_revision_sha256": revision, "event_role": basis["event_role"],
+                      "event_period": period, "basis_sha256": fingerprint(basis),
+                      "reasons": ["source_bound_scope_requires_legal_review" if applies
+                                  else "source_bound_scope_exclusion"]})
 
 
 def compare_applicability(duty_ids, rules, context, bases=()):

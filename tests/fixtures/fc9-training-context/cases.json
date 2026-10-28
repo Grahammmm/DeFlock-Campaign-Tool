@@ -1,0 +1,31 @@
+{
+  "schema": "fc9-training-context/v1",
+  "synthetic_only": true,
+  "agency": "synthetic-fc9-agency",
+  "user": "synthetic-fc9-user",
+  "search_at": "2020-06-15T12:00:00+00:00",
+  "completion_values": {
+    "before": "2020-06-15T11:59:59+00:00",
+    "equal": "2020-06-15T12:00:00+00:00",
+    "after": "2020-06-15T12:00:01+00:00",
+    "later": "2020-06-16T12:00:00+00:00"
+  },
+  "cases": [
+    {"id": "before_equal_after", "rosters": ["before", "equal", "after"], "earliest": "2020-06-15T11:59:59+00:00", "hits": 0},
+    {"id": "before_after", "rosters": ["before", "after"], "earliest": "2020-06-15T11:59:59+00:00", "hits": 0},
+    {"id": "equal_after", "rosters": ["equal", "after"], "earliest": "2020-06-15T12:00:00+00:00", "hits": 0},
+    {"id": "after_later", "rosters": ["after", "later"], "earliest": "2020-06-15T12:00:01+00:00", "hits": 1},
+    {"id": "conflicting_duplicate", "rosters": ["before", "after"], "extra": "conflict", "reason": "training_context_invalid"},
+    {"id": "missing_key", "rosters": ["before", "after"], "extra": "missing_key", "reason": "field_training_completed_at_missing"},
+    {"id": "missing_state", "rosters": ["before", "after"], "extra": "missing_state", "reason": "field_training_completed_at_missing"},
+    {"id": "null_value", "rosters": ["before", "after"], "extra": "null_value", "reason": "field_training_completed_at_missing"},
+    {"id": "redacted_state", "rosters": ["before", "after"], "extra": "redacted_state", "reason": "field_training_completed_at_redacted"},
+    {"id": "redacted_literal", "rosters": ["before", "after"], "extra": "redacted_literal", "reason": "field_training_completed_at_redacted"},
+    {"id": "blank_value", "rosters": ["before", "after"], "extra": "blank_value", "reason": "field_training_completed_at_blank"},
+    {"id": "invalid_timestamp", "rosters": ["before", "after"], "extra": "invalid_timestamp", "reason": "event_time_invalid"},
+    {"id": "invalid_type", "rosters": ["before", "after"], "extra": "invalid_type", "reason": "field_training_completed_at_type"},
+    {"id": "timezone_missing", "rosters": ["before", "after"], "extra": "timezone_missing", "reason": "event_timezone_missing"},
+    {"id": "other_user_invalid", "rosters": ["after", "later"], "extra": "other_user_invalid", "earliest": "2020-06-15T12:00:01+00:00", "hits": 1}
+  ],
+  "controls": ["latest_instead_of_earliest", "skip_matching_validity"]
+}

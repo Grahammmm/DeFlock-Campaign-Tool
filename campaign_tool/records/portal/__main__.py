@@ -13,6 +13,9 @@ def main(argv=None, *, transport=None, egress=None, ledger=None):
     sub=parser.add_subparsers(dest="command",required=True)
     inventory=sub.add_parser("inventory")
     inventory.add_argument("--input",required=True,help="Private JSON array of hash-bound notice links")
+    intake=sub.add_parser("intake")
+    intake.add_argument("--input",required=True,help="Private JSON array of mail-delta notices {body,request_id,source_sha256}")
+    intake.add_argument("--approval-file",required=True,help="root-owned administrator allowlist (read only)")
     sub.add_parser("status")
     fetch=sub.add_parser("fetch")
     fetch.add_argument("--apply",action="store_true")
@@ -37,6 +40,20 @@ def main(argv=None, *, transport=None, egress=None, ledger=None):
                 # Untrusted notice payloads cannot opt themselves into refresh.
                 queue.inventory(**row)
             result=queue.status()
+        elif args.command=="intake":
+            with open(args.input,"rb") as stream:
+                raw=stream.read(16*1024*1024+1)
+            if len(raw)>16*1024*1024:
+                raise PortalError("intake_oversize")
+            rows=json.loads(raw)
+            if not isinstance(rows,list) or len(rows)>1000:
+                raise PortalError("intake_invalid")
+            from .intake import intake_notices
+            # Read-only: this path never opens the allowlist for writing.
+            loader=lambda:load_approval(args.approval_file)
+            outcome=intake_notices(queue,notices=rows,approval_loader=loader)
+            result={"enrolled":outcome["enrolled"],"refused":outcome["refused"],
+                    "skipped":outcome["skipped"],"status":queue.status()}
         elif args.command=="status":
             result=queue.status()
         else:

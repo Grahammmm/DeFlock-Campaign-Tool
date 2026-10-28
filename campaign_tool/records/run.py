@@ -146,16 +146,27 @@ class Root:
 
 
 class Pipeline:
+    # Per-child OCR limits (None: the parse timeout, as before) and the per-document wall-clock
+    # budget (None: no budget). The records run extract stage sets the budget per document
+    # (native_extract.extract_one); see extraction_routes.extract. Class defaults keep
+    # partially constructed pipelines (tests, subclasses) on the unbudgeted path.
+    ocr_page_timeout = ocr_vision_timeout = document_budget = None
+
     def __init__(self, root, *, jurisdiction="us-ca", account="local", model=None, challenge=None,
                  redaction_allowlist=(), redaction_denylist=(), event_date=None, opener=None,
-                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180, native_workbook_policy=None):
+                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180, native_workbook_policy=None,
+                 ocr_vision=None, ocr_page_timeout=None, ocr_vision_timeout=None):
         self.root = Root(root).prepare()
         self.jurisdiction, self.account = jurisdiction, account
         self.model, self.challenge, self.opener = model, challenge, opener
         self.allowlist, self.denylist = tuple(redaction_allowlist), tuple(redaction_denylist)
         self.event_date = event_date
         self.ocr_tools, self.ocr_tool_signature = ocr_tools, ocr_tool_signature
+        if ocr_vision is not None and not ocr_tools:
+            raise ValueError("ocr_vision_requires_ocr_tools")
+        self.ocr_vision = ocr_vision
         self.extraction_timeout = extraction_timeout
+        self.ocr_page_timeout, self.ocr_vision_timeout = ocr_page_timeout, ocr_vision_timeout
         self.native_workbook_policy = native_workbook_policy
         self.package = load_package(jurisdiction)
         self.config = {"engine": ENGINE, "version": __version__, "jurisdiction": jurisdiction,
@@ -166,6 +177,8 @@ class Pipeline:
                        "model_id": model.model_id if model else None,
                        "challenge_model_id": challenge.model.model_id if challenge else None,
                        "ocr": bool(ocr_tools)}
+        if ocr_vision is not None:
+            self.config["ocr_vision"] = {key: ocr_vision[key] for key in ("engine", "model", "signature")}
         if native_workbook_policy is not None:
             from .workbook_policy import NativeWorkbookPolicy
             if type(native_workbook_policy) is not NativeWorkbookPolicy:
@@ -241,6 +254,46 @@ class Pipeline:
                                              "preserved": report["preserved"], "failures": report["failures"]})
         return report
 
+    def ingest_exports(self, exports):
+        """Explicit bounded legacy receipts; no mailbox/configuration access."""
+        from .export_bridge import enroll_export
+        require_root_lock(self.root.path)
+        if not isinstance(exports, dict) or set(exports) != {"root", "receipts", "inventory"}:
+            raise RunError("invalid_export_selection")
+        receipts = exports["receipts"]
+        inventory = exports["inventory"]
+        if not isinstance(receipts, (list, tuple)) or not 1 <= len(receipts) <= 60:
+            raise RunError("export_receipt_bound")
+        if inventory.queue.root != self.root.path / "portal":
+            raise RunError("export_inventory_root_mismatch")
+        backend = CanonicalMailBackend(Path(os.path.abspath(exports["root"])), self.root.intake, self.root.ledger)
+        identity = self._identity()
+        identity["run_id"] = "export-" + self.run_id
+        backend.start_run(identity)
+        report = {"messages": len(receipts), "preserved": [], "replayed": [], "failures": [], "events": []}
+        try:
+            for receipt in receipts:
+                try:
+                    from .intake import mail_delta
+                    path = mail_delta.source_path(backend.mail_root, str(receipt), backend.output)
+                    _, scope, _ = mail_delta.load_receipt(path)
+                    seen = self._query("SELECT id FROM mail_messages WHERE account=? AND folder=? AND uidvalidity=? AND uid=?",
+                                       (scope[0], scope[1], int(scope[2]), int(scope[3])))
+                    value = enroll_export(path, export_root=backend.mail_root, backend=backend, inventory=inventory)
+                    entry = {"event": value.message_id, "eml_sha256": value.eml_sha256, "documents": list(value.documents)}
+                    report["replayed" if seen else "preserved"].append(entry)
+                    report["events"].append(inventory.readiness(value.message_id))
+                except Exception:
+                    # Never place private paths, account names, URLs or arbitrary
+                    # exception text in the run report.
+                    report["failures"].append({"detail": "export_enrollment_or_discovery_failed"})
+            backend.finish_run(identity, "completed_with_gaps" if report["failures"] else "slice_completed",
+                               {"messages": len(receipts), "failures": len(report["failures"])})
+        except BaseException:
+            backend.finish_run(identity, "failed", {"messages": len(receipts)})
+            raise
+        return report
+
     # ----- stage runner ------------------------------------------------------------------
     def _open_stage_run(self):
         if self._stage is not None:
@@ -288,6 +341,12 @@ class Pipeline:
             con.execute("INSERT INTO alerts(id,key,first_seen,last_seen,count,owner,state) VALUES(?,?,?,?,1,?,'open') "
                         "ON CONFLICT(key) DO UPDATE SET last_seen=excluded.last_seen,count=alerts.count+1,state='open'",
                         (sha(key.encode())[:32], key, stamp, stamp, owner))
+            con.commit()
+
+    def _resolve_alert(self, key):
+        """Mark one open keyed alert resolved (a later repeat reopens it via ``_alert``)."""
+        with store.ledger(self.root.ledger) as con:
+            con.execute("UPDATE alerts SET state='resolved',last_seen=? WHERE key=? AND state='open'", (now(), key))
             con.commit()
 
     def subjects(self):
@@ -421,7 +480,15 @@ class Pipeline:
                 raise RunError("local_acquisition_method_unsupported")
             receipt = evidence.get("export_receipt_path")
             if receipt and Path(receipt).exists():
-                forms = eml_export.attachment_forms(Path(receipt))
+                if (Path(receipt).parent.parent / "objects").is_dir():
+                    forms = eml_export.attachment_forms(Path(receipt))
+                else:
+                    # Pre-T4 identities bind export_receipt_path to the intake verification
+                    # copy of the receipt, so its objects are not beside it. Name the format
+                    # from the receipt entry and the canonical original's (same) bytes.
+                    with intake_folder.secure_open(original["storage_path"]) as source:
+                        head = source.read(16384)
+                    forms = eml_export.attachment_forms(Path(receipt), heads={subject: head})
                 if subject in forms:
                     return forms[subject]
         with intake_folder.secure_open(original["storage_path"]) as source:
@@ -457,16 +524,36 @@ class Pipeline:
         ocr_root = self.root.sub("ocr") if self.ocr_tools else None
         result = extraction_routes.extract(original["storage_path"], subject, self.root.sub("extract"), form=form,
                                            timeout=self.extraction_timeout, ocr_output_root=ocr_root,
-                                           ocr_tools=self.ocr_tools, tool_signature=self.ocr_tool_signature)
+                                           ocr_tools=self.ocr_tools, tool_signature=self.ocr_tool_signature,
+                                           ocr_vision=self.ocr_vision, document_budget=self.document_budget,
+                                           ocr_page_timeout=self.ocr_page_timeout,
+                                           ocr_vision_timeout=self.ocr_vision_timeout)
         receipt = Path(result["run_path"]) / "extraction.json"
         codes = [i.get("code", "?") for i in result.get("issues", [])]
-        if result["status"] == "blocked" or (result["status"] == "partial" and not result.get("ocr_receipts")):
-            # Not acceptable yet (no decoder, timeout, or image-only pages with no OCR runtime).
-            # Record a keyed alert so the gap is visible in `records status`; nothing is faked.
+        # The per-document budget ran out during OCR (extraction_timeout with page progress):
+        # carried to the caller; it is no failure attempt when pages progressed (see below).
+        progress = next((i for i in result.get("issues", []) if i.get("code") == "extraction_timeout"
+                         and type(i.get("ocr_pages_done")) is int), None)
+        # A plain workbook is "partial" by construction (the reader hold below). It may go on to
+        # enrollment only when trusted startup loaded the native workbook policy; the installed
+        # extraction check then qualifies it under that policy or refuses it. Nothing is waived here.
+        workbook = (form == "xlsx" and self.native_workbook_policy is not None and result["status"] == "partial"
+                    and codes == ["workbook_cached_values_and_objects_not_reviewed"] and not result.get("ocr_receipts"))
+        if result["status"] != "complete" and not workbook and not (result["status"] == "partial" and result.get("ocr_receipts")):
+            # Not acceptable yet (no decoder, a parser failure on a damaged file, timeout, or
+            # image-only pages with no OCR runtime). Record a keyed alert so the gap is visible
+            # in `records status`; nothing is faked and nothing unacceptable is enrolled.
             reason = "extraction_" + result["status"] + ":" + ",".join(codes)
-            self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
-            return {"status": "blocked", "reason": reason,
-                    "extraction_gaps": _extraction_report_gaps(subject, result)}
+            blocked = {"status": "blocked", "reason": reason,
+                       "extraction_gaps": _extraction_report_gaps(subject, result)}
+            if progress is not None:
+                blocked.update(ocr_pages_done=progress["ocr_pages_done"],
+                               ocr_pages_pending=list(progress.get("ocr_pages_pending") or []))
+            if progress is None or progress["ocr_pages_done"] < 1:
+                # Page progress under the budget is no failed attempt: no counted alert, so the
+                # document is retried next run and reuses the page receipts already published.
+                self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
+            return blocked
         enrolled = stage["enrollment"].enroll(original_path=Path(original["storage_path"]), receipt_path=receipt,
                                               receipt_sha256=result["receipt_sha256"])
         accepted = stage["extraction"].accept(enrolled["import_id"])
@@ -483,21 +570,42 @@ class Pipeline:
         is_mail = original.get("mime_detected") == "message/rfc822"
         first = next((u for u in units if u["unit_type"] == "email_body"), units[0])
         quote = first["text"].strip()[:400]
-        proof = {"unit_id": first["unit_id"], "source_sha256": subject, "locator": first["locator_text"],
-                 "artifact_sha256": first["artifact_sha256"], "quote": quote}
-        text_blob = " ".join(u["text"] for u in units[:50]).lower()
-        doc_type = "correspondence" if is_mail else next((t for key, t in DOC_TYPE_HINTS if key in text_blob), "other")
+        type_match = None if is_mail else next(
+            ((u, match.start(), kind) for key, kind in DOC_TYPE_HINTS for u in units[:50]
+             if (match := re.search(re.escape(key), u["text"], flags=re.IGNORECASE | re.ASCII))), None)
+        doc_type = "correspondence" if is_mail else type_match[2] if type_match else "other"
         title = headers.get("subject") if is_mail else None
-        if not title:
+        title_unit = next((u for u in units if title and title in u["text"]), None)
+        if title_unit is None:
             title = quote.splitlines()[0][:120] if quote else None
+            title_unit = first
         event = None  # Source-date adapter unavailable; never copy a mail date.
         metadata = {"title": title, "doc_type": doc_type, "summary": quote[:300] or None,
                     "date_from": event, "date_to": event}
         metadata = {k: v for k, v in metadata.items() if v not in (None, "")}
-        field_support = {k: [first["unit_id"]] for k in metadata}
-        metadata["evidence"] = [{"source_sha256": subject, "locator": first["locator_text"]}]
+        field_units = {"title": title_unit, "summary": first,
+                       "doc_type": type_match[0] if type_match else first}
+        field_support = {k: [field_units[k]["unit_id"]] for k in metadata}
+        supports = {}
+        for field in ("summary", "title", "doc_type"):
+            if field not in metadata:
+                continue
+            unit = field_units[field]
+            if field == "doc_type" and not type_match and unit["unit_id"] in supports:
+                continue
+            text = unit["text"]
+            # Keep an exact source substring near the evidence used for this
+            # field, including type hints beyond the first display excerpt.
+            start = type_match[1] if field == "doc_type" and type_match else (
+                text.find(title) if field == "title" else 0)
+            supports[unit["unit_id"]] = {
+                "unit_id": unit["unit_id"], "source_sha256": subject,
+                "locator": unit["locator_text"], "artifact_sha256": unit["artifact_sha256"],
+                "quote": text[max(0, start):max(0, start) + 400]}
+        metadata["evidence"] = [{"source_sha256": subject, "locator": p["locator"]}
+                                for p in supports.values()]
         card = {"schema": "catalog-card-evidence-v1", "subject_sha256": subject, "metadata": metadata,
-                "supports": [proof], "field_support": field_support}
+                "supports": list(supports.values()), "field_support": field_support}
         path = self.root.sub("artifacts") / (subject + "-card.json")
         raw = encoded(card)
         if not path.exists() or path.read_bytes() != raw:
@@ -827,12 +935,20 @@ class Pipeline:
             self._alert("run:lease_recovered:" + subject + ":" + stage, owner="runtime")
         return {"interrupted_runs": dead, "recovered_leases": [list(pair) for pair in leases]}
 
-    def run(self, inbox=None, mail_config=None, *, client_factory=None, documents=None, document_manifest_sha256=None):
+    def run(self, inbox=None, mail_config=None, *, client_factory=None, documents=None, document_manifest_sha256=None,
+            exports=None):
+        from .export_selection import ExportSelection
         if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
             raise RunError('invalid_input_selection')
+        if exports is not None and (inbox or mail_config or documents):
+            raise RunError('invalid_input_selection')
         with root_lock(self.root.path):
+            if type(exports) is ExportSelection:
+                with exports.open(self.root.path) as selected:
+                    return self._run_locked(inbox, mail_config, client_factory=client_factory, documents=documents,
+                                            document_manifest_sha256=document_manifest_sha256, exports=selected)
             return self._run_locked(inbox, mail_config, client_factory=client_factory, documents=documents,
-                                    document_manifest_sha256=document_manifest_sha256)
+                                    document_manifest_sha256=document_manifest_sha256, exports=exports)
 
     def _run_locked(self, *args, **kwargs):
         # Recovery precedes this invocation's run row, so it cannot interrupt itself.
@@ -849,6 +965,7 @@ class Pipeline:
         outcomes = [value for item in report.get("subjects", []) for value in item.get("stages", {}).values()]
         technical = any(value.startswith("error:") for value in outcomes)
         gaps = technical or bool(report.get("intake", {}).get("failures")) or bool((report.get("mailbox") or {}).get("failures"))
+        gaps = gaps or any(not event["retrieval_complete"] for event in report["intake"].get("events", []))
         gaps = gaps or any(value.startswith(("blocked", "pending")) for value in outcomes)
         gaps = gaps or report["review_retirement"]["state"] == "pending"
         status = "failed" if technical else "completed_with_gaps" if gaps else "completed"
@@ -864,12 +981,13 @@ class Pipeline:
         os.chmod(path, 0o600)
         return report
 
-    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None, documents=None, document_manifest_sha256=None):
+    def _run_locked_unchecked(self, inbox, mail_config, *, client_factory=None, documents=None, document_manifest_sha256=None,
+                              exports=None):
         started = now()
         recovery = self.recover()
         self._open_stage_run()
         self._arm_review_retirement()
-        intake = self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
+        intake = self.ingest_exports(exports) if exports is not None else self.ingest_documents(documents, document_manifest_sha256) if documents else self.ingest_inbox(inbox) if inbox else {"messages": 0, "preserved": [], "replayed": [], "failures": []}
         mailbox = self.ingest_mailbox(mail_config, client_factory=client_factory) if mail_config else None
         progress = self.advance_all()
         summary = stages.counts(self.root.ledger)
@@ -976,12 +1094,19 @@ def build_pipeline(args, env=None):
             print("records run: --ocr requested but tesseract/pdftoppm/pypdf are not all installed; "
                   "image-only pages will be held", file=sys.stderr)
     event = date.fromisoformat(args.event_date) if getattr(args, "event_date", None) else None
+    vision_config = getattr(args, "ocr_vision_config", None)
+    ocr_vision = None
+    if vision_config:
+        if ocr_tools is None:
+            raise ValueError("ocr_vision_requires_ocr_tools")
+        from .extract import vision as page_vision
+        ocr_vision = page_vision.load_config(vision_config)
     return Pipeline(args.root, jurisdiction=args.jurisdiction, account=args.account, model=model, challenge=challenge,
                     redaction_allowlist=[x for x in env.get("REDACTION_ALLOWLIST", "").split(",") if x.strip()],
                     redaction_denylist=[x for x in env.get("REDACTION_DENYLIST", "").split(",") if x.strip()],
                     event_date=event, ocr_tools=ocr_tools,
                     ocr_tool_signature=(env.get("OCR_TOOL_SIGNATURE") or ocr_signature) if ocr_tools else None,
-                    extraction_timeout=args.timeout)
+                    extraction_timeout=args.timeout, ocr_vision=ocr_vision)
 
 
 def main(argv=None):
@@ -995,21 +1120,42 @@ def main(argv=None):
                         help="owner-only JSON (0600) naming the IMAP host/account; new messages are fetched and preserved")
     parser.add_argument("--documents", help="read-only flat PDF/XLSX drop")
     parser.add_argument("--document-manifest-sha256")
+    parser.add_argument("--export-root", help="existing local export root; does not fetch mail")
+    parser.add_argument("--export-receipt", action="append", help="explicit receipt path under --export-root; repeat up to 60 times")
+    parser.add_argument("--collection-host", action="append", help="host to classify for collection inventory; does not authorize retrieval")
+    parser.add_argument("--collection-exclude-host", action="append", help="explicit non-record host exclusion for this inventory scope")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date", dest="event_date", help="YYYY-MM-DD override for rule applicability")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--ocr", action="store_true", help="use local tesseract/pdftoppm for image-only PDF pages when installed")
+    parser.add_argument("--ocr-vision-config", dest="ocr_vision_config",
+                        help="with --ocr: owner-only local-vision-config-v1 JSON naming a local vision command for "
+                             "pages Tesseract leaves empty or low confidence")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
+        parser.error('invalid_input_selection')
+    from .export_selection import from_cli
+    try:
+        exports = from_cli(args)
+    except ValueError:
+        parser.error('invalid_export_selection')
     from .runtime import require
     if not require(args.root):
         return 2
-    if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
-        parser.error('invalid_input_selection')
-    pipeline = build_pipeline(args)
+    if args.ocr_vision_config and not args.ocr:
+        parser.error("--ocr-vision-config requires --ocr")
+    try:
+        pipeline = build_pipeline(args)
+    except ValueError as error:
+        if str(error).startswith(("vision_config", "ocr_vision", "vision adapter")):
+            print("records run: " + str(error).split(":")[0], file=sys.stderr)
+            return 2
+        raise
+    selection = {"exports": exports} if exports is not None else {}
     report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
-                          document_manifest_sha256=args.document_manifest_sha256)
+                          document_manifest_sha256=args.document_manifest_sha256, **selection)
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:

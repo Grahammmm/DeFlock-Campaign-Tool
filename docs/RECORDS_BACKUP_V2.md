@@ -41,6 +41,52 @@ Additional real schema adapters and exhaustive semantic inventories are NOT supp
 by this candidate. Profile authors are trusted engine callers, not untrusted JSON.
 SELECT queries are bounded and query-only, not a general untrusted plugin interface.
 
+### Immutable resolution policy closure (T4B S4)
+
+An optional `resolution_policy` file role extends the existing v2 format without
+changing its required baseline roles. Every declared file under
+`resolution-policies/` must be included with this role and an explicit
+`expected_sha256`; the immediate parent must be `resolution-policies` and the
+basename must equal that digest. Excluding, relabelling or failing to pin a policy
+is refused, even before the first resolution row exists. A configured policy is
+represented by an explicit Store declaration; configuration discovery is not
+implemented here. Unknown files/directories still fail the exact inventory.
+
+For each nonempty `original_resolutions` table, a fixed snapshot reader checks the
+installed, unchanged `original_resolution_v1` schema/trigger pin (Option B), payload
+identity and column bindings, independently of caller-supplied closure SELECTs.
+It adds required references for the payload's `blobs/<original-sha>`,
+`resolution-policies/<policy-sha>` and the hash-addressed receipt in the same
+historical output root (`verification-receipts/` for mail, `local-capture-receipts/`
+for local capture). These references must resolve to included stores with the
+correct role, exact historical path and copied hash. Caller SQL cannot silently
+omit these dependencies. Both the historical policy that created a resolution and
+any separately configured successor policy must be retained. Original baseline
+ledger, intake catalog, receipt and review closure requirements remain in force.
+
+The same checks run in `verify_v2` (including release verification of such a set)
+and before `restore_v2` creates its destination. Missing/tampered policies,
+hash/path mismatches and incomplete resolution closure fail without creating a
+restore target or changing originals. All existing owner-only, regular-file,
+no-symlink/no-hardlink rules apply. Restore retains opaque payload names and exact
+manifest bytes; it does not rebuild a runnable `resolution-policies/` directory or
+rebase historical paths. With no configured policies and no resolution rows,
+existing v2 profiles and archives retain their previous behavior. V1 is unchanged.
+
+These are dependency-consistency checks, not semantic approval of a policy,
+verification receipt, occurrence or owner authorization. Other application
+dependencies still require caller completeness review. There is no new apply
+path, adoption-config loader, operational backup adapter or release CLI.
+
+The unattended `run_stages._backup_under_lock` pre-adoption step
+(`backup_adoption_dbs`) snapshots only ledger and intake databases. It is NOT full
+immutable-resolution rollback closure: it does
+not capture CAS, verification receipts or resolution policy bytes. Immutable rows
+cannot be rolled back by deleting/updating them. TEST and live application each
+require separately authorized, independently verified full pre-apply closure
+(ledger, intake catalog, CAS, verification receipts and policies), plus the
+existing owner gates. Passing these fixture tests does not establish such a backup.
+
 CallerQuiescence must cover exactly every declared root, confirm all writers stopped,
 declare independent_all_writer_audit, and reference an independently obtained evidence
 digest with recent UTC observation (120 seconds maximum). The library does not read
@@ -118,7 +164,8 @@ database, receipt and review bytes without rebasing absolute historical paths or
 changing signatures. Restored SQLite files are read-only recovery snapshots, not a
 runnable pipeline. Leases/checkpoints/history are preserved as evidence, not claimed
 live ownership. No review authentication or signature authority is manufactured.
-Trusted keys/policies and path-dependent review reconciliation remain external.
+Trusted keys, policy authorization and path-dependent review reconciliation remain
+external; resolution policy bytes are included as described above.
 
 No activation, sends, deployments, timers or automatic replay. Replay acceptance
 uses a distinct synthetic writable clone created by the test, NOT by restore.
@@ -134,7 +181,7 @@ silently retry into the same destination. No automatic deletion of partial trees
 ## Synthetic tests and review
 
 Run from this candidate root only:
-    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tests/test_records_backup_v2.py
+    python3 -B -W error::ResourceWarning -m unittest tests.test_records_backup_v2 tests.records.test_backup_publication_compatibility tests.records.test_original_reconciliation
 
 Tests use only generated SQLite/files and deny socket.connect in the test process.
 They exercise WAL mechanics, references, hashes, permission/path/link/unknown-store

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "notes": [
+    "Reviewed pins for container/flock-ocr. Change only in a reviewed PR.",
+    "engine.* was produced by running `python3 -B -m campaign_tool.records version --json` in a clean detached checkout of engine.commit (2026-10-20). It is the source inventory the installed wheel must reproduce.",
+    "wheel_sha256 is recorded by the operator from build_wheel.py output (two independent builds must agree byte-for-byte) and passed to preflight.py; it is not invented here.",
+    "expected_versions are matched against the first output line of each command (pdftotext -v prints on stderr).",
+    "engine.package_file_count is len(package_files) of that manifest: the committed files under campaign_tool/ at engine.commit minus the generated manifest members (190 at cc0b8e0). It is not the wheel member count; tests/test_flock_ocr_container.py derives it from the pinned commit's tree."
+  ],
+  "engine": {
+    "commit": "cc0b8e0e8fd2919a447ca93b16ee630587cb5556",
+    "commit_subject": "Merge pull request #167 from Grahammmm/flock/t_df6a1465-t6-fix-ocr-sidecar-ranges",
+    "commit_time_epoch": 1792516722,
+    "tree": "21ad06dedeb3f6915ca82b83dc715c04ade4fdda",
+    "package_name": "deflock-campaign-tool",
+    "package_version": "0.1.0",
+    "wheel_filename": "deflock_campaign_tool-0.1.0-py3-none-any.whl",
+    "manifest_sha256": "d5c62b6524309ba76083b10e62594028af4ef2a080341a26b839e90faafb1551",
+    "dependency_lock_sha256": "8699276a235c5cbe5a091aaf76f9673ff193c91af6b490bdcc9d265a220b8f54",
+    "package_file_count": 190,
+    "ledger_schema_version": 1
+  },
+  "wheel_build": {
+    "requirements": ["setuptools==84.0.0", "wheel==0.48.0"],
+    "command": "python -m pip wheel --no-deps --no-build-isolation --no-index --wheel-dir <out> <clean checkout>",
+    "source_date_epoch": "engine.commit_time_epoch",
+    "independent_builds": 2
+  },
+  "apt": {
+    "tesseract-ocr": "5.3.0-2",
+    "tesseract-ocr-eng": "1:4.1.0-2",
+    "tesseract-ocr-osd": "1:4.1.0-2",
+    "poppler-utils": "22.12.0-2+deb12u3",
+    "qpdf": "11.3.0-1+deb12u1",
+    "libqpdf29": "11.3.0-1+deb12u1",
+    "ocrmypdf": "14.0.1+dfsg1-1",
+    "python3-pikepdf": "6.0.0+dfsg-1+b2",
+    "ghostscript": "10.0.0~dfsg-11+deb12u8",
+    "python3-venv": "3.11.2-1+b1"
+  },
+  "expected_versions": {
+    "ocrmypdf --version": "14.0.1",
+    "pdftotext -v": "pdftotext version 22.12.0",
+    "pdftoppm -v": "pdftoppm version 22.12.0",
+    "qpdf --version": "qpdf version 11.3.0",
+    "tesseract --version": "tesseract 5.3.0"
+  }
+}
