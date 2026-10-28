@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import html
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -84,10 +85,38 @@ def _rows(con, table, columns, *, limit=MAX_ROWS):
     return [dict(row) for row in rows]
 
 
+def _unique_object(pairs):
+    """object_pairs_hook: a repeated member name, at any depth, is ambiguous."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_object_member")
+        result[key] = value
+    return result
+
+
+def _reject_constant(_name):
+    raise ValueError("nonfinite_json_constant")
+
+
+def _finite_float(text):
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("nonfinite_json_number")
+    return value
+
+
+def _strict_loads(value):
+    """Decode JSON with one meaning only: no repeated members, NaN/Infinity or overflow."""
+    return json.loads(value, object_pairs_hook=_unique_object, parse_constant=_reject_constant,
+                      parse_float=_finite_float)
+
+
 def _json(value, code):
     try:
-        result = json.loads(value)
+        result = _strict_loads(value)
     except (TypeError, ValueError) as error:
+        # Hook errors carry fixed codes; the source text is never part of the reason.
         raise CatalogError(code) from error
     return result
 
