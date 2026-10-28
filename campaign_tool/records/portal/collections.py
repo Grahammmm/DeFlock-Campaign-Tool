@@ -61,7 +61,8 @@ def normalized(url):
 class BodyLinks(Links):
     def handle_data(self, data):
         # Insecure HTTP record links are exceptions, never silently invisible.
-        self.urls.extend(re.findall(r'https?://[^\s<>"\']+', data))
+        if not self.in_inert_content:
+            self.urls.extend(re.findall(r'https?://[^\s<>"\']+', data))
 
 
 @dataclass(frozen=True)

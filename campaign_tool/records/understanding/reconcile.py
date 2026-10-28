@@ -49,6 +49,9 @@ def rule_support_bound(req,version,bundle):
  except (ValueError,KeyError,TypeError):return False
  # A span must support the transcribed requirement, not merely share its source.
  return any(req["text"] in c.get("quote","") for c in cites)
+def valid_fact_event_key(key):
+ # A supplied grouping key is an exact string with a non-whitespace character; it is never rewritten.
+ return type(key)is str and key.strip()!=""
 def compare(facts,versions,*,bundle,agency_id,jurisdiction,regulated_role,event_at,request_number=None):
  evidence.validate_bundle(bundle)
  evidence.need(type(facts)is list and len(facts)<=10000,"fact_count_bound")
@@ -58,6 +61,8 @@ def compare(facts,versions,*,bundle,agency_id,jurisdiction,regulated_role,event_
  byfield=defaultdict(list);fact_gaps=[];ids=set()
  for f in facts:
   evidence.need(type(f)is dict and type(f.get("fact_id"))is str and f["fact_id"] not in ids and type(f.get("field"))is str and f["field"],"fact_identity")
+  # Omission alone means request-level; a supplied key is checked before any grouping or sorting.
+  evidence.need("event_key" not in f or valid_fact_event_key(f["event_key"]),"fact_event_key")
   ids.add(f["fact_id"]);cites=f.get("citations")
   if type(cites)is not list or not cites:fact_gaps.append({"fact_id":f["fact_id"],"reason":"fact_uncited"});continue
   try:

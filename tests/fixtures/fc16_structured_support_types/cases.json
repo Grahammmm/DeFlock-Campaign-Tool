@@ -1,0 +1,34 @@
+{
+  "schema": "fc16-structured-support-types/v1",
+  "provenance": {
+    "source": "tests/records/test_structured_detector_pipeline.py:14-56 and tests/records/test_detectors.py:15-68",
+    "shape": "Synthetic normalized record/source envelopes, supplied reviewed rule fields, and in-memory joins/agencies/requests SQL columns. Independently constructed; no operational content.",
+    "authority": "Supplied-evidence triage only; synthetic review flags are not legal acceptance."
+  },
+  "forbidden_types": ["search-log", "sharing-list", "network-search", "retention-setting", "audit", "request"],
+  "allowed_support": ["training-roster", "policy", "contract", "correspondence", "invoice", "denial-or-extension", "other"],
+  "detectors": ["search-before-training", "purpose-quality", "external-sharing", "retention-over-policy", "audit-gap", "cpra-deadline", "volume-anomaly"],
+  "oracle": {
+    "reason": "unrelated_support_record",
+    "status": "blocked",
+    "hits": [],
+    "hit_count": 0,
+    "publication_ready": false,
+    "stage_promotions": 0,
+    "target": "retention-over-policy",
+    "target_status": "evaluated",
+    "target_hit_count": 1,
+    "observed_values_private": {"setting_days": 31, "policy_days": 30},
+    "training_status": "evaluated",
+    "training_hit_count": 1
+  },
+  "matrix": {
+    "forbidden_types": "test_forbidden_types: each type independently, first/last inventory order",
+    "allowed_support": "test_allowed_support: each permitted type; identical retention hits with/without; training also evaluates bound search support",
+    "primary_control": "test_primary_control: every eligible label, valid primary binding and ordinary context outcome",
+    "order_and_failure": "test_order_and_failure: each forbidden type mixed with all permitted peers, first/last inventory order",
+    "immutability": "checked_evaluate: full input canonical bytes, SQL iterdump and total_changes unchanged",
+    "deciding_control": "test_deciding_control: AST-remove only eligible foreign support require; exact assertion fails then genuine retention positive and refusal pass",
+    "coverage": "test_inventory: exact KNOWN_TYPES and TYPES union against frozen independent lists"
+  }
+}
