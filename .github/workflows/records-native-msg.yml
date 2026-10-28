@@ -1,6 +1,5 @@
 name: Records native mail completion
 on:
-  pull_request:
   push:
     branches: [main]
 permissions:
