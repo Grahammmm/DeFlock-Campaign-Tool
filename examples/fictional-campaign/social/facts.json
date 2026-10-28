@@ -33,6 +33,9 @@
       "numbers": [],
       "source_url": "https://example.org/fictional/cedar-audits",
       "source_label": "Fictional example record",
+      "quotes": [
+        "No completed audit reports produced."
+      ],
       "hooks": [
         "The policy promises audits. We asked to see them."
       ],

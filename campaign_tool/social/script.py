@@ -13,7 +13,7 @@ import os
 import re
 import urllib.request
 
-from .facts import numbers_in
+from .facts import numbers_in, quote_is_approved
 
 FORMATS = {
     # name: (beat order, frames it suits)
@@ -89,7 +89,7 @@ def veo_prompt(fact, campaign):
 
 
 def check_script(script, fact, campaign):
-    """Reject a script that adds numbers, banned terms, or overlong lines."""
+    """Reject a script that adds numbers, banned terms, unapproved quotes, or overlong lines."""
     allowed = {n.replace(",", "") for n in fact.numbers} | {n.replace(",", "") for n in campaign.get("always_allowed_numbers", [])}
     problems = []
     texts, cited = [], []
@@ -107,6 +107,11 @@ def check_script(script, fact, campaign):
             if re.search(r"\b" + re.escape(term) + r"\b", text, re.I):
                 problems.append(f"banned term '{term}' in '{text[:60]}'")
     for beat in script["beats"]:
+        # A quote card is shown as "FROM THE RECORDS" and read as "The records say": its words must be an
+        # approved quotation copied from the source, never model-written or paraphrased text.
+        if beat.get("type") == "quote" and not quote_is_approved(beat.get("text", ""), fact):
+            problems.append(f"quote is not an approved source quotation: '{beat.get('text', '')[:60]}'")
+    for beat in script["beats"]:
         if len(beat.get("text", "")) > 140 or len(beat.get("big", "")) > 24 or len(beat.get("say", "")) > 180:
             problems.append(f"beat too long: {beat}")
     if not any(b["type"] == "cta" for b in script["beats"]):
@@ -121,12 +126,14 @@ campaign about license plate reader cameras. Follow the messaging guide. Use ONL
 provided: every number you write must appear in the fact's `numbers`. Don't add claims,
 names of individuals, or legal conclusions that the fact doesn't state. Plain, calm,
 factual tone; no insults, no anti-police framing, no conspiracy language.
+A "quote" beat is shown as words from the records: its text must be one entry of the fact's
+`quotes`, copied exactly. If `quotes` is empty, do not write quote beats.
 
 Return JSON only:
 {"hook": "<= 90 characters, first 2 seconds, curiosity or direct address>",
  "beats": [{"type": "stat", "big": "<number or short figure, <= 12 chars>", "small": "<label <= 90 chars>"} |
            {"type": "line", "text": "<= 110 characters"} |
-           {"type": "quote", "text": "<words from the fact, <= 120 characters>"}],   (2-3 beats)
+           {"type": "quote", "text": "<one entry of the fact's `quotes`, copied exactly>"}],   (2-3 beats)
  "why": "<= 110 characters: why a resident should care>"}"""
 
 
@@ -141,7 +148,8 @@ def llm_script(fact, fmt, campaign, day, guide, api_key=None, model=None):
         "system": LLM_INSTRUCTIONS + "\n\nMESSAGING GUIDE:\n" + guide[:12000],
         "messages": [{"role": "user", "content": json.dumps({
             "format": fmt, "fact": {"agency": fact.agency, "claim": fact.claim, "numbers": fact.numbers,
-                                    "example_hooks": fact.hooks, "example_beats": fact.beats, "why": fact.why}})}],
+                                    "quotes": fact.quotes, "example_hooks": fact.hooks, "example_beats": fact.beats,
+                                    "why": fact.why}})}],
     }
     req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
                                  headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",

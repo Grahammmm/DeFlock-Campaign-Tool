@@ -2,7 +2,9 @@
 
 A fact is a claim the campaign has already published, with its public source.
 The on-screen lines are written from the fact's own wording; `numbers` lists
-every figure a script built on this fact may show.
+every figure a script built on this fact may show. `quotes` lists the exact
+wording, copied from the source record, that a quote card ("FROM THE RECORDS")
+may show; a quote beat whose text is not one of them is rejected.
 """
 import json
 import re
@@ -28,12 +30,28 @@ class Fact:
     visual: str
     weight: float = 1.0
     expires: str = ""
+    quotes: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
 
 def numbers_in(text):
     """Every figure in a text, normalised (commas removed, trailing dots stripped)."""
     return {m.group(0).replace(",", "").rstrip(".") for m in NUMBER.finditer(text or "")}
+
+
+_QUOTE_CHARS = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+
+
+def normalise_quote(text):
+    """Compare quotations ignoring whitespace runs, curly vs straight quotes and enclosing quote marks."""
+    text = " ".join(str(text or "").translate(_QUOTE_CHARS).split())
+    return text.strip('"').strip()
+
+
+def quote_is_approved(text, fact):
+    """True only when `text` is, in full, one of the fact's approved source quotations."""
+    wanted = normalise_quote(text)
+    return bool(wanted) and any(wanted == normalise_quote(q) for q in fact.quotes)
 
 
 def load_facts(path):
@@ -48,6 +66,7 @@ def load_facts(path):
                         frame=raw["frame"], numbers=[str(n) for n in raw.get("numbers", [])],
                         hooks=raw["hooks"], beats=raw["beats"], why=raw["why"], visual=raw["visual"],
                         weight=float(raw.get("weight", 1.0)), expires=raw.get("expires", ""),
+                        quotes=list(raw.get("quotes", [])),
                         extra={k: v for k, v in raw.items() if k not in Fact.__dataclass_fields__})
         except KeyError as missing:
             errors.append(f"{fid}: missing field {missing}")
@@ -80,7 +99,17 @@ def validate_fact(fact):
         extra = numbers_in(text) - allowed
         if extra:
             errors.append(f"{fact.id}: '{text[:50]}' uses numbers {sorted(extra)} not listed in numbers")
+    for quote in fact.quotes:
+        if not isinstance(quote, str) or not normalise_quote(quote):
+            errors.append(f"{fact.id}: quotes must be non-empty strings copied from the source")
+            continue
+        extra = numbers_in(quote) - allowed
+        if extra:
+            errors.append(f"{fact.id}: quote '{quote[:50]}' uses numbers {sorted(extra)} not listed in numbers")
     for beat in fact.beats:
         if beat.get("type") not in {"stat", "line", "quote", "map"}:
             errors.append(f"{fact.id}: beat type {beat.get('type')} unknown")
+        if beat.get("type") == "quote" and not quote_is_approved(beat.get("text", ""), fact):
+            errors.append(f"{fact.id}: quote beat '{beat.get('text', '')[:50]}' is not one of the fact's "
+                          "approved source quotes")
     return errors

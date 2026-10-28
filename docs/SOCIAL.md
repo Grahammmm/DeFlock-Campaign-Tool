@@ -37,7 +37,7 @@ python -m campaign_tool.social daily --campaign <campaign>/social --out out/ --s
 ## Campaign files (`<campaign>/social/`)
 
 - `social.json`: brand colours, `site`, `voice`, call to action (with its spoken `say`), caption parts, map files (with a spoken `say`), Veo style, banned terms.
-- `facts.json`: published claims only, each with `source_url`, the figures it may show (`numbers`), hooks, beats (optionally with `say` and `scene`), a "why it matters" line and a visual description. `check` validates every fact against every format.
+- `facts.json`: published claims only, each with `source_url`, the figures it may show (`numbers`), the exact source wording a quote card may show (`quotes`), hooks, beats (optionally with `say` and `scene`), a "why it matters" line and a visual description. `check` validates every fact against every format.
 - `messaging.md`: the campaign's messaging guide, which the Claude writer reads.
 - `shots/` (optional): pre-rendered 3D shots to seed the library, so the daily job rarely renders.
 
@@ -46,6 +46,9 @@ python -m campaign_tool.social daily --campaign <campaign>/social --out out/ --s
 ## Rules built in
 
 - Only published, sourced facts. The caption quotes the claim and names its source. Spoken lines are checked like on-screen text.
+- A quote card ("FROM THE RECORDS", read as "The records say") must show one of the fact's `quotes` in full, copied from the source. Any other quote text, including a Claude-written one, fails the checks and the template script is used instead.
+- Narration is recorded per beat (`voices` in `script.json`). If any beat fell back to espeak or silence, `POSTING.md` says not to post, even when other beats used an AI voice.
+- Planning, script checks and the checklist import without NumPy or Pillow; only rendering needs `requirements-social.txt` and ffmpeg.
 - The 3D scenes are generic illustrations: no real camera brand, no readable plates, no people, no police. The map scene uses the campaign's own published location data.
 - Nothing is posted automatically. A person watches the video, then posts it.
 

@@ -5,12 +5,13 @@ Instagram's safe area (clear of the top bar and the bottom caption area).
 """
 import json
 import math
-import re
 import subprocess
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+from .timeline import split_number  # noqa: F401  (shared with the v2 renderer)
 
 W, H, FPS = 1080, 1920, 30
 SAFE_X0, SAFE_X1, SAFE_TOP, SAFE_BOTTOM = 90, 990, 300, 1440
@@ -76,14 +77,6 @@ def draw_lines(draw, lines, fnt, y, fill, align="center", spacing=1.18, x0=SAFE_
 
 def block_height(lines, fnt, spacing=1.18):
     return len(lines) * fnt.size * spacing
-
-
-def split_number(big):
-    """'$152,299' -> ('$', 152299, '', True); returns None if not a clean number."""
-    m = re.fullmatch(r"([^\d]*)([\d,]+)([^\d]*)", big.strip())
-    if not m:
-        return None
-    return m.group(1), int(m.group(2).replace(",", "")), m.group(3), "," in m.group(2)
 
 
 def count_text(big, progress):

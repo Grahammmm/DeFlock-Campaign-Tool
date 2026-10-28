@@ -5,7 +5,6 @@ Visuals come from the 3D shot library (Blender), the 2D map, or a fallback clip.
 Every frame gets the same grade (vignette + fine grain), the brand bar with
 deflockslo.com, word-by-word subtitles, and beat-specific graphics.
 """
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,51 +14,12 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from . import sfx
 from .narration import narrate
-from .render import (FPS, H, SAFE_BOTTOM, SAFE_X0, SAFE_X1, W, block_height, count_text, draw_lines, fit, font,
-                     split_number, wrap)
-from .shots import FRAME_SCENES, OPENERS, ensure_shot, shot_params
+from .render import FPS, H, SAFE_BOTTOM, SAFE_X0, SAFE_X1, W, block_height, count_text, draw_lines, fit, font
+from .shots import ensure_shot, shot_params
+# Planning helpers live in the dependency-free timeline module; re-exported for callers of reel.
+from .timeline import beat_scene, spoken, split_number, timed_words, voice_summary  # noqa: F401
 
 GAP = 0.28          # breath after each spoken line
-
-
-# ---------------------------------------------------------------- planning
-def beat_scene(beat, fact, index, day_seed):
-    if beat.get("scene"):
-        return beat["scene"]
-    kind = beat["type"]
-    if kind == "hook":
-        return OPENERS[day_seed % 2]
-    if kind == "map":
-        return "county_pins"
-    if kind == "stat":
-        scene = FRAME_SCENES.get(fact.frame)
-        if scene == "retention_blocks":
-            n = split_number(beat.get("big", ""))
-            # One block per day: only when the figure really is a count of days (not "260×").
-            is_days = beat.get("small", "").lower().startswith("day") and not beat.get("big", "").endswith(("×", "x", "%"))
-            return scene if n and n[1] >= 30 and is_days else OPENERS[(day_seed + 1) % 2]
-        if scene == "network_arcs":
-            n = split_number(beat.get("big", ""))
-            return scene if n and 20 <= n[1] <= 400 else "county_pins"
-        return scene or OPENERS[(day_seed + index) % 2]
-    if kind == "cta":
-        return "county_pins"
-    return OPENERS[(day_seed + index) % 2]
-
-
-def spoken(beat, campaign):
-    if beat.get("say"):
-        return beat["say"]
-    kind = beat["type"]
-    if kind == "stat":
-        return f"{beat['big']}. {beat['small']}."
-    if kind == "map":
-        return f"{beat['big']}. {beat['small']}."
-    if kind == "quote":
-        return f"The records say: {beat['text']}"
-    if kind == "cta":
-        return campaign["cta"].get("say", beat["text"] + ". Sources at " + campaign.get("site", "") + ".")
-    return beat["text"]
 
 
 # ---------------------------------------------------------------- drawing helpers
@@ -196,12 +156,12 @@ class Reel:
         work = Path(tempfile.mkdtemp())
         beats = script["beats"]
         timeline, t0 = [], 0.0
-        voice_used = None
+        voices = []  # provider per beat: a later fallback must stay visible in the metadata
         for i, beat in enumerate(beats):
             say = spoken(beat, self.c)
             wav = work / f"n{i}.wav"
             secs, provider = narrate(say, wav, self.c.get("voice", {}), offline=offline_voice, log=self.log)
-            voice_used = voice_used or provider
+            voices.append(provider)
             dur = max(secs + GAP, 2.2 if beat["type"] != "cta" else 3.4)
             shown = beat.get("text", "") if beat["type"] in ("hook", "line") else ""
             words = timed_words(shown, 0.08, secs) if shown else []
@@ -295,7 +255,7 @@ class Reel:
         enc.stdin.close()
         if enc.wait() != 0:
             raise RuntimeError("ffmpeg encode failed")
-        return {"seconds": round(total, 1), "voice": voice_used,
+        return {"seconds": round(total, 1), "voice": voice_summary(voices), "voices": voices,
                 "scenes": [s["scene"] for s in timeline], "beats": len(timeline)}
 
     def shot_for(self, seg, fact):
@@ -324,18 +284,6 @@ def as_layer(img):
     o = np.asarray(img, dtype=np.float32)
     a = o[..., 3:4] / 255
     return o[..., :3] * a, 1 - a
-
-
-def timed_words(text, start, seconds):
-    """Spread words across the spoken duration, weighted by length (+ pauses at punctuation)."""
-    words = text.split()
-    weights = [len(re.sub(r"\W", "", w)) + 2 + (3 if w.endswith((".", ",", ":", "?", "!")) else 0) for w in words]
-    total = sum(weights) or 1
-    out, t = [], start
-    for w, wt in zip(words, weights):
-        out.append((w, t))
-        t += seconds * wt / total
-    return out
 
 
 def footage(clip, need):

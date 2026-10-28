@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 from .facts import load_facts
+from .posting import posting_notes
 from .reel import Reel
 from .render import Brand, Renderer, load_map
 from .script import check_script, llm_script, plan, template_script
@@ -84,34 +85,11 @@ def daily(args):
     history = [h for h in history if h.get("date") != day.isoformat()]
     history.append({"date": day.isoformat(), "fact_id": fact.id, "format": fmt, "writer": script["writer"],
                     "clip": clip_info.get("key"), "ai_background": ai_background,
-                    "voice": stats.get("voice"), "scenes": stats.get("scenes")})
+                    "voice": stats.get("voice"), "voices": stats.get("voices"), "scenes": stats.get("scenes")})
     history_path.parent.mkdir(parents=True, exist_ok=True)
     history_path.write_text(json.dumps(history[-120:], indent=2))
     print(f"Wrote {out / 'reel.mp4'} ({stats['seconds']} s)")
     return out
-
-
-def posting_notes(script, fact, ai_background, cfg):
-    lines = [f"# Reel for {script['date']}", "",
-             f"**Fact:** {fact.claim}", f"**Source:** {fact.source_label}: {fact.source_url}", "",
-             "## Before you post", "",
-             "- [ ] Watch it once with sound off: every number matches the source above.",
-             "- [ ] Paste `caption.txt` as the caption.",
-             "- [ ] Post as a **Trial Reel** first (shown to non-followers); share to followers if it performs.",
-             "- [ ] Optional: add a sound in Instagram, turned down to about 10-15% so the narration stays clear."]
-    voice = (script.get("render") or {}).get("voice")
-    if voice in ("espeak", "silence"):
-        lines.insert(4, f"- [ ] **Don't post this one:** narration used the {voice} test fallback. "
-                        "Check the GEMINI_API_KEY / ELEVENLABS_API_KEY secrets and re-run.")
-    if ai_background or voice in ("gemini", "elevenlabs"):
-        why = " and ".join(x for x in ["the narration is an AI voice" if voice in ("gemini", "elevenlabs") else "",
-                                        "some background video is AI-generated" if ai_background else ""] if x)
-        lines.append(f"- [ ] Turn on **Add AI label** (Advanced settings): {why}.")
-    lines += [f"- [ ] Pin a comment: \"{cfg['caption']['pinned_comment']}\"", "",
-              f"Format: {script['format']} · writer: {script['writer']} · voice: {voice or 'none'} · "
-              f"3D scenes: {', '.join((script.get('render') or {}).get('scenes') or []) or 'none'} · "
-              f"AI b-roll: {script['clip'].get('model', 'none')}"]
-    return "\n".join(lines) + "\n"
 
 
 def check(args):

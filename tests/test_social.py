@@ -4,9 +4,11 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 CAMPAIGN = ROOT / "examples" / "fictional-campaign" / "social"
@@ -18,8 +20,11 @@ try:
 except ImportError:
     HAVE_MEDIA = False
 
-from campaign_tool.social.facts import Fact, load_facts, validate_fact
+from campaign_tool.social import script as script_module
+from campaign_tool.social.facts import Fact, load_facts, quote_is_approved, validate_fact
+from campaign_tool.social.posting import posting_notes
 from campaign_tool.social.script import check_script, llm_script, plan, template_script
+from campaign_tool.social.timeline import voice_summary
 
 
 def cfg():
@@ -109,7 +114,7 @@ class ReelV2PlanningTest(unittest.TestCase):
         self.assertIn("4321", " ".join(check_script(script, fact, cfg())))
 
     def test_timed_words_cover_the_spoken_duration(self):
-        from campaign_tool.social.reel import timed_words
+        from campaign_tool.social.timeline import timed_words
         words = timed_words("Every source is at example.org.", 0.1, 2.0)
         self.assertEqual([w for w, _ in words], ["Every", "source", "is", "at", "example.org."])
         self.assertAlmostEqual(words[0][1], 0.1)
@@ -117,7 +122,7 @@ class ReelV2PlanningTest(unittest.TestCase):
         self.assertEqual(sorted(t for _, t in words), [t for _, t in words])
 
     def test_scene_choice_uses_the_fact_frame(self):
-        from campaign_tool.social.reel import beat_scene
+        from campaign_tool.social.timeline import beat_scene
         fact = load_facts(CAMPAIGN / "facts.json")[0]
         self.assertIn(beat_scene({"type": "hook", "text": "x"}, fact, 0, 3), ("camera_hero", "plate_scan"))
         self.assertEqual(beat_scene({"type": "map", "big": "24", "small": "x"}, fact, 1, 3), "county_pins")
@@ -144,6 +149,124 @@ class ReelV2PlanningTest(unittest.TestCase):
         finally:
             if old:
                 os.environ["SOCIAL_BLENDER_PYTHON"] = old
+
+
+class PlanningWithoutMediaTest(unittest.TestCase):
+    """Planning, scripting and checklist code must import without NumPy or Pillow installed."""
+
+    def test_planning_modules_import_without_numpy_or_pillow(self):
+        probe = (
+            "import sys\n"
+            "class Block:\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name.split('.')[0] in ('numpy', 'PIL'):\n"
+            "            raise ImportError('blocked for test: ' + name)\n"
+            "        return None\n"
+            "sys.meta_path.insert(0, Block())\n"
+            "import campaign_tool.social.facts, campaign_tool.social.script, campaign_tool.social.timeline\n"
+            "import campaign_tool.social.posting, campaign_tool.social.shots\n"
+            "for heavy in ('numpy', 'PIL'):\n"
+            "    assert heavy not in sys.modules, heavy\n"
+            "print('planning-ok')\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "probe.py"
+            path.write_text(probe)
+            done = subprocess.run([sys.executable, str(path)], cwd=ROOT, capture_output=True, text=True,
+                                  env=dict(os.environ, PYTHONPATH=str(ROOT)))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("planning-ok", done.stdout)
+
+
+class VoiceFallbackTest(unittest.TestCase):
+    """A test-voice fallback on any beat must reach the metadata and the posting checklist."""
+
+    def notes(self, voices):
+        fact = load_facts(CAMPAIGN / "facts.json")[0]
+        script = template_script(fact, "stat-drop", cfg(), dt.date(2026, 10, 1))
+        script.update(clip={"model": "none"}, render={"voice": voice_summary(voices), "voices": voices,
+                                                      "scenes": []})
+        return posting_notes(script, fact, False, cfg())
+
+    def test_later_fallback_is_reported(self):
+        self.assertEqual(voice_summary(["gemini", "gemini", "espeak", "gemini"]), "espeak")
+        self.assertEqual(voice_summary(["elevenlabs", "silence", "espeak"]), "silence")
+        self.assertEqual(voice_summary(["gemini", "gemini"]), "gemini")
+        self.assertIsNone(voice_summary([]))
+
+    def test_mixed_sequence_checklist_warns_and_labels(self):
+        notes = self.notes(["gemini", "gemini", "silence", "gemini"])
+        self.assertIn("Don't post this one", notes)
+        self.assertIn("silence", notes)
+        self.assertIn("beat 3 of 4", notes)
+        self.assertIn("the narration is an AI voice", notes)
+
+    def test_all_ai_voice_has_no_warning(self):
+        notes = self.notes(["elevenlabs", "elevenlabs"])
+        self.assertNotIn("Don't post", notes)
+        self.assertIn("Add AI label", notes)
+
+    def test_old_metadata_without_per_beat_list(self):
+        fact = load_facts(CAMPAIGN / "facts.json")[0]
+        script = template_script(fact, "stat-drop", cfg(), dt.date(2026, 10, 1))
+        script.update(clip={"model": "none"}, render={"voice": "espeak", "scenes": []})
+        self.assertIn("Don't post this one", posting_notes(script, fact, False, cfg()))
+
+
+class QuoteBindingTest(unittest.TestCase):
+    """Quote cards say "FROM THE RECORDS": their words must be an approved source quotation."""
+
+    def setUp(self):
+        self.fact = next(f for f in load_facts(CAMPAIGN / "facts.json") if f.id == "cc-audits")
+        self.day = dt.date(2026, 10, 1)
+
+    def script_with_quote(self, text):
+        script = template_script(self.fact, "stat-drop", cfg(), self.day)
+        for beat in script["beats"]:
+            if beat["type"] == "quote":
+                beat["text"] = text
+        return script
+
+    def test_approved_quote_passes_with_typographic_variants(self):
+        self.assertEqual(check_script(self.script_with_quote("No completed audit reports produced."),
+                                      self.fact, cfg()), [])
+        self.assertTrue(quote_is_approved("\u201cNo completed  audit reports produced.\u201d", self.fact))
+
+    def test_fabricated_nonnumeric_quote_is_rejected(self):
+        problems = check_script(self.script_with_quote("The county admits nobody checks the cameras."),
+                                self.fact, cfg())
+        self.assertTrue(any("approved source quotation" in p for p in problems), problems)
+
+    def test_excerpt_of_approved_quote_is_rejected(self):
+        problems = check_script(self.script_with_quote("audit reports produced."), self.fact, cfg())
+        self.assertTrue(any("approved source quotation" in p for p in problems), problems)
+
+    def test_fact_quote_beat_must_be_listed(self):
+        fact = Fact(id="x", agency="A", claim="The county produced no audits.", source_url="https://example.org",
+                    source_label="s", frame="audits", numbers=[], hooks=["Hook"],
+                    beats=[{"type": "quote", "text": "Nobody audits anything."}], why="Why", visual="v")
+        self.assertTrue(any("approved source quotes" in e for e in validate_fact(fact)))
+        fact.quotes = ["Nobody audits anything."]
+        self.assertEqual(validate_fact(fact), [])
+
+    def test_generated_quote_beat_falls_back_to_template(self):
+        reply = {"hook": "The policy promises audits.",
+                 "beats": [{"type": "quote", "text": "Audits were never a priority for us."}],
+                 "why": "A safeguard nobody can see isn't one residents can trust."}
+        body = json.dumps({"content": [{"text": json.dumps(reply)}]}).encode()
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = body
+        with mock.patch.object(script_module.urllib.request, "urlopen", return_value=response), \
+                mock.patch("builtins.print"):
+            self.assertIsNone(llm_script(self.fact, "stat-drop", cfg(), self.day, "", api_key="test-key"))
+        reply["beats"] = [{"type": "quote", "text": "No completed audit reports produced."}]
+        body = json.dumps({"content": [{"text": json.dumps(reply)}]}).encode()
+        response.__enter__.return_value.read.return_value = body
+        with mock.patch.object(script_module.urllib.request, "urlopen", return_value=response), \
+                mock.patch("builtins.print"):
+            accepted = llm_script(self.fact, "stat-drop", cfg(), self.day, "", api_key="test-key")
+        self.assertIsNotNone(accepted)
+        self.assertEqual(accepted["writer"], "claude")
 
 
 @unittest.skipUnless(HAVE_MEDIA, "needs numpy, Pillow and ffmpeg")
@@ -173,6 +296,31 @@ class ReelV2RenderTest(unittest.TestCase):
             narration.shutil.which = real_which
             if old:
                 os.environ["SOCIAL_BLENDER_PYTHON"] = old
+
+    def test_later_beat_fallback_reaches_render_metadata(self):
+        from campaign_tool.social import reel as reel_module
+        from campaign_tool.social.render import Brand
+        c = cfg()
+        fact = load_facts(CAMPAIGN / "facts.json")[0]
+        script = {"beats": [{"type": "hook", "text": "A short hook"}, {"type": "line", "text": "A short line"},
+                            {"type": "cta", "text": c["cta"]["text"], "small": c["cta"]["small"]}]}
+        providers = iter(["gemini", "silence", "gemini"])
+        real_narrate = reel_module.narrate
+
+        def fake_narrate(text, out, voice_cfg, offline=False, log=print):
+            seconds, _ = real_narrate(text, out, {}, offline=True, log=log)
+            return seconds, next(providers)
+
+        old = os.environ.pop("SOCIAL_BLENDER_PYTHON", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(reel_module, "narrate", fake_narrate):
+                stats = reel_module.Reel(Brand(c["brand"]), c, None, Path(tmp) / "shots", log=lambda *_: None).build(
+                    script, fact, Path(tmp) / "reel.mp4", offline_voice=False)
+        finally:
+            if old:
+                os.environ["SOCIAL_BLENDER_PYTHON"] = old
+        self.assertEqual(stats["voices"], ["gemini", "silence", "gemini"])
+        self.assertEqual(stats["voice"], "silence")
 
 
 if __name__ == "__main__":
