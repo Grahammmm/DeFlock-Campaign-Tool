@@ -17,6 +17,7 @@ Unknown unit kinds (including the non-native "text") supply no content cues.
 """
 import hashlib
 import json
+import math
 import re
 
 VERSION = "deterministic-document-kind-v1"
@@ -74,6 +75,44 @@ def sha256(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+_LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def _parse_float(token):
+    # A finite-looking token such as 1e309 silently decodes to inf; refuse it
+    # exactly like explicit NaN/Infinity. Underflow to a finite value is kept.
+    value = float(token)
+    if not math.isfinite(value):
+        raise KindError("nonfinite_json")
+    return value
+
+
+def _parse_int(token):
+    try:
+        return int(token)
+    except ValueError:  # Interpreter digit limit; never echo the token.
+        raise KindError("invalid_json") from None
+
+
+def _reject_lone_surrogates(value):
+    """Refuse unpaired surrogates in every decoded string and key.
+
+    Iterative, so traversal is bounded by the already size-capped decoded
+    value rather than recursion depth. Paired escapes (astral characters) are
+    combined by the JSON decoder and are accepted.
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if type(item) is str:
+            require(_LONE_SURROGATE.search(item) is None, "invalid_unicode_json")
+        elif type(item) is dict:
+            stack.extend(item)
+            stack.extend(item.values())
+        elif type(item) is list:
+            stack.extend(item)
+
+
 def decode(raw):
     def pairs(items):
         result = {}
@@ -84,9 +123,12 @@ def decode(raw):
     def nonfinite(_):
         raise KindError("nonfinite_json")
     try:
-        return json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
+        value = json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite,
+                           parse_float=_parse_float, parse_int=_parse_int)
     except (UnicodeError, json.JSONDecodeError, RecursionError):
         raise KindError("invalid_json") from None
+    _reject_lone_surrogates(value)
+    return value
 
 
 def _title(value):

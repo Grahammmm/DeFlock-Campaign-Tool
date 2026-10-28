@@ -34,7 +34,21 @@ CREATE TRIGGER IF NOT EXISTS immutable_events_update BEFORE UPDATE ON snapshot_e
  BEGIN SELECT RAISE(ABORT,'immutable snapshot history'); END;
 CREATE TRIGGER IF NOT EXISTS immutable_events_delete BEFORE DELETE ON snapshot_events
  BEGIN SELECT RAISE(ABORT,'immutable snapshot history'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_acceptances_insert_collision BEFORE INSERT ON snapshot_acceptances
+ WHEN EXISTS (SELECT 1 FROM snapshot_acceptances WHERE snapshot_id=NEW.snapshot_id)
+ BEGIN SELECT RAISE(ABORT,'immutable snapshot acceptance insert collision'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_events_insert_collision BEFORE INSERT ON snapshot_events
+ WHEN NEW.sequence<>-1 AND EXISTS (SELECT 1 FROM snapshot_events WHERE sequence=NEW.sequence)
+ BEGIN SELECT RAISE(ABORT,'immutable snapshot history insert collision'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_events_insert_reserved AFTER INSERT ON snapshot_events
+ WHEN NEW.sequence=-1
+ BEGIN SELECT RAISE(ABORT,'immutable snapshot history reserved sequence'); END;
 """
+# REPLACE conflict deletion skips DELETE triggers unless recursive_triggers is
+# ON, so colliding inserts are refused before conflict resolution instead.
+# BEFORE INSERT sees NEW.sequence=-1 for an unassigned AUTOINCREMENT value too,
+# so -1 is reserved: the AFTER trigger refuses an explicit -1 (rolling back any
+# REPLACE deletion) while automatic inserts keep working.
 
 
 def _decode(raw):

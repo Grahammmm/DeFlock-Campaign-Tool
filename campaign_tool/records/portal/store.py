@@ -168,7 +168,15 @@ class Queue:
         if url_parts(url).hostname != host:
             raise PortalError("initial_host_mismatch")
         url_hash = digest_bytes(url.encode())
-        stamp = float(now if now is not None else time.time())
+        clock = now if now is not None else time.time()
+        if isinstance(clock, bool) or not isinstance(clock, (int, float)):
+            raise PortalError("invalid_refusal_clock")
+        try:
+            stamp = float(clock)
+        except (OverflowError, TypeError, ValueError):
+            raise PortalError("invalid_refusal_clock") from None
+        if stamp != stamp or stamp == float("inf") or stamp == float("-inf"):
+            raise PortalError("invalid_refusal_clock")
         with self.lock(), self.db:
             row = self.db.execute(
                 "SELECT id,count FROM portal_refusals WHERE host=? AND reason=? AND source_sha256=? AND url_sha256=?",

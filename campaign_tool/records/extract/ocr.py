@@ -180,7 +180,11 @@ def _publish_directory(source: Path, destination: Path) -> bool:
 
 def _confidence(tsv: str) -> float | None:
     values = []
-    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
+    reader = csv.DictReader(io.StringIO(tsv), delimiter="\t")
+    if (reader.fieldnames is None or reader.fieldnames.count("conf") != 1
+            or reader.fieldnames.count("text") != 1):
+        return None
+    for row in reader:
         if not row.get("text", "").strip():
             continue
         try:
@@ -267,14 +271,25 @@ def _hold(page_dir: Path, source_sha256: str, page: int, requested: bool) -> boo
     return True
 
 
+def _exact_page(value: object) -> bool:
+    """Page identities are exact positive ints; bool and integral floats are not aliases."""
+    return type(value) is int and value >= 1
+
+
 def _validate_receipt(receipt: dict, identity: dict, directory: Path) -> tuple[str, str]:
     # Legacy receipts remain readable. Cache-policy migration is staged in X6
     # phase 2; phase 1 must not be deployed over existing result roots.
     if not isinstance(receipt, dict) or set(receipt) not in (RECEIPT_KEYS, RECEIPT_KEYS | {'eligibility'}):
         raise ValueError("ocr_receipt_schema_mismatch")
+    stated, locator = receipt["identity"], receipt["locator"]
+    if (not isinstance(identity, dict) or not _exact_page(identity.get("page"))
+            or not isinstance(stated, dict) or not _exact_page(stated.get("page"))
+            or not isinstance(locator, dict) or not _exact_page(locator.get("page"))):
+        raise ValueError("ocr_receipt_state_mismatch")
     if 'eligibility' in receipt:
         evidence = receipt['eligibility']
-        if (not isinstance(evidence, dict) or evidence.get('source_sha256') != identity['source_sha256']
+        if (not isinstance(evidence, dict) or not _exact_page(evidence.get('page'))
+                or evidence.get('source_sha256') != identity['source_sha256']
                 or evidence.get('page') != identity['page'] or evidence.get('policy') != pdf_eligibility.POLICY
                 or evidence.get('probe') != pdf_eligibility.PROBE
                 or (receipt['status'] == 'skipped_machine_text' and evidence.get('decision') != 'native_sufficient')):
@@ -286,7 +301,8 @@ def _validate_receipt(receipt: dict, identity: dict, directory: Path) -> tuple[s
             or receipt["source"] != {"kind": "preserved_blob", "sha256": identity["source_sha256"]}
             or receipt["locator"] != {"page": identity["page"]}
             or type(receipt["page_count"]) is not int or receipt["page_count"] < identity["page"]
-            or receipt["status"] not in STATES or receipt["review_status"] != "not_reviewed"
+            or type(receipt["status"]) is not str or receipt["status"] not in STATES
+            or receipt["review_status"] != "not_reviewed"
             or receipt["visual_check_status"] != "not_done" or receipt["fidelity_status"] != "not_checked"
             or receipt["confidence_basis"] != "tesseract_word_tsv_mean"
             or type(receipt["visual_check_required"]) is not bool
@@ -372,7 +388,7 @@ def load_page_receipt(output_root: str | Path, source_sha256: str, page: int,
         raise ValueError("ocr_receipt_missing") from None
     identity = raw.get("identity") if isinstance(raw, dict) else None
     if (not isinstance(identity, dict) or identity.get("source_sha256") != source_sha256
-            or identity.get("page") != page):
+            or not _exact_page(identity.get("page")) or identity.get("page") != page):
         raise ValueError("ocr_receipt_identity_mismatch")
     if identity.get("version") != VERSION:
         raise ValueError("ocr_receipt_schema_mismatch")
@@ -546,17 +562,39 @@ def _prune_unrecorded(directory: Path, artifacts: dict) -> str | None:
     return reason
 
 
+def _page_selector(value, *, unique: bool) -> tuple[int, ...]:
+    """Snapshot an exact list/tuple of exact positive ints; any other shape is refused."""
+    if type(value) not in (list, tuple):
+        raise ValueError("invalid or duplicate page selector")
+    selected = tuple(value)
+    if any(type(n) is not int or n < 1 for n in selected) or (unique and len(set(selected)) != len(selected)):
+        raise ValueError("invalid or duplicate page selector")
+    return selected
+
+
+def _page_selectors(pages, fidelity_holds) -> tuple[tuple[int, ...] | None, frozenset[int]]:
+    """Caller-supplied selector shapes, checked before tools, source bytes or the PDF reader."""
+    requested = None if pages is None else _page_selector(pages, unique=True)
+    return requested, frozenset(_page_selector(fidelity_holds, unique=False))
+
+
 def extract_image_only_pages(
     intake_root: str | Path, source_sha256: str, output_root: str | Path, *,
     tool_signature: str, tools: dict | None = None, attempt_id: str = "initial",
-    pages: tuple[int, ...] | None = None,
-    fidelity_holds: tuple[int, ...] = (), language: str = "eng",
+    pages: list[int] | tuple[int, ...] | None = None,
+    fidelity_holds: list[int] | tuple[int, ...] = (), language: str = "eng",
     low_confidence: float = 80.0, timeout: int = 180, runner=subprocess.run,
 ) -> list[dict]:
     """Persist page receipts for a preserved PDF, including failures and holds.
 
     ``tools`` is the ``dependency_status()["tools"]`` map: children are invoked by
     those absolute paths and the probed versions are recorded in every receipt.
+
+    ``pages`` is None (every page) or an exact list/tuple of distinct exact positive
+    ints; ``fidelity_holds`` is an exact list/tuple of exact positive ints (repeats are
+    idempotent). Any other shape raises ``ValueError("invalid or duplicate page
+    selector")`` before tool resolution, the source read or the PDF reader; the upper
+    bound against the verified page count is checked after the source is verified.
     """
     if not SHA256.fullmatch(source_sha256):
         raise ValueError("source_sha256 must be a lowercase SHA-256")
@@ -568,6 +606,7 @@ def extract_image_only_pages(
         raise ValueError("invalid OCR language")
     if type(low_confidence) not in {int, float} or not 0 <= low_confidence <= 100 or type(timeout) is not int or timeout <= 0:
         raise ValueError("invalid OCR threshold or timeout")
+    requested, holds = _page_selectors(pages, fidelity_holds)
     tool_paths, tool_versions = _resolved_tools(tools)
     search = []
     for name in OCR_TOOLS:
@@ -584,8 +623,8 @@ def extract_image_only_pages(
     if reader.is_encrypted and not reader.decrypt(""):
         raise ValueError("encrypted_pdf_requires_user_password")
     count = len(reader.pages)
-    selected = tuple(range(1, count + 1)) if pages is None else tuple(pages)
-    holds = set(fidelity_holds)
+    selected = tuple(range(1, count + 1)) if requested is None else tuple(requested)
+    holds = set(holds)
     if (len(set(selected)) != len(selected) or any(type(n) is not int or n < 1 or n > count for n in selected)
             or any(type(n) is not int or n < 1 or n > count for n in holds)):
         raise ValueError("invalid or duplicate page selector")
