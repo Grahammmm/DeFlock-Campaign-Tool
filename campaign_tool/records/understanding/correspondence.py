@@ -1,6 +1,7 @@
 """Conservative, portable tracking for cited correspondence candidates."""
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -118,7 +119,7 @@ def _items(event: dict, name: str) -> list[str]:
 def _event_key(event: dict) -> str:
     message_id = _s(event.get("message_id") or event.get("event_id"))
     if message_id:
-        return "message:" + message_id.casefold()
+        return "message:" + message_id
     fields = ("agency_id", "request_number", "request_numbers", "occurred_at", "event_type",
               "kind", "text", "items_requested", "items_delivered", "due_at", "due_kind")
     return "sha256:" + _hash({key: event.get(key) for key in fields if key in event})
@@ -465,12 +466,14 @@ def track(events: Iterable[dict], *, as_of: str | datetime, deadline_rules: Iter
                 due_actions.append(action)
             if reason:
                 holds.append({"index": index, "request_id": request_id, "reason": reason})
-    return {"schema": SCHEMA, "as_of": asof_out, "as_of_status": asof_status,
+    # Result payloads may borrow nested citations/requirements while building.
+    # Detach once at the public boundary, preserving values and internal sharing.
+    return deepcopy({"schema": SCHEMA, "as_of": asof_out, "as_of_status": asof_status,
             "snapshot_sha256": snapshot.get("snapshot_sha256") if snapshot else None,
             "requests": [requests[key] for key in sorted(requests)],
             "due_actions": sorted(due_actions, key=lambda row: (row.get("due_at", row.get("due_day", "")), row["request_id"], row["deadline_kind"])),
             "holds": sorted(holds, key=lambda row: (row.get("index", -1), row.get("request_id", ""), row["reason"])),
-            "semantic_assessment": "NOT_ASSESSED", "review_acceptance": False}
+            "semantic_assessment": "NOT_ASSESSED", "review_acceptance": False})
 
 
 def _json_pointer_token(key: str) -> str:
