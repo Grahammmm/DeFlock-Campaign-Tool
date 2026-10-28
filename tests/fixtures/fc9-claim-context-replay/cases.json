@@ -1,0 +1,78 @@
+{
+  "schema": "fc9-claim-context-replay-cases/v1",
+  "note": "Every value here is invented for FC9 tests. The agency, request number, schedule entry, labels and contexts describe no real record, person or source.",
+  "original_label": "fc9 fictional original document for claim context replay",
+  "receipt_label": "fc9 fictional native receipt identity A",
+  "changed_receipt_label": "fc9 fictional native receipt identity B",
+  "units": [
+    {
+      "kind": "text",
+      "locator": {"page": 1},
+      "text": "Synthetic request FX-0901\nFictional Agency: Example County Records Desk\nRetention schedule entry 7.3 keeps camera audit logs for 45 days.",
+      "data": {}
+    },
+    {
+      "kind": "text",
+      "locator": {"page": 2},
+      "text": "{\"retention_days\": 45, \"schedule_entry\": \"7.3\"}",
+      "data": {}
+    }
+  ],
+  "native_receipt": {
+    "schema": "format-extraction-v1",
+    "original_changed": false,
+    "status": "complete",
+    "parser": "fc9-fictional-parser",
+    "parser_version": "0",
+    "route": {"format": "pdf"},
+    "pages": [{"page_no": 1, "status": "ok"}, {"page_no": 2, "status": "ok"}]
+  },
+  "base_context": {
+    "analysis_stage": "first-pass",
+    "analysis_profile": "fictional-default",
+    "window": {"start": "2030-01-01", "end": "2030-02-14"},
+    "review_acceptance": false,
+    "semantic_acceptance": false
+  },
+  "changed_contexts": [
+    {"id": "stage_advanced", "set": {"analysis_stage": "second-pass"}},
+    {"id": "note_added", "set": {"analysis_note": "fictional second reader note"}},
+    {"id": "nested_window_end", "set": {"window": {"start": "2030-01-01", "end": "2030-02-15"}}}
+  ],
+  "equal_reordered_context": {
+    "id": "reordered_equal",
+    "context": {
+      "semantic_acceptance": false,
+      "window": {"end": "2030-02-14", "start": "2030-01-01"},
+      "review_acceptance": false,
+      "analysis_profile": "fictional-default",
+      "analysis_stage": "first-pass"
+    }
+  },
+  "builders": ["hand_built", "native_receipt"],
+  "claims": [
+    {
+      "id": "single_quote",
+      "text": "The fictional schedule keeps camera audit logs for 45 days.",
+      "supports": [{"page": 1, "quote": "camera audit logs for 45 days"}]
+    },
+    {
+      "id": "quote_and_pointer",
+      "text": "Fictional schedule entry 7.3 sets 45 retention days.",
+      "supports": [
+        {"page": 1, "quote": "Retention schedule entry 7.3"},
+        {"page": 2, "pointer": "/retention_days"}
+      ]
+    }
+  ],
+  "expected": {
+    "validate_claim": {
+      "structural_support": "verified_exact_retained_bytes",
+      "semantic_assessment": "NOT_ASSESSED",
+      "review_acceptance": false
+    },
+    "context_refusal": "evidence_claim_stale_or_changed",
+    "receipt_refusal": "evidence_unit_not_current",
+    "corrupt_bundle_refusal": "bundle_snapshot_mismatch"
+  }
+}

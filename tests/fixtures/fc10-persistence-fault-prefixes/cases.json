@@ -1,0 +1,15 @@
+{
+  "schema": "fc10.persistence-fault-prefixes/v1",
+  "authority": "test_only",
+  "detector": "retention-over-policy",
+  "schema_modes": ["fresh", "existing"],
+  "insert_sites": ["detector_runs", "wp6_manifests", "wp6_input_originals", "detector_hits", "wp6_hit_identities", "wp6_run_hits"],
+  "second_insert_sites": ["wp6_input_originals", "detector_hits", "wp6_hit_identities", "wp6_run_hits"],
+  "expected_hits": 2,
+  "original_labels": ["synthetic-fc10-original-a", "synthetic-fc10-original-b"],
+  "events": ["synthetic-event-a", "synthetic-event-b"],
+  "retention_days": [31, 40],
+  "maximum_days": 30,
+  "negative_control": {"schema_mode": "fresh", "table": "detector_hits", "ordinal": 2, "mutation": "ineffective_rollback", "deciding_assertion": "exact_state_and_transaction_closed"},
+  "dimensions": ["six_insert_sites_fresh_schema", "six_insert_sites_existing_schema", "second_hit_prefix_failure", "source_binding_prefix_failure", "transaction_closed", "exact_state_preserved", "clean_retry_then_replay", "canonical_run_and_stage_states_unchanged", "caller_transaction_refused"]
+}

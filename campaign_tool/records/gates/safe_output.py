@@ -67,6 +67,10 @@ def write_private(path, text, *, create_parents=False):
         temporary = None
         os.fsync(directory)
     finally:
-        if temporary is not None:
-            os.unlink(temporary, dir_fd=directory)
-        os.close(directory)
+        # Close the owned directory even when temporary cleanup raises; the
+        # cleanup error stays visible and chains any original failure.
+        try:
+            if temporary is not None:
+                os.unlink(temporary, dir_fd=directory)
+        finally:
+            os.close(directory)

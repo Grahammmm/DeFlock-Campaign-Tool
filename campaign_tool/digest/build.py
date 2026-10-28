@@ -7,6 +7,7 @@ narrative fields come from the validated model output and each conclusion's
 sources are bound to the digested sha256. Either way the result passes
 :func:`campaign_tool.digest.schema.validate_digest`.
 """
+import copy
 from datetime import date
 
 from ..law import rules_in_force
@@ -22,7 +23,9 @@ def redact_units(units, allowlist=(), denylist=()):
 
     Units are redacted one at a time (never joined), so a pattern can never
     match across a page break. Original locators stay local; ``model_locator``
-    is an opaque unit reference with no original metadata.
+    is an opaque unit reference with no original metadata. Returned units are
+    detached snapshots: mutating a caller unit (including nested locator or
+    data values) never changes the result, and vice versa.
     """
     redactor = Redactor(allowlist=allowlist, denylist=denylist)
     counts = {}
@@ -31,7 +34,8 @@ def redact_units(units, allowlist=(), denylist=()):
         result = redactor.redact(unit.get("text") or "")
         for key, value in result.counts.items():
             counts[key] = counts.get(key, 0) + value
-        redacted.append({**unit, "text": result.text, "model_locator": model_locator(unit.get("locator") or {}, index)})
+        # Deep detachment: returned metadata (nested locator/data) never aliases caller-owned objects.
+        redacted.append({**copy.deepcopy(unit), "text": result.text, "model_locator": model_locator(unit.get("locator") or {}, index)})
     return redacted, counts
 
 
