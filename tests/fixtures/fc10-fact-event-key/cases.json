@@ -1,0 +1,59 @@
+{
+  "schema": "fc10-fact-event-key/v1",
+  "synthetic_only": true,
+  "scope": {"agency_id": "fictional-fc10-agency", "jurisdiction": "fictional-fc10-state", "regulated_role": "operator", "request_number": "FICTIONAL-FC10-1", "event_at": "2030-07-02"},
+  "version": {"version_id": "fictional-fc10-policy", "family_id": "fictional-fc10-retention", "effective_from": "2030-01-01", "issued_at": "2029-12-01", "retrieved_at": "2031-01-01", "supersession_status": "not_superseded_as_of_retrieval", "source_id": "fictional-fc10-policy-source", "url": "https://example.invalid/fc10/policy", "locator": "fictional section 1", "unit_locator": {"page": 1}, "requirement_id": "fictional-fc10-maximum-retention", "text": "Fictional retention must be at most 90 days.", "field": "retention_days", "maximum": 90},
+  "fact_source": {"text": "{\"retention_days\":60}", "locator": {"page": 1}, "pointer": "/retention_days", "field": "retention_days", "value": 60},
+  "cases": [
+    {"id": "omitted_default", "variants": [
+      {"facts": [{"fact_id": "fact-omitted"}], "expect": "findings", "events": ["request-level"]}
+    ]},
+    {"id": "valid_ascii_unicode_delimiter_keys", "variants": [
+      {"facts": [{"fact_id": "fact-ascii", "event_key": "event-A"}], "expect": "findings", "events": ["event-A"]},
+      {"facts": [{"fact_id": "fact-unicode", "event_key": "\u00e9v\u00e8nement-\u03a9"}], "expect": "findings", "events": ["\u00e9v\u00e8nement-\u03a9"]},
+      {"facts": [{"fact_id": "fact-delimiters", "event_key": "a|b::c/d=e,f;g#h"}], "expect": "findings", "events": ["a|b::c/d=e,f;g#h"]},
+      {"facts": [{"fact_id": "fact-padded", "event_key": "  padded event\t"}], "expect": "findings", "events": ["  padded event\t"]},
+      {"facts": [{"fact_id": "fact-explicit-request-level", "event_key": "request-level"}], "expect": "findings", "events": ["request-level"]}
+    ]},
+    {"id": "empty_and_whitespace", "variants": [
+      {"facts": [{"fact_id": "fact-empty", "event_key": ""}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-space", "event_key": " "}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-tab-newline", "event_key": "\t\n"}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-nbsp", "event_key": "\u00a0"}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-ideographic-space", "event_key": "\u3000"}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"}
+    ]},
+    {"id": "null_bool_int_float_list_object", "variants": [
+      {"facts": [{"fact_id": "fact-null", "event_key": null}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-true", "event_key": true}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-false", "event_key": false}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-zero", "event_key": 0}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-int", "event_key": 1}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-float", "event_key": 1.5}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-empty-list", "event_key": []}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "TypeError"},
+      {"facts": [{"fact_id": "fact-list", "event_key": ["event-A"]}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "TypeError"},
+      {"facts": [{"fact_id": "fact-empty-object", "event_key": {}}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "TypeError"},
+      {"facts": [{"fact_id": "fact-object", "event_key": {"event": "event-A"}}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "TypeError"}
+    ]},
+    {"id": "mixed_valid_invalid_keys", "variants": [
+      {"facts": [{"fact_id": "fact-valid-first", "event_key": "event-A"}, {"fact_id": "fact-list-second", "event_key": ["event-B"]}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "TypeError"},
+      {"facts": [{"fact_id": "fact-object-first", "event_key": {"event": "event-B"}}, {"fact_id": "fact-valid-second", "event_key": "event-A"}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "TypeError"},
+      {"facts": [{"fact_id": "fact-omitted-first"}, {"fact_id": "fact-blank-second", "event_key": "  "}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"},
+      {"facts": [{"fact_id": "fact-valid-cited", "event_key": "event-A"}, {"fact_id": "fact-uncited-null", "event_key": null, "citations": []}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "admitted"}
+    ]},
+    {"id": "valid_multiple_events_sorted", "variants": [
+      {"facts": [{"fact_id": "fact-b", "event_key": "event-B"}, {"fact_id": "fact-omitted"}, {"fact_id": "fact-a", "event_key": "event-A"}, {"fact_id": "fact-zeta", "event_key": "Zeta"}, {"fact_id": "fact-a-second", "event_key": "event-A"}], "expect": "findings", "events": ["Zeta", "event-A", "event-B", "request-level"]}
+    ]},
+    {"id": "no_input_mutation", "variants": [
+      {"facts": [{"fact_id": "fact-keep-b", "event_key": "event-B"}, {"fact_id": "fact-keep-a", "event_key": "event-A"}], "expect": "findings", "events": ["event-A", "event-B"]},
+      {"facts": [{"fact_id": "fact-keep-valid", "event_key": "event-A"}, {"fact_id": "fact-keep-object", "event_key": {"nested": ["event-A"]}}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "TypeError"}
+    ]},
+    {"id": "original_fact_identity_error_preserved", "variants": [
+      {"facts": [{"fact_id": "fact-duplicate", "event_key": "event-A"}, {"fact_id": "fact-duplicate", "event_key": "event-B"}], "expect": "refusal", "error": "fact_identity", "old_behavior": "fact_identity"},
+      {"facts": [{"fact_id": 7, "event_key": "event-A"}], "expect": "refusal", "error": "fact_identity", "old_behavior": "fact_identity"},
+      {"facts": [{"fact_id": "fact-no-field", "field": "", "event_key": ["event-A"]}], "expect": "refusal", "error": "fact_identity", "old_behavior": "fact_identity"},
+      {"facts": [{"fact_id": "fact-null-id", "event_key": null}, {"fact_id": "fact-null-id", "event_key": null}], "expect": "refusal", "error": "fact_event_key", "old_behavior": "fact_identity"}
+    ]}
+  ],
+  "negative_control": {"inject": "in_memory_valid_fact_event_key_accepts_everything", "killed_case": "null_bool_int_float_list_object", "killed_assertion": "fact_event_key_refusal", "restore_cases": ["omitted_default", "valid_ascii_unicode_delimiter_keys"]},
+  "limits": "Fictional cited numeric at_most comparison with a selected fictional policy; event-key shape only. No semantic, legal, human, review or live acceptance."
+}

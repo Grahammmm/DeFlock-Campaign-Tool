@@ -110,7 +110,10 @@ def _scope(c,imports):
         if type(x)is not dict or set(x)!={"original_sha256","import_id","manifest_sha256","unit_ids"}:_no("import_scope_invalid")
         subject,imp,msha,ids=(x[k] for k in ("original_sha256","import_id","manifest_sha256","unit_ids"))
         if any(type(v)is not str or not HEX.fullmatch(v) for v in (subject,imp,msha)) or subject in subjects:_no("import_scope_invalid")
-        if type(ids)is not list or not ids or len(ids)>MAX_UNITS or len(set(ids))!=len(ids) or any(type(v)is not str or not HEX.fullmatch(v) for v in ids):_no("import_scope_invalid")
+        if type(ids)is not list or not ids or len(ids)>MAX_UNITS:_no("import_scope_invalid")
+        # Exact member types and HEX identities before any set(): an unhashable member must not escape as TypeError.
+        if any(type(v)is not str or not HEX.fullmatch(v) for v in ids):_no("import_scope_invalid")
+        if len(set(ids))!=len(ids):_no("import_scope_invalid")
         requested+=len(ids)
         if requested>MAX_UNITS:_no("unit_count_limit")
         subjects.add(subject)
@@ -231,7 +234,11 @@ def build_search_index(index_dir,read_result):
 def search_index(index_path,expected_snapshot,query,*,expected_content_sha256,limit=50):
     if type(expected_snapshot)is not str or not HEX.fullmatch(expected_snapshot):_no("snapshot_pin_invalid")
     if type(expected_content_sha256)is not str or not HEX.fullmatch(expected_content_sha256):_no("index_content_pin_invalid")
-    if type(query)is not str or not query.strip() or len(query.encode())>1024 or type(limit)is not int or not 1<=limit<=200:_no("search_query_invalid")
+    if type(query)is not str or not query.strip() or type(limit)is not int or not 1<=limit<=200:_no("search_query_invalid")
+    query_bytes: bytes
+    try: query_bytes=query.encode("utf-8")
+    except UnicodeError: _no("search_query_invalid")
+    if len(query_bytes)>1024:_no("search_query_invalid")
     p=_path(index_path)
     _private(p.parent)
     if p.name!="retained-search-"+expected_snapshot+".sqlite":_no("index_binding_mismatch")

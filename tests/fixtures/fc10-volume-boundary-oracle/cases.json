@@ -1,0 +1,952 @@
+{
+  "schema": "fc10-volume-boundary-oracle/v1",
+  "authority": "synthetic test_only; triage only; no legal or publication acceptance",
+  "business_hours": [
+    9,
+    17
+  ],
+  "cases": [
+    {
+      "id": "daily_below",
+      "dimension": "daily_threshold_triplets",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "off_below",
+      "dimension": "off_hours_threshold_triplets",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 2,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "daily_equal",
+      "dimension": "daily_threshold_triplets",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "off_equal",
+      "dimension": "off_hours_threshold_triplets",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 2,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "daily_above",
+      "dimension": "daily_threshold_triplets",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 3,
+          "off": 0
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "off_above",
+      "dimension": "off_hours_threshold_triplets",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 2,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 3,
+          "off": 3
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "or_neither",
+      "dimension": "combined_OR_condition",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 1,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "or_daily_only",
+      "dimension": "combined_OR_condition",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 1,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 3,
+          "off": 0
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "or_off_only",
+      "dimension": "combined_OR_condition",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 1,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 2,
+          "off": 2
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "or_both",
+      "dimension": "combined_OR_condition",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 1,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 3,
+          "off": 3
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "edge_0859",
+      "dimension": "start_end_minute_edges",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:59:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 1,
+          "off": 1
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "edge_0900",
+      "dimension": "start_end_minute_edges",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T09:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "edge_0901",
+      "dimension": "start_end_minute_edges",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T09:01:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "edge_1659",
+      "dimension": "start_end_minute_edges",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T16:59:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "edge_1700",
+      "dimension": "start_end_minute_edges",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T17:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 1,
+          "off": 1
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "edge_1701",
+      "dimension": "start_end_minute_edges",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T17:01:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 1,
+          "off": 1
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "midnight_equal",
+      "dimension": "local_midnight_split",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 1,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T23:59:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-21T00:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "midnight_above",
+      "dimension": "local_midnight_split",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 1,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T23:58:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T23:59:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-21T00:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e4",
+          "at": "2020-01-21T00:01:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 2,
+          "off": 2
+        },
+        {
+          "user": "user-a",
+          "date": "2020-01-21",
+          "rule": 0,
+          "unique": 2,
+          "off": 2
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "offset_positive",
+      "dimension": "positive_negative_offset_controls",
+      "mode": "evaluate",
+      "policy_offset": 330,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T23:59:00+05:30",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-21T00:00:00+05:30",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-21T09:00:00+05:30",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e4",
+          "at": "2020-01-21T17:00:00+05:30",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 1,
+          "off": 1
+        },
+        {
+          "user": "user-a",
+          "date": "2020-01-21",
+          "rule": 0,
+          "unique": 3,
+          "off": 2
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "mismatch_positive",
+      "dimension": "offset_mismatch",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+05:30",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": [
+        "e1"
+      ]
+    },
+    {
+      "id": "offset_negative",
+      "dimension": "positive_negative_offset_controls",
+      "mode": "evaluate",
+      "policy_offset": -420,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T23:59:00-07:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-21T00:00:00-07:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-21T09:00:00-07:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e4",
+          "at": "2020-01-21T17:00:00-07:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 1,
+          "off": 1
+        },
+        {
+          "user": "user-a",
+          "date": "2020-01-21",
+          "rule": 0,
+          "unique": 3,
+          "off": 2
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "mismatch_negative",
+      "dimension": "offset_mismatch",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 99,
+      "off_threshold": 0,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00-07:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": [
+        "e1"
+      ]
+    },
+    {
+      "id": "users_equal",
+      "dimension": "users_separate",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-b",
+          "rule": 0
+        },
+        {
+          "id": "e4",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-b",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "users_above",
+      "dimension": "users_separate",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e4",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-b",
+          "rule": 0
+        },
+        {
+          "id": "e5",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-b",
+          "rule": 0
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 3,
+          "off": 3
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "duplicate_equal",
+      "dimension": "duplicate_event_prints",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [
+        {
+          "event": 0,
+          "row": 101
+        },
+        {
+          "event": 0,
+          "row": 102
+        },
+        {
+          "event": 1,
+          "row": 2
+        }
+      ],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "duplicate_above",
+      "dimension": "preserved_source_refs_and_triage_flags",
+      "mode": "evaluate",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        }
+      ],
+      "copies": [
+        {
+          "event": 0,
+          "row": 101
+        },
+        {
+          "event": 1,
+          "row": 102
+        },
+        {
+          "event": 1,
+          "row": 2
+        }
+      ],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 3,
+          "off": 3
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "id": "fingerprint_equal",
+      "dimension": "rule_fingerprint_separate",
+      "mode": "prepared",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 1
+        },
+        {
+          "id": "e4",
+          "at": "2020-01-20T12:00:00+00:00",
+          "user": "user-a",
+          "rule": 1
+        }
+      ],
+      "copies": [],
+      "expected_hits": [],
+      "blocked": []
+    },
+    {
+      "id": "fingerprint_above",
+      "dimension": "rule_fingerprint_separate",
+      "mode": "prepared",
+      "policy_offset": 0,
+      "daily_threshold": 2,
+      "off_threshold": 99,
+      "events": [
+        {
+          "id": "e1",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e2",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e3",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 0
+        },
+        {
+          "id": "e4",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 1
+        },
+        {
+          "id": "e5",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 1
+        },
+        {
+          "id": "e6",
+          "at": "2020-01-20T08:00:00+00:00",
+          "user": "user-a",
+          "rule": 1
+        }
+      ],
+      "copies": [],
+      "expected_hits": [
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 0,
+          "unique": 3,
+          "off": 3
+        },
+        {
+          "user": "user-a",
+          "date": "2020-01-20",
+          "rule": 1,
+          "unique": 3,
+          "off": 3
+        }
+      ],
+      "blocked": []
+    }
+  ]
+}

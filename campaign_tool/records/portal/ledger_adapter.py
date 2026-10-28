@@ -22,7 +22,7 @@ def verify_cas(path, digest, size):
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
     try:
         before=os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.geteuid() or before.st_mode&0o077 or before.st_size!=size:
+        if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.geteuid() or before.st_mode&0o277 or before.st_size!=size:
             raise PortalError("canonical_cas_invalid")
         sha=hashlib.sha256()
         while chunk:=os.read(fd,65536):
@@ -119,8 +119,8 @@ class WP1LedgerAdapter:
             finally:
                 os.close(src)
             try:
+                os.chmod(name,0o400)
                 os.link(name,destination)
-                os.chmod(destination,0o400)
                 sync_dir(self.cas)
             except FileExistsError:
                 pass

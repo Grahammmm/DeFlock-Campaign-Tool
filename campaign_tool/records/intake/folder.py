@@ -265,9 +265,13 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
             for n,page in enumerate(pdf.pages,1):
                 loc=dict(page=n)
                 try:
-                    text=page.extract_text() or ""; needed=not text.strip()
+                    from campaign_tool.records.pdf_eligibility import probe
+                    text=page.extract_text() or ""
+                    eligibility=probe(page,sha,n,text)
+                    needed=eligibility['decision']!='native_sufficient'
                     if needed: issue("ocr_needed_or_blank_page",loc); stats["ocr_needed"]+=1
-                    emit("pdf_page",loc,text,dict(ocr_needed=needed,visual_review="not_done"))
+                    if eligibility['decision']=='unresolved': issue('page_eligibility_unresolved',loc)
+                    emit("pdf_page",loc,text,dict(ocr_needed=needed,visual_review="not_done",eligibility=eligibility))
                 except Exception as e: issue("page_error",loc,e); emit("pdf_page",loc,"",dict(error=str(e),ocr_needed=True))
         elif form=="eml":
             from campaign_tool.records.intake import mail_wire

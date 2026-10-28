@@ -20,6 +20,32 @@ or GitHub. Parent reports carry source versions, counts and fixed hold reasons.
 
 ## Enrollment and acceptance
 
+The separate mail-export census/config slice is documented in
+[RECORDS-MAIL-ADOPTION.md](RECORDS-MAIL-ADOPTION.md#staged-legacy-census-and-config-v2-s3a).
+Its owner-only v2 config independently pins each historical subject's creating
+mail policy; a resolution row cannot choose its own trust root. Census proposals
+are not scope decisions or semantic acceptance. The local-capture policy,
+Option B resolution table/schema pin, and generic fail-closed readers remain
+unchanged. S3b adds the shared pure all-state planner and locked config/policy
+reload to `records adopt-mail`: blocked originals or any inventory drift refuse
+the whole apply before recovery, run creation, CAS/catalog or ledger writes.
+Complete receipts and existing mail resolutions still participate in drift
+checks. Held-only unresolved originals remain accepted gaps; rfc822 remains
+unsupported. Binding/dependent chains run in deterministic topological order,
+failed predecessors suppress all transitive dependents, and partial/postcommit
+recovery reuses committed immutable bindings without another append.
+
+For successor mail policies the original creating policy must be independently
+subject-pinned in the owner-only config. Binding receipt, occurrence and legacy
+binding remain fixed; only approved dependent coverage may grow. The stored row
+keeps its creating policy hash. Reports expose counts, safe codes and baseline/
+after pair digests, not original listings. Acceptance compares every baseline
+K0 original row and every R0 resolution row unchanged, PLUS exact allowed new
+original/resolution sets; whole-originals-table equality would reject legitimate
+new EML/attachment insertions. See the T4B runbook for the separate inventory,
+TEST-policy, revised-number and live-policy human gates. Synthetic green tests
+never supply those decisions or semantic/legal acceptance.
+
 Construct `CanonicalOriginalReconciler(mail_root, intake_output, database,
 policy=...)` using the existing pinned startup identity and lifecycle:
 

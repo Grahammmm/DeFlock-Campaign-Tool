@@ -212,7 +212,8 @@ class FailureTest(unittest.TestCase):
         self.assertEqual(results(self.ws.out), {})  # failures are never cached
 
     def test_native_text_pages_are_left_to_native_extraction(self):
-        digest = self.ws.add("mixed.pdf", scanned_pdf([noise_page(3), noise_page(4)]))
+        # A skip marker only qualifies on an actual native-only page (X6).
+        digest = self.ws.add("mixed.pdf", mixed_pdf([["Approved"], noise_page(4)]))
         self.ws.write_queue()
         vision = FakeVision()
         stage.run(self.ws.args(self.config), runner=FakeTools({digest: ["[OCR skipped on page(s) 1]", CLEAN]}),
@@ -312,7 +313,9 @@ class PageAttributionTest(unittest.TestCase):
 
     def run_pages(self, sidecar_pages, page_count=None):
         page_count = len(sidecar_pages) if page_count is None else page_count
-        digest = self.ws.add("doc.pdf", scanned_pdf([noise_page(40 + i) for i in range(page_count)]))
+        digest = self.ws.add("doc.pdf", mixed_pdf([
+            ["Approved"] if i < len(sidecar_pages) and sidecar_pages[i] is None else noise_page(40 + i)
+            for i in range(page_count)]))
         self.ws.write_queue()
         tools, vision = FakeTools({digest: sidecar_pages}), FakeVision()
         line, code, outcomes = stage.run(self.ws.args(self.config), runner=tools, transport=vision)

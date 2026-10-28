@@ -833,9 +833,25 @@ class OcrStage:
             return Outcome(item.document_id, "ocr_failed", "ocrmypdf_sidecar_inconsistent")
 
         pages, outcome, transient = [], Outcome(item.document_id, "ocr_complete"), False
+        skip_reader = None
         for number, text in enumerate(texts, start=1):
             row: dict = {"page": number}
             if SKIPPED_PAGE.match(text.strip()):
+                # OCRmyPDF's --skip-text marker is not coverage evidence. Until
+                # a selective stamped-scan backend is qualified, refuse this
+                # document closed rather than publish a false native success.
+                from pypdf import PdfReader
+                from campaign_tool.records.pdf_eligibility import probe
+                try:
+                    if skip_reader is None:
+                        skip_reader = PdfReader(source, strict=False)
+                    page = skip_reader.pages[number - 1]
+                    eligibility = probe(page, item.sha256, number, page.extract_text() or '')
+                except Exception:
+                    return Outcome(item.document_id, 'ocr_failed', 'page_eligibility_unresolved')
+                if eligibility['decision'] != 'native_sufficient':
+                    return Outcome(item.document_id, 'ocr_failed', 'page_eligibility_unresolved')
+                row['eligibility'] = eligibility
                 row.update(status="native_text", engine=None, method=None)
                 pages.append((row, None))
                 continue
