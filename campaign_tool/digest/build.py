@@ -89,6 +89,9 @@ def build_digest(sha256, units, package, jurisdiction, law_package_version, priv
                  model_config=None, allowlist=(), denylist=(), event_date=None, opener=None):
     if model_config is not None and model_config.privacy_tier != privacy_tier:
         raise ModelError("model privacy tier does not match digest privacy tier")
+    # Both redaction stages must see the same policy, including one-shot inputs.
+    allowlist = tuple(allowlist)
+    denylist = tuple(denylist)
     redacted, counts = redact_units(units, allowlist=allowlist, denylist=denylist)
     hits = run_detectors(redacted, package)
     digest = empty_digest(sha256, jurisdiction, law_package_version, privacy_tier, DETECTOR_VERSION)
