@@ -24,6 +24,11 @@ def _identity(row, kind):
             return None
         if any(type(value[k]) is not int or value[k] < 1 for k in ('uidvalidity', 'uid')):
             return None
+        # An absent kind is the legacy message shape; any explicit discriminator
+        # other than 'mail' or 'attachment' (null, bool, number, list, unknown
+        # string) is not a mail occurrence and has no reconcilable identity.
+        if 'kind' in row and not (isinstance(row['kind'], str) and row['kind'] in ('mail', 'attachment')):
+            return None
         if row.get('kind') == 'attachment':
             part = value.get('mime_part_path')
             if not isinstance(part, str) or not re.fullmatch(r'[1-9][0-9]*(?:\.[1-9][0-9]*)*', part):
