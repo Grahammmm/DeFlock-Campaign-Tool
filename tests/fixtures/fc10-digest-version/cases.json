@@ -1,0 +1,64 @@
+{
+  "schema": "fc10-digest-version/v1",
+  "synthetic_only": true,
+  "note": "Fictional digest inputs. The original's sha256 is derived from original_text at test time; no real record is used.",
+  "base": {
+    "original_text": "Fictional synthetic original for the FC10 digest version experiment.",
+    "jurisdiction": "us-ca",
+    "law_package_version": "fictional-package-1",
+    "privacy_tier": "strict_local",
+    "detector_version": "fictional-detector-1"
+  },
+  "populated": {
+    "model_id": "fictional-model",
+    "scope": "Fictional retention policy scope",
+    "actors": ["Fictional agency"],
+    "dates": [{"date": "2026-01-01", "locator": {"unit": 1}, "note": "fictional"}],
+    "statements": [{"text": "A fictional retention statement.", "locator": {"unit": 1}}],
+    "conclusions": [{"text": "A fictional verified observation.", "confidence": "verified",
+                     "locator": {"unit": 1}, "rule_id": null}]
+  },
+  "accepted": [
+    {"id": "integer_one", "dimension": "integer_one", "kind": "json", "value": 1}
+  ],
+  "rejected": [
+    {"id": "bool_true", "dimension": "bool_true_false", "kind": "json", "value": true,
+     "error": "$.schema_version: expected type integer, got bool", "new_gate": true},
+    {"id": "bool_false", "dimension": "bool_true_false", "kind": "json", "value": false,
+     "error": "$.schema_version: expected constant 1, got False", "new_gate": false},
+    {"id": "float_one", "dimension": "float_one_fraction_nonfinite", "kind": "float_text", "value": "1.0",
+     "error": "$.schema_version: expected type integer, got float", "new_gate": true},
+    {"id": "float_fraction", "dimension": "float_one_fraction_nonfinite", "kind": "float_text", "value": "1.5",
+     "error": "$.schema_version: expected constant 1, got 1.5", "new_gate": false},
+    {"id": "float_nan", "dimension": "float_one_fraction_nonfinite", "kind": "float_text", "value": "nan",
+     "error": "$.schema_version: expected constant 1, got nan", "new_gate": false},
+    {"id": "float_inf", "dimension": "float_one_fraction_nonfinite", "kind": "float_text", "value": "inf",
+     "error": "$.schema_version: expected constant 1, got inf", "new_gate": false},
+    {"id": "float_negative_inf", "dimension": "float_one_fraction_nonfinite", "kind": "float_text", "value": "-inf",
+     "error": "$.schema_version: expected constant 1, got -inf", "new_gate": false},
+    {"id": "null", "dimension": "null_string_array_object", "kind": "json", "value": null,
+     "error": "$.schema_version: expected constant 1, got None", "new_gate": false},
+    {"id": "string_one", "dimension": "null_string_array_object", "kind": "json", "value": "1",
+     "error": "$.schema_version: expected constant 1, got '1'", "new_gate": false},
+    {"id": "array_one", "dimension": "null_string_array_object", "kind": "json", "value": [1],
+     "error": "$.schema_version: expected constant 1, got [1]", "new_gate": false},
+    {"id": "object_one", "dimension": "null_string_array_object", "kind": "json", "value": {"version": 1},
+     "error": "$.schema_version: expected constant 1, got {'version': 1}", "new_gate": false},
+    {"id": "integer_zero", "dimension": "integer_zero_two", "kind": "json", "value": 0,
+     "error": "$.schema_version: expected constant 1, got 0", "new_gate": false},
+    {"id": "integer_two", "dimension": "integer_zero_two", "kind": "json", "value": 2,
+     "error": "$.schema_version: expected constant 1, got 2", "new_gate": false}
+  ],
+  "required_dimensions": [
+    "integer_one",
+    "bool_true_false",
+    "float_one_fraction_nonfinite",
+    "null_string_array_object",
+    "integer_zero_two",
+    "ordinary_empty_digest",
+    "populated_digest_with_current_source",
+    "same_object_and_bytes_preserved",
+    "negative_control_killed",
+    "negative_control_restored"
+  ]
+}

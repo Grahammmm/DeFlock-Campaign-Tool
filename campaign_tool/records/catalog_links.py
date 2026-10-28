@@ -65,13 +65,24 @@ def _checked_input(path: Path) -> Path:
 def _read(path: Path) -> bytes:
     try:
         path = _checked_input(path)
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as source:
-            before = os.fstat(source.fileno())
+        # O_NONBLOCK: a path swapped for a FIFO after the precheck must not
+        # block this open; the descriptor is refused below before any read.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
             if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_INPUT_BYTES:
                 raise LinkError("invalid_input_file")
-            data = source.read(MAX_INPUT_BYTES + 1)
-            after = os.fstat(source.fileno())
+            chunks, remaining = [], MAX_INPUT_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(fd, min(remaining, 1024 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
         identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
         if len(data) > MAX_INPUT_BYTES or identity(before) != identity(after):
             raise LinkError("source_changed_or_oversize")

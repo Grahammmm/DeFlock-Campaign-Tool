@@ -1,0 +1,81 @@
+{
+  "schema": "fc12-bundle-snapshot/v1",
+  "synthetic_only": true,
+  "note": "Fictional data only. No agency, request, person or document here is real. Hashes are derived by the test from these texts; none are embedded.",
+  "base": {
+    "original_text": "fictional original document for the FC12 bundle snapshot experiment",
+    "other_original_text": "a second fictional original document for the FC12 bundle snapshot experiment",
+    "receipt": {
+      "schema": "format-extraction-v1",
+      "original_changed": false,
+      "status": "complete",
+      "parser": "synthetic-fixture",
+      "parser_version": "0",
+      "route": {"format": "pdf"},
+      "pages": [{"page_no": 1, "status": "ok"}, {"page_no": 2, "status": "ok"}],
+      "units": [
+        {"kind": "text", "locator": {"page": 1, "bbox": [0, 0, 612, 792], "region": {"x": 10, "y": 20}},
+         "text": "Fictional Example Agency notice: audit entries are kept for 30 days.",
+         "data": {"cells": ["alpha", "beta"], "meta": {"source": "synthetic"}}},
+        {"kind": "table", "locator": {"page": 2, "bbox": [0, 0, 612, 396], "region": {"x": 5, "y": 6}},
+         "text": "system,days\nsynthetic,30",
+         "data": {"cells": ["system", "days"], "meta": {"source": "synthetic"}}},
+        {"kind": "text", "locator": {"page": 2}, "text": "this unit has no data member and becomes a normalization gap"}
+      ]
+    },
+    "extra_context": {"campaign": {"labels": ["synthetic", "fixture"], "notes": {"tier": "fictional"}}},
+    "extra_raw_unit": {"kind": "text", "locator": {"page": 3, "region": {"x": 1, "y": 2}}, "text": "an appended fictional unit", "data": {"cells": []}},
+    "expected_counts": {"declared_unit_count": 3, "normalized_unit_count": 2,
+                        "normalization_gaps": [{"code": "unit_normalization_failed", "ordinal": 3}]}
+  },
+  "required_dimensions": [
+    "unit_locator_alias", "unit_data_alias", "bundle_units_alias", "bundle_source_context_alias",
+    "bundle_source_receipts_alias", "receipt_pages_alias", "receipt_units_alias", "receipt_extra_context_alias",
+    "caller_append", "caller_remove", "caller_reorder", "output_not_input", "repeated_equal_hashes",
+    "derived_hashes_exact", "tamper_rejected", "count_conservation", "validator_not_resealing",
+    "negative_control_killed", "negative_control_restored"
+  ],
+  "cases": [
+    {"id": "unit:locator_nested_dict_set", "target": "unit", "direction": "input", "path": ["locator", "region", "x"], "op": "set", "value": 999, "new_gate": true, "dimensions": ["unit_locator_alias"]},
+    {"id": "unit:locator_nested_list_append", "target": "unit", "direction": "input", "path": ["locator", "bbox"], "op": "append", "value": 1, "new_gate": true, "dimensions": ["unit_locator_alias", "caller_append"]},
+    {"id": "unit:locator_top_key_add", "target": "unit", "direction": "input", "path": ["locator", "added"], "op": "set", "value": "late", "new_gate": true, "dimensions": ["unit_locator_alias"]},
+    {"id": "unit:data_nested_dict_set", "target": "unit", "direction": "input", "path": ["data", "meta", "source"], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["unit_data_alias"]},
+    {"id": "unit:data_nested_list_reorder", "target": "unit", "direction": "input", "path": ["data", "cells"], "op": "reverse", "new_gate": true, "dimensions": ["unit_data_alias", "caller_reorder"]},
+    {"id": "unit:data_nested_list_remove", "target": "unit", "direction": "input", "path": ["data", "cells"], "op": "pop", "new_gate": true, "dimensions": ["unit_data_alias", "caller_remove"]},
+    {"id": "unit:text_replace_control", "target": "unit", "direction": "input", "path": ["text"], "op": "set", "value": "replaced top-level text", "new_gate": false, "dimensions": []},
+
+    {"id": "bundle:units_append_control", "target": "bundle", "direction": "input", "path": ["units"], "op": "append", "value": "<extra_unit>", "new_gate": false, "dimensions": ["caller_append"]},
+    {"id": "bundle:units_remove_control", "target": "bundle", "direction": "input", "path": ["units"], "op": "pop", "new_gate": false, "dimensions": ["caller_remove"]},
+    {"id": "bundle:units_reorder_control", "target": "bundle", "direction": "input", "path": ["units"], "op": "reverse", "new_gate": false, "dimensions": ["caller_reorder"]},
+    {"id": "bundle:unit_nested_set", "target": "bundle", "direction": "input", "path": ["units", 0, "data", "cells", 0], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["bundle_units_alias"]},
+    {"id": "bundle:unit_member_set", "target": "bundle", "direction": "input", "path": ["units", 0, "text"], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["bundle_units_alias"]},
+    {"id": "bundle:source_context_nested_append", "target": "bundle", "direction": "input", "path": ["source_context", "<original>", "pages"], "op": "append", "value": {"page_no": 9, "status": "ok"}, "new_gate": true, "dimensions": ["bundle_source_context_alias", "caller_append"]},
+    {"id": "bundle:source_context_key_add", "target": "bundle", "direction": "input", "path": ["source_context", "<other>"], "op": "set", "value": {"format": "late"}, "new_gate": true, "dimensions": ["bundle_source_context_alias"]},
+    {"id": "bundle:source_receipts_append_control", "target": "bundle", "direction": "input", "path": ["source_receipts"], "op": "append", "value": {"original_sha256": "<other>", "receipt_sha256": "<receipt_sha>", "attempt_kind": "native", "declared_unit_count": 0, "normalized_unit_count": 0}, "new_gate": false, "dimensions": ["caller_append"]},
+    {"id": "bundle:source_receipts_entry_set", "target": "bundle", "direction": "input", "path": ["source_receipts", 0, "normalized_unit_count"], "op": "set", "value": 0, "new_gate": true, "dimensions": ["bundle_source_receipts_alias"]},
+
+    {"id": "receipt:units_data_nested_set", "target": "receipt", "direction": "input", "path": ["receipt", "units", 0, "data", "cells", 0], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["receipt_units_alias"]},
+    {"id": "receipt:units_locator_nested_set", "target": "receipt", "direction": "input", "path": ["receipt", "units", 1, "locator", "bbox", 3], "op": "set", "value": 1, "new_gate": true, "dimensions": ["receipt_units_alias"]},
+    {"id": "receipt:units_data_key_add", "target": "receipt", "direction": "input", "path": ["receipt", "units", 1, "data", "added"], "op": "set", "value": true, "new_gate": true, "dimensions": ["receipt_units_alias"]},
+    {"id": "receipt:units_append_control", "target": "receipt", "direction": "input", "path": ["receipt", "units"], "op": "append", "value": "<extra_raw_unit>", "new_gate": false, "dimensions": ["caller_append"]},
+    {"id": "receipt:units_remove_control", "target": "receipt", "direction": "input", "path": ["receipt", "units"], "op": "pop", "new_gate": false, "dimensions": ["caller_remove"]},
+    {"id": "receipt:units_reorder_control", "target": "receipt", "direction": "input", "path": ["receipt", "units"], "op": "reverse", "new_gate": false, "dimensions": ["caller_reorder"]},
+    {"id": "receipt:pages_nested_set", "target": "receipt", "direction": "input", "path": ["receipt", "pages", 0, "status"], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["receipt_pages_alias"]},
+    {"id": "receipt:pages_append", "target": "receipt", "direction": "input", "path": ["receipt", "pages"], "op": "append", "value": {"page_no": 3, "status": "ok"}, "new_gate": true, "dimensions": ["receipt_pages_alias", "caller_append"]},
+    {"id": "receipt:pages_remove", "target": "receipt", "direction": "input", "path": ["receipt", "pages"], "op": "pop", "new_gate": true, "dimensions": ["receipt_pages_alias", "caller_remove"]},
+    {"id": "receipt:pages_reorder", "target": "receipt", "direction": "input", "path": ["receipt", "pages"], "op": "reverse", "new_gate": true, "dimensions": ["receipt_pages_alias", "caller_reorder"]},
+    {"id": "receipt:extra_context_nested_list_append", "target": "receipt", "direction": "input", "path": ["extra_context", "campaign", "labels"], "op": "append", "value": "late", "new_gate": true, "dimensions": ["receipt_extra_context_alias", "caller_append"]},
+    {"id": "receipt:extra_context_nested_dict_set", "target": "receipt", "direction": "input", "path": ["extra_context", "campaign", "notes", "tier"], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["receipt_extra_context_alias"]},
+    {"id": "receipt:extra_context_top_set_control", "target": "receipt", "direction": "input", "path": ["extra_context", "campaign"], "op": "set", "value": "replaced", "new_gate": false, "dimensions": []},
+
+    {"id": "output:unit_locator_nested", "target": "unit", "direction": "output", "path": ["locator", "region", "x"], "op": "set", "value": 999, "new_gate": true, "dimensions": ["output_not_input", "unit_locator_alias"]},
+    {"id": "output:unit_data_nested", "target": "unit", "direction": "output", "path": ["data", "cells"], "op": "append", "value": "late", "new_gate": true, "dimensions": ["output_not_input", "unit_data_alias"]},
+    {"id": "output:bundle_unit_nested", "target": "bundle", "direction": "output", "path": ["units", 0, "data", "meta", "source"], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["output_not_input", "tamper_rejected"]},
+    {"id": "output:bundle_source_context_nested", "target": "bundle", "direction": "output", "path": ["source_context", "<original>", "pages", 0, "status"], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["output_not_input", "tamper_rejected"]},
+    {"id": "output:bundle_source_receipt_entry", "target": "bundle", "direction": "output", "path": ["source_receipts", 0, "attempt_kind"], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["output_not_input", "tamper_rejected"]},
+    {"id": "output:receipt_units_data", "target": "receipt", "direction": "output", "path": ["units", 0, "data", "cells", 1], "op": "set", "value": "changed", "new_gate": true, "dimensions": ["output_not_input", "tamper_rejected"]},
+    {"id": "output:receipt_pages", "target": "receipt", "direction": "output", "path": ["source_context", "<original>", "pages"], "op": "reverse", "new_gate": true, "dimensions": ["output_not_input", "tamper_rejected"]},
+    {"id": "output:receipt_extra_context", "target": "receipt", "direction": "output", "path": ["source_context", "<original>", "campaign", "labels"], "op": "pop", "new_gate": true, "dimensions": ["output_not_input", "tamper_rejected"]},
+    {"id": "output:receipt_units_list_control", "target": "receipt", "direction": "output", "path": ["units"], "op": "reverse", "new_gate": false, "dimensions": ["tamper_rejected"]}
+  ]
+}
