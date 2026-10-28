@@ -1,0 +1,10 @@
+{
+  "schema": "fc15-message-id-case/v1",
+  "fictional": true,
+  "agency": "Example Agency",
+  "request": "R-FC15",
+  "as_of": "2030-02-01T00:00:00Z",
+  "time": "2030-01-01T10:00:00Z",
+  "case_pairs": [["A", "a"], ["Opaque-ID", "opaque-id"], ["Σ", "σ"]],
+  "cases": ["case_distinct", "exact_replay", "fallback_event_id", "content_conflict", "source_cited", "scope_and_preservation"]
+}
