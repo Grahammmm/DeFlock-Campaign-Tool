@@ -218,10 +218,17 @@ class StructuredPipelineTests(unittest.TestCase):
         self.assertEqual(self.entry(args)["reason"], "unrelated_support_record")
 
     def test_missing_redacted_rows_do_not_create_subset_rates(self):
-        args, _ = self.prepare("purpose-quality")
+        args, con = self.prepare("purpose-quality")
         extra = copy.deepcopy(args["normalized"]["units"][0])
         extra["record"]["event_id"] = "redacted-event"
         extra["record"]["fields"]["purpose"] = {"state": "redacted"}
+        # The redacted row is its own extracted unit, not a second reading of unit-0.
+        source = copy.deepcopy(args["source_bindings"][0])
+        source.update(unit_id="redacted-unit", artifact_sha256=digest(extra["record"]))
+        args["source_bindings"].append(source)
+        extra["source"] = {k: source[k] for k in ("unit_id", "artifact_sha256")}
+        args["normalized"]["source_inventory_sha256"] = digest(args["source_bindings"])
+        args["joins"] = canonical_joins(con, args["source_bindings"])
         args["normalized"]["units"].append(extra)
         entry = self.entry(args, "purpose-quality")
         self.assertEqual(entry["status"], "blocked")
