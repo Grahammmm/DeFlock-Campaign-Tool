@@ -1,0 +1,4499 @@
+{
+  "schema": "fc16.law-business-oracle/v1",
+  "provenance": {
+    "source_shape": "campaign_tool/law.py: deadline, summary and render_request on the admitted main; synthetic package authored only for those accessed fields",
+    "oracle": "Literal calendar and expected dates authored without product imports. Weekdays independently checked with stdlib calendar and Gregorian Zeller formula; expected results selected only by frozen table position and weekday eligibility.",
+    "limits": "Fictional weekday-only reminder calendar; not a legal calendar, receipt fact, timeliness determination or acceptance.",
+    "synthetic_holiday": "2020-03-02"
+  },
+  "calendar": [
+    {
+      "date": "2020-02-24",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-02-25",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-02-26",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-02-27",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-02-28",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-02-29",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-01",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-02",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": "holiday"
+    },
+    {
+      "date": "2020-03-03",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-04",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-05",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-06",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-07",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-08",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-09",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-10",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-11",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-12",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-13",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-14",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-15",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-16",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-17",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-18",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-19",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-20",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-21",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-22",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-23",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-24",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-25",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-26",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-27",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-28",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-29",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-03-30",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-03-31",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-01",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-02",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-03",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-04",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-05",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-06",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-07",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-08",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-09",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-10",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-11",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-12",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-13",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-14",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-15",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-16",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-17",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-18",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-19",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-20",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-21",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-22",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-23",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-24",
+      "weekday": "Friday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-25",
+      "weekday": "Saturday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-26",
+      "weekday": "Sunday",
+      "business_eligible": false,
+      "label": ""
+    },
+    {
+      "date": "2020-04-27",
+      "weekday": "Monday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-28",
+      "weekday": "Tuesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-29",
+      "weekday": "Wednesday",
+      "business_eligible": true,
+      "label": ""
+    },
+    {
+      "date": "2020-04-30",
+      "weekday": "Thursday",
+      "business_eligible": true,
+      "label": ""
+    }
+  ],
+  "receipts": [
+    "2020-02-24",
+    "2020-02-25",
+    "2020-02-26",
+    "2020-02-27",
+    "2020-02-28",
+    "2020-02-29",
+    "2020-03-01",
+    "2020-03-02",
+    "2020-03-03",
+    "2020-03-04",
+    "2020-03-05",
+    "2020-03-06",
+    "2020-03-07",
+    "2020-03-08"
+  ],
+  "determination_counts": [
+    1,
+    2,
+    5,
+    10
+  ],
+  "extension_counts": [
+    0,
+    3
+  ],
+  "cases": [
+    {
+      "id": "2020-02-24-1-0-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-25"
+    },
+    {
+      "id": "2020-02-24-1-0-false-business",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-25"
+    },
+    {
+      "id": "2020-02-24-1-0-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-25"
+    },
+    {
+      "id": "2020-02-24-1-0-true-business",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-25"
+    },
+    {
+      "id": "2020-02-24-1-3-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-25"
+    },
+    {
+      "id": "2020-02-24-1-3-false-business",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-25"
+    },
+    {
+      "id": "2020-02-24-1-3-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-24-1-3-true-business",
+      "received": "2020-02-24",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-24-2-0-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-24-2-0-false-business",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-24-2-0-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-24-2-0-true-business",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-24-2-3-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-24-2-3-false-business",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-24-2-3-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-24-2-3-true-business",
+      "received": "2020-02-24",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-24-5-0-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-24-5-0-false-business",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-24-5-0-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-24-5-0-true-business",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-24-5-3-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-24-5-3-false-business",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-24-5-3-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-24-5-3-true-business",
+      "received": "2020-02-24",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-24-10-0-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-24-10-0-false-business",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-24-10-0-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-24-10-0-true-business",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-24-10-3-false-calendar",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-24-10-3-false-business",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-24-10-3-true-calendar",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-02-24-10-3-true-business",
+      "received": "2020-02-24",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-02-25-1-0-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-25-1-0-false-business",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-25-1-0-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-25-1-0-true-business",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-25-1-3-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-25-1-3-false-business",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-26"
+    },
+    {
+      "id": "2020-02-25-1-3-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-25-1-3-true-business",
+      "received": "2020-02-25",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-25-2-0-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-25-2-0-false-business",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-25-2-0-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-25-2-0-true-business",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-25-2-3-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-25-2-3-false-business",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-25-2-3-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-25-2-3-true-business",
+      "received": "2020-02-25",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-25-5-0-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-25-5-0-false-business",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-25-5-0-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-25-5-0-true-business",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-25-5-3-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-25-5-3-false-business",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-25-5-3-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-25-5-3-true-business",
+      "received": "2020-02-25",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-25-10-0-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-25-10-0-false-business",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-25-10-0-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-25-10-0-true-business",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-25-10-3-false-calendar",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-25-10-3-false-business",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-25-10-3-true-calendar",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-25-10-3-true-business",
+      "received": "2020-02-25",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-26-1-0-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-26-1-0-false-business",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-26-1-0-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-26-1-0-true-business",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-26-1-3-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-26-1-3-false-business",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-27"
+    },
+    {
+      "id": "2020-02-26-1-3-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-26-1-3-true-business",
+      "received": "2020-02-26",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-26-2-0-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-26-2-0-false-business",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-26-2-0-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-26-2-0-true-business",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-26-2-3-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-26-2-3-false-business",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-26-2-3-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-26-2-3-true-business",
+      "received": "2020-02-26",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-26-5-0-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-26-5-0-false-business",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-26-5-0-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-26-5-0-true-business",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-26-5-3-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-26-5-3-false-business",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-26-5-3-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-26-5-3-true-business",
+      "received": "2020-02-26",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-26-10-0-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-02-26-10-0-false-business",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-02-26-10-0-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-02-26-10-0-true-business",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-02-26-10-3-false-calendar",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-02-26-10-3-false-business",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-02-26-10-3-true-calendar",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-26-10-3-true-business",
+      "received": "2020-02-26",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-02-27-1-0-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-27-1-0-false-business",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-27-1-0-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-27-1-0-true-business",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-27-1-3-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-27-1-3-false-business",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-02-28"
+    },
+    {
+      "id": "2020-02-27-1-3-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-27-1-3-true-business",
+      "received": "2020-02-27",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-27-2-0-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-27-2-0-false-business",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-27-2-0-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-27-2-0-true-business",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-27-2-3-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-27-2-3-false-business",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-27-2-3-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-27-2-3-true-business",
+      "received": "2020-02-27",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-27-5-0-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-27-5-0-false-business",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-27-5-0-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-27-5-0-true-business",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-27-5-3-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-27-5-3-false-business",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-27-5-3-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-27-5-3-true-business",
+      "received": "2020-02-27",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-27-10-0-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-02-27-10-0-false-business",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-02-27-10-0-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-02-27-10-0-true-business",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-02-27-10-3-false-calendar",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-02-27-10-3-false-business",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-02-27-10-3-true-calendar",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-02-27-10-3-true-business",
+      "received": "2020-02-27",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-02-28-1-0-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-28-1-0-false-business",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-28-1-0-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-28-1-0-true-business",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-28-1-3-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-02-29"
+    },
+    {
+      "id": "2020-02-28-1-3-false-business",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-28-1-3-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-28-1-3-true-business",
+      "received": "2020-02-28",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-28-2-0-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-28-2-0-false-business",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-28-2-0-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-28-2-0-true-business",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-28-2-3-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-28-2-3-false-business",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-28-2-3-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-28-2-3-true-business",
+      "received": "2020-02-28",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-28-5-0-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-28-5-0-false-business",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-28-5-0-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-28-5-0-true-business",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-28-5-3-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-28-5-3-false-business",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-28-5-3-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-02-28-5-3-true-business",
+      "received": "2020-02-28",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-02-28-10-0-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-28-10-0-false-business",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-28-10-0-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-28-10-0-true-business",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-28-10-3-false-calendar",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-02-28-10-3-false-business",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-28-10-3-true-calendar",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-02-28-10-3-true-business",
+      "received": "2020-02-28",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-02-29-1-0-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-29-1-0-false-business",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-29-1-0-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-29-1-0-true-business",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-29-1-3-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-01"
+    },
+    {
+      "id": "2020-02-29-1-3-false-business",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-29-1-3-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-02-29-1-3-true-business",
+      "received": "2020-02-29",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-29-2-0-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-29-2-0-false-business",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-29-2-0-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-29-2-0-true-business",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-29-2-3-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-02-29-2-3-false-business",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-02-29-2-3-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-29-2-3-true-business",
+      "received": "2020-02-29",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-29-5-0-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-29-5-0-false-business",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-29-5-0-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-29-5-0-true-business",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-29-5-3-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-02-29-5-3-false-business",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-02-29-5-3-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-02-29-5-3-true-business",
+      "received": "2020-02-29",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-02-29-10-0-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-29-10-0-false-business",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-29-10-0-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-29-10-0-true-business",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-29-10-3-false-calendar",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-02-29-10-3-false-business",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-29-10-3-true-calendar",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-02-29-10-3-true-business",
+      "received": "2020-02-29",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-01-1-0-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-03-01-1-0-false-business",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-03-01-1-0-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-03-01-1-0-true-business",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-03-01-1-3-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-03-01-1-3-false-business",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-02"
+    },
+    {
+      "id": "2020-03-01-1-3-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-01-1-3-true-business",
+      "received": "2020-03-01",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-01-2-0-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-01-2-0-false-business",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-01-2-0-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-01-2-0-true-business",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-01-2-3-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-01-2-3-false-business",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-01-2-3-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-2-3-true-business",
+      "received": "2020-03-01",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-5-0-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-5-0-false-business",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-5-0-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-5-0-true-business",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-5-3-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-5-3-false-business",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-01-5-3-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-01-5-3-true-business",
+      "received": "2020-03-01",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-01-10-0-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-01-10-0-false-business",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-01-10-0-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-01-10-0-true-business",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-01-10-3-false-calendar",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-01-10-3-false-business",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-01-10-3-true-calendar",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-14"
+    },
+    {
+      "id": "2020-03-01-10-3-true-business",
+      "received": "2020-03-01",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-02-1-0-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-02-1-0-false-business",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-02-1-0-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-02-1-0-true-business",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-02-1-3-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-02-1-3-false-business",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-03"
+    },
+    {
+      "id": "2020-03-02-1-3-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-02-1-3-true-business",
+      "received": "2020-03-02",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-02-2-0-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-02-2-0-false-business",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-02-2-0-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-02-2-0-true-business",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-02-2-3-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-02-2-3-false-business",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-02-2-3-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-02-2-3-true-business",
+      "received": "2020-03-02",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-02-5-0-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-02-5-0-false-business",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-02-5-0-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-02-5-0-true-business",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-02-5-3-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-02-5-3-false-business",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-02-5-3-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-02-5-3-true-business",
+      "received": "2020-03-02",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-02-10-0-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-02-10-0-false-business",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-02-10-0-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-02-10-0-true-business",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-02-10-3-false-calendar",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-02-10-3-false-business",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-02-10-3-true-calendar",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-15"
+    },
+    {
+      "id": "2020-03-02-10-3-true-business",
+      "received": "2020-03-02",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-19"
+    },
+    {
+      "id": "2020-03-03-1-0-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-03-1-0-false-business",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-03-1-0-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-03-1-0-true-business",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-03-1-3-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-03-1-3-false-business",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-04"
+    },
+    {
+      "id": "2020-03-03-1-3-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-03-1-3-true-business",
+      "received": "2020-03-03",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-03-2-0-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-03-2-0-false-business",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-03-2-0-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-03-2-0-true-business",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-03-2-3-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-03-2-3-false-business",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-03-2-3-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-03-2-3-true-business",
+      "received": "2020-03-03",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-03-5-0-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-03-5-0-false-business",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-03-5-0-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-03-5-0-true-business",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-03-5-3-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-03-5-3-false-business",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-03-5-3-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-03-5-3-true-business",
+      "received": "2020-03-03",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-03-10-0-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-03-10-0-false-business",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-03-10-0-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-03-10-0-true-business",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-03-10-3-false-calendar",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-03-10-3-false-business",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-03-10-3-true-calendar",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-03-10-3-true-business",
+      "received": "2020-03-03",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-04-1-0-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-04-1-0-false-business",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-04-1-0-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-04-1-0-true-business",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-04-1-3-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-04-1-3-false-business",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-05"
+    },
+    {
+      "id": "2020-03-04-1-3-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-04-1-3-true-business",
+      "received": "2020-03-04",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-04-2-0-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-04-2-0-false-business",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-04-2-0-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-04-2-0-true-business",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-04-2-3-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-04-2-3-false-business",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-04-2-3-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-04-2-3-true-business",
+      "received": "2020-03-04",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-04-5-0-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-04-5-0-false-business",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-04-5-0-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-04-5-0-true-business",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-04-5-3-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-04-5-3-false-business",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-04-5-3-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-04-5-3-true-business",
+      "received": "2020-03-04",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-04-10-0-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-14"
+    },
+    {
+      "id": "2020-03-04-10-0-false-business",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-04-10-0-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-14"
+    },
+    {
+      "id": "2020-03-04-10-0-true-business",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-04-10-3-false-calendar",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-14"
+    },
+    {
+      "id": "2020-03-04-10-3-false-business",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-04-10-3-true-calendar",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-04-10-3-true-business",
+      "received": "2020-03-04",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-23"
+    },
+    {
+      "id": "2020-03-05-1-0-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-05-1-0-false-business",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-05-1-0-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-05-1-0-true-business",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-05-1-3-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-05-1-3-false-business",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-06"
+    },
+    {
+      "id": "2020-03-05-1-3-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-05-1-3-true-business",
+      "received": "2020-03-05",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-05-2-0-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-05-2-0-false-business",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-05-2-0-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-05-2-0-true-business",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-05-2-3-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-05-2-3-false-business",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-05-2-3-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-05-2-3-true-business",
+      "received": "2020-03-05",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-05-5-0-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-05-5-0-false-business",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-05-5-0-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-05-5-0-true-business",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-05-5-3-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-05-5-3-false-business",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-05-5-3-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-05-5-3-true-business",
+      "received": "2020-03-05",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-05-10-0-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-15"
+    },
+    {
+      "id": "2020-03-05-10-0-false-business",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-19"
+    },
+    {
+      "id": "2020-03-05-10-0-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-15"
+    },
+    {
+      "id": "2020-03-05-10-0-true-business",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-19"
+    },
+    {
+      "id": "2020-03-05-10-3-false-calendar",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-15"
+    },
+    {
+      "id": "2020-03-05-10-3-false-business",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-19"
+    },
+    {
+      "id": "2020-03-05-10-3-true-calendar",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-05-10-3-true-business",
+      "received": "2020-03-05",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-24"
+    },
+    {
+      "id": "2020-03-06-1-0-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-06-1-0-false-business",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-06-1-0-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-06-1-0-true-business",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-06-1-3-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-07"
+    },
+    {
+      "id": "2020-03-06-1-3-false-business",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-06-1-3-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-06-1-3-true-business",
+      "received": "2020-03-06",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-06-2-0-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-06-2-0-false-business",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-06-2-0-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-06-2-0-true-business",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-06-2-3-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-06-2-3-false-business",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-06-2-3-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-06-2-3-true-business",
+      "received": "2020-03-06",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-06-5-0-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-06-5-0-false-business",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-06-5-0-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-06-5-0-true-business",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-06-5-3-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-06-5-3-false-business",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-06-5-3-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-14"
+    },
+    {
+      "id": "2020-03-06-5-3-true-business",
+      "received": "2020-03-06",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-06-10-0-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-06-10-0-false-business",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-06-10-0-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-06-10-0-true-business",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-06-10-3-false-calendar",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-06-10-3-false-business",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-06-10-3-true-calendar",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-19"
+    },
+    {
+      "id": "2020-03-06-10-3-true-business",
+      "received": "2020-03-06",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-25"
+    },
+    {
+      "id": "2020-03-07-1-0-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-07-1-0-false-business",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-07-1-0-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-07-1-0-true-business",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-07-1-3-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-08"
+    },
+    {
+      "id": "2020-03-07-1-3-false-business",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-07-1-3-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-11"
+    },
+    {
+      "id": "2020-03-07-1-3-true-business",
+      "received": "2020-03-07",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-07-2-0-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-07-2-0-false-business",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-07-2-0-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-07-2-0-true-business",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-07-2-3-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-07-2-3-false-business",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-07-2-3-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-07-2-3-true-business",
+      "received": "2020-03-07",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-07-5-0-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-07-5-0-false-business",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-07-5-0-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-07-5-0-true-business",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-07-5-3-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-07-5-3-false-business",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-07-5-3-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-15"
+    },
+    {
+      "id": "2020-03-07-5-3-true-business",
+      "received": "2020-03-07",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-07-10-0-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-07-10-0-false-business",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-07-10-0-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-07-10-0-true-business",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-07-10-3-false-calendar",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-17"
+    },
+    {
+      "id": "2020-03-07-10-3-false-business",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-07-10-3-true-calendar",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-07-10-3-true-business",
+      "received": "2020-03-07",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-25"
+    },
+    {
+      "id": "2020-03-08-1-0-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-08-1-0-false-business",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-08-1-0-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-08-1-0-true-business",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-08-1-3-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-08-1-3-false-business",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-09"
+    },
+    {
+      "id": "2020-03-08-1-3-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-08-1-3-true-business",
+      "received": "2020-03-08",
+      "determination_days": 1,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-12"
+    },
+    {
+      "id": "2020-03-08-2-0-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-08-2-0-false-business",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-08-2-0-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-08-2-0-true-business",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-08-2-3-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-08-2-3-false-business",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-10"
+    },
+    {
+      "id": "2020-03-08-2-3-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-2-3-true-business",
+      "received": "2020-03-08",
+      "determination_days": 2,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-5-0-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-5-0-false-business",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-5-0-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-5-0-true-business",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-5-3-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-5-3-false-business",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-13"
+    },
+    {
+      "id": "2020-03-08-5-3-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-16"
+    },
+    {
+      "id": "2020-03-08-5-3-true-business",
+      "received": "2020-03-08",
+      "determination_days": 5,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-08-10-0-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-08-10-0-false-business",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-08-10-0-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-08-10-0-true-business",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 0,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-08-10-3-false-calendar",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "calendar",
+      "expected": "2020-03-18"
+    },
+    {
+      "id": "2020-03-08-10-3-false-business",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": false,
+      "day_type": "business",
+      "expected": "2020-03-20"
+    },
+    {
+      "id": "2020-03-08-10-3-true-calendar",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "calendar",
+      "expected": "2020-03-21"
+    },
+    {
+      "id": "2020-03-08-10-3-true-business",
+      "received": "2020-03-08",
+      "determination_days": 10,
+      "extension_days": 3,
+      "extension": true,
+      "day_type": "business",
+      "expected": "2020-03-25"
+    }
+  ],
+  "package": {
+    "jurisdiction": "zz-zz",
+    "status": "draft",
+    "reviewed_by": [],
+    "reviewed_at": null,
+    "records_law": {
+      "name": "Synthetic weekday reminder",
+      "citation": "Fictional demonstration only",
+      "determination_days": 1,
+      "determination_extension_days": 0,
+      "day_type": "business",
+      "fee_basis": "Synthetic basis",
+      "appeal": "No legal determination"
+    },
+    "rules": [],
+    "request_scopes": [
+      {
+        "scope_id": "synthetic",
+        "title": "Synthetic scope",
+        "items": [
+          "Synthetic item"
+        ],
+        "rule_ids": []
+      }
+    ]
+  }
+}
