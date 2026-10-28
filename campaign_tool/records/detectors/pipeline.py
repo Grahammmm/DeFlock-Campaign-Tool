@@ -153,7 +153,7 @@ def evaluate_structured(*, subject_sha256, normalized=None, source_bindings=None
         primary = [row for row in source_bindings if row["original_sha256"] == subject_sha256]
         require(primary, "primary_source_inventory_missing")
         require(normalized.get("source_inventory_sha256") == digest(source_bindings), "source_inventory_mismatch")
-        units, mapped = [], set()
+        units, mapped, first_records = [], set(), {}
         for item in normalized["units"]:
             require(set(item) == {"record", "source"}, "normalized_unit_shape")
             record, binding = item["record"], item["source"]
@@ -168,6 +168,12 @@ def evaluate_structured(*, subject_sha256, normalized=None, source_bindings=None
             require(record["original_sha256"] == subject_sha256 or
                     kind not in set().union(*TYPES.values()),
                     "unrelated_support_record")
+            # One extracted source unit has one canonical normalized record. An
+            # exactly equal repeated mapping keeps core duplicate accounting; a
+            # different record for the same unit is a reinterpretation, not data.
+            record_text = canonical(record)
+            require(first_records.setdefault(source["unit_id"], record_text) == record_text,
+                    "normalized_source_record_conflict")
             mapped.add(source["unit_id"])
             units.append(record)  # Do not put mapping metadata into core event identity.
         require(set(sources) == mapped, "normalization_inventory_incomplete")
