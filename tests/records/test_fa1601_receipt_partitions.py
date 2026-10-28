@@ -56,6 +56,10 @@ def offline_boundary(prefix):
 
     def connect(database, *args, **kwargs):
         value = os.fspath(database)
+        if value == ':memory:':
+            # Private in-memory database: no file, no real data. The product's
+            # schema-object check (FA102) builds its reference schema here.
+            return real_connect(database, *args, **kwargs)
         if value.startswith('file:'):
             from urllib.parse import unquote, urlsplit
             value = unquote(urlsplit(value).path)
