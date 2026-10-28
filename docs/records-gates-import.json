@@ -7,7 +7,7 @@
       "source_relative_path": "gates/validate_findings.py",
       "source_sha256": "24716e969cbc4ef4ba905c8c949f06e85dcc1439cc0c72f74163c1cd9670c42b",
       "engine_path": "campaign_tool/records/gates/validate_findings.py",
-      "engine_sha256": "efa2879d62c4d887096369355f8deb877bc131f5a7d61a3da5c10e879e39f58a",
+      "engine_sha256": "047d4f1b6ec6356c439063ebca8d15fceb0c0417d98d4987cd7696370465b1ac",
       "identical_bytes": false
     },
     {

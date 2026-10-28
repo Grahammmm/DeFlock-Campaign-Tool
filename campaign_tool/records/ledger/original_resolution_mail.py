@@ -117,32 +117,36 @@ def append(con, *, subject, policy, verification_receipt_sha256, occurrence_id, 
     """No commit or acquisition bypass: caller verifies MIME, CAS and receipt first."""
     from .original_resolution import _named_row, require, digest, ensure_schema, effective_original
     require(con.in_transaction, "original_resolution_transaction_required")
-    require(type(policy) is ApprovedMailResolutionPolicy, "resolution_policy_invalid")
-    ensure_schema(con)
-    original = _named_row(con, "SELECT * FROM originals WHERE sha256=?", (subject,))
-    require(original is not None, "original_resolution_not_unresolved")
-    original = dict(original)
-    entry = policy.admission(subject, original["bytes"])
-    require(verification_receipt_sha256 == entry["verification_receipt_sha256"]
-            and occurrence_id == entry["binding_occurrence_id"], "resolution_policy_receipt_mismatch")
-    kind, identity_hash = _occurrence(con, subject, occurrence_id, verification_receipt_sha256, storage_path, output_root=output_root)
-    payload = dict(schema=MAIL_SCHEMA, original_sha256=subject, declaration_sha256=digest(original),
-                   policy_sha256=policy.sha256, verification_receipt_sha256=verification_receipt_sha256,
-                   occurrence_id=occurrence_id, occurrence_kind=kind, mail_identity_sha256=identity_hash,
-                   legacy_binding_sha256=entry["legacy_binding_sha256"], byte_length=original["bytes"],
-                   role="original", scope="in_scope", storage_path=storage_path)
-    identity = digest(payload)
-    prior = con.execute("SELECT binding_sha256 FROM original_resolutions WHERE original_sha256=?", (subject,)).fetchone()
-    if prior:
-        require(prior[0] == identity, "original_resolution_conflict")
-        effective_original(con, subject, output_root=output_root, mail_policy=policy)
-        return identity, True
-    eligible(con, subject, original, entry, kind)
-    values = (subject, identity, payload["declaration_sha256"], policy.sha256,
-              verification_receipt_sha256, occurrence_id, store.canonical(payload))
     con.execute("SAVEPOINT mail_resolution_append")
-    pending = values
+    pending = None
+    writing = False
     try:
+        require(type(policy) is ApprovedMailResolutionPolicy, "resolution_policy_invalid")
+        ensure_schema(con)
+        original = _named_row(con, "SELECT * FROM originals WHERE sha256=?", (subject,))
+        require(original is not None, "original_resolution_not_unresolved")
+        original = dict(original)
+        entry = policy.admission(subject, original["bytes"])
+        require(verification_receipt_sha256 == entry["verification_receipt_sha256"]
+                and occurrence_id == entry["binding_occurrence_id"], "resolution_policy_receipt_mismatch")
+        kind, identity_hash = _occurrence(con, subject, occurrence_id, verification_receipt_sha256, storage_path, output_root=output_root)
+        payload = dict(schema=MAIL_SCHEMA, original_sha256=subject, declaration_sha256=digest(original),
+                       policy_sha256=policy.sha256, verification_receipt_sha256=verification_receipt_sha256,
+                       occurrence_id=occurrence_id, occurrence_kind=kind, mail_identity_sha256=identity_hash,
+                       legacy_binding_sha256=entry["legacy_binding_sha256"], byte_length=original["bytes"],
+                       role="original", scope="in_scope", storage_path=storage_path)
+        identity = digest(payload)
+        prior = con.execute("SELECT binding_sha256 FROM original_resolutions WHERE original_sha256=?", (subject,)).fetchone()
+        if prior:
+            require(prior[0] == identity, "original_resolution_conflict")
+            effective_original(con, subject, output_root=output_root, mail_policy=policy)
+            con.execute("RELEASE mail_resolution_append")
+            return identity, True
+        eligible(con, subject, original, entry, kind)
+        values = (subject, identity, payload["declaration_sha256"], policy.sha256,
+                  verification_receipt_sha256, occurrence_id, store.canonical(payload))
+        writing = True
+        pending = values
         con.create_function("original_resolution_append_allowed", -1, lambda *row: int(row == pending))
         try:
             con.execute("INSERT INTO original_resolutions VALUES(?,?,?,?,?,?,?)", values)
@@ -154,9 +158,12 @@ def append(con, *, subject, policy, verification_receipt_sha256, occurrence_id, 
     except BaseException as exc:
         con.execute("ROLLBACK TO mail_resolution_append")
         con.execute("RELEASE mail_resolution_append")
-        if isinstance(exc, sqlite3.Error):
+        if writing and isinstance(exc, sqlite3.Error):
             raise ValueError("original_resolution_write_failed") from None
         raise
+    finally:
+        pending = None
+        con.create_function("original_resolution_append_allowed", -1, lambda *row: 0)
     return identity, False
 
 

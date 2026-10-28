@@ -20,7 +20,10 @@ DRIFT_REASONS = frozenset({
 
 def _artifact(con, digest, limit):
     require(type(digest) is str and len(digest) == 64, "wp4_stage_artifact_identity")
-    row = con.execute("SELECT payload FROM stage_artifacts WHERE sha256=?", (digest,)).fetchone()
+    row = con.execute(
+        "SELECT payload FROM stage_artifacts WHERE sha256=? AND typeof(payload)='blob' AND length(payload)<=?",
+        (digest, limit),
+    ).fetchone()
     require(row is not None and type(row[0]) is bytes and len(row[0]) <= limit
             and _sha(row[0]) == digest, "wp4_stage_artifact_identity")
     return bytes(row[0])
