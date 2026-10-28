@@ -10,7 +10,9 @@ send is logged, an alert file is written, the report gets
 failure wording is used only when the run itself did not succeed.
 
 The message is built only from enums, counts and upper-snake codes in the
-report, never from record content. Credentials come from the process
+report, never from record content. It names the report mode after the run id
+and, unless the run was refused at preflight, ends with the coverage line from
+campaign_tool.records.run_coverage (coverage contract v1). Credentials come from the process
 environment or a KEY=VALUE env file: TELEGRAM_BOT_TOKEN and
 TELEGRAM_HOME_CHANNEL. They are never logged or written to the report or
 the alert file.
@@ -31,7 +33,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from campaign_tool.records import run_orchestrator, run_report
+from campaign_tool.records import run_coverage, run_orchestrator, run_report
 
 DEFAULT_API_BASE = "https://api.telegram.org"
 LOOPBACK_PREFIXES = ("http://127.0.0.1:", "http://[::1]:", "http://localhost:")
@@ -44,6 +46,10 @@ PREFLIGHT_MESSAGES = {
                       "check failed). No records work was attempted.",
     "TARGET_CONFIG_INVALID": "{label}: records run {run_id} refused to start (target stage plan "
                              "invalid). No records work was attempted.",
+    "DISK_SPACE_LOW": "{label}: records run {run_id} refused to start (runtime disk space below "
+                      "the configured minimum). No records work was attempted.",
+    "DISK_SPACE_UNKNOWN": "{label}: records run {run_id} refused to start (runtime disk space "
+                          "could not be measured). No records work was attempted.",
 }
 
 
@@ -78,25 +84,32 @@ def api_base_allowed(base: str) -> bool:
 
 
 def compose(report: dict[str, Any], label: str, exit_code: int) -> str:
-    """Build the message from report enums, counts and codes only."""
-    run_id = report["run_id"]
+    """Build the message from report enums, counts and codes only.
+
+    Every message names the report mode after the run id. Non-preflight
+    messages end with the coverage line (run_coverage, contract v1). The T17
+    cutover message is simply this message for the first scheduled live run.
+    """
+    run_id = f"{report['run_id']} ({report['mode']})"
     work = [stage for stage in report["stages"] if stage["name"] != "notify"]
     failed = [stage for stage in work if stage["status"] == "fail"]
     warned = [stage for stage in work if stage["status"] == "warn"]
     needs = len(report["needs_g"])
     tail = f" Needs G: {needs} item(s)." if needs else ""
+    coverage = "\n" + run_coverage.format_coverage(run_coverage.coverage_counts(report))
     if failed:
         first = failed[0]
         if first["error_code"] in PREFLIGHT_MESSAGES:
             return PREFLIGHT_MESSAGES[first["error_code"]].format(label=label, run_id=run_id) + tail
         return (f"{label}: records run {run_id} failed at stage {first['name']} "
                 f"({first['error_code']}, exit {exit_code}). The runtime needs attention. "
-                f"No replies were sent.{tail}")
+                f"No replies were sent.{tail}{coverage}")
     if warned:
         codes = ", ".join(f"{stage['name']} {stage['error_code']}" for stage in warned)
         return (f"{label}: records run {run_id} completed with warnings ({codes}). "
-                f"Details are in the private run report.{tail}")
-    return f"{label}: records run {run_id} completed. Details are in the private run report.{tail}"
+                f"Details are in the private run report.{tail}{coverage}")
+    return (f"{label}: records run {run_id} completed. "
+            f"Details are in the private run report.{tail}{coverage}")
 
 
 def send(api_base: str, token: str, chat_id: str, text: str) -> None:

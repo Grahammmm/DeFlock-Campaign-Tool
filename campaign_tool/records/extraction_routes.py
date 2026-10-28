@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from .intake import folder
 from .extract import ocr as page_ocr
 from .extract import vision as page_vision
@@ -220,7 +222,7 @@ def _child(source,sha,form,dest,root):
             units,parser,version=_image(source,raw);children=[]
         else:
             units,parser,version,children=_msg(source,raw,root)
-        with (dest/'units.jsonl').open('x') as stream:
+        with folder.private_file(dest/'units.jsonl',exclusive=True) as stream:
             for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
         issues=[{'code':'msg_attachment_bytes_not_preserved'}] if any(u['kind']=='msg_attachment' and not u['data']['bytes_preserved'] for u in units) else []
         metadata={'stage':'partial' if issues else 'complete','counts':{'units':len(units)},
@@ -239,7 +241,8 @@ def _child(source,sha,form,dest,root):
         if dependency:metadata['parser_components'][dependency]=_version(dependency)
         metadata['parser']='legacy-intake:'+form
         metadata['parser_version']=metadata['parser_components'].get(dependency,folder.VERSION+'/'+folder.ENGINE_REVISION)
-        (dest/'digest.json').write_text(json.dumps(metadata,sort_keys=True,ensure_ascii=True)+'\n')
+        with folder.private_file(dest/'digest.json') as stream:
+            stream.write(json.dumps(metadata,sort_keys=True,ensure_ascii=True)+'\n')
 
 def run_bounded(args,timeout):
     """Private diagnostics are discarded; timeout terminates the whole child group."""
@@ -269,14 +272,29 @@ def _read_output(dest):
     pages=page_manifest(units,metadata.get('counts',{}).get('pages_expected'),parser,version)
     return metadata,units,pages
 
-def _ocr_pages(pinned_sha, intake_root, ocr_root, page_numbers, tools, tool_signature, attempt_id, *, timeout=180, runner=subprocess.run, vision=None):
-    """Per-page OCR (the only OCR path) for the given non-ok pages.
+def _page_result(ocr_root, pinned_sha, receipt, loaded, attempt_id, vision, vision_timeout, runner):
+    """One page's result from its verified Tesseract receipt, running the vision fallback if eligible."""
+    page=receipt['locator']['page']
+    summary=ocr_summary(loaded)
+    vision_sidecar=None
+    if vision is not None and page_vision.needs_fallback(loaded['receipt']):
+        published=page_vision.run_fallback(ocr_root,pinned_sha,page,receipt['receipt_id'],vision_adapter=vision,
+                                           attempt_id=attempt_id,timeout=vision_timeout,runner=runner)
+        seen=page_vision.load_vision_receipt(ocr_root,pinned_sha,page,published['receipt_id'])
+        summary['vision']=vision_summary(seen)
+        vision_sidecar=seen['sidecar']
+    return {'summary':summary,'text':page_text(summary,loaded['sidecar'],vision_sidecar)}
+
+def _ocr_pages(pinned_sha, intake_root, ocr_root, page_numbers, tools, tool_signature, attempt_id, *, timeout=180, runner=subprocess.run, vision=None, vision_timeout=None):
+    """Per-page OCR (the only OCR path) for the given non-ok pages, without a document budget.
 
     Tesseract always runs first. With a vision adapter configured, a page whose Tesseract
     receipt is empty or low confidence (``page_vision.needs_fallback``) is sent to it once.
-    Returns page -> {'summary': page-manifest receipt summary, 'text': page text or None}.
+    ``timeout`` bounds each pdftoppm/tesseract child, ``vision_timeout`` (default ``timeout``)
+    each vision child. Returns page -> {'summary': page-manifest receipt summary, 'text': page text or None}.
     """
     page_numbers=tuple(page_numbers)
+    vision_timeout=timeout if vision_timeout is None else vision_timeout
     receipts=page_ocr.extract_image_only_pages(intake_root,pinned_sha,ocr_root,tool_signature=tool_signature,
         tools=tools,attempt_id=attempt_id,pages=page_numbers,timeout=timeout,runner=runner)
     if tuple(r['locator']['page'] for r in receipts)!=page_numbers:raise ValueError('ocr_receipt_page_mismatch')
@@ -284,16 +302,69 @@ def _ocr_pages(pinned_sha, intake_root, ocr_root, page_numbers, tools, tool_sign
     for receipt in receipts:
         page=receipt['locator']['page']
         loaded=page_ocr.load_page_receipt(ocr_root,pinned_sha,page,receipt['receipt_id'])
-        summary=ocr_summary(loaded)
-        vision_sidecar=None
-        if vision is not None and page_vision.needs_fallback(loaded['receipt']):
-            published=page_vision.run_fallback(ocr_root,pinned_sha,page,receipt['receipt_id'],vision_adapter=vision,
-                                               attempt_id=attempt_id,timeout=timeout,runner=runner)
-            seen=page_vision.load_vision_receipt(ocr_root,pinned_sha,page,published['receipt_id'])
-            summary['vision']=vision_summary(seen)
-            vision_sidecar=seen['sidecar']
-        results[page]={'summary':summary,'text':page_text(summary,loaded['sidecar'],vision_sidecar)}
+        results[page]=_page_result(ocr_root,pinned_sha,receipt,loaded,attempt_id,vision,vision_timeout,runner)
     return results
+
+# extract.ocr's receipt identity defaults (the routes never override them), read from its signature.
+_OCR_DEFAULTS=inspect.signature(page_ocr.extract_image_only_pages).parameters
+OCR_LANGUAGE=_OCR_DEFAULTS['language'].default
+OCR_LOW_CONFIDENCE=_OCR_DEFAULTS['low_confidence'].default
+
+def _ocr_receipt_published(ocr_root, pinned_sha, page, tool_signature, attempt_id):
+    """True when a Tesseract receipt for this page's exact identity is already published.
+
+    Such a page loads from disk and runs no child. The identity mirrors ``extract.ocr``
+    (either fidelity-hold state). Should that identity ever change, this answers False and the
+    page is charged its full allowance: conservative, never a shrunk timeout or an overrun.
+    """
+    page_dir=Path(ocr_root)/pinned_sha/f'page-{page:06d}'
+    for held in (False,True):
+        identity={'source_sha256':pinned_sha,'page':page,'version':page_ocr.VERSION,'tool_signature':tool_signature,
+                  'attempt_id':attempt_id,'language':OCR_LANGUAGE,'low_confidence':OCR_LOW_CONFIDENCE,'fidelity_hold':held}
+        if (page_dir/page_ocr._hash(page_ocr._json(identity))/'receipt.json').is_file():return True
+    return False
+
+def _vision_receipt_published(ocr_root, pinned_sha, page, loaded, vision, attempt_id):
+    """True when the vision receipt bound to this Tesseract receipt is already published (``extract.vision`` identity)."""
+    identity={'source_sha256':pinned_sha,'page':page,'version':page_vision.VERSION,
+              'base_receipt_id':loaded['receipt']['receipt_id'],'base_receipt_sha256':loaded['receipt_sha256'],
+              'engine':vision['engine'],'model':vision['model'],'adapter_signature':vision['signature'],'attempt_id':attempt_id}
+    return (Path(ocr_root)/'vision'/pinned_sha/f'page-{page:06d}'/page_ocr._hash(page_ocr._json(identity))/'receipt.json').is_file()
+
+def _ocr_pages_within_budget(pinned_sha, intake_root, ocr_root, page_numbers, tools, tool_signature, attempt_id, *, remaining, page_timeout, vision_timeout, runner=subprocess.run, vision=None):
+    """Per-page OCR under a per-document wall-clock budget (``remaining()`` -> seconds left).
+
+    Child timeouts are never shrunk to fit the budget: ``extract.ocr`` caches a blocked page
+    receipt (e.g. ``local_ocr_timeout``) permanently, so a shortened child would turn a slow
+    page into a lasting gap. Instead pages run one at a time, in order, and a page without a
+    published receipt starts only when its full allowance fits the remaining budget:
+    2 x ``page_timeout`` (pdftoppm + tesseract) plus ``vision_timeout`` with a vision adapter.
+    A page whose Tesseract receipt is already published costs nothing; if it still needs an
+    unpublished vision receipt it needs ``vision_timeout`` of budget.
+    Returns ``(results, done, pending)``: ``done`` counts pages that received a new receipt in
+    this call, ``pending`` lists the pages left without a result (empty when every page has one).
+    """
+    pages=tuple(page_numbers)
+    allowance=2*page_timeout+(vision_timeout if vision is not None else 0)
+    results={};done=0
+    for index,page in enumerate(pages):
+        published=_ocr_receipt_published(ocr_root,pinned_sha,page,tool_signature,attempt_id)
+        if not published and remaining()<allowance:
+            return results,done,list(pages[index:])
+        receipts=page_ocr.extract_image_only_pages(intake_root,pinned_sha,ocr_root,tool_signature=tool_signature,
+            tools=tools,attempt_id=attempt_id,pages=(page,),timeout=page_timeout,runner=runner)
+        if tuple(r['locator']['page'] for r in receipts)!=(page,):raise ValueError('ocr_receipt_page_mismatch')
+        receipt=receipts[0]
+        loaded=page_ocr.load_page_receipt(ocr_root,pinned_sha,page,receipt['receipt_id'])
+        new=not published
+        if (published and vision is not None and page_vision.needs_fallback(loaded['receipt'])
+                and not _vision_receipt_published(ocr_root,pinned_sha,page,loaded,vision,attempt_id)):
+            if remaining()<vision_timeout:
+                return results,done,list(pages[index:])
+            new=True
+        results[page]=_page_result(ocr_root,pinned_sha,receipt,loaded,attempt_id,vision,vision_timeout,runner)
+        done+=new
+    return results,done,[]
 
 def apply_ocr(native_units, expected_pages, parser, parser_version, results):
     """Merge per-page OCR results onto native units/pages; native-text pages keep their units."""
@@ -326,15 +397,30 @@ def _ocr_configuration(ocr_output_root, ocr_tools, tool_signature, vision=None):
         except ValueError as error:raise ValueError('ocr_configuration_invalid: '+str(error)) from None
     return {'root':root,'tools':ocr_tools,'tool_signature':tool_signature,'vision':vision}
 
-def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_root=None,ocr_tools=None,tool_signature=None,ocr_attempt_id='initial',ocr_runner=subprocess.run,ocr_vision=None):
+def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_root=None,ocr_tools=None,tool_signature=None,ocr_attempt_id='initial',ocr_runner=subprocess.run,ocr_vision=None,*,document_budget=None,ocr_page_timeout=None,ocr_vision_timeout=None,clock=time.monotonic):
     """Parse one immutable input in a child process; never promote review stages.
 
     OCR runs only through ``extract.ocr`` per-page receipts, only for PDF pages that are
     not ``ok``; native-text pages keep their units and page rows unchanged. ``ocr_vision``
     optionally names a local vision adapter (``extract.vision.adapter``) that receives only
     pages Tesseract left empty or below the confidence threshold.
+
+    ``timeout`` bounds the native parse child. ``ocr_page_timeout`` bounds each pdftoppm and
+    tesseract child and ``ocr_vision_timeout`` each vision child (both default to ``timeout``).
+    ``document_budget`` (seconds, measured with ``clock`` from the start of this call) is the
+    per-document wall-clock budget: with it, OCR pages are admitted one at a time only when
+    their full child allowance still fits (``_ocr_pages_within_budget``). When it runs out
+    before every non-ok page has a receipt the result is ``blocked`` with an
+    ``extraction_timeout`` issue carrying ``ocr_pages_done`` and ``ocr_pages_pending``; the
+    page receipts already published stay in the OCR root and are reused by the next call.
+    Without a budget (the default) every non-ok page is OCRed in one batch, as before.
     """
+    started=clock()
     if type(timeout)is not int or not 1<=timeout<=600:raise ValueError('timeout bound')
+    for value in (ocr_page_timeout,ocr_vision_timeout):
+        if value is not None and (type(value)is not int or not 1<=value<=600):raise ValueError('ocr timeout bound')
+    if document_budget is not None and (type(document_budget)is not int or not timeout<=document_budget<=86400):
+        raise ValueError('document budget bound')
     ocr_config=_ocr_configuration(ocr_output_root,ocr_tools,tool_signature,ocr_vision)
     if not isinstance(ocr_attempt_id,str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",ocr_attempt_id):
         raise ValueError('ocr_configuration_invalid: ocr_attempt_id must be a safe label')
@@ -361,7 +447,10 @@ def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_roo
                     if ocr_config is None:
                         result['issues'].append({'code':'ocr_runtime_unconfigured','owner':'runtime'})
                     else:
-                        _run_page_ocr(result,run,raw,expected_sha,metadata,ocr_config,ocr_attempt_id,timeout,ocr_runner)
+                        limits={'page':timeout if ocr_page_timeout is None else ocr_page_timeout,
+                                'vision':timeout if ocr_vision_timeout is None else ocr_vision_timeout,
+                                'remaining':None if document_budget is None else (lambda:started+document_budget-clock())}
+                        _run_page_ocr(result,run,raw,expected_sha,metadata,ocr_config,ocr_attempt_id,limits,ocr_runner)
         except subprocess.TimeoutExpired:
             result['status']='blocked';result['issues'].append({'code':'extraction_timeout','owner':'runtime'})
         except (ValueError,OSError,json.JSONDecodeError):
@@ -369,24 +458,35 @@ def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_roo
     result['receipt_sha256']=_write(run/'extraction.json',result)
     return result
 
-def _run_page_ocr(result,run,raw,expected_sha,metadata,config,attempt_id,timeout,runner):
+def _run_page_ocr(result,run,raw,expected_sha,metadata,config,attempt_id,limits,runner):
     non_ok=[p['page_no'] for p in result['pages'] if p['status']!='ok']
     intake=run/'ocr-source';intake.mkdir(mode=0o700);(intake/'blobs').mkdir(mode=0o700)
     fd=os.open(intake/'blobs'/expected_sha,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
     with os.fdopen(fd,'wb') as stream:stream.write(raw)
+    pending=[];done=0
     try:
-        results=_ocr_pages(expected_sha,intake,config['root'],non_ok,config['tools'],config['tool_signature'],attempt_id,timeout=timeout,runner=runner,vision=config.get('vision'))
+        if limits['remaining'] is None:
+            results=_ocr_pages(expected_sha,intake,config['root'],non_ok,config['tools'],config['tool_signature'],attempt_id,
+                               timeout=limits['page'],runner=runner,vision=config.get('vision'),vision_timeout=limits['vision'])
+        else:
+            results,done,pending=_ocr_pages_within_budget(expected_sha,intake,config['root'],non_ok,config['tools'],
+                config['tool_signature'],attempt_id,remaining=limits['remaining'],page_timeout=limits['page'],
+                vision_timeout=limits['vision'],runner=runner,vision=config.get('vision'))
     except Exception as error:  # bounded batch failure: native results stay partial
         result['issues'].append({'code':'ocr_failed','owner':'runtime','error_type':type(error).__name__})
+        return
+    if pending:
+        # Document budget exhausted: nothing to enroll yet. Published page receipts are reused next call.
+        result['status']='blocked'
+        result['issues'].append({'code':'extraction_timeout','owner':'runtime','ocr_pages_done':done,'ocr_pages_pending':pending})
         return
     expected=metadata.get('counts',{}).get('pages_expected')
     units,pages,receipts=apply_ocr(result['units'],expected,result['parser'],result['parser_version'],results)
     visions=vision_entries(results)
     extra={'vision_receipts':visions} if visions else {}
     derived=run/'ocr-derived';derived.mkdir(mode=0o700)
-    with (derived/'units.jsonl').open('x') as stream:
+    with folder.private_file(derived/'units.jsonl',exclusive=True) as stream:
         for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
-    os.chmod(derived/'units.jsonl',0o600)
     _write(derived/'digest.json',{**metadata,'ocr_receipts':receipts,**extra})
     result['pre_ocr']={'status':result['status'],'unit_count':len(result['units']),'page_count':len(result['pages']),'issues':list(result['issues'])}
     result.update(units=units,pages=pages,status='partial',ocr_receipts=receipts,ocr_output_root=str(config['root']),ocr_method=OCR_METHOD,**extra)

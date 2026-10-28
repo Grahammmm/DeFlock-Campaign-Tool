@@ -4,7 +4,8 @@ Per-page OCR in this module is the **only OCR path** in the engine's WP4
 extraction (`extraction_routes`). The separate Phase 2 queue stage for
 documents held as `awaiting_ocr` (OCRmyPDF first, local Qwen vision fallback)
 is described in `docs/RECORDS-OCR-STAGE.md`; it writes only its own output
-root and is not wired into WP4. WP4's
+root and is not wired into WP4. WP4 has its own optional local vision fallback
+after Tesseract (see "Local vision fallback (T6)" below). WP4's
 `extraction_routes.extract()` no longer runs whole-document OCRmyPDF or writes
 an `ocr.pdf` derivative; for PDF pages that are not natively `ok` it calls
 `extract_image_only_pages` and binds each page row to that page's immutable
@@ -109,7 +110,77 @@ read-only verified loader used by WP4 extraction and enrollment: it re-checks
 the receipt, manifest and every artifact hash and returns the exact
 `sidecar.txt` bytes.
 
+## Local vision fallback (T6)
+
+Tesseract always runs first. When the operator configures a local vision
+adapter, each page whose verified `local-ocr-3` receipt is
+`visual_check_queued` (low confidence) or blocked as
+`no_text_after_ocr`/`confidence_unavailable` is sent to it **once**.
+Fidelity-held pages and pages without a recorded raster are never sent.
+`campaign_tool.records.extract.vision` passes the hash-verified `page.png` of
+that Tesseract receipt to `argv + [page.png]` and reads UTF-8 text from stdout.
+The engine never names a provider, URL or model endpoint. The Flock image's
+command is `ocr_stage transcribe-png` (see `docs/RECORDS-OCR-STAGE.md`), which
+talks to the loopback llama.cpp server. Output is an immutable
+`local-vision-1` receipt under `<ocr_root>/vision/<sha>/page-N/<id>/` that names
+the exact Tesseract receipt (id and SHA-256) it supersedes. A timeout, a failed
+command, empty output, oversize output or non-UTF-8 output each becomes a
+blocked receipt. A rerun under the same identity reuses the receipt and makes
+no call.
+
+Vision is configured by an owner-only, non-symlink `local-vision-config-v1`
+file with exactly these keys:
+
+    {"schema": "local-vision-config-v1",
+     "argv": ["/opt/campaign-tool/venv/bin/python", "-I", "-m", "campaign_tool.records.ocr_stage",
+              "transcribe-png", "--config", "<owner-only ocr-stage config>"],
+     "engine": "qwen", "model": "qwen3.8:27b-thinkingcap-q6", "signature": "<operator pin>"}
+
+Use it with `records run --ocr --ocr-vision-config FILE`, or in a stage plan
+with `run_stages extract --ocr --ocr-vision-config FILE`. Both are off by
+default, and Phase 1 stage plans keep native-only extraction. In the stage,
+`--ocr` without installed tools fails as `EXTRACT_OCR_UNAVAILABLE`, a bad
+vision file fails as `EXTRACT_OCR_VISION_CONFIG_INVALID`, and a vision file
+without `--ocr` fails as `STAGE_CONFIG_INVALID`. None of these falls back
+silently.
+
+In the stage, `--ocr-page-timeout` bounds each pdftoppm and Tesseract child
+and `--ocr-vision-timeout` (only with a vision file) each vision child; both
+take 10-600 s and are refused without their flag. `--document-timeout` is the
+per-document wall-clock budget (10-1400 s, at most the stage `--timeout` minus
+15 s). Pages run one at a time, and a page without a published receipt starts
+only when its full allowance (2 x page timeout, plus the vision timeout) still
+fits the budget. A document whose budget runs out after at least one new page
+receipt is `DEFERRED_RUN_BUDGET` (progress, resumed next run); with no new
+receipt it is `EXTRACT_TIMEOUT`. The OCR LIVE plans pin 1200 s budget, 180 s
+page and 300 s vision timeouts (see `deploy/records-runtime/README.md`).
+
+A PDF that a native-only (Phase 1) run held as `AWAITING_OCR` keeps an open
+`extract:<sha256>:...ocr_runtime_unconfigured...` alert. On a stage run with
+`--ocr` and valid tools, an alert like that stops holding the document when its
+codes name no other hold (workbook, timeout, decoder, corrupt, refused, error).
+The document is then extracted with OCR, and once it is `EXTRACTED` the alert is
+marked `resolved`. Every other alert still holds, and retry caps are unchanged.
+Without `--ocr`, the hold works exactly as in Phase 1.
+
+Vision text replaces the page's Tesseract text only when the vision receipt
+produced text. Every OCR page row and unit records
+`engine=tesseract|<vision engine>`. When a vision receipt exists, the row also
+records `vision_receipt_id`, `vision_receipt_sha256` and `vision_status`, and
+`method` is `local-vision-1` when vision text is used. Enrollment captures
+each vision receipt as a closed CAS closure (`vision_receipt:<id>`,
+`vision_asset:<id>:<name>`) and re-verifies it from CAS bytes, checking it
+against the Tesseract receipt of the same page. Acceptance does the same: a
+Tesseract-blocked page is acceptable only when bound vision text exists. The
+accepted envelope lists `ocr.engines` per page and `ocr.vision_receipt_ids`.
+The visual-review hold is unchanged. Vision text is machine output and
+`not_reviewed`, like Tesseract text.
+
 Synthetic injected tests in `tests/records/test_ocr.py` never call real OCR
 executables. They cover retry history, index reconciliation, concurrent
 holds, page-failure continuation, tamper/symlink rejection, doctor and owner
-permissions. No private records are fixtures.
+permissions. `tests/records/test_ocr_vision.py` covers the fallback with
+injected OCR and vision runners: 10 clean scans make no vision call, empty and
+low-confidence pages go to vision and the ledger records `qwen`, failure
+dispositions, reuse, tamper and binding refusals, config loading and stage
+wiring. No private records are fixtures.

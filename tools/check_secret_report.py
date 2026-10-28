@@ -16,16 +16,16 @@ import sys
 
 APPROVED_MANIFESTS = {
     'docs/records-gates-import.json': (
-        '7fdbd0576e72dad7'  # pragma: allowlist secret
-        '4cd567436dec32b0'  # pragma: allowlist secret
-        '3a745b4fe8f23b7e'  # pragma: allowlist secret
-        '7776a834fcf471b5'  # pragma: allowlist secret
+        '79c496fcfcba8c46'  # pragma: allowlist secret
+        'a313e17d4e69caf6'  # pragma: allowlist secret
+        '3963ae7cf2de0ff1'  # pragma: allowlist secret
+        '1817d63755403fbb'  # pragma: allowlist secret
     ),
     'docs/records-intake-import.json': (
-        '16fac4f376734ba3'  # pragma: allowlist secret
-        'ee5a7a3db906a5f8'  # pragma: allowlist secret
-        '43ba1aa1490c4713'  # pragma: allowlist secret
-        'f995593c56cba413'  # pragma: allowlist secret
+        'fca5448e30d30871'  # pragma: allowlist secret
+        '5e6fa0ff1f544ddf'  # pragma: allowlist secret
+        '39a2f24282f1988e'  # pragma: allowlist secret
+        'dc92645cc7ecc87c'  # pragma: allowlist secret
     ),
 }
 
@@ -38,10 +38,10 @@ HASH_LINE = re.compile(r'\s*"(?:source_sha256|engine_sha256|schema_sha256)": "([
 # update of this digest.
 APPROVED_PIN_FILES = {
     'container/flock-ocr/pins.json': (
-        '02723ddca319da0f'  # pragma: allowlist secret
-        'ef5d5e41aa3aa148'  # pragma: allowlist secret
-        '286dcdbc80824dc0'  # pragma: allowlist secret
-        '687d9f1a2409c442'  # pragma: allowlist secret
+        '8a42359935e6cac7'  # pragma: allowlist secret
+        'bd874dec62be7482'  # pragma: allowlist secret
+        '156cd9ec2a70fb08'  # pragma: allowlist secret
+        '8a3735d5a303716b'  # pragma: allowlist secret
     ),
 }
 

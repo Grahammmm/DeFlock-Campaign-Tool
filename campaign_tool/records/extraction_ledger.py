@@ -8,8 +8,10 @@ import importlib
 import json
 import os
 import re
+import sqlite3
 import stat
 import tempfile
+from contextlib import closing
 from datetime import datetime,timezone
 from pathlib import Path
 from . import extraction_routes as routes
@@ -157,12 +159,35 @@ def store_blob(root,raw):
     return digest,str(target)
 
 
+def _verify_adapter_schema(con,absent_ok=False):
+    """Adapter-owned objects must equal SCHEMA itself, not merely carry its marker.
+
+    The reference is built from SCHEMA in a private in-memory database; no other
+    database is read. Only names declared by SCHEMA are compared, so unrelated WP1
+    objects are ignored. Read-only: nothing is repaired, committed or rolled back.
+    Returns False only when absent_ok and no adapter object exists at all (fresh);
+    any partial or altered adapter state raises.
+    """
+    with closing(sqlite3.connect(":memory:")) as reference:
+        reference.executescript(SCHEMA)
+        expected=sorted(tuple(r) for r in reference.execute("SELECT type,name,tbl_name,sql FROM sqlite_master"))
+    names=[row[1] for row in expected]
+    actual=sorted(tuple(r) for r in con.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name IN (%s)"%",".join("?"*len(names)),names))
+    if absent_ok and not actual:return False
+    if actual!=expected:raise ExtractionBindingError("adapter_schema_mismatch")
+    return True
+
+
 def ensure_schema(con):
-    found=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extraction_adapter_schema'").fetchone()
     digest=sha(SCHEMA.encode())
-    if not found:
+    # Definitions are verified before any marker column is read or any DDL runs.
+    if not _verify_adapter_schema(con,absent_ok=True):
         con.executescript("BEGIN IMMEDIATE;\n"+SCHEMA)
-        con.execute("INSERT INTO extraction_adapter_schema VALUES(?,?)",(1,digest));con.commit()
+        con.execute("INSERT INTO extraction_adapter_schema VALUES(?,?)",(1,digest))
+        try:_verify_adapter_schema(con)
+        except ExtractionBindingError:con.rollback();raise
+        con.commit()
     else:
         rows=con.execute("SELECT version,checksum FROM extraction_adapter_schema").fetchall()
         if len(rows)!=1 or tuple(rows[0])!=(1,digest):raise ExtractionBindingError("adapter_schema_mismatch")
@@ -175,8 +200,13 @@ def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
     if receipt.get("route",{}).get("route")!="extract:pdf" or not isinstance(entries,list) or not entries or len(entries)>MAX_UNITS:
         raise ExtractionBindingError("ocr_receipts_shape")
     if metadata.get("ocr_receipts")!=entries:raise ExtractionBindingError("ocr_receipts_metadata_mismatch")
+    visions=receipt.get("vision_receipts")
+    if ("vision_receipts" in receipt)!=("vision_receipts" in metadata) or metadata.get("vision_receipts")!=visions:
+        raise ExtractionBindingError("vision_receipts_metadata_mismatch")
+    if "vision_receipts" in receipt and (not isinstance(visions,list) or not visions or len(visions)>len(entries)):
+        raise ExtractionBindingError("vision_receipts_shape")
     initial_raw=read_file(run/"derived"/"digest.json",MAX_RECEIPT);initial=decode(initial_raw)
-    if not isinstance(initial,dict) or canonical(initial)!=canonical({k:v for k,v in metadata.items() if k!="ocr_receipts"}):
+    if not isinstance(initial,dict) or canonical(initial)!=canonical({k:v for k,v in metadata.items() if k not in ("ocr_receipts","vision_receipts")}):
         raise ExtractionBindingError("ocr_pre_ocr_metadata_mismatch")
     native_raw=read_file(run/"derived"/"units.jsonl",MAX_DERIVED)
     native=[decode(line) for line in native_raw.splitlines()]
@@ -185,7 +215,7 @@ def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
     root=receipt.get("ocr_output_root")
     if not isinstance(root,str) or not os.path.isabs(root):raise ExtractionBindingError("ocr_output_root_unbound")
     private_dir(root)
-    mapping={};texts={};sidecars={};unverified=False
+    mapping={};texts={};sidecars={};ocr_sidecars={};unverified=False
     for entry in entries:
         if not isinstance(entry,dict) or set(entry)!={"page","receipt_id","receipt_sha256","status"}:raise ExtractionBindingError("ocr_receipt_entry_shape")
         page=entry["page"]
@@ -201,20 +231,45 @@ def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
         if not isinstance(versions,dict) or not versions.get("tesseract"):unverified=True
         artifacts.update(closure)
         mapping[page]=summary
-        if summary["status"] in routes.OCR_TEXT_STATES:
-            sidecar=loaded["sidecar"]
-            if sidecar is None:raise ExtractionBindingError("ocr_sidecar_missing")
-            try:text=sidecar.decode("utf-8")
-            except UnicodeError:raise ExtractionBindingError("ocr_sidecar_encoding") from None
-            sidecars[page]=sidecar
-            texts[page]=routes.ocr_unit(page,summary["receipt_id"],summary["receipt_sha256"],text)
+        ocr_sidecars[page]=loaded["sidecar"]
+        if summary["status"] in routes.OCR_TEXT_STATES and loaded["sidecar"] is None:raise ExtractionBindingError("ocr_sidecar_missing")
+    vision_sidecars={}
+    for entry in visions or []:
+        # A vision receipt supersedes only the text of the Tesseract receipt it was made from.
+        if not isinstance(entry,dict) or set(entry)!={"page","receipt_id","receipt_sha256","status","engine","base_receipt_id"}:
+            raise ExtractionBindingError("vision_receipt_entry_shape")
+        page=entry["page"]
+        if type(page) is not int or page not in mapping or page in vision_sidecars or entry["base_receipt_id"]!=mapping[page]["receipt_id"]:
+            raise ExtractionBindingError("vision_receipt_unbound")
+        try:
+            closure=ocr_closure.vision_closure_artifacts(root, subject, page, checked_sha(entry["receipt_id"]))
+            loaded=ocr_closure.load_cas_vision(closure, subject, page, entry["receipt_id"])
+        except (ValueError,OSError):raise ExtractionBindingError("vision_receipt_unverified") from None
+        summary=routes.vision_summary(loaded)
+        if (loaded["receipt_sha256"]!=entry["receipt_sha256"] or summary["status"]!=entry["status"]
+                or summary["engine"]!=entry["engine"] or summary["base_receipt_id"]!=entry["base_receipt_id"]
+                or loaded["receipt"]["base"]["receipt_sha256"]!=mapping[page]["receipt_sha256"]):
+            raise ExtractionBindingError("vision_receipt_hash_mismatch")
+        artifacts.update(closure)
+        mapping[page]["vision"]=summary
+        vision_sidecars[page]=loaded["sidecar"]
+    for page,summary in mapping.items():
+        try:text=routes.page_text(summary,ocr_sidecars[page],vision_sidecars.get(page))
+        except UnicodeError:raise ExtractionBindingError("ocr_sidecar_encoding") from None
+        except ValueError:raise ExtractionBindingError("ocr_sidecar_missing") from None
+        if text is not None:
+            vision=summary.get("vision")
+            sidecars[page]=vision_sidecars[page] if vision is not None and vision["status"]==routes.VISION_TEXT_STATE else ocr_sidecars[page]
+            texts[page]=routes.text_unit(page,summary,text)
     if canonical(routes.merge_ocr_units(native,texts))!=canonical(units):raise ExtractionBindingError("ocr_unit_merge_mismatch")
     for unit in units:
         data=unit.get("data") if isinstance(unit.get("data"),dict) else {}
         if "ocr_receipt_id" in data:
             page=unit["locator"].get("page")
-            # The stored unit text bytes must be exactly the receipt's sidecar.txt bytes.
+            # The stored unit text bytes must be exactly the sidecar.txt bytes of the receipt it names.
             if page not in sidecars or sha(unit["text"].encode("utf-8"))!=sha(sidecars[page]) or data["ocr_receipt_id"]!=mapping[page]["receipt_id"]:
+                raise ExtractionBindingError("ocr_sidecar_hash_mismatch")
+            if data.get("vision_receipt_id") not in (None,(mapping[page].get("vision") or {}).get("receipt_id")):
                 raise ExtractionBindingError("ocr_sidecar_hash_mismatch")
     gaps.append("ocr_visual_review_required")
     if unverified:gaps.append("ocr_runtime_version_unverified")
@@ -329,7 +384,7 @@ class ExtractionLedgerAdapter:
         for row in rows:
             digest,path=store_blob(self.evidence_root,row["raw"])
             unit=row["unit"];ordinal=row["ordinal"]
-            provenance=canonical({"extraction_import_id":import_id,"receipt_sha256":receipt_sha256,"payload_sha256":digest,"ordinal":ordinal,"source_units_sha256":stored["derived_units"]["sha256"],"parser_provenance":"bound_to_derivative_metadata","parser_components":receipt.get("parser_components",{}),"ocr_receipt_ids":[entry["receipt_id"] for entry in receipt.get("ocr_receipts",[])],"review_status":"not_reviewed"})
+            provenance=canonical({"extraction_import_id":import_id,"receipt_sha256":receipt_sha256,"payload_sha256":digest,"ordinal":ordinal,"source_units_sha256":stored["derived_units"]["sha256"],"parser_provenance":"bound_to_derivative_metadata","parser_components":receipt.get("parser_components",{}),"ocr_receipt_ids":[entry["receipt_id"] for entry in receipt.get("ocr_receipts",[])],**({"vision_receipt_ids":[entry["receipt_id"] for entry in receipt["vision_receipts"]]} if receipt.get("vision_receipts") else {}),"review_status":"not_reviewed"})
             planned.append((sha(canonical([import_id,ordinal,digest]).encode()),subject,parser,version,canonical(unit["locator"]),unit["kind"],row["text_sha256"],path,"candidate_extracted",ordinal,provenance))
         manifest={"adapter":VERSION,"adapter_code_sha256":sha(Path(__file__).read_bytes()),"original_sha256":subject,"original_bytes":original["bytes"],"receipt_sha256":receipt_sha256,"artifacts":stored,"unit_ids":[r[0] for r in planned],"pages":receipt["pages"],"parser":parser,"parser_version":version,"source_status":receipt["status"],"issues":receipt["issues"],"gaps":gaps,"stage_promotions":0}
         if receipt.get("ocr_receipts"):

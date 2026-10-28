@@ -178,6 +178,208 @@ class RecoveryV2(unittest.TestCase):
             self.assertEqual(con.execute("SELECT COUNT(*),COUNT(DISTINCT sha) FROM occurrences").fetchone(), (2,1))
         self.assertNotIn(b"SYNTHETIC_CREDENTIAL_CANARY", b"".join(p.read_bytes() for p in (source/"payload").iterdir()))
 
+    def resolution_profile(self, *, local=False):
+        """Use the real S1 append/schema and canonical import fixtures, not fake SQL."""
+        from campaign_tool.records.ledger import original_resolution as resolution
+        from tests.records import test_original_reconciliation as local_fixtures
+        from tests.records import test_original_resolution_mail as mail_fixtures
+        case = (local_fixtures.OriginalReconciliationTests() if local else
+                mail_fixtures.OriginalResolutionMailTests())
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        output = case.backend.output if local else case.output
+        policy = case.policy
+        if not local:
+            blob = output / "blobs" / case.sha
+            blob.write_bytes(case.fixture.source.read_bytes()); blob.chmod(0o400)
+            case.receipt_path.chmod(0o400)
+            directory = output / "resolution-policies"; directory.mkdir(mode=0o700)
+            policy_path = directory / policy.sha256
+            policy_path.write_bytes(policy.raw); policy_path.chmod(0o400)
+        case.enroll()
+        path = self.source / "resolution.sqlite"
+        v1.snapshot_ledger(case.database, path)
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as con:
+            self.assertTrue(resolution.installed(con))
+            schema = schema_hash(con)
+            tables = tuple(row[0] for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"))
+            row = con.execute("SELECT policy_sha256,capture_receipt_sha256 FROM original_resolutions").fetchone()
+            self.assertEqual(row[0], policy.sha256)
+        directories = (output / "blobs", output / "resolution-policies",
+                       output / ("local-capture-receipts" if local else "verification-receipts"))
+        stores = [v2.Store("resolution-ledger", str(path), ("canonical_ledger",), "sqlite",
+                           required_tables=tables, schema_sha256=schema,
+                           # Intentionally does not mention policy, CAS or receipt:
+                           # fixed reader must enforce these independently.
+                           reference_sql=("SELECT 'receipt','unused','unused' WHERE 0",))]
+        for name, directory, key, role in (
+                ("resolution-blob", directories[0], case.sha, "original_blob"),
+                ("resolution-policy", directories[1], row[0], "resolution_policy"),
+                ("resolution-receipt", directories[2], row[1], "receipt")):
+            stores.append(v2.Store(name, str(directory / key), (role,), expected_sha256=key))
+        self.profile = replace(self.profile, roots=self.profile.roots + tuple(map(str, directories)),
+                               stores=self.profile.stores + tuple(stores))
+        self.q = replace(self.q, roots=self.profile.roots)
+        return policy, Path(stores[2].source)
+
+    def rewrite_manifest(self, source, mutate):
+        value = json.loads((source / "manifest.json").read_bytes())
+        mutate(value)
+        value["total_bytes"] = sum(row["bytes"] for row in value["files"])
+        raw = v1.canonical(value)
+        target = source / "manifest.json"; target.chmod(0o600)
+        target.write_bytes(raw); target.chmod(0o400)
+        return digest(raw)
+
+    def assert_restore_refused(self, source, pin, reason, name="refused-restore"):
+        before = v2._inventory(self.source)
+        target = self.base / name
+        with self.assertRaisesRegex(v1.RecoveryError, reason):
+            v2.restore_v2(str(source), str(target), manifest_sha256=pin)
+        self.assertFalse(target.exists(), "invalid closure must refuse before target creation")
+        self.assertEqual(v2._inventory(self.source), before)
+
+    def test_resolution_policy_roundtrip_mail_and_local_unchanged_pin(self):
+        # Each variant gets its own complete synthetic fixture and fresh target.
+        from campaign_tool.records.ledger import original_resolution as resolution
+        from campaign_tool.records.ledger.migrations import original_resolution_v001 as migration
+        for local in (False, True):
+            with self.subTest(local=local):
+                case = RecoveryV2("runTest"); case.setUp()
+                self.addCleanup(case.doCleanups)
+                policy, _ = case.resolution_profile(local=local)
+                source, pin = case.ready()
+                restored = case.base / "restored"
+                result = v2.restore_v2(str(source), str(restored), manifest_sha256=pin)
+                self.assertTrue(result["declared_scope_closed"])
+                self.assertFalse(result["runnable_reconciliation_proven"])
+                self.assertEqual((restored / "payload/resolution-policy").read_bytes(), policy.raw)
+                for row in json.loads((source / "manifest.json").read_bytes())["files"]:
+                    self.assertEqual((restored / row["path"]).read_bytes(), (source / row["path"]).read_bytes())
+                    self.assertEqual((restored / row["path"]).stat().st_mode & 0o777, 0o400)
+                with closing(sqlite3.connect((restored / "payload/resolution-ledger").as_uri() +
+                                             "?mode=ro&immutable=1", uri=True)) as con:
+                    self.assertTrue(resolution.installed(con))
+                    self.assertEqual(con.execute("SELECT value FROM ledger_meta WHERE key=?", (resolution.KEY,)).fetchone(),
+                                     (digest(migration.SQL.encode()),))
+
+    def test_resolution_policy_configured_without_rows_and_no_policy_compatibility(self):
+        # Configuration can precede the first resolution; an unreferenced but
+        # explicitly pinned policy must still be included and roundtrip.
+        directory = self.source / "resolution-policies"; directory.mkdir(mode=0o700)
+        raw = b"synthetic configured policy"; key = digest(raw)
+        path = directory / key; path.write_bytes(raw); path.chmod(0o400)
+        profile = replace(self.profile, stores=self.profile.stores + (
+            v2.Store("configured-policy", str(path), ("resolution_policy",), expected_sha256=key),))
+        result = self.backup(profile=profile)
+        self.assertTrue(v2.verify_v2(str(self.base / "backup"), manifest_sha256=result["manifest_sha256"])["declared_scope_closed"])
+        v2.restore_v2(str(self.base / "backup"), str(self.base / "restored"), manifest_sha256=result["manifest_sha256"])
+        self.assertEqual((self.base / "restored/payload/configured-policy").read_bytes(), raw)
+        # The pre-existing no-policy roundtrip remains a separate positive control.
+
+    def test_resolution_policy_source_missing_tampered_wrong_hash_links_and_permissions(self):
+        for mode, reason in (("missing", "unknown_or_missing"), ("tampered", "expected_hash_mismatch"),
+                             ("wrong-pin", "resolution_policy_store_invalid"),
+                             ("symlink", "symlink_rejected"), ("parent-symlink", "backup_v2_refused"),
+                             ("hardlink", "hardlink_rejected"), ("shared", "owner_only_permissions")):
+            with self.subTest(mode=mode):
+                case = RecoveryV2("runTest"); case.setUp(); self.addCleanup(case.doCleanups)
+                _, path = case.resolution_profile()
+                before = case.canonical.read_bytes()
+                if mode == "missing": path.unlink()
+                if mode == "tampered": path.chmod(0o600); path.write_bytes(b"tampered")
+                if mode == "wrong-pin": case.profile = case.changed("resolution-policy", expected_sha256="f" * 64)
+                if mode in ("symlink", "hardlink"):
+                    other = case.base / "other-policy"; other.write_bytes(path.read_bytes()); other.chmod(0o400)
+                    path.unlink()
+                    if mode == "symlink": path.symlink_to(other)
+                    else: os.link(other, path)
+                if mode == "parent-symlink":
+                    other = case.base / "policy-directory"; path.parent.rename(other)
+                    path.parent.symlink_to(other, target_is_directory=True)
+                if mode == "shared": path.chmod(0o644)
+                with self.assertRaisesRegex(v1.RecoveryError, reason): case.backup()
+                self.assertEqual(case.canonical.read_bytes(), before)
+                self.assertFalse((case.base / "backup/manifest.json").exists())
+
+    def test_resolution_policy_cannot_be_excluded_relabelled_or_unpinned(self):
+        self.resolution_profile()
+        for index, changes in enumerate((dict(included=False, roles=(), exclusion="rebuildable", expected_sha256=""),
+                                        dict(roles=("configuration",)), dict(expected_sha256=""))):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(v1.RecoveryError, "resolution_policy_store_invalid"):
+                    self.backup(profile=self.changed("resolution-policy", **changes), name="invalid-policy-" + str(index))
+                self.assertFalse((self.base / ("invalid-policy-" + str(index))).exists())
+
+    def test_policy_directory_cannot_be_excluded_without_resolution_rows(self):
+        # Isolate the directory gate: no resolution row or closure dependency
+        # can mask a missing check, and each attempted backup uses a new target.
+        directory = self.source / "resolution-policies"; directory.mkdir(mode=0o700)
+        raw = b"synthetic configured policy"; key = digest(raw)
+        path = directory / key; path.write_bytes(raw); path.chmod(0o400)
+        item = v2.Store("configured-policy", str(path), ("resolution_policy",), expected_sha256=key)
+        for index, changes in enumerate((dict(included=False, roles=(), exclusion="rebuildable", expected_sha256=""),
+                                        dict(roles=("configuration",)), dict(expected_sha256=""))):
+            profile = replace(self.profile, stores=self.profile.stores + (replace(item, **changes),))
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(v1.RecoveryError, "resolution_policy_store_invalid"):
+                    self.backup(profile=profile, name="configured-" + str(index))
+
+    def test_fixed_resolution_reader_closes_omitted_policy_receipt_and_cas(self):
+        self.resolution_profile()
+        # Keep every file declared/included and all ordinary roles/closure valid;
+        # only the resolution dependency role is removed (no allowlist masking).
+        for name, role in (("resolution-blob", "configuration"), ("resolution-receipt", "configuration")):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(v1.RecoveryError, "database_reference_not_closed"):
+                    self.backup(profile=self.changed(name, roles=(role,)), name=name)
+        # Omit policy physically AND from profile: ordinary inventories are valid.
+        policy = next(s for s in self.profile.stores if s.name == "resolution-policy")
+        Path(policy.source).unlink()
+        Path(policy.source).parent.rmdir()
+        profile = replace(self.profile, roots=tuple(r for r in self.profile.roots if r != str(Path(policy.source).parent)),
+                          stores=tuple(s for s in self.profile.stores if s != policy))
+        with self.assertRaisesRegex(v1.RecoveryError, "database_reference_not_closed"):
+            self.backup(profile=profile, q=replace(self.q, roots=profile.roots), name="omitted-policy")
+
+    def test_resolution_backup_policy_corruption_refuses_restore_before_mutation(self):
+        self.resolution_profile()
+        source, pin = self.ready()
+        path = source / "payload/resolution-policy"; raw = path.read_bytes()
+        for mode, reason in (("missing", "unclassified_backup_member"), ("tampered", "member_hash_or_size_mismatch"),
+                             ("symlink", "symlink_rejected"), ("shared", "owner_only_permissions")):
+            with self.subTest(mode=mode):
+                path.unlink(missing_ok=True)
+                if mode == "symlink": path.symlink_to(self.receipt)
+                elif mode != "missing":
+                    path.write_bytes(b"changed" if mode == "tampered" else raw)
+                    path.chmod(0o644 if mode == "shared" else 0o400)
+                self.assert_restore_refused(source, pin, reason, name=mode)
+
+    def test_resolution_resealed_manifest_omission_exclusion_wrong_path_and_role_refused(self):
+        for mode, reason in (("omission", "database_reference_not_closed"),
+                             ("exclusion", "resolution_policy_store_invalid"),
+                             ("path", "database_reference_not_closed"),
+                             ("role", "resolution_policy_store_invalid"),
+                             ("wrong-hash", "resolution_policy_store_invalid")):
+            with self.subTest(mode=mode):
+                case = RecoveryV2("runTest"); case.setUp(); self.addCleanup(case.doCleanups)
+                case.resolution_profile(); source, _ = case.ready()
+                def mutate(m):
+                    row = next(r for r in m["files"] if r["name"] == "resolution-policy")
+                    if mode in ("omission", "exclusion"):
+                        m["files"].remove(row); (source / row["path"]).unlink()
+                        if mode == "exclusion":
+                            m["excluded"].append(dict(name=row["name"], source=row["source"], reason="rebuildable"))
+                    if mode == "path":
+                        # Same digest/basename but another root: not row-bound.
+                        row["source"] = str(case.source / "resolution-policies" / row["sha256"])
+                    if mode == "role": row["roles"] = ["configuration"]
+                    if mode == "wrong-hash": row["sha256"] = "f" * 64
+                pin = case.rewrite_manifest(source, mutate)
+                case.assert_restore_refused(source, pin, reason)
+
     def test_missing_quiescence_rejected(self):
         with self.assertRaises(v1.RecoveryError):
             self.backup(q=replace(self.q, all_writers_stopped=False))

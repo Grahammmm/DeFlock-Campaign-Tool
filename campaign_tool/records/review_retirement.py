@@ -61,14 +61,27 @@ def arm(con):
     return held
 
 
+def _abort(con):
+    """End finish()'s own transaction after a failed step; the committed hold stays."""
+    con.rollback()
+
+
 def finish(con):
-    """Clear the hold only after every eligible current review has reopened."""
+    """Clear the hold only after every eligible current review has reopened.
+
+    A failure to BEGIN leaves any caller-owned transaction alone. Once BEGIN
+    succeeds, every failure (including interruption) rolls back and re-raises.
+    """
     con.execute("BEGIN IMMEDIATE")
-    pending(con)  # Invalid metadata never gets silently replaced.
-    if con.execute("SELECT 1 " + ELIGIBLE + " LIMIT 1").fetchone() is not None:
-        con.rollback()
-        return False
-    if con.execute("SELECT 1 FROM ledger_meta WHERE key=?", (KEY,)).fetchone() is not None:
-        _write(con, COMPLETE)
-    con.commit()
+    try:
+        pending(con)  # Invalid metadata never gets silently replaced.
+        if con.execute("SELECT 1 " + ELIGIBLE + " LIMIT 1").fetchone() is not None:
+            con.rollback()
+            return False
+        if con.execute("SELECT 1 FROM ledger_meta WHERE key=?", (KEY,)).fetchone() is not None:
+            _write(con, COMPLETE)
+        con.commit()
+    except BaseException:
+        _abort(con)
+        raise
     return True

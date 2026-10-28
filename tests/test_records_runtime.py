@@ -4,9 +4,12 @@ Every test renders the real templates with render.py into a temporary
 directory. The tests use a fake docker shim, the synthetic stub stage
 backend and a loopback fake Telegram server only. No network, no records.
 """
+import contextlib
 import fcntl
+import hashlib
 import http.server
 import importlib.util
+import io
 import json
 import os
 import re
@@ -20,6 +23,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +36,15 @@ FAKE_IMAGE = "sha256:" + "0" * 64
 STUB_TEMPLATE = RUNTIME / "targets" / "stub.json.in"
 SYNTHETIC_FIXTURE = ROOT / "examples" / "run-report" / "stub-stages.synthetic.json"
 STAGES = run_report.STAGE_ORDER
+# Phase 1 container plans, pinned at origin/main 4750f69: T6-plan (Phase 2 OCR
+# plans) must not change them. Update only with an intentional, reviewed edit.
+PHASE1_TEMPLATE_SHA256 = {
+    # pragma comments: SHA-256 of public committed templates, not credentials.
+    "live-container.json.in":
+        "ed928535b1b110fdd63ece9d47cecf770a097935c7c4e20a18a78fff40c73071",  # pragma: allowlist secret
+    "test-container.json.in":
+        "f4f042de70fd1fce1cdf36b1ca62c0cbc40f4f7369fabfc1ff25e77b60b7fc52",  # pragma: allowlist secret
+}
 
 FAKE_DOCKER = r"""#!/bin/sh
 # Synthetic docker shim. State lives in $STATE (rendered absolute path).
@@ -84,6 +97,47 @@ def free_port():
         return sock.getsockname()[1]
 
 
+COVERAGE_FIXTURE = ROOT / "examples" / "run-report" / "coverage-projection.synthetic.json"
+STUB_COVERAGE_LINE = ("Coverage: adopted 4 (+4 this run), coded-gap 0, awaiting_ocr 2, "
+                      "portal-held 0 [stub]")
+# Every lower-case word the notify templates may use. Anything else is free text.
+MESSAGE_VOCABULARY = set("""
+records run scheduled manual test completed with warnings details are in the private report
+needs g item s failed at stage exit runtime attention no replies were sent
+coverage adopted this coded gap awaiting_ocr portal held unknown stub
+could not start because docker or container was ready work attempted refused to
+configuration image check target plan invalid
+sync delta adoption extract digest_gates outputs notify synthetic
+disk space below configured minimum be measured
+""".split())
+
+
+def sent_text(call):
+    """The ``text`` field of one fake Telegram sendMessage call."""
+    return urllib.parse.parse_qs(call[1])["text"][0]
+
+
+def report_codes(report):
+    codes = {stage["error_code"] for stage in report["stages"] if stage["error_code"]}
+    codes.update(item["code"] for item in report["needs_g"])
+    for stage in report["stages"]:
+        codes.update(item["code"] for item in stage.get("outcomes", []))
+    return codes
+
+
+def assert_metadata_only(case, text, report):
+    """No path, URL, email or free text: only template words, counts, enums and report codes."""
+    for marker in ("/", "\\", "@", "://", "http", ".json", ".eml", ".pdf", "~"):
+        case.assertNotIn(marker, text)
+    rest = text.replace(report["run_id"], " ")
+    codes = set(re.findall(r"\b[A-Z][A-Z0-9_]{2,63}\b", rest))
+    case.assertLessEqual(codes, report_codes(report), text)
+    for code in codes:
+        rest = re.sub(rf"\b{code}\b", " ", rest)
+    words = set(re.findall(r"[a-z_]+", rest.lower()))
+    case.assertLessEqual(words, MESSAGE_VOCABULARY, text)
+
+
 class RuntimeHarness(unittest.TestCase):
     """Render the wrapper for a synthetic TEST target and run it."""
 
@@ -129,6 +183,8 @@ class RuntimeHarness(unittest.TestCase):
             "RUN_BUDGET_SECONDS": "600", "DEFAULT_TARGET": "TEST",
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": str(self.runtime / "run-records.sh"),
             "STUB_FIXTURE": str(self.fixture_path),
+            # 64 MiB floor: any CI or dev host has that much free scratch space.
+            "MIN_FREE_BYTES": str(64 * 1024 ** 2),
         }
         self.render()
 
@@ -223,7 +279,8 @@ class OrchestratedRunTests(RuntimeHarness):
         for index, name in enumerate(STAGES[:-1]):
             self.assertIn(f"stage {index + 1}/8 {name}: exit-on-fail={10 + index}", result.stdout)
         self.assertIn("preflight 1 lock", result.stdout)
-        self.assertIn("preflight 2 docker", result.stdout)
+        self.assertIn("preflight 2 disk", result.stdout)
+        self.assertIn("preflight 3 docker", result.stdout)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.target_dir.exists())
         self.assertFalse((self.runtime / "run-records.lock").exists())
@@ -259,6 +316,10 @@ class OrchestratedRunTests(RuntimeHarness):
         message = FakeTelegram.calls[0][1]
         self.assertIn("completed+with+warnings", message)
         self.assertNotIn("failed", message)
+        text = sent_text(FakeTelegram.calls[0])
+        self.assertIn(f"records run {report['run_id']} (test) completed with warnings", text)
+        self.assertTrue(text.endswith("\n" + STUB_COVERAGE_LINE), text)
+        assert_metadata_only(self, text, report)
         self.assertEqual(self.alerts(), [])
         self.assertIn("docker ready after 1/3 attempts", self.log())
 
@@ -410,6 +471,10 @@ class RobustnessTests(RuntimeHarness):
         self.assertEqual(report["needs_g"], [{"code": "DOCKER_UNAVAILABLE", "stage": "sync",
                                               "severity": "blocking", "count": 1}])
         self.assertIn("Docker", FakeTelegram.calls[0][1])
+        text = sent_text(FakeTelegram.calls[0])
+        self.assertIn(f"records run {report['run_id']} ({report['mode']}) could not start", text)
+        self.assertNotIn("Coverage:", text)
+        assert_metadata_only(self, text, report)
         self.assertEqual(self.log().count("retrying"), 2)
 
     def test_docker_comes_up_within_bound(self):
@@ -685,6 +750,81 @@ class StageProcessGroupTests(unittest.TestCase):
         self.assertEqual(report["stages"][-1]["error_code"], "NOTIFY_PENDING")
 
 
+class ComposeTests(unittest.TestCase):
+    """notify.compose(): mode after the run id, coverage line on non-preflight messages."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("records_runtime_notify",
+                                                      RUNTIME / "notify.py")
+        cls.notify = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.notify)
+        cls.cases = {case["name"]: case
+                     for case in json.loads(COVERAGE_FIXTURE.read_text(encoding="utf-8"))}
+
+    def compose(self, name, exit_code=0):
+        case = self.cases[name]
+        report = case["report"]
+        run_report.validate_run_report(report)
+        text = self.notify.compose(report, "Synthetic", exit_code)
+        assert_metadata_only(self, text, report)
+        return report, text, case["expected"]["line"]
+
+    def test_completed_message_has_mode_and_coverage_line(self):
+        report, text, line = self.compose("b_adoption_skipped_not_configured")
+        self.assertEqual(report["overall_status"], "ok")
+        self.assertEqual(text, f"Synthetic: records run {report['run_id']} (manual) completed. "
+                               f"Details are in the private run report. Needs G: 2 item(s).\n"
+                               f"{line}")
+
+    def test_warned_message_has_mode_and_coverage_line(self):
+        report, text, line = self.compose("a_live_shaped_scheduled_run")
+        self.assertEqual(report["overall_status"], "warn")
+        self.assertTrue(text.startswith(f"Synthetic: records run {report['run_id']} (scheduled) "
+                                        f"completed with warnings (portal PORTAL_HTTP_404)."), text)
+        self.assertTrue(text.endswith("\n" + line), text)
+        self.assertEqual(text.count("Coverage:"), 1)
+
+    def test_failed_message_has_mode_and_coverage_line(self):
+        report, text, line = self.compose("c_portal_and_extract_fail", exit_code=13)
+        self.assertEqual(report["overall_status"], "fail")
+        self.assertTrue(text.startswith(f"Synthetic: records run {report['run_id']} (scheduled) "
+                                        f"failed at stage portal (PORTAL_INTAKE_FAILED, exit 13)."),
+                        text)
+        self.assertTrue(text.endswith("\n" + line), text)
+
+    def test_stub_message_marks_stub(self):
+        _, text, line = self.compose("d_stub_run")
+        self.assertEqual(line, STUB_COVERAGE_LINE)
+        self.assertTrue(text.endswith("\n" + STUB_COVERAGE_LINE), text)
+
+    def test_preflight_refusals_carry_mode_but_no_coverage_line(self):
+        base = self.cases["a_live_shaped_scheduled_run"]["report"]
+        for code in self.notify.PREFLIGHT_MESSAGES:
+            for mode in ("scheduled", "manual", "test"):
+                with self.subTest(code=code, mode=mode):
+                    report = json.loads(json.dumps(base))
+                    report["mode"] = mode
+                    report["overall_status"] = "fail"
+                    for stage in report["stages"][:-1]:
+                        stage.update(status="skipped", counts={"input": 0, "output": 0,
+                                                               "failed": 0, "skipped": 0},
+                                     duration_seconds=None, error_code="UPSTREAM_FAILED")
+                        stage.pop("outcomes", None)
+                    report["stages"][0].update(status="fail", duration_seconds=1.0,
+                                               error_code=code,
+                                               counts={"input": 0, "output": 0, "failed": 1,
+                                                       "skipped": 0})
+                    report["needs_g"] = [{"code": code, "stage": "sync",
+                                          "severity": "blocking", "count": 1}]
+                    run_report.validate_run_report(report)
+                    text = self.notify.compose(report, "Synthetic", 75)
+                    self.assertIn(f"records run {report['run_id']} ({mode}) ", text)
+                    self.assertNotIn("Coverage:", text)
+                    self.assertNotIn("\n", text)
+                    assert_metadata_only(self, text, report)
+
+
 class RendererTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -704,7 +844,7 @@ class RendererTests(unittest.TestCase):
             "DOCKER_WAIT_DEADLINE": "600", "NOTIFY_TIMEOUT": "60",
             "RUN_BUDGET_SECONDS": "2640", "DEFAULT_TARGET": "TEST",
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": "/srv/runtime/run-records.sh",
-            "STUB_FIXTURE": "/srv/fixture.json",
+            "STUB_FIXTURE": "/srv/fixture.json", "MIN_FREE_BYTES": "2147483648",
         }
         self.targets = [("TEST", str(STUB_TEMPLATE))]
 
@@ -754,6 +894,148 @@ class RendererTests(unittest.TestCase):
         for name in ("TEST", "LIVE"):
             self.assertIsNone(re.search(r"@[A-Z_]+@",
                                         (out / "targets" / f"{name}.json").read_text()), name)
+
+    def test_live_mail_render_requires_safe_script_and_leaves_test_offline(self):
+        template = RUNTIME / "targets" / "live-mail-container.json.in"
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(template))]
+        for label, script in (("missing", None), ("relative", "sync.py"),
+                              ("unsafe", "/srv/sync.py;false")):
+            with self.subTest(label):
+                values = self.ocr_container_values()
+                if script is not None:
+                    values["CONTAINER_SYNC_SCRIPT"] = script
+                with self.assertRaises(self.render.RenderError):
+                    self.do_render(values, targets, self.tmp / label)
+        out = self.tmp / "mail"
+        values = self.ocr_container_values(CONTAINER_SYNC_SCRIPT="/srv/mail/sync.py")
+        self.do_render(values, targets, out)
+        test = json.loads((out / "targets/TEST.json").read_text())
+        live = json.loads((out / "targets/LIVE.json").read_text())
+        self.assertNotIn("--sync-script", test["stages"][0]["argv"])
+        self.assertEqual(live["stages"][0]["argv"][-2:],
+                         ["--sync-script", "/srv/mail/sync.py"])
+        self.assertEqual(test["stages"][1:], live["stages"][1:])
+        self.assertEqual(live["stages"][0]["on_fail"], "stop")
+
+    # ---- Phase 2 (T6-plan) OCR-enabled LIVE stage plans ----
+
+    def ocr_container_values(self, **extra):
+        """Synthetic container values (placeholder paths only) for TEST + an OCR LIVE plan."""
+        return {**{k: v for k, v in self.values.items() if k != "STUB_FIXTURE"},
+                "CONTAINER_USER": "0", "CONTAINER_ENGINE_DIR": "/opt/flock-engine",
+                "CONTAINER_PYTHON": "/opt/campaign-tool/venv/bin/python",
+                "CONTAINER_PROJECT_DIR": "/srv/flock-live",
+                "CONTAINER_APPROVAL_FILE": "/srv/flock-live/approval.json",
+                "ADOPTION_CONFIG": "/srv/flock-live/adoption.json",
+                "SCHEDULED_TARGET": "LIVE", **extra}
+
+    def render_ocr_plan(self, template, values, out=None):
+        out = out or self.tmp / "out"
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(RUNTIME / "targets" / template))]
+        written = self.do_render(values=values, targets=targets, out=out)
+        self.assertIn("targets/LIVE.json", written)
+        text = (out / "targets" / "LIVE.json").read_text()
+        self.assertIsNone(re.search(r"@[A-Z_]+@", text))
+        self.assertEqual(stat.S_IMODE((out / "targets" / "LIVE.json").stat().st_mode), 0o600)
+        return json.loads(text)
+
+    def run_rendered_extract(self, argv, tools):
+        """Run the rendered extract argv's adapter arguments through run_stages.main."""
+        from unittest import mock  # noqa: PLC0415
+        from campaign_tool.records import run_stages  # noqa: PLC0415
+        adapter = argv[argv.index("campaign_tool.records.run_stages") + 1:]
+        project = self.tmp / "project"
+        project.mkdir(exist_ok=True)
+        adapter[adapter.index("--project") + 1] = str(project)
+        out = io.StringIO()
+        with mock.patch("campaign_tool.records.run.local_ocr_tools", return_value=tools), \
+                contextlib.redirect_stdout(out):
+            code = run_stages.main(adapter)
+        return code, json.loads(out.getvalue())
+
+    def test_phase1_container_templates_are_unchanged(self):
+        # T6-plan must leave the Phase 1 plans byte-identical (sha256 at origin/main 4750f69).
+        for name, digest in PHASE1_TEMPLATE_SHA256.items():
+            data = (RUNTIME / "targets" / name).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), digest, name)
+
+    def test_render_live_ocr_targets_with_exact_extract_limits(self):
+        # The Phase 1 LIVE plan rendered with the same values: every non-extract stage matches it.
+        phase1 = {stage["name"]: stage for stage in self.render_ocr_plan(
+            "live-container.json.in", self.ocr_container_values(), out=self.tmp / "out-phase1")["stages"]}
+        # T6-timeout B: document budget 1200 s, page children 180 s, vision children 300 s.
+        cases = (("live-ocr-container.json.in", {}, ["--ocr"]),
+                 ("live-ocr-vision-container.json.in",
+                  {"CONTAINER_OCR_VISION_CONFIG": "/srv/flock-live/vision.json"},
+                  ["--ocr-vision-timeout", "300", "--ocr", "--ocr-vision-config", "/srv/flock-live/vision.json"]))
+        for index, (template, extra, ocr_flags) in enumerate(cases):
+            with self.subTest(template):
+                plan = self.render_ocr_plan(template, self.ocr_container_values(**extra),
+                                            out=self.tmp / f"out-{index}")
+                self.assertEqual((plan["target"], plan["mode"]), ("LIVE", "live"))
+                self.assertEqual(self.render.run_orchestrator.report_mode(plan, False), "manual")
+                self.assertEqual(self.render.run_orchestrator.report_mode(plan, True), "scheduled")
+                stages = {stage["name"]: stage for stage in plan["stages"]}
+                self.assertEqual(list(stages), list(phase1))
+                extract = stages.pop("extract")
+                self.assertEqual(extract["argv"], phase1["extract"]["argv"][:11] + [
+                    "extract", "--project", "/srv/flock-live", "--timeout", "1490",
+                    "--run-id", "{run_id}", "--max-documents", "20",
+                    "--document-timeout", "1200", "--ocr-page-timeout", "180", *ocr_flags])
+                self.assertEqual((extract["timeout_seconds"], extract["on_fail"]), (1500, "stop"))
+                for name, stage in stages.items():
+                    self.assertEqual(stage, phase1[name], name)
+
+    def test_rendered_ocr_extract_argv_is_accepted_by_run_stages(self):
+        # Tesseract-only: no vision file is a valid OCR plan (it reaches the OCR tools check,
+        # then the records root), never STAGE_CONFIG_INVALID.
+        plan = self.render_ocr_plan("live-ocr-container.json.in", self.ocr_container_values(),
+                                    out=self.tmp / "out-ocr")
+        argv = next(s["argv"] for s in plan["stages"] if s["name"] == "extract")
+        code, line = self.run_rendered_extract(argv, (None, None))
+        self.assertEqual((code, line["error_code"]), (1, "EXTRACT_OCR_UNAVAILABLE"))
+        code, line = self.run_rendered_extract(argv, ({"tesseract": "/x"}, "sig"))
+        self.assertEqual((code, line["error_code"]), (1, "EXTRACT_ROOT_NOT_INITIALIZED"))
+        # Vision: the rendered config path reaches the vision loader (absent here: synthetic).
+        plan = self.render_ocr_plan("live-ocr-vision-container.json.in",
+                                    self.ocr_container_values(
+                                        CONTAINER_OCR_VISION_CONFIG="/srv/flock-live/vision.json"),
+                                    out=self.tmp / "out-vision")
+        argv = next(s["argv"] for s in plan["stages"] if s["name"] == "extract")
+        # T6-timeout B: the rendered limits pass run_stages' argument validation as pinned.
+        from campaign_tool.records import run_stages  # noqa: PLC0415
+        args = run_stages.parser().parse_args(argv[argv.index("campaign_tool.records.run_stages") + 1:])
+        self.assertFalse(run_stages.config_invalid(args))
+        self.assertEqual((args.timeout, args.document_timeout, args.ocr_page_timeout, args.ocr_vision_timeout,
+                          args.ocr, args.ocr_vision_config),
+                         (1490, 1200, 180, 300, True, "/srv/flock-live/vision.json"))
+        code, line = self.run_rendered_extract(argv, ({"tesseract": "/x"}, "sig"))
+        self.assertEqual((code, line["error_code"]), (1, "EXTRACT_OCR_VISION_CONFIG_INVALID"))
+        # The vision flag without --ocr stays a stage configuration error.
+        without_ocr = [arg for arg in argv if arg != "--ocr"]
+        code, line = self.run_rendered_extract(without_ocr, ({"tesseract": "/x"}, "sig"))
+        self.assertEqual((code, line["error_code"]), (1, "STAGE_CONFIG_INVALID"))
+
+    def test_live_ocr_vision_requires_a_safe_absolute_vision_config(self):
+        template = str(RUNTIME / "targets" / "live-ocr-vision-container.json.in")
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")), ("LIVE", template)]
+        self.assert_refused("no value for ['CONTAINER_OCR_VISION_CONFIG']",
+                            values=self.ocr_container_values(), targets=targets)
+        for bad, fragment in (("vision.json", "absolute path"), ("/srv/a b.json", "shell-safe"),
+                              ("/srv/x;rm", "shell-safe"), ("/srv/$(id)", "shell-safe")):
+            with self.subTest(bad):
+                self.assert_refused(fragment, targets=targets,
+                                    values=self.ocr_container_values(CONTAINER_OCR_VISION_CONFIG=bad))
+        # Only the vision plan uses the key: the other plans refuse it as unknown.
+        for other in ("live-ocr-container.json.in", "live-container.json.in"):
+            with self.subTest(other):
+                self.assert_refused("unknown placeholder", targets=[
+                    ("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                    ("LIVE", str(RUNTIME / "targets" / other))],
+                    values=self.ocr_container_values(
+                        CONTAINER_OCR_VISION_CONFIG="/srv/flock-live/vision.json"))
 
     def assert_refused(self, fragment, **kwargs):
         with self.assertRaises(ValueError) as caught:

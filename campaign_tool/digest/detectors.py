@@ -27,7 +27,25 @@ CITATIONS = {
 CHP_RETENTION_DAYS = 60
 
 RETENTION_CONTEXT = re.compile(r"(?i)\b(retain|retention|retained|kept|keep|stored|store|purge[sd]?|delete[sd]?|destroy(?:ed)?|preserv\w*)\b")
-DURATION = re.compile(r"(?i)\b(\d{1,4})\s*[- ]?\s*(day|days|month|months|year|years|week|weeks|hour|hours)\b")
+# A duration is a complete nonnegative plain integer (1-4 digits) plus a unit.
+# The lookbehinds/lookahead refuse to read a fragment of a larger numeric token:
+# a sign, dash or leading decimal point directly before the digits (-30, +30,
+# \u221230, \u00b130, 30-60, .5), the tail of a decimal, grouped, fraction or clock
+# number (1.5, 1,000, 1'000, 1\u202f000, 1/2, 1:30) and a space-grouped thousands
+# tail (1 000). Ranges whose dash or slash is padded by any horizontal whitespace
+# are refused by NUMERIC_RANGE_LEAD in _complete_durations. Such forms stay
+# uninterpreted; scanning continues, so a later well-formed duration still hits.
+DURATION = re.compile(
+    r"(?i)\b"
+    r"(?<![.+\-\u2212\u2013\u2014\u00b1])"
+    r"(?<!\d[.,'\u2019/:\u00a0\u2009\u202f])"
+    r"(?!(?<=\d )\d{3}(?!\d))"
+    r"(\d{1,4})\s*[- ]?\s*(day|days|month|months|year|years|week|weeks|hour|hours)\b")
+# Text ending in "digit, any horizontal whitespace, dash or slash, any horizontal
+# whitespace": a duration starting there is the second half of a numeric range or
+# fraction (30 -  60, 30\t\u2013 60, 1 / 2). Lines are already split, so only CR/LF
+# are excluded from the whitespace class.
+NUMERIC_RANGE_LEAD = re.compile(r"\d[^\S\r\n]*[-\u2013\u2014/][^\S\r\n]*\Z")
 SHARING = re.compile(r"(?i)\b(out[- ]of[- ]state|other states?|federal(?:\s+agenc\w+)?|nationwide|national\s+(?:lookup|search|network)|ICE|Immigration and Customs|Customs and Border|CBP|DHS|FBI|Homeland Security|U\.?S\.? Marshals?)\b")
 IMMIGRATION = re.compile(r"(?i)\b(immigration|ICE|Immigration and Customs|CBP|Customs and Border)\b")
 AUDIT = re.compile(r"(?i)\b(audit(?:s|ed|ing)?|audit\s+log|access\s+log|query\s+log|search\s+log|record\s+of\s+(?:each\s+)?access|log\s+of\s+(?:each\s+)?(?:access|query|search))\b")
@@ -91,6 +109,13 @@ def _days(value, unit):
     return {"hour": n / 24, "day": n, "week": n * 7, "month": n * 30, "year": n * 365}[unit]
 
 
+def _complete_durations(line):
+    """DURATION matches that are not the second half of a whitespace-padded numeric range."""
+    for match in DURATION.finditer(line):
+        if NUMERIC_RANGE_LEAD.search(line, 0, match.start()) is None:
+            yield match
+
+
 def detect_retention(units, package):
     rule = rule_for(package, CITATIONS["retention"])
     hits = []
@@ -98,7 +123,7 @@ def detect_retention(units, package):
         for locator, line in _lines(unit):
             if not RETENTION_CONTEXT.search(line):
                 continue
-            for match in DURATION.finditer(line):
+            for match in _complete_durations(line):
                 days = _days(match.group(1), match.group(2))
                 comparison = "exceeds_chp_60_days" if days > CHP_RETENTION_DAYS else "within_chp_60_days"
                 hits.append(_hit("retention_period", rule, locator, line.strip(), "comparison",

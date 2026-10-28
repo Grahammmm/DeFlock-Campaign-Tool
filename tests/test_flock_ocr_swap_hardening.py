@@ -27,7 +27,7 @@ class BuildAndBudgetTests(RunMixin, unittest.TestCase):
         code, out = self.run_swap(self.args())
         self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
         first = self.run_dir()
-        wheel = next((first / "b1/context/dist").iterdir())
+        wheel = next((first / "build/dist").iterdir())
         original = wheel.read_bytes()
         self.fake.faults.clear()
         code, out = self.run_swap(self.args())
@@ -36,7 +36,7 @@ class BuildAndBudgetTests(RunMixin, unittest.TestCase):
         self.assertEqual(len(set(contexts)), 2)
         self.assertEqual(wheel.read_bytes(), original)
         for context in contexts:
-            self.assertEqual(Path(context).parents[1].parent, self.private)
+            self.assertEqual(Path(context).parent.parent, self.private)
 
     def test_b1_never_reads_or_changes_recipe_dist(self):
         # Use a copy of recipe control files, with a deliberately unusable dist.
@@ -55,11 +55,15 @@ class BuildAndBudgetTests(RunMixin, unittest.TestCase):
             driver.b1_wheel()
         self.assertTrue((recipe / "dist").is_symlink())
         self.assertFalse((self.tmp / "missing").exists())
-        self.assertTrue((run / "b1/context/dist").is_dir())
+        self.assertTrue((run / "build/dist").is_dir())
 
     def test_old_three_copy_budget_refused_before_first_archive(self):
         total = self.estimated_copy()
-        self.fake.disk_free = lambda path: 3 * total + (512 << 20)
+        seen = []
+        # R1 keeps its independent survey-based early gate; simulate space
+        # consumed between that gate and S1 to exercise S1's stricter check.
+        self.fake.disk_free = lambda path: (seen.append(path), (1 << 40) if len(seen) == 1
+                                            else 3 * total + (512 << 20))[1]
         code, out = self.run_swap(self.args())
         self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
         self.assertIn("FAIL at [S1]", out)
@@ -68,7 +72,8 @@ class BuildAndBudgetTests(RunMixin, unittest.TestCase):
         self.assertEqual(budget["required_free_bytes"], 7 * total + (512 << 20))
         self.assertEqual(budget["copies"], {"s1_evidence": 2, "a2_evidence": 2,
                                           "scratch_extract": 1, "rollback_preservation": 2})
-        self.assertEqual(self.fake.api_calls, [])
+        self.assertEqual([call[1] for call in self.fake.api_calls],
+                         ["/containers/create?name=flock-target-swap-probe"])
 
     def test_exact_peak_budget_passes_and_a2_excludes_existing_s1(self):
         total = self.estimated_copy()

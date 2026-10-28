@@ -52,6 +52,40 @@ def adapter(argv, engine, model, signature) -> dict:
     return {"argv": tuple(argv), "engine": engine, "model": model, "signature": signature}
 
 
+CONFIG_SCHEMA = "local-vision-config-v1"
+MAX_CONFIG_BYTES = 16 * 1024
+
+
+def load_config(path) -> dict:
+    """Adapter from an operator-owned ``local-vision-config-v1`` JSON file (owner-only, no symlink).
+
+    ``{"schema": "local-vision-config-v1", "argv": [...], "engine": "qwen", "model": "...",
+    "signature": "..."}``. The file names a local command only; endpoints and credentials, if
+    any, belong to that command's own configuration and never to the engine.
+    """
+    import stat as _stat
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise ValueError("vision_config_unreadable") from None
+    try:
+        info = os.fstat(fd)
+        if (not _stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or _stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > MAX_CONFIG_BYTES):
+            raise ValueError("vision_config_not_owner_only_regular_file")
+        raw = os.read(fd, MAX_CONFIG_BYTES + 1)
+    finally:
+        os.close(fd)
+    try:
+        config = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise ValueError("vision_config_invalid_json") from None
+    if not isinstance(config, dict) or set(config) != {"schema", "argv", "engine", "model", "signature"} \
+            or config["schema"] != CONFIG_SCHEMA:
+        raise ValueError("vision_config_schema_mismatch")
+    return adapter(config["argv"], config["engine"], config["model"], config["signature"])
+
+
 def needs_fallback(receipt: dict) -> bool:
     """True when a Tesseract page receipt is empty or low confidence and has a raster."""
     if not isinstance(receipt, dict) or receipt.get("identity", {}).get("fidelity_hold"):
