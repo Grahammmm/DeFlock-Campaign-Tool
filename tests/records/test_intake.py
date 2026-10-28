@@ -34,7 +34,57 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(d["counts"]["csv_row"],6); self.assertEqual(d["counts"]["duplicate_rows"],1)
         counts=d["counts"]["fields"][0]["counts"]; self.assertEqual(counts["whitespace"],1); self.assertEqual(counts["redacted_marker"],1)
         u=db.execute("SELECT locator FROM units WHERE kind='csv_row' AND ordinal=6").fetchone(); self.assertEqual(json.loads(u[0]),dict(record=6,line_start=6,line_end=7))
-        self.assertEqual(d["counts"]["fields"][1]["counts"]["missing_field"],1)
+        # A short record does not identify which header lost a field. Preserve
+        # its values and locator, but exclude it from header-aligned counts.
+        self.assertEqual(d["stage"],"partial")
+        self.assertEqual(d["counts"]["ragged_rows"],1)
+        self.assertEqual(d["counts"]["fields"][0]["counts"],
+                         {"whitespace":1,"redacted_marker":1,"present":3})
+        self.assertEqual(d["counts"]["fields"][1]["counts"],{"present":5})
+        row=db.execute("SELECT locator,text,data FROM units WHERE kind='csv_row' AND ordinal=7").fetchone()
+        locator=dict(record=7,line_start=8,line_end=8)
+        self.assertEqual(json.loads(row["locator"]),locator)
+        self.assertEqual(json.loads(row["text"]),["short"])
+        data=json.loads(row["data"])
+        self.assertEqual(data["values"],["short"])
+        self.assertEqual(data["column_mapping"],"ambiguous")
+        self.assertIsNone(data["presence"])
+        self.assertEqual(d["issues"],[dict(code="csv_ragged_row_ambiguous",locator=locator,
+                         detail=str(dict(expected_fields=2,actual_fields=1)))])
+    def test_csv_and_tsv_ragged_records_retain_values_without_header_inference(self):
+        for form,separator in (("csv",","),("tsv","\t")):
+            raw=(separator.join(("a","b"))+"\nshort\n"+
+                 separator.join(("long","extra","value"))+"\n\n"+
+                 separator.join(("valid",""))+"\n").encode()
+            (self.root/("shapes."+form)).write_bytes(raw)
+        self.run_cli(); db=self.db()
+        for form in ("csv","tsv"):
+            with self.subTest(form=form):
+                raw=(self.root/("shapes."+form)).read_bytes()
+                sha=hashlib.sha256(raw).hexdigest()
+                d=json.loads(db.execute("SELECT digest FROM docs WHERE sha=?",(sha,)).fetchone()[0])
+                self.assertEqual((self.out/"blobs"/sha).read_bytes(),raw)
+                self.assertEqual(d["stage"],"partial")
+                self.assertEqual(d["counts"]["csv_row"],4)
+                self.assertEqual(d["counts"]["ragged_rows"],3)
+                self.assertEqual([f["counts"] for f in d["counts"]["fields"]],
+                                 [{"present":1},{"empty":1}])
+                rows=db.execute("SELECT locator,text,data FROM units WHERE sha=? AND kind='csv_row' ORDER BY ordinal",(sha,)).fetchall()
+                self.assertEqual([json.loads(r["text"]) for r in rows],
+                                 [["short"],["long","extra","value"],[],["valid",""]])
+                for record,row,values in zip((2,3,4),rows,(["short"],["long","extra","value"],[])):
+                    data=json.loads(row["data"])
+                    self.assertEqual(data["values"],values)
+                    self.assertEqual(json.loads(row["locator"]),dict(record=record,line_start=record,line_end=record))
+                    self.assertEqual(data["column_mapping"],"ambiguous")
+                    self.assertIsNone(data["presence"])
+                valid=json.loads(rows[-1]["data"])
+                self.assertEqual(valid["column_mapping"],"positional")
+                self.assertEqual(valid["presence"],["present","empty"])
+                self.assertEqual(d["issues"],[dict(code="csv_ragged_row_ambiguous",
+                    locator=dict(record=record,line_start=record,line_end=record),
+                    detail=str(dict(expected_fields=2,actual_fields=width)))
+                    for record,width in ((2,1),(3,3),(4,0))])
     def test_zip_traversal_nested_duplicates_and_secrets(self):
         nested=io.BytesIO()
         with zipfile.ZipFile(nested,"w") as z: z.writestr("ok.txt","record")

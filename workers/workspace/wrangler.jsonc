@@ -1,0 +1,23 @@
+// Workspace Worker. The wizard uploads this script with bindings it created; this file
+// exists for local development (`wrangler dev`) and the vitest pool. No account values here.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "deflock-workspace",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "deflock-campaign", "database_id": "local", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [
+    { "binding": "ORIGINALS", "bucket_name": "example-campaign-originals" },
+    { "binding": "PUBLIC_BUCKET", "bucket_name": "example-campaign-public" }
+  ],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "local" }],
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "deflock-jobs" }]
+  },
+  "triggers": { "crons": ["0 7,13 * * *", "30 20 * * *"] }
+  // Runtime configuration comes from secrets set by the wizard (see dev.vars.example):
+  // CAMPAIGN_ID, ACCESS_TEAM_DOMAIN, ACCESS_AUD, RUNNER_TOKEN, DOWNLOAD_SIGNING_KEY.
+}

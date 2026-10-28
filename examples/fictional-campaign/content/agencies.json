@@ -1,0 +1,43 @@
+[
+  {
+    "agency_id": "ca-cedar-county-sheriff",
+    "name": "Cedar County Sheriff's Office (fictional)",
+    "kind": "sheriff",
+    "jurisdiction_name": "Cedar County",
+    "records_url": null,
+    "records_email": null,
+    "portal": {"vendor": "unknown", "url": null},
+    "verified": false,
+    "profile": {"status": "Records requested", "summary": "Synthetic entry; no records received in this example."}
+  },
+  {
+    "agency_id": "ca-cedar-police",
+    "slug": "cedar",
+    "name": "Cedar Police Department (fictional)",
+    "kind": "police",
+    "jurisdiction_name": "Cedar",
+    "records_url": "https://example.invalid/cedar-police/records",
+    "records_email": null,
+    "portal": {"vendor": "none", "url": null},
+    "verified": false,
+    "profile": {
+      "vendor": "Synthetic vendor",
+      "status": "Policy received",
+      "summary": "A synthetic policy document was produced in response to a fictional request.",
+      "cameraCount": "",
+      "facts": [],
+      "open": "Whether any agreement governs data sharing is an open information gap.",
+      "flags": ["Fictional example"]
+    }
+  },
+  {
+    "agency_id": "ca-cedar-city-council",
+    "name": "Cedar City Council (fictional)",
+    "kind": "city_council",
+    "jurisdiction_name": "Cedar",
+    "records_url": null,
+    "records_email": null,
+    "portal": {"vendor": "unknown", "url": null},
+    "verified": false
+  }
+]

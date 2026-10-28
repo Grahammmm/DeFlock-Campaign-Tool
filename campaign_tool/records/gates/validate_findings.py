@@ -32,6 +32,7 @@ CLASSES = {
 INCOMPLETE = {"NOT_ASSESSED", "VERSION_OR_APPLICABILITY_UNRESOLVED", "LEGAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE"}
 ROLES = {"factual", "legal", "privacy"}
 COVERAGE = {"selected", "full_text", "full_visual", "all_rows"}
+TIER_A_CLASSES = {"CONFIRMED_DOCUMENTARY_FACT", "REDACTION", "REDACTION_OR_EXPORT_LIMIT"}
 
 
 def agent_identity(value):
@@ -45,9 +46,26 @@ def valid_hash(value):
     return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) is not None
 
 
+# ASCII digits only; the offset components are captured so their ranges can be
+# checked before datetime parsing gets a chance to normalize them.
+REVIEWED_AT = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?"
+    r"(?:Z|[+-](?P<offset_hours>[0-9]{2}):(?P<offset_minutes>[0-9]{2}))", re.ASCII)
+
+
+def offset_components_valid(match):
+    """Z, or an explicit offset with hours 00-23 and minutes 00-59."""
+    hours, minutes = match.group("offset_hours"), match.group("offset_minutes")
+    if hours is None:
+        return True
+    return int(hours) <= 23 and int(minutes) <= 59
+
+
 def reviewed_timestamp(value):
-    if not isinstance(value, str) or not re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value):
+    if not isinstance(value, str):
+        return False
+    match = REVIEWED_AT.fullmatch(value)
+    if match is None or not offset_components_valid(match):
         return False
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -101,7 +119,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def gate(finding, external_reviews=(), check_files=False):
+def gate(finding, external_reviews=(), check_files=False, *, tier="B"):
     blocks = []
     if not isinstance(finding, dict):
         return {"ready": False, "blockers": ["finding is not an object"]}
@@ -116,6 +134,11 @@ def gate(finding, external_reviews=(), check_files=False):
     if not check_files:
         blocks.append("source byte verification required for readiness")
     classification = finding.get("classification")
+    required_roles = {"factual", "privacy"} if tier == "A" else ROLES
+    if tier not in ("A", "B"):
+        blocks.append("unrecognized review tier")
+    if tier == "A" and (not isinstance(classification, str) or classification not in TIER_A_CLASSES or finding.get("rules") != []):
+        blocks.append("tier A cannot carry legal classification or rules")
     if not isinstance(classification, str) or classification not in CLASSES:
         blocks.append("unrecognized classification")
     if isinstance(classification, str) and classification in INCOMPLETE:
@@ -229,8 +252,8 @@ def gate(finding, external_reviews=(), check_files=False):
                 continue
         roles.add(role)
         reviewers.add(reviewer)
-    if roles != ROLES:
-        blocks.append("missing independent roles: " + ", ".join(sorted(ROLES - roles)))
+    if not required_roles.issubset(roles):
+        blocks.append("missing independent roles: " + ", ".join(sorted(required_roles - roles)))
     if len(reviewers) < 2:
         blocks.append("at least two distinct independent reviewers required")
     return {"finding_id": identity, "finding_digest": content_hash,
@@ -252,8 +275,24 @@ def block_duplicate_ids(reports):
     return reports
 
 
-def gate_many(findings, reviews=(), check_files=False):
-    return block_duplicate_ids([gate(f, reviews, check_files) for f in findings])
+def gate_many(findings, reviews=(), check_files=False, *, collection_errors=()):
+    reports = block_duplicate_ids([gate(f, reviews, check_files) for f in findings])
+    if collection_errors:
+        for report in reports:
+            report["ready"] = False
+            report["blockers"] = sorted(set(report["blockers"] + ["review_collection_failed"]))
+    return reports
+
+
+def review_input(data):
+    """Preserve collection failure state instead of evaluating a passing subset."""
+    values = data.get("reviews") if isinstance(data, dict) else data
+    if not isinstance(values, list):
+        raise ValueError("input must be an array or object with reviews")
+    errors = data.get("collection_errors", []) if isinstance(data, dict) else []
+    if not isinstance(errors, list):
+        errors = ["invalid collection_errors envelope"]
+    return values, errors
 
 
 def objects(path, key):
@@ -273,17 +312,17 @@ def main():
     p.add_argument("--output")
     args = p.parse_args()
     findings = objects(args.findings, "findings")
-    reviews = objects(args.reviews, "reviews") if args.reviews else []
-    report = gate_many(findings, reviews, args.check_files)
+    reviews, collection_errors = review_input(json.loads(Path(args.reviews).read_text())) if args.reviews else ([], [])
+    report = gate_many(findings, reviews, args.check_files, collection_errors=collection_errors)
     output = {"total": len(report), "ready": sum(r["ready"] for r in report),
               "gate_scope": "structural evidence/review checks; no legal merits decision",
-              "findings": report}
+              "findings": report, "collection_errors": collection_errors}
     rendered = json.dumps(output, indent=2) + "\n"
     if args.output:
         write_private(args.output, rendered)
     else:
         print(rendered, end="")
-    return 1 if args.require_ready and (not report or any(not r["ready"] for r in report)) else 0
+    return 1 if args.require_ready and (collection_errors or not report or any(not r["ready"] for r in report)) else 0
 
 
 if __name__ == "__main__":

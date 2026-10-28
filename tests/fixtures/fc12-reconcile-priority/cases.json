@@ -1,0 +1,1934 @@
+{
+  "cases": [
+    {
+      "changes": {
+        "selection_unavailable": true,
+        "unbound": true
+      },
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "45",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "applicability_unresolved",
+        "counterevidence": [
+          "f-1"
+        ],
+        "exceptions": [
+          "f-1"
+        ],
+        "fact_ids": [
+          "f-1"
+        ],
+        "reason": "not_in_force",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "not_in_force"
+      },
+      "facts": [
+        {
+          "counterevidence": true,
+          "exception_applies": true,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 45
+        }
+      ],
+      "id": "selection_before_binding",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":45}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {
+        "missing_field": true,
+        "unbound": true
+      },
+      "expected": {
+        "citations": [],
+        "classification": "applicability_unresolved",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [],
+        "reason": "rule_source_or_requirement_span_unbound",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [],
+      "id": "binding_before_field",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          }
+        ]
+      }
+    },
+    {
+      "changes": {
+        "missing_field": true
+      },
+      "expected": {
+        "citations": [],
+        "classification": "not_assessed",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [],
+        "reason": "record_field_mapping_not_supplied",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [],
+      "id": "field_before_no_fact",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [],
+        "classification": "missing_evidence",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [],
+        "reason": "missing_or_NA_is_not_violation",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [],
+      "id": "no_fact",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "null",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 13,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "\"unknown\"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 18,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "missing_evidence",
+        "counterevidence": [
+          "f-1",
+          "f-2"
+        ],
+        "exceptions": [
+          "f-1"
+        ],
+        "fact_ids": [
+          "f-1",
+          "f-2"
+        ],
+        "reason": "missing_or_NA_is_not_violation",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": true,
+          "exception_applies": true,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": null
+        },
+        {
+          "counterevidence": true,
+          "exception_applies": false,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": "unknown"
+        }
+      ],
+      "id": "unknown_before_counterevidence",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":null}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":\"unknown\"}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "\"\"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "\"n/a\"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 14,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 4
+            },
+            "quote": "\" NA \"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 15,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 5
+            },
+            "quote": "\"not provided\"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 23,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 6
+            },
+            "quote": "\"not available\"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 24,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 7
+            },
+            "quote": "\"null\"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 15,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 8
+            },
+            "quote": "\"none\"",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 15,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "missing_evidence",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1",
+          "f-2",
+          "f-3",
+          "f-4",
+          "f-5",
+          "f-6",
+          "f-7"
+        ],
+        "reason": "missing_or_NA_is_not_violation",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": ""
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": "n/a"
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-3",
+          "field": "interval_days",
+          "value": " NA "
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-4",
+          "field": "interval_days",
+          "value": "not provided"
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-5",
+          "field": "interval_days",
+          "value": "not available"
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-6",
+          "field": "interval_days",
+          "value": "null"
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-7",
+          "field": "interval_days",
+          "value": "none"
+        }
+      ],
+      "id": "unknown_variants",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          },
+          {
+            "page_no": 4,
+            "status": "ok"
+          },
+          {
+            "page_no": 5,
+            "status": "ok"
+          },
+          {
+            "page_no": 6,
+            "status": "ok"
+          },
+          {
+            "page_no": 7,
+            "status": "ok"
+          },
+          {
+            "page_no": 8,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":\"\"}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":\"n/a\"}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 4
+            },
+            "text": "{\"value\":\" NA \"}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 5
+            },
+            "text": "{\"value\":\"not provided\"}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 6
+            },
+            "text": "{\"value\":\"not available\"}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 7
+            },
+            "text": "{\"value\":\"null\"}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 8
+            },
+            "text": "{\"value\":\"none\"}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "45",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "20",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "contradictory_evidence",
+        "counterevidence": [
+          "f-1"
+        ],
+        "exceptions": [
+          "f-1",
+          "f-2"
+        ],
+        "fact_ids": [
+          "f-1",
+          "f-2"
+        ],
+        "reason": "counterevidence_requires_resolution",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": true,
+          "exception_applies": true,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 45
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": true,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": 20
+        }
+      ],
+      "id": "counterevidence_before_distinct_and_exception",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":45}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":20}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "45",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "contradictory_evidence",
+        "counterevidence": [
+          "f-1"
+        ],
+        "exceptions": [
+          "f-1"
+        ],
+        "fact_ids": [
+          "f-1"
+        ],
+        "reason": "counterevidence_requires_resolution",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": true,
+          "exception_applies": true,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 45
+        }
+      ],
+      "id": "counterevidence_before_exception",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":45}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "45",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "contradictory_evidence",
+        "counterevidence": [
+          "f-1"
+        ],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1"
+        ],
+        "reason": "counterevidence_requires_resolution",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": true,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 45
+        }
+      ],
+      "id": "counterevidence_without_exception",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":45}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "45",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "20",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "contradictory_evidence",
+        "counterevidence": [],
+        "exceptions": [
+          "f-1",
+          "f-2"
+        ],
+        "fact_ids": [
+          "f-1",
+          "f-2"
+        ],
+        "reason": "same_event_field_disagrees",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": true,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 45
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": true,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": 20
+        }
+      ],
+      "id": "distinct_before_exception",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":45}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":20}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "20",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "25",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "contradictory_evidence",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1",
+          "f-2"
+        ],
+        "reason": "same_event_field_disagrees",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 20
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": 25
+        }
+      ],
+      "id": "distinct_without_exception",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":20}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":25}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "45",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "exception_applies",
+        "counterevidence": [],
+        "exceptions": [
+          "f-1"
+        ],
+        "fact_ids": [
+          "f-1"
+        ],
+        "reason": "cited_exception_candidate_requires_review",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": true,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 45
+        }
+      ],
+      "id": "exception_before_failure",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":45}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "30",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "no_conflict_observed",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1"
+        ],
+        "reason": "only_supplied_fields_no_global_compliance_claim",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 30
+        }
+      ],
+      "id": "configured_true_boundary",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":30}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "31",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "potential_conflict",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1"
+        ],
+        "reason": "authenticated_factual_exception_and_terms_review_not_established",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 31
+        }
+      ],
+      "id": "configured_false",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":31}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {
+        "operator": "unconfigured"
+      },
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "30",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "not_assessed",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1"
+        ],
+        "reason": "comparison_type_or_operator_unconfigured",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 30
+        }
+      ],
+      "id": "unconfigured_operator",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":30}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "null",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 13,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "20",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "no_conflict_observed",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1",
+          "f-2"
+        ],
+        "reason": "only_supplied_fields_no_global_compliance_claim",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": null
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": 20
+        }
+      ],
+      "id": "known_with_unknown",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":null}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":20}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {},
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "30",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "30",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "no_conflict_observed",
+        "counterevidence": [],
+        "exceptions": [],
+        "fact_ids": [
+          "f-1",
+          "f-2"
+        ],
+        "reason": "only_supplied_fields_no_global_compliance_claim",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 30
+        },
+        {
+          "counterevidence": false,
+          "exception_applies": false,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": 30
+        }
+      ],
+      "id": "duplicate_equal_values",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":30}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":30}"
+          }
+        ]
+      }
+    },
+    {
+      "changes": {
+        "reverse": true
+      },
+      "expected": {
+        "citations": [
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 2
+            },
+            "quote": "20",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          },
+          {
+            "json_pointer": "/value",
+            "locator": {
+              "page": 3
+            },
+            "quote": "45",
+            "schema": "records-grounded-evidence-v1",
+            "span": {
+              "end_byte": 11,
+              "start_byte": 9
+            }
+          }
+        ],
+        "classification": "contradictory_evidence",
+        "counterevidence": [
+          "f-2"
+        ],
+        "exceptions": [
+          "f-1",
+          "f-2"
+        ],
+        "fact_ids": [
+          "f-1",
+          "f-2"
+        ],
+        "reason": "counterevidence_requires_resolution",
+        "rule_citation": {
+          "json_pointer": null,
+          "locator": {
+            "page": 1
+          },
+          "quote": "Fictional review interval must be at most 30 days.",
+          "schema": "records-grounded-evidence-v1",
+          "span": {
+            "end_byte": 78,
+            "start_byte": 28
+          }
+        },
+        "rule_selection": "selected"
+      },
+      "facts": [
+        {
+          "counterevidence": false,
+          "exception_applies": true,
+          "fact_id": "f-1",
+          "field": "interval_days",
+          "value": 20
+        },
+        {
+          "counterevidence": true,
+          "exception_applies": true,
+          "fact_id": "f-2",
+          "field": "interval_days",
+          "value": 45
+        }
+      ],
+      "id": "reverse_input_order",
+      "receipt": {
+        "original_changed": false,
+        "pages": [
+          {
+            "page_no": 1,
+            "status": "ok"
+          },
+          {
+            "page_no": 2,
+            "status": "ok"
+          },
+          {
+            "page_no": 3,
+            "status": "ok"
+          }
+        ],
+        "parser": "fictional-fc12",
+        "parser_version": "1",
+        "route": {
+          "format": "pdf"
+        },
+        "schema": "format-extraction-v1",
+        "status": "complete",
+        "units": [
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 1
+            },
+            "text": "Invented policy section 12.\nFictional review interval must be at most 30 days.\nFor synthetic offline tests only."
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 2
+            },
+            "text": "{\"value\":20}"
+          },
+          {
+            "data": {},
+            "kind": "text",
+            "locator": {
+              "page": 3
+            },
+            "text": "{\"value\":45}"
+          }
+        ]
+      }
+    }
+  ],
+  "fictional": true,
+  "requirement": "Fictional review interval must be at most 30 days.",
+  "schema": "fc12-reconcile-priority-fixture/v1",
+  "scope": {
+    "agency_id": "fictional-fc12",
+    "event_at": "2030-06-01",
+    "jurisdiction": "fictional-state",
+    "regulated_role": "operator",
+    "request_number": "FICTION-12"
+  },
+  "source_preimage": "FC12 wholly fictional policy and observations; not an original record"
+}

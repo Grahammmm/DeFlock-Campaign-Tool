@@ -6,16 +6,22 @@ Open-source tools to help local organizers investigate automated license plate r
 
 ## Start locally
 
-Requires Python 3.11 or newer. No third-party Python packages are required.
+The portable offline starter below requires Python 3.11 or newer and no third-party
+Python packages. Full records intake/extraction has a separate Linux runtime and
+parser requirements; see [Records runtime](docs/RECORDS-RUNTIME.md). Running the
+starter on macOS does not establish support for the full extraction pipeline.
 
 ```sh
 git clone https://github.com/Grahammmm/DeFlock-Campaign-Tool.git
 cd DeFlock-Campaign-Tool
 python3 -m campaign_tool init --directory ../my-campaign --county "Your County" --state CA --name "Your Campaign"
+python3 -m campaign_tool kit --directory ../my-campaign
 python3 -m campaign_tool doctor --directory ../my-campaign
 python3 -m campaign_tool build --directory ../my-campaign
 python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
 ```
+
+`kit` resolves the county (or a city given with `init --location "Morro Bay"`) against the offline California agency seed and writes `../my-campaign/kit/`: an organizer-owned `agencies.json`, one draft records request per sheriff, police and CHP entry, governing bodies, and a law-package summary. Nothing is sent and no agency is asserted to use ALPR; see [docs/AGENCY-DISCOVERY.md](docs/AGENCY-DISCOVERY.md) for what to verify before sending.
 
 Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, not a claim that any agency violated a law. Use an external campaign directory so private records do not live in the software repository.
 
@@ -31,21 +37,74 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 ## Included in this alpha
 
 - County/state configuration with safe defaults and local setup diagnostics.
-- Static, mobile-friendly website generation from an explicit public-field allowlist.
+- Offline agency discovery for all 58 California counties (`data/agencies/us-ca.json`, unverified seed) and a drafted-request kit.
+- Static, mobile-friendly website generation: a neutral starter from `campaign.json` alone, or a multi-page campaign site (findings with hashed sources, agencies, source library, meetings, Atom feed, agency cards and optional MapLibre map) from a reviewed `content/` directory with a generated Content-Security-Policy; see [docs/SITE-CONTENT.md](docs/SITE-CONTENT.md).
 - Private local document storage and SQLite receipt ledger.
 - A review-gate library binding independent review receipts to finding content.
 - Synthetic policy, search log, agreement, and agency reply fixtures.
+- Offline newsletter drafts (`python3 -m campaign_tool.newsletter`), Legistar meeting import with an ALPR keyword filter (`campaign_tool meetings`, fixture-driven without `--online`), and verified `backup` / `verify` / `restore` of a campaign directory.
 - Portable records-analysis and review skills.
 - Architecture, implementation roadmap, operator checklists, request templates, and contribution guidance.
 - A daily Reel generator that turns published, sourced facts into a finished vertical video with Google Veo backgrounds (see [social pipeline](docs/SOCIAL.md)).
 
-The initial code has not yet completed independent validation. No passing-test or capacity claim is made.
+An offline test suite (synthetic fixtures only, no network) runs in GitHub Actions on every pull request and push to `main`. Run it locally with `python3 -B -m unittest discover -v`, then `python3 -B tools/check_public_tree.py` and `node scripts/scan-secrets.mjs` before pushing. A passing suite checks structure and safeguards; it is not independent legal, privacy, or capacity validation, and no production-readiness claim is made.
+
+## Jurisdiction law packages
+
+`jurisdictions/us-ca/package.json` encodes California's Public Records Act deadlines and the SB 34 ALPR statute (Civ. Code § 1798.90.5 et seq.) as data, with a primary source and effective date on every rule. It ships with `status: draft`; `doctor` reports `reviewed_law_package: false` until an independent reviewer marks it `reviewed`. Preview a package with `python3 -m campaign_tool.law show us-ca`. See [jurisdictions/README.md](jurisdictions/README.md) and [docs/LAW-PACKAGES.md](docs/LAW-PACKAGES.md).
+
+## Cloudflare Workers (tested offline, not deployed)
+
+`workers/` contains the setup wizard, the Access-protected organizer workspace and the public-site Worker described in [docs/WORKERS.md](docs/WORKERS.md): resumable setup with an encrypted one-hour session, a provisioning plan with per-resource receipts and a rollback list (`DRY_RUN=1` records calls without performing them), Access JWT validation, the runner API from [docs/CONTRACTS.md](docs/CONTRACTS.md), approval cards, cron run receipts, inbound-mail preservation, the review and publication workflow ([docs/PUBLICATION.md](docs/PUBLICATION.md)), Brevo newsletter drafts and sends behind approval cards ([docs/NEWSLETTER.md](docs/NEWSLETTER.md)), manual meetings with comment kits ([docs/MEETINGS.md](docs/MEETINGS.md)) and the D1 export and backup job ([docs/BACKUP.md](docs/BACKUP.md)). Run `cd workers && npm ci && npm run check`. No campaign has been deployed with it; `send_request`, `send_followup`, `post_social` and `pay_fee` executors refuse with stable codes until an outbox or a person completes them.
+
+## Runner, digest and outbox (tested offline, not deployed)
+
+`runner/` is the container that pulls jobs from the workspace Worker and runs the engine: `classify_mail` (rule-based classification of preserved MIME, attachments stored by hash with receipts), `extract` (the sandboxed intake worker reused unchanged), `digest` (`campaign_tool/digest`: deterministic redaction with stable placeholders, versioned detectors with exact locators, an optional model over redacted text only, `strict_local` refusing non-local model hosts; every conclusion without a model is `needs_attorney_review`), `draft_followup` (proposes a `send_followup` card, never sends) and `build_site` (builds, leak-checks, stages to the public bucket and proposes `deploy_site`). `campaign_tool/outbox.py` is the only code that sends records requests (newsletters go to Brevo through the `send_newsletter` approval card): a journal with idempotent keys, approval and identity requirements, per-agency daily and fee caps, MuckRock 402 → blocked, and ambiguous failures that block resends until reconciled. See [docs/RUNNER.md](docs/RUNNER.md), [docs/OUTBOX.md](docs/OUTBOX.md), `runner/Dockerfile`, `runner/compose.example.yml` and `runner/cloudflare-container.md`. Smoke test: `python3 -B -m runner --once --fake` (exit 3 = idle). No runner has been attached to a deployed workspace and no live send has been made.
+
+## Run the records pipeline
+
+`python3 -m campaign_tool.records run --root ../records-root --inbox ../inbox` preserves every
+`.eml` in the inbox and advances each original through extract, catalog, detect, review
+(with an independent challenge pass), compare and privacy in one ledger. `records status --root`
+prints the counts, blocked items and proposals awaiting the owner. Model calls are optional
+(`MODEL_BASE_URL`, `CHALLENGE_MODEL_BASE_URL`) and only ever receive locally redacted text.
+Nothing is published or sent by this command. `records approve --root R --proposal ID --owner YOU`
+binds your decision to the exact public bytes; `records publish --root R --proposal ID --staging DIR`
+copies only approved bytes to a staging directory with versioned releases, and `--rollback`
+restores the previous release. There is no live target in the engine. `records reopen --root R
+--proposal ID --reason "..."` is the correction path: it reopens review (or an earlier stage with
+`--stage`) for that record, clears the approval, and the next `records run` regenerates the public
+content for re-approval; `publish` then records a correction against the previous release.
+`records status` lists `drifted_proposals` whenever a public file on disk no longer matches the
+reviewed hash in the ledger; such a file can never be published.
+
+`records run` holds an exclusive lock on the root (`run.lock`), so a second run on the same
+root fails at once with `root_locked` instead of racing for stage leases. Under that lock it
+first finalises any run a dead process left open (`interrupted`) and frees that process's
+abandoned stage leases, so a crash between a lease and its promotion is recovered on the next
+run rather than after a 300-second TTL; both are recorded as keyed alerts. The intake report
+separates `preserved` (new occurrences) from `replayed` (bytes and occurrence already held).
+
+`records run --root R --mail-config /path/mail.json` fetches new messages over IMAP before
+advancing stages. `mail.json` is an owner-only (0600) file naming `host`, `username`,
+`account_id`, optional `folders` and either `password_file` (0600) or `password_env`; the
+password never appears in reports, run rows or checkpoints. An existing owner-only
+flat JSON credential file can instead be reused through a generic `password_source`
+mapping; see [private IMAP configuration](docs/IMAP-CONFIG.md). The global
+`max_messages_per_run` defaults to 200 and accepts integers from 1 through 200;
+failed fetches and replays consume the same budget across all folders, with
+deferred counts reported and deferred UIDs left checkpoint-safe. Messages are fetched with
+`BODY.PEEK[]`, so read flags are never touched or used as state. A per-folder
+`(uidvalidity, highest_uid)` checkpoint in the ledger advances only past fully preserved
+messages; a UIDVALIDITY change re-enumerates the folder and byte identity keeps the replay
+free of duplicate originals. Folders the account exposes but the config omits, and configured
+folders the server lacks, raise keyed alerts visible in `records status`.
 
 ## Planned, not yet implemented
 
-Resumable account setup; Cloudflare deployment automation; authenticated workspace; mailbox and MuckRock connectors; sandboxed PDF/spreadsheet extraction; reviewed state-law packages; authenticated review receipts; publication/correction workflows; newsletter integration; meeting tools; monitored scheduling and cost controls.
+Wiring the engine outbox (`campaign_tool/outbox.py`) into the Worker's `send_request`/`send_followup` executors (today they fail `sender_not_configured` until a `MailSender` is bound); runner handlers for `newsletter_draft` and `backup` (enqueued, answered `blocked`); social posting; OCR for image-only pages; independently reviewed state-law packages (California is drafted, not reviewed); Brevo webhooks and list counts; automatic Legistar polling from the Worker (the CLI import exists); backup encryption, scheduling and hosted restore; monitored scheduling and cost controls; any production deployment of the Workers or the runner.
 
-See [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
+See [LAUNCH.md](LAUNCH.md) for the end-to-end picture and the launch gates, plus [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 
 ## Evidence before conclusions
 

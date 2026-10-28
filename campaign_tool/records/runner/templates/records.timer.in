@@ -1,0 +1,13 @@
+# PREPARATION ONLY. Do not install alongside a legacy mailbox timer.
+[Unit]
+Description=Owner-scoped records pipeline schedule
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 America/Los_Angeles
+OnCalendar=*-*-* 13:00:00 America/Los_Angeles
+OnCalendar=*-*-* 20:30:00 America/Los_Angeles
+Persistent=true
+Unit=@PREPARED_SERVICE_UNIT@
+
+[Install]
+WantedBy=timers.target

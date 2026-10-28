@@ -1,0 +1,6 @@
+# Copy to .dev.vars (gitignored) for `wrangler dev`. Synthetic values only.
+CAMPAIGN_ID=01example000000000000000000
+ACCESS_TEAM_DOMAIN=example-team
+ACCESS_AUD=replace-with-the-access-application-aud-tag
+RUNNER_TOKEN=replace-with-a-long-random-runner-token
+DOWNLOAD_SIGNING_KEY=replace-with-32-random-bytes-hex

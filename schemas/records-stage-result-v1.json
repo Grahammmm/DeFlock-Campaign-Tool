@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/records-stage-result-v1.json",
+  "title": "Flock records stage result v1",
+  "description": "The single JSON line a records run stage prints as the last non-empty line of its stdout. The orchestrator (campaign_tool.records.run_orchestrator) folds it into the run report v1. Metadata only: counts, enum status and upper-snake codes. A stage must never put filenames, paths, URLs, email addresses, record text or OCR text here. Cross-field rules enforced by the orchestrator: warn/fail need error_code, ok needs error_code null, needs_g codes unique. A non-zero exit always makes the stage fail.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stage_result_version", "status", "counts"],
+  "properties": {
+    "stage_result_version": {"const": 1},
+    "status": {"type": "string", "enum": ["ok", "warn", "fail", "skipped"]},
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output", "failed", "skipped"],
+      "properties": {
+        "input": {"$ref": "#/$defs/count"},
+        "output": {"$ref": "#/$defs/count"},
+        "failed": {"$ref": "#/$defs/count"},
+        "skipped": {"$ref": "#/$defs/count"}
+      }
+    },
+    "error_code": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+    },
+    "new_data": {
+      "type": "object",
+      "description": "This stage's contribution to the run's new_data counts.",
+      "additionalProperties": false,
+      "properties": {
+        "documents": {"$ref": "#/$defs/count"},
+        "pages": {"$ref": "#/$defs/count"},
+        "extracted_units": {"$ref": "#/$defs/count"},
+        "portal_releases": {"$ref": "#/$defs/count"},
+        "request_status_changes": {"$ref": "#/$defs/count"},
+        "backup_bytes": {"$ref": "#/$defs/count"}
+      }
+    },
+    "review_required": {"$ref": "#/$defs/count"},
+    "outcomes": {
+      "type": "array",
+      "description": "Optional per-document outcome codes for the units in counts.input: each document has exactly one code, so the counts sum to counts.input. Codes are unique. Used by the extract stage (EXTRACTED, AWAITING_OCR, CORRUPT_DOCUMENT, ...).",
+      "items": {"$ref": "#/$defs/outcome"}
+    },
+    "needs_g": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "count"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$"},
+          "severity": {"type": "string", "enum": ["info", "action", "blocking"]},
+          "count": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$"},
+        "count": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

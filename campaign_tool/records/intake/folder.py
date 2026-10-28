@@ -19,9 +19,25 @@ SCHEMA = """\nPRAGMA foreign_keys=ON;\nCREATE TABLE IF NOT EXISTS runs(id TEXT P
 def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def js(x): return json.dumps(x, ensure_ascii=True, sort_keys=True, default=str)
 def hid(x): return hashlib.sha256(x.encode()).hexdigest()
+def private_file(path, mode="w", *, exclusive=False, **kwargs):
+    """Open a private (0600) file for writing: new, or truncated with ``exclusive=False``.
+
+    Explicit mode, never the umask: a default ACL on the directory (the rootless Flock
+    host-work has one) makes the kernel ignore the umask, so a plain ``open(..., "w")``
+    would leave the group bits that the owner-only artifact checks refuse.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_EXCL if exclusive else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        return os.fdopen(fd, mode, **kwargs)
+    except BaseException:
+        os.close(fd); raise
 def atomic(path, value):
-    p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True)
-    t = p.with_name(p.name + ".tmp"); t.write_text(js(value)+"\n"); os.replace(t, p)
+    p = pathlib.Path(path); p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    t = p.with_name(p.name + ".tmp")
+    with private_file(t) as f: f.write(js(value)+"\n")
+    os.replace(t, p)
 def event(db, run, stage, code, path="", sha="", locator=None, detail=""):
     db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?)", (run,stage,code,path,sha,js(locator),str(detail)))
 def excluded(path, out=None, excluded_path_fragments=()):
@@ -120,12 +136,21 @@ def inventory(db, out, roots, config=None):
     config = config if config is not None else load_config()
     run=uuid.uuid4().hex; started=time.monotonic(); counts=collections.Counter(); root_stats=[]
     db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?)", (run,now(),None,"inventory","running",js(roots))); db.commit()
-    manifest=out/"manifests"/(run+".jsonl"); manifest.parent.mkdir(exist_ok=True); (out/"blobs").mkdir(exist_ok=True)
+    # Publish a conservative snapshot before any incremental commits. An interrupted
+    # scan must retain the previous denominator, including roots not yet visited.
+    previous=db.execute("SELECT value FROM meta WHERE key='inventory_run'").fetchone()
+    if previous:
+        for root in roots:
+            db.execute("INSERT OR IGNORE INTO seen SELECT ?,s.oid,s.sha FROM seen s JOIN occurrences o ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.root=?",(run,previous[0],root))
+    db.execute("INSERT OR REPLACE INTO meta VALUES('inventory_run',?)",(run,)); db.commit()
+    manifest=out/"manifests"/(run+".jsonl"); manifest.parent.mkdir(mode=0o700,exist_ok=True); (out/"blobs").mkdir(mode=0o700,exist_ok=True)
     blocked_paths={r[0] for r in db.execute("SELECT path FROM scope_exclusions")}; blocked_hashes={r[0] for r in db.execute("SELECT sha FROM scope_exclusions WHERE sha!=''")}
-    with manifest.open("w") as log:
+    with private_file(manifest) as log:
         def record(row): log.write(js(row)+"\n"); log.flush(); counts[row["status"]]+=1
         for root in roots:
             rs=dict(root=root,hashed=0,errors=0,excluded=0); root_stats.append(rs)
+            prior={r[0] for r in db.execute("SELECT s.oid FROM seen s JOIN occurrences o ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.root=?",(run,root))}
+            observed=set()
             def onerror(e):
                 rs["errors"]+=1; record(dict(status="error",root=root,path=e.filename,error=str(e)))
                 event(db,run,"inventory","scan_error",e.filename or root,detail=e)
@@ -162,16 +187,21 @@ def inventory(db, out, roots, config=None):
                             sha=h.hexdigest(); receipt=dict(mtime_ns=before.st_mtime_ns,ctime_ns=before.st_ctime_ns,device=before.st_dev,inode=before.st_ino,observed_at=now(),received_at=None)
                             oid=register(db,sha,size,fmt(path,head,stored),path,root,receipt=receipt)
                             db.execute("INSERT OR IGNORE INTO preservations VALUES(?,?,?,?)",(sha,stored,now(),size))
-                            db.execute("INSERT INTO seen VALUES(?,?,?)",(run,oid,sha)); rs["hashed"]+=1
+                            db.execute("INSERT OR REPLACE INTO seen VALUES(?,?,?)",(run,oid,sha)); observed.add(oid); rs["hashed"]+=1
                             record(dict(status="included",oid=oid,sha256=sha,bytes=size,path=path,root=root,classification=provenance(path),classification_basis="trusted directory first; otherwise provisional filename heuristic, never excluded from review",receipt=receipt,storage="preserved",blob_path=stored,name_review_required=not pathlib.Path(path).suffix))
                             if rs["hashed"]%100==0: db.commit()
-                        except Exception as e: onerror(OSError(str(e),path))
+                        except Exception as e: onerror(OSError(None,str(e),path))
             except Exception as e:
                 rs["errors"]+=1; record(dict(status="error",root=root,path=root,error=str(e))); event(db,run,"inventory","root_error",root,detail=e)
-    db.execute("INSERT OR REPLACE INTO meta VALUES('inventory_run',?)",(run,))
+            # Only a complete root scan proves that old occurrences disappeared.
+            # Failed roots retain unseen sources; explicit scope exclusions still
+            # apply in active(). Historical occurrences and bytes are immutable.
+            if not rs["errors"]:
+                db.executemany("DELETE FROM seen WHERE run=? AND oid=?",((run,oid) for oid in prior-observed))
+            rs["retained_unverified_occurrences"]=len(prior-observed) if rs["errors"] else 0
     stats=dict(run_id=run,version=VERSION,roots=root_stats,counts=dict(counts),seconds=round(time.monotonic()-started,3),manifest=str(manifest),complete=not counts["error"])
     stats["unique_hashes"]=db.execute("SELECT count(DISTINCT sha) FROM seen WHERE run=?",(run,)).fetchone()[0]
-    stats["duplicate_occurrences"]=counts["included"]-stats["unique_hashes"]
+    stats["duplicate_occurrences"]=db.execute("SELECT count(*) FROM seen WHERE run=?",(run,)).fetchone()[0]-stats["unique_hashes"]
     stats["occurrence_bytes"]=db.execute("SELECT coalesce(sum(d.bytes),0) FROM seen s JOIN docs d ON d.sha=s.sha WHERE s.run=?",(run,)).fetchone()[0]
     stats["unique_bytes"]=db.execute("SELECT coalesce(sum(bytes),0) FROM docs WHERE sha IN (SELECT sha FROM seen WHERE run=?)",(run,)).fetchone()[0]
     db.execute("UPDATE runs SET finished=?,status=?,detail=? WHERE id=?",(now(),"complete" if stats["complete"] else "partial",js(stats),run)); db.commit()
@@ -186,13 +216,23 @@ def presence(v):
 def safe_member(name):
     p=pathlib.PurePosixPath(name.replace("\\","/"))
     return bool(name) and not p.is_absolute() and ".." not in p.parts and not re.match(r"^[A-Za-z]:",name) and "\x00" not in name
+def inherited_limit(kind, requested):
+    """Keep a stricter launch budget; a child must never raise its ceiling."""
+    import resource
+    current = resource.getrlimit(kind)
+    return min([requested, *(value for value in current if value != resource.RLIM_INFINITY)])
+def apply_resource_limit(kind, requested):
+    import resource
+    effective = inherited_limit(kind, requested)
+    resource.setrlimit(kind, (effective, effective))
+    return effective
 def worker(src, sha, form, dest, out, limits, depth, config=None):
     config = config if config is not None else load_config()
     import resource
-    resource.setrlimit(resource.RLIMIT_AS,(limits["memory_bytes"],limits["memory_bytes"]))
-    dest.mkdir(parents=True,exist_ok=True); stats=collections.Counter(); issues=[]; children=[]; stage="complete"
+    limits = dict(limits, memory_bytes=apply_resource_limit(resource.RLIMIT_AS, limits["memory_bytes"]))
+    dest.mkdir(mode=0o700,parents=True,exist_ok=True); stats=collections.Counter(); issues=[]; children=[]; stage="complete"
     blocked=json.loads((out/"scope-excluded-hashes.json").read_text()) if (out/"scope-excluded-hashes.json").exists() else []
-    uf=(dest/"units.jsonl").open("w",buffering=1); tf=(dest/"text.txt").open("w"); started=time.monotonic()
+    uf=private_file(dest/"units.jsonl","w",buffering=1); tf=private_file(dest/"text.txt"); started=time.monotonic()
     def issue(code,loc=None,detail=""):
         issues.append(dict(code=code,locator=loc,detail=str(detail)))
     def emit(kind,loc,text="",data=None):
@@ -206,7 +246,7 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
         if len(data)>limits["member_bytes"] or stats["expanded_bytes"]+len(data)>limits["expanded_bytes"] or len(children)>=limits["members"]: issue("expansion_limit",loc,name); return
         h=hashlib.sha256(data).hexdigest()
         if h in blocked: issue("out_of_scope_child",loc); return
-        p=out/"blobs"/h; p.parent.mkdir(exist_ok=True); check_space(out,len(data)); tmp=p.parent/(".pending-"+uuid.uuid4().hex)
+        p=out/"blobs"/h; p.parent.mkdir(mode=0o700,exist_ok=True); check_space(out,len(data)); tmp=p.parent/(".pending-"+uuid.uuid4().hex)
         with tmp.open("xb") as f: f.write(data); f.flush(); os.fsync(f.fileno())
         seal_blob(tmp,h,out)
         stats["expanded_bytes"]+=len(data); children.append(dict(sha=h,bytes=len(data),name=name,locator=loc,relation=relation,format=fmt(name,data[:16384],data)))
@@ -225,46 +265,60 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
             for n,page in enumerate(pdf.pages,1):
                 loc=dict(page=n)
                 try:
-                    text=page.extract_text() or ""; needed=not text.strip()
+                    from campaign_tool.records.pdf_eligibility import probe
+                    text=page.extract_text() or ""
+                    eligibility=probe(page,sha,n,text)
+                    needed=eligibility['decision']!='native_sufficient'
                     if needed: issue("ocr_needed_or_blank_page",loc); stats["ocr_needed"]+=1
-                    emit("pdf_page",loc,text,dict(ocr_needed=needed,visual_review="not_done"))
+                    if eligibility['decision']=='unresolved': issue('page_eligibility_unresolved',loc)
+                    emit("pdf_page",loc,text,dict(ocr_needed=needed,visual_review="not_done",eligibility=eligibility))
                 except Exception as e: issue("page_error",loc,e); emit("pdf_page",loc,"",dict(error=str(e),ocr_needed=True))
         elif form=="eml":
+            from campaign_tool.records.intake import mail_wire
+            plan=mail_wire.prepare(raw,"eml",max_total_bytes=min(limits["expanded_bytes"],512*1024**2),
+                                   max_parts=min(1000,limits["members"]),max_captures=min(100,limits["members"]),
+                                   max_depth=min(32,limits["depth"]-depth+1))
+            mail_wire.store_native(plan,out)
             msg=BytesParser(policy=email.policy.default).parsebytes(raw)
             emit("email_headers",{"mime":"0"},data=dict(headers=list(msg.raw_items()),defects=[str(x) for x in msg.defects]))
-            def mime(part,loc):
-                if part.defects: issue("mime_defect",loc,[str(x) for x in part.defects])
-                if part.get_content_type()=="message/rfc822":
-                    for n,m in enumerate(part.get_payload() if isinstance(part.get_payload(),list) else []):
-                        child(part.get_filename() or "attached.eml",m.as_bytes(),dict(mime=loc,message=n),"reserialized_rfc822")
-                    issue("rfc822_reserialized",loc,"child hash is serialized parsed message, not asserted original attachment octets"); return
-                if part.is_multipart():
-                    for n,p in enumerate(part.iter_parts(),1): mime(p,loc+"."+str(n))
-                    return
-                data=part.get_payload(decode=True) or b""; name=part.get_filename(); typ=part.get_content_type()
-                emit("mime_part",{"mime":loc},data=dict(content_type=typ,filename=name,disposition=part.get_content_disposition(),headers=list(part.raw_items())))
-                if name or part.get_content_disposition()=="attachment" or not typ.startswith("text/"): child(name or ("part-"+loc),data,{"mime":loc},"decoded_mime_payload")
-                else:
-                    charset=part.get_content_charset() or "utf-8"
-                    try: body=data.decode(charset)
-                    except (UnicodeError,LookupError): body=data.decode("utf-8",errors="replace"); issue("body_decode_replacement",loc,charset)
-                    emit("email_body",{"mime":loc},body,dict(content_type=typ,charset=charset))
-            mime(msg,"1")
+            for unit in mail_wire.project_units(plan):
+                emit(unit["kind"],unit["locator"],unit["text"],unit["data"])
+            for capture in plan.captures:
+                child(capture.metadata.get("original_filename") or "attachment.bin",capture.payload,
+                      {"part":capture.part,"wire_schema":mail_wire.SCHEMA},capture.metadata["relation"])
+                if children and children[-1]["sha"]==mail_wire.digest(capture.payload):
+                    children[-1].update(parent_sha=capture.parent_sha256,
+                                        format=capture.metadata.get("format") or children[-1]["format"])
         elif form in {"csv","tsv"}:
             try: text=raw.decode("utf-8-sig"); encoding="utf-8-sig"
             except UnicodeError:
                 text=raw.decode("utf-16") if raw[:2] in {b"\xff\xfe",b"\xfe\xff"} else raw.decode("cp1252"); encoding="utf-16" if raw[:2] in {b"\xff\xfe",b"\xfe\xff"} else "cp1252"
                 issue("encoding_fallback",detail=encoding)
-            csv.field_size_limit(min(sys.maxsize,limits["source_bytes"])); reader=csv.reader(io.StringIO(text,newline=""),delimiter="\t" if form=="tsv" else ",")
-            headers=next(reader,[]); emit("csv_header",dict(record=1,line_start=1,line_end=reader.line_num),js(headers)); fields=[collections.Counter() for _ in headers]; duplicates={}; end=reader.line_num
-            for rowno,row in enumerate(reader,2):
-                loc=dict(record=rowno,line_start=end+1,line_end=reader.line_num); end=reader.line_num
-                states=[presence(row[i] if i<len(row) else None) for i in range(len(headers))]
-                for i,s in enumerate(states): fields[i][s]+=1
-                key=hid(js(row)); duplicate=duplicates.get(key); duplicates.setdefault(key,rowno)
-                if duplicate is not None: stats["duplicate_rows"]+=1
-                if len(row)!=len(headers): stats["ragged_rows"]+=1
-                emit("csv_row",loc,js(row),dict(values=row,presence=states,duplicate_of_record=duplicate,row_sha256=key))
+            csv.field_size_limit(min(sys.maxsize,limits["source_bytes"]))
+            reader=csv.reader(io.StringIO(text,newline=""),delimiter="\t" if form=="tsv" else ",",strict=True)
+            rowno=1; end=0; headers=[]; fields=[]; duplicates={}
+            try:
+                headers=next(reader,[])
+                emit("csv_header",dict(record=1,line_start=1,line_end=reader.line_num),js(headers))
+                fields=[collections.Counter() for _ in headers]; end=reader.line_num
+                for rowno,row in enumerate(reader,2):
+                    loc=dict(record=rowno,line_start=end+1,line_end=reader.line_num); end=reader.line_num
+                    ragged=len(row)!=len(headers)
+                    # Keep positional source values, but do not infer header alignment.
+                    states=None if ragged else [presence(value) for value in row]
+                    if ragged:
+                        stats["ragged_rows"]+=1
+                        issue("csv_ragged_row_ambiguous",loc,dict(expected_fields=len(headers),actual_fields=len(row)))
+                    else:
+                        for i,state in enumerate(states): fields[i][state]+=1
+                    key=hid(js(row)); duplicate=duplicates.get(key); duplicates.setdefault(key,rowno)
+                    if duplicate is not None: stats["duplicate_rows"]+=1
+                    emit("csv_row",loc,js(row),dict(values=row,presence=states,duplicate_of_record=duplicate,row_sha256=key,
+                                                   column_mapping="ambiguous" if ragged else "positional"))
+            except csv.Error:
+                # Failed next() does not update enumerate's record counter.
+                record=1 if end==0 else stats["csv_row"]+2
+                issue("csv_malformed_quoting_or_record",dict(record=record,line_start=end+1,line_end=reader.line_num))
             stats["fields"]=[dict(index=i,header=h,counts=dict(fields[i])) for i,h in enumerate(headers)]; stats["encoding"]=encoding
         elif form=="docx":
             import xml.etree.ElementTree as ET
@@ -278,12 +332,17 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
                 if "word/document.xml" not in parts: raise ValueError("docx_missing_document_xml")
                 for name in parts:
                     root=ET.fromstring(z.read(name))
+                    # Alternative-format imports are document content, even when
+                    # their relationship is missing or external. Do not resolve
+                    # or fetch targets; retain an explicit part-local gap.
+                    for count,_ in enumerate(root.iter(ns+"altChunk"),1):
+                        issue("docx_altchunk_content_not_extracted",dict(part=name,altchunk=count))
                     for count,para in enumerate(root.iter(ns+"p"),1):
                         tokens=[]
                         for node in para.iter():
                             if node.tag==ns+"t" and node.text: tokens.append(node.text)
-                            elif node.tag==ns+"tab": tokens.append("\\t")
-                            elif node.tag in (ns+"br",ns+"cr"): tokens.append("\\n")
+                            elif node.tag==ns+"tab": tokens.append("\t")
+                            elif node.tag in (ns+"br",ns+"cr"): tokens.append("\n")
                         value="".join(tokens)
                         if value:
                             emit("docx_paragraph",dict(part=name,paragraph=count),value)
@@ -348,6 +407,8 @@ def active(db):
 def extraction_policy(form,config):
     """Fingerprint parser-affecting settings, not host paths or agency routing."""
     return hid(js(dict(format=form,paragraph_ordinals=2 if form=="docx" else None,
+                       **({"csv_strict_records":1} if form in {"csv","tsv"} else {}),
+                       **({"docx_text_separators":1,"docx_altchunk_unsupported":1} if form=="docx" else {}),
                        excluded_path_fragments=sorted(set(config["excluded_path_fragments"])) if form in {"zip","eml"} else [])))
 def extraction_budget(form,limits,depth):
     """Bind effective parser resources, not the container's absolute location."""
@@ -360,23 +421,40 @@ def reconcile_edges(db,sha,digest,config,source_version):
     exclusions still retire matching links. Other parents/direct originals keep
     shared child hashes active; old blobs, receipts and units are not deleted.
     """
-    incoming={js(child["locator"]):child for child in digest.get("children",[])}
+    from campaign_tool.records.intake.rfc822_adapter import SCHEMA as wire_schema
+    incoming={js(child["locator"]):child for child in digest.get("children",[])
+              if child.get("parent_sha",sha)==sha}
     complete=digest.get("children_inventory_complete") is True
     stamp=now()
     for edge in list(db.execute("SELECT * FROM edges WHERE parent=?",(sha,))):
+        # A legacy extraction inventory cannot prove exact-wire acquisition absent.
+        try:
+            locator=json.loads(edge["locator"])
+        except (TypeError,ValueError):
+            locator=None
+        wire_acquisition=(isinstance(locator,dict) and set(locator)=={"mime","wire_schema"}
+                          and locator["wire_schema"]==wire_schema
+                          and isinstance(locator["mime"],str)
+                          and len(locator["mime"])<=256
+                          and re.fullmatch(r"1(?:\.[1-9][0-9]*)*",locator["mime"]) is not None)
+        if isinstance(locator,dict) and locator.get("wire_schema")=="mail-wire-receipt-v2":
+            wire_acquisition=(set(locator)=={"mime","part","wire_schema"} and
+                              isinstance(locator["part"],str) and 0<len(locator["part"])<=256)
         new=incoming.get(edge["locator"])
         reason=None
         if new and (new["sha"]!=edge["child"] or new["name"]!=edge["name"]):
             reason="observed_relationship_replaced"
         elif not new and excluded(edge["name"],excluded_path_fragments=config["excluded_path_fragments"]):
             reason="relationship_excluded_by_current_policy"
-        elif not new and complete:
+        elif not new and complete and not wire_acquisition:
             reason="absent_from_completed_child_inventory"
         if reason:
             db.execute("INSERT INTO edge_history VALUES(?,?,?,?,?,?,?)",
                        (sha,edge["locator"],edge["child"],edge["name"],stamp,reason,source_version))
             db.execute("DELETE FROM edges WHERE parent=? AND locator=?",(sha,edge["locator"]))
 def extract(db,out,limits,retry=False,selection=None,config=None):
+    import resource
+    limits = dict(limits, memory_bytes=inherited_limit(resource.RLIMIT_AS, limits["memory_bytes"]))
     config = config if config is not None else load_config(output=str(out))
     levels,inv=active(db)
     if selection is not None and (not re.fullmatch(r"[a-f0-9]{64}",selection) or selection not in levels): raise ValueError("--sha must be a known active lowercase SHA-256; invalid/inactive selector rejected")
@@ -407,16 +485,16 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
         blob=out/"blobs"/sha; src=str(blob) if blob.exists() else next((x["path"] for x in sources if os.path.isfile(x["path"])),str(blob)); dest=out/"derived"/sha
         attempt=uuid.uuid4().hex
         if dest.exists():
-            previous=out/"history"/sha/attempt; previous.parent.mkdir(parents=True,exist_ok=True); os.rename(dest,previous)
+            previous=out/"history"/sha/attempt; previous.parent.mkdir(mode=0o700,parents=True,exist_ok=True); os.rename(dest,previous)
             changed=db.execute("UPDATE extraction_attempts SET artifact_dir=? WHERE sha=? AND artifact_dir=?",(str(previous),sha,str(dest))).rowcount
             if not changed and doc["digest"]:
                 prior=json.loads(doc["digest"])
                 db.execute("INSERT INTO extraction_attempts VALUES(?,?,?,?,?,?,?,?,?)",("legacy-"+attempt,sha,None,None,prior.get("version",doc["version"]),js(prior["effective_limits"]) if "effective_limits" in prior else None,prior.get("stage",doc["stage"]),doc["digest"],str(previous)))
-        dest.mkdir(parents=True,exist_ok=True)
+        dest.mkdir(mode=0o700,parents=True,exist_ok=True)
         db.execute("INSERT INTO extraction_attempts VALUES(?,?,?,?,?,?,?,?,?)",(attempt,sha,now(),None,VERSION,js(limits),"running",None,str(dest)))
         db.execute("UPDATE docs SET stage='running' WHERE sha=?",(sha,)); db.commit()
         cmd=[sys.executable,__file__,"_worker","--output",str(out),"--source",src,"--sha",sha,"--format",doc["format"],"--depth",str(levels[sha]),"--limits",js(limits),"--worker-config",js({**config,"output":str(out)})]
-        with (dest/"stderr.log").open("w") as err:
+        with private_file(dest/"stderr.log") as err:
             try:
                 p=subprocess.run(cmd,stdout=err,stderr=err,timeout=limits["seconds"])
                 failure="worker_exit_"+str(p.returncode) if p.returncode else "missing_worker_digest"
@@ -441,9 +519,10 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
                     db.execute("INSERT INTO units VALUES(?,?,?,?,?,?)",(sha,n,u["kind"],js(u["locator"]),u["text"],js(u["data"])))
         reconcile_edges(db,sha,digest,config,doc["version"])
         for c in digest.get("children",[]):
-            loc=js(c["locator"]); register(db,c["sha"],c["bytes"],c["format"],c["name"],"container",sha,c["locator"],dict(relation=c["relation"],parent_sha256=sha))
+            parent=c.get("parent_sha",sha)
+            loc=js(c["locator"]); register(db,c["sha"],c["bytes"],c["format"],c["name"],"container",parent,c["locator"],dict(relation=c["relation"],parent_sha256=parent))
             db.execute("INSERT OR IGNORE INTO preservations VALUES(?,?,?,?)",(c["sha"],str(out/"blobs"/c["sha"]),now(),c["bytes"]))
-            db.execute("INSERT OR REPLACE INTO edges VALUES(?,?,?,?)",(sha,loc,c["sha"],c["name"]))
+            db.execute("INSERT OR REPLACE INTO edges VALUES(?,?,?,?)",(parent,loc,c["sha"],c["name"]))
         levels,_=active(db)
         if selection is None:
             for child in sorted(levels,key=lambda x:(levels[x],x)):
@@ -455,6 +534,17 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
         if done%25==0: print(js(dict(extracted_this_run=done,discovered=len(todo),seconds=round(time.monotonic()-started,1))),flush=True)
     summary=dict(processed=done,selected_sha=selection,seconds=round(time.monotonic()-started,3),run_id=run)
     db.execute("UPDATE runs SET finished=?,status='finished',detail=? WHERE id=?",(now(),js(summary),run)); db.commit(); report(db,out,config); print(js(summary),flush=True)
+def report_issue(issue):
+    """Present a reason/locator without copying arbitrary parser exception text.
+
+    The digest and attempt artifacts remain the original evidence. Locators are
+    evidence coordinates (including archive member names), not error messages.
+    """
+    result = dict(issue)
+    if result.get("detail"):
+        result["detail"] = "See preserved extraction evidence for details."
+    return result
+
 def report(db,out,config=None):
     config = config if config is not None else load_config()
     levels,inv=active(db); docs={r["sha"]:dict(r) for r in db.execute("SELECT * FROM docs") if r["sha"] in levels}
@@ -469,25 +559,38 @@ def report(db,out,config=None):
         for e in edges:
             if e["parent"] in levels:
                 agents[e["child"]].update(agents[e["parent"]]); classes[e["child"]].update(classes[e["parent"]])
-    stages=collections.Counter(); types=collections.Counter(); unit_counts=collections.Counter(); issue_counts=collections.Counter(); agency_counts=collections.Counter()
-    with (out/"all-agency-document-queue.jsonl").open("w") as q:
+    stages=collections.Counter(); types=collections.Counter(); unit_counts=collections.Counter(); issue_counts=collections.Counter(); agency_counts=collections.Counter(); extraction_gaps=[]
+    with private_file(out/"all-agency-document-queue.jsonl") as q:
         for sha,d in sorted(docs.items()):
-            stages[d["stage"]]+=1; types[d["format"]]+=1; digest=json.loads(d["digest"] or "{}"); issues=digest.get("issues",[])
+            stages[d["stage"]]+=1; types[d["format"]]+=1; digest=json.loads(d["digest"] or "{}"); issues=[report_issue(e) for e in digest.get("issues",[])]
+            if d["stage"] != "complete":
+                for issue in issues or [{"code":"extraction_not_complete","locator":None}]:
+                    extraction_gaps.append(dict(document_id="sha256:"+sha,sha256=sha,stage=d["stage"],
+                                                reason=issue["code"],locator=issue.get("locator"),
+                                                detail=issue.get("detail","")))
             issue_counts.update(e["code"] for e in issues); hints=sorted(agents[sha]) or ["UNASSIGNED"]; agency_counts.update(hints)
             q.write(js(dict(document_id="sha256:"+sha,sha256=sha,bytes=d["bytes"],format=d["format"],stage=d["stage"],extraction_version=d["version"],review_status=d["review_status"],storage="preserved" if sha in stored else "indexed_only",blob_path=str(out/"blobs"/sha) if sha in stored else None,name_review_required=any(not pathlib.Path(p).suffix for p in paths[sha]) or d["format"]=="unknown",agency_hints=hints,agency_basis="path routing only, not confirmed custodian",classification=sorted(classes[sha]) or ["unknown"],source_paths=paths[sha],parents=[e for e in edges if e["child"]==sha],digest_path=str(out/"derived"/sha/"digest.json") if d["digest"] else None,issues=issues))+"\n")
     for r in db.execute("SELECT sha,kind,count(*) AS n FROM units GROUP BY sha,kind"):
         if r["sha"] in levels: unit_counts[r["kind"]]+=r["n"]
-    with (out/"occurrences.jsonl").open("w") as f:
+    with private_file(out/"occurrences.jsonl") as f:
         for r in db.execute("SELECT * FROM occurrences ORDER BY oid,first_seen"): f.write(js(dict(r))+"\n")
-    with (out/"events.jsonl").open("w") as f:
+    with private_file(out/"events.jsonl") as f:
         for r in db.execute("SELECT * FROM events"): f.write(js(dict(r))+"\n")
     summary=dict(version=VERSION,inventory_run=inv,active_unique_documents=len(docs),physical_unique_hashes=db.execute("SELECT count(DISTINCT sha) FROM seen WHERE run=?",(inv,)).fetchone()[0],physical_occurrences=db.execute("SELECT count(*) FROM seen WHERE run=?",(inv,)).fetchone()[0],stages=dict(stages),formats=dict(types),units=dict(unit_counts),issues=dict(issue_counts),agency_hint_counts=dict(agency_counts),semantic_reviews_complete=0,legal_comparisons_complete=0,independent_reviews_complete=0,mailbox_coverage="not established; filesystem snapshot only",limitations=["Path classifications and agencies are heuristics; prior analyses are leads, not primary proof.","No OCR or visual review performed; text-bearing PDF pages may still contain unread image regions.","CSV values retained without deduplicating rows. Workbook formulas not executed.","Archive limits apply per container and depth; excluded directory descendants are not enumerated.","Historical hashes and receipt metadata retained; physical source bytes are not copied.","No factual, legal-conflict, missing-document or redaction conclusions are auto-approved."])
     summary.update(physical_unique_by_class=dict(physical_classes),active_original_hashes=sum("original" in classes[s] for s in docs),preserved_active_hashes=sum(s in stored for s in docs),indexed_only_active_hashes=sum(s not in stored for s in docs),extraction_version_mismatches=sum(d["version"] not in {None,VERSION} for d in docs.values()))
     summary.update(physical_unique_hashes=sum(v==0 for v in levels.values()),physical_occurrences=db.execute("SELECT count(*) FROM seen WHERE run=? AND sha NOT IN (SELECT sha FROM scope_exclusions)",(inv,)).fetchone()[0],quarantined_hashes=db.execute("SELECT count(DISTINCT sha) FROM scope_exclusions WHERE sha!=''").fetchone()[0])
-    summary.update(retired_container_edges=db.execute("SELECT count(*) FROM edge_history").fetchone()[0],format_history_records=db.execute("SELECT count(*) FROM document_history").fetchone()[0])
+    summary.update(retired_container_edges=db.execute("SELECT count(*) FROM edge_history").fetchone()[0],format_history_records=db.execute("SELECT count(*) FROM document_history").fetchone()[0],extraction_gaps=extraction_gaps)
+    inventory_state=db.execute("SELECT status FROM runs WHERE id=?",(inv,)).fetchone()
+    inventory_gaps=[dict(reason=r["code"],path=r["path"],sha256=r["sha"] or None)
+                    for r in db.execute("SELECT * FROM events WHERE run=? AND stage='inventory' AND code IN ('scan_error','root_error')",(inv,))]
+    if inventory_state and inventory_state[0]=="running":
+        inventory_gaps.append(dict(reason="inventory_interrupted_or_running",path=None,sha256=None))
+    summary.update(inventory_complete=bool(inventory_state and inventory_state[0]=="complete"),inventory_gaps=inventory_gaps)
+    issue_counts.update(gap["reason"] for gap in inventory_gaps)
+    summary["issues"]=dict(issue_counts)
     summary["limitations"][4]="Content-addressed physical originals and children are preserved read-only from v2 onward; older hash-only history may lack bytes."
     atomic(out/"coverage.json",summary); atomic(out/"reports"/((inv or "none")+"-"+uuid.uuid4().hex+".json"),summary)
-    (out/"coverage.md").write_text("# Flock intake coverage\n\n```json\n"+json.dumps(summary,indent=2)+"\n```\n")
+    with private_file(out/"coverage.md") as f: f.write("# Flock intake coverage\n\n```json\n"+json.dumps(summary,indent=2)+"\n```\n")
 def main():
     p=argparse.ArgumentParser(description=__doc__); p.add_argument("command",choices=["inventory","extract","run","report","_worker"])
     p.add_argument("--config",help="explicit private JSON config; CLI roots/output override its paths")

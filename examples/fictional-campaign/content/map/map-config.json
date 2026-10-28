@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "group_slug": "rural-area",
+  "candidate_property": "ruralCandidate",
+  "bounding_box_fallbacks": ["cedar"],
+  "source_map_url": "https://example.invalid/map#fictional",
+  "city_boundaries_url": "data/city-boundaries.geojson",
+  "initial_point_count": 3,
+  "candidate_count_suffix": " possible rural-area points; ownership unconfirmed",
+  "county_bounds": [[0.0, 0.0], [2.0, 2.0]],
+  "style_url": "https://tiles.example.invalid/styles/fictional/style.json",
+  "tile_hosts": ["tiles.example.invalid"],
+  "group_label": "Unincorporated Cedar County (ownership unconfirmed)"
+}

@@ -62,6 +62,8 @@ def initialize(args, root):
            "jurisdiction_verified": False, "law_package_status": "unreviewed",
            "external_sends": "disabled", "publication": "manual",
            "newsletter": {"mode": "not_configured"}}
+    if getattr(args, "location", None) and args.location.strip():
+        cfg["location_query"] = args.location.strip()
     if not re.fullmatch(r"[A-Z]{2}", cfg["state"]):
         raise ValueError("State must be a two-letter code")
     with (root / "campaign.json").open("x", encoding="utf-8") as out:
@@ -133,12 +135,25 @@ def status(root):
         db.close()
 
 
+def law_package_report(cfg):
+    """Status of the jurisdiction law package: draft, reviewed or missing."""
+    from .law import package_status
+    jurisdiction = (str(cfg.get("country", "US")).lower() + "-" + cfg["state"].lower())
+    status, error = package_status(jurisdiction)
+    report = {"law_package_status": status, "reviewed_law_package": status == "reviewed"}
+    if error:
+        report["law_package_error"] = error
+    return report
+
+
 def doctor(root):
     cfg = read_config(root)
+    law = law_package_report(cfg)
     report = {
         "config_readable": True,
         "jurisdiction_verified": cfg.get("jurisdiction_verified") is True,
-        "reviewed_law_package": False,
+        "reviewed_law_package": law["reviewed_law_package"],
+        "law_package_status": law["law_package_status"],
         "public_deployment_checked": False,
         "newsletter_checked": False,
         "safe_to_send_automatically": False,
@@ -150,22 +165,97 @@ def doctor(root):
             "Configure and test signup and suppression with one approved address."
         ]
     }
+    if "law_package_error" in law:
+        report["law_package_error"] = law["law_package_error"]
+    from .kit import kit_status
+    report.update(kit_status(root))
     print(json.dumps(report, indent=2))
 
 
-def build(root):
-    from .site import preview
-    cfg = read_config(root)
-    site = preview(cfg)
+def kit(args, root):
+    from .kit import build_kit
+    summary = build_kit(root, online=args.online, include=args.include)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
+
+
+def check_public_tree(public):
+    """Run the repository leak scan over public/; returns (path, line, label) hits."""
+    from .records.public_scan import violations
+    hits = []
+    for path in sorted(public.rglob("*")):
+        if path.is_symlink():
+            hits.append((str(path.relative_to(public)), 0, "symlink_not_scanned"))
+        elif path.is_file():
+            hits.extend(violations(str(path.relative_to(public)), path.read_bytes()))
+    return hits
+
+
+def build(root, check=False):
+    from .site import build_site
     public = root / "public"
-    public.mkdir(exist_ok=True)
-    (public / "index.html").write_text(site["html"], encoding="utf-8")
-    (public / "style.css").write_text(site["css"], encoding="utf-8")
-    (public / "_headers").write_text(
-        "/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n"
-        "  Content-Security-Policy: default-src 'none'; style-src 'self'; "
-        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'\n", encoding="utf-8")
-    print("Starter written to " + str(public) + ". No private documents exported.")
+    written = build_site(root)
+    content_mode = (root / "content").is_dir()
+    print(("Site" if content_mode else "Starter") + " written to " + str(public)
+          + ". No private documents exported.")
+    total = 0
+    for path in sorted(written):
+        size = path.stat().st_size
+        total += size
+        print(f"  {path.relative_to(public).as_posix():<40} {size:>9} bytes")
+    print(f"  {len(written)} files, {total} bytes")
+    if check:
+        hits = check_public_tree(public)
+        for path, line, label in hits:
+            print(f"public/{path}:{line}: {label}", file=sys.stderr)
+        if hits:
+            raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
+        print("Public tree check passed (pattern scan only; human review still required).")
+
+
+def backup_cmd(args, root):
+    from .backup import export
+    manifest = export(root, args.out)
+    print(json.dumps({"out": str(args.out), "files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"],
+                      "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"],
+                      "manifest_sha256": manifest["manifest_sha256"]},
+                     indent=2))
+    print("Archive is unencrypted; encrypt it before storing it anywhere shared.", file=sys.stdout)
+    print("Record manifest_sha256 somewhere other than with the archive and pass it to "
+          "`verify --expect-manifest-sha256`: without it verify checks integrity, not tampering.", file=sys.stdout)
+
+
+def restore_cmd(args, root):
+    from .backup import restore
+    report = restore(args.file, root)
+    print(json.dumps({"restored_to": report["restored_to"], "files": report["files"],
+                      "engine_version": report["engine_version"], "created_at": report["created_at"]}, indent=2))
+
+
+def verify_cmd(args):
+    from .backup import verify
+    report = verify(args.file, expected_manifest_sha256=args.expect_manifest_sha256)
+    if not args.expect_manifest_sha256:
+        report["note"] = "integrity check only; pass --expect-manifest-sha256 <digest from backup> to detect a rewritten archive"
+    print(json.dumps(report, indent=2))
+
+
+def meetings_cmd(args, root):
+    from datetime import date
+    from .meetings import LegistarClient, default_opener, fixture_opener, relevant_events, write_meetings
+    read_config(root)
+    if args.from_json:
+        opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
+    elif args.online:
+        opener = default_opener
+    else:
+        raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
+    client = LegistarClient(args.client, opener=opener)
+    since = date.fromisoformat(args.since) if args.since else None
+    meetings = relevant_events(client, since=since)
+    target = write_meetings(root, meetings, args.client)
+    print(json.dumps({"client": args.client, "matched_meetings": len(meetings), "written": str(target),
+                      "note": "keyword hits only; verify the posted agenda before publishing"}, indent=2))
 
 
 def main():
@@ -179,19 +269,62 @@ def main():
             cmd.add_argument("--name", required=True)
             cmd.add_argument("--county", required=True)
             cmd.add_argument("--state", required=True)
+            cmd.add_argument("--location", help="City or county to resolve (default: the county)")
         if name == "ingest":
             cmd.add_argument("--file", required=True)
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
+        if name == "build":
+            cmd.add_argument("--check", action="store_true",
+                             help="Scan the generated public/ tree for private paths and credential patterns")
+    kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
+    kit_cmd.add_argument("--directory", required=True)
+    kit_cmd.add_argument("--online", action="store_true",
+                         help="Fall back to the Census geocoder when the seed cannot resolve the location")
+    kit_cmd.add_argument("--include", action="append",
+                         help="Agency kind to include (repeatable): sheriff, police, county_board, "
+                              "city_council, district_attorney, chp")
+    backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
+    backup_p.add_argument("--directory", required=True)
+    backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
+    restore_p = commands.add_parser("restore", help="Restore a backup into an empty directory")
+    restore_p.add_argument("--file", required=True)
+    restore_p.add_argument("--directory", required=True)
+    verify_p = commands.add_parser("verify", help="Re-hash every member of a backup against its manifest")
+    verify_p.add_argument("--file", required=True)
+    verify_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`, kept apart from the archive")
+    meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
+    meetings_p.add_argument("--directory", required=True)
+    meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
+    meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
+    meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
+    meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     args = parser.parse_args()
+    if args.command == "verify":
+        try:
+            verify_cmd(args)
+        except (OSError, ValueError) as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(1)
+        return
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
             initialize(args, root)
         elif args.command == "ingest":
             ingest(args, root)
+        elif args.command == "kit":
+            kit(args, root)
+        elif args.command == "build":
+            build(root, check=args.check)
+        elif args.command == "backup":
+            backup_cmd(args, root)
+        elif args.command == "restore":
+            restore_cmd(args, root)
+        elif args.command == "meetings":
+            meetings_cmd(args, root)
         else:
-            {"doctor": doctor, "status": status, "build": build}[args.command](root)
+            {"doctor": doctor, "status": status}[args.command](root)
     except (OSError, ValueError, sqlite3.Error) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         sys.exit(1)

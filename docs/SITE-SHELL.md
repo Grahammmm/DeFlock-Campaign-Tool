@@ -3,8 +3,14 @@
 This slice extracts the pilot's original CSS and document frame into a reusable
 Python-only renderer. The existing `build` command now uses that renderer rather
 than its earlier unrelated placeholder. Intake, doctor and review gates are not
-replaced. Maps, agency cards, story data, signup and analytics are still later
-slices; their style selectors remain in the shared stylesheet for output parity.
+replaced.
+
+**Status (Phase 0c):** `build` now renders every page of the multi-page site
+through this shell from the content model in [SITE-CONTENT.md](SITE-CONTENT.md)
+(header, main and footer come from `content/site.json` and the campaign's
+findings, meetings, sources and agencies). Without a `content/` directory the
+neutral starter below is still produced unchanged. Story data and analytics
+remain later slices; their style selectors stay in the shared stylesheet.
 
 ## Contract and trust boundary
 

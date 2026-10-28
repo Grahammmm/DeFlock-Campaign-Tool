@@ -3,12 +3,14 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
-from tools.check_secret_report import APPROVED_MANIFESTS, verified_provenance_hit
+from tools.check_secret_report import (APPROVED_MANIFESTS, APPROVED_PIN_FILES, PIN_FIELDS,
+                                       verified_pin_hit, verified_provenance_hit)
 
 
 class ProvenanceScanTests(unittest.TestCase):
@@ -115,6 +117,103 @@ class ProvenanceScanTests(unittest.TestCase):
         result = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertNotIn(marker, result.stdout + result.stderr)
+
+
+class PinScanTests(unittest.TestCase):
+    """Synthetic adversarial cases for the reviewed build-pin approval."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.name = "container/flock-ocr/pins.json"
+        self.path = self.root / self.name
+        self.path.parent.mkdir(parents=True)
+        self.data = {"engine": {
+            "commit": hashlib.sha1(b"synthetic commit").hexdigest(),
+            "tree": hashlib.sha1(b"synthetic tree").hexdigest(),
+            "manifest_sha256": hashlib.sha256(b"synthetic manifest").hexdigest(),
+            "dependency_lock_sha256": hashlib.sha256(b"synthetic lock").hexdigest()}}
+        self.write()
+
+    def write(self):
+        self.path.write_text(json.dumps(self.data, indent=2) + "\n")
+        self.approved = {self.name: hashlib.sha256(self.path.read_bytes()).hexdigest()}
+
+    def hit_for(self, field, value=None):
+        lines = self.path.read_text().splitlines()
+        value = self.data["engine"][field] if value is None else value
+        return {"type": "Hex High Entropy String",
+                "line_number": next(i for i, line in enumerate(lines, 1) if '"' + field + '"' in line),
+                "hashed_secret": hashlib.sha1(value.encode()).hexdigest()}
+
+    def allowed(self, hit, path=None):
+        return verified_pin_hit(self.root, path or self.name, hit, self.approved)
+
+    def test_exact_reviewed_pins_pass(self):
+        for field in PIN_FIELDS:
+            with self.subTest(field=field):
+                self.assertTrue(self.allowed(self.hit_for(field)))
+
+    def test_changed_file_bytes_fail_even_for_unchanged_line(self):
+        hit = self.hit_for("commit")
+        self.data["engine"]["note"] = "x"
+        self.path.write_text(json.dumps(self.data, indent=2) + "\n")
+        self.assertFalse(self.allowed(hit))
+
+    def test_unlisted_field_or_wrong_length_fails(self):
+        self.data["engine"]["api_token"] = hashlib.sha256(b"synthetic").hexdigest()
+        self.data["engine"]["commit"] = hashlib.sha256(b"too long for a commit").hexdigest()
+        self.write()
+        self.assertFalse(self.allowed(self.hit_for("api_token")))
+        self.assertFalse(self.allowed(self.hit_for("commit")))
+
+    def test_field_outside_engine_or_duplicated_fails(self):
+        self.data = {"engine": {}, "other": {"commit": hashlib.sha1(b"x").hexdigest()}}
+        self.write()
+        self.assertFalse(self.allowed({**self.hit_for("commit", self.data["other"]["commit"])}))
+        self.data = {"engine": {"commit": hashlib.sha1(b"x").hexdigest()},
+                     "other": {"commit": hashlib.sha1(b"x").hexdigest()}}
+        self.write()
+        self.assertFalse(self.allowed(self.hit_for("commit")))
+
+    def test_wrong_line_value_detector_path_or_symlink_fails(self):
+        hit = self.hit_for("tree")
+        for change in ({"line_number": 1}, {"line_number": 0}, {"line_number": True}, {"line_number": 999},
+                       {"hashed_secret": "wrong"}, {"type": "Secret Keyword"}):  # pragma: allowlist secret
+            with self.subTest(change=change):
+                self.assertFalse(self.allowed({**hit, **change}))
+        self.assertFalse(self.allowed(hit, path="container/other/pins.json"))
+        self.assertFalse(verified_provenance_hit(self.root, self.name, hit, self.approved))
+        replacement = self.root / "other.json"
+        self.path.rename(replacement)
+        self.path.symlink_to(replacement)
+        self.assertFalse(self.allowed(hit))
+
+    def test_actual_pins_accept_only_identity_lines_and_cli_passes(self):
+        root = Path(__file__).resolve().parents[1]
+        results = {}
+        for name, pin in APPROVED_PIN_FILES.items():
+            raw = (root / name).read_bytes()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), pin)
+            entries = []
+            for number, line in enumerate(raw.decode().splitlines(), 1):
+                for value in re.findall(r"[a-f0-9]{40,64}", line):
+                    hit = {"type": "Hex High Entropy String", "line_number": number,
+                           "hashed_secret": hashlib.sha1(value.encode()).hexdigest()}
+                    self.assertTrue(verified_pin_hit(root, name, hit), (name, number))
+                    entries.append(hit)
+            self.assertEqual(len(entries), 4)
+            results[name] = entries
+            stray = {"type": "Hex High Entropy String", "line_number": 1,
+                     "hashed_secret": entries[0]["hashed_secret"]}
+            self.assertFalse(verified_pin_hit(root, name, stray))
+        report = self.root / "report.json"
+        report.write_text(json.dumps({"results": results}))
+        cmd = [sys.executable, str(root / "tools/check_secret_report.py"), str(report)]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("potential secrets: 0", result.stdout)
 
 
 if __name__ == "__main__":

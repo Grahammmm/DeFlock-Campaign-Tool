@@ -17,3 +17,6 @@ public/
 *.pem
 *.key
 .DS_Store
+build/
+dist/
+*.egg-info/

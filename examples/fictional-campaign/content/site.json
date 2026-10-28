@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "tagline": "Local records. Public understanding.",
+  "mission_md": "Cedar County is fictional. This example shows how a campaign publishes **source-linked** findings.\n\n- Request policies, agreements, sharing settings and audit records.\n- Preserve originals and cite them by hash.\n- Bring reviewed evidence to official meetings.\n\nRead the [engine documentation](https://example.invalid/fictional-docs) for the content model.",
+  "about_md": "## Who we are\n\nA fictional group of Cedar County residents. No real agency, person, camera or record is described anywhere on this site.\n\n## How findings are reviewed\n\nEvery finding names its classification and confidence and cites source records by SHA-256. Findings marked needs_attorney_review are never rendered.",
+  "contact_email": null,
+  "signup": {"mode": "none"},
+  "social": [
+    {"label": "Source map (fictional)", "url": "https://example.invalid/map#fictional"}
+  ],
+  "language": "en",
+  "base_url": "https://cedar-records.example.invalid",
+  "county_profile": {
+    "vendor": "Synthetic records example",
+    "status": "Demonstration only",
+    "summary": "No claims about a real agency. Facts below come from synthetic fixtures.",
+    "cameraCount": "3 synthetic points",
+    "facts": ["Synthetic example; one published documented_fact finding."],
+    "open": "Configure reviewed sources before publication.",
+    "flags": ["Fictional example"]
+  },
+  "source_link_label": "Review the evidence notes"
+}

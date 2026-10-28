@@ -1,0 +1,17 @@
+# PREPARATION ONLY. Parent supplies reviewed exact host unit diff and launcher.
+[Unit]
+Description=Owner-scoped records pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@NONROOT_PIPELINE_USER@
+Group=@NONROOT_PIPELINE_GROUP@
+WorkingDirectory=@PINNED_ENGINE_ROOT@
+EnvironmentFile=@OWNER_ONLY_MAIL_ENV@
+ExecStart=@INSTALLED_TRUSTED_LAUNCHER@ --profile @PRIVATE_PROFILE@ --control-root @PRIVATE_CONTROL_ROOT@
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=3600
