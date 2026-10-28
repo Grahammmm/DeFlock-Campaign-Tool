@@ -112,6 +112,39 @@ print(json.dumps(run_once(adapter, execute=True, seconds=2)))
         self.assertEqual(result.stderr, '')
         self.assertNotIn('synthetic-private', result.stdout)
 
+    @unittest.skipUnless(platform.system() == 'Linux', 'qualified Linux supervisor case')
+    def test_worker_exit_is_not_held_open_by_inherited_sentinel(self):
+        # A forked descendant inherits the multiprocessing sentinel. Deliberate
+        # synthetic no-child violation; it proves the fence waits on the worker
+        # pid, not on descriptors a surviving descendant can hold open.
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / 'descendant'
+            source = '''
+import json, os, sys, time
+from pathlib import Path
+from campaign_tool.records.bounded_resume import run_once
+marker = Path(sys.argv[1])
+def adapter(request):
+    pid = os.fork()
+    if pid == 0:
+        time.sleep(4)
+        os._exit(0)
+    marker.write_text(str(pid))
+started = time.monotonic()
+result = run_once(adapter, execute=True, seconds=3)
+print(json.dumps({'result': result, 'elapsed': time.monotonic() - started}))
+'''
+            try:
+                result = subprocess.run([sys.executable, '-B', '-c', source, str(marker)],
+                                        capture_output=True, text=True, timeout=8, check=True)
+            finally:
+                if marker.exists():
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(int(marker.read_text()), signal.SIGKILL)
+            output = json.loads(result.stdout)
+            self.assertEqual(output['result'], {'status': 'completed', 'completion_claimed': True})
+            self.assertLess(output['elapsed'], 2)
+
 
 if __name__ == '__main__':
     unittest.main()

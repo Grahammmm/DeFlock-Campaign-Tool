@@ -49,6 +49,21 @@ def _worker(adapter, request, deadline, connection):
         connection.close()
 
 
+def _wait(process, seconds):
+    """Wait for the worker pid itself, never for the multiprocessing sentinel.
+
+    Every forked descendant inherits the sentinel pipe's write end, so a
+    surviving accidental descendant would hold join() open until the deadline
+    even after the worker has exited. exitcode polls waitpid(WNOHANG).
+    """
+    deadline = time.monotonic() + seconds
+    while process.exitcode is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(.01, remaining))
+
+
 def _stop(process):
     # Only the owned worker is guaranteed to be cleaned up. Admission requires
     # separately reviewed adapters and their dependencies to spawn no children.
@@ -63,7 +78,7 @@ def _stop(process):
             process.kill()
     except ProcessLookupError:
         pass
-    process.join(2)
+    _wait(process, 2)
     if process.is_alive():
         raise RuntimeError('worker_cleanup_failed')
 
@@ -86,7 +101,7 @@ def run_once(adapter=None, *, execute=False, seconds=120):
     try:
         process.start()
         writer.close()
-        process.join(seconds)
+        _wait(process, seconds)
         if process.is_alive():
             _stop(process)
             return {'status': 'timed_out', 'completion_claimed': False}

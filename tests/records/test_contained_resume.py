@@ -27,7 +27,7 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(contained.run_once(execute=True)['reason'], 'reviewed_adapter_binding_required')
 
     def test_invalid_budget_or_opt_in_is_rejected(self):
-        for seconds in (True, 0, 2.99, 121, float('nan'), float('inf')):
+        for seconds in (True, 0, 2.99, 3, 5.99, 121, float('nan'), float('inf')):
             with self.subTest(seconds=seconds), self.assertRaises(ValueError):
                 contained.run_once(seconds=seconds)
         with self.assertRaises(ValueError):
@@ -40,6 +40,42 @@ class AdmissionTests(unittest.TestCase):
                                               state_dir='/fresh-state', execute=True)['completion_claimed'])
         self.assertEqual(supervise.call_args.kwargs,
                          {'wall_seconds': 118, 'term_seconds': 1, 'kill_seconds': 1, 'max_owned': 32})
+
+    def test_inner_fence_deadline_is_strictly_inside_outer_wall(self):
+        receipt = {'status': 'completed', 'quiescent': True, 'worker_exit': 0}
+        for seconds in (6, 60, 120):
+            with self.subTest(seconds=seconds):
+                with patch.object(contained.worker_lifecycle, 'supervise',
+                                  return_value=receipt) as supervise:
+                    contained.run_once('/synthetic.py', sha256='a'*64, state_dir='/fresh-state',
+                                       execute=True, seconds=seconds)
+                wall = supervise.call_args.kwargs['wall_seconds']
+                argument = supervise.call_args.args[0][-1]
+                with patch.object(contained, '_parent_state'), \
+                        patch.object(contained.bounded_resume, 'run_once',
+                                     return_value={'status': 'completed',
+                                                   'completion_claimed': True}) as inner:
+                    self.assertEqual(contained._worker_entry('/fresh-state', '/synthetic.py',
+                                                             'a'*64, argument), 0)
+                inner_seconds = inner.call_args.kwargs['seconds']
+                self.assertEqual(wall, seconds - contained.CLEANUP_SECONDS)
+                self.assertEqual(inner_seconds, wall - contained.INNER_MARGIN_SECONDS)
+                # Inner fence plus its own 2s worker cleanup ends before the outer wall.
+                self.assertGreater(inner_seconds, 0)
+                self.assertLess(inner_seconds + 2, wall)
+
+    def test_inner_timeout_is_reported_as_timeout_without_claim(self):
+        with patch.object(contained, '_parent_state'), \
+                patch.object(contained.bounded_resume, 'run_once',
+                             return_value={'status': 'timed_out', 'completion_claimed': False}):
+            self.assertEqual(contained._worker_entry('/fresh-state', '/synthetic.py', 'a'*64, '120.0'),
+                             contained.INNER_TIMED_OUT_EXIT)
+        receipt = {'status': 'worker_failed', 'quiescent': True,
+                   'worker_exit': contained.INNER_TIMED_OUT_EXIT}
+        with patch.object(contained.worker_lifecycle, 'supervise', return_value=receipt):
+            self.assertEqual(contained.run_once('/synthetic.py', sha256='a'*64,
+                                               state_dir='/fresh-state', execute=True),
+                             {'status': 'timed_out', 'completion_claimed': False, 'quiescent': True})
 
     def test_leader_completion_without_quiescence_is_not_success(self):
         receipt = {'status': 'completed', 'quiescent': False, 'worker_exit': 0}
@@ -123,7 +159,7 @@ class CompositionTests(unittest.TestCase):
                 process.stderr.close()
         self.temporary.cleanup()
 
-    def start(self, body, *, seconds=6, wrong_hash=False, prefix=''):
+    def start(self, body, *, seconds=10, wrong_hash=False, prefix=''):
         source = self.root / 'adapter.py'
         code = ('import json, os, signal, time\nfrom pathlib import Path\n'
                 + prefix + '\ndef run(request):\n'
@@ -205,7 +241,7 @@ while not (root / 'release-leader').exists():
         self.assert_child_stopped(fd)
 
     def test_timeout_reaps_descendant_and_cannot_claim_completion(self):
-        process = self.start(CHILD + '\nsignal.signal(signal.SIGALRM, signal.SIG_IGN)\ntime.sleep(30)', seconds=3)
+        process = self.start(CHILD + '\nsignal.signal(signal.SIGALRM, signal.SIG_IGN)\ntime.sleep(30)', seconds=6)
         fd = self.pin_child(process)
         result = self.finish(process)
         self.assertEqual(result['status'], 'timed_out')

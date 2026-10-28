@@ -48,9 +48,20 @@ against a malicious same-UID process able to forge state or alter dependencies.
 The module does not discover or load mail configuration and provides no fallback
 credential path.
 
-The total configured budget accepts 3–120 seconds. Two seconds are reserved for
-TERM/KILL cleanup, leaving at most 118 seconds of work at the default. Polling,
-kernel scheduling and uninterruptible I/O can exceed nominal timing; this is not
+The total configured budget accepts 6–120 seconds. Two seconds are reserved for
+outer TERM/KILL cleanup, leaving the outer supervisor a wall budget of at most
+118 seconds at the default. The inner `bounded_resume` deadline is a further
+three seconds shorter (115 seconds at the default), so the inner fence, its own
+up-to-two-second worker cleanup and interpreter startup finish strictly before
+the outer wall timer. An inner timeout exits the leader with a dedicated code
+that is reported as `timed_out` with no completion claim.
+
+The inner fence waits on the worker process id (`waitpid`), not on the
+multiprocessing sentinel pipe. Every forked descendant inherits that pipe, so
+waiting on it let a surviving accidental descendant hold the inner fence open
+until its deadline after the worker had already exited.
+
+Polling, kernel scheduling and uninterruptible I/O can exceed nominal timing; this is not
 a hard real-time deadline. Unproven cleanup reports failure. A fresh lifecycle
 directory retains its own private state/socket/receipt; canonical sync status,
 failure markers and production checkpoints are not written by this module.
@@ -63,10 +74,23 @@ The new focused contract is:
 python3 -B -m unittest tests.records.test_contained_resume -v
 ```
 
-It has eight admission/source tests and five Linux composition tests: exact
+It has ten admission/source tests and five Linux composition tests: exact
 request and import/raw-output suppression; leader-exit cleanup of a pinned
 session-escaped descendant; timeout cleanup with no completion claim; changed
-source refusal before effects; and unrelated-process survival. Forking in the
+source refusal before effects; and unrelated-process survival. The admission
+tests also pin the inner/outer budget relationship and the inner-timeout
+mapping. `tests.records.test_bounded_resume` adds a regression case showing that
+a surviving forked descendant no longer holds the inner fence open after the
+worker exits.
+
+Failure history: at head `7d83f2531fa83a4e55c6adf15c66483334fe1310` the
+leader-exit composition case failed deterministically in every hosted job
+(Python 3.11/3.12/3.13), returning a quiescent `timed_out` instead of
+`completed`. The cause was the inherited-sentinel wait combined with equal
+inner and outer deadlines, not the test fixture. That failure is preserved here
+and in the PR history; it is not reset by the later fix.
+
+Forking in the
 negative fixtures deliberately violates the no-child request to exercise the
 outer fence. It does not permit real adapters to fork. Descendant tests pin the
 original identity with a pidfd and require exit plus a stopped synthetic writer.

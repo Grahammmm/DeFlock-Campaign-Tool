@@ -17,14 +17,22 @@ from . import bounded_resume, worker_lifecycle
 
 MAX_SOURCE_BYTES = 256 * 1024
 CLEANUP_SECONDS = 2
+# The inner fence must finish (including its own up-to-2s worker cleanup and
+# interpreter startup) strictly before the outer supervisor's wall timer.
+INNER_MARGIN_SECONDS = 3
+INNER_TIMED_OUT_EXIT = 11
 MAX_OWNED = 32
 
 
 def _budget(seconds):
     if (type(seconds) not in (int, float) or not math.isfinite(seconds)
-            or not 3 <= seconds <= 120):
+            or not 6 <= seconds <= 120):
         raise ValueError('invalid_deadline')
     return seconds - CLEANUP_SECONDS
+
+
+def _inner_budget(work_seconds):
+    return work_seconds - INNER_MARGIN_SECONDS
 
 
 def _reviewed_source(path, expected):
@@ -103,7 +111,10 @@ def _worker_entry(state_dir, adapter_path, expected, seconds):
                 raise ValueError('reviewed_entry_required')
             adapter(request)
 
-        result = bounded_resume.run_once(deferred_adapter, execute=True, seconds=work_seconds)
+        result = bounded_resume.run_once(deferred_adapter, execute=True,
+                                         seconds=_inner_budget(work_seconds))
+        if result.get('status') == 'timed_out':
+            return INNER_TIMED_OUT_EXIT
         return 0 if result.get('status') == 'completed' and result.get('completion_claimed') else 10
     except BaseException:
         return 10
@@ -126,12 +137,14 @@ def run_once(adapter_path=None, *, sha256=None, state_dir=None, execute=False, s
     command = [sys.executable, '-B', '-c',
                'import sys; from campaign_tool.records.contained_resume import _worker_entry; '
                'raise SystemExit(_worker_entry(*sys.argv[1:]))',
-               os.fspath(state_dir), os.fspath(adapter_path), sha256, str(seconds)]
+               os.fspath(state_dir), os.fspath(adapter_path), sha256, repr(float(seconds))]
     try:
         receipt = worker_lifecycle.supervise(command, state_dir, wall_seconds=work_seconds,
                                              term_seconds=1, kill_seconds=1, max_owned=MAX_OWNED)
         quiescent = receipt['quiescent'] is True
         status = receipt['status'] if quiescent else 'not_quiescent'
+        if status == 'worker_failed' and receipt['worker_exit'] == INNER_TIMED_OUT_EXIT:
+            status = 'timed_out'
         complete = status == 'completed' and receipt['worker_exit'] == 0 and quiescent
         return {'status': status, 'completion_claimed': complete, 'quiescent': quiescent}
     except worker_lifecycle.Unsupported:
