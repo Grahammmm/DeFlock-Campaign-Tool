@@ -55,7 +55,7 @@ VALID = {
     "astral_query": COLLECTION + "&q=" + ASTRAL,
     "percent_path": BASE + "/documents/caf%C3%A9",
     "percent_query": BASE + "/documents/A?name=caf%C3%A9&raw=%FF&slash=%2F",
-    "signed_query": BASE + "/documents/A/download?X-Amz-Date=20260102&X-Amz-Signature=abc123&b=2&a=1",
+    "signed_query": BASE + "/documents/A/download?X-Amz-Date=20260102&sig=fixture-only&b=2&a=1",
 }
 
 
@@ -92,8 +92,8 @@ class A1PositiveTests(unittest.TestCase):
 
     def test_a1_signed_query_spelling_and_order_unchanged(self):
         url = VALID["signed_query"]
-        self.assertEqual(url_parts(url).query, "X-Amz-Date=20260102&X-Amz-Signature=abc123&b=2&a=1")
-        self.assertEqual(normalized(url).split("?", 1)[1], "X-Amz-Date=20260102&X-Amz-Signature=abc123&b=2&a=1")
+        self.assertEqual(url_parts(url).query, "X-Amz-Date=20260102&sig=fixture-only&b=2&a=1")
+        self.assertEqual(normalized(url).split("?", 1)[1], "X-Amz-Date=20260102&sig=fixture-only&b=2&a=1")
         self.assertEqual(url_parts(VALID["percent_query"]).query, "name=caf%C3%A9&raw=%FF&slash=%2F")
         self.assertEqual(url_parts(VALID["percent_path"]).path, "/documents/caf%C3%A9")
 
