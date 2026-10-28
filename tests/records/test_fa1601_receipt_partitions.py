@@ -3,7 +3,7 @@
 The deliberately faulty reader is an in-memory oracle control, not a parser
 qualification or a modification of captured database evidence.
 """
-from contextlib import contextmanager, ExitStack
+from contextlib import closing, contextmanager, ExitStack
 import builtins
 import hashlib
 import importlib
@@ -56,6 +56,10 @@ def offline_boundary(prefix):
 
     def connect(database, *args, **kwargs):
         value = os.fspath(database)
+        # Product schema comparison uses an isolated, non-filesystem reference.
+        # Only SQLite's exact private-memory spelling bypasses the path check.
+        if value == ':memory:':
+            return real_connect(database, *args, **kwargs)
         if value.startswith('file:'):
             from urllib.parse import unquote, urlsplit
             value = unquote(urlsplit(value).path)
@@ -265,6 +269,24 @@ class ReceiptPartitionsTests(unittest.TestCase):
         self.assert_equivalent(expected, observed)
 
     def test_missing_peer_frozen_across_batches(self):
+        before = set(self.prefix.iterdir())
+        with closing(sqlite3.connect(':memory:')) as reference:
+            reference.execute('CREATE TABLE synthetic_reference (value TEXT)')
+            with closing(sqlite3.connect(':memory:')) as peer:
+                self.assertEqual(peer.execute('SELECT count(*) FROM sqlite_master').fetchone()[0], 0)
+        self.assertEqual(set(self.prefix.iterdir()), before)
+        outside = self.prefix.parent / 'fa1601-outside.sqlite'
+        # An inert underlying connector proves refusal before any real path is
+        # opened, even if a regression accidentally admits one of these inputs.
+        with patch.object(sqlite3, 'connect') as underlying:
+            with offline_boundary(self.prefix):
+                for target in (str(outside), 'file:' + str(outside) + '?mode=ro',
+                               str(self.prefix.parent / ':memory:'),
+                               'file::memory:?cache=shared'):
+                    with self.subTest(refused_database=target):
+                        with self.assertRaisesRegex(RuntimeError, '^FA1601 real-data SQLite sentinel$'):
+                            sqlite3.connect(target)
+            underlying.assert_not_called()
         for size in (1, 2):
             with self.subTest(batch_size=size):
                 self.comparison('missing', size)
