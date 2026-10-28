@@ -1,0 +1,300 @@
+{
+  "schema": "fc12-duty-groups-fixture/v1",
+  "fictional": true,
+  "note": "Fictional law packages and record text only. Expected values are frozen by hand from the detector and digest contracts, never computed by product code.",
+  "packages": {
+    "retention_only": {
+      "rules": [
+        {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413"}
+      ]
+    },
+    "retention_sharing": {
+      "rules": [
+        {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413"},
+        {"rule_id": "fictional-sharing", "citation": "Fictional Civil Code 1798.90.55(b)"},
+        {"rule_id": "fictional-immigration", "citation": "Fictional Government Code 7284"}
+      ]
+    },
+    "policy_family": {
+      "rules": [
+        {"rule_id": "fictional-policy", "citation": "Fictional Civil Code 1798.90.51(b)"},
+        {"rule_id": "fictional-access", "citation": "Fictional Civil Code 1798.90.52"},
+        {"rule_id": "fictional-hearing", "citation": "Fictional Civil Code 1798.90.55(a)"}
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "zero_locators",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "General administrative notes for the fictional office."}
+      ],
+      "expected": {
+        "rule_hits": [],
+        "null_rule_hits": 12,
+        "duties": [],
+        "conclusions": [
+          [{"locator": {"scope": "document"}, "rule_id": null}]
+        ]
+      }
+    },
+    {
+      "id": "one_locator",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections are retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [["fictional-retention", {"page": 1}]],
+        "null_rule_hits": 12,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413", "locators": [{"page": 1}]}
+        ],
+        "conclusions": [
+          [{"locator": {"page": 1}, "rule_id": "fictional-retention"}]
+        ]
+      }
+    },
+    {
+      "id": "five_locators",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 2}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 3}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 4}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 5}, "text": "Detections are retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [
+          ["fictional-retention", {"page": 1}], ["fictional-retention", {"page": 2}],
+          ["fictional-retention", {"page": 3}], ["fictional-retention", {"page": 4}],
+          ["fictional-retention", {"page": 5}]
+        ],
+        "null_rule_hits": 12,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413",
+           "locators": [{"page": 1}, {"page": 2}, {"page": 3}, {"page": 4}, {"page": 5}]}
+        ],
+        "conclusions": [
+          [
+            {"locator": {"page": 1}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 2}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 3}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 4}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 5}, "rule_id": "fictional-retention"}
+          ]
+        ]
+      }
+    },
+    {
+      "id": "six_locators",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 2}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 3}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 4}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 5}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 6}, "text": "Detections are retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [
+          ["fictional-retention", {"page": 1}], ["fictional-retention", {"page": 2}],
+          ["fictional-retention", {"page": 3}], ["fictional-retention", {"page": 4}],
+          ["fictional-retention", {"page": 5}], ["fictional-retention", {"page": 6}]
+        ],
+        "null_rule_hits": 12,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413",
+           "locators": [{"page": 1}, {"page": 2}, {"page": 3}, {"page": 4}, {"page": 5}, {"page": 6}]}
+        ],
+        "conclusions": [
+          [
+            {"locator": {"page": 1}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 2}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 3}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 4}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 5}, "rule_id": "fictional-retention"}
+          ]
+        ]
+      }
+    },
+    {
+      "id": "seven_locators",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 2}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 3}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 4}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 5}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 6}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 7}, "text": "Detections are retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [
+          ["fictional-retention", {"page": 1}], ["fictional-retention", {"page": 2}],
+          ["fictional-retention", {"page": 3}], ["fictional-retention", {"page": 4}],
+          ["fictional-retention", {"page": 5}], ["fictional-retention", {"page": 6}],
+          ["fictional-retention", {"page": 7}]
+        ],
+        "null_rule_hits": 12,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413",
+           "locators": [{"page": 1}, {"page": 2}, {"page": 3}, {"page": 4}, {"page": 5}, {"page": 6}, {"page": 7}]}
+        ],
+        "conclusions": [
+          [
+            {"locator": {"page": 1}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 2}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 3}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 4}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 5}, "rule_id": "fictional-retention"}
+          ]
+        ]
+      }
+    },
+    {
+      "id": "repeated_equal_locator",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections are retained for 30 days or 2 years."},
+        {"locator": {"page": 2}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 1}, "text": "Detections are retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [
+          ["fictional-retention", {"page": 1}], ["fictional-retention", {"page": 1}],
+          ["fictional-retention", {"page": 2}], ["fictional-retention", {"page": 1}]
+        ],
+        "null_rule_hits": 12,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413",
+           "locators": [{"page": 1}, {"page": 2}]}
+        ],
+        "conclusions": [
+          [
+            {"locator": {"page": 1}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 2}, "rule_id": "fictional-retention"}
+          ]
+        ]
+      }
+    },
+    {
+      "id": "repeats_before_cap",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections are retained for 30 days or 2 years."},
+        {"locator": {"page": 2}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 3}, "text": "Detections are retained for 30 days or 2 years."},
+        {"locator": {"page": 4}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 5}, "text": "Detections are retained for 30 days."},
+        {"locator": {"page": 6}, "text": "Detections are retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [
+          ["fictional-retention", {"page": 1}], ["fictional-retention", {"page": 1}],
+          ["fictional-retention", {"page": 2}], ["fictional-retention", {"page": 3}],
+          ["fictional-retention", {"page": 3}], ["fictional-retention", {"page": 4}],
+          ["fictional-retention", {"page": 5}], ["fictional-retention", {"page": 6}]
+        ],
+        "null_rule_hits": 12,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413",
+           "locators": [{"page": 1}, {"page": 2}, {"page": 3}, {"page": 4}, {"page": 5}, {"page": 6}]}
+        ],
+        "conclusions": [
+          [
+            {"locator": {"page": 1}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 2}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 3}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 4}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 5}, "rule_id": "fictional-retention"}
+          ]
+        ]
+      }
+    },
+    {
+      "id": "same_locator_two_rules",
+      "package": "retention_sharing",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections retained for 30 days may be shared with ICE."},
+        {"locator": {"page": 2}, "text": "Detections retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [
+          ["fictional-retention", {"page": 1}], ["fictional-retention", {"page": 2}],
+          ["fictional-sharing", {"page": 1}], ["fictional-immigration", {"page": 1}]
+        ],
+        "null_rule_hits": 12,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413", "locators": [{"page": 1}, {"page": 2}]},
+          {"rule_id": "fictional-sharing", "citation": "Fictional Civil Code 1798.90.55(b)", "locators": [{"page": 1}]},
+          {"rule_id": "fictional-immigration", "citation": "Fictional Government Code 7284", "locators": [{"page": 1}]}
+        ],
+        "conclusions": [
+          [
+            {"locator": {"page": 1}, "rule_id": "fictional-retention"},
+            {"locator": {"page": 2}, "rule_id": "fictional-retention"}
+          ],
+          [{"locator": {"page": 1}, "rule_id": "fictional-sharing"}],
+          [{"locator": {"page": 1}, "rule_id": "fictional-immigration"}]
+        ]
+      }
+    },
+    {
+      "id": "null_rule_hits",
+      "package": "retention_only",
+      "units": [
+        {"locator": {"page": 1}, "text": "Detections may be shared with federal agencies."},
+        {"locator": {"page": 2}, "text": "Audit logs are discussed at a public hearing."},
+        {"locator": {"page": 3}, "text": "Detections are retained for 30 days."}
+      ],
+      "expected": {
+        "rule_hits": [["fictional-retention", {"page": 3}]],
+        "null_rule_hits": 13,
+        "duties": [
+          {"rule_id": "fictional-retention", "citation": "Fictional Vehicle Code 2413", "locators": [{"page": 3}]}
+        ],
+        "conclusions": [
+          [{"locator": {"page": 3}, "rule_id": "fictional-retention"}]
+        ]
+      }
+    },
+    {
+      "id": "mixed_mention_absence",
+      "package": "policy_family",
+      "units": [
+        {"locator": {"page": 1}, "text": "This usage and privacy policy requires training."}
+      ],
+      "expected": {
+        "rule_hits": [
+          ["fictional-policy", {"page": 1}], ["fictional-policy", {"page": 1}],
+          ["fictional-policy", {"scope": "document"}], ["fictional-policy", {"scope": "document"}],
+          ["fictional-policy", {"scope": "document"}], ["fictional-policy", {"scope": "document"}],
+          ["fictional-policy", {"scope": "document"}], ["fictional-policy", {"scope": "document"}],
+          ["fictional-policy", {"scope": "document"}], ["fictional-policy", {"scope": "document"}],
+          ["fictional-access", {"scope": "document"}], ["fictional-hearing", {"scope": "document"}]
+        ],
+        "null_rule_hits": 0,
+        "statements": 2,
+        "omissions": 10,
+        "duties": [
+          {"rule_id": "fictional-policy", "citation": "Fictional Civil Code 1798.90.51(b)", "locators": [{"page": 1}, {"scope": "document"}]},
+          {"rule_id": "fictional-access", "citation": "Fictional Civil Code 1798.90.52", "locators": [{"scope": "document"}]},
+          {"rule_id": "fictional-hearing", "citation": "Fictional Civil Code 1798.90.55(a)", "locators": [{"scope": "document"}]}
+        ],
+        "conclusions": [
+          [
+            {"locator": {"page": 1}, "rule_id": "fictional-policy"},
+            {"locator": {"scope": "document"}, "rule_id": "fictional-policy"}
+          ],
+          [{"locator": {"scope": "document"}, "rule_id": "fictional-access"}],
+          [{"locator": {"scope": "document"}, "rule_id": "fictional-hearing"}]
+        ]
+      }
+    }
+  ]
+}
