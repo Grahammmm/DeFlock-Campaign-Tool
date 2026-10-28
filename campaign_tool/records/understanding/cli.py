@@ -1,5 +1,6 @@
 """Offline portable commands. Outputs are private immutable derivatives."""
-import argparse,json,os,stat,tempfile,hashlib
+import argparse,errno,json,os,stat,tempfile,hashlib
+from contextlib import contextmanager
 from pathlib import Path
 from . import evidence,document,correspondence,policy,reconcile
 VERSION="records-understanding-cli-v1"
@@ -65,6 +66,92 @@ def findings_markdown(result):
    loc=json.dumps(c["locator"],sort_keys=True);span=c["span"]
    lines.append("  Source "+c["original_sha256"]+" "+loc+" bytes "+str(span["start_byte"])+"–"+str(span["end_byte"])+": "+c["quote"].replace("\n"," "))
  return ("\n".join(lines)+"\n").encode()
+_DIR_FLAGS=getattr(os,"O_PATH",os.O_RDONLY)|os.O_DIRECTORY|os.O_NOFOLLOW|getattr(os,"O_CLOEXEC",0)
+_RUN_FLAGS=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|getattr(os,"O_CLOEXEC",0)
+_LEAF_FLAGS=os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|getattr(os,"O_CLOEXEC",0)
+def _refuse(e,symlink_code):
+ """Map a validation OSError to a stable non-payload code (never the message or path)."""
+ if e.errno in (errno.ELOOP,errno.ENOTDIR):return ValueError(symlink_code)
+ if e.errno in (errno.ENOENT,getattr(errno,"ESTALE",errno.ENOENT)):return ValueError("existing_run_changed")
+ return ValueError("existing_run_artifact_unreadable")
+def _ident(st):return (st.st_dev,st.st_ino)
+def _entry(dfd,name):
+ """No-follow identity of one name inside an already opened directory."""
+ st=os.stat(name,dir_fd=dfd,follow_symlinks=False)
+ return (st.st_dev,st.st_ino,stat.S_IFMT(st.st_mode),st.st_mode,st.st_uid,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+def _security(st):return (st.st_dev,st.st_ino,st.st_mode,st.st_uid,st.st_gid)
+def _run_state(st):return _security(st)+(st.st_size,st.st_mtime_ns,st.st_ctime_ns,st.st_nlink)
+def _close(fds,suppress=False):
+ """Attempt every close exactly once; never retry an ambiguous failed close."""
+ failed=False
+ for fd in reversed(fds):
+  try:os.close(fd)
+  except OSError:failed=True
+ if failed and not suppress:raise ValueError("existing_run_close_failed")from None
+@contextmanager
+def _owned_descriptors():
+ fds=[]
+ try:yield fds
+ except BaseException:
+  _close(fds,suppress=True);raise
+ else:_close(fds)
+def _read_replay_artifact(dfd,name,data,entry):
+ """Bounded no-follow, nonblocking descriptor read of one private saved artifact,
+ opened relative to the checked run-directory descriptor and bound to its listed entry."""
+ try:
+  with _owned_descriptors() as owned:
+   fd=os.open(name,_LEAF_FLAGS,dir_fd=dfd);owned.append(fd)
+   before=os.fstat(fd)
+   evidence.need(stat.S_ISREG(before.st_mode) and before.st_uid==os.geteuid() and not before.st_mode&0o077 and before.st_size<=len(data),"private_artifact_bound")
+   evidence.need(_ident(before)==entry[:2],"existing_run_changed")
+   chunks=[];size=0
+   while True:
+    b=os.read(fd,min(65536,len(data)-size+1))
+    if not b:break
+    size+=len(b);evidence.need(size<=len(data),"private_artifact_bound");chunks.append(b)
+   after=os.fstat(fd)
+   evidence.need((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns),"artifact_changed")
+   raw=b"".join(chunks)
+   evidence.need(evidence.sha(raw)==evidence.sha(data),"existing_run_conflict")
+ except OSError as e:raise _refuse(e,"symlink_artifact")from None
+ return raw
+def _open_chain(dest,owned):
+ """Open checked ancestors. Own each fd before any subsequent fallible operation."""
+ fd=os.open("/",_DIR_FLAGS&~os.O_NOFOLLOW);owned.append(fd)
+ chain=[(fd,"/",os.fstat(fd))]
+ parts=dest.parts[1:]
+ for i,part in enumerate(parts):
+  last=i==len(parts)-1
+  fd=os.open(part,_RUN_FLAGS if last else _DIR_FLAGS,dir_fd=chain[-1][0]);owned.append(fd)
+  chain.append((fd,part,os.fstat(fd)))
+  evidence.need(stat.S_ISDIR(chain[-1][2].st_mode),"existing_run_symlink")
+ return chain
+def _validate_existing_run(dest,artifacts):
+ """Validate immutable replay with checked ancestry and stable private descriptors.
+
+ Namespace identity is rebound after reads. Root security metadata must remain
+ private, but sibling creation may change its times/size/link count. The run
+ itself is immutable, including ctime and nlink. Cleanup preserves any primary
+ refusal and still attempts all closes; no unsafe entry is repaired."""
+ try:
+  with _owned_descriptors() as owned:
+   chain=_open_chain(dest,owned)
+   root_st=chain[-2][2];dfd,_,s=chain[-1]
+   evidence.need(root_st.st_uid==os.geteuid() and not root_st.st_mode&0o077,"existing_run_unsafe")
+   evidence.need(s.st_uid==os.geteuid() and not s.st_mode&0o077,"existing_run_unsafe")
+   names=sorted(os.listdir(dfd))
+   evidence.need(names==sorted(artifacts),"existing_run_artifact_set")
+   entries={name:_entry(dfd,name) for name in names}
+   for name,data in artifacts.items():evidence.need(_read_replay_artifact(dfd,name,data,entries[name])==data,"existing_run_conflict")
+   evidence.need(sorted(os.listdir(dfd))==names,"existing_run_changed")
+   evidence.need(all(_entry(dfd,name)==entries[name] for name in names),"existing_run_changed")
+   for i,((pfd,_,_),(fd,part,st)) in enumerate(zip(chain,chain[1:]),1):
+    now=os.stat(part,dir_fd=pfd,follow_symlinks=False)
+    evidence.need(stat.S_ISDIR(now.st_mode) and _ident(now)==_ident(st),"existing_run_changed")
+    if i>=len(chain)-2:
+     shape=_run_state if i==len(chain)-1 else _security
+     evidence.need(shape(os.fstat(fd))==shape(st)==shape(now),"existing_run_changed")
+ except OSError as e:raise _refuse(e,"existing_run_symlink")from None
 def run(command,value,input_sha256,output):
  result=execute(command,value);raw=evidence.canonical(result)+b"\n";pins=code_pins()
  binding={"command":command,"input_sha256":input_sha256,"code_pins":pins,"result_sha256":evidence.sha(raw)}
@@ -74,10 +161,8 @@ def run(command,value,input_sha256,output):
  artifacts={"result.json":raw,"receipt.json":receipt_raw}
  if command=="requests":artifacts["due-actions.json"]=evidence.canonical({"schema":"request-due-actions-v1","actions":result["due_actions"],"automatic_scheduling":False,"verification":"derived_needs_review","source_run_id":run_id})+b"\n"
  if command=="reconcile":artifacts["findings.md"]=findings_markdown(result)
- reused=dest.exists()
- if reused:
-  evidence.need(not dest.is_symlink(),"existing_run_symlink")
-  for name,data in artifacts.items():evidence.need((dest/name).read_bytes()==data,"existing_run_conflict")
+ reused=os.path.lexists(dest)
+ if reused:_validate_existing_run(dest,artifacts)
  else:
   stage=Path(tempfile.mkdtemp(prefix=".understanding-",dir=root))
   try:
