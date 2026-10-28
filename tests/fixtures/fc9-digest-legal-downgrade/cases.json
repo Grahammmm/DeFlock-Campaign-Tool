@@ -1,0 +1,57 @@
+{
+  "schema": "fc9-digest-legal-downgrade/cases/v1",
+  "note": "Entirely synthetic and fictional. No real record, agency, person or law package. Machine-valid output from these cases is REVIEW REQUIRED, never a legal or semantic conclusion.",
+  "jurisdiction": "zz-fx",
+  "law_package_version": "zz-fx:synthetic-fixture",
+  "privacy_tier": "redacted_cloud",
+  "model_id": "synthetic-narrative-stand-in",
+  "event_date": "2025-06-01",
+  "package": {
+    "jurisdiction": "zz-fx",
+    "status": "draft",
+    "rules": [
+      {"rule_id": "fx-rule-alpha", "citation": "Fictional Records Code 101", "effective_from": "2020-01-01", "effective_to": null, "review": "needs_attorney_review"},
+      {"rule_id": "fx-rule-beta", "citation": "Fictional Records Code 202", "effective_from": "2020-01-01", "effective_to": null, "review": "likely"},
+      {"rule_id": "fx-rule-lapsed", "citation": "Fictional Records Code 303", "effective_from": "2019-01-01", "effective_to": "2021-12-31", "review": "verified"}
+    ]
+  },
+  "rules_in_force_on_event_date": ["fx-rule-alpha", "fx-rule-beta"],
+  "units": [
+    {"locator": {"page": 1}, "text": "Fictional page one lists a synthetic retention schedule for test data."},
+    {"locator": {"page": 2, "line": 4}, "text": "Fictional page two notes a synthetic sharing arrangement."},
+    {"locator": {"section": "appendix-c"}, "text": "Fictional appendix describes a synthetic audit table."}
+  ],
+  "confidences": ["verified", "likely", "needs_attorney_review"],
+  "positions": ["first", "middle", "last"],
+  "filler_shapes": ["rule_free", "rule_free_absent_key"],
+  "source_shapes": {
+    "rule_free": {"rule_bearing": false, "sources": [{"unit": 0, "rule_id": null}, {"unit": 1, "rule_id": null}]},
+    "rule_free_absent_key": {"rule_bearing": false, "sources": [{"unit": 2}]},
+    "rule_first": {"rule_bearing": true, "sources": [{"unit": 0, "rule_id": "fx-rule-alpha"}, {"unit": 1, "rule_id": null}, {"unit": 2, "rule_id": null}]},
+    "rule_last_only": {"rule_bearing": true, "sources": [{"unit": 0, "rule_id": null}, {"unit": 1, "rule_id": null}, {"unit": 2, "rule_id": "fx-rule-beta"}]},
+    "rule_single": {"rule_bearing": true, "sources": [{"unit": 1, "rule_id": "fx-rule-beta"}]},
+    "mixed": {"rule_bearing": true, "sources": [{"unit": 1, "rule_id": null}, {"unit": 0, "rule_id": "fx-rule-alpha"}, {"unit": 2}, {"unit": 1, "rule_id": "fx-rule-beta"}]},
+    "rule_lapsed_known": {"rule_bearing": true, "sources": [{"unit": 0, "rule_id": null}, {"unit": 2, "rule_id": "fx-rule-lapsed"}]}
+  },
+  "unknown_rule_cases": [
+    {"id": "unknown-first-source", "sources": [{"unit": 0, "rule_id": "fx-rule-unknown"}, {"unit": 1, "rule_id": null}]},
+    {"id": "unknown-last-source-after-known", "sources": [{"unit": 0, "rule_id": "fx-rule-alpha"}, {"unit": 1, "rule_id": "fx-rule-missing"}]},
+    {"id": "unknown-empty-string", "sources": [{"unit": 2, "rule_id": ""}]}
+  ],
+  "expected_unknown_rule_error": "model cited unknown rule_id",
+  "malformed_conclusions": [
+    {"id": "confidence-outside-enum", "conclusion": {"text": "Synthetic claim.", "confidence": "certain", "sources": [{"locator": {"page": 1}, "rule_id": null}]}},
+    {"id": "empty-sources", "conclusion": {"text": "Synthetic claim.", "confidence": "verified", "sources": []}},
+    {"id": "source-missing-locator", "conclusion": {"text": "Synthetic claim.", "confidence": "likely", "sources": [{"rule_id": "fx-rule-alpha"}]}},
+    {"id": "source-model-supplied-sha256", "conclusion": {"text": "Synthetic claim.", "confidence": "likely", "sources": [{"locator": {"page": 1}, "rule_id": null, "sha256": "model-supplied"}]}},
+    {"id": "empty-text", "conclusion": {"text": "", "confidence": "verified", "sources": [{"locator": {"page": 1}, "rule_id": null}]}},
+    {"id": "missing-confidence", "conclusion": {"text": "Synthetic claim.", "sources": [{"locator": {"page": 1}, "rule_id": null}]}}
+  ],
+  "negative_control": {
+    "shape": "rule_last_only",
+    "confidence": "verified",
+    "position": "last",
+    "injected": "campaign_tool.digest.build module-global name any shadowed by a function returning False (builtins untouched, schema validation untouched)",
+    "expected_failure_message": "confidence 'verified' != 'needs_attorney_review'"
+  }
+}
