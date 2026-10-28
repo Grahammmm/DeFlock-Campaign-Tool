@@ -17,6 +17,8 @@ MAX_ROWS = 20000
 MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
 SCHEMA_HASH = hashlib.sha256(migration.SQL.encode()).hexdigest()
 MIME_PATH = re.compile(r"1(?:\.[1-9][0-9]*)*\Z")
+# IMAP UID and UIDVALIDITY are nonzero 32-bit unsigned numbers (RFC 3501 nz-number).
+MAX_MAIL_NUMBER = 2 ** 32 - 1
 
 
 def digest(value):
@@ -126,7 +128,8 @@ def _base_plan(row, original):
         identity = receipt["mail_identity"]
         if (type(identity) is not dict or set(identity) != {"account", "folder", "uidvalidity", "uid"}
                 or not all(_text(identity.get(key)) for key in ("account", "folder"))
-                or any(type(identity.get(key)) is not int or identity[key] <= 0 for key in ("uidvalidity", "uid"))
+                or any(type(identity.get(key)) is not int or not 1 <= identity[key] <= MAX_MAIL_NUMBER
+                       for key in ("uidvalidity", "uid"))
                 or receipt.get("eml_sha256") != row["sha"] or original["legacy_format"] != "eml"):
             return None, "invalid_or_unbound_mail_identity", receipt, locator
         return _candidate("mail", {"scheme": "mail_account_folder_uid_v1", **identity},

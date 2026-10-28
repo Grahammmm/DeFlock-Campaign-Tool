@@ -41,7 +41,9 @@ class SyntheticHTML(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.base = normalized(base_url)
         self.host = url_parts(self.base).hostname
-        self.query = parse_qs(url_parts(self.base).query, strict_parsing=True)
+        # Keep blank values: a dropped "id=" or unknown "key=" would otherwise
+        # hide a duplicate identity declaration from the checks below.
+        self.query = parse_qs(url_parts(self.base).query, keep_blank_values=True, strict_parsing=True)
         self.active = False
         self.closed = False
         self.roots = 0
@@ -97,7 +99,7 @@ class SyntheticHTML(HTMLParser):
                 if self.next is not None or "data-record-id" in values:
                     raise PortalError("unsupported_navigation")
                 p = url_parts(url)
-                q = parse_qs(p.query, strict_parsing=True)
+                q = parse_qs(p.query, keep_blank_values=True, strict_parsing=True)
                 if p.path != url_parts(self.base).path or q.get("id") != self.query.get("id") or not set(q) <= {"id", "page"}:
                     raise PortalError("collection_identity_mismatch")
                 self.next = url

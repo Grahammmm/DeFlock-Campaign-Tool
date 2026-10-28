@@ -14,6 +14,10 @@ MAX_DATES = 1000
 MAX_SUMMARY_FACTS = 20
 MAX_KEY_GROUPS = 512
 MAX_CROSS_RECORD_KEYS = 200
+# Upper bound for the legacy integer page-inventory form; larger values are
+# reported as an invalid inventory instead of allocating a page range.
+MAX_PAGE_INVENTORY = 100_000
+_PAGE_COUNT_KEYS = ("declared_page_count", "page_count", "expected_page_count")
 _DATE = re.compile(
     r"(?<![0-9])(?:[0-9]{4}-[0-9]{2}-[0-9]{2}"
     r"(?:[Tt ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?(?:Z|z|[+-][0-9]{2}:?[0-9]{2})?)?)"
@@ -44,6 +48,18 @@ def _utf8_offset(text: str, character_offset: int) -> int:
     return len(text[:character_offset].encode("utf-8"))
 
 
+_NUMERIC_OFFSET = re.compile(r"(?<=[0-9])[+-]([0-9]{2}):?([0-9]{2})$")
+
+
+def _offset_components_in_range(raw: str) -> bool:
+    """Check a supplied compact/colon numeric offset before parser normalization.
+
+    The parser would otherwise carry +01:60 into +02:00; such source text stays unresolved.
+    """
+    match = _NUMERIC_OFFSET.search(raw)
+    return match is None or (int(match.group(1)) <= 23 and int(match.group(2)) <= 59)
+
+
 def _date_value(raw: str) -> dict[str, Any]:
     candidate = {"raw": raw, "value": None, "time_basis": "unknown"}
     if "T" not in raw and "t" not in raw and " " not in raw:
@@ -51,6 +67,9 @@ def _date_value(raw: str) -> dict[str, Any]:
             candidate.update(value=date.fromisoformat(raw).isoformat(), time_basis="local_date_only")
         except ValueError:
             candidate["parse_status"] = "invalid_date"
+        return candidate
+    if not _offset_components_in_range(raw):
+        candidate["parse_status"] = "unparsed_date_time"
         return candidate
     normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
     # ISO permits compact offsets; normalize only for Python's parser.
@@ -67,6 +86,122 @@ def _date_value(raw: str) -> dict[str, Any]:
     return candidate
 
 
+def _positive_int(value: Any) -> bool:
+    return type(value) is int and value > 0
+
+
+def _declared_page_count(context: Any) -> tuple[int | None, str]:
+    """Return (declared total, status) where status is declared, absent or invalid.
+
+    Every present count key must be a positive integer and all must agree;
+    otherwise the total is unknown and reported as invalid metadata.
+    """
+    if not isinstance(context, dict):
+        return None, "absent"
+    present = [context[k] for k in _PAGE_COUNT_KEYS if context.get(k) is not None]
+    if not present:
+        return None, "absent"
+    if not all(_positive_int(v) for v in present) or len(set(present)) != 1:
+        return None, "invalid"
+    return present[0], "declared"
+
+
+def _missing_page_count(declared: int | None, in_range: int) -> int | None:
+    """Count-versus-inventory predicate: shortfall against a declared total.
+
+    Pure arithmetic; a large untrusted total never allocates a page range.
+    """
+    return None if declared is None else max(0, declared - in_range)
+
+
+_PAGE_ID_KEYS = ("page", "page_no")
+
+
+def _page_entry_id(entry: Any) -> Any:
+    """Resolve one inventory entry to its page identifier, or None when untrusted.
+
+    A dict entry may carry either supported alias or both. Every alias that is
+    present must be a positive integer and all present aliases must agree;
+    a contradictory or malformed entry is rejected rather than silently
+    preferring one number. Inventory counting and page metadata lookup both
+    use this single resolver.
+    """
+    if isinstance(entry, dict):
+        present = [entry[k] for k in _PAGE_ID_KEYS if k in entry]
+        if not present or not all(_positive_int(v) for v in present) or len(set(present)) != 1:
+            return None
+        return present[0]
+    return entry if _positive_int(entry) else None
+
+
+def _unit_page(unit: Any) -> tuple[int | None, bool]:
+    """Resolve a unit locator's page aliases to (page, invalid).
+
+    Uses the same rule as inventory entries via _page_entry_id. A locator with
+    neither alias is non-page evidence (None, False); a present but malformed
+    or contradictory alias set covers no page and is reported as invalid.
+    """
+    locator = unit.get("locator") if isinstance(unit, dict) else None
+    if not isinstance(locator, dict) or not any(k in locator for k in _PAGE_ID_KEYS):
+        return None, False
+    page = _page_entry_id(locator)
+    return page, page is None
+
+
+def _page_inventory(context: Any) -> tuple[list[int], dict, set[str]]:
+    """Validate the supplied page inventory against any declared total.
+
+    Returns unique valid page numbers (only pages actually supplied), a count
+    summary and inventory gap codes. Missing pages are counted, never invented.
+    """
+    raw_pages = context.get("pages") if isinstance(context, dict) else None
+    declared, count_status = _declared_page_count(context)
+    gaps: set[str] = set()
+    invalid = 0
+    if raw_pages is None:
+        shape, identifiers = "absent", []
+    elif type(raw_pages) is int and 0 < raw_pages <= MAX_PAGE_INVENTORY:
+        shape, identifiers = "count", list(range(1, raw_pages + 1))
+    elif isinstance(raw_pages, list):
+        shape = "list"
+        identifiers = [_page_entry_id(p) for p in raw_pages]
+    else:
+        # Unsupported shape, bool, nonpositive or over-bound integer: no range is allocated.
+        shape, identifiers, invalid = "invalid", [], 1
+    valid = [p for p in identifiers if _positive_int(p)]
+    invalid += len(identifiers) - len(valid)
+    unique = sorted(set(valid))
+    duplicate = len(valid) - len(unique)
+    out_of_range = sum(1 for p in unique if declared is not None and p > declared)
+    # Without a valid declared total there is no range to be inside of.
+    in_range = None if declared is None else len(unique) - out_of_range
+    missing = None if in_range is None else _missing_page_count(declared, in_range)
+    if count_status == "invalid":
+        gaps.add("page_count_invalid")
+    if invalid or duplicate or out_of_range:
+        gaps.add("page_inventory_invalid")
+    if declared is not None and not unique:
+        gaps.add("page_inventory_missing")
+    elif missing:
+        gaps.add("page_inventory_incomplete")
+    if gaps - {"page_inventory_incomplete", "page_inventory_missing"}:
+        status = "inconsistent"
+    elif declared is None:
+        status = "unknown_total"
+    elif not unique:
+        status = "missing"
+    elif missing:
+        status = "incomplete"
+    else:
+        status = "complete"
+    summary = {"declared_page_count": declared, "count_status": count_status, "inventory_shape": shape,
+               "supplied_page_entry_count": len(identifiers), "inventoried_page_count": len(unique),
+               "in_range_page_count": in_range, "missing_page_count": missing,
+               "duplicate_page_count": duplicate, "invalid_page_identifier_count": invalid,
+               "out_of_range_page_count": out_of_range, "status": status}
+    return unique, summary, gaps
+
+
 def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
     units = bundle.get("units", [])
     contexts = bundle.get("source_context", {})
@@ -78,27 +213,27 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
     for original, context in sorted(contexts.items()):
         source_units = by_original.get(original, [])
         raw_pages = context.get("pages", []) if isinstance(context, dict) else []
-        if isinstance(raw_pages, int):
-            page_numbers = list(range(1, raw_pages + 1))
-        elif isinstance(raw_pages, list):
-            page_numbers = [p.get("page", p.get("page_no")) if isinstance(p, dict) else p for p in raw_pages]
-        else:
-            page_numbers = []
-        page_numbers = sorted({p for p in page_numbers if type(p) is int and p > 0})
+        page_numbers, inventory, inventory_gaps = _page_inventory(context)
+        gaps.update(inventory_gaps)
+        declared_count = inventory["declared_page_count"]
         page_rows = []
         source_visual_claim = isinstance(context, dict) and context.get("visual_review_complete") is True
         page_visual_claim = any(isinstance(p, dict) and p.get("visual_review_complete") is True
                                 for p in raw_pages) if isinstance(raw_pages, list) else False
         if source_visual_claim or page_visual_claim:
             gaps.add("claimed_visual_review_unverified")
+        located = [(u, *_unit_page(u)) for u in source_units]
+        if any(invalid for _, _, invalid in located):
+            # Reported even when valid peers cover every inventoried page.
+            gaps.add("unit_page_locator_invalid")
         for page in page_numbers:
-            page_units = [u for u in source_units if page in (u.get("locator", {}).get("page"), u.get("locator", {}).get("page_no"))]
+            page_units = [u for u, unit_page, _ in located if unit_page == page]
             text_units = [u for u in page_units if isinstance(u.get("text"), str) and bool(u["text"].strip())]
             ocr = any(_is_ocr(u) for u in text_units)
             state = "text_unit_present" if text_units else "no_text_unit"
             if not text_units:
                 gaps.add("page_without_text_unit")
-            page_meta = next((p for p in raw_pages if isinstance(p, dict) and p.get("page_no", p.get("page")) == page), {}) if isinstance(raw_pages, list) else {}
+            page_meta = next((p for p in raw_pages if isinstance(p, dict) and _page_entry_id(p) == page), {}) if isinstance(raw_pages, list) else {}
             page_rows.append({"page": page, "text_unit_count": len(text_units), "text_coverage": state,
                               "text_sources": sorted({_source_kind(u) for u in text_units if _source_kind(u) != "visual"}),
                               "evidence_attempts": sorted({_source_kind(u) for u in page_units}),
@@ -107,9 +242,7 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
                               "visual_check_required": page_meta.get("needs_visual_review") is True,
                               "visual_review": "not_established",
                               "ocr_visual_review": "required" if ocr else "not_established"})
-        declared_count = context.get("page_count", context.get("expected_page_count")) if isinstance(context, dict) else None
-        if type(declared_count) is int and declared_count > 0 and not page_numbers:
-            gaps.add("page_inventory_missing")
+        # The declared total and inventory-missing gap now come from _page_inventory.
         # No existing adapter authenticates visual-review claims, so flags are
         # reported as unverified gaps and can never establish completion.
         visual = "not_established"
@@ -129,7 +262,7 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
                      "native_status": context.get("native_status") if isinstance(context, dict) else None,
                      "unit_count": len(source_units), "declared_unit_count": context.get("declared_unit_count") if isinstance(context, dict) else None,
                      "normalized_unit_count": context.get("normalized_unit_count") if isinstance(context, dict) else len(source_units),
-                     "pages": page_rows, "declared_page_count": declared_count,
+                     "pages": page_rows, "declared_page_count": declared_count, "page_inventory": inventory,
                      "visual_review": visual,
                      "quality_gaps": sorted(str(g.get("code", "source_quality_gap")) if isinstance(g, dict) else str(g) for g in context_gaps),
                      "quality_gap_details": [g for g in context_gaps if isinstance(g, dict)]})
@@ -138,6 +271,7 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
         rows.append({"original_sha256": original, "format": None, "native_status": "unknown",
                      "unit_count": len(by_original[original]), "declared_unit_count": None,
                      "normalized_unit_count": len(by_original[original]), "pages": [], "declared_page_count": None,
+                     "page_inventory": _page_inventory(None)[1],
                      "visual_review": "not_established", "quality_gaps": ["source_context_missing"],
                      "quality_gap_details": []})
         gaps.add("source_context_missing")
@@ -146,9 +280,8 @@ def _coverage(bundle: dict) -> tuple[list[dict], list[str]]:
 
 def _source_kind(unit: dict) -> str:
     kind = str(unit.get("kind", "")).lower()
-    attempt = str(unit.get("attempt_kind", "")).lower()
     data = unit.get("data") if isinstance(unit.get("data"), dict) else {}
-    if _is_ocr(unit) or "ocr" in kind or "ocr" in attempt:
+    if _is_ocr(unit):
         return "ocr"
     if kind in {"visual", "image", "visual_page"} or data.get("visual_review") is True:
         return "visual"
@@ -157,7 +290,9 @@ def _source_kind(unit: dict) -> str:
 
 def _is_ocr(unit: dict) -> bool:
     data = unit.get("data") if isinstance(unit.get("data"), dict) else {}
-    return bool("ocr" in str(unit.get("attempt_kind", "")).lower() or data.get("ocr_receipt_id") or data.get("ocr") is True or unit.get("ocr") is True)
+    return bool("ocr" in str(unit.get("kind", "")).lower()
+                or "ocr" in str(unit.get("attempt_kind", "")).lower()
+                or data.get("ocr_receipt_id") or data.get("ocr") is True or unit.get("ocr") is True)
 
 
 def _extract(bundle: dict) -> dict:

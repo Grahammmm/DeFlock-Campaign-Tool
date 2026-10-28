@@ -294,6 +294,17 @@ def _checked_manifest(manifest):
     return units, {chunk["chunk_id"]: chunk for chunk in manifest["chunks"]}
 
 
+def _known_chunk(chunk_id, chunks, reason):
+    """Refuse a non-string or unplanned chunk identity with ``reason``.
+
+    The type check precedes hash-map membership, so unhashable restored or
+    caller values are typed refusals rather than ``TypeError``. IDs are never
+    coerced or mapped to an ordinal.
+    """
+    _require(isinstance(chunk_id, str) and chunk_id in chunks, reason)
+    return chunk_id
+
+
 def render_chunk(manifest, chunk_id, selected_text):
     """Return exact ``payload``, ``payload_sha256`` and ``visible_ranges``.
 
@@ -306,7 +317,7 @@ def render_chunk(manifest, chunk_id, selected_text):
     The result is an emission receipt, never evidence of semantic acceptance.
     """
     units, chunks = _checked_manifest(manifest)
-    _require(chunk_id in chunks, "unknown_chunk")
+    _known_chunk(chunk_id, chunks, "unknown_chunk")
     _require(isinstance(selected_text, dict), "selected_text_mapping")
     chunk = chunks[chunk_id]
     for row in chunk["ranges"]:
@@ -364,7 +375,8 @@ def validate_checkpoint(manifest, checkpoint):
     _require(isinstance(checkpoint.get("attempts"), list), "checkpoint_attempts")
     receipts = set()
     for attempt in checkpoint["attempts"]:
-        _require(isinstance(attempt, dict) and attempt.get("chunk_id") in chunks, "checkpoint_chunk")
+        _require(isinstance(attempt, dict), "checkpoint_chunk")
+        _known_chunk(attempt.get("chunk_id"), chunks, "checkpoint_chunk")
         _require(set(attempt) == {"chunk_id", "visible_ranges", "accepted_ranges", "receipt_sha256", "completed"},
                  "checkpoint_attempt_shape")
         normalized = _attempt(chunks[attempt["chunk_id"]], units,
@@ -387,7 +399,7 @@ def record_attempt(manifest, checkpoint, chunk_id, *, visible_ranges, accepted_r
     """
     result = validate_checkpoint(manifest, checkpoint)
     units, chunks = _checked_manifest(manifest)
-    _require(chunk_id in chunks, "unknown_chunk")
+    _known_chunk(chunk_id, chunks, "unknown_chunk")
     attempt = _attempt(chunks[chunk_id], units, visible_ranges=visible_ranges,
                        accepted_ranges=accepted_ranges, receipt_sha256=receipt_sha256, completed=completed)
     existing = next((a for a in result["attempts"] if a["receipt_sha256"] == receipt_sha256), None)

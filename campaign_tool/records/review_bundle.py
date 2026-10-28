@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -49,6 +50,14 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _finite_float(text):
+    # Exponent overflow (1e999) parses to +/-inf; refuse it without echoing the text.
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError()
+    return value
+
+
 def decode(raw, maximum=MAX_JSON):
     require(type(raw) is bytes and len(raw) <= maximum, "json_byte_bound")
     def pairs(items):
@@ -58,7 +67,7 @@ def decode(raw, maximum=MAX_JSON):
             result[key] = value
         return result
     try:
-        return json.loads(raw, object_pairs_hook=pairs,
+        return json.loads(raw, object_pairs_hook=pairs, parse_float=_finite_float,
                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     except (ValueError, UnicodeError) as error:
         raise BundleError("invalid_json") from error
