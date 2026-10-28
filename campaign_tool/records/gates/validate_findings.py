@@ -46,9 +46,26 @@ def valid_hash(value):
     return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) is not None
 
 
+# ASCII digits only; the offset components are captured so their ranges can be
+# checked before datetime parsing gets a chance to normalize them.
+REVIEWED_AT = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?"
+    r"(?:Z|[+-](?P<offset_hours>[0-9]{2}):(?P<offset_minutes>[0-9]{2}))", re.ASCII)
+
+
+def offset_components_valid(match):
+    """Z, or an explicit offset with hours 00-23 and minutes 00-59."""
+    hours, minutes = match.group("offset_hours"), match.group("offset_minutes")
+    if hours is None:
+        return True
+    return int(hours) <= 23 and int(minutes) <= 59
+
+
 def reviewed_timestamp(value):
-    if not isinstance(value, str) or not re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value):
+    if not isinstance(value, str):
+        return False
+    match = REVIEWED_AT.fullmatch(value)
+    if match is None or not offset_components_valid(match):
         return False
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

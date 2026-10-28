@@ -146,16 +146,27 @@ class Root:
 
 
 class Pipeline:
+    # Per-child OCR limits (None: the parse timeout, as before) and the per-document wall-clock
+    # budget (None: no budget). The records run extract stage sets the budget per document
+    # (native_extract.extract_one); see extraction_routes.extract. Class defaults keep
+    # partially constructed pipelines (tests, subclasses) on the unbudgeted path.
+    ocr_page_timeout = ocr_vision_timeout = document_budget = None
+
     def __init__(self, root, *, jurisdiction="us-ca", account="local", model=None, challenge=None,
                  redaction_allowlist=(), redaction_denylist=(), event_date=None, opener=None,
-                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180, native_workbook_policy=None):
+                 ocr_tools=None, ocr_tool_signature=None, extraction_timeout=180, native_workbook_policy=None,
+                 ocr_vision=None, ocr_page_timeout=None, ocr_vision_timeout=None):
         self.root = Root(root).prepare()
         self.jurisdiction, self.account = jurisdiction, account
         self.model, self.challenge, self.opener = model, challenge, opener
         self.allowlist, self.denylist = tuple(redaction_allowlist), tuple(redaction_denylist)
         self.event_date = event_date
         self.ocr_tools, self.ocr_tool_signature = ocr_tools, ocr_tool_signature
+        if ocr_vision is not None and not ocr_tools:
+            raise ValueError("ocr_vision_requires_ocr_tools")
+        self.ocr_vision = ocr_vision
         self.extraction_timeout = extraction_timeout
+        self.ocr_page_timeout, self.ocr_vision_timeout = ocr_page_timeout, ocr_vision_timeout
         self.native_workbook_policy = native_workbook_policy
         self.package = load_package(jurisdiction)
         self.config = {"engine": ENGINE, "version": __version__, "jurisdiction": jurisdiction,
@@ -166,6 +177,8 @@ class Pipeline:
                        "model_id": model.model_id if model else None,
                        "challenge_model_id": challenge.model.model_id if challenge else None,
                        "ocr": bool(ocr_tools)}
+        if ocr_vision is not None:
+            self.config["ocr_vision"] = {key: ocr_vision[key] for key in ("engine", "model", "signature")}
         if native_workbook_policy is not None:
             from .workbook_policy import NativeWorkbookPolicy
             if type(native_workbook_policy) is not NativeWorkbookPolicy:
@@ -330,6 +343,12 @@ class Pipeline:
                         (sha(key.encode())[:32], key, stamp, stamp, owner))
             con.commit()
 
+    def _resolve_alert(self, key):
+        """Mark one open keyed alert resolved (a later repeat reopens it via ``_alert``)."""
+        with store.ledger(self.root.ledger) as con:
+            con.execute("UPDATE alerts SET state='resolved',last_seen=? WHERE key=? AND state='open'", (now(), key))
+            con.commit()
+
     def subjects(self):
         return [row["sha256"] for row in self._query("SELECT sha256 FROM originals WHERE scope!='out_of_scope' ORDER BY first_seen_at,sha256")]
 
@@ -461,7 +480,15 @@ class Pipeline:
                 raise RunError("local_acquisition_method_unsupported")
             receipt = evidence.get("export_receipt_path")
             if receipt and Path(receipt).exists():
-                forms = eml_export.attachment_forms(Path(receipt))
+                if (Path(receipt).parent.parent / "objects").is_dir():
+                    forms = eml_export.attachment_forms(Path(receipt))
+                else:
+                    # Pre-T4 identities bind export_receipt_path to the intake verification
+                    # copy of the receipt, so its objects are not beside it. Name the format
+                    # from the receipt entry and the canonical original's (same) bytes.
+                    with intake_folder.secure_open(original["storage_path"]) as source:
+                        head = source.read(16384)
+                    forms = eml_export.attachment_forms(Path(receipt), heads={subject: head})
                 if subject in forms:
                     return forms[subject]
         with intake_folder.secure_open(original["storage_path"]) as source:
@@ -497,16 +524,36 @@ class Pipeline:
         ocr_root = self.root.sub("ocr") if self.ocr_tools else None
         result = extraction_routes.extract(original["storage_path"], subject, self.root.sub("extract"), form=form,
                                            timeout=self.extraction_timeout, ocr_output_root=ocr_root,
-                                           ocr_tools=self.ocr_tools, tool_signature=self.ocr_tool_signature)
+                                           ocr_tools=self.ocr_tools, tool_signature=self.ocr_tool_signature,
+                                           ocr_vision=self.ocr_vision, document_budget=self.document_budget,
+                                           ocr_page_timeout=self.ocr_page_timeout,
+                                           ocr_vision_timeout=self.ocr_vision_timeout)
         receipt = Path(result["run_path"]) / "extraction.json"
         codes = [i.get("code", "?") for i in result.get("issues", [])]
-        if result["status"] == "blocked" or (result["status"] == "partial" and not result.get("ocr_receipts")):
-            # Not acceptable yet (no decoder, timeout, or image-only pages with no OCR runtime).
-            # Record a keyed alert so the gap is visible in `records status`; nothing is faked.
+        # The per-document budget ran out during OCR (extraction_timeout with page progress):
+        # carried to the caller; it is no failure attempt when pages progressed (see below).
+        progress = next((i for i in result.get("issues", []) if i.get("code") == "extraction_timeout"
+                         and type(i.get("ocr_pages_done")) is int), None)
+        # A plain workbook is "partial" by construction (the reader hold below). It may go on to
+        # enrollment only when trusted startup loaded the native workbook policy; the installed
+        # extraction check then qualifies it under that policy or refuses it. Nothing is waived here.
+        workbook = (form == "xlsx" and self.native_workbook_policy is not None and result["status"] == "partial"
+                    and codes == ["workbook_cached_values_and_objects_not_reviewed"] and not result.get("ocr_receipts"))
+        if result["status"] != "complete" and not workbook and not (result["status"] == "partial" and result.get("ocr_receipts")):
+            # Not acceptable yet (no decoder, a parser failure on a damaged file, timeout, or
+            # image-only pages with no OCR runtime). Record a keyed alert so the gap is visible
+            # in `records status`; nothing is faked and nothing unacceptable is enrolled.
             reason = "extraction_" + result["status"] + ":" + ",".join(codes)
-            self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
-            return {"status": "blocked", "reason": reason,
-                    "extraction_gaps": _extraction_report_gaps(subject, result)}
+            blocked = {"status": "blocked", "reason": reason,
+                       "extraction_gaps": _extraction_report_gaps(subject, result)}
+            if progress is not None:
+                blocked.update(ocr_pages_done=progress["ocr_pages_done"],
+                               ocr_pages_pending=list(progress.get("ocr_pages_pending") or []))
+            if progress is None or progress["ocr_pages_done"] < 1:
+                # Page progress under the budget is no failed attempt: no counted alert, so the
+                # document is retried next run and reuses the page receipts already published.
+                self._alert("extract:" + subject + ":" + ",".join(sorted(set(codes))), owner="runtime")
+            return blocked
         enrolled = stage["enrollment"].enroll(original_path=Path(original["storage_path"]), receipt_path=receipt,
                                               receipt_sha256=result["receipt_sha256"])
         accepted = stage["extraction"].accept(enrolled["import_id"])
@@ -1047,12 +1094,19 @@ def build_pipeline(args, env=None):
             print("records run: --ocr requested but tesseract/pdftoppm/pypdf are not all installed; "
                   "image-only pages will be held", file=sys.stderr)
     event = date.fromisoformat(args.event_date) if getattr(args, "event_date", None) else None
+    vision_config = getattr(args, "ocr_vision_config", None)
+    ocr_vision = None
+    if vision_config:
+        if ocr_tools is None:
+            raise ValueError("ocr_vision_requires_ocr_tools")
+        from .extract import vision as page_vision
+        ocr_vision = page_vision.load_config(vision_config)
     return Pipeline(args.root, jurisdiction=args.jurisdiction, account=args.account, model=model, challenge=challenge,
                     redaction_allowlist=[x for x in env.get("REDACTION_ALLOWLIST", "").split(",") if x.strip()],
                     redaction_denylist=[x for x in env.get("REDACTION_DENYLIST", "").split(",") if x.strip()],
                     event_date=event, ocr_tools=ocr_tools,
                     ocr_tool_signature=(env.get("OCR_TOOL_SIGNATURE") or ocr_signature) if ocr_tools else None,
-                    extraction_timeout=args.timeout)
+                    extraction_timeout=args.timeout, ocr_vision=ocr_vision)
 
 
 def main(argv=None):
@@ -1075,6 +1129,9 @@ def main(argv=None):
     parser.add_argument("--event-date", dest="event_date", help="YYYY-MM-DD override for rule applicability")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--ocr", action="store_true", help="use local tesseract/pdftoppm for image-only PDF pages when installed")
+    parser.add_argument("--ocr-vision-config", dest="ocr_vision_config",
+                        help="with --ocr: owner-only local-vision-config-v1 JSON naming a local vision command for "
+                             "pages Tesseract leaves empty or low confidence")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
@@ -1087,7 +1144,15 @@ def main(argv=None):
     from .runtime import require
     if not require(args.root):
         return 2
-    pipeline = build_pipeline(args)
+    if args.ocr_vision_config and not args.ocr:
+        parser.error("--ocr-vision-config requires --ocr")
+    try:
+        pipeline = build_pipeline(args)
+    except ValueError as error:
+        if str(error).startswith(("vision_config", "ocr_vision", "vision adapter")):
+            print("records run: " + str(error).split(":")[0], file=sys.stderr)
+            return 2
+        raise
     selection = {"exports": exports} if exports is not None else {}
     report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
                           document_manifest_sha256=args.document_manifest_sha256, **selection)

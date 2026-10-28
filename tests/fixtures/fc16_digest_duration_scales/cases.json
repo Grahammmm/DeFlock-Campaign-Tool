@@ -1,0 +1,95 @@
+{
+  "schema": "fc16-digest-duration-scales/v1",
+  "card": "FC16-DIGEST-DURATION-SCALES",
+  "provenance": {
+    "kind": "synthetic",
+    "source_shape": "campaign_tool/digest/detectors.py detect_retention(units, package) over units shaped {\"locator\": {...}, \"text\": \"...\"}; hits shaped by _hit(); duration tokens matched by DURATION; context by RETENTION_CONTEXT",
+    "base": "bound at run time to the SOURCE-MANIFEST head; no revision literal is stored here",
+    "package": "jurisdictions/us-ca via campaign_tool.law.load_package",
+    "content": "Every text line below is invented for this test. No record, agency, person or operational content."
+  },
+  "scale_note": "Fixed reference conversions frozen by the orchestrator. They are not calendar or legal retention periods.",
+  "scale": {
+    "hour": [1, 24],
+    "day": [1, 1],
+    "week": [7, 1],
+    "month": [30, 1],
+    "year": [365, 1]
+  },
+  "reference_days": 60,
+  "hit_identity": {
+    "detector": "retention_period",
+    "detector_version": "digest-detectors-1",
+    "kind": "comparison",
+    "rule_id": "ca-veh-2413-chp-lpr-retention-and-sharing",
+    "citation": "Veh. Code \u00a7 2413(b)-(e)",
+    "note": "Veh. Code 2413 binds CHP; for other agencies this is a reference point, not the governing period.",
+    "hit_keys": ["citation", "detail", "detector", "detector_version", "excerpt", "kind", "locator", "rule_id"],
+    "detail_keys": ["comparison", "note", "reference_days", "stated", "stated_days"],
+    "comparison_labels": {"exceeds": "exceeds_chp_60_days", "within": "within_chp_60_days"}
+  },
+  "unit_table": {
+    "units": {
+      "hour": {"singular": "hour", "plural": "hours"},
+      "day": {"singular": "day", "plural": "days"},
+      "week": {"singular": "week", "plural": "weeks"},
+      "month": {"singular": "month", "plural": "months"},
+      "year": {"singular": "year", "plural": "years"}
+    },
+    "values": [1, 2, 24],
+    "forms": ["singular", "plural"],
+    "cases": ["lower", "upper", "mixed"],
+    "line_template": "Synthetic camera reads are retained for {value} {word} under this example.",
+    "locator_page": 4,
+    "expected_case_count": 90
+  },
+  "threshold": {
+    "line_template": "Synthetic detections are kept for {value} {word} in this example.",
+    "locator_page": 9,
+    "cases": [
+      {"id": "hours_1439", "value": 1439, "word": "hours", "unit": "hour", "days": [1439, 24], "comparison": "within"},
+      {"id": "hours_1440", "value": 1440, "word": "hours", "unit": "hour", "days": [60, 1], "comparison": "within"},
+      {"id": "hours_1441", "value": 1441, "word": "hours", "unit": "hour", "days": [1441, 24], "comparison": "exceeds"},
+      {"id": "days_59", "value": 59, "word": "days", "unit": "day", "days": [59, 1], "comparison": "within"},
+      {"id": "days_60", "value": 60, "word": "days", "unit": "day", "days": [60, 1], "comparison": "within"},
+      {"id": "days_61", "value": 61, "word": "days", "unit": "day", "days": [61, 1], "comparison": "exceeds"},
+      {"id": "weeks_8", "value": 8, "word": "weeks", "unit": "week", "days": [56, 1], "comparison": "within"},
+      {"id": "weeks_9", "value": 9, "word": "weeks", "unit": "week", "days": [63, 1], "comparison": "exceeds"},
+      {"id": "months_1", "value": 1, "word": "month", "unit": "month", "days": [30, 1], "comparison": "within"},
+      {"id": "months_2", "value": 2, "word": "months", "unit": "month", "days": [60, 1], "comparison": "within"},
+      {"id": "months_3", "value": 3, "word": "months", "unit": "month", "days": [90, 1], "comparison": "exceeds"},
+      {"id": "year_0", "value": 0, "word": "year", "unit": "year", "days": [0, 1], "comparison": "within"},
+      {"id": "year_1", "value": 1, "word": "year", "unit": "year", "days": [365, 1], "comparison": "exceeds"}
+    ],
+    "exact_sixty_ids": ["hours_1440", "days_60", "months_2"],
+    "expected_case_count": 13
+  },
+  "multiple_and_none": {
+    "same_line": {
+      "locator": {"page": 12, "line": 3},
+      "text": "Synthetic reads are retained for 30 days and backups are stored for 2 years.",
+      "expected": [
+        {"stated": "30 days", "days": [30, 1], "comparison": "within"},
+        {"stated": "2 years", "days": [730, 1], "comparison": "exceeds"}
+      ]
+    },
+    "two_units": {
+      "units": [
+        {"locator": {"page": 13, "line": 1}, "text": "Synthetic hot list entries are purged after 9 weeks."},
+        {"locator": {"page": 13, "line": 2}, "text": "Synthetic audit copies are preserved for 48 hours."}
+      ],
+      "expected": [
+        {"locator": {"page": 13, "line": 1}, "stated": "9 weeks", "days": [63, 1], "comparison": "exceeds"},
+        {"locator": {"page": 13, "line": 2}, "stated": "48 hours", "days": [2, 1], "comparison": "within"}
+      ]
+    },
+    "no_context": [
+      {"locator": {"page": 14, "line": 1}, "text": "Synthetic policy review occurs every 90 days."},
+      {"locator": {"page": 14, "line": 2}, "text": "Synthetic training lasts 2 weeks and repeats after 1 year."}
+    ]
+  },
+  "negative_controls": {
+    "month_multiplier": {"original": "\"month\": n * 30", "mutant": "\"month\": n * 31", "failing_assertion": "days", "must_fail": ["months_2"], "must_pass": ["days_60", "days_61", "hours_1440", "weeks_8", "year_1"]},
+    "inclusive_threshold": {"original": "days > CHP_RETENTION_DAYS", "mutant": "days >= CHP_RETENTION_DAYS", "failing_assertion": "comparison", "must_fail": ["days_60", "hours_1440", "months_2"], "must_pass": ["days_59", "days_61", "hours_1439", "weeks_9", "months_3"]}
+  }
+}

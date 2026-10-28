@@ -19,9 +19,25 @@ SCHEMA = """\nPRAGMA foreign_keys=ON;\nCREATE TABLE IF NOT EXISTS runs(id TEXT P
 def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def js(x): return json.dumps(x, ensure_ascii=True, sort_keys=True, default=str)
 def hid(x): return hashlib.sha256(x.encode()).hexdigest()
+def private_file(path, mode="w", *, exclusive=False, **kwargs):
+    """Open a private (0600) file for writing: new, or truncated with ``exclusive=False``.
+
+    Explicit mode, never the umask: a default ACL on the directory (the rootless Flock
+    host-work has one) makes the kernel ignore the umask, so a plain ``open(..., "w")``
+    would leave the group bits that the owner-only artifact checks refuse.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_EXCL if exclusive else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        return os.fdopen(fd, mode, **kwargs)
+    except BaseException:
+        os.close(fd); raise
 def atomic(path, value):
-    p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True)
-    t = p.with_name(p.name + ".tmp"); t.write_text(js(value)+"\n"); os.replace(t, p)
+    p = pathlib.Path(path); p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    t = p.with_name(p.name + ".tmp")
+    with private_file(t) as f: f.write(js(value)+"\n")
+    os.replace(t, p)
 def event(db, run, stage, code, path="", sha="", locator=None, detail=""):
     db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?)", (run,stage,code,path,sha,js(locator),str(detail)))
 def excluded(path, out=None, excluded_path_fragments=()):
@@ -138,9 +154,9 @@ def inventory(db, out, roots, config=None):
         for root in roots:
             db.execute("INSERT OR IGNORE INTO seen SELECT ?,s.oid,s.sha FROM seen s JOIN occurrences o ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.root=?",(run,previous[0],root))
     db.execute("INSERT OR REPLACE INTO meta VALUES('inventory_run',?)",(run,)); db.commit()
-    manifest=out/"manifests"/(run+".jsonl"); manifest.parent.mkdir(exist_ok=True); (out/"blobs").mkdir(exist_ok=True)
+    manifest=out/"manifests"/(run+".jsonl"); manifest.parent.mkdir(mode=0o700,exist_ok=True); (out/"blobs").mkdir(mode=0o700,exist_ok=True)
     blocked_paths={r[0] for r in db.execute("SELECT path FROM scope_exclusions")}; blocked_hashes={r[0] for r in db.execute("SELECT sha FROM scope_exclusions WHERE sha!=''")}
-    with manifest.open("w") as log:
+    with private_file(manifest) as log:
         def record(row): log.write(js(row)+"\n"); log.flush(); counts[row["status"]]+=1
         for root in roots:
             rs=dict(root=root,hashed=0,errors=0,excluded=0); root_stats.append(rs)
@@ -225,9 +241,9 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
     config = config if config is not None else load_config()
     import resource
     limits = dict(limits, memory_bytes=apply_resource_limit(resource.RLIMIT_AS, limits["memory_bytes"]))
-    dest.mkdir(parents=True,exist_ok=True); stats=collections.Counter(); issues=[]; children=[]; stage="complete"
+    dest.mkdir(mode=0o700,parents=True,exist_ok=True); stats=collections.Counter(); issues=[]; children=[]; stage="complete"
     blocked=json.loads((out/"scope-excluded-hashes.json").read_text()) if (out/"scope-excluded-hashes.json").exists() else []
-    uf=(dest/"units.jsonl").open("w",buffering=1); tf=(dest/"text.txt").open("w"); started=time.monotonic()
+    uf=private_file(dest/"units.jsonl","w",buffering=1); tf=private_file(dest/"text.txt"); started=time.monotonic()
     def issue(code,loc=None,detail=""):
         issues.append(dict(code=code,locator=loc,detail=str(detail)))
     def emit(kind,loc,text="",data=None):
@@ -241,7 +257,7 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
         if len(data)>limits["member_bytes"] or stats["expanded_bytes"]+len(data)>limits["expanded_bytes"] or len(children)>=limits["members"]: issue("expansion_limit",loc,name); return
         h=hashlib.sha256(data).hexdigest()
         if h in blocked: issue("out_of_scope_child",loc); return
-        p=out/"blobs"/h; p.parent.mkdir(exist_ok=True); check_space(out,len(data)); tmp=p.parent/(".pending-"+uuid.uuid4().hex)
+        p=out/"blobs"/h; p.parent.mkdir(mode=0o700,exist_ok=True); check_space(out,len(data)); tmp=p.parent/(".pending-"+uuid.uuid4().hex)
         with tmp.open("xb") as f: f.write(data); f.flush(); os.fsync(f.fileno())
         seal_blob(tmp,h,out)
         stats["expanded_bytes"]+=len(data); children.append(dict(sha=h,bytes=len(data),name=name,locator=loc,relation=relation,format=fmt(name,data[:16384],data)))
@@ -260,9 +276,13 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
             for n,page in enumerate(pdf.pages,1):
                 loc=dict(page=n)
                 try:
-                    text=page.extract_text() or ""; needed=not text.strip()
+                    from campaign_tool.records.pdf_eligibility import probe
+                    text=page.extract_text() or ""
+                    eligibility=probe(page,sha,n,text)
+                    needed=eligibility['decision']!='native_sufficient'
                     if needed: issue("ocr_needed_or_blank_page",loc); stats["ocr_needed"]+=1
-                    emit("pdf_page",loc,text,dict(ocr_needed=needed,visual_review="not_done"))
+                    if eligibility['decision']=='unresolved': issue('page_eligibility_unresolved',loc)
+                    emit("pdf_page",loc,text,dict(ocr_needed=needed,visual_review="not_done",eligibility=eligibility))
                 except Exception as e: issue("page_error",loc,e); emit("pdf_page",loc,"",dict(error=str(e),ocr_needed=True))
         elif form=="eml":
             from campaign_tool.records.intake import mail_wire
@@ -476,16 +496,16 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
         blob=out/"blobs"/sha; src=str(blob) if blob.exists() else next((x["path"] for x in sources if os.path.isfile(x["path"])),str(blob)); dest=out/"derived"/sha
         attempt=uuid.uuid4().hex
         if dest.exists():
-            previous=out/"history"/sha/attempt; previous.parent.mkdir(parents=True,exist_ok=True); os.rename(dest,previous)
+            previous=out/"history"/sha/attempt; previous.parent.mkdir(mode=0o700,parents=True,exist_ok=True); os.rename(dest,previous)
             changed=db.execute("UPDATE extraction_attempts SET artifact_dir=? WHERE sha=? AND artifact_dir=?",(str(previous),sha,str(dest))).rowcount
             if not changed and doc["digest"]:
                 prior=json.loads(doc["digest"])
                 db.execute("INSERT INTO extraction_attempts VALUES(?,?,?,?,?,?,?,?,?)",("legacy-"+attempt,sha,None,None,prior.get("version",doc["version"]),js(prior["effective_limits"]) if "effective_limits" in prior else None,prior.get("stage",doc["stage"]),doc["digest"],str(previous)))
-        dest.mkdir(parents=True,exist_ok=True)
+        dest.mkdir(mode=0o700,parents=True,exist_ok=True)
         db.execute("INSERT INTO extraction_attempts VALUES(?,?,?,?,?,?,?,?,?)",(attempt,sha,now(),None,VERSION,js(limits),"running",None,str(dest)))
         db.execute("UPDATE docs SET stage='running' WHERE sha=?",(sha,)); db.commit()
         cmd=[sys.executable,__file__,"_worker","--output",str(out),"--source",src,"--sha",sha,"--format",doc["format"],"--depth",str(levels[sha]),"--limits",js(limits),"--worker-config",js({**config,"output":str(out)})]
-        with (dest/"stderr.log").open("w") as err:
+        with private_file(dest/"stderr.log") as err:
             try:
                 p=subprocess.run(cmd,stdout=err,stderr=err,timeout=limits["seconds"])
                 failure="worker_exit_"+str(p.returncode) if p.returncode else "missing_worker_digest"
@@ -551,7 +571,7 @@ def report(db,out,config=None):
             if e["parent"] in levels:
                 agents[e["child"]].update(agents[e["parent"]]); classes[e["child"]].update(classes[e["parent"]])
     stages=collections.Counter(); types=collections.Counter(); unit_counts=collections.Counter(); issue_counts=collections.Counter(); agency_counts=collections.Counter(); extraction_gaps=[]
-    with (out/"all-agency-document-queue.jsonl").open("w") as q:
+    with private_file(out/"all-agency-document-queue.jsonl") as q:
         for sha,d in sorted(docs.items()):
             stages[d["stage"]]+=1; types[d["format"]]+=1; digest=json.loads(d["digest"] or "{}"); issues=[report_issue(e) for e in digest.get("issues",[])]
             if d["stage"] != "complete":
@@ -563,9 +583,9 @@ def report(db,out,config=None):
             q.write(js(dict(document_id="sha256:"+sha,sha256=sha,bytes=d["bytes"],format=d["format"],stage=d["stage"],extraction_version=d["version"],review_status=d["review_status"],storage="preserved" if sha in stored else "indexed_only",blob_path=str(out/"blobs"/sha) if sha in stored else None,name_review_required=any(not pathlib.Path(p).suffix for p in paths[sha]) or d["format"]=="unknown",agency_hints=hints,agency_basis="path routing only, not confirmed custodian",classification=sorted(classes[sha]) or ["unknown"],source_paths=paths[sha],parents=[e for e in edges if e["child"]==sha],digest_path=str(out/"derived"/sha/"digest.json") if d["digest"] else None,issues=issues))+"\n")
     for r in db.execute("SELECT sha,kind,count(*) AS n FROM units GROUP BY sha,kind"):
         if r["sha"] in levels: unit_counts[r["kind"]]+=r["n"]
-    with (out/"occurrences.jsonl").open("w") as f:
+    with private_file(out/"occurrences.jsonl") as f:
         for r in db.execute("SELECT * FROM occurrences ORDER BY oid,first_seen"): f.write(js(dict(r))+"\n")
-    with (out/"events.jsonl").open("w") as f:
+    with private_file(out/"events.jsonl") as f:
         for r in db.execute("SELECT * FROM events"): f.write(js(dict(r))+"\n")
     summary=dict(version=VERSION,inventory_run=inv,active_unique_documents=len(docs),physical_unique_hashes=db.execute("SELECT count(DISTINCT sha) FROM seen WHERE run=?",(inv,)).fetchone()[0],physical_occurrences=db.execute("SELECT count(*) FROM seen WHERE run=?",(inv,)).fetchone()[0],stages=dict(stages),formats=dict(types),units=dict(unit_counts),issues=dict(issue_counts),agency_hint_counts=dict(agency_counts),semantic_reviews_complete=0,legal_comparisons_complete=0,independent_reviews_complete=0,mailbox_coverage="not established; filesystem snapshot only",limitations=["Path classifications and agencies are heuristics; prior analyses are leads, not primary proof.","No OCR or visual review performed; text-bearing PDF pages may still contain unread image regions.","CSV values retained without deduplicating rows. Workbook formulas not executed.","Archive limits apply per container and depth; excluded directory descendants are not enumerated.","Historical hashes and receipt metadata retained; physical source bytes are not copied.","No factual, legal-conflict, missing-document or redaction conclusions are auto-approved."])
     summary.update(physical_unique_by_class=dict(physical_classes),active_original_hashes=sum("original" in classes[s] for s in docs),preserved_active_hashes=sum(s in stored for s in docs),indexed_only_active_hashes=sum(s not in stored for s in docs),extraction_version_mismatches=sum(d["version"] not in {None,VERSION} for d in docs.values()))
@@ -581,7 +601,7 @@ def report(db,out,config=None):
     summary["issues"]=dict(issue_counts)
     summary["limitations"][4]="Content-addressed physical originals and children are preserved read-only from v2 onward; older hash-only history may lack bytes."
     atomic(out/"coverage.json",summary); atomic(out/"reports"/((inv or "none")+"-"+uuid.uuid4().hex+".json"),summary)
-    (out/"coverage.md").write_text("# Flock intake coverage\n\n```json\n"+json.dumps(summary,indent=2)+"\n```\n")
+    with private_file(out/"coverage.md") as f: f.write("# Flock intake coverage\n\n```json\n"+json.dumps(summary,indent=2)+"\n```\n")
 def main():
     p=argparse.ArgumentParser(description=__doc__); p.add_argument("command",choices=["inventory","extract","run","report","_worker"])
     p.add_argument("--config",help="explicit private JSON config; CLI roots/output override its paths")

@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import sys
@@ -36,7 +37,16 @@ def _json(value):
     def constant(value):
         raise ValueError("nonfinite JSON value")
 
-    return json.loads(value, object_pairs_hook=pairs, parse_constant=constant)
+    return json.loads(value, object_pairs_hook=pairs, parse_constant=constant,
+                      parse_float=_finite_float)
+
+
+def _finite_float(text):
+    # Exponent/mantissa overflow (e.g. 1e309) decodes to inf without a token.
+    number = float(text)
+    if not math.isfinite(number):
+        raise ValueError("nonfinite JSON number")
+    return number
 
 
 def _positive(value, maximum, name):

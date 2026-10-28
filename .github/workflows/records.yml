@@ -12,7 +12,10 @@ permissions:
 jobs:
   offline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # The full synthetic suite measured 620-1063 s on successful hosted runs
+    # (2026-10-25) and was killed at the former 18-minute step cap on main and
+    # PRs alike; keep the cap well above the measured maximum.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -29,8 +32,10 @@ jobs:
           if [ -f requirements-records-test.txt ]; then
             python -m pip install -r requirements-records-test.txt
           fi
+      - name: S3a adoption and reconciliation acceptance (SD-12 CI ownership)
+        run: python -B -W error::ResourceWarning -m unittest tests.records.test_mail_resolution_census tests.records.test_mail_adoption tests.records.test_original_reconciliation
       - name: Synthetic offline tests
-        timeout-minutes: 15
-        run: python -B -m unittest discover -v
+        timeout-minutes: 30
+        run: python -B -W error::ResourceWarning -m unittest discover -v
       - name: Public-tree credential and private-path scan
         run: python -B tools/check_public_tree.py

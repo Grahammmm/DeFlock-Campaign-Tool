@@ -80,13 +80,23 @@ def _text(value, code, maximum=1000):
     return value
 
 
+def _reject_duplicate_members(pairs):
+    """JSON object hook: a repeated member is ambiguous, so neither declaration is chosen."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_member")
+        result[key] = value
+    return result
+
+
 def _header_parent(message):
     """Only root EML header evidence; subject similarity is never a join."""
     raw = message["headers"]
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_HEADER_BYTES:
         return None, "header_projection_invalid"
     try:
-        obj = json.loads(raw)
+        obj = json.loads(raw, object_pairs_hook=_reject_duplicate_members)
         if not isinstance(obj, dict) or obj.get("schema") != "verified-eml-headers-v1":
             return None, "thread_headers_unsupported"
         if obj.get("source_original_sha256") != message["eml_sha256"] or obj.get("parser_defects"):
@@ -121,6 +131,43 @@ def _header_parent(message):
         return None, "header_projection_invalid"
 
 
+def _cycle_edges(edges):
+    """Return only edges inside directed cycles, using iterative SCC traversal.
+
+    Logical vertices are (account, original digest), never delivery occurrence IDs.
+    Iterative traversal also handles long chains without a Python recursion limit.
+    """
+    forward, reverse = defaultdict(set), defaultdict(set)
+    for source, target in edges:
+        forward[source].add(target)
+        reverse[target].add(source)
+    vertices = set(forward) | set(reverse)
+    seen, finished = set(), []
+    for root in vertices:
+        stack = [(root, False)]
+        while stack:
+            node, returning = stack.pop()
+            if returning:
+                finished.append(node)
+            elif node not in seen:
+                seen.add(node)
+                stack.append((node, True))
+                stack.extend((child, False) for child in forward[node] if child not in seen)
+    components = {}
+    for root in reversed(finished):
+        if root in components:
+            continue
+        components[root] = root
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            for parent in reverse[node]:
+                if parent not in components:
+                    components[parent] = root
+                    stack.append(parent)
+    return {(source, target) for source, target in edges if components[source] == components[target]}
+
+
 def _threads(messages, gaps):
     by_id = defaultdict(list)
     parsed = {}
@@ -131,7 +178,7 @@ def _threads(messages, gaps):
             gaps.append({"code": reason, "mail_id": message["id"]})
         if not reason and isinstance(message["message_id"], str) and MESSAGE_ID.fullmatch(message["message_id"]):
             by_id[(message["account"], message["message_id"])].append(message)
-    candidates = []
+    candidates, edges = [], []
     for message in messages:
         parent, _ = parsed[message["id"]]
         if parent is None:
@@ -148,7 +195,16 @@ def _threads(messages, gaps):
             continue
         candidates.append({"mail_id": message["id"], "parent_mail_ids": sorted(m["id"] for m in matches),
                            "basis": "declared_reply_header", "status": "unverified_candidate"})
-    return candidates
+        edges.append(((message["account"], message["eml_sha256"]),
+                      (message["account"], matches[0]["eml_sha256"])))
+    cyclic = _cycle_edges(edges)
+    output = []
+    for candidate, edge in zip(candidates, edges):
+        if edge in cyclic:
+            gaps.append({"code": "thread_reply_cycle", "mail_id": candidate["mail_id"]})
+        else:
+            output.append(candidate)
+    return output
 
 
 def _request_membership(data, gaps):

@@ -1,0 +1,24 @@
+{
+  "schema": "fc9-policy-history-compare/v1",
+  "synthetic_only": true,
+  "scope": {"agency_id": "fictional-fc9-agency", "jurisdiction": "fictional-fc9-state", "regulated_role": "operator", "request_number": "FICTIONAL-FC9-1"},
+  "fact": {"fact_id": "fictional-retention-fact", "event_key": "fictional-same-event", "field": "retention_days", "value": 60, "text": "{\"retention_days\":60}", "locator": {"page": 1}, "source_id": "fictional-fact-source"},
+  "versions": [
+    {"version_id": "fictional-old", "effective_from": "2030-01-01", "effective_to": "2030-07-01", "issued_at": "2029-12-01", "retrieved_at": "2030-06-01", "source_id": "fictional-old-source", "url": "https://example.invalid/fc9/old", "locator": "fictional old section 1", "unit_locator": {"page": 1}, "text": "Fictional retention must be at most 30 days.", "maximum": 30},
+    {"version_id": "fictional-new", "effective_from": "2030-07-01", "issued_at": "2030-06-01", "retrieved_at": "2031-01-01", "supersession_status": "not_superseded_as_of_retrieval", "source_id": "fictional-new-source", "url": "https://example.invalid/fc9/new", "locator": "fictional new section 2", "unit_locator": {"page": 2}, "text": "Fictional retention must be at most 90 days.", "maximum": 90}
+  ],
+  "cases": [
+    {"id": "old_start", "event_at": "2030-01-01", "status": "selected", "version_id": "fictional-old", "text": "Fictional retention must be at most 30 days.", "classification": "potential_conflict"},
+    {"id": "day_before", "event_at": "2030-06-30", "status": "selected", "version_id": "fictional-old", "text": "Fictional retention must be at most 30 days.", "classification": "potential_conflict"},
+    {"id": "exact_boundary", "event_at": "2030-07-01", "status": "selected", "version_id": "fictional-new", "text": "Fictional retention must be at most 90 days.", "classification": "no_conflict_observed"},
+    {"id": "day_after", "event_at": "2030-07-02", "status": "selected", "version_id": "fictional-new", "text": "Fictional retention must be at most 90 days.", "classification": "no_conflict_observed"},
+    {"id": "retrieval_boundary", "event_at": "2031-01-01", "status": "selected", "version_id": "fictional-new", "text": "Fictional retention must be at most 90 days.", "classification": "no_conflict_observed"},
+    {"id": "retrieval_next_day", "event_at": "2031-01-02", "status": "effective_date_unknown", "gap_code": "applicability_date_unknown", "classification": "applicability_unresolved"},
+    {"id": "before_start", "event_at": "2029-12-31", "status": "not_in_force", "gap_code": "no_version_in_force", "classification": "applicability_unresolved"},
+    {"id": "one_day_gap", "event_at": "2030-06-30", "old_effective_to": "2030-06-30", "status": "not_in_force", "gap_code": "no_version_in_force", "classification": "applicability_unresolved"},
+    {"id": "unknown_event", "event_at": null, "status": "event_date_unknown", "gap_code": "event_date_required", "classification": "applicability_unresolved"},
+    {"id": "malformed_event", "event_at": "2030-02-30", "status": "event_date_unknown", "gap_code": "invalid_date", "classification": "applicability_unresolved"}
+  ],
+  "negative_control": {"case": "exact_boundary", "inject": "test_local_handoff_keeps_old_version", "expected_failed_assertions": ["requirement_text_mismatch", "classification_mismatch"], "restore_cases": ["day_before", "exact_boundary"]},
+  "limits": "Fictional source-pinned numeric at_most comparison only; no semantic, legal, human, review or live acceptance."
+}
