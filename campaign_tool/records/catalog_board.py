@@ -69,8 +69,20 @@ def _text(value):
     return value if isinstance(value, str) and value.strip() else "Unknown"
 
 
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _require_encodable(text):
+    # A str containing any surrogate code point cannot be saved as strict UTF-8.
+    # The fixed message never echoes the offending value.
+    if _SURROGATE.search(text):
+        raise ValueError("invalid_catalog_text")
+
+
 def _escape(value):
-    return html.escape(str(value), quote=True)
+    text = str(value)
+    _require_encodable(text)
+    return html.escape(text, quote=True)
 
 
 def _listing(value, attribute=""):
