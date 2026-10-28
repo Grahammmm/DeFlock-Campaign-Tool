@@ -96,6 +96,8 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, origin
         raise mail_delta.Rejected("message_size_limit")
     if type(uidvalidity) is not int or type(uid) is not int or uidvalidity <= 0 or uid <= 0:
         raise mail_delta.Rejected("invalid_identity_numbers")
+    mail_delta.short_text(account, "invalid_account")
+    mail_delta.short_text(mailbox, "invalid_folder")
     from . import mail_wire
     if mail_wire.needs_extended(bytes(raw), original_format):
         from .native_receipt import export

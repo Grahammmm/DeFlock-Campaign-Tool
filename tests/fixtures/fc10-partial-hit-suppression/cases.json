@@ -1,0 +1,92 @@
+{
+  "schema": "fc10-partial-hit-suppression/v1",
+  "authority": "test_only",
+  "description": "Synthetic normalized-adapter populations, not real records or legal acceptance. Fields follow the pinned core and structured adapter contracts.",
+  "dimensions": ["seven_positive_plus_blocked", "seven_zero_plus_blocked", "clean_positive", "clean_zero", "input_order_reverse", "supporting_training_row_preserved", "inapplicable_known_type_control", "precise_manifest_counts", "immutable_inputs"],
+  "agency": "synthetic-agency",
+  "event_at": "2020-01-20T12:00:00+00:00",
+  "as_of": "2020-01-20",
+  "detectors": [
+    {
+      "name": "search-before-training",
+      "record_type": "search-log",
+      "fields": {"user_id": "synthetic-user", "purpose": "specific documented follow-up"},
+      "parameters": {},
+      "training_completed_at": "2020-01-21T12:00:00+00:00",
+      "zero_training_completed_at": "2020-01-19T12:00:00+00:00",
+      "missing_field": "user_id",
+      "blocked_reason": "field_user_id_missing",
+      "positive_hits": 1,
+      "signal": "search_precedes_supplied_training_completion"
+    },
+    {
+      "name": "purpose-quality",
+      "record_type": "search-log",
+      "fields": {"user_id": "synthetic-user", "purpose": "investigation"},
+      "parameters": {"generic_reasons": ["investigation", "inv", "test"]},
+      "zero_fields": {"purpose": "specific documented incident follow-up"},
+      "missing_field": "purpose",
+      "blocked_reason": "field_purpose_missing",
+      "positive_hits": 2,
+      "signal": "qualified_purpose_quality_rate"
+    },
+    {
+      "name": "external-sharing",
+      "record_type": "sharing-list",
+      "fields": {"access_enabled": true, "recipient_level": "federal", "recipient_jurisdiction": "ZZ"},
+      "parameters": {"home_jurisdiction": "AA"},
+      "zero_fields": {"recipient_level": "local", "recipient_jurisdiction": "AA"},
+      "missing_field": "access_enabled",
+      "blocked_reason": "field_access_enabled_missing",
+      "positive_hits": 1,
+      "signal": "external_permission_observed"
+    },
+    {
+      "name": "retention-over-policy",
+      "record_type": "retention-setting",
+      "fields": {"retention_mode": "days", "retention_days": 31},
+      "parameters": {"maximum_days": 30, "unit": "calendar_days"},
+      "zero_fields": {"retention_days": 30},
+      "missing_field": "retention_days",
+      "blocked_reason": "field_retention_days_missing",
+      "positive_hits": 1,
+      "signal": "setting_exceeds_supplied_policy_period"
+    },
+    {
+      "name": "audit-gap",
+      "record_type": "audit",
+      "fields": {"period_start": "2020-01-01", "period_end": "2020-01-20", "production_complete": true, "audit_dates": []},
+      "parameters": {"frequency_days": 7, "first_due": "2020-01-07"},
+      "zero_fields": {"audit_dates": ["2020-01-07", "2020-01-14"]},
+      "missing_field": "audit_dates",
+      "blocked_reason": "field_audit_dates_missing",
+      "positive_hits": 1,
+      "signal": "produced_audit_documentation_gap"
+    },
+    {
+      "name": "cpra-deadline",
+      "record_type": "request",
+      "event_at": "2020-01-01T12:00:00+00:00",
+      "fields": {"request_received": "2020-01-01", "determination_state": "pending", "extension_claimed": false},
+      "parameters": {"counting": "calendar", "exclude_received_day": true, "determination_days": 10, "extension_days_max": 14, "reminder_days": 3, "weekend_days": [5, 6], "roll_due": "next_business_day", "extension_allowed_bases": ["synthetic-basis"], "extension_notice_deadline": "base_due", "extension_calculation": "from_base_due"},
+      "holiday_table": {"version": "synthetic-holidays-v1", "coverage_start": "2020-01-01", "coverage_end": "2020-12-31", "dates": []},
+      "zero_fields": {"determination_state": "made", "determination_at": "2020-01-10"},
+      "missing_field": "determination_state",
+      "blocked_reason": "field_determination_state_missing",
+      "positive_hits": 1,
+      "signal": "determination_timing_observation"
+    },
+    {
+      "name": "volume-anomaly",
+      "record_type": "search-log",
+      "event_at": "2020-01-20T02:00:00+00:00",
+      "fields": {"user_id": "synthetic-user", "purpose": "specific documented follow-up"},
+      "parameters": {"timezone_offset_minutes": 0, "daily_count_threshold": 100, "off_hours_threshold": 0, "business_hours": [9, 17]},
+      "zero_event_at": "2020-01-20T12:00:00+00:00",
+      "missing_field": "user_id",
+      "blocked_reason": "field_user_id_missing",
+      "positive_hits": 1,
+      "signal": "search_volume_triage"
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "schema": "fc16-document-locator-cases/v1",
+  "provenance": {
+    "content": "synthetic; invented for these tests, describes no real record, agency or person",
+    "source_shape": "format-extraction-v1 receipt (schema, original_sha256, original_changed, status, parser, parser_version, route.format, pages, units) normalized by campaign_tool.records.understanding.evidence.normalize_receipt; each unit is {kind, locator, text, data}",
+    "consumer": "campaign_tool.records.understanding.document.analyze coverage rows and gaps",
+    "original_label": "fc16-document-locator synthetic original",
+    "page_alias_rule": "a unit locator page/page_no alias set resolves like an inventory entry: every present alias is a positive exact integer and all present aliases agree; otherwise it is invalid and covers no page"
+  },
+  "gap": "unit_page_locator_invalid",
+  "texts": {
+    "a": "Policy 100.1 describes a synthetic retention procedure on this page.",
+    "b": "Agreement terms for the synthetic second page are listed here.",
+    "c": "Invoice amount due for the synthetic contradictory unit appears here.",
+    "d": "Audit log entries for the synthetic peer unit are summarized here."
+  },
+  "cases": {
+    "valid_aliases": [
+      {"id": "page_only", "pages": [1], "page_count": 1,
+       "units": [{"locator": {"page": 1}, "text": "a"}],
+       "expect": {"gaps": [], "partial": false, "pages": [1], "counts": [1]}},
+      {"id": "page_no_only", "pages": [1], "page_count": 1,
+       "units": [{"locator": {"page_no": 1}, "text": "a"}],
+       "expect": {"gaps": [], "partial": false, "pages": [1], "counts": [1]}},
+      {"id": "both_agreeing", "pages": [1], "page_count": 1,
+       "units": [{"locator": {"page": 1, "page_no": 1}, "text": "a"}],
+       "expect": {"gaps": [], "partial": false, "pages": [1], "counts": [1]}},
+      {"id": "different_pages", "pages": [1, 2], "page_count": 2,
+       "units": [{"locator": {"page": 1}, "text": "a"}, {"locator": {"page_no": 2}, "text": "b"},
+                 {"locator": {"page_no": 2, "page": 2}, "text": "d"}],
+       "expect": {"gaps": [], "partial": false, "pages": [1, 2], "counts": [1, 2]}},
+      {"id": "reordered_units", "pages": [1, 2], "page_count": 2,
+       "units": [{"locator": {"page_no": 2, "page": 2}, "text": "d"}, {"locator": {"page_no": 2}, "text": "b"},
+                 {"locator": {"page": 1}, "text": "a"}],
+       "expect": {"gaps": [], "partial": false, "pages": [1, 2], "counts": [1, 2]}}
+    ],
+    "invalid_types": {
+      "bad_values": [true, false, 1.0, 0, -1, "1", null, [1], {"page": 1}],
+      "forms": [
+        {"id": "page", "bad_key": "page", "fixed": {}},
+        {"id": "page_no", "bad_key": "page_no", "fixed": {}},
+        {"id": "page_valid_page_no_bad", "bad_key": "page_no", "fixed": {"page": 1}},
+        {"id": "page_no_valid_page_bad", "bad_key": "page", "fixed": {"page_no": 1}}
+      ],
+      "pages": [1], "page_count": 1, "text": "a",
+      "expect": {"gaps": ["page_without_text_unit", "unit_page_locator_invalid"], "partial": true,
+                 "pages": [1], "counts": [0], "text_coverage": ["no_text_unit"]}
+    },
+    "contradiction": [
+      {"id": "page1_then_page_no2", "pages": [1, 2], "page_count": 2,
+       "units": [{"locator": {"page": 1, "page_no": 2}, "text": "c"}],
+       "expect": {"gaps": ["page_without_text_unit", "unit_page_locator_invalid"], "partial": true,
+                  "pages": [1, 2], "counts": [0, 0]}},
+      {"id": "page_no2_then_page1", "pages": [1, 2], "page_count": 2,
+       "units": [{"locator": {"page_no": 2, "page": 1}, "text": "c"}],
+       "expect": {"gaps": ["page_without_text_unit", "unit_page_locator_invalid"], "partial": true,
+                  "pages": [1, 2], "counts": [0, 0]}},
+      {"id": "page2_then_page_no1", "pages": [1, 2], "page_count": 2,
+       "units": [{"locator": {"page": 2, "page_no": 1}, "text": "c"}],
+       "expect": {"gaps": ["page_without_text_unit", "unit_page_locator_invalid"], "partial": true,
+                  "pages": [1, 2], "counts": [0, 0]}},
+      {"id": "page_no1_then_page2", "pages": [1, 2], "page_count": 2,
+       "units": [{"locator": {"page_no": 1, "page": 2}, "text": "c"}],
+       "expect": {"gaps": ["page_without_text_unit", "unit_page_locator_invalid"], "partial": true,
+                  "pages": [1, 2], "counts": [0, 0]}}
+    ],
+    "mixed_and_nonpage": [
+      {"id": "valid_peers_with_contradictory_unit", "pages": [1, 2], "page_count": 2,
+       "units": [{"locator": {"page": 1}, "text": "a"}, {"locator": {"page": 1, "page_no": 2}, "text": "c"},
+                 {"locator": {"page_no": 2}, "text": "b"}],
+       "expect": {"gaps": ["unit_page_locator_invalid"], "partial": true, "pages": [1, 2], "counts": [1, 1]}},
+      {"id": "valid_peer_covers_all_with_malformed_unit", "pages": [1], "page_count": 1,
+       "units": [{"locator": {"page": true}, "text": "d"}, {"locator": {"page_no": 1}, "text": "a"}],
+       "expect": {"gaps": ["unit_page_locator_invalid"], "partial": true, "pages": [1], "counts": [1]}},
+      {"id": "row_and_sheet_only_without_inventory", "pages": [], "page_count": null,
+       "units": [{"locator": {"row": 3}, "text": "a"}, {"locator": {"sheet": "S1", "row": 2}, "text": "b"},
+                 {"locator": {}, "text": "d"}],
+       "expect": {"gaps": [], "partial": false, "pages": [], "counts": []}},
+      {"id": "sheet_only_on_inventoried_page", "pages": [1], "page_count": 1,
+       "units": [{"locator": {"sheet": "S1", "row": 1}, "text": "a"}],
+       "expect": {"gaps": ["page_without_text_unit"], "partial": true, "pages": [1], "counts": [0]}}
+    ]
+  },
+  "deciding_control": {
+    "case": "contradiction",
+    "subcase": "page1_then_page_no2",
+    "baseline_counts": [1, 1],
+    "fixed_counts": [0, 0]
+  }
+}
