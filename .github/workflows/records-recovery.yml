@@ -1,6 +1,8 @@
 name: WP9 recovery and pinned WP8 composition
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
