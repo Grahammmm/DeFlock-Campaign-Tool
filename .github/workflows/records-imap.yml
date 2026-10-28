@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   synthetic-imap:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
