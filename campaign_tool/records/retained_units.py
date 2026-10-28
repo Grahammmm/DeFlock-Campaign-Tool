@@ -234,7 +234,11 @@ def build_search_index(index_dir,read_result):
 def search_index(index_path,expected_snapshot,query,*,expected_content_sha256,limit=50):
     if type(expected_snapshot)is not str or not HEX.fullmatch(expected_snapshot):_no("snapshot_pin_invalid")
     if type(expected_content_sha256)is not str or not HEX.fullmatch(expected_content_sha256):_no("index_content_pin_invalid")
-    if type(query)is not str or not query.strip() or len(query.encode())>1024 or type(limit)is not int or not 1<=limit<=200:_no("search_query_invalid")
+    if type(query)is not str or not query.strip() or type(limit)is not int or not 1<=limit<=200:_no("search_query_invalid")
+    query_bytes: bytes
+    try: query_bytes=query.encode("utf-8")
+    except UnicodeError: _no("search_query_invalid")
+    if len(query_bytes)>1024:_no("search_query_invalid")
     p=_path(index_path)
     _private(p.parent)
     if p.name!="retained-search-"+expected_snapshot+".sqlite":_no("index_binding_mismatch")
