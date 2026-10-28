@@ -1,0 +1,166 @@
+{
+  "schema": "fc16-detector-manifest-balance-cases/v1",
+  "provenance": {
+    "card": "FC16-DETECTOR-MANIFEST-BALANCE",
+    "author": "claude-opus-5-5 / anthropic",
+    "content": "synthetic only; no records, corpus, agency data or operational content",
+    "source_shape": "unit objects follow campaign_tool/records/detectors/core.py evaluate inputs: original_sha256, locator, event_id, event_at, record_type, fields; joins are typed original_sha256 to agency_id rows; rules carry version and entries with detector, agency_id, rule_id, version, source_sha256, effective_from, effective_to and parameters",
+    "shape_reference": "per-detector field and parameter shapes mirror the existing synthetic fixture in tests/records/test_detectors.py at the admitted base",
+    "hash_policy": "no hash literals are stored; every original_sha256 and source_sha256 is the sha256 of the listed seed string, computed at test time",
+    "oracle_policy": "expected dispositions, reasons, multiplicities and counts below are literal and were written independently of the product grouping function"
+  },
+  "agency_id": "synthetic-agency",
+  "rules_version": "synthetic-pack-v1",
+  "rule": {
+    "rule_id": "synthetic-rule",
+    "version": "synthetic-v1",
+    "source_seed": "synthetic policy fc16",
+    "effective_from": "2020-01-01",
+    "effective_to": "2021-01-01"
+  },
+  "config": {"as_of": "2020-01-20"},
+  "roles": {
+    "evaluated": {"event_id": "event-evaluated", "locator": {"row": 1}},
+    "blocked": {"event_id": "event-blocked", "locator": {"row": 2}, "omit": "event_at"},
+    "irrelevant": {"event_id": "irrelevant-1", "locator": {"row": 3},
+                   "record_type": "synthetic-unrelated-note",
+                   "event_at": "2020-01-20T12:00:00+00:00",
+                   "fields": {"note": "synthetic irrelevant peer"}},
+    "outside": {"event_id": "event-outside", "locator": {"row": 4},
+                "event_at": "2021-06-01T12:00:00+00:00"},
+    "support": {"event_id": "training-roster-1", "locator": {"row": 9}}
+  },
+  "extra_occurrence_first_row": 100,
+  "detectors": {
+    "search-before-training": {
+      "record_type": "search-log",
+      "event_at": "2020-01-20T12:00:00+00:00",
+      "fields": {"user_id": "synthetic-user", "purpose": "case follow-up with supplied context"},
+      "parameters": {},
+      "support": {"record_type": "training-roster", "event_at": "2020-01-20T12:00:00+00:00",
+                  "fields": {"user_id": "synthetic-user", "training_completed_at": "2020-01-21T12:00:00+00:00"}},
+      "conflict_patch": {"field": "purpose", "value": "changed synthetic purpose"},
+      "expected_hits": 1
+    },
+    "purpose-quality": {
+      "record_type": "search-log",
+      "event_at": "2020-01-20T12:00:00+00:00",
+      "fields": {"user_id": "synthetic-user", "purpose": "investigation"},
+      "parameters": {"generic_reasons": ["investigation", "inv", "test"]},
+      "conflict_patch": {"field": "purpose", "value": "specific different context"},
+      "expected_hits": 2
+    },
+    "external-sharing": {
+      "record_type": "sharing-list",
+      "event_at": "2020-01-20T12:00:00+00:00",
+      "fields": {"access_enabled": true, "recipient_level": "federal", "recipient_jurisdiction": "ZZ"},
+      "parameters": {"home_jurisdiction": "AA"},
+      "conflict_patch": {"field": "recipient_jurisdiction", "value": "YY"},
+      "expected_hits": 1
+    },
+    "retention-over-policy": {
+      "record_type": "retention-setting",
+      "event_at": "2020-01-20T12:00:00+00:00",
+      "fields": {"retention_mode": "days", "retention_days": 31},
+      "parameters": {"maximum_days": 30, "unit": "calendar_days"},
+      "conflict_patch": {"field": "retention_days", "value": 45},
+      "expected_hits": 1
+    },
+    "audit-gap": {
+      "record_type": "audit",
+      "event_at": "2020-01-20T12:00:00+00:00",
+      "fields": {"period_start": "2020-01-01", "period_end": "2020-01-20",
+                 "production_complete": true, "audit_dates": []},
+      "parameters": {"frequency_days": 7, "first_due": "2020-01-07"},
+      "conflict_patch": {"field": "audit_dates", "value": ["2020-01-07"]},
+      "expected_hits": 1
+    },
+    "cpra-deadline": {
+      "record_type": "request",
+      "event_at": "2020-01-01T12:00:00+00:00",
+      "fields": {"request_received": "2020-01-01", "determination_state": "pending",
+                 "extension_claimed": false, "production_at": "2020-01-02"},
+      "parameters": {"counting": "calendar", "exclude_received_day": true, "determination_days": 10,
+                     "extension_days_max": 14, "reminder_days": 3, "weekend_days": [5, 6],
+                     "roll_due": "next_business_day", "holiday_table": "synthetic-holidays",
+                     "extension_allowed_bases": ["synthetic-basis"], "extension_notice_deadline": "base_due",
+                     "extension_calculation": "from_base_due"},
+      "holiday_table": {"version": "synthetic-holidays-v1", "coverage_start": "2020-01-01",
+                        "coverage_end": "2020-12-31", "dates": []},
+      "conflict_patch": {"field": "production_at", "value": "2020-01-03"},
+      "expected_hits": 1
+    },
+    "volume-anomaly": {
+      "record_type": "search-log",
+      "event_at": "2020-01-20T02:00:00+00:00",
+      "fields": {"user_id": "synthetic-user", "purpose": "case follow-up with supplied context"},
+      "parameters": {"timezone_offset_minutes": 0, "daily_count_threshold": 100,
+                     "off_hours_threshold": 0, "business_hours": [9, 17]},
+      "conflict_patch": {"field": "user_id", "value": "synthetic-user-variant"},
+      "expected_hits": 1
+    }
+  },
+  "oracle": {
+    "mixed_outcomes": {
+      "outcomes": {
+        "evaluated": {"disposition": "evaluated", "reason": "supplied_context_evaluated", "duplicate_rows": 0, "references": 1},
+        "blocked": {"disposition": "blocked", "reason": "event_time_missing", "duplicate_rows": 0, "references": 1},
+        "irrelevant": {"disposition": "skipped", "reason": "not_detector_input_type", "duplicate_rows": 0, "references": 1},
+        "support": {"disposition": "skipped", "reason": "not_detector_input_type", "duplicate_rows": 0, "references": 1}
+      },
+      "counts": {
+        "standard": {"input_rows": 3, "unique_records": 3, "duplicate_rows": 0, "eligible": 2,
+                     "evaluated": 1, "skipped": 1, "blocked": 1},
+        "with_support": {"input_rows": 4, "unique_records": 4, "duplicate_rows": 0, "eligible": 2,
+                         "evaluated": 1, "skipped": 2, "blocked": 1}
+      }
+    },
+    "multiplicity": {
+      "shapes": ["distinct_locator", "exact_copy"],
+      "extra_occurrences": {
+        "0": {"standard": {"input_rows": 3, "unique_records": 3, "duplicate_rows": 0, "eligible": 2, "evaluated": 1, "skipped": 1, "blocked": 1},
+              "with_support": {"input_rows": 4, "unique_records": 4, "duplicate_rows": 0, "eligible": 2, "evaluated": 1, "skipped": 2, "blocked": 1},
+              "references": {"distinct_locator": 1, "exact_copy": 1}},
+        "1": {"standard": {"input_rows": 4, "unique_records": 3, "duplicate_rows": 1, "eligible": 2, "evaluated": 1, "skipped": 1, "blocked": 1},
+              "with_support": {"input_rows": 5, "unique_records": 4, "duplicate_rows": 1, "eligible": 2, "evaluated": 1, "skipped": 2, "blocked": 1},
+              "references": {"distinct_locator": 2, "exact_copy": 1}},
+        "3": {"standard": {"input_rows": 6, "unique_records": 3, "duplicate_rows": 3, "eligible": 2, "evaluated": 1, "skipped": 1, "blocked": 1},
+              "with_support": {"input_rows": 7, "unique_records": 4, "duplicate_rows": 3, "eligible": 2, "evaluated": 1, "skipped": 2, "blocked": 1},
+              "references": {"distinct_locator": 4, "exact_copy": 1}}
+      }
+    },
+    "outside_interval": {
+      "outcome": {"disposition": "skipped", "reason": "rule_not_effective", "duplicate_rows": 0, "references": 1},
+      "counts": {
+        "standard": {"input_rows": 4, "unique_records": 4, "duplicate_rows": 0, "eligible": 3,
+                     "evaluated": 1, "skipped": 2, "blocked": 1},
+        "with_support": {"input_rows": 5, "unique_records": 5, "duplicate_rows": 0, "eligible": 3,
+                         "evaluated": 1, "skipped": 3, "blocked": 1}
+      }
+    },
+    "conflict": {
+      "outcome": {"disposition": "blocked", "reason": "conflicting_duplicate_event", "duplicate_rows": 1, "references": 2},
+      "expected_hits": 0,
+      "counts": {
+        "standard": {"input_rows": 4, "unique_records": 3, "duplicate_rows": 1, "eligible": 2,
+                     "evaluated": 0, "skipped": 1, "blocked": 2},
+        "with_support": {"input_rows": 5, "unique_records": 4, "duplicate_rows": 1, "eligible": 2,
+                         "evaluated": 0, "skipped": 2, "blocked": 2}
+      }
+    },
+    "empty_and_order": {
+      "variants": ["empty", "all_irrelevant", "reverse_order", "reverse_order_with_duplicates", "repeated_calls"],
+      "all_irrelevant_units": 2,
+      "empty_counts": {"input_rows": 0, "unique_records": 0, "duplicate_rows": 0, "eligible": 0,
+                       "evaluated": 0, "skipped": 0, "blocked": 0, "hits": 0},
+      "all_irrelevant_counts": {"input_rows": 2, "unique_records": 2, "duplicate_rows": 0, "eligible": 0,
+                                "evaluated": 0, "skipped": 2, "blocked": 0, "hits": 0},
+      "order_free_manifest_fields": ["input_sha256", "manifest_sha256"]
+    },
+    "negative_controls": {
+      "duplicates_counted_as_unique": {"source_case": "multiplicity", "extra_occurrences": 3, "must_fail": "row_balance", "must_still_pass": "outcome_membership"},
+      "blocked_outcome_omitted": {"source_case": "mixed_outcomes", "must_fail": "outcome_membership", "omitted_role": "blocked"}
+    },
+    "invariants": {"stage_promotions": 0, "publication_ready": false, "schema": "pure-detector-manifest-v1"}
+  }
+}

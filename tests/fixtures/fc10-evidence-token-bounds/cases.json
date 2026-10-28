@@ -1,0 +1,39 @@
+{
+  "schema": "fc10-evidence-token-bounds/v1",
+  "synthetic_only": true,
+  "label": "FC10 synthetic generated JSON; no real record, receipt or agency content",
+  "limits": {"max_tokens": 4096, "max_depth": 64},
+  "refusal_code": "evidence_json_bound",
+  "surfaces": ["text", "data"],
+  "offsets": [-1, 0, 1],
+  "shapes": {
+    "tokens": ["array", "object", "mixed"],
+    "depth": ["array", "object", "mixed", "empty_leaf"]
+  },
+  "text_styles": {"array": "compact", "object": "indented_ascii", "mixed": "spaced_unicode",
+                  "empty_leaf": "compact"},
+  "object_key_template": "k~/\u00e9\"\\{:04d}",
+  "depth_key": "d",
+  "mixed_keys": ["empty_array", "empty_object", "a/b~c", "fill"],
+  "unit": {
+    "kind": "fc10_synthetic_json",
+    "locator": {"page": 1, "label": "fc10-synthetic"},
+    "subject_label": "fc10-synthetic-original",
+    "receipt_label": "fc10-synthetic-receipt",
+    "data_text": "FC10 synthetic retained text; the evidence target is the data field"
+  },
+  "required_dimensions": [
+    "text_tokens_below_at_over",
+    "data_tokens_below_at_over",
+    "text_depth_below_at_over",
+    "data_depth_below_at_over",
+    "container_and_leaf_targets",
+    "exact_retained_quote",
+    "near_tail_pointer",
+    "inputs_unchanged",
+    "review_flags_preserved",
+    "negative_control_max_tokens_killed",
+    "negative_control_max_depth_killed",
+    "negative_control_restored"
+  ]
+}

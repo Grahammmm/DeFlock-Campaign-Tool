@@ -1,0 +1,20 @@
+{
+  "schema": "portal-queue-export/v1",
+  "items": [
+    {"host": "records.example.test", "request_id": "26-101", "item_id": "doc-a", "state": "received"},
+    {"host": "records.example.test", "request_id": "26-101", "item_id": "doc-b", "state": "pending"},
+    {"host": "records.example.test", "request_id": "26-102", "item_id": "doc-c", "state": "blocked", "reason": "retry_exhausted"},
+    {"host": "records.example.test", "request_id": "26-102", "item_id": "doc-d", "state": "retry", "reason": "timeout"},
+    {"host": "records.example.test", "request_id": "26-103", "item_id": "doc-e", "state": "pending", "has_version": true},
+    {"host": "records.example.test", "request_id": "26-104", "item_id": "doc-f", "state": "blocked", "reason": "expired_or_denied_link"},
+    {"host": "records.example.test", "request_id": "26-105", "item_id": "doc-g", "state": "received", "has_version": true},
+    {"host": "records.example.test", "request_id": "26-106", "item_id": "doc-h", "state": "pending"},
+    {"host": "records.example.test", "request_id": "26-106", "item_id": "doc-h", "state": "received"},
+    {"host": "records.example.test", "request_id": "26-107", "item_id": "doc-q", "state": "blocked", "reason": "Server said: <html>"},
+    {"host": "records.example.test", "request_id": "26-107", "item_id": "doc-r", "state": "done"},
+    {"host": "records.example.test", "item_id": "doc-s", "state": "pending"},
+    {"host": "records.example.test", "request_id": "26-107", "item_id": "doc-t", "state": "received", "has_version": false},
+    {"host": "records.example.test", "request_id": "26-107", "item_id": "doc-u", "state": "pending", "url": "https://records.example.test/documents/doc-u"},
+    "records.example.test 26-107 doc-v"
+  ]
+}

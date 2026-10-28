@@ -168,7 +168,15 @@ class Queue:
         if url_parts(url).hostname != host:
             raise PortalError("initial_host_mismatch")
         url_hash = digest_bytes(url.encode())
-        stamp = float(now if now is not None else time.time())
+        clock = now if now is not None else time.time()
+        if isinstance(clock, bool) or not isinstance(clock, (int, float)):
+            raise PortalError("invalid_refusal_clock")
+        try:
+            stamp = float(clock)
+        except (OverflowError, TypeError, ValueError):
+            raise PortalError("invalid_refusal_clock") from None
+        if stamp != stamp or stamp == float("inf") or stamp == float("-inf"):
+            raise PortalError("invalid_refusal_clock")
         with self.lock(), self.db:
             row = self.db.execute(
                 "SELECT id,count FROM portal_refusals WHERE host=? AND reason=? AND source_sha256=? AND url_sha256=?",
@@ -202,7 +210,7 @@ class Queue:
         fd = os.open(self.objects / digest, os.O_RDONLY | os.O_NOFOLLOW)
         try:
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size != size:
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o277 or info.st_size != size:
                 raise PortalError("object_integrity_failed")
             sha = hashlib.sha256()
             while chunk := os.read(fd, 65536):
@@ -216,8 +224,8 @@ class Queue:
         check_hash(digest)
         destination = self.objects / digest
         try:
+            os.chmod(path, 0o400)
             os.link(path, destination, follow_symlinks=False)
-            os.chmod(destination, 0o400)
             sync_dir(self.objects)
         except FileExistsError:
             pass

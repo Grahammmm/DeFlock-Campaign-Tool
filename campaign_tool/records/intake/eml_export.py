@@ -96,6 +96,8 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, origin
         raise mail_delta.Rejected("message_size_limit")
     if type(uidvalidity) is not int or type(uid) is not int or uidvalidity <= 0 or uid <= 0:
         raise mail_delta.Rejected("invalid_identity_numbers")
+    mail_delta.short_text(account, "invalid_account")
+    mail_delta.short_text(mailbox, "invalid_folder")
     from . import mail_wire
     if mail_wire.needs_extended(bytes(raw), original_format):
         from .native_receipt import export
@@ -186,18 +188,32 @@ def _part_payload(eml_path, locator):
     return part.get_payload(decode=True) or b""
 
 
-def attachment_forms(receipt_path):
-    """Map attachment sha256 -> detected format name, from the export receipt."""
+def attachment_forms(receipt_path, *, heads=None):
+    """Map attachment sha256 -> detected format name, from the export receipt.
+
+    The first bytes come from the receipt's objects (``<receipt>/../../objects``). With
+    ``heads`` (sha256 -> first bytes of the canonical original) only those attachments
+    are mapped and no object is read: for receipts whose objects are not beside them.
+    """
     receipt, _, items = mail_delta.load_receipt(receipt_path)
     root = receipt_path.parent.parent
+
+    def head_of(item, *, secure=True):
+        if heads is not None:
+            return heads[item["sha"]][:16384]
+        if not secure:
+            return (root / item["path"]).read_bytes()[:16384]
+        with folder.secure_open(root / item["path"]) as source:
+            return source.read(16384)
+
     if receipt.get("schema") == "mail-wire-receipt-v2":
         return {item["sha"]: item["source"].get("format") or folder.fmt(
-                    item["source"].get("original_filename") or item["path"],
-                    (root / item["path"]).read_bytes()[:16384]) for item in items}
+                    item["source"].get("original_filename") or item["path"], head_of(item, secure=False))
+                for item in items if heads is None or item["sha"] in heads}
     forms = {}
     for item in items[1:]:
-        path = root / item["path"]
-        with folder.secure_open(path) as source:
-            head = source.read(16384)
-        forms[item["sha"]] = "eml" if item["kind"] == "eml" else folder.fmt(item["source"].get("original_filename") or item["path"], head)
+        if heads is not None and item["sha"] not in heads:
+            continue
+        forms[item["sha"]] = "eml" if item["kind"] == "eml" else folder.fmt(
+            item["source"].get("original_filename") or item["path"], head_of(item))
     return forms

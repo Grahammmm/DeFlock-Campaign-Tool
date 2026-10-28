@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -94,13 +95,44 @@ def capture_file(path, objects):
             temporary.unlink()
 
 
+class _AmbiguousJSON(ValueError):
+    """Internal marker; jsonl replaces it with a payload-free line diagnostic."""
+
+
+def _unique_object(pairs):
+    """Build a JSON object, refusing any key that occurs twice (at every depth)."""
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _AmbiguousJSON()
+        seen.add(key)
+    return dict(pairs)
+
+
+def _reject_constant(name):
+    """Refuse the nonstandard NaN, Infinity and -Infinity constants."""
+    raise _AmbiguousJSON()
+
+
+def _finite_float(text):
+    """Refuse finite-looking literals such as 1e400 that overflow to infinity."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise _AmbiguousJSON()
+    return value
+
+
 def jsonl(path):
     result = []
     with path.open(encoding="utf-8") as stream:
         for number, line in enumerate(stream, 1):
             if not line.strip():
                 continue
-            row = json.loads(line)
+            try:
+                row = json.loads(line, object_pairs_hook=_unique_object,
+                                 parse_constant=_reject_constant, parse_float=_finite_float)
+            except _AmbiguousJSON:
+                raise ValueError("invalid_catalog_json line " + str(number)) from None
             if not isinstance(row, dict):
                 raise ValueError("JSONL rows must be objects")
             result.append((number, row))

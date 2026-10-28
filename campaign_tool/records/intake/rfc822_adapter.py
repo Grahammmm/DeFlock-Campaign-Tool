@@ -98,10 +98,12 @@ def _decode_scalar(raw, encoding):
     if encoding == "quoted-printable":
         # A strict subset: explicit hex escapes and LF/CRLF soft breaks only.
         # No tolerant repair, bare CR, non-ASCII literals or transport padding.
+        # RFC 2045 s6.7 binds the 76-column line limit to encoders; a
+        # conformant decoder accepts longer encoded lines, so length is not
+        # checked here.
         for line in raw.split(b"\n"):
             line = line[:-1] if line.endswith(b"\r") else line
-            _require(len(line) <= 76 and not line.endswith((b" ", b"\t")),
-                     "rfc822_scalar_payload_invalid")
+            _require(not line.endswith((b" ", b"\t")), "rfc822_scalar_payload_invalid")
         index = 0
         while index < len(raw):
             byte = raw[index]

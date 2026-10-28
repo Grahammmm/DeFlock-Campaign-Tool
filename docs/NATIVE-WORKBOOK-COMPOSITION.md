@@ -1,9 +1,19 @@
 # Optional native workbook composition
 
 Trusted startup can explicitly pass a NativeWorkbookPolicy to Pipeline,
-install_extraction_validator and ExtractionStageAdapter. There is no CLI switch,
+install_extraction_validator and ExtractionStageAdapter. There is no
 record-selected module, automatic policy enrollment or runtime installation.
 The default installed policy still refuses XLSX and Pillow acceptance.
+
+The records run's extract stage (`run_stages extract`) is such a trusted startup.
+`--workbook-policy PATH` must come from the operator's root-owned stage plan,
+never from a record. It is loaded only through `load_native_workbook_policy`, so
+pinned digest, 0400 mode and a single link are required. Any other file fails
+the stage with `EXTRACT_WORKBOOK_POLICY_INVALID`, and there is no fallback. With
+the policy loaded, `Pipeline.stage_extract` passes a workbook receipt whose only
+issue is the reader hold to enrollment. The installed check then qualifies it
+under the policy or refuses it, and a refusal is held once as
+`WORKBOOK_POLICY_REQUIRED`. The TEST stage plan does not set the flag.
 
 The loader accepts only the exact pinned read-only workbook accounting helper on
 AgentOrange. It compiles verified local bytes rather than cached bytecode. The

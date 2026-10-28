@@ -197,6 +197,39 @@ class RFC822IntegrationTests(unittest.TestCase):
             with self.subTest(encoding=encoding, body=body):
                 self.reject(lambda: self.scalar(body, encoding), "rfc822_scalar_payload_invalid")
 
+    def test_quoted_printable_decode_accepts_lines_longer_than_76(self):
+        # RFC 2045 s6.7: the 76-column limit binds encoders, not decoders.
+        for length in (1, 75, 76, 77, 78, 100, 1000):
+            for eol in (b"\r\n", b"\n"):
+                with self.subTest(length=length, eol=eol):
+                    line = b"s" * length
+                    body = line + eol + b"=41" * 20 + b"tail" + eol
+                    decoded = self.scalar(body, b"quoted-printable").captures[0].payload
+                    self.assertEqual(decoded, line + eol + b"A" * 20 + b"tail" + eol)
+        escaped = b"=41" * 33  # 99 encoded columns of escapes only
+        self.assertEqual(self.scalar(escaped, b"quoted-printable").captures[0].payload, b"A" * 33)
+        soft = b"y" * 90 + b"=\r\n" + b"z" * 90
+        self.assertEqual(self.scalar(soft, b"quoted-printable").captures[0].payload, b"y" * 90 + b"z" * 90)
+
+    def test_over_long_quoted_printable_lines_keep_every_other_strict_check(self):
+        long = b"s" * 90
+        for encoding, body in ((b"quoted-printable", long + b" \r\n"),
+                               (b"quoted-printable", long + b"\t\n"),
+                               (b"quoted-printable", long + b"=ZZ"),
+                               (b"quoted-printable", long + b"="),
+                               (b"quoted-printable", long + b"=4"),
+                               (b"quoted-printable", long + b"\rcr"),
+                               (b"quoted-printable", long + b"\xff"),
+                               (b"quoted-printable", long + b"\x00"),
+                               (b"quoted-printable", long + b"\x7f"),
+                               (b"base64", b"Zh=="),
+                               (b"base64", b"Zg==!"),
+                               (b"base64", base64.b64encode(long) + b"!")):
+            with self.subTest(encoding=encoding, body=body[-8:]):
+                self.reject(lambda: self.scalar(body, encoding), "rfc822_scalar_payload_invalid")
+        # Unknown transfer encodings stay refused upstream at the wire layer.
+        self.reject(lambda: self.scalar(long, b"x-unknown-cte"), "rfc822_wire_rejected")
+
     def test_scalar_outputs_share_rfc822_byte_and_capture_budgets(self):
         raw, child, grandchild = self.nested()
         initial = adapter.prepare_rfc822_intake(raw)

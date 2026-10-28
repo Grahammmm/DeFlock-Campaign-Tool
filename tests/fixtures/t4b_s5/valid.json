@@ -1,0 +1,835 @@
+{
+  "allowance": {
+    "remaining_attempts": 2,
+    "remaining_seconds": 600,
+    "requested_attempts": 2,
+    "requested_seconds": 600,
+    "stop_clear": true
+  },
+  "binding": {
+    "approval_sha256": "0000000000000000000000000000000000000000000000000000000000000008",
+    "backup_manifest_sha256": "000000000000000000000000000000000000000000000000000000000000003d",
+    "config_sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+    "inventory_sha256": "0000000000000000000000000000000000000000000000000000000000000028",
+    "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+    "preflight_config_sha256": "000000000000000000000000000000000000000000000000000000000000003b",
+    "snapshot_sha256": "<SNAPSHOT_SHA256>"
+  },
+  "contract_pins": "<CONTRACT_PINS>",
+  "expected": {
+    "adopted_receipts": [
+      "000000000000000000000000000000000000000000000000000000000000000e",
+      "0000000000000000000000000000000000000000000000000000000000000015",
+      "000000000000000000000000000000000000000000000000000000000000001d"
+    ],
+    "binding_messages": 1,
+    "dependent_messages": 1,
+    "eligible_new_messages": 1,
+    "final_gaps": {
+      "original_scope_unresolved": 1,
+      "unsupported_rfc822_part": 1
+    },
+    "initial_gaps": {
+      "original_scope_unresolved": 3,
+      "unsupported_rfc822_part": 1
+    },
+    "new_originals": [
+      "0000000000000000000000000000000000000000000000000000000000000014",
+      "0000000000000000000000000000000000000000000000000000000000000018",
+      "0000000000000000000000000000000000000000000000000000000000000019",
+      "0000000000000000000000000000000000000000000000000000000000000037"
+    ],
+    "preserve_promotions": [
+      "0000000000000000000000000000000000000000000000000000000000000006",
+      "0000000000000000000000000000000000000000000000000000000000000035"
+    ],
+    "receipts": 5,
+    "scope_counts": {
+      "unresolved": 4
+    }
+  },
+  "f010_sha256": "<F010_SHA>",
+  "fixes400": false,
+  "gates": {
+    "backup": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000012",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "command_closure": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000039",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "coordinator_registration": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000022",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "engine_review": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000009",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "facade": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000017",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "inventory_policy_approval": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000033",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "remaining_allowance": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000013",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "source_count_partitions": {
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000038",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "stop_disposition": {
+      "evidence_sha256": "000000000000000000000000000000000000000000000000000000000000003c",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "test_scope": {
+      "evidence_sha256": "000000000000000000000000000000000000000000000000000000000000000d",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    },
+    "wal_queue_lock": {
+      "evidence_sha256": "000000000000000000000000000000000000000000000000000000000000002a",
+      "run_id": "synthetic-s5-f011",
+      "snapshot_sha256": "<SNAPSHOT_SHA256>",
+      "state": "SIMULATED_QUALIFIED"
+    }
+  },
+  "historical_tested_k": 0,
+  "kind": "SYNTHETIC",
+  "partition": {
+    "already_resolved": [],
+    "blocked": [],
+    "held": [
+      "000000000000000000000000000000000000000000000000000000000000000c"
+    ],
+    "inventory": [
+      "0000000000000000000000000000000000000000000000000000000000000006",
+      "000000000000000000000000000000000000000000000000000000000000000c",
+      "0000000000000000000000000000000000000000000000000000000000000035"
+    ],
+    "policy": [
+      "0000000000000000000000000000000000000000000000000000000000000006",
+      "0000000000000000000000000000000000000000000000000000000000000035"
+    ],
+    "resolvable": [
+      "0000000000000000000000000000000000000000000000000000000000000006",
+      "0000000000000000000000000000000000000000000000000000000000000035"
+    ]
+  },
+  "policy": {
+    "0000000000000000000000000000000000000000000000000000000000000006": {
+      "binding_occurrence_id": "0000000000000000000000000000000000000000000000000000000000000007",
+      "verification_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015"
+    },
+    "0000000000000000000000000000000000000000000000000000000000000035": {
+      "binding_occurrence_id": "0000000000000000000000000000000000000000000000000000000000000003",
+      "verification_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015"
+    }
+  },
+  "reports": {
+    "apply": {
+      "binding": "<BINDING>",
+      "exit": 0,
+      "observed_at": "2026-10-24T18:02:00Z",
+      "report": {
+        "adopted_attachments": 5,
+        "adopted_messages": 3,
+        "after": {
+          "already_adopted": 3,
+          "coded_gap_messages": 2,
+          "coded_gaps": {
+            "original_scope_unresolved": 1,
+            "unsupported_rfc822_part": 1
+          },
+          "identity_conflicts": {},
+          "incomplete_messages": 0,
+          "new_messages": 2,
+          "pending_messages": 0,
+          "policy_originals": 2,
+          "policy_originals_blocked": 0,
+          "policy_originals_resolved": 2,
+          "resolution_drift": {},
+          "resolution_plan": {
+            "state": "ok"
+          },
+          "resolvable_messages": 0,
+          "resolvable_originals": 0,
+          "unaccepted_coded_gaps": {},
+          "unfinalized_runs": 0
+        },
+        "already_adopted": 0,
+        "attachments": 7,
+        "coded_gap_attachments": 2,
+        "coded_gap_messages": 2,
+        "coded_gaps": {
+          "original_scope_unresolved": 1,
+          "unsupported_rfc822_part": 1
+        },
+        "eligible_new_messages": 1,
+        "failures": {},
+        "gaps": {},
+        "gate": {
+          "marker_present": false,
+          "marker_sha256": null,
+          "open": true,
+          "state": "enabled"
+        },
+        "held_originals": 1,
+        "identity_conflicts": {},
+        "incomplete_messages": 0,
+        "mode": "apply",
+        "new_attachments": 7,
+        "new_messages": 5,
+        "pending_attachments": 5,
+        "pending_messages": 3,
+        "policy_originals": 2,
+        "policy_originals_blocked": 0,
+        "policy_originals_resolved": 0,
+        "receipts": 5,
+        "resolution_after": {
+          "rows": 3,
+          "sha256": "<RESOLUTION_SHA256>"
+        },
+        "resolution_baseline": {
+          "rows": 1,
+          "sha256": "<RESOLUTION_SHA256>"
+        },
+        "resolution_drift": {},
+        "resolution_plan": {
+          "state": "ok"
+        },
+        "resolution_policy": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "state": "loaded"
+        },
+        "resolvable_attachments": 5,
+        "resolvable_binding_messages": 1,
+        "resolvable_dependent_messages": 1,
+        "resolvable_messages": 2,
+        "resolvable_originals": 2,
+        "resolved_originals": 2,
+        "resumed_messages": 0,
+        "run_id": "mail-history-a5b7e6d36d374c1a86ac4c2f45e7670d",
+        "source": "mail-history",
+        "unaccepted_coded_gaps": {},
+        "unfinalized_runs": 0
+      },
+      "run_id": "synthetic-s5-f011",
+      "sha256": "<REPORT_SHA256>"
+    },
+    "dry": {
+      "binding": "<BINDING>",
+      "exit": 0,
+      "observed_at": "2026-10-24T18:01:00Z",
+      "report": {
+        "adopted_attachments": 0,
+        "adopted_messages": 0,
+        "already_adopted": 0,
+        "attachments": 7,
+        "coded_gap_attachments": 2,
+        "coded_gap_messages": 2,
+        "coded_gaps": {
+          "original_scope_unresolved": 1,
+          "unsupported_rfc822_part": 1
+        },
+        "eligible_new_messages": 1,
+        "failures": {},
+        "gaps": {},
+        "gate": {
+          "marker_present": false,
+          "marker_sha256": null,
+          "open": true,
+          "state": "enabled"
+        },
+        "held_originals": 1,
+        "identity_conflicts": {},
+        "incomplete_messages": 0,
+        "mode": "dry-run",
+        "new_attachments": 7,
+        "new_messages": 5,
+        "pending_attachments": 5,
+        "pending_messages": 3,
+        "policy_originals": 2,
+        "policy_originals_blocked": 0,
+        "policy_originals_resolved": 0,
+        "receipts": 5,
+        "resolution_after": {
+          "rows": 1,
+          "sha256": "<RESOLUTION_SHA256>"
+        },
+        "resolution_baseline": {
+          "rows": 1,
+          "sha256": "<RESOLUTION_SHA256>"
+        },
+        "resolution_drift": {},
+        "resolution_plan": {
+          "state": "ok"
+        },
+        "resolution_policy": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "state": "loaded"
+        },
+        "resolvable_attachments": 5,
+        "resolvable_binding_messages": 1,
+        "resolvable_dependent_messages": 1,
+        "resolvable_messages": 2,
+        "resolvable_originals": 2,
+        "resolved_originals": 0,
+        "resumed_messages": 0,
+        "source": "mail-history",
+        "unaccepted_coded_gaps": {},
+        "unfinalized_runs": 0
+      },
+      "run_id": "synthetic-s5-f011",
+      "sha256": "<REPORT_SHA256>"
+    },
+    "preflight": {
+      "binding": "<BINDING>",
+      "exit": 0,
+      "observed_at": "2026-10-24T18:00:00Z",
+      "report": {
+        "adopted_attachments": 0,
+        "adopted_messages": 0,
+        "already_adopted": 0,
+        "attachments": 7,
+        "coded_gap_attachments": 7,
+        "coded_gap_messages": 4,
+        "coded_gaps": {
+          "original_scope_unresolved": 3,
+          "unsupported_rfc822_part": 1
+        },
+        "eligible_new_messages": 1,
+        "failures": {},
+        "gaps": {},
+        "gate": {
+          "marker_present": false,
+          "marker_sha256": null,
+          "open": true,
+          "state": "enabled"
+        },
+        "identity_conflicts": {},
+        "incomplete_messages": 0,
+        "mode": "dry-run",
+        "new_attachments": 7,
+        "new_messages": 5,
+        "pending_attachments": 0,
+        "pending_messages": 1,
+        "receipts": 5,
+        "resumed_messages": 0,
+        "source": "mail-history",
+        "unaccepted_coded_gaps": {},
+        "unfinalized_runs": 0
+      },
+      "run_id": "synthetic-s5-f011",
+      "sha256": "<REPORT_SHA256>"
+    },
+    "rerun": {
+      "binding": "<BINDING>",
+      "exit": 0,
+      "observed_at": "2026-10-24T18:03:00Z",
+      "report": {
+        "adopted_attachments": 0,
+        "adopted_messages": 0,
+        "after": {
+          "already_adopted": 3,
+          "coded_gap_messages": 2,
+          "coded_gaps": {
+            "original_scope_unresolved": 1,
+            "unsupported_rfc822_part": 1
+          },
+          "identity_conflicts": {},
+          "incomplete_messages": 0,
+          "new_messages": 2,
+          "pending_messages": 0,
+          "policy_originals": 2,
+          "policy_originals_blocked": 0,
+          "policy_originals_resolved": 2,
+          "resolution_drift": {},
+          "resolution_plan": {
+            "state": "ok"
+          },
+          "resolvable_messages": 0,
+          "resolvable_originals": 0,
+          "unaccepted_coded_gaps": {},
+          "unfinalized_runs": 0
+        },
+        "already_adopted": 3,
+        "attachments": 7,
+        "coded_gap_attachments": 2,
+        "coded_gap_messages": 2,
+        "coded_gaps": {
+          "original_scope_unresolved": 1,
+          "unsupported_rfc822_part": 1
+        },
+        "eligible_new_messages": 0,
+        "failures": {},
+        "gaps": {},
+        "gate": {
+          "marker_present": false,
+          "marker_sha256": null,
+          "open": true,
+          "state": "enabled"
+        },
+        "held_originals": 1,
+        "identity_conflicts": {},
+        "incomplete_messages": 0,
+        "mode": "apply",
+        "new_attachments": 2,
+        "new_messages": 2,
+        "pending_attachments": 0,
+        "pending_messages": 0,
+        "policy_originals": 2,
+        "policy_originals_blocked": 0,
+        "policy_originals_resolved": 2,
+        "receipts": 5,
+        "resolution_after": {
+          "rows": 3,
+          "sha256": "<RESOLUTION_SHA256>"
+        },
+        "resolution_baseline": {
+          "rows": 3,
+          "sha256": "<RESOLUTION_SHA256>"
+        },
+        "resolution_drift": {},
+        "resolution_plan": {
+          "state": "ok"
+        },
+        "resolution_policy": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "state": "loaded"
+        },
+        "resolvable_attachments": 0,
+        "resolvable_binding_messages": 0,
+        "resolvable_dependent_messages": 0,
+        "resolvable_messages": 0,
+        "resolvable_originals": 0,
+        "resolved_originals": 0,
+        "resumed_messages": 0,
+        "source": "mail-history",
+        "unaccepted_coded_gaps": {},
+        "unfinalized_runs": 0
+      },
+      "run_id": "synthetic-s5-f011",
+      "sha256": "<REPORT_SHA256>"
+    }
+  },
+  "run_id": "synthetic-s5-f011",
+  "schema": "s5-synthetic-evidence-v1",
+  "snapshots": {
+    "after": {
+      "fk_violations": 0,
+      "legacy": {
+        "captured_legacy_occurrences": "0000000000000000000000000000000000000000000000000000000000000023",
+        "legacy_rows": "0000000000000000000000000000000000000000000000000000000000000004",
+        "occurrence_projection_rows": "0000000000000000000000000000000000000000000000000000000000000032"
+      },
+      "mail_messages": 3,
+      "originals": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "cas_sha256": null,
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015"
+          ],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000030",
+          "scope": "unresolved"
+        },
+        "000000000000000000000000000000000000000000000000000000000000000c": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000026",
+          "scope": "unresolved"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000014": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000014",
+          "occurrences": [
+            "000000000000000000000000000000000000000000000000000000000000000e"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "000000000000000000000000000000000000000000000000000000000000000e",
+          "role": "original",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000002b",
+          "scope": "in_scope"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000018": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000018",
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "role": "original",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "scope": "in_scope"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000019": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000019",
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "role": "original",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000000a",
+          "scope": "in_scope"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000034",
+          "scope": "unresolved"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "cas_sha256": null,
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015",
+            "000000000000000000000000000000000000000000000000000000000000001d"
+          ],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000027",
+          "scope": "unresolved"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000037": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000037",
+          "occurrences": [
+            "000000000000000000000000000000000000000000000000000000000000001d"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "000000000000000000000000000000000000000000000000000000000000001d",
+          "role": "original",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000001b",
+          "scope": "in_scope"
+        }
+      },
+      "quick_check": "ok",
+      "resolutions": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "binding_sha256": "000000000000000000000000000000000000000000000000000000000000000f",
+          "capture_occurrence_id": "0000000000000000000000000000000000000000000000000000000000000007",
+          "capture_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000002f",
+          "schema": "original_resolution_mail_export_v1"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "binding_sha256": "0000000000000000000000000000000000000000000000000000000000000016",
+          "capture_occurrence_id": "local-capture:f9095f25f3de0fa51fbb535b65ad3e2a058fc31f1db3b1aa6d7430679f06d668",
+          "capture_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000031",
+          "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000025",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000020",
+          "schema": "original_resolution_v1"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "binding_sha256": "000000000000000000000000000000000000000000000000000000000000002d",
+          "capture_occurrence_id": "0000000000000000000000000000000000000000000000000000000000000003",
+          "capture_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+          "schema": "original_resolution_mail_export_v1"
+        }
+      },
+      "stages": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "000000000000000000000000000000000000000000000000000000000000000c": {
+          "extract": "pending",
+          "preserve": "pending"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000014": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000018": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000019": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "extract": "pending",
+          "preserve": "pending"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000037": {
+          "extract": "pending",
+          "preserve": "done"
+        }
+      }
+    },
+    "before": {
+      "fk_violations": 0,
+      "legacy": {
+        "captured_legacy_occurrences": "0000000000000000000000000000000000000000000000000000000000000023",
+        "legacy_rows": "0000000000000000000000000000000000000000000000000000000000000004",
+        "occurrence_projection_rows": "0000000000000000000000000000000000000000000000000000000000000032"
+      },
+      "mail_messages": 0,
+      "originals": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000030",
+          "scope": "unresolved"
+        },
+        "000000000000000000000000000000000000000000000000000000000000000c": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000026",
+          "scope": "unresolved"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000034",
+          "scope": "unresolved"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000027",
+          "scope": "unresolved"
+        }
+      },
+      "quick_check": "ok",
+      "resolutions": {
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "binding_sha256": "0000000000000000000000000000000000000000000000000000000000000016",
+          "capture_occurrence_id": "local-capture:f9095f25f3de0fa51fbb535b65ad3e2a058fc31f1db3b1aa6d7430679f06d668",
+          "capture_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000031",
+          "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000025",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000020",
+          "schema": "original_resolution_v1"
+        }
+      },
+      "stages": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "extract": "pending",
+          "preserve": "pending"
+        },
+        "000000000000000000000000000000000000000000000000000000000000000c": {
+          "extract": "pending",
+          "preserve": "pending"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "extract": "pending",
+          "preserve": "pending"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "extract": "pending",
+          "preserve": "pending"
+        }
+      }
+    },
+    "rerun": {
+      "fk_violations": 0,
+      "legacy": {
+        "captured_legacy_occurrences": "0000000000000000000000000000000000000000000000000000000000000023",
+        "legacy_rows": "0000000000000000000000000000000000000000000000000000000000000004",
+        "occurrence_projection_rows": "0000000000000000000000000000000000000000000000000000000000000032"
+      },
+      "mail_messages": 3,
+      "originals": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "cas_sha256": null,
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015"
+          ],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000030",
+          "scope": "unresolved"
+        },
+        "000000000000000000000000000000000000000000000000000000000000000c": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000026",
+          "scope": "unresolved"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000014": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000014",
+          "occurrences": [
+            "000000000000000000000000000000000000000000000000000000000000000e"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "000000000000000000000000000000000000000000000000000000000000000e",
+          "role": "original",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000002b",
+          "scope": "in_scope"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000018": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000018",
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "role": "original",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "scope": "in_scope"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000019": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000019",
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "role": "original",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000000a",
+          "scope": "in_scope"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "cas_sha256": null,
+          "occurrences": [],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000034",
+          "scope": "unresolved"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "cas_sha256": null,
+          "occurrences": [
+            "0000000000000000000000000000000000000000000000000000000000000015",
+            "000000000000000000000000000000000000000000000000000000000000001d"
+          ],
+          "provenance": null,
+          "receipt_sha256": null,
+          "role": "unresolved",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000027",
+          "scope": "unresolved"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000037": {
+          "cas_sha256": "0000000000000000000000000000000000000000000000000000000000000037",
+          "occurrences": [
+            "000000000000000000000000000000000000000000000000000000000000001d"
+          ],
+          "provenance": "verified_export_receipt",
+          "receipt_sha256": "000000000000000000000000000000000000000000000000000000000000001d",
+          "role": "original",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000001b",
+          "scope": "in_scope"
+        }
+      },
+      "quick_check": "ok",
+      "resolutions": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "binding_sha256": "000000000000000000000000000000000000000000000000000000000000000f",
+          "capture_occurrence_id": "0000000000000000000000000000000000000000000000000000000000000007",
+          "capture_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "row_sha256": "000000000000000000000000000000000000000000000000000000000000002f",
+          "schema": "original_resolution_mail_export_v1"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "binding_sha256": "0000000000000000000000000000000000000000000000000000000000000016",
+          "capture_occurrence_id": "local-capture:f9095f25f3de0fa51fbb535b65ad3e2a058fc31f1db3b1aa6d7430679f06d668",
+          "capture_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000031",
+          "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000025",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000020",
+          "schema": "original_resolution_v1"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "binding_sha256": "000000000000000000000000000000000000000000000000000000000000002d",
+          "capture_occurrence_id": "0000000000000000000000000000000000000000000000000000000000000003",
+          "capture_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "row_sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+          "schema": "original_resolution_mail_export_v1"
+        }
+      },
+      "stages": {
+        "0000000000000000000000000000000000000000000000000000000000000006": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "000000000000000000000000000000000000000000000000000000000000000c": {
+          "extract": "pending",
+          "preserve": "pending"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000014": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000018": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000019": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "000000000000000000000000000000000000000000000000000000000000002e": {
+          "extract": "pending",
+          "preserve": "pending"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000035": {
+          "extract": "pending",
+          "preserve": "done"
+        },
+        "0000000000000000000000000000000000000000000000000000000000000037": {
+          "extract": "pending",
+          "preserve": "done"
+        }
+      }
+    }
+  },
+  "source_head": "<SOURCE_HEAD>"
+}

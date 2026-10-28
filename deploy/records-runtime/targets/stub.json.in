@@ -1,0 +1,14 @@
+{
+  "target_config_version": 1,
+  "target": "@TARGET_NAME@",
+  "mode": "test",
+  "stages": [
+    {"name": "sync", "argv": ["@HOST_PYTHON@", "-B", "-m", "campaign_tool.records.run_orchestrator", "stub-stage", "--stage", "sync", "--fixture", "@STUB_FIXTURE@"], "timeout_seconds": 60, "on_fail": "stop"},
+    {"name": "delta", "argv": ["@HOST_PYTHON@", "-B", "-m", "campaign_tool.records.run_orchestrator", "stub-stage", "--stage", "delta", "--fixture", "@STUB_FIXTURE@"], "timeout_seconds": 60, "on_fail": "stop"},
+    {"name": "adoption", "argv": ["@HOST_PYTHON@", "-B", "-m", "campaign_tool.records.run_orchestrator", "stub-stage", "--stage", "adoption", "--fixture", "@STUB_FIXTURE@"], "timeout_seconds": 60, "on_fail": "stop"},
+    {"name": "portal", "argv": ["@HOST_PYTHON@", "-B", "-m", "campaign_tool.records.run_orchestrator", "stub-stage", "--stage", "portal", "--fixture", "@STUB_FIXTURE@"], "timeout_seconds": 60, "on_fail": "continue"},
+    {"name": "extract", "argv": ["@HOST_PYTHON@", "-B", "-m", "campaign_tool.records.run_orchestrator", "stub-stage", "--stage", "extract", "--fixture", "@STUB_FIXTURE@"], "timeout_seconds": 60, "on_fail": "stop"},
+    {"name": "digest_gates", "argv": ["@HOST_PYTHON@", "-B", "-m", "campaign_tool.records.run_orchestrator", "stub-stage", "--stage", "digest_gates", "--fixture", "@STUB_FIXTURE@"], "timeout_seconds": 60, "on_fail": "stop"},
+    {"name": "outputs", "argv": ["@HOST_PYTHON@", "-B", "-m", "campaign_tool.records.run_orchestrator", "stub-stage", "--stage", "outputs", "--fixture", "@STUB_FIXTURE@"], "timeout_seconds": 60, "on_fail": "stop"}
+  ]
+}
