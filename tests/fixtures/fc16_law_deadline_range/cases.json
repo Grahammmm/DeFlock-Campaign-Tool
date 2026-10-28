@@ -1,0 +1,3315 @@
+{
+  "schema": "fc16-law-deadline-range/v1",
+  "provenance": {
+    "shape": "Pinned law-package.schema.json and law.deadline records_law fields; synthetic full package, no legal content copied.",
+    "oracle": "Literal values frozen before implementation using bounded independent one-day enumeration (at most 38 days); weekdays are Python Monday=0, Saturday/Sunday only excluded.",
+    "source_pin_location": "Supplied source manifest pins the baseline head/tree; original source file SHA256 values are retained in the preflight and each acceptance receipt outside the public tree."
+  },
+  "package": {
+    "schema_version": 1,
+    "jurisdiction": "us-zz",
+    "status": "draft",
+    "reviewed_by": [],
+    "reviewed_at": null,
+    "records_law": {
+      "name": "Synthetic law",
+      "citation": "Synthetic citation",
+      "determination_days": 10,
+      "determination_extension_days": 0,
+      "day_type": "calendar",
+      "fee_basis": "",
+      "appeal": "",
+      "sources": [
+        {
+          "title": "Synthetic source shape only",
+          "url": "https://example.invalid/synthetic",
+          "accessed": "2026-01-01"
+        }
+      ]
+    },
+    "rules": [],
+    "request_scopes": []
+  },
+  "rows": [
+    {
+      "case": "range_edges",
+      "id": "edge-calendar-False-0001-01-01",
+      "start": "0001-01-01",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "0001-01-11"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-calendar-False-2026-01-02",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-12"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-calendar-False-9999-12-31",
+      "start": "9999-12-31",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-calendar-True-0001-01-01",
+      "start": "0001-01-01",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "0001-01-25"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-calendar-True-2026-01-02",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-26"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-calendar-True-9999-12-31",
+      "start": "9999-12-31",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "range_edges",
+      "id": "exact-calendar-ext0",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "range_edges",
+      "id": "exact-calendar-ext1",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-business-False-0001-01-01",
+      "start": "0001-01-01",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "business",
+      "expected": "0001-01-15"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-business-False-2026-01-02",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-01-16"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-business-False-9999-12-31",
+      "start": "9999-12-31",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-business-True-0001-01-01",
+      "start": "0001-01-01",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "business",
+      "expected": "0001-02-02"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-business-True-2026-01-02",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-02-05"
+    },
+    {
+      "case": "range_edges",
+      "id": "edge-business-True-9999-12-31",
+      "start": "9999-12-31",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "range_edges",
+      "id": "exact-business-ext0",
+      "start": "9999-12-17",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "range_edges",
+      "id": "exact-business-ext1",
+      "start": "9999-12-17",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-1-0-False",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-21"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-1-0-True",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-21"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-1-1-False",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-21"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-1-1-True",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-4-0-False",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-4-0-True",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-4-1-False",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-4-1-True",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-5-0-False",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-5-0-True",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-5-1-False",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-5-1-True",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-6-0-False",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-6-0-True",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-6-1-False",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-6-1-True",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-10-0-False",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-10-0-True",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-10-1-False",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-calendar-10-1-True",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-1-0-False",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-21"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-1-0-True",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-21"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-1-1-False",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-21"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-1-1-True",
+      "start": "9999-12-20",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-4-0-False",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-4-0-True",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-4-1-False",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-4-1-True",
+      "start": "9999-12-20",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-5-0-False",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-5-0-True",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-5-1-False",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-5-1-True",
+      "start": "9999-12-20",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-6-0-False",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-6-0-True",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-6-1-False",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-6-1-True",
+      "start": "9999-12-20",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-10-0-False",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-10-0-True",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-10-1-False",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-0-business-10-1-True",
+      "start": "9999-12-20",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-1-0-False",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-1-0-True",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-1-1-False",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-1-1-True",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-4-0-False",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-4-0-True",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-4-1-False",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-4-1-True",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-5-0-False",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-5-0-True",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-5-1-False",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-5-1-True",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-6-0-False",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-6-0-True",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-6-1-False",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-6-1-True",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-10-0-False",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-10-0-True",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-10-1-False",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-calendar-10-1-True",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-1-0-False",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-1-0-True",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-1-1-False",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-22"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-1-1-True",
+      "start": "9999-12-21",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-4-0-False",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-4-0-True",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-4-1-False",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-4-1-True",
+      "start": "9999-12-21",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-5-0-False",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-5-0-True",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-5-1-False",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-5-1-True",
+      "start": "9999-12-21",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-6-0-False",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-6-0-True",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-6-1-False",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-6-1-True",
+      "start": "9999-12-21",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-10-0-False",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-10-0-True",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-10-1-False",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-1-business-10-1-True",
+      "start": "9999-12-21",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-1-0-False",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-1-0-True",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-1-1-False",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-1-1-True",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-4-0-False",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-4-0-True",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-4-1-False",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-4-1-True",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-5-0-False",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-5-0-True",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-5-1-False",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-5-1-True",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-6-0-False",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-6-0-True",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-6-1-False",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-6-1-True",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-10-0-False",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-10-0-True",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-10-1-False",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-calendar-10-1-True",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-1-0-False",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-1-0-True",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-1-1-False",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-23"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-1-1-True",
+      "start": "9999-12-22",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-4-0-False",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-4-0-True",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-4-1-False",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-4-1-True",
+      "start": "9999-12-22",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-5-0-False",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-5-0-True",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-5-1-False",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-5-1-True",
+      "start": "9999-12-22",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-6-0-False",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-6-0-True",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-6-1-False",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-6-1-True",
+      "start": "9999-12-22",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-10-0-False",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-10-0-True",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-10-1-False",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-2-business-10-1-True",
+      "start": "9999-12-22",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-1-0-False",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-1-0-True",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-1-1-False",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-1-1-True",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-4-0-False",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-4-0-True",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-4-1-False",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-4-1-True",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-5-0-False",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-5-0-True",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-5-1-False",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-5-1-True",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-6-0-False",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-6-0-True",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-6-1-False",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-6-1-True",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-10-0-False",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-10-0-True",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-10-1-False",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-calendar-10-1-True",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-1-0-False",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-1-0-True",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-1-1-False",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-24"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-1-1-True",
+      "start": "9999-12-23",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-4-0-False",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-4-0-True",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-4-1-False",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-4-1-True",
+      "start": "9999-12-23",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-5-0-False",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-5-0-True",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-5-1-False",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-5-1-True",
+      "start": "9999-12-23",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-6-0-False",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-6-0-True",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-6-1-False",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-6-1-True",
+      "start": "9999-12-23",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-10-0-False",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-10-0-True",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-10-1-False",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-3-business-10-1-True",
+      "start": "9999-12-23",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-1-0-False",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-1-0-True",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-1-1-False",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-25"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-1-1-True",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-4-0-False",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-4-0-True",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-4-1-False",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-4-1-True",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-5-0-False",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-5-0-True",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-5-1-False",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-5-1-True",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-6-0-False",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-6-0-True",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-6-1-False",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-6-1-True",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-10-0-False",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-10-0-True",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-10-1-False",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-calendar-10-1-True",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-1-0-False",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-1-0-True",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-1-1-False",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-1-1-True",
+      "start": "9999-12-24",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-4-0-False",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-4-0-True",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-4-1-False",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-4-1-True",
+      "start": "9999-12-24",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-5-0-False",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-5-0-True",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-5-1-False",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-5-1-True",
+      "start": "9999-12-24",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-6-0-False",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-6-0-True",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-6-1-False",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-6-1-True",
+      "start": "9999-12-24",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-10-0-False",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-10-0-True",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-10-1-False",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-4-business-10-1-True",
+      "start": "9999-12-24",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-1-0-False",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-1-0-True",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-1-1-False",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-26"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-1-1-True",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-4-0-False",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-4-0-True",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-4-1-False",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-29"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-4-1-True",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-5-0-False",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-5-0-True",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-5-1-False",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-5-1-True",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-6-0-False",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-6-0-True",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-6-1-False",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-6-1-True",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-10-0-False",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-10-0-True",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-10-1-False",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-calendar-10-1-True",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-1-0-False",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-1-0-True",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-1-1-False",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-1-1-True",
+      "start": "9999-12-25",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-4-0-False",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-4-0-True",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-4-1-False",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-4-1-True",
+      "start": "9999-12-25",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-5-0-False",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-5-0-True",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-5-1-False",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-5-1-True",
+      "start": "9999-12-25",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-6-0-False",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-6-0-True",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-6-1-False",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-6-1-True",
+      "start": "9999-12-25",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-10-0-False",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-10-0-True",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-10-1-False",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-5-business-10-1-True",
+      "start": "9999-12-25",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-1-0-False",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-1-0-True",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-1-1-False",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-1-1-True",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-4-0-False",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-4-0-True",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-4-1-False",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-4-1-True",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-5-0-False",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-5-0-True",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-5-1-False",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-5-1-True",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-6-0-False",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-6-0-True",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-6-1-False",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-6-1-True",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-10-0-False",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-10-0-True",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-10-1-False",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-calendar-10-1-True",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "calendar",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-1-0-False",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-1-0-True",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-1-1-False",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-27"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-1-1-True",
+      "start": "9999-12-26",
+      "days": 1,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-28"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-4-0-False",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-4-0-True",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-4-1-False",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-30"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-4-1-True",
+      "start": "9999-12-26",
+      "days": 4,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-5-0-False",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-5-0-True",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-5-1-False",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": "9999-12-31"
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-5-1-True",
+      "start": "9999-12-26",
+      "days": 5,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-6-0-False",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-6-0-True",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-6-1-False",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-6-1-True",
+      "start": "9999-12-26",
+      "days": 6,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-10-0-False",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-10-0-True",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-10-1-False",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 1,
+      "extension": false,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "weekday_boundary",
+      "id": "weekday-6-business-10-1-True",
+      "start": "9999-12-26",
+      "days": 10,
+      "extra": 1,
+      "extension": true,
+      "mode": "business",
+      "expected": null
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-1-0-False",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-03"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-1-0-True",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-03"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-1-14-False",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 14,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-03"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-1-14-True",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 14,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-17"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-5-0-False",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-07"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-5-0-True",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-07"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-5-14-False",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 14,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-07"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-5-14-True",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 14,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-21"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-10-0-False",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-12"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-10-0-True",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-12"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-10-14-False",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-12"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-10-14-True",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-26"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-24-0-False",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 0,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-26"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-24-0-True",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 0,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-01-26"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-24-14-False",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 14,
+      "extension": false,
+      "mode": "calendar",
+      "expected": "2026-01-26"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-calendar-24-14-True",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 14,
+      "extension": true,
+      "mode": "calendar",
+      "expected": "2026-02-09"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-1-0-False",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-01-05"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-1-0-True",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-01-05"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-1-14-False",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 14,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-01-05"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-1-14-True",
+      "start": "2026-01-02",
+      "days": 1,
+      "extra": 14,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-01-23"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-5-0-False",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-01-09"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-5-0-True",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-01-09"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-5-14-False",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 14,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-01-09"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-5-14-True",
+      "start": "2026-01-02",
+      "days": 5,
+      "extra": 14,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-01-29"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-10-0-False",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-01-16"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-10-0-True",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-01-16"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-10-14-False",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-01-16"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-10-14-True",
+      "start": "2026-01-02",
+      "days": 10,
+      "extra": 14,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-02-05"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-24-0-False",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 0,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-02-05"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-24-0-True",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 0,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-02-05"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-24-14-False",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 14,
+      "extension": false,
+      "mode": "business",
+      "expected": "2026-02-05"
+    },
+    {
+      "case": "preservation",
+      "id": "ordinary-business-24-14-True",
+      "start": "2026-01-02",
+      "days": 24,
+      "extra": 14,
+      "extension": true,
+      "mode": "business",
+      "expected": "2026-02-25"
+    }
+  ]
+}
