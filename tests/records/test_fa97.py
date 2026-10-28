@@ -228,12 +228,32 @@ class Behavior(Fixture):
 
 
 class GateControl(unittest.TestCase):
+    def test_launcher_identity_still_requires_manifest(self):
+        from tools import accept_fa97
+        with tempfile.TemporaryDirectory(prefix="fa97-missing-manifest-") as directory:
+            with self.assertRaises(FileNotFoundError):
+                accept_fa97.identity(accept_fa97.REPO, Path(directory) / "absent.json")
+
     def test_disposable_truthiness_mutant_and_restored_positive(self):
         # The launcher owns copying, file-launched children and raw receipts.
         # Ordinary unittest uses the identical driver under its temporary root.
-        from tools.accept_fa97 import negative_control
+        from tools import accept_fa97
         directory = Path(tempfile.mkdtemp(prefix="fa97-control-"))
-        result = negative_control(directory)
+        # A normal checkout has no admission-time SOURCE-MANIFEST.json beside
+        # it. Supply an explicitly synthetic manifest only for this unit test;
+        # the standalone launcher still requires its real admission manifest.
+        manifest = directory / "synthetic-source-manifest.json"
+        manifest.write_text(json.dumps({"fixture": "fa97-unittest-only"}) + "\n")
+        with patch.object(accept_fa97, "SOURCE_MANIFEST", manifest):
+            result = accept_fa97.negative_control(directory)
+        expected_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        self.assertEqual(result["parent_identity"]["source_manifest_sha256"], expected_hash)
+        for case, name in (("mutant", "targeted-defect"),
+                           ("mutant-same-empty", "same-empty"),
+                           ("restored", "positive")):
+            receipt = json.loads((directory / case / (name + ".json")).read_text())
+            self.assertEqual(receipt["identity"]["source_manifest_sha256"], expected_hash)
+            self.assertEqual(receipt["candidate_identity"]["source_manifest_sha256"], expected_hash)
         self.assertTrue(result["detected"])
         self.assertEqual(result["mutant_failed_tests"], [
             "tests.records.test_fa97.Behavior.test_completed_empty_reopen_nonempty_refuses_before_targets"])
