@@ -1,0 +1,47 @@
+{
+  "schema": "fc15-claim-bounds-cases/v1",
+  "note": "Fictional parameters only. Large claim texts and support lists are generated in memory from these values; expectations are the declared contract, not saved function output.",
+  "cases": ["text_bytes", "support_count", "container_types", "replay", "hold_invariants", "text_limit_mutant", "support_limit_mutant"],
+  "limits": {"claim_utf8_bytes": 8192, "supports": 32},
+  "codes": {"claim": "evidence_claim_bound", "supports": "evidence_support_bound"},
+  "unit_text": "Synthetic retained unit text for FC15 claim bounds. Nothing here describes a real record.",
+  "support_span": [0, 9],
+  "form_note": "A form repeats its unit while the next whole unit still fits, then pads with ASCII pad to the exact byte count.",
+  "pad": "c",
+  "forms": {
+    "ascii": {"unit": "a", "multibyte": false},
+    "mixed": {"unit": "\u00e9\u20ac\ud83d\ude00b", "multibyte": true},
+    "two_byte": {"unit": "\u00e9", "multibyte": true},
+    "four_byte": {"unit": "\ud83d\ude00", "multibyte": true}
+  },
+  "text_bytes": [
+    {"id": "ascii_empty", "form": "ascii", "bytes": 0, "expect": "evidence_claim_bound"},
+    {"id": "ascii_one", "form": "ascii", "bytes": 1, "expect": "ok"},
+    {"id": "ascii_8191", "form": "ascii", "bytes": 8191, "expect": "ok"},
+    {"id": "ascii_8192", "form": "ascii", "bytes": 8192, "expect": "ok"},
+    {"id": "ascii_8193", "form": "ascii", "bytes": 8193, "expect": "evidence_claim_bound"},
+    {"id": "mixed_one_multibyte_char", "form": "four_byte", "bytes": 4, "expect": "ok"},
+    {"id": "mixed_8191", "form": "mixed", "bytes": 8191, "expect": "ok"},
+    {"id": "mixed_8192", "form": "mixed", "bytes": 8192, "expect": "ok"},
+    {"id": "mixed_8193", "form": "mixed", "bytes": 8193, "expect": "evidence_claim_bound"},
+    {"id": "two_byte_8192", "form": "two_byte", "bytes": 8192, "expect": "ok"},
+    {"id": "two_byte_8192_plus_ascii", "form": "two_byte", "bytes": 8193, "expect": "evidence_claim_bound"},
+    {"id": "four_byte_8192", "form": "four_byte", "bytes": 8192, "expect": "ok"},
+    {"id": "four_byte_8192_plus_ascii", "form": "four_byte", "bytes": 8193, "expect": "evidence_claim_bound"}
+  ],
+  "support_count": [
+    {"id": "zero", "count": 0, "expect": "evidence_support_bound"},
+    {"id": "one", "count": 1, "expect": "ok"},
+    {"id": "thirty_one", "count": 31, "expect": "ok"},
+    {"id": "thirty_two", "count": 32, "expect": "ok"},
+    {"id": "thirty_three", "count": 33, "expect": "evidence_support_bound"}
+  ],
+  "container_types": {
+    "claims": ["none", "bytes", "int", "list", "dict", "bool"],
+    "supports": ["none", "tuple", "single_support_dict", "str", "int", "generator"]
+  },
+  "replay": {
+    "accepted": [["ascii_8192", 32], ["mixed_8192", 1], ["four_byte_8192", 32], ["ascii_one", 32]],
+    "forged": [["ascii_8193", 32, "evidence_claim_bound"], ["mixed_8193", 1, "evidence_claim_bound"], ["ascii_8192", 33, "evidence_support_bound"]]
+  }
+}

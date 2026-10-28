@@ -67,6 +67,13 @@ def score(facts):
             "low_value_closed": False}
 
 
+def excluded_from_claims(row):
+    """Catalog scope vocabulary; historical caller rows may omit role or scope."""
+    from .ledger_catalog import EXCLUDED_ROLE, EXCLUDED_SCOPES
+    scope = row.get("scope")
+    return row.get("role") == EXCLUDED_ROLE or (isinstance(scope, str) and scope in EXCLUDED_SCOPES)
+
+
 def plan(originals, stage_rows, leases, *, now, facts=None, config_version=VERSION, limit=20):
     """Pure deterministic metadata planner; never equates settled stages with review."""
     when = timestamp(now)
@@ -105,7 +112,7 @@ def plan(originals, stage_rows, leases, *, now, facts=None, config_version=VERSI
     require(set(facts).issubset(subjects), "priority_subject_outside_snapshot")
     ready, held, settled, excluded = [], [], [], []
     for subject in sorted(subjects):
-        if subjects[subject].get("scope") == "out_of_scope":
+        if excluded_from_claims(subjects[subject]):
             excluded.append({"original_sha256":subject,"reason":"original_out_of_scope"})
             continue
         rows, reasons, chosen = states[subject], [], None
@@ -165,8 +172,11 @@ def from_ledger(database, *, now, facts=None, config_version=VERSION, limit=20):
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")
+        # Canonical originals carry role; historical minimal snapshots may not.
+        columns = {row[0] for row in connection.execute("SELECT name FROM pragma_table_info('originals')")}
+        projection = "sha256,scope,role" if "role" in columns else "sha256,scope"
         originals = [store.effective_original_fields(connection,row) for row in connection.execute(
-            "SELECT sha256,scope FROM originals ORDER BY sha256 LIMIT ?", (MAX_ORIGINALS + 1,))]
+            "SELECT " + projection + " FROM originals ORDER BY sha256 LIMIT ?", (MAX_ORIGINALS + 1,))]
         states = [dict(row) for row in connection.execute(
             "SELECT * FROM stage_state LIMIT ?", (7 * MAX_ORIGINALS + 1,))]
         leases = [dict(row) for row in connection.execute(
