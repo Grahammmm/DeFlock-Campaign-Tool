@@ -455,13 +455,25 @@ class GateControl(unittest.TestCase):
     TARGET = "test_path_replacement_with_different_content_is_receipt_changed"
     POSITIVE = "test_stable_legacy_and_wire_receipts_bind_declaration_to_hashed_bytes"
 
+    def setUp(self):
+        self.control_outcomes = []
+
     def run_case(self, name, discover=None, label="restored"):
         case = Regression(name)
         if discover is not None:
             case.discover = lambda: discover(case.export, case.root / "intake")
         output = io.StringIO()
         result = unittest.TextTestRunner(stream=output, verbosity=2).run(case)
-        print("CONTROL %s\n%s" % (label, output.getvalue()))
+        # An expected failure from the detached broken backend is evidence, not
+        # an ordinary discovery failure. Keep its complete transcript for the
+        # acceptance launcher without printing a misleading nested FAIL block.
+        self.control_outcomes.append({
+            "label": label, "test_id": case.id(), "tests_run": result.testsRun,
+            "failures": [test.id() for test, _ in result.failures],
+            "errors": [test.id() for test, _ in result.errors],
+            "skipped": [test.id() for test, _ in result.skipped],
+            "raw_output": output.getvalue(),
+        })
         return result
 
     def test_disabled_comparison_is_detected_and_restored_positive_passes(self):
@@ -483,7 +495,7 @@ class GateControl(unittest.TestCase):
         self.assertIn("receipt_changed", broken.failures[0][1])
         restored = self.run_case(self.TARGET)
         self.assertTrue(restored.wasSuccessful(), restored.failures + restored.errors)
-        positive = self.run_case(self.POSITIVE)
+        positive = self.run_case(self.POSITIVE, label="restored-positive")
         self.assertTrue(positive.wasSuccessful(), positive.failures + positive.errors)
         self.assertEqual((restored.testsRun, positive.testsRun), (1, 1))
 

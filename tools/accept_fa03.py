@@ -14,6 +14,8 @@ Unit-test suites run in a fresh child process of this same file. Before any
 repository module is imported the child points ``tempfile``/TMPDIR/HOME at the
 run directory, installs an offline socket guard, then loads only the exact
 named test modules and records which repository modules were imported. The
+control suite retains the nested broken/restored transcripts in the child
+result and receipt, separately from ordinary unittest stdout/stderr. The
 internal ``--child`` option is used only for that self-spawn. Subprocesses
 are literal argv lists; no shell or inline interpreter source is used.
 """
@@ -250,7 +252,15 @@ def child(args):
     names = UNIT_SUITES[args.suite]
     suite = unittest.defaultTestLoader.loadTestsFromNames(names)
     importing[0] = False
-    result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(suite)
+    control_outcomes = []
+
+    class EvidenceResult(unittest.TextTestResult):
+        def stopTest(self, test):
+            control_outcomes.extend(getattr(test, "control_outcomes", []))
+            super().stopTest(test)
+
+    result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2,
+                                     resultclass=EvidenceResult).run(suite)
     loaded_tests = sorted(name for name in sys.modules if name == "tests" or name.startswith("tests."))
     loaded_code = sorted(name for name in sys.modules if name.split(".")[0] == "campaign_tool")
     outside = sorted(set(loaded_tests) - ADMITTED_TESTS[args.suite])
@@ -261,6 +271,7 @@ def child(args):
           and not result.expectedFailures and not result.unexpectedSuccesses
           and tempfile.gettempdir() == str(sandbox / "tmp"))
     data = {"suite": args.suite, "names": names, "ok": ok, "tests_run": result.testsRun,
+            "control_outcomes": control_outcomes,
             "failures": [case.id() for case, _ in result.failures],
             "errors": [case.id() for case, _ in result.errors],
             "skipped": skipped, "skipped_count": len(skipped),
