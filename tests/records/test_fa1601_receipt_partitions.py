@@ -104,6 +104,36 @@ def faulty_resume_reader(store, database, caller_root):
     return result
 
 
+class OfflineBoundaryTests(unittest.TestCase):
+    def test_private_memory_and_synthetic_paths_only(self):
+        with tempfile.TemporaryDirectory(prefix='fa1601-boundary-') as temporary:
+            parent = Path(temporary)
+            root = parent / 'allowed'
+            root.mkdir()
+            with offline_boundary(root):
+                first = sqlite3.connect(':memory:')
+                second = sqlite3.connect(':memory:')
+                try:
+                    first.execute('CREATE TABLE private_reference(value)')
+                    self.assertEqual(second.execute('SELECT name FROM sqlite_master').fetchall(), [])
+                    self.assertEqual(list(root.iterdir()), [])
+                finally:
+                    first.close()
+                    second.close()
+                local = sqlite3.connect(root / 'synthetic.sqlite')
+                local.close()
+                outside = parent / 'outside.sqlite'
+                link = root / 'linked.sqlite'
+                link.symlink_to(root / 'synthetic.sqlite')
+                for database, uri in (
+                        (outside, False), (outside.as_uri(), True),
+                        (link, False), ('file::memory:?cache=shared', True)):
+                    with self.subTest(database=str(database)):
+                        with self.assertRaisesRegex(RuntimeError, '^FA1601 real-data SQLite sentinel$'):
+                            sqlite3.connect(database, uri=uri)
+                self.assertFalse(outside.exists())
+
+
 class ReceiptPartitionsTests(unittest.TestCase):
     def setUp(self):
         # A caller-owned directory, not a product default; fixture-owned teardown
