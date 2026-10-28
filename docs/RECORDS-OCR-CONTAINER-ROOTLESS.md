@@ -232,11 +232,11 @@ finding refuses the run (exit 2, nothing changed). The findings go to
 | overflow owners | The same survey refuses entries owned by uid or gid 65534 (formerly found only at [S1], after the stop). |
 | [S3] sockets | The survey names every socket, fifo and device per mount. They are excluded from every equality check (see "Sockets and other special files"). |
 | [C2] settings diff | A create-only probe: `POST /containers/create` of `<name>-swap-probe` with the saved settings and the old image, without `Binds`, `Mounts` and `VolumesFrom` (it never mounts live data), never started. Its inspect is diffed with the same rules as [C2] (name and mounts left out), then it is removed with `docker rm -v`. Any difference refuses the run. |
-| [A2] free space | The survey sizes give one archive set (tar headers, pax reserve, long names, padding, record rounding) `T`, the largest extracted mount `L` and the SQLite data `D`. The run needs `3T + 2D + L + 512 MiB` free: S1 archives, S2 backups, A2 archives and backups, and the preserved current state plus its verify extract of an [RB-C] restore after [A2]. Extracts run one mount at a time and are deleted, so only the largest counts. |
+| [A2] free space | The survey sizes give one archive set (tar headers, pax reserve, long names, padding, record rounding) `T`, the largest extracted mount `L` and the SQLite data `D`. Let `C` be the sum of each entry's payload rounded up to 4 KiB plus 4 KiB per entry. R1 requires `max(7C + 512 MiB, 3T + 2D + L + 512 MiB)` free, matching S1's backstop: S1 archives, S2 backups, A2 archives and backups, scratch extraction, and the preserved current state plus its verify extract of an [RB-C] restore after [A2]. The format-aware floor counts only the largest extract because extracts run one mount at a time and are deleted. |
 
 Freeing space is the operator's job. Superseded run directories under
-`--private` are kept or deleted under the owner's retention rule, never by the
-driver.
+`--private` are never deleted by the driver during a swap. The owner's retention
+rule governs the explicit operator action `rootless_swap.py prune ... --apply`.
 
 ## Rootless owner runbook
 

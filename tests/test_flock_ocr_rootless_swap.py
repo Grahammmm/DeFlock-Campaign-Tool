@@ -1730,6 +1730,9 @@ class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
                                       "restore_preservation", "largest_extract", "margin"})
         self.assertEqual(parts["margin"], 512 << 20)
         self.assertEqual(parts["s1_archives"], parts["a2_archives"])
+        copies = sum(evidence.survey(root)["estimated_copy_bytes"]
+                     for root in (self.fake.volume, self.fake.bind))
+        need = max(need, 7 * copies + (512 << 20))
         self.fake.free = need - 1
         code, out = self.run_swap(self.args())
         self.assert_refused_before_any_change(

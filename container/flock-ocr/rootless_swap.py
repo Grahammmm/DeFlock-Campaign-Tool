@@ -686,8 +686,7 @@ class Swap:
                               "rootless namespace (overflow 65534); a rootless archive cannot preserve them")
                 # Round file payloads to filesystem blocks and allow tar/PAX
                 # headers, directory entries and metadata per manifest entry.
-                total += sum(((e.get("size", 0) + 4095) // 4096) * 4096 + 4096
-                             for e in baseline["entries"].values())
+                total += snapshot_evidence.copy_estimate(baseline["entries"])
             baselines[label] = baseline
         if not self.dry:
             # S1 and A2 each retain an archive plus SQLite backups (2 copies).
@@ -1173,9 +1172,12 @@ class Swap:
         tar = sum(r["tar_bytes"] for r in surveys.values())
         extract = max(r["extract_bytes"] for r in surveys.values())
         sqlite = sum(r["sqlite_bytes"] for r in surveys.values())
-        parts, need = space_budget(tar, extract, sqlite)
+        parts, format_need = space_budget(tar, extract, sqlite)
+        total = sum(r["estimated_copy_bytes"] for r in surveys.values())
+        need = max(7 * total + MARGIN, format_need)
         free = self.system.disk_free(self.run_dir)
-        self.state["preflight"].update({"budget": parts, "need": need, "free": free, "sqlite_bytes": sqlite})
+        self.state["preflight"].update({"budget": parts, "need": need, "free": free, "sqlite_bytes": sqlite,
+                                       "estimated_copy_bytes": total, "format_budget_bytes": format_need})
         shown = ", ".join(f"{k} {v}" for k, v in parts.items())
         if free < need:
             self.fail(f"preflight: private dir has {free} bytes free, the run needs {need} ({shown}); free "

@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.test_flock_ocr_rootless_swap import (
-    RunMixin, swap, evidence, RECIPE, OLD_IMAGE, TARGET,
+    RunMixin, swap, evidence, RECIPE, OLD_IMAGE, TARGET, lifecycle,
 )
 
 
@@ -59,9 +59,27 @@ class BuildAndBudgetTests(RunMixin, unittest.TestCase):
 
     def test_old_three_copy_budget_refused_before_first_archive(self):
         total = self.estimated_copy()
+        surveys = [evidence.survey(root) for root in (self.fake.volume, self.fake.bind)]
+        _, old_need = swap.space_budget(sum(s["tar_bytes"] for s in surveys),
+                                        max(s["extract_bytes"] for s in surveys),
+                                        sum(s["sqlite_bytes"] for s in surveys))
+        # Constant space above the old R1 gate, but below the seven-copy gate.
+        free = (old_need + 7 * total + (512 << 20)) // 2
+        self.fake.disk_free = lambda path: free
+        code, out = self.run_swap(self.args())
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn("FAIL at [R1]", out)
+        self.assertIn("preflight: private dir", out)
+        self.assertEqual(lifecycle(self.fake), [])
+        self.assertFalse(any("-cpf" in h["command"] for h in self.fake.helper_runs))
+        budget = json.loads((self.run_dir() / "state.json").read_text())["preflight"]
+        self.assertEqual(budget["need"], 7 * total + (512 << 20))
+        self.assertGreater(budget["free"], budget["format_budget_bytes"])
+
+    def test_s1_rechecks_budget_after_preflight(self):
+        total = self.estimated_copy()
         seen = []
-        # R1 keeps its independent survey-based early gate; simulate space
-        # consumed between that gate and S1 to exercise S1's stricter check.
+        # Simulate space consumed after R1 to exercise S1's backstop.
         self.fake.disk_free = lambda path: (seen.append(path), (1 << 40) if len(seen) == 1
                                             else 3 * total + (512 << 20))[1]
         code, out = self.run_swap(self.args())
