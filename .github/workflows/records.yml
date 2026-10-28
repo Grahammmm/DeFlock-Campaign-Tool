@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   offline:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     # The full synthetic suite measured 620-1063 s on successful hosted runs
     # (2026-10-25) and was killed at the former 18-minute step cap on main and
     # PRs alike; keep the cap well above the measured maximum.
