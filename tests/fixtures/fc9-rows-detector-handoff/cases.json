@@ -1,0 +1,69 @@
+{
+  "schema": "fc9-rows-detector-handoff/v1",
+  "authority": "fictional synthetic supplied-context triage only; review required",
+  "producer_shape": "format-extraction-v1 csv_header/csv_row; intake/folder.py positional values/presence/row_sha256",
+  "agency": "fc9-fictional-agency",
+  "stamp": "2020-01-20T12:00:00+00:00",
+  "variants": ["hit", "zero", "redacted"],
+  "detectors": [
+    {
+      "name": "search-before-training", "record_type": "search-log",
+      "fields": [["user_id", "str", "fictional-user"]],
+      "parameters": {}, "zero": {}, "redact": "user_id",
+      "roster": {"hit": "2020-01-21T12:00:00+00:00", "zero": "2020-01-20T12:00:00+00:00"},
+      "hit_observations": [{"event_at": "2020-01-20T12:00:00+00:00", "earliest_supplied_completion": "2020-01-21T12:00:00+00:00", "user_id": "fictional-user"}],
+      "signals": ["search_precedes_supplied_training_completion"], "severity": 3
+    },
+    {
+      "name": "purpose-quality", "record_type": "search-log",
+      "fields": [["user_id", "str", "fictional-user"], ["purpose", "str", "investigation"]],
+      "parameters": {"generic_reasons": ["investigation"]},
+      "zero": {"purpose": "specific fictional incident follow-up"}, "redact": "purpose",
+      "hit_observations": [
+        {"scope": ["overall"], "qualified_problem_observations": 1, "qualified_observations": 1, "blank_missing_redacted_excluded": true},
+        {"scope": ["user", "fictional-user"], "qualified_problem_observations": 1, "qualified_observations": 1, "blank_missing_redacted_excluded": true}
+      ], "signals": ["qualified_purpose_quality_rate", "qualified_purpose_quality_rate"], "severity": 3
+    },
+    {
+      "name": "external-sharing", "record_type": "sharing-list",
+      "fields": [["access_enabled", "bool", "true"], ["recipient_level", "str", "federal"], ["recipient_jurisdiction", "str", "ZZ"]],
+      "parameters": {"home_jurisdiction": "AA"},
+      "zero": {"recipient_level": "local", "recipient_jurisdiction": "AA"}, "redact": "access_enabled",
+      "hit_observations": [{"recipient_level": "federal", "recipient_jurisdiction": "ZZ", "home_jurisdiction": "AA", "access_enabled": true, "disclosure_established": false}],
+      "signals": ["external_permission_observed"], "severity": 3
+    },
+    {
+      "name": "retention-over-policy", "record_type": "retention-setting",
+      "fields": [["retention_mode", "str", "days"], ["retention_days", "int", "31"]],
+      "parameters": {"maximum_days": 30, "unit": "calendar_days"},
+      "zero": {"retention_days": "30"}, "redact": "retention_days",
+      "hit_observations": [{"setting_days": 31, "policy_days": 30}],
+      "signals": ["setting_exceeds_supplied_policy_period"], "severity": 3
+    },
+    {
+      "name": "audit-gap", "record_type": "audit",
+      "fields": [["period_start", "str", "2020-01-01"], ["period_end", "str", "2020-01-14"], ["production_complete", "bool", "true"], ["audit_dates", "json", "[]"]],
+      "parameters": {"frequency_days": 7, "first_due": "2020-01-07"},
+      "zero": {"audit_dates": "[\"2020-01-07\"]"}, "redact": "production_complete",
+      "hit_observations": [{"period_start": "2020-01-01", "period_end_exclusive": "2020-01-14", "due_dates": ["2020-01-07"], "missing_documentation_due_dates": ["2020-01-07"], "produced_dates": [], "absence_of_actual_audit_established": false}],
+      "signals": ["produced_audit_documentation_gap"], "severity": 3
+    },
+    {
+      "name": "cpra-deadline", "record_type": "request", "stamp": "2020-01-01T12:00:00+00:00",
+      "fields": [["request_received", "str", "2020-01-01"], ["determination_state", "str", "pending"], ["determination_at", "str", ""], ["extension_claimed", "bool", "false"], ["production_at", "str", "2020-01-02"]],
+      "parameters": {"counting": "calendar", "exclude_received_day": true, "determination_days": 10, "extension_days_max": 14, "reminder_days": 3, "weekend_days": [5, 6], "roll_due": "next_business_day", "extension_allowed_bases": ["fictional-basis"], "extension_notice_deadline": "base_due", "extension_calculation": "from_base_due"},
+      "holiday_table": {"version": "fictional-holidays-v1", "coverage_start": "2020-01-01", "coverage_end": "2020-12-31", "dates": []},
+      "zero": {"determination_state": "made", "determination_at": "2020-01-10"}, "redact": "request_received",
+      "hit_observations": [{"request_received": "2020-01-01", "base_due": "2020-01-13", "determination_due": "2020-01-13", "determination_state": "pending", "determination_at": null, "as_of": "2020-01-20", "extension_days": 0, "holiday_table_sha256": "$holiday_table_sha256", "production_is_not_determination": true, "legal_conclusion": null}],
+      "signals": ["determination_timing_observation"], "severity": 2
+    },
+    {
+      "name": "volume-anomaly", "record_type": "search-log", "stamp": "2020-01-20T08:00:00+00:00",
+      "fields": [["user_id", "str", "fictional-user"]],
+      "parameters": {"timezone_offset_minutes": 0, "daily_count_threshold": 100, "off_hours_threshold": 0, "business_hours": [9, 17]},
+      "zero": {"event_at": "2020-01-20T09:00:00+00:00"}, "redact": "user_id",
+      "hit_observations": [{"scope": ["user_day", "fictional-user", "2020-01-20"], "unique_searches": 1, "off_hours_searches": 1, "daily_threshold": 100, "off_hours_threshold": 0}],
+      "signals": ["search_volume_triage"], "severity": 1
+    }
+  ]
+}
