@@ -2,21 +2,21 @@ name: Records controller kernel faults
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'batch/**']
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
-  kernel-faults:
+  kernel-faults-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'pull_request' && github.head_ref != 'main' && !startsWith(github.head_ref, 'batch/') && '["3.13"]' || '["3.11", "3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret - public action commit
         with:
@@ -38,3 +38,16 @@ jobs:
         run: |
           python -B tools/check_public_tree.py
           node scripts/scan-secrets.mjs
+  kernel-faults:
+    needs: kernel-faults-tests
+    if: always()
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - name: All selected interpreters must pass (PR compatibility alias)
+        env:
+          RESULT: ${{ needs.kernel-faults-tests.result }}
+        run: test "$RESULT" = success

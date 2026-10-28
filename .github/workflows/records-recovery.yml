@@ -2,21 +2,21 @@ name: WP9 recovery and pinned WP8 composition
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'batch/**']
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
-  recovery-composition:
+  recovery-composition-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'pull_request' && github.head_ref != 'main' && !startsWith(github.head_ref, 'batch/') && '["3.13"]' || '["3.11", "3.12", "3.13"]') }}
     steps:
       - name: Check out WP9 candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -47,3 +47,16 @@ jobs:
           TMPDIR: '${{ runner.temp }}'
           REQUIRE_WP8_INTEGRATION: '1'
         run: python -B tests/records/run_recovery_composition.py --wp8-root "$WP8_ROOT"
+  recovery-composition:
+    needs: recovery-composition-tests
+    if: always()
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - name: All selected interpreters must pass (PR compatibility alias)
+        env:
+          RESULT: ${{ needs.recovery-composition-tests.result }}
+        run: test "$RESULT" = success

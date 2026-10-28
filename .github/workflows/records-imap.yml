@@ -2,21 +2,21 @@ name: Records IMAP source and global budget
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'batch/**']
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
-  synthetic-imap:
+  synthetic-imap-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'pull_request' && github.head_ref != 'main' && !startsWith(github.head_ref, 'batch/') && '["3.13"]' || '["3.11", "3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -37,3 +37,16 @@ jobs:
           if result.skipped or not result.wasSuccessful():
               raise SystemExit(1)
           PY
+  synthetic-imap:
+    needs: synthetic-imap-tests
+    if: always()
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - name: All selected interpreters must pass (PR compatibility alias)
+        env:
+          RESULT: ${{ needs.synthetic-imap-tests.result }}
+        run: test "$RESULT" = success

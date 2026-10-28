@@ -2,20 +2,70 @@ name: Offline engine checks
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'batch/**']
   workflow_dispatch:
+# PR refs cancel only their own older run. Unique non-PR groups never cancel
+# pending main/batch runs (even cancel-in-progress:false replaces pending runs).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
-  offline:
+  scope:
     runs-on: ubuntu-24.04
-    # The full synthetic suite measured 620-1063 s on successful hosted runs
-    # (2026-10-25) and was killed at the former 18-minute step cap on main and
-    # PRs alike; keep the cap well above the measured maximum.
+    outputs:
+      run-tests: ${{ steps.scope.outputs.run-tests }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: scope
+        run: python3 -B tools/ci_scope.py
+  offline-shards:
+    needs: scope
+    if: needs.scope.outputs.run-tests == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(github.event_name == 'pull_request' && github.head_ref != 'main' && !startsWith(github.head_ref, 'batch/') && '["3.13"]' || '["3.11", "3.12", "3.13"]') }}
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '${{ matrix.python }}'
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            pyproject.toml
+            setup.py
+      - name: Install dependencies even on a cache miss
+        run: python -m pip install -r requirements-records-test.txt
+      - name: S3a adoption and reconciliation acceptance (SD-12 CI ownership)
+        if: matrix.shard == 0
+        run: python -B -W error::ResourceWarning -m unittest tests.records.test_mail_resolution_census tests.records.test_mail_adoption tests.records.test_original_reconciliation
+      - name: Exact discovery population, four disjoint module-preserving shards
+        timeout-minutes: 30
+        run: python -B -W error::ResourceWarning tools/ci_unittest.py --shard ${{ matrix.shard }} --shards 4 --report "$RUNNER_TEMP/offline-shard.json"
+  # These workflows are called once, not separately on every PR. Their full
+  # discovery previously repeated the same population/dependencies as above.
+  shell-checks:
+    uses: ./.github/workflows/offline.yml
+  intake-checks:
+    uses: ./.github/workflows/records-intake.yml
+  # Keep every pre-existing matrix check name, including compatibility aliases
+  # on PRs where G approved 3.13-only execution. Any selected interpreter/shard
+  # failing/cancelling fails ALL aliases; none asserts an unexecuted version ran.
+  offline:
+    needs: [scope, offline-shards, shell-checks]
+    if: always()
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -24,18 +74,35 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - name: Required discovery and public-tree result (PR compatibility alias)
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 -B tools/ci_gate.py --test-job offline-shards
+  intake:
+    needs: [scope, offline-shards, intake-checks]
+    if: always()
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          python-version: '${{ matrix.python }}'
-      - name: Optional intake test dependencies (CI runner only)
-        run: |
-          if [ -f requirements-records-test.txt ]; then
-            python -m pip install -r requirements-records-test.txt
-          fi
-      - name: S3a adoption and reconciliation acceptance (SD-12 CI ownership)
-        run: python -B -W error::ResourceWarning -m unittest tests.records.test_mail_resolution_census tests.records.test_mail_adoption tests.records.test_original_reconciliation
-      - name: Synthetic offline tests
-        timeout-minutes: 30
-        run: python -B -W error::ResourceWarning -m unittest discover -v
-      - name: Public-tree credential and private-path scan
-        run: python -B tools/check_public_tree.py
+          persist-credentials: false
+      - name: Required discovery and credential result (PR compatibility alias)
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 -B tools/ci_gate.py --test-job offline-shards
+  shell:
+    needs: [scope, offline-shards, shell-checks]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Required discovery, Node, build and scanner results
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 -B tools/ci_gate.py --test-job offline-shards

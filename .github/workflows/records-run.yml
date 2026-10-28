@@ -2,21 +2,21 @@ name: Records run slice
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'batch/**']
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
-  slice:
+  slice-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'pull_request' && github.head_ref != 'main' && !startsWith(github.head_ref, 'batch/') && '["3.13"]' || '["3.11", "3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret - public action commit
         with:
@@ -24,6 +24,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # pragma: allowlist secret - public action commit
         with:
           python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            pyproject.toml
+            setup.py
       - name: Local OCR tools (disposable CI runner only)
         run: |
           sudo apt-get update -qq
@@ -52,10 +57,23 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # pragma: allowlist secret - public action commit
         with:
-          python-version: '3.11'
+          python-version: ${{ github.event_name == 'pull_request' && '3.13' || '3.11' }}
       - name: Actual SQLite 10000/10001 retirement and bounded replay (synthetic only)
         env:
           # Synthetic SQLite fixture only; retain real rows, commits and all guards.
           # Avoid host-disk fsync latency while building 10001 test-only receipts.
           TMPDIR: /dev/shm
         run: python -B -m tests.records.retirement_boundary
+  slice:
+    needs: slice-tests
+    if: always()
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - name: All selected interpreters must pass (PR compatibility alias)
+        env:
+          RESULT: ${{ needs.slice-tests.result }}
+        run: test "$RESULT" = success
