@@ -118,7 +118,7 @@ def _items(event: dict, name: str) -> list[str]:
 def _event_key(event: dict) -> str:
     message_id = _s(event.get("message_id") or event.get("event_id"))
     if message_id:
-        return "message:" + message_id.casefold()
+        return "message:" + message_id
     fields = ("agency_id", "request_number", "request_numbers", "occurred_at", "event_type",
               "kind", "text", "items_requested", "items_delivered", "due_at", "due_kind")
     return "sha256:" + _hash({key: event.get(key) for key in fields if key in event})
