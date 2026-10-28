@@ -1,0 +1,36 @@
+{
+  "schema": "fc13-structured-revisions/v1",
+  "authorship": "Independently authored by gpt-6.1-sol / openai-codex for t_2532b0ef; fixture shapes derived from pinned public APIs, not copied planner probes.",
+  "baseline": {
+    "subject_label": "fictional FC13 retention export",
+    "policy_label": "fictional FC13 retention policy",
+    "artifact_label": "fictional FC13 extraction v1",
+    "policy_artifact_label": "fictional FC13 policy extraction",
+    "agency_id": "fc13-fictional-agency",
+    "agency_metadata": "fictional metadata v1",
+    "request_id": "fc13-fictional-request",
+    "event_id": "fc13-retention-event",
+    "event_at": "2020-02-12T12:00:00+00:00",
+    "as_of": "2020-02-12",
+    "retention_days": 31,
+    "maximum_days": 30,
+    "normalization_version": "fc13-normalizer-v1",
+    "rules_version": "fc13-rule-pack-v1",
+    "config_annotation": "fictional unused annotation v1"
+  },
+  "cases": [
+    {"id": "baseline", "domain": "none", "changed_revisions": []},
+    {"id": "normalization_version", "domain": "normalization", "value": "fc13-normalizer-v2", "changed_revisions": ["normalization_sha256"]},
+    {"id": "source_artifact", "domain": "source_bindings", "value": "fictional FC13 extraction v2", "changed_revisions": ["normalization_sha256", "source_bindings_sha256"], "coupling": "Replace the mapped artifact hash and inventory digest, then capture fresh joins. Join rows and their revision digest remain unchanged; snapshot source binding digest changes."},
+    {"id": "agency_metadata", "domain": "joins", "value": "fictional metadata v2", "changed_revisions": ["joins_sha256"]},
+    {"id": "rules_version", "domain": "rules", "value": "fc13-rule-pack-v2", "changed_revisions": ["rules_sha256"]},
+    {"id": "config_annotation", "domain": "config", "value": "fictional unused annotation v2", "changed_revisions": ["config_sha256"]}
+  ],
+  "negative_control": {
+    "id": "stale_config_valid_outer_hash",
+    "case": "config_annotation",
+    "failure": "wrong_revision:config_sha256",
+    "mutation": "Wrap the real evaluate_structured API; copy only prior config_sha256 into the new result, then recompute only result_sha256 with the independent test oracle."
+  },
+  "invariants": ["independent_five_domain_oracle", "outer_hash", "exact_rerun", "input_not_mutated", "output_detached_from_inputs", "outputs_detached_from_each_other", "stable_status_counts", "unique_source_mappings", "memory_only_sqlite", "no_publication_or_promotion"]
+}
