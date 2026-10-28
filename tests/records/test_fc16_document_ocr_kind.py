@@ -74,14 +74,15 @@ class OcrKindTests(unittest.TestCase):
                                      extra_context={'page_count': len(cases)})
         self.assertEqual(raw, before, 'receipt input preserved')
         # Real bound units, not an invalid edit of a signed bundle.
-        if any(c['attempt'] != 'native' for c in cases):
-            # One receipt has one attempt identity; rebind its label as well as
-            # the units, preserving the validator's exact label-equality gate.
-            attempt = cases[0]['attempt']
-            self.assertEqual({c['attempt'] for c in cases}, {attempt})
-            units = [e.unit(u, original, receipt_hash, n, c['attempt'])
-                     for n, (u, c) in enumerate(zip(raw_units, cases), 1)]
-            receipts = [dict(r, attempt_kind=attempt) for r in bundle['source_receipts']]
+        attempts = {c['attempt'] for c in cases}
+        if attempts != {'native'}:
+            # A receipt binds exactly one attempt kind (FC13-ATTEMPT-BINDING),
+            # so its units and source receipt carry the same label.
+            self.assertEqual(len(attempts), 1, 'one attempt kind per receipt')
+            (attempt,) = attempts
+            units = [e.unit(u, original, receipt_hash, n, attempt)
+                     for n, u in enumerate(raw_units, 1)]
+            receipts = [{**r, 'attempt_kind': attempt} for r in bundle['source_receipts']]
             bundle = e.bundle(units, bundle['source_context'], receipts)
         return bundle
 
