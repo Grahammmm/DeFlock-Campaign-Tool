@@ -29,3 +29,9 @@ jobs:
           "$RUNNER_TEMP/campaign-venv/bin/python" -m pip install --no-deps "$RUNNER_TEMP"/campaign-wheels/*.whl
       - name: Exercise installed commands away from checkout
         run: python3 -B tools/test_campaign_wheel.py --python "$RUNNER_TEMP/campaign-venv/bin/python" --expected-commit "$(git rev-parse HEAD)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Example campaign builds reproducibly (moved from Offline shell checks for PRs)
+        run: python3 -B -m campaign_tool build --directory examples/fictional-campaign --check
+      - run: node scripts/scan-secrets.mjs
