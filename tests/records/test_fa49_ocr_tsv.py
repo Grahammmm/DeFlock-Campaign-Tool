@@ -129,7 +129,17 @@ class MalformedConfidenceTests(unittest.TestCase):
 
     def test_a2_null_like_and_non_string_text_cells(self):
         def reader(rows):
-            return lambda *args, **kwargs: iter(rows)
+            # Mimic csv.DictReader: _confidence first validates the header (fieldnames),
+            # then iterates rows whose cells are the non-string values under test.
+            class Reader:
+                fieldnames = list(HEADER)
+
+                def __init__(self, *args, **kwargs):
+                    self._rows = iter(rows)
+
+                def __iter__(self):
+                    return self._rows
+            return Reader
         rows = [{"text": None, "conf": "90"}, {"text": 7, "conf": "90"}, {"text": b"bytes", "conf": "90"},
                 {"text": ["list"], "conf": "90"}, {"conf": "90"}]
         with mock.patch.object(ocr.csv, "DictReader", reader(rows)):
