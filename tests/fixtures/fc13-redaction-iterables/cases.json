@@ -1,0 +1,12 @@
+{
+  "schema": "fc13.redaction-iterables/v1",
+  "event_date": "2026-01-15",
+  "deny_phrase": "velvet orchard visitor",
+  "allow_value": "policy-office@example.invalid",
+  "unit_email": "unitperson@example.invalid",
+  "representations": ["list", "tuple", "generator"],
+  "scenarios": ["citation", "duty", "excerpt", "allow_rule", "combined_source"],
+  "empty_representations": ["list", "tuple", "generator"],
+  "invariants": ["digest_schema", "original_locators", "redaction_counts", "legal_review_downgrade", "privacy_mismatch", "single_consumption", "immutable_shared_snapshots", "fresh_iterators", "default_parity"],
+  "negative_control": "remove_only_two_policy_tuple_assignments_in_memory"
+}
