@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   slice:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -43,7 +43,7 @@ jobs:
               raise SystemExit(1)
           PY
   retirement-boundary:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret - public action commit

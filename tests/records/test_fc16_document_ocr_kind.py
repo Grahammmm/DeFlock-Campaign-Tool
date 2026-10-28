@@ -131,6 +131,14 @@ class OcrKindTests(unittest.TestCase):
 
     def test_existing_markers(self):
         self.group('existing_markers')
+        attempt = next(c for c in self.fx['cases'] if c['id'] == 'attempt_ocr')
+        bundle = self.build([attempt])
+        receipts = deepcopy(bundle['source_receipts'])
+        self.assertEqual(receipts[0]['attempt_kind'], attempt['attempt'])
+        receipts[0]['attempt_kind'] = 'native'
+        with self.assertRaisesRegex(ValueError, '^receipt_attempt_kind_mismatch$'):
+            self.evidence.bundle(bundle['units'], bundle['source_context'], receipts)
+        self.evidence.validate_bundle(bundle)
         for case in self.fx['predicate_cases']:
             with self.subTest(case=case['id']):
                 self.assertIs(self.document._is_ocr(case['unit']), case['expected'])

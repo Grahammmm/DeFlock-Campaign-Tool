@@ -138,6 +138,16 @@ class SupportIdentityMatrix(unittest.TestCase):
                 self.assertEqual(claim["semantic_assessment"], "NOT_ASSESSED")
                 self.assertIs(claim["review_acceptance"], False)
                 self.ev.validate_claim(claim, bundle)
+                for mutation, code in ((None, "receipt_attempt_kind_invalid"),
+                                       ("ocr", "receipt_attempt_kind_mismatch")):
+                    receipts = copy.deepcopy(bundle["source_receipts"])
+                    if mutation is None:
+                        receipts[0].pop("attempt_kind")
+                    else:
+                        receipts[0]["attempt_kind"] = mutation
+                    with self.assertRaisesRegex(ValueError, "^" + code + "$"):
+                        self.ev.bundle(bundle["units"], bundle["source_context"], receipts)
+                self.ev.validate_bundle(bundle)
 
     def test_five_bindings(self):
         for rep in REPRESENTATIONS:
