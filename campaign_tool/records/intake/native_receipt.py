@@ -5,6 +5,21 @@ import os
 from pathlib import Path
 from . import folder, mail_wire
 
+# The producer's flat usage counters (mail_wire.prepare). Each must be an exact,
+# nonnegative int: bool and integral float compare equal to int but are not counters.
+BUDGET_COUNTERS = ("total_bytes", "mime_parts", "captures", "messages", "max_depth")
+
+
+def _budget_counters(value):
+    return (type(value) is dict and len(value) == len(BUDGET_COUNTERS)
+            and all(type(value.get(key)) is int and value[key] >= 0 for key in BUDGET_COUNTERS))
+
+
+def _budget_matches(supplied, recomputed):
+    """Supplied receipt budget equals the recomputed plan budget, counter by counter."""
+    return (_budget_counters(supplied) and _budget_counters(recomputed)
+            and all(supplied[key] == recomputed[key] for key in BUDGET_COUNTERS))
+
 
 def parse(receipt):
     from . import mail_delta as delta
@@ -108,7 +123,7 @@ def bind(items, receipt, root, out):
     with folder.secure_open(items[0]["tmp"]) as stream:
         raw = stream.read(delta.MAX_EML + 1)
     plan = mail_wire.prepare(raw, receipt["original_eml"]["format"])
-    delta.require(receipt["budget"] == plan.budget, "mail_wire_receipt_mismatch")
+    delta.require(_budget_matches(receipt.get("budget"), plan.budget), "mail_wire_receipt_mismatch")
     original = {key: value for key, value in receipt["original_eml"].items() if key != "path"}
     delta.require(original == plan.original, "mail_wire_receipt_mismatch")
     wanted = {capture.part: capture for capture in plan.captures}

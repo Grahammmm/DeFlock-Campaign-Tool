@@ -218,9 +218,18 @@ class StdlibHTTPS:
             remaining=deadline-self.clock()
             if remaining<=0:
                 raise TimeoutError()
-            sock.settimeout(remaining)
             target=(parts.path or "/")+("?"+parts.query if parts.query else "")
             request=("GET "+target+" HTTP/1.1\r\nHost: "+host+"\r\nUser-Agent: records-portal/1\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n").encode("ascii")
+            # TLS setup may outlive either permission or a policy revocation.
+            decision_time=self.wall()
+            self.approval_loader().authorize(url,self.origin,decision_time)
+            if not self.egress_loader().allows(host,decision_time):
+                raise PortalError("egress_denied")
+            # Policy loading spends the same deadline; it cannot renew it.
+            remaining=deadline-self.clock()
+            if remaining<=0:
+                raise TimeoutError()
+            sock.settimeout(remaining)
             sock.sendall(request)
             response=http.client.HTTPResponse(DeadlineSocket(sock,deadline,self.clock))
             response.begin()
