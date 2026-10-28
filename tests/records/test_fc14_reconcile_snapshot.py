@@ -9,7 +9,6 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import types
@@ -38,14 +37,14 @@ def modules():
 
 def baseline_module():
     fixture = read_fixture()
-    done = subprocess.run(["git", "show", "".join(fixture["baseline_head_parts"]) + ":" + PRODUCT],
-                          cwd=REPO, capture_output=True, check=True, timeout=30)
+    # Keep the immutable, hash-pinned source available in shallow/offline checkouts.
+    source = FIXTURE.with_name("reconcile_baseline.py").read_bytes()
     expected = "".join(fixture["baseline_source_sha256_parts"])
-    if hashlib.sha256(done.stdout).hexdigest() != expected:
+    if hashlib.sha256(source).hexdigest() != expected:
         raise ValueError("baseline_source_pin_mismatch")
     mod = types.ModuleType("campaign_tool.records.understanding.fc14_baseline")
     mod.__package__ = "campaign_tool.records.understanding"
-    exec(compile(done.stdout, "<git-verified-fc14-baseline>", "exec"), mod.__dict__)
+    exec(compile(source, "<hash-verified-fc14-baseline>", "exec"), mod.__dict__)
     return mod
 
 
@@ -60,7 +59,7 @@ def inputs(branch=None, pointer="default", reverse=False):
              for ordinal, text in enumerate((f["rule_text"], f["fact_text"]), 1)]
     bundle = e.bundle(units, {original: {"review_acceptance": False, "synthetic": {"tags": ["only"]}}},
                       [{"original_sha256": original, "receipt_sha256": receipt_hash,
-                        "declared_unit_count": 2, "normalized_unit_count": 2}])
+                        "attempt_kind": "native", "declared_unit_count": 2, "normalized_unit_count": 2}])
     rule_cite = e.cite_text(units[0], f["rule_text"])
     cites = [e.cite_text(units[1], quote) for quote in ("retention is 12 days", "Alternate evidence: 12 days")]
     req = {"requirement_id": "synthetic-rule", "text": f["rule_text"], "citations": [rule_cite],

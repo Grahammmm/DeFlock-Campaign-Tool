@@ -17,7 +17,8 @@ PRODUCT = "campaign_tool/records/understanding/reconcile.py"
 TEST = "tests/records/test_fc14_reconcile_snapshot.py"
 FIXTURE = "tests/fixtures/fc14-reconcile-snapshot/cases.json"
 RUNNER = "tools/fc14_reconcile_snapshot_acceptance.py"
-AUTHORED = (PRODUCT, TEST, FIXTURE, RUNNER)
+BASELINE = "tests/fixtures/fc14-reconcile-snapshot/reconcile_baseline.py"
+AUTHORED = (PRODUCT, TEST, FIXTURE, RUNNER, BASELINE)
 UNCHANGED = ("tools/check_secret_report.py", "tools/check_public_tree.py",
              "campaign_tool/records/public_scan.py", ".gitignore", "tests/records/test_understanding.py")
 REQUIRED = ("citation_input_to_output", "citation_output_to_input", "explicit_rule_pointer",
@@ -104,6 +105,7 @@ class Row:
         need(self.git("ancestor", "merge-base", m["head"], "HEAD") == m["head"], "candidate_not_descendant")
         baseline = self.child("baseline-source", ["git", "show", m["head"] + ":" + PRODUCT])
         need(digest(baseline) == "".join(fixture["baseline_source_sha256_parts"]), "baseline_source_pin")
+        need((REPO / BASELINE).read_bytes() == baseline, "baseline_fixture_mismatch")
         self.record["baseline_source_sha256"] = digest(baseline)
         need(set(fixture["cases"]) == set(REQUIRED) - {"empty_invalid_versions", "unresolved_version_source", "mutable_graph_disjoint"}, "required_case_inventory")
         self.record["frozen_fixture"] = fixture
