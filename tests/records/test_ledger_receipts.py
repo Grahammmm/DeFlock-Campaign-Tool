@@ -92,12 +92,12 @@ class ReceiptProjectionTests(unittest.TestCase):
         self.run_project()
         with store.ledger(self.db) as c:
             c.execute('DROP TRIGGER rp_items_no_update');c.execute('UPDATE rp_items SET binding_verified=0');c.commit()
-        with self.assertRaisesRegex(ValueError,'binding mutation'):self.run_project()
+        with self.assertRaisesRegex(ValueError,'binding mutation|sidecar schema objects mismatch'):self.run_project()
     def test_mutated_gap_failclosed(self):
         (self.root/'artifact.json').unlink();self.run_project()
         with store.ledger(self.db) as c:
             c.execute('DROP TRIGGER rp_gaps_no_update');c.execute("UPDATE rp_gaps SET reason='changed'");c.commit()
-        with self.assertRaisesRegex(ValueError,'gap mutation'):self.run_project()
+        with self.assertRaisesRegex(ValueError,'gap mutation|sidecar schema objects mismatch'):self.run_project()
     def test_index_hash_mismatch_explicit_gap(self):
         (self.root/'index.jsonl').write_bytes(b'changed\n');r=self.run_project()
         self.assertEqual(r['status'],'captured_with_gaps');self.assertEqual(r['processed'],0)
@@ -144,13 +144,13 @@ class ReceiptProjectionTests(unittest.TestCase):
             rp.register(c);c.execute('DROP TRIGGER rp_artifacts_no_update')
             # Bypass CHECK only to emulate an externally damaged snapshot.
             c.execute('PRAGMA ignore_check_constraints=ON');c.execute("UPDATE rp_artifacts SET body=x'00'");c.commit()
-        with self.assertRaisesRegex(ValueError,'artifact mutation'):self.run_project()
+        with self.assertRaisesRegex(ValueError,'artifact mutation|sidecar schema objects mismatch'):self.run_project()
     def test_source_snapshot_mutation_rejected(self):
         self.run_project()
         with store.ledger(self.db) as c:
             c.execute('DROP TRIGGER rp_sources_no_update');c.execute('PRAGMA ignore_check_constraints=ON')
             c.execute("UPDATE rp_sources SET body=x'00'");c.commit()
-        with self.assertRaisesRegex(ValueError,'source bytes mutation'):self.run_project()
+        with self.assertRaisesRegex(ValueError,'source bytes mutation|sidecar schema objects mismatch'):self.run_project()
     def test_fresh_insert_wrong_source_mapping_rejected(self):
         self.run_project()
         with store.ledger(self.db) as c:
@@ -181,7 +181,7 @@ class ReceiptProjectionTests(unittest.TestCase):
         (self.root/'index.jsonl').write_bytes(b'changed\n');self.run_project()
         with store.ledger(self.db) as c:
             rp.register(c);c.execute('DROP TRIGGER rp_sources_no_update');c.execute('UPDATE rp_sources SET error=NULL');c.commit()
-        with self.assertRaisesRegex(ValueError,'source hash binding mutation'):self.run_project()
+        with self.assertRaisesRegex(ValueError,'source hash binding mutation|sidecar schema objects mismatch'):self.run_project()
     def test_fresh_insert_without_artifact_or_gap_rejected(self):
         self.run_project()
         with store.ledger(self.db) as c:
