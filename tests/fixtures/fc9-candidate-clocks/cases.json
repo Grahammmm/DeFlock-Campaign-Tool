@@ -1,0 +1,1075 @@
+{
+  "schema": "fc9-candidate-clocks-cases/v1",
+  "synthetic": true,
+  "note": "Invented synthetic timestamps, agency and request numbers for FC9-CANDIDATE-CLOCKS. No real record, person, mailbox or source is described.",
+  "agency_id": "fc9-synthetic-agency",
+  "request_prefix": "FC9CLK",
+  "negative_controls": {
+    "lexical_bypass_case": "doc-colon-plus-01-60",
+    "unguarded_conversion_case": "occ-boundary-high-overflow"
+  },
+  "track_as_of": "2030-06-01T00:00:00Z",
+  "as_of_due_at": "2030-04-01T00:00:00+01:00",
+  "document_mentions": [
+    {
+      "id": "doc-colon-plus-01-59",
+      "raw": "2024-03-10T10:00:00+01:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00+01:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-colon-plus-01-60",
+      "raw": "2024-03-10T10:00:00+01:60",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-colon-plus-00-99",
+      "raw": "2024-03-10T10:00:00+00:99",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-colon-plus-23-00",
+      "raw": "2024-03-10T10:00:00+23:00",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00+23:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-colon-plus-24-00",
+      "raw": "2024-03-10T10:00:00+24:00",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-colon-plus-23-59",
+      "raw": "2024-03-10T10:00:00+23:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00+23:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-colon-minus-01-59",
+      "raw": "2024-03-10T10:00:00-01:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00-01:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-colon-minus-01-60",
+      "raw": "2024-03-10T10:00:00-01:60",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-colon-minus-00-99",
+      "raw": "2024-03-10T10:00:00-00:99",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-colon-minus-23-00",
+      "raw": "2024-03-10T10:00:00-23:00",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00-23:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-colon-minus-24-00",
+      "raw": "2024-03-10T10:00:00-24:00",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-colon-minus-23-59",
+      "raw": "2024-03-10T10:00:00-23:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00-23:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-compact-plus-01-59",
+      "raw": "2024-03-10T10:00:00+0159",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00+01:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-compact-plus-01-60",
+      "raw": "2024-03-10T10:00:00+0160",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-compact-plus-00-99",
+      "raw": "2024-03-10T10:00:00+0099",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-compact-plus-23-00",
+      "raw": "2024-03-10T10:00:00+2300",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00+23:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-compact-plus-24-00",
+      "raw": "2024-03-10T10:00:00+2400",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-compact-plus-23-59",
+      "raw": "2024-03-10T10:00:00+2359",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00+23:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-compact-minus-01-59",
+      "raw": "2024-03-10T10:00:00-0159",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00-01:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-compact-minus-01-60",
+      "raw": "2024-03-10T10:00:00-0160",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-compact-minus-00-99",
+      "raw": "2024-03-10T10:00:00-0099",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-compact-minus-23-00",
+      "raw": "2024-03-10T10:00:00-2300",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00-23:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-compact-minus-24-00",
+      "raw": "2024-03-10T10:00:00-2400",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "unparsed_date_time"
+      }
+    },
+    {
+      "id": "doc-compact-minus-23-59",
+      "raw": "2024-03-10T10:00:00-2359",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "value": "2024-03-10T10:00:00-23:59",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-z-upper",
+      "raw": "2024-03-10T10:00:00Z",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "2024-03-10T10:00:00+00:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-z-lower-leap",
+      "raw": "2024-02-29T10:00:00z",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "2024-02-29T10:00:00+00:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-plus-02-00",
+      "raw": "2024-03-10T12:00:00+02:00",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "2024-03-10T12:00:00+02:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-plus-0200-compact",
+      "raw": "2024-03-10T13:00:00+0200",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "2024-03-10T13:00:00+02:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-boundary-high",
+      "raw": "9999-12-31T23:30:00-01:00",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "9999-12-31T23:30:00-01:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-boundary-low",
+      "raw": "0001-01-01T00:30:00+01:00",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "0001-01-01T00:30:00+01:00",
+        "time_basis": "explicit_offset",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-naive",
+      "raw": "2024-03-10T10:00",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "2024-03-10T10:00:00",
+        "time_basis": "timezone_unknown",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-date-leap",
+      "raw": "2024-02-29",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": "2024-02-29",
+        "time_basis": "local_date_only",
+        "parse_status": null
+      }
+    },
+    {
+      "id": "doc-date-invalid",
+      "raw": "2023-02-29",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "value": null,
+        "time_basis": "unknown",
+        "parse_status": "invalid_date"
+      }
+    }
+  ],
+  "occurred_at": [
+    {
+      "id": "occ-colon-plus-01-59",
+      "raw": "2030-03-10T12:00:00+01:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T10:01:00+00:00"
+      }
+    },
+    {
+      "id": "occ-colon-plus-01-60",
+      "raw": "2030-03-10T12:00:00+01:60",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-colon-plus-00-99",
+      "raw": "2030-03-10T12:00:00+00:99",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-colon-plus-23-00",
+      "raw": "2030-03-10T12:00:00+23:00",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-09T13:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-colon-plus-24-00",
+      "raw": "2030-03-10T12:00:00+24:00",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-colon-plus-23-59",
+      "raw": "2030-03-10T12:00:00+23:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-09T12:01:00+00:00"
+      }
+    },
+    {
+      "id": "occ-colon-minus-01-59",
+      "raw": "2030-03-10T12:00:00-01:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T13:59:00+00:00"
+      }
+    },
+    {
+      "id": "occ-colon-minus-01-60",
+      "raw": "2030-03-10T12:00:00-01:60",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-colon-minus-00-99",
+      "raw": "2030-03-10T12:00:00-00:99",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-colon-minus-23-00",
+      "raw": "2030-03-10T12:00:00-23:00",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-11T11:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-colon-minus-24-00",
+      "raw": "2030-03-10T12:00:00-24:00",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-colon-minus-23-59",
+      "raw": "2030-03-10T12:00:00-23:59",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-11T11:59:00+00:00"
+      }
+    },
+    {
+      "id": "occ-compact-plus-01-59",
+      "raw": "2030-03-10T12:00:00+0159",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T10:01:00+00:00"
+      }
+    },
+    {
+      "id": "occ-compact-plus-01-60",
+      "raw": "2030-03-10T12:00:00+0160",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-compact-plus-00-99",
+      "raw": "2030-03-10T12:00:00+0099",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-compact-plus-23-00",
+      "raw": "2030-03-10T12:00:00+2300",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-09T13:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-compact-plus-24-00",
+      "raw": "2030-03-10T12:00:00+2400",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-compact-plus-23-59",
+      "raw": "2030-03-10T12:00:00+2359",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-09T12:01:00+00:00"
+      }
+    },
+    {
+      "id": "occ-compact-minus-01-59",
+      "raw": "2030-03-10T12:00:00-0159",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T13:59:00+00:00"
+      }
+    },
+    {
+      "id": "occ-compact-minus-01-60",
+      "raw": "2030-03-10T12:00:00-0160",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-compact-minus-00-99",
+      "raw": "2030-03-10T12:00:00-0099",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-compact-minus-23-00",
+      "raw": "2030-03-10T12:00:00-2300",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-11T11:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-compact-minus-24-00",
+      "raw": "2030-03-10T12:00:00-2400",
+      "valid_offset": false,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-compact-minus-23-59",
+      "raw": "2030-03-10T12:00:00-2359",
+      "valid_offset": true,
+      "dimension": "offset_lexical",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-11T11:59:00+00:00"
+      }
+    },
+    {
+      "id": "occ-boundary-high-overflow",
+      "raw": "9999-12-31T23:30:00-01:00",
+      "valid_offset": null,
+      "dimension": "utc_overflow",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-boundary-high-overflow-compact",
+      "raw": "9999-12-31T23:30:00-0100",
+      "valid_offset": null,
+      "dimension": "utc_overflow",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-boundary-low-overflow",
+      "raw": "0001-01-01T00:30:00+01:00",
+      "valid_offset": null,
+      "dimension": "utc_overflow",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-boundary-high-z",
+      "raw": "9999-12-31T23:59:59Z",
+      "valid_offset": null,
+      "dimension": "boundary_representable",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "9999-12-31T23:59:59+00:00"
+      }
+    },
+    {
+      "id": "occ-boundary-high-plus",
+      "raw": "9999-12-31T23:30:00+01:00",
+      "valid_offset": null,
+      "dimension": "boundary_representable",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "9999-12-31T22:30:00+00:00"
+      }
+    },
+    {
+      "id": "occ-boundary-low-plus",
+      "raw": "0001-01-01T00:30:00+00:30",
+      "valid_offset": null,
+      "dimension": "boundary_representable",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "0001-01-01T00:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-boundary-low-minus",
+      "raw": "0001-01-01T00:30:00-01:00",
+      "valid_offset": null,
+      "dimension": "boundary_representable",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "0001-01-01T01:30:00+00:00"
+      }
+    },
+    {
+      "id": "occ-z-upper",
+      "raw": "2030-03-10T10:00:00Z",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T10:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-z-lower-leap",
+      "raw": "2024-02-29T10:00:00z",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2024-02-29T10:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-plus-00-00",
+      "raw": "2030-03-10T10:00:00+00:00",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T10:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-plus-0000-compact",
+      "raw": "2030-03-10T10:00:00+0000",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T10:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-plus-02-00",
+      "raw": "2030-03-10T12:00:00+02:00",
+      "valid_offset": null,
+      "dimension": "retained_behavior",
+      "expect": {
+        "time_status": "explicit_offset",
+        "time_sort": "2030-03-10T10:00:00+00:00"
+      }
+    },
+    {
+      "id": "occ-missing",
+      "raw": null,
+      "valid_offset": null,
+      "dimension": "unknown_path",
+      "expect": {
+        "time_status": "time_unknown",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-naive",
+      "raw": "2030-03-10T12:00:00",
+      "valid_offset": null,
+      "dimension": "unknown_path",
+      "expect": {
+        "time_status": "timezone_unknown",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-date-only-leap",
+      "raw": "2024-02-29",
+      "valid_offset": null,
+      "dimension": "unknown_path",
+      "expect": {
+        "time_status": "date_only_timezone_unknown",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "occ-date-only-invalid",
+      "raw": "2023-02-29",
+      "valid_offset": null,
+      "dimension": "unknown_path",
+      "expect": {
+        "time_status": "invalid_time",
+        "time_sort": null
+      }
+    }
+  ],
+  "promised_due_at": [
+    {
+      "id": "due-high-overflow",
+      "due_at": "9999-12-31T23:30:00-01:00",
+      "dimension": "utc_overflow",
+      "expect": {
+        "hold": "promise_due_date_invalid_time",
+        "action": null
+      }
+    },
+    {
+      "id": "due-low-overflow",
+      "due_at": "0001-01-01T00:30:00+01:00",
+      "dimension": "utc_overflow",
+      "expect": {
+        "hold": "promise_due_date_invalid_time",
+        "action": null
+      }
+    },
+    {
+      "id": "due-offset-minutes-60",
+      "due_at": "2030-04-01T00:00:00+01:60",
+      "dimension": "offset_lexical",
+      "expect": {
+        "hold": "promise_due_date_invalid_time",
+        "action": null
+      }
+    },
+    {
+      "id": "due-offset-hours-24-compact",
+      "due_at": "2030-04-01T00:00:00-2400",
+      "dimension": "offset_lexical",
+      "expect": {
+        "hold": "promise_due_date_invalid_time",
+        "action": null
+      }
+    },
+    {
+      "id": "due-valid-overdue",
+      "due_at": "2030-04-01T00:00:00+01:00",
+      "dimension": "retained_behavior",
+      "expect": {
+        "hold": null,
+        "action": {
+          "due_at": "2030-03-31T23:00:00Z",
+          "status": "overdue"
+        }
+      }
+    },
+    {
+      "id": "due-valid-boundary-upcoming",
+      "due_at": "9999-12-31T23:30:00+01:00",
+      "dimension": "boundary_representable",
+      "expect": {
+        "hold": null,
+        "action": {
+          "due_at": "9999-12-31T22:30:00Z",
+          "status": "upcoming"
+        }
+      }
+    },
+    {
+      "id": "due-date-only",
+      "due_at": "2030-04-01",
+      "dimension": "unknown_path",
+      "expect": {
+        "hold": null,
+        "action": {
+          "due_day": "2030-04-01",
+          "status": "date_only_timezone_unknown"
+        }
+      }
+    }
+  ],
+  "as_of_strings": [
+    {
+      "id": "asof-str-high-overflow",
+      "as_of": "9999-12-31T23:30:00-01:00",
+      "dimension": "utc_overflow",
+      "expect": {
+        "as_of": "9999-12-31T23:30:00-01:00",
+        "as_of_status": "invalid_time",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-str-low-overflow",
+      "as_of": "0001-01-01T00:30:00+01:00",
+      "dimension": "utc_overflow",
+      "expect": {
+        "as_of": "0001-01-01T00:30:00+01:00",
+        "as_of_status": "invalid_time",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-str-minutes-60",
+      "as_of": "2030-06-01T00:00:00+01:60",
+      "dimension": "offset_lexical",
+      "expect": {
+        "as_of": "2030-06-01T00:00:00+01:60",
+        "as_of_status": "invalid_time",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-str-minutes-99-compact",
+      "as_of": "2030-06-01T00:00:00-0099",
+      "dimension": "offset_lexical",
+      "expect": {
+        "as_of": "2030-06-01T00:00:00-0099",
+        "as_of_status": "invalid_time",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-str-hours-24",
+      "as_of": "2030-06-01T00:00:00+24:00",
+      "dimension": "offset_lexical",
+      "expect": {
+        "as_of": "2030-06-01T00:00:00+24:00",
+        "as_of_status": "invalid_time",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-str-valid-overdue",
+      "as_of": "2030-06-01T00:00:00+02:00",
+      "dimension": "retained_behavior",
+      "expect": {
+        "as_of": "2030-06-01T00:00:00+02:00",
+        "as_of_status": "explicit_offset",
+        "due_status": "overdue"
+      }
+    },
+    {
+      "id": "asof-str-valid-upcoming",
+      "as_of": "2030-01-01T00:00:00+01:00",
+      "dimension": "retained_behavior",
+      "expect": {
+        "as_of": "2030-01-01T00:00:00+01:00",
+        "as_of_status": "explicit_offset",
+        "due_status": "upcoming"
+      }
+    },
+    {
+      "id": "asof-str-boundary-representable",
+      "as_of": "9999-12-31T23:30:00+01:00",
+      "dimension": "boundary_representable",
+      "expect": {
+        "as_of": "9999-12-31T23:30:00+01:00",
+        "as_of_status": "explicit_offset",
+        "due_status": "overdue"
+      }
+    },
+    {
+      "id": "asof-str-naive",
+      "as_of": "2030-06-01T00:00:00",
+      "dimension": "unknown_path",
+      "expect": {
+        "as_of": "2030-06-01T00:00:00",
+        "as_of_status": "timezone_unknown",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-str-date-only",
+      "as_of": "2030-06-01",
+      "dimension": "unknown_path",
+      "expect": {
+        "as_of": "2030-06-01",
+        "as_of_status": "date_only_timezone_unknown",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    }
+  ],
+  "as_of_datetimes": [
+    {
+      "id": "asof-dt-high-overflow",
+      "local": "9999-12-31T23:30:00",
+      "offset_minutes": -60,
+      "dimension": "utc_overflow",
+      "expect": {
+        "as_of": "9999-12-31T23:30:00-01:00",
+        "as_of_status": "invalid_time",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-dt-low-overflow",
+      "local": "0001-01-01T00:30:00",
+      "offset_minutes": 60,
+      "dimension": "utc_overflow",
+      "expect": {
+        "as_of": "0001-01-01T00:30:00+01:00",
+        "as_of_status": "invalid_time",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    },
+    {
+      "id": "asof-dt-boundary-representable",
+      "local": "9999-12-31T23:30:00",
+      "offset_minutes": 60,
+      "dimension": "boundary_representable",
+      "expect": {
+        "as_of": "9999-12-31T22:30:00Z",
+        "as_of_status": "explicit_offset",
+        "due_status": "overdue"
+      }
+    },
+    {
+      "id": "asof-dt-valid",
+      "local": "2030-06-01T02:00:00",
+      "offset_minutes": 120,
+      "dimension": "retained_behavior",
+      "expect": {
+        "as_of": "2030-06-01T00:00:00Z",
+        "as_of_status": "explicit_offset",
+        "due_status": "overdue"
+      }
+    },
+    {
+      "id": "asof-dt-naive",
+      "local": "2030-06-01T00:00:00",
+      "offset_minutes": null,
+      "dimension": "unknown_path",
+      "expect": {
+        "as_of": "2030-06-01T00:00:00",
+        "as_of_status": "timezone_unknown",
+        "due_status": "undetermined_as_of_timezone"
+      }
+    }
+  ],
+  "rfc_dates": [
+    {
+      "id": "rfc-high-overflow",
+      "date": "Fri, 31 Dec 9999 23:30:00 -0100",
+      "dimension": "utc_overflow",
+      "expect": {
+        "message_date": null,
+        "message_date_status": "invalid_date",
+        "metadata_hold": "message_date_invalid_date",
+        "time_status": "message_date_invalid_date",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "rfc-boundary-representable",
+      "date": "Fri, 31 Dec 9999 23:30:00 +0000",
+      "dimension": "boundary_representable",
+      "expect": {
+        "message_date": "9999-12-31T23:30:00Z",
+        "message_date_status": "explicit_offset",
+        "metadata_hold": null,
+        "time_status": "message_date_explicit_offset",
+        "time_sort": "9999-12-31T23:30:00+00:00"
+      }
+    },
+    {
+      "id": "rfc-ordinary-offset",
+      "date": "Tue, 15 Jan 2030 10:00:00 +0100",
+      "dimension": "retained_behavior",
+      "expect": {
+        "message_date": "2030-01-15T09:00:00Z",
+        "message_date_status": "explicit_offset",
+        "metadata_hold": null,
+        "time_status": "message_date_explicit_offset",
+        "time_sort": "2030-01-15T09:00:00+00:00"
+      }
+    },
+    {
+      "id": "rfc-timezone-unknown",
+      "date": "Tue, 15 Jan 2030 10:00:00 -0000",
+      "dimension": "unknown_path",
+      "expect": {
+        "message_date": null,
+        "message_date_status": "timezone_unknown",
+        "metadata_hold": "message_date_timezone_unknown",
+        "time_status": "message_date_timezone_unknown",
+        "time_sort": null
+      }
+    },
+    {
+      "id": "rfc-missing",
+      "date": null,
+      "dimension": "unknown_path",
+      "expect": {
+        "message_date": null,
+        "message_date_status": "unknown",
+        "metadata_hold": null,
+        "time_status": "time_unknown",
+        "time_sort": null
+      }
+    }
+  ]
+}

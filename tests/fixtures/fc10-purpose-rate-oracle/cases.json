@@ -1,0 +1,37 @@
+{
+  "schema": "fc10-purpose-rate-oracle/v1",
+  "authority": "synthetic offline triage tests only; no legal or live acceptance",
+  "grid": {"minimum_total": 1, "maximum_total": 40},
+  "oracle": {"severity_3": "4 * bad > total", "severity_2": "20 * bad > total", "otherwise": 0},
+  "generic_reasons": ["investigation", "inv", "test"],
+  "bad_purposes": ["investigation", "  InVeStIgAtIoN  ", "INV", "TeSt", "case #20-12345", "CASE 2020/123456", "20-123", "2020/123456789012"],
+  "specific_purposes": ["specific documented incident follow-up", "investigation of documented vehicle theft at synthetic location", "case #20-12345 follow-up with documented facts", "contest identification with supplied context", "20-12", "20201-12345"],
+  "boundaries": [
+    {"total": 20, "bad": 0, "severity": 0},
+    {"total": 20, "bad": 1, "severity": 0},
+    {"total": 20, "bad": 2, "severity": 2},
+    {"total": 20, "bad": 4, "severity": 2},
+    {"total": 20, "bad": 5, "severity": 2},
+    {"total": 20, "bad": 6, "severity": 3},
+    {"total": 40, "bad": 2, "severity": 0}
+  ],
+  "unequal_users": [
+    {"alpha": [20, 1], "beta": [20, 6]},
+    {"alpha": [20, 6], "beta": [20, 1]},
+    {"alpha": [20, 5], "beta": [4, 0]},
+    {"alpha": [1, 1], "beta": [39, 0]}
+  ],
+  "excluded": [
+    {"label": "absent", "omit": true, "reason": "field_purpose_missing"},
+    {"label": "null", "value": null, "reason": "field_purpose_missing"},
+    {"label": "empty", "value": "", "reason": "field_purpose_blank"},
+    {"label": "spaces", "value": "  ", "reason": "field_purpose_blank"},
+    {"label": "redacted_literal", "value": "[redacted]", "reason": "field_purpose_redacted"},
+    {"label": "withheld_literal", "value": " [WITHHELD] ", "reason": "field_purpose_redacted"},
+    {"label": "missing_state", "value": {"state": "missing"}, "reason": "field_purpose_missing"},
+    {"label": "blank_state", "value": {"state": "blank"}, "reason": "field_purpose_blank"},
+    {"label": "redacted_state", "value": {"state": "redacted"}, "reason": "field_purpose_redacted"}
+  ],
+  "dimensions": ["finite_total_bad_grid", "exact_five_and_twenty_five_percent", "differing_user_rates", "same_counts_different_members", "generic_casefold_and_case_number", "legitimate_specific_purpose", "duplicate_print_no_denominator_inflation", "blank_missing_redacted_outcomes_separate", "immutable_inputs"],
+  "negative_control": {"comparison": "bad * 100 > total * 5", "replacement": "bad * 100 >= total * 5", "deciding_test": "test_exact_five_percent_deciding", "expected_failure_marker": "strict_threshold_scope_set"}
+}
