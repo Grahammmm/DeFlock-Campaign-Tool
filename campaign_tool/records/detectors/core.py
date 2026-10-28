@@ -1,4 +1,16 @@
-"""Deterministic detectors over explicit supplied units, joins and versioned rules."""
+"""Deterministic detectors over explicit supplied units, joins and versioned rules.
+
+Identity-shape refusals (stable ``Blocked`` codes; payload values are never
+reflected). A JSON container (list/object) in an identity field fails the whole
+supplied batch closed before any lookup, grouping or set membership:
+
+* ``unit_record_type_invalid``   -- a unit's ``record_type`` is a container.
+* ``unit_original_hash_invalid`` -- a unit's ``original_sha256`` is a container.
+* ``join_identity_invalid``      -- an object join row's ``original_sha256`` or
+  ``agency_id`` is a container.
+
+Missing, null and scalar values keep their existing per-record outcomes.
+"""
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -126,7 +138,25 @@ def reference(unit):
     return {"original_sha256": unit["original_sha256"], "locator": locator}
 
 
+IDENTITY_SHAPE_CODES = ("unit_record_type_invalid", "unit_original_hash_invalid", "join_identity_invalid")
+
+
+def _identity_shape(units, joins):
+    """Fail the batch closed when an identity field holds an unhashable container."""
+    for join in joins:
+        if isinstance(join, dict) and (isinstance(join.get("original_sha256"), (list, dict)) or
+                                       isinstance(join.get("agency_id"), (list, dict))):
+            raise Blocked("join_identity_invalid")
+    for unit in units:
+        need(isinstance(unit, dict), "unit_not_object")
+        if isinstance(unit.get("record_type"), (list, dict)):
+            raise Blocked("unit_record_type_invalid")
+        if isinstance(unit.get("original_sha256"), (list, dict)):
+            raise Blocked("unit_original_hash_invalid")
+
+
 def _records(units, joins):
+    _identity_shape(units, joins)
     agencies = defaultdict(set)
     for join in joins:
         if (isinstance(join, dict) and join.get("status") == "typed" and sha(join.get("original_sha256"))
