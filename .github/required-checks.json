@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "required_checks": [
+    {
+      "context": "offline (3.12)",
+      "app_id": 15368
+    },
+    {
+      "context": "package (3.12)",
+      "app_id": 15368
+    },
+    {
+      "context": "wheel",
+      "app_id": 15368
+    },
+    {
+      "context": "runner",
+      "app_id": 15368
+    },
+    {
+      "context": "image",
+      "app_id": 15368
+    },
+    {
+      "context": "workers",
+      "app_id": 15368
+    },
+    {
+      "context": "wp5 (3.12)",
+      "app_id": 15368
+    },
+    {
+      "context": "recovery-composition (3.12)",
+      "app_id": 15368
+    }
+  ]
+}
