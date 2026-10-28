@@ -7,6 +7,7 @@ semantic acceptance of the run.
 """
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,9 +37,32 @@ def check_outcomes(outcomes, counts, where="outcomes"):
         raise ValueError(f"{where}: outcome counts sum to {total}, counts.input is {counts['input']}")
 
 
+def check_finite_durations(report):
+    """Reject NaN and infinite durations; diagnostics never echo the value.
+
+    The shared ``law`` subset checks number type and minimum but not
+    finiteness. Only float values can be non-finite; anything else is left to
+    ``law.validate`` so its existing type/minimum/required errors are unchanged.
+    """
+    if not isinstance(report, dict):
+        return
+    if _nonfinite(report.get("duration_seconds")):
+        raise ValueError("$.duration_seconds: must be a finite number")
+    stages = report.get("stages")
+    if isinstance(stages, list):
+        for index, stage in enumerate(stages):
+            if isinstance(stage, dict) and _nonfinite(stage.get("duration_seconds")):
+                raise ValueError(f"$.stages[{index}].duration_seconds: must be a finite number")
+
+
+def _nonfinite(value):
+    return isinstance(value, float) and not math.isfinite(value)
+
+
 def validate_run_report(report, schema=None):
     """Raise ValueError when ``report`` does not satisfy run report v1."""
     schema = schema if schema is not None else load_schema()
+    check_finite_durations(report)
     law.validate(report, schema)
 
     names = tuple(stage["name"] for stage in report["stages"])
