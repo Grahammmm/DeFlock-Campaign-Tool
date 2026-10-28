@@ -7,6 +7,7 @@ narrative fields come from the validated model output and each conclusion's
 sources are bound to the digested sha256. Either way the result passes
 :func:`campaign_tool.digest.schema.validate_digest`.
 """
+import copy
 from datetime import date
 
 from ..law import rules_in_force
@@ -22,7 +23,9 @@ def redact_units(units, allowlist=(), denylist=()):
 
     Units are redacted one at a time (never joined), so a pattern can never
     match across a page break. Original locators stay local; ``model_locator``
-    is an opaque unit reference with no original metadata.
+    is an opaque unit reference with no original metadata. Returned units are
+    detached snapshots: mutating a caller unit (including nested locator or
+    data values) never changes the result, and vice versa.
     """
     redactor = Redactor(allowlist=allowlist, denylist=denylist)
     counts = {}
@@ -31,7 +34,8 @@ def redact_units(units, allowlist=(), denylist=()):
         result = redactor.redact(unit.get("text") or "")
         for key, value in result.counts.items():
             counts[key] = counts.get(key, 0) + value
-        redacted.append({**unit, "text": result.text, "model_locator": model_locator(unit.get("locator") or {}, index)})
+        # Deep detachment: returned metadata (nested locator/data) never aliases caller-owned objects.
+        redacted.append({**copy.deepcopy(unit), "text": result.text, "model_locator": model_locator(unit.get("locator") or {}, index)})
     return redacted, counts
 
 
@@ -85,6 +89,9 @@ def build_digest(sha256, units, package, jurisdiction, law_package_version, priv
                  model_config=None, allowlist=(), denylist=(), event_date=None, opener=None):
     if model_config is not None and model_config.privacy_tier != privacy_tier:
         raise ModelError("model privacy tier does not match digest privacy tier")
+    # Both redaction stages must see the same policy, including one-shot inputs.
+    allowlist = tuple(allowlist)
+    denylist = tuple(denylist)
     redacted, counts = redact_units(units, allowlist=allowlist, denylist=denylist)
     hits = run_detectors(redacted, package)
     digest = empty_digest(sha256, jurisdiction, law_package_version, privacy_tier, DETECTOR_VERSION)

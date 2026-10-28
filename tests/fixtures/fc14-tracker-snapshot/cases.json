@@ -1,0 +1,23 @@
+{
+  "schema": "fc14-tracker-snapshot-cases/v1",
+  "fictional": true,
+  "as_of": "2026-10-20T12:00:00Z",
+  "agency_id": "fictional-office",
+  "request_number": "SYN-14",
+  "promise": "SYN-14: We will provide the fictional audit records.",
+  "occurred_at": "2026-10-18T09:00:00Z",
+  "due_values": ["2026-10-19T09:00:00Z", "2026-10-21T09:00:00Z", "2026-10-21"],
+  "header_date": "Sun, 18 Oct 2026 02:00:00 -0700",
+  "header_id": "<fc14@synthetic.invalid>",
+  "cases": ["event_citation_input", "event_citation_output", "policy_deadline_basis", "metadata_citations", "caller_unverified_mode", "two_calls", "holds_and_empty", "never_send"],
+  "dimensions": {
+    "event_citation_input": ["overdue", "upcoming", "date_only_timezone_unknown"],
+    "event_citation_output": ["timeline", "promise_basis"],
+    "policy_deadline_basis": ["input", "output"],
+    "metadata_citations": ["text_header", "native_data_header"],
+    "caller_unverified_mode": ["nested_mutables", "empty_citations"],
+    "two_calls": ["earlier", "later"],
+    "holds_and_empty": ["empty", "missing_identity", "contradictory_promises"],
+    "never_send": ["promise", "withdrawal"]
+  }
+}

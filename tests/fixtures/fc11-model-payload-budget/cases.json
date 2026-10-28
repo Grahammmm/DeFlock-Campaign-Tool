@@ -1,0 +1,60 @@
+{
+  "schema": "fc11-model-payload-budget/v1",
+  "synthetic_only": true,
+  "note": "Fictional benign units. Costs are characters (str length) of the serialized record: JSON reference + TAB + redacted text, plus the counted trailing newline. The multibyte unit has more UTF-8 bytes than characters, so a byte-based budget would truncate the two-record equal case.",
+  "units": [
+    {"locator": {"record": "synthetic-alpha", "part": "body"}, "text": "alpha one\nalpha two"},
+    {"locator": {"record": "synthetic-beta", "part": "body"}, "text": "b\u00e9ta na\u00efve\n\u03b2\u03ae\u03c4\u03b1 \u03b4\u03b5\u03cd\u03c4\u03b5\u03c1\u03b7"},
+    {"locator": {"record": "synthetic-gamma", "part": "body"}, "text": "gamma one\ngamma two\ngamma three"}
+  ],
+  "serialized_records": [
+    "{\"unit\": 0}\talpha one\nalpha two",
+    "{\"unit\": 1}\tb\u00e9ta na\u00efve\n\u03b2\u03ae\u03c4\u03b1 \u03b4\u03b5\u03cd\u03c4\u03b5\u03c1\u03b7",
+    "{\"unit\": 2}\tgamma one\ngamma two\ngamma three"
+  ],
+  "record_costs": [32, 36, 44],
+  "record_utf8_bytes": [31, 48, 43],
+  "budget_cases": [
+    {"id": "zero", "budget": 0, "prefix_count": 0, "truncated": true},
+    {"id": "first_minus_one", "budget": 31, "prefix_count": 0, "truncated": true},
+    {"id": "first_equal", "budget": 32, "prefix_count": 1, "truncated": true},
+    {"id": "two_minus_one", "budget": 67, "prefix_count": 1, "truncated": true},
+    {"id": "two_equal", "budget": 68, "prefix_count": 2, "truncated": true},
+    {"id": "total_minus_one", "budget": 111, "prefix_count": 2, "truncated": true},
+    {"id": "total_equal", "budget": 112, "prefix_count": 3, "truncated": false},
+    {"id": "unbounded", "budget": null, "prefix_count": 3, "truncated": false}
+  ],
+  "cycle": [
+    {"id": "full_first", "budget": null, "prefix_count": 3},
+    {"id": "partial", "budget": 32, "prefix_count": 1},
+    {"id": "empty", "budget": 0, "prefix_count": 0},
+    {"id": "full_again", "budget": null, "prefix_count": 3}
+  ],
+  "hit": {
+    "budget": 32,
+    "prefix_count": 1,
+    "detector_hit": {"detector": "synthetic_detector", "rule_id": null,
+                     "locator": {"record": "synthetic-gamma", "part": "body", "line": 2},
+                     "excerpt": "gamma two", "kind": "synthetic", "detail": {}},
+    "emitted_reference": {"unit": 2, "line": 2},
+    "restored_locator": {"record": "synthetic-gamma", "part": "body", "line": 2},
+    "refused_references": {
+      "omitted_whole": {"unit": 2},
+      "same_unit_line_1": {"unit": 2, "line": 1},
+      "same_unit_line_3": {"unit": 2, "line": 3},
+      "other_omitted_whole": {"unit": 1},
+      "other_omitted_line_1": {"unit": 1, "line": 1}
+    }
+  },
+  "controls": {
+    "union_issued": {"seam": "union of the previously issued reference set back after each source_payload view",
+                     "deciding": "omitted-unit restoration refusal"},
+    "uncounted_newline": {"seam_candidate": "total + len(chunk) + 1 > max_chars",
+                          "seam_control": "total + len(chunk) > max_chars",
+                          "deciding": "one-character-under prefix"}
+  },
+  "required_dimensions": ["record_costs_frozen", "matrix_fresh", "matrix_shared_descending", "cycle_same_instance",
+                          "hit_line_only", "hit_cleared_by_shorter_view", "inputs_unchanged",
+                          "negative_control_union_killed", "negative_control_newline_killed",
+                          "negative_controls_restored"]
+}
