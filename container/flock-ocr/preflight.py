@@ -147,7 +147,7 @@ def build_command(args):
             "--build-arg", f"ENGINE_COMMIT={args.engine_commit}",
             "--build-arg", f"WHEEL_SHA256={args.wheel_sha256}",
             "--build-arg", f"ENGINE_MANIFEST_SHA256={args.engine_manifest_sha256}",
-            "-t", args.tag, str(RECIPE)]
+            "-t", args.tag, str(getattr(args, "context", None) or RECIPE)]
 
 
 def check_pins(args, pins_path=RECIPE / "pins.json"):
@@ -168,6 +168,9 @@ def main(argv=None):
     parser.add_argument("--wheel-sha256", required=True)
     parser.add_argument("--tag", default="<new tag>")
     parser.add_argument("--skip-docker", action="store_true", help="skip the local base image check")
+    parser.add_argument("--context", default=str(RECIPE),
+                        help="build context holding requirements.lock, .dockerignore and dist/ (default: this "
+                             "directory; the rootless driver uses $RUN/build)")
     args = parser.parse_args(argv)
     try:
         validate_base_image(args.base_image)
@@ -176,7 +179,7 @@ def main(argv=None):
         if not SHA256_RE.fullmatch(args.wheel_sha256):
             raise PreflightError("--wheel-sha256 must be 64 lowercase hex")
         check_pins(args)
-        sent = check_context(RECIPE, args.wheel_sha256)
+        sent = check_context(Path(args.context), args.wheel_sha256)
         if not args.skip_docker:
             check_local_base(args.base_image)
     except PreflightError as error:
