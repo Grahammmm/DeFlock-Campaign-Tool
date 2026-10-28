@@ -122,6 +122,14 @@ def restore_fixture_hashes(raw):
 
 
 PINS = json.loads(restore_fixture_hashes((FIX / 'source-pins.json').read_bytes()))
+# Frozen fixture provenance stays unchanged. The live import closure includes
+# FC7's stricter run-clock admission, so pin those exact current source bytes
+# separately rather than rewriting historical fixtures or dropping the gate.
+CURRENT_SOURCE_PINS = {
+    **PINS['files'],
+    'campaign_tool/records/detectors/persistence.py':
+        '683cb632e3845ecb2687e0b586efaac538b9fcff7744e5e9d834fd79f932529a',
+}
 
 
 def byte_hash(data):
@@ -134,8 +142,12 @@ def require(ok, reason):
 
 
 # Freeze the complete inspected local import closure BEFORE importing the adapter.
-for _path, _hash in PINS['files'].items():
-    require(byte_hash((REPO / _path).read_bytes()) == _hash, 'existing_source_changed')
+def verify_source_pins():
+    for path, expected in CURRENT_SOURCE_PINS.items():
+        require(byte_hash((REPO / path).read_bytes()) == expected, 'existing_source_changed')
+
+
+verify_source_pins()
 with mock.patch('sqlite3.connect', side_effect=RuntimeError('import_database_forbidden')):
     from campaign_tool.records.detectors import core, pipeline
     from campaign_tool.records.ledger.migrations import v001
@@ -319,9 +331,18 @@ class ComprehensionContractTests(unittest.TestCase):
             self.assertEqual(byte_hash((FIX / name).read_bytes()), expected, name)
         for name, expected in PINS['materialized_fixture_files'].items():
             self.assertEqual(byte_hash(restore_fixture_hashes((FIX / name).read_bytes())), expected, name)
-        for path, expected in PINS['files'].items():
+        for path, expected in CURRENT_SOURCE_PINS.items():
             self.assertEqual(byte_hash((REPO / path).read_bytes()), expected, path)
         VALIDATOR.validate(self.envelope)
+
+    def test_current_source_pins_reject_changed_bytes(self):
+        self.assertEqual(set(CURRENT_SOURCE_PINS), set(PINS['files']))
+        for path in CURRENT_SOURCE_PINS:
+            with self.subTest(path=path):
+                changed = {**CURRENT_SOURCE_PINS, path: '0' * 64}
+                with mock.patch.dict(CURRENT_SOURCE_PINS, changed, clear=True):
+                    with self.assertRaisesRegex(ValueError, '^existing_source_changed$'):
+                        verify_source_pins()
 
     def test_runtime_database_preserves_frozen_native_schema_and_content(self):
         pins = PINS['canonical_database']
