@@ -1,0 +1,32 @@
+{
+  "schema": "fc16-document-ocr-kind-synthetic/v1",
+  "provenance": "Synthetic format-extraction-v1 units shaped from understanding.evidence.normalize_receipt and existing test_fc_doc_coverage.py; no operational content. attempt_kind variants are rebound using evidence.unit and evidence.bundle. Top-level ocr is a predicate-only legacy control because receipt units reject that extra key.",
+  "text": "Policy café retains synthetic audit entries.",
+  "cases": [
+    {"id":"kind_ocr_text","group":"kind_only","kind":"ocr_text","data":{},"attempt":"native","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"kind_mixed_case","group":"kind_only","kind":"TeXt_OcR","data":{},"attempt":"native","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"kind_substring","group":"kind_only","kind":"preocrpost","data":{},"attempt":"native","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"kind_with_false_flags","group":"kind_only","kind":"OCR","data":{"ocr":false},"attempt":"native","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"explicit_data_true","group":"existing_markers","kind":"text","data":{"ocr":true},"attempt":"native","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"receipt_id","group":"existing_markers","kind":"text","data":{"ocr_receipt_id":"synthetic-receipt"},"attempt":"native","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"attempt_ocr","group":"existing_markers","kind":"text","data":{},"attempt":"oCr_attempt","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"ocr_precedes_visual","group":"existing_markers","kind":"visual_page","data":{"ocr":true},"attempt":"native","source":"ocr","warning":"required","gaps":["ocr_visual_review_required"]},
+    {"id":"native","group":"native_visual","kind":"text","data":{},"attempt":"native","source":"native","warning":"not_established","gaps":[]},
+    {"id":"data_false","group":"native_visual","kind":"text","data":{"ocr":false},"attempt":"native","source":"native","warning":"not_established","gaps":[]},
+    {"id":"data_one_not_true","group":"native_visual","kind":"text","data":{"ocr":1},"attempt":"native","source":"native","warning":"not_established","gaps":[]},
+    {"id":"empty_receipt_id","group":"native_visual","kind":"text","data":{"ocr_receipt_id":""},"attempt":"native","source":"native","warning":"not_established","gaps":[]},
+    {"id":"nonmatching_kind","group":"native_visual","kind":"oc_r_text","data":{},"attempt":"native","source":"native","warning":"not_established","gaps":[]},
+    {"id":"visual_page","group":"native_visual","kind":"visual_page","data":{},"attempt":"native","text":"","source":"visual","warning":"not_established","gaps":["page_without_text_unit"]},
+    {"id":"image","group":"native_visual","kind":"image","data":{},"attempt":"native","text":"","source":"visual","warning":"not_established","gaps":["page_without_text_unit"]},
+    {"id":"visual_flag","group":"native_visual","kind":"text","data":{"visual_review":true},"attempt":"native","text":"","source":"visual","warning":"not_established","gaps":["page_without_text_unit"]},
+    {"id":"empty_ocr","group":"mixed_empty","kind":"ocr_text","data":{},"attempt":"native","text":"","source":"ocr","warning":"not_established","gaps":["ocr_visual_review_required","page_without_text_unit"]},
+    {"id":"whitespace_ocr","group":"mixed_empty","kind":"OCR","data":{},"attempt":"native","text":"  \n","source":"ocr","warning":"not_established","gaps":["ocr_visual_review_required","page_without_text_unit"]}
+  ],
+  "predicate_cases": [
+    {"id":"unit_true","unit":{"ocr":true},"expected":true},
+    {"id":"unit_false","unit":{"ocr":false},"expected":false},
+    {"id":"unit_one","unit":{"ocr":1},"expected":false},
+    {"id":"false_flags","unit":{"ocr":false,"data":{"ocr":false}},"expected":false},
+    {"id":"non_dict_data","unit":{"kind":"text","data":null},"expected":false}
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "fc9-request-identity-synthetic-v1",
+  "as_of": "2026-10-20T12:00:00Z",
+  "cases": [
+    {"label":"measured-left","agency":"alpha::beta","number":"gamma","expected_id":"alpha%3a%3abeta::gamma"},
+    {"label":"measured-right","agency":"alpha","number":"beta::gamma","expected_id":"alpha::beta%3a%3agamma"},
+    {"label":"encoded-left","agency":"alpha%3a%3abeta","number":"gamma","expected_id":"alpha%253a%253abeta::gamma"},
+    {"label":"encoded-right","agency":"alpha","number":"beta%3a%3agamma","expected_id":"alpha::beta%253a%253agamma"},
+    {"label":"colon-left","agency":"a:b","number":"c","expected_id":"a%3ab::c"},
+    {"label":"colon-right","agency":"a","number":"b:c","expected_id":"a::b%3ac"},
+    {"label":"percent","agency":"100%","number":"ref","expected_id":"100%25::ref"},
+    {"label":"encoded-percent","agency":"100%25","number":"ref","expected_id":"100%2525::ref"},
+    {"label":"ordinary-a","agency":"Agency A","number":"REQ-1","expected_id":"agency a::req-1"},
+    {"label":"ordinary-b","agency":"Agency B","number":"REQ-1","expected_id":"agency b::req-1"},
+    {"label":"unicode-fold","agency":"Straße","number":"RÉF","expected_id":"strasse::réf"},
+    {"label":"unicode-greek","agency":"Σ","number":"Α:1","expected_id":"σ::α%3a1"},
+    {"label":"pipe-left","agency":"pipe","number":"x|message:left","message":"right","expected_id":"pipe::x|message%3aleft"},
+    {"label":"pipe-right","agency":"pipe","number":"x","message":"left|message:right","expected_id":"pipe::x"},
+    {"label":"boundary-percent","agency":"%","number":":","expected_id":"%25::%3a"},
+    {"label":"boundary-colon","agency":":","number":"%","expected_id":"%3a::%25"}
+  ]
+}

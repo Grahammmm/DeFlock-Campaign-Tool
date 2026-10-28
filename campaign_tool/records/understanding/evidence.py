@@ -40,17 +40,27 @@ def read_pinned(path,expected,limit=MAX_RECEIPT_BYTES):
         need((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns),"artifact_changed")
         raw=b"".join(chunks);need(sha(raw)==expected,"artifact_hash_mismatch");return raw
     finally:os.close(fd)
+def detach(value,_active=None):
+    """JSON-structural copy sharing no mutable container with the caller; canonical bytes are unchanged."""
+    if not isinstance(value,(dict,list,tuple)):return value
+    active=set() if _active is None else _active
+    need(id(value) not in active,"circular_reference");active.add(id(value))
+    try:
+        if isinstance(value,dict):return {k:detach(v,active) for k,v in value.items()}
+        items=[detach(v,active) for v in value]
+        return items if isinstance(value,list) else tuple(items)
+    finally:active.discard(id(value))
 def unit(raw,subject,receipt_sha256,ordinal,attempt_kind="native"):
     need(is_hash(subject) and is_hash(receipt_sha256),"unit_source_binding")
     need(type(raw)is dict and set(raw)=={"kind","locator","text","data"},"unit_shape")
     need(type(raw["text"])is str and type(raw["locator"])is dict and type(raw["data"])is dict and type(raw["kind"])is str,"unit_payload_shape")
     need(type(ordinal)is int and ordinal>0,"unit_ordinal")
-    payload=canonical(raw);need(len(payload)<=MAX_UNIT_BYTES,"unit_size_bound")
+    raw=detach(raw);payload=canonical(raw);need(len(payload)<=MAX_UNIT_BYTES,"unit_size_bound")
     imp=sha(["receipt-bound-derivative-v1",subject,receipt_sha256,attempt_kind])
     art=sha(payload)
     return {"unit_id":sha([imp,ordinal,art]),"original_sha256":subject,"import_id":imp,"artifact_sha256":art,"text_sha256":sha(raw["text"].encode()),**raw,"ordinal":ordinal,"receipt_sha256":receipt_sha256,"attempt_kind":attempt_kind,"authority_basis":"receipt_bound_derivative_not_canonical"}
 def bundle(units,source_context,source_receipts):
-    body={"schema":VERSION,"units":sorted(units,key=lambda u:(u["original_sha256"],u["receipt_sha256"],u["ordinal"])),"source_context":source_context,"source_receipts":sorted(source_receipts,key=lambda r:(r["original_sha256"],r["receipt_sha256"]))}
+    body={"schema":VERSION,"units":sorted((detach(u) for u in units),key=lambda u:(u["original_sha256"],u["receipt_sha256"],u["ordinal"])),"source_context":detach(source_context),"source_receipts":sorted((detach(r) for r in source_receipts),key=lambda r:(r["original_sha256"],r["receipt_sha256"]))}
     return validate_bundle({**body,"snapshot_sha256":sha(body)})
 def normalize_receipt(receipt,subject,receipt_sha256,format=None,extra_context=None):
     need(type(receipt)is dict and receipt.get("schema")=="format-extraction-v1" and receipt.get("original_sha256")==subject and receipt.get("original_changed")is False,"native_receipt_binding")
@@ -58,7 +68,7 @@ def normalize_receipt(receipt,subject,receipt_sha256,format=None,extra_context=N
     need(type(raw_units)is list and type(pages)is list,"native_receipt_units")
     out=[];gaps=[]
     for ordinal,raw in enumerate(raw_units,1):
-        if ordinal>MAX_UNITS:gaps.append({"code":"unit_count_bound","first_unprocessed_ordinal":ordinal,"remaining":len(raw_units)-len(out)});break
+        if ordinal>MAX_UNITS:gaps.append({"code":"unit_count_bound","first_unprocessed_ordinal":ordinal,"remaining":len(raw_units)-ordinal+1});break
         try:out.append(unit(raw,subject,receipt_sha256,ordinal))
         except (ValueError,UnicodeError,TypeError):gaps.append({"code":"unit_normalization_failed","ordinal":ordinal})
     context={"format":format or receipt.get("route",{}).get("format","unknown"),"native_status":receipt.get("status","unknown"),"pages":pages,"declared_unit_count":len(raw_units),"normalized_unit_count":len(out),"normalization_gaps":gaps,"parser":receipt.get("parser"),"parser_version":receipt.get("parser_version"),"native_receipt_sha256":receipt_sha256,"review_acceptance":False,"semantic_acceptance":False}
@@ -75,15 +85,41 @@ def validate_bundle(value):
     receipts={}
     for r in value["source_receipts"]:
         need(type(r)is dict and is_hash(r.get("original_sha256")) and is_hash(r.get("receipt_sha256")),"receipt_binding")
+        need(type(r.get("attempt_kind"))is str and r["attempt_kind"].strip()!="","receipt_attempt_kind_invalid")
         key=(r["original_sha256"],r["receipt_sha256"]);need(key not in receipts,"duplicate_receipt");receipts[key]=r
-    ids=set()
+    ids=set();bound={}
     for u in value["units"]:
         need(type(u)is dict and u.get("authority_basis")=="receipt_bound_derivative_not_canonical","unit_authority")
         subject=u.get("original_sha256");need(subject in value["source_context"] and (subject,u.get("receipt_sha256")) in receipts,"unit_receipt_missing")
+        need(type(u.get("attempt_kind"))is str and u["attempt_kind"].strip()!="","unit_attempt_kind_invalid")
+        need(u["attempt_kind"]==receipts[(subject,u["receipt_sha256"])]["attempt_kind"],"receipt_attempt_kind_mismatch")
         raw={k:u.get(k) for k in ("kind","locator","text","data")}
         expected=unit(raw,subject,u["receipt_sha256"],u.get("ordinal"),u.get("attempt_kind"))
         need(u==expected,"unit_binding_mismatch");need(u["unit_id"] not in ids,"duplicate_unit");ids.add(u["unit_id"])
+        key=(subject,u["receipt_sha256"]);bound[key]=bound.get(key,0)+1
+    _check_receipt_counts(receipts,bound)
+    _check_receipt_positions(receipts,value["units"])
     return value
+
+def _check_receipt_positions(receipts,units):
+    """Sparse positions are legitimate, but must be unique and within their receipt."""
+    seen={}
+    for u in units:
+        key=(u["original_sha256"],u["receipt_sha256"]);ordinal=u["ordinal"]
+        positions=seen.setdefault(key,set())
+        need(ordinal not in positions,"receipt_ordinal_duplicate")
+        need(ordinal<=receipts[key]["declared_unit_count"],"receipt_ordinal_out_of_range")
+        positions.add(ordinal)
+RECEIPT_COUNT_CODES=("receipt_count_missing","receipt_count_type","receipt_count_negative","receipt_count_exceeds_declared","receipt_count_mismatch")
+def _check_receipt_counts(receipts,bound):
+    """Count conservation per original/receipt pair; numerical consistency is not completeness."""
+    for key,r in receipts.items():
+        need("declared_unit_count" in r and "normalized_unit_count" in r,"receipt_count_missing")
+        declared=r["declared_unit_count"];normalized=r["normalized_unit_count"]
+        need(type(declared)is int and type(normalized)is int,"receipt_count_type")
+        need(declared>=0 and normalized>=0,"receipt_count_negative")
+        need(normalized<=declared,"receipt_count_exceeds_declared")
+        need(normalized==bound.get(key,0),"receipt_count_mismatch")
 def citation(u,start_byte,end_byte):
     return grounded_evidence.span_support(u,start_byte,end_byte)
 def validate_citation(support,value):
