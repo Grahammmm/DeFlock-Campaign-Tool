@@ -1,0 +1,55 @@
+{
+  "schema": "fc10-law-jurisdiction/cases/v1",
+  "note": "Synthetic jurisdiction arguments for campaign_tool.law.package_path. No real records.",
+  "error_prefix": "Jurisdiction must look like 'us-ca', got ",
+  "dimensions": {
+    "ordinary_us_ca_and_other_two_letter_pairs": {
+      "expect": "accept",
+      "values": ["us-ca", "us-or", "us-wa", "ca-on", "mx-bc", "aa-zz", "zz-aa"]
+    },
+    "trailing_newline_cr_crlf": {
+      "expect": "reject",
+      "values": ["us-ca\n", "us-ca\r", "us-ca\r\n", "us-ca\n\n", "us-or\n"]
+    },
+    "tabs_unicode_space": {
+      "expect": "reject",
+      "values": ["us-ca\t", "\tus-ca", "us-ca\u00a0", "us-ca\u2003", "us-ca\u3000",
+                 "us-ca\u200b", "us-ca\u000b", "us-ca\u000c", "us-ca\u0000", "us-ca\u0085"]
+    },
+    "leading_space": {
+      "expect": "reject",
+      "values": [" us-ca", "  us-ca", "\nus-ca", "\u00a0us-ca"]
+    },
+    "embedded_linebreak": {
+      "expect": "reject",
+      "values": ["us-\nca", "us\n-ca", "us-c\na", "us-ca\nus-or", "us-\rca", "us-\u2028ca",
+                 "us-ca\u2029", "us-ca\n/../x"]
+    },
+    "suffix_prefix": {
+      "expect": "reject",
+      "values": ["us-cax", "xus-ca", "us-ca-", "-us-ca", "us-ca/", "us-ca/..", "../us-ca",
+                 "us-c", "u-ca", "usa-ca", "us_ca", "usca", "us--ca", "", "us-ca.json"]
+    },
+    "uppercase": {
+      "expect": "reject",
+      "values": ["US-CA", "Us-ca", "us-CA", "us-cA", "\u0131s-ca", "\uff55s-ca"]
+    },
+    "nonstring": {
+      "expect": "reject",
+      "values": [null, 42, 1.5, true, ["us-ca"], {"jurisdiction": "us-ca"},
+                 {"$bytes": "us-ca"}, {"$bytes": "us-ca\n"}]
+    },
+    "package_status_invalid_is_missing": {
+      "expect": "missing_with_error",
+      "values": ["us-ca\n", "us-ca\r\n", "US-CA", " us-ca", "us-cax", null]
+    },
+    "no_read_on_invalid": {
+      "expect": "no_filesystem_access",
+      "values": ["us-ca\n", "us-ca\r\n", "us-\nca", "us-ca\u00a0"]
+    },
+    "explicit_base_preserved": {
+      "expect": "base_joined",
+      "values": ["us-ca", "us-or", "ca-on"]
+    }
+  }
+}
