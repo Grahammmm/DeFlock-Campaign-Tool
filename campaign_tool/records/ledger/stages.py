@@ -650,8 +650,10 @@ def promote(runner, subject, stage, receipt_bytes, *, claim_id=None):
             _coverage(receipt, stage)
             expected_inputs = _inputs(states, stage, subject)
             _require(receipt.get("input_hashes") == expected_inputs, "stale_or_wrong_inputs")
+            verdict = receipt.get("verdict")
+            _require(isinstance(verdict, str), "invalid_verdict")
             status = {"pass": "done", "blocked": "blocked", "challenge": "blocked",
-                      "inapplicable": "inapplicable"}.get(receipt.get("verdict"))
+                      "inapplicable": "inapplicable"}.get(verdict)
             _require(status is not None, "invalid_verdict")
             _require(not (stage == "preserve" and status == "inapplicable"), "preservation_required")
             if status in ("blocked", "inapplicable"):
