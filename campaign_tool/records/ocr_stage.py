@@ -415,6 +415,15 @@ class Quality:
     min_chars: int = 20
     min_alnum_ratio: float = 0.6
 
+    def __post_init__(self) -> None:
+        # The closed interval also rejects NaN and infinities, without a float
+        # conversion that could overflow on an out-of-range integer ratio.
+        if (type(self.min_chars) is not int or self.min_chars < 0 or
+                isinstance(self.min_alnum_ratio, bool) or
+                not isinstance(self.min_alnum_ratio, (int, float)) or
+                not 0 <= self.min_alnum_ratio <= 1):
+            raise ValueError("quality_config_invalid")
+
     def check(self, text: str) -> str | None:
         """``None`` when the page text is usable, else ``ocr_empty``/``ocr_low_quality``."""
         visible = "".join(text.split())
@@ -995,10 +1004,10 @@ def vision_backend(config: dict, runner=run_group, transport=urllib_transport):
 
 
 def build_stage(out_root: str, config: dict, runner=run_group, transport=urllib_transport) -> OcrStage:
+    quality = Quality(config.get("min_chars", 20), config.get("min_alnum_ratio", 0.6))
     primary = OcrmypdfBackend(config.get("ocrmypdf", DEFAULT_OCRMYPDF), config.get("language", "eng"),
                               config.get("ocrmypdf_timeout", 900), runner=runner)
     fallback = vision_backend(config, runner=runner, transport=transport)
-    quality = Quality(int(config.get("min_chars", 20)), float(config.get("min_alnum_ratio", 0.6)))
     return OcrStage(out_root, primary, fallback, quality)
 
 
