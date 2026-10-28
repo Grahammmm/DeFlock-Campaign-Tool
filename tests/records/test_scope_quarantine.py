@@ -95,6 +95,21 @@ class ScopeQuarantineTests(unittest.TestCase):
         self.assertEqual((self.out / 'quarantine' / ident / 'blob').read_bytes(), raw)
         self.assertTrue((self.out / 'quarantine' / ident / 'derived').is_dir())
 
+    def assert_retained_named(self, result, expected):
+        """Named bytes that stay active must be reported, never silently counted as success."""
+        report = [dict(path=str(p), sha256=[sha(raw)]) for p, raw in sorted(expected.items())]
+        self.assertEqual(result['retained_named_paths'], len(expected))
+        self.assertEqual(result['retained_named_hashes'], len({sha(raw) for raw in expected.values()}))
+        self.assertEqual(result['retained_named'], report)
+        event = json.loads((self.out / 'scope-event.json').read_text())
+        self.assertEqual(event['retained_named'], report)
+        self.assertEqual(event['retained_named_paths'], len(expected))
+        for p, raw in expected.items():
+            self.assertEqual(self.rows('SELECT sha,reason FROM scope_exclusions WHERE path=?', (str(p),)),
+                             [('', 'unrelated_personal_record_shared_bytes_retained')])
+            self.assertEqual(self.rows("SELECT path,sha FROM events WHERE code='named_hash_retained_shared' AND path=?",
+                                       (str(p),)), [(str(p), sha(raw))])
+
     def shared_fixture(self, shared=b'synthetic shared logo'):
         personal_note = b'synthetic personal note'
         contract = b'synthetic agency contract'
@@ -193,6 +208,7 @@ class ScopeQuarantineTests(unittest.TestCase):
         self.assertEqual(self.rows('SELECT * FROM edges ORDER BY parent,locator'), edges)
         self.assertEqual(self.rows('SELECT sha FROM scope_exclusions WHERE path=?', (str(named),)), [('',)])
         self.assertEqual(json.loads((self.out / 'scope-excluded-hashes.json').read_text()), [])
+        self.assert_retained_named(result, {named: leaf})
         self.quarantine(named)
         self.intake()
         self.assert_retained(leaf, before[leaf])
@@ -214,12 +230,57 @@ class ScopeQuarantineTests(unittest.TestCase):
         for raw in (mail, nested, leaf):
             self.assert_quarantined(raw)
 
+    def test_unnamed_top_level_copy_of_container_child_is_not_moved(self):
+        # The standalone copy has no container, so it has no edge parent; it is
+        # still an in-scope use of the shared bytes and must keep them active.
+        note = b'synthetic personal note'
+        contract = b'synthetic agency contract also attached in personal archive'
+        personal = archive({'note.txt': note, 'contract.txt': contract})
+        pa = self.add('personal.zip', personal)
+        standalone = self.add('agency-contract.txt', contract)
+        self.intake()
+        before = self.snapshot(contract)
+        result = self.quarantine(pa)
+        self.assertEqual(result['quarantined_hashes'], 2)
+        self.assertEqual(result['retained_named_paths'], 0)
+        self.assert_quarantined(personal)
+        self.assert_quarantined(note)
+        self.assert_retained(contract, before)
+        self.assertEqual(self.rows('SELECT * FROM scope_exclusions WHERE path=?', (str(standalone),)), [])
+        self.assertNotIn(sha(contract), json.loads((self.out / 'scope-excluded-hashes.json').read_text()))
+        self.intake()
+        self.assert_retained(contract, before)
+        queue = [json.loads(line)['sha256'] for line in
+                 (self.out / 'all-agency-document-queue.jsonl').read_text().splitlines()]
+        self.assertIn(sha(contract), queue)
+        self.assertNotIn(sha(personal), queue)
+        # Naming the last top-level use as well releases the shared bytes.
+        self.quarantine(standalone)
+        self.assert_quarantined(contract)
+
+    def test_unnamed_top_level_use_protects_nested_descendants(self):
+        leaf = b'synthetic nested leaf also kept at top level'
+        nested = archive({'leaf.txt': leaf})
+        personal = archive({'inner.zip': nested, 'exclusive.txt': b'only personal'})
+        pa = self.add('personal.zip', personal)
+        self.add('inner-copy.zip', nested)
+        self.intake()
+        before = {raw: self.snapshot(raw) for raw in (nested, leaf)}
+        self.assertEqual(self.quarantine(pa)['quarantined_hashes'], 2)
+        self.assert_quarantined(personal)
+        self.assert_quarantined(b'only personal')
+        for raw, snap in before.items():
+            self.assert_retained(raw, snap)
+
     def test_empty_unknown_and_invalid_paths_do_not_spread(self):
         raw = b'synthetic retained record'
         path = self.add('records.txt', raw)
         self.intake()
         before = self.snapshot(raw)
-        self.assertEqual(self.quarantine(self.root / 'missing.txt')['quarantined_hashes'], 0)
+        missing = self.quarantine(self.root / 'missing.txt')
+        self.assertEqual(missing['quarantined_hashes'], 0)
+        self.assertEqual((missing['unmatched_paths'], missing['retained_named_paths'], missing['retained_named']), (1, 0, []))
+        self.assertEqual(self.rows('SELECT reason FROM scope_exclusions'), [('unrelated_personal_record',)])
         self.assertEqual(self.rows('SELECT path,sha FROM scope_exclusions'), [(str(self.root / 'missing.txt'), '')])
         proc = subprocess.run([sys.executable, '-B', str(QUARANTINE_SCRIPT), '--output', str(self.out),
                                str(path), 'relative.txt'], capture_output=True, text=True, timeout=30)
