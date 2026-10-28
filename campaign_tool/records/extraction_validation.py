@@ -20,6 +20,7 @@ from . import extraction_routes as routes
 from .intake import folder
 from . import ocr_closure, workbook_policy
 from .extract import ocr as page_ocr
+from .extract import vision as page_vision
 
 ADAPTER_ID = "records-extract-complete-v2"
 ENVELOPE_SCHEMA = "canonical-extraction-content-v1"
@@ -40,22 +41,44 @@ def encoded(value):
     return enrollment.canonical(value).encode("utf-8")
 
 
-def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root):
-    """page -> {receipt_id, receipt_sha256, text} for OCR pages whose receipts are bound and readable.
+def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root, vision_ids=()):
+    """page -> {receipt_id, receipt_sha256, text, summary} for OCR pages whose receipts are bound and readable.
 
     Only ``ocr_text_unreviewed``/``visual_check_queued`` receipts with recorded tool versions are
-    acceptable; a blocked or missing page refuses acceptance of the whole original.
+    acceptable, unless a bound ``local-vision-1`` receipt made from that exact Tesseract receipt
+    produced text, in which case the vision text is the page text. A page with neither refuses
+    acceptance of the whole original.
     """
     entries = receipt.get("ocr_receipts")
-    require(isinstance(entries, list) and entries and
-            sorted(e.get("receipt_id") for e in entries if isinstance(e, dict)) == ocr_ids, "ocr_receipts_binding")
+    require(isinstance(entries, list) and entries, "ocr_receipts_binding")
+    # Structural preflight of the complete list before any identifier sort or CAS read:
+    # one receipt per page and per receipt id, so no page can be silently overwritten.
+    for entry in entries:
+        require(isinstance(entry, dict) and set(entry) == {"page", "receipt_id", "receipt_sha256", "status"} and
+                type(entry["page"]) is int and entry["page"] > 0 and
+                all(isinstance(entry[key], str) and re.fullmatch(r"[a-f0-9]{64}", entry[key])
+                    for key in ("receipt_id", "receipt_sha256")), "ocr_receipt_entry_shape")
+    entry_pages = [entry["page"] for entry in entries]
+    entry_ids = [entry["receipt_id"] for entry in entries]
+    require(len(set(entry_pages)) == len(entries) and len(set(entry_ids)) == len(entries) and
+            sorted(entry_ids) == ocr_ids, "ocr_receipts_binding")
     root = receipt.get("ocr_output_root")
     require(isinstance(root, str) and os.path.isabs(root), "ocr_output_root_unbound")
+    visions = receipt.get("vision_receipts", [])
+    require(isinstance(visions, list) and
+            sorted(e.get("receipt_id") for e in visions if isinstance(e, dict)) == sorted(vision_ids) and
+            len(visions) == len(set(vision_ids)), "vision_receipts_binding")
+    by_page = {}
+    for entry in visions:
+        require(isinstance(entry, dict) and
+                set(entry) == {"page", "receipt_id", "receipt_sha256", "status", "engine", "base_receipt_id"} and
+                type(entry["page"]) is int and entry["page"] > 0 and entry["page"] not in by_page,
+                "vision_receipt_entry_shape")
+        by_page[entry["page"]] = entry
     pages = {}
     for entry in entries:
         require(isinstance(entry, dict) and set(entry) == {"page", "receipt_id", "receipt_sha256", "status"} and
                 type(entry["page"]) is int and entry["page"] > 0, "ocr_receipt_entry_shape")
-        require(entry["status"] in routes.OCR_TEXT_STATES, "ocr_page_not_accepted:" + str(entry["status"]))
         try:
             loaded = ocr_closure.load_cas_page(artifacts, receipt["original_sha256"], entry["page"],
                                                enrollment.checked_sha(entry["receipt_id"]), scratch_root=scratch_root)
@@ -67,13 +90,34 @@ def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root):
         versions = loaded["receipt"].get("tool_versions")
         require(isinstance(versions, dict) and versions.get("tesseract"), "ocr_tool_versions_missing")
         sidecar = loaded.get("sidecar")
+        vision = by_page.pop(entry["page"], None)
+        if vision is not None:
+            require(vision["base_receipt_id"] == entry["receipt_id"], "vision_receipt_unbound")
+            try:
+                seen = ocr_closure.load_cas_vision(artifacts, receipt["original_sha256"], entry["page"],
+                                                   enrollment.checked_sha(vision["receipt_id"]),
+                                                   scratch_root=scratch_root)
+            except (ValueError, OSError):
+                raise enrollment.ExtractionBindingError("vision_receipt_unverified") from None
+            summary["vision"] = routes.vision_summary(seen)
+            require(seen["receipt_sha256"] == vision["receipt_sha256"] and
+                    summary["vision"]["status"] == vision["status"] and
+                    summary["vision"]["engine"] == vision["engine"] and
+                    summary["vision"]["base_receipt_id"] == entry["receipt_id"] and
+                    seen["receipt"]["base"]["receipt_sha256"] == entry["receipt_sha256"],
+                    "vision_receipt_hash_mismatch")
+            if summary["vision"]["status"] == routes.VISION_TEXT_STATE:
+                sidecar = seen.get("sidecar")
+        if summary.get("vision", {}).get("status") != routes.VISION_TEXT_STATE:
+            require(entry["status"] in routes.OCR_TEXT_STATES, "ocr_page_not_accepted:" + str(entry["status"]))
         require(sidecar is not None, "ocr_sidecar_missing")
         try:
             text = sidecar.decode("utf-8")
         except UnicodeError:
             raise enrollment.ExtractionBindingError("ocr_sidecar_encoding") from None
         pages[entry["page"]] = {"receipt_id": summary["receipt_id"], "receipt_sha256": summary["receipt_sha256"],
-                                "text": text}
+                                "text": text, "summary": summary}
+    require(not by_page, "vision_receipt_unbound")
     return pages
 
 
@@ -89,6 +133,7 @@ def code_identity():
     return {name: enrollment.sha(Path(module.__file__).read_bytes())
             for name, module in (("enrollment", enrollment), ("routes", routes),
                                  ("ocr_verifier", page_ocr), ("ocr_closure", ocr_closure),
+                                 ("ocr_vision", page_vision),
                                  ("workbook_policy", workbook_policy),
                                  ("intake", folder), ("mail_wire", mail_wire), ("native_msg", native_msg),
                                  ("native_receipt", native_receipt), ("rfc822_inventory", rfc822_inventory),
@@ -327,12 +372,16 @@ class _InstalledExtractionValidator:
                                  "pre_ocr_metadata", "native_units") or
                         (name.startswith("child:") and re.fullmatch(r"[0-9a-f]{64}", name[6:])) or
                         (name.startswith("ocr_receipt:") and re.fullmatch(r"[0-9a-f]{64}", name[12:])) or
-                        ocr_closure.artifact_name(name)
+                        ocr_closure.artifact_name(name) or ocr_closure.vision_artifact_name(name)
                         for name in artifact_refs), "unsupported_artifact_set")
             child_hashes = sorted(name[6:] for name in artifact_refs if name.startswith("child:"))
             ocr_ids = sorted(name[12:] for name in artifact_refs if name.startswith("ocr_receipt:"))
+            vision_ids = ocr_closure.vision_receipt_ids(artifact_refs)
             require(bool(ocr_ids) == ("pre_ocr_metadata" in artifact_refs) == ("native_units" in artifact_refs),
                     "ocr_artifact_set_incomplete")
+            require(not vision_ids or ocr_ids, "vision_without_ocr")
+            require(all(name.split(":")[1] in vision_ids for name in artifact_refs if name.startswith("vision_asset:")),
+                    "vision_closure_asset_set_mismatch")
             artifacts = {}
             budget = MAX_ACCEPT_EVIDENCE
             for name, ref in artifact_refs.items():
@@ -359,7 +408,8 @@ class _InstalledExtractionValidator:
                         "unexpected_ocr_closure")
             native_workbook = (receipt.get("parser") == "legacy-intake:xlsx" and self.native_workbook_policy is not None)
             workbook = None
-            ocr_pages = _accepted_ocr_pages(receipt, ocr_ids, artifacts=artifacts, scratch_root=self.evidence_root) if ocr_ids else {}
+            ocr_pages = _accepted_ocr_pages(receipt, ocr_ids, artifacts=artifacts, scratch_root=self.evidence_root,
+                                            vision_ids=vision_ids) if ocr_ids else {}
             if ocr_pages:
                 # Per-page OCR: the source stays "partial" by construction (pages were not native
                 # text). Acceptance records the visual-review hold per page; it never clears it.
@@ -445,6 +495,8 @@ class _InstalledExtractionValidator:
                     "parser_provenance": "bound_to_derivative_metadata",
                     "parser_components": receipt.get("parser_components", {}),
                     "ocr_receipt_ids": [entry["receipt_id"] for entry in receipt.get("ocr_receipts", [])],
+                    **({"vision_receipt_ids": [entry["receipt_id"] for entry in receipt["vision_receipts"]]}
+                       if receipt.get("vision_receipts") else {}),
                     "review_status": "not_reviewed"}
                 expected = {"original_sha256": subject, "parser": parser, "parser_version": version,
                     "locator": enrollment.canonical(unit.get("locator")), "unit_type": unit.get("kind"),
@@ -526,16 +578,19 @@ class _InstalledExtractionValidator:
                 require(checked.get("status") == "partial" and checked.get("units") == native and
                         len(native) == len(pages) == len(checked.get("pages", [])) == counts["pages_expected"],
                         "pdf_native_reparse_mismatch")
-                merged = routes.merge_ocr_units(native, {page: routes.ocr_unit(page, info["receipt_id"],
-                                                                                info["receipt_sha256"], info["text"])
+                merged = routes.merge_ocr_units(native, {page: routes.text_unit(page, info["summary"], info["text"])
                                                          for page, info in ocr_pages.items()})
                 require(enrollment.canonical(merged) == enrollment.canonical(units), "ocr_unit_merge_mismatch")
                 for index, page in enumerate(pages, 1):
                     native_page = checked["pages"][index - 1]
                     require(page["page_no"] == index == native_page["page_no"], "pdf_page_order")
                     if index in ocr_pages:
+                        vision = ocr_pages[index]["summary"].get("vision") or {}
+                        engine = vision["engine"] if vision.get("status") == routes.VISION_TEXT_STATE else "tesseract"
                         require(native_page["status"] != "ok" and page["status"] == "partial" and
                                 page.get("ocr_receipt_id") == ocr_pages[index]["receipt_id"] and
+                                page.get("engine") == engine and
+                                page.get("vision_receipt_id") == vision.get("receipt_id") and
                                 page.get("needs_visual_review") is True, "ocr_page_state_binding")
                     else:
                         require(page["status"] == "ok" and native_page["status"] == "ok", "pdf_missing_or_partial_pages")
@@ -560,6 +615,12 @@ class _InstalledExtractionValidator:
         if ocr_ids:
             envelope["ocr"] = {"method": receipt.get("ocr_method"), "pages": sorted(ocr_pages),
                                "receipt_ids": ocr_ids, "visual_review_pending": True}
+            if vision_ids:
+                envelope["ocr"]["engines"] = {str(page): (info["summary"]["vision"]["engine"]
+                                                          if (info["summary"].get("vision") or {}).get("status") ==
+                                                          routes.VISION_TEXT_STATE else "tesseract")
+                                              for page, info in sorted(ocr_pages.items())}
+                envelope["ocr"]["vision_receipt_ids"] = vision_ids
         raw = encoded(envelope)
         require(len(raw) <= MAX_CONTENT, "content_envelope_limit")
         return raw, original, coverage

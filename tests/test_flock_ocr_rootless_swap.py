@@ -48,15 +48,7 @@ TARGET, SIDECAR, UNRELATED = "flock-target", "flock-sidecar", "unrelated"
 UNIT = "synthetic-mail"
 WHEEL_SHA = "ab" * 32
 
-_WAL_WRITER = (
-    "import os, sqlite3, sys\n"
-    "c = sqlite3.connect(sys.argv[1])\n"
-    "c.execute('pragma journal_mode=wal')\n"
-    "c.execute('create table synthetic(value)')\n"
-    "c.executemany('insert into synthetic values (?)', [(n,) for n in range(42)])\n"
-    "c.commit()\n"
-    "os._exit(0)\n"
-)
+_WAL_WRITER = Path(__file__).resolve().with_name("wal_writer_fixture.py")
 
 
 def _container(ident, name, image, running, mounts, binds, env, labels):
@@ -89,7 +81,7 @@ class FakeSystem:
         (self.volume / "state" / "notes.txt").write_text("synthetic\n")
         os.chmod(self.volume / "state" / "notes.txt", 0o640)
         (self.bind / "receipt.json").write_text("{}\n")
-        subprocess.run([sys.executable, "-B", "-c", _WAL_WRITER, str(self.volume / "state" / "flock.db")],
+        subprocess.run([sys.executable, "-B", str(_WAL_WRITER), str(self.volume / "state" / "flock.db")],
                        check=True)
         self.other_volume = self.tmp / "volumes" / "other" / "_data"
         self.other_volume.mkdir(parents=True)

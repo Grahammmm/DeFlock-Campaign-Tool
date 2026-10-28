@@ -78,7 +78,7 @@ class FlockOcrContainerRecipeTests(unittest.TestCase):
             self.assertRegex(DOCKERFILE, rf"(?m)^ARG {argument}$")
         self.assertIn("sha256sum -c -", DOCKERFILE)
         self.assertIn("--require-hashes --only-binary=:all:", DOCKERFILE)
-        self.assertIn("pip install --no-deps --no-index", DOCKERFILE)
+        self.assertIn("pip install --force-reinstall --no-deps --no-index", DOCKERFILE)
         self.assertIn('r["commit"]==sys.argv[1]', DOCKERFILE)
         for smoke in ("ocrmypdf --version", "pdftotext -v", "qpdf --version",
                       "campaign_tool.records.extract.ocr --doctor"):
@@ -534,15 +534,7 @@ _SE_SPEC = importlib.util.spec_from_file_location("flock_ocr_snapshot_evidence",
 snapshot_evidence = importlib.util.module_from_spec(_SE_SPEC)
 _SE_SPEC.loader.exec_module(snapshot_evidence)
 
-_WAL_FIXTURE = (
-    "import os, sqlite3, sys\n"
-    "c = sqlite3.connect(sys.argv[1])\n"
-    "c.execute('pragma journal_mode=wal')\n"
-    "c.execute('create table synthetic(value)')\n"
-    "c.executemany('insert into synthetic values (?)', [(n,) for n in range(42)])\n"
-    "c.commit()\n"
-    "os._exit(0)\n"
-)
+_WAL_FIXTURE = Path(__file__).resolve().with_name("wal_writer_fixture.py")
 
 
 class FlockOcrSnapshotEvidenceTests(unittest.TestCase):
@@ -560,7 +552,7 @@ class FlockOcrSnapshotEvidenceTests(unittest.TestCase):
         self.db = self.live / "state" / "synthetic.db"
         # A writer commits and exits without closing: committed frames stay in
         # the WAL and both sidecars remain, as after a stop with no checkpoint.
-        subprocess.run([sys.executable, "-B", "-c", _WAL_FIXTURE, str(self.db)], check=True)
+        subprocess.run([sys.executable, "-B", str(_WAL_FIXTURE), str(self.db)], check=True)
         wal = Path(str(self.db) + "-wal")
         self.assertTrue(wal.is_file() and wal.stat().st_size > 0, "fixture must leave WAL frames")
         self.assertTrue(Path(str(self.db) + "-shm").is_file())

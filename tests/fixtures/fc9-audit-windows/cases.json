@@ -1,0 +1,80 @@
+{
+  "schema": "fc9-audit-windows-cases-v1",
+  "synthetic": true,
+  "acceptance": "REVIEW REQUIRED; synthetic machine checks only, no semantic, legal, human or live audit conclusion",
+  "frozen": {
+    "detector": "audit-gap",
+    "period_start": "2030-01-01",
+    "period_end_exclusive": "2030-01-14",
+    "first_due": "2030-01-05",
+    "frequency_days": 4,
+    "event_at": "2030-01-01T12:00:00+00:00",
+    "rule_effective_from": "2030-01-01",
+    "rule_effective_to": "2031-01-01",
+    "signal": "produced_audit_documentation_gap"
+  },
+  "candidate_produced_dates": [
+    "2030-01-01", "2030-01-04", "2030-01-05", "2030-01-06",
+    "2030-01-08", "2030-01-09", "2030-01-13", "2030-01-14"
+  ],
+  "expected_due_dates": ["2030-01-05", "2030-01-09", "2030-01-13"],
+  "hand_windows": {
+    "comment": "Hand-written membership of every period day in exactly one due window; 2030-01-14 is outside the exclusive end and belongs to none.",
+    "2030-01-05": ["2030-01-01", "2030-01-02", "2030-01-03", "2030-01-04", "2030-01-05"],
+    "2030-01-09": ["2030-01-06", "2030-01-07", "2030-01-08", "2030-01-09"],
+    "2030-01-13": ["2030-01-10", "2030-01-11", "2030-01-12", "2030-01-13"]
+  },
+  "named_cases": [
+    {"name": "empty_production", "produced": [], "missing": ["2030-01-05", "2030-01-09", "2030-01-13"], "severity": 3,
+     "dimension": "valid"},
+    {"name": "clipped_first_window_start_inclusive", "produced": ["2030-01-01"], "missing": ["2030-01-09", "2030-01-13"],
+     "severity": 2, "dimension": "boundary"},
+    {"name": "due_boundary_covers_own_window_only", "produced": ["2030-01-05"], "missing": ["2030-01-09", "2030-01-13"],
+     "severity": 2, "dimension": "boundary"},
+    {"name": "second_due_boundary_not_next_window", "produced": ["2030-01-09"], "missing": ["2030-01-05", "2030-01-13"],
+     "severity": 2, "dimension": "boundary"},
+    {"name": "day_after_due_opens_next_window", "produced": ["2030-01-06"], "missing": ["2030-01-05", "2030-01-13"],
+     "severity": 2, "dimension": "boundary"},
+    {"name": "last_due_on_final_period_day", "produced": ["2030-01-13"], "missing": ["2030-01-05", "2030-01-09"],
+     "severity": 2, "dimension": "boundary"},
+    {"name": "exclusive_end_date_covers_nothing", "produced": ["2030-01-14"],
+     "missing": ["2030-01-05", "2030-01-09", "2030-01-13"], "severity": 3, "dimension": "boundary"},
+    {"name": "every_window_interior", "produced": ["2030-01-04", "2030-01-08", "2030-01-13"], "missing": [],
+     "severity": 0, "dimension": "valid"},
+    {"name": "every_due_boundary", "produced": ["2030-01-05", "2030-01-09", "2030-01-13"], "missing": [],
+     "severity": 0, "dimension": "boundary"},
+    {"name": "duplicates_unsorted_deduplicated",
+     "produced": ["2030-01-13", "2030-01-05", "2030-01-05", "2030-01-09", "2030-01-13", "2030-01-01"],
+     "missing": [], "severity": 0, "observed": ["2030-01-01", "2030-01-05", "2030-01-09", "2030-01-13"],
+     "dimension": "duplicate"},
+    {"name": "duplicate_boundary_still_one_window",
+     "produced": ["2030-01-09", "2030-01-09", "2030-01-14", "2030-01-14"],
+     "missing": ["2030-01-05", "2030-01-13"], "severity": 2, "observed": ["2030-01-09", "2030-01-14"],
+     "dimension": "duplicate"}
+  ],
+  "blocking_controls": [
+    {"name": "incomplete_production", "dimension": "control", "fields": {"production_complete": false},
+     "reason": "audit_production_scope_unknown"},
+    {"name": "policy_ends_inside_period", "dimension": "control", "rule": {"effective_to": "2030-01-10"},
+     "reason": "audit_period_crosses_policy_version"},
+    {"name": "policy_starts_after_period_start", "dimension": "control",
+     "rule": {"effective_from": "2030-01-02"}, "event_at": "2030-01-02T12:00:00+00:00",
+     "reason": "audit_period_crosses_policy_version"}
+  ],
+  "malformed_cases": [
+    {"name": "noncanonical_produced_date", "dimension": "malformed", "audit_dates": ["20300105"],
+     "reason": "date_not_canonical"},
+    {"name": "impossible_produced_date", "dimension": "malformed", "audit_dates": ["2030-02-30"],
+     "reason": "date_invalid"},
+    {"name": "non_string_produced_date", "dimension": "malformed", "audit_dates": [20300105],
+     "reason": "date_missing"},
+    {"name": "produced_dates_not_list", "dimension": "malformed", "audit_dates": "2030-01-05",
+     "reason": "field_audit_dates_type"}
+  ],
+  "negative_control": {
+    "injected": "test-only window predicate includes the previous due boundary in every window",
+    "produced": ["2030-01-05"],
+    "core_missing": ["2030-01-09", "2030-01-13"],
+    "mutant_oracle_missing": ["2030-01-13"]
+  }
+}

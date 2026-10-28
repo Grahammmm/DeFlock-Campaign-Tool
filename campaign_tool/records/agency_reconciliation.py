@@ -31,6 +31,34 @@ def label(value):
     return "" if value.casefold() in {"unassigned", "unknown"} else value
 
 
+AGENCY_STATUSES = frozenset({"unassigned", "hint_present", "scope_excluded"})
+TARGET_ROLES = frozenset({"agency_original", "container_child"})
+
+
+def _require_agency_status(card):
+    """A card's agency_status must be a string in the existing vocabulary.
+
+    The string check precedes membership so a list or object label raises the
+    fixed ValueError instead of an unhashable-type TypeError.
+    """
+    status = card.get("agency_status")
+    if not isinstance(status, str) or status not in AGENCY_STATUSES:
+        raise ValueError("card requires explicit agency_status")
+    return status
+
+
+def _require_role(card):
+    """A card's role must be a nonblank string; the target rule stays open-ended.
+
+    Nontarget string roles are still accepted (and later skipped); only
+    missing, null, non-string or blank roles are rejected.
+    """
+    role = card.get("role")
+    if not isinstance(role, str) or not role.strip():
+        raise ValueError("card requires explicit role")
+    return role
+
+
 def reconcile(cards, records, aliases=None):
     """Reconcile only unassigned originals/children; all results stay candidates."""
     if not isinstance(cards, list) or not isinstance(records, list):
@@ -60,8 +88,8 @@ def reconcile(cards, records, aliases=None):
             raise ValueError("card requires a lowercase SHA-256")
         if card["sha256"] in indexed:
             raise ValueError("duplicate card identity")
-        if card.get("agency_status") not in {"unassigned", "hint_present", "scope_excluded"}:
-            raise ValueError("card requires explicit agency_status")
+        _require_agency_status(card)
+        _require_role(card)
         if not isinstance(card.get("agency_hints"), list) or not isinstance(card.get("parents"), list):
             raise ValueError("card requires hint and parent lists")
         if any(not isinstance(v, str) for v in card["agency_hints"]):
@@ -90,7 +118,7 @@ def reconcile(cards, records, aliases=None):
             matched[record["sha256"]].append(item)
     results = []
     for sha, card in sorted(indexed.items()):
-        if card["agency_status"] != "unassigned" or card.get("role") not in {"agency_original", "container_child"}:
+        if card["agency_status"] != "unassigned" or card.get("role") not in TARGET_ROLES:
             continue
         exact = [{"agency": r["agency"], "canonical_agency": r["canonical_agency"], "source": r["source"]}
                  for r in matched[sha]]

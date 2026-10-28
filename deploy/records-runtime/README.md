@@ -23,6 +23,10 @@ Files
   is `docker exec ... -m campaign_tool.records.run_stages` against a sandbox
   TEST copy or the real records project. The committed-template-is-current
   test covers both files.
+- `targets/live-ocr-container.json.in`,
+  `targets/live-ocr-vision-container.json.in`: Phase 2 (T6) LIVE plans from
+  the same generator. They are `live-container.json.in` with only the extract
+  stage changed (see "Phase 2 OCR plans" below). The same test covers them.
 - `render.py`: fail-closed renderer for all of the above.
 - Engine side: `campaign_tool/records/run_orchestrator.py`,
   `schemas/records-run-report-v1.json`, `schemas/records-stage-result-v1.json`.
@@ -39,6 +43,11 @@ renderer refuses:
 - a leftover placeholder or an invalid stage plan
 - a timer that is not the three Pacific slots
 - a budget that does not fit `TimeoutStartSec=47min`
+- a `MIN_FREE_BYTES` that is not a canonical decimal byte count between
+  64 MiB (67108864) and 1 PiB, or a wrapper template that lost the
+  placeholder. The value is required: an older `VALUES.json` without it no
+  longer renders. Size it to at least twice the latest per-run ledger+intake
+  backup plus headroom; 2147483648 (2 GiB) is a reasonable starting point.
 - a `DEFAULT_TARGET` or `SCHEDULED_TARGET` with no rendered plan
 - an output directory that is non-empty or inside a Git checkout
 
@@ -57,6 +66,18 @@ container plans with both targets:
 the live owner-only adoption config (both placeholders already exist; no
 values files, host paths, image digests or chat IDs belong in this repo).
 Set `DEFAULT_TARGET=TEST` and `SCHEDULED_TARGET=LIVE` at cutover (T17).
+
+T17 mailbox-refresh cutover uses the opt-in
+`targets/live-mail-container.json.in` as LIVE, with
+`CONTAINER_SYNC_SCRIPT` set to the existing authorized in-container mail-sync
+script. This plan adds only `--sync-script` to LIVE sync; TEST and the
+existing pinned Phase 1/OCR templates remain unchanged. The stage runs that
+script with the configured container Python, with its child timeout inside
+the 110-second stage deadline and 120-second host deadline; failure stops
+the run. Rendering and dry-run never execute the script. Verify the existing
+script's interpreter/dependencies and export destination without fetching
+mail before retiring the legacy timer. Do not use `--help` on a script that
+runs sync at module scope.
 
 Usage
 
@@ -87,6 +108,70 @@ timer are separate owner-approved cutover steps. Until the per-run
 ledger+intake backup pre-step lands (planned T17), the operator takes a
 manual ledger and intake backup before each live run.
 
+Phase 2 OCR plans (T6)
+
+Two LIVE plans enable OCR without hand-editing the Phase 1 plan, which stays
+byte-identical. Render one of them as the LIVE target in place of
+`live-container.json.in`:
+
+    python3 deploy/records-runtime/render.py --values VALUES.json --out DIR \
+        --target TEST=deploy/records-runtime/targets/test-container.json.in \
+        --target LIVE=deploy/records-runtime/targets/live-ocr-vision-container.json.in
+
+- `live-ocr-container.json.in`: per-page Tesseract only. Extract argv adds
+  `--ocr`, with `--max-documents 20 --document-timeout 1200
+  --ocr-page-timeout 180`.
+- `live-ocr-vision-container.json.in`: Tesseract, then the local vision
+  fallback for empty or low-confidence pages. Extract argv adds `--ocr
+  --ocr-vision-config @CONTAINER_OCR_VISION_CONFIG@`, with
+  `--max-documents 20 --document-timeout 1200 --ocr-page-timeout 180
+  --ocr-vision-timeout 300` (a 27B vision page can take minutes).
+
+In both, extract has `--timeout 1490`, `timeout_seconds: 1500` and `on_fail:
+stop`; every other stage is the Phase 1 LIVE stage. The stage caps then sum
+to more than `RUN_BUDGET_SECONDS`, which stays the real guard together with
+the 47 minute unit (budget check below). OCR publishes an immutable receipt
+per page, so a run cut short (`RUN_INTERRUPTED`) resumes on the next slot.
+
+`CONTAINER_OCR_VISION_CONFIG` is the absolute in-container path of the
+owner-only `local-vision-config-v1` file. Only the vision plan uses it, so
+it is required there and refused as unknown for the other plans. Like the
+other paths it must be absolute and shell-safe. Example value only:
+`/srv/flock-live/vision.json`; the real path belongs in the private
+`VALUES.json`, never in this repo.
+
+Extract has three limits on the OCR path:
+
+- `--document-timeout` is each document's wall-clock budget, clamped to the
+  stage time left. The native parse child gets at most 600 s of it.
+- `--ocr-page-timeout` bounds each `pdftoppm` and each `tesseract` child.
+- `--ocr-vision-timeout` (vision plan only) bounds each vision adapter child.
+
+| Plan | `--document-timeout` | `--ocr-page-timeout` | `--ocr-vision-timeout` |
+| --- | --- | --- | --- |
+| `live-ocr-container.json.in` | 1200 s | 180 s | not used |
+| `live-ocr-vision-container.json.in` | 1200 s | 180 s | 300 s |
+
+Child timeouts are never shortened to fit the budget, because a timed-out
+page receipt is cached permanently. Instead, image-only pages run one at a
+time. A page without a published receipt starts only if its full allowance
+still fits in the document budget: 2 x 180 s = 360 s with Tesseract only,
+660 s with vision. A page whose Tesseract receipt is already published costs
+nothing, or 300 s if it still needs a vision receipt. 1200 s therefore admits
+at least one uncached page in either plan.
+
+When the budget runs out before every page has a receipt, the document is
+coded `DEFERRED_RUN_BUDGET` if this run published at least one new page
+receipt. That counts as progress, not as a failed attempt, and the next run
+resumes from the published receipts. If no page got a receipt, it is coded
+`EXTRACT_TIMEOUT`, which is retryable and held after the attempt limit.
+
+The budget must be at most `--timeout` minus 15 s (`run_stages` refuses it
+otherwise). With `--timeout 1490`, 1200 s leaves about 275 s of the stage for
+the validator's re-parses and ledger work. The installed-extraction
+validator's re-parses keep their own fixed bounds (20 s for PDF, 60 s for
+re-parsed workbook and container forms).
+
 Order of one run
 
 1. Static checks. Refusals exit 78 and append a code-only line to
@@ -98,18 +183,27 @@ Order of one run
    exits 73. The running run is never interrupted.
 3. Stage plan check. On failure it writes the report (`sync`
    `TARGET_CONFIG_INVALID`), then notifies and exits 78.
-4. Bounded Docker wait (plan T10, Oct 17 regression). On failure: report
+4. Free-space preflight (Fable audit F4(a)). `df -P -k RUNTIME_DIR` under a
+   10 s deadline must show at least `MIN_FREE_BYTES` available to the run
+   user. Below it: log line, report `sync` `DISK_SPACE_LOW` plus a blocking
+   needs-G item, notify, exit 78. If free space cannot be measured (df
+   fails, hangs or prints something unparseable) the run fails closed the
+   same way with `DISK_SPACE_UNKNOWN`. Nothing is attempted: no Docker call,
+   no backup, no stage. The probe covers the filesystem holding
+   `RUNTIME_DIR`; keep the records project (ledger, intake and the per-run
+   backups) on that filesystem, or the check does not cover them.
+5. Bounded Docker wait (plan T10, Oct 17 regression). On failure: report
    `sync` `DOCKER_UNAVAILABLE` plus a blocking needs-G item, notify, exit 75.
-5. Image pin check. On mismatch: `IMAGE_MISMATCH`, exit 78.
-6. Stage orchestrator. It runs sync, delta, adoption, portal, extract,
+6. Image pin check. On mismatch: `IMAGE_MISMATCH`, exit 78.
+7. Stage orchestrator. It runs sync, delta, adoption, portal, extract,
    digest_gates and outputs in order, each under its own timeout. All stages
    share one deadline: `RUN_BUDGET_SECONDS` counted from wrapper start, so
    it includes the Docker wait. A GNU timeout backstop sends TERM 15 s after
    the deadline. On TERM the orchestrator kills the stage's process group,
    records `RUN_INTERRUPTED` and still writes the report.
-7. Notify (plan T10, Oct 16 regression). It never changes the exit code; see
+8. Notify (plan T10, Oct 16 regression). It never changes the exit code; see
    below.
-8. Publish `run-report.json`.
+9. Publish `run-report.json`.
 
 Exit codes
 
@@ -120,7 +214,8 @@ Exit codes
 - 70: internal orchestrator error
 - 73: lock held, slot skipped
 - 75: Docker not ready
-- 78: configuration, identity, image or stage plan refused
+- 78: configuration, identity, image or stage plan refused, or free space
+  below `MIN_FREE_BYTES` (or not measurable)
 
 Stage contract (pluggable stages)
 
@@ -227,6 +322,49 @@ without recording an outcome, the wrapper records the outcome itself with
 directly. The Telegram API base may only be overridden to loopback, and only
 for tests.
 
+Every message names the report mode after the run id, for example
+`records run <run_id> (scheduled) completed.`, including preflight refusals.
+Every message except a preflight refusal (`DOCKER_UNAVAILABLE`,
+`IMAGE_MISMATCH`, `TARGET_CONFIG_INVALID`) ends with the coverage line below
+on its own line. The T17 cutover message is the notify message of the first
+`mode: scheduled` live run; there is no separate composer.
+
+Coverage line
+
+Format, from `campaign_tool.records.run_coverage`:
+
+    Coverage: adopted A (+a this run), coded-gap C, awaiting_ocr O, portal-held P
+
+A count that is `None` renders as `unknown`; `(+a this run)` is omitted when
+adopted is unknown; ` [stub]` is appended when the run used the stub stage
+backend. Operators can print the same line from a report by hand:
+
+    python3 -m campaign_tool.records.run_coverage --report run-report.json
+
+It validates the report with `run_report.validate_run_report` and exits 0, or
+exits 2 on an unreadable or invalid report. Fixture:
+`examples/run-report/coverage-projection.synthetic.json` (synthetic cases with
+exact expected counts and lines; FL-1b pins its sha256).
+
+COVERAGE CONTRACT v1 (decided by fable-2nd-look; do not reinterpret). Source = the run report v1 only. S(x) = the stage entry named x; n(x, CODE) = `count` of the needs_g item with stage x and that code, 0 when absent (the engine drops zero counts: run_stages.py:115-118).
+
+- adopted (unit: mail messages, cumulative over the mail export after this run) = S(adoption).counts.output + S(adoption).counts.skipped - n(adoption, ADOPTION_CODED_GAPS). Evidence: run_stages.py:585-588 (output = adopted_messages + resumed_messages; skipped = already_adopted + coded_gap_messages), :293-297 (item count = coded_gap_messages), mail_adoption.py:660-680 (already_adopted = receipts `complete` before this run's writes; resumed receipts were `incomplete`, so no double count). adopted_this_run = S(adoption).counts.output.
+- coded_gap (unit: mail messages, cumulative: the export is re-classified every run) = n(adoption, ADOPTION_CODED_GAPS). Receipts the canonical backend refuses under its contract (legacy originals / T4B); never dropped.
+- awaiting_ocr (unit: documents, cumulative backlog) = n(extract, AWAITING_OCR). Held documents are re-counted on every run without re-parsing (native_extract.py:22-30 and :325-327), so this is the current backlog, not a per-run delta. Equals the extract stage `outcomes` AWAITING_OCR count when present.
+- portal_held (unit: approved portal document links enrolled in the queue and not yet received) = n(portal, PORTAL_FETCH_DRY_RUN_ONLY) + n(portal, PORTAL_HTTP_404) + n(portal, PORTAL_FETCH_BLOCKED). Disjoint by construction: run_stages.py:714-723 (pending excludes queue states received/blocked; blocked links are counted by fetch_blocked; the PORTAL_FETCH_BLOCKED item is blocked - http_404). Deduplication is the queue's own (duplicate notices are `skipped`, never enrolled). NOT included: PORTAL_HOST_NOT_ALLOWLISTED (distinct hosts, a different unit) and PORTAL_NOTICE_UNREADABLE (notices). Document, do not change, the `pending or totals["enrolled"]` fallback at run_stages.py:723.
+- Availability rule: a count is None ("unknown") unless its source stage status is `ok` or `warn`; None is never rendered as 0. adopted is also None when the subtraction is negative.
+- stub = any needs_g item with code STUB_STAGE_BACKEND. mode = report["mode"].
+
+Note on the `pending or totals["enrolled"]` fallback (run_stages.py:723,
+documented, not changed): when no enrolled link is pending in the dry fetch,
+`PORTAL_FETCH_DRY_RUN_ONLY` falls back to the number of links enrolled by this
+run, so portal-held can count this run's new enrolments even when the dry
+fetch lists none of them as pending.
+
+Line numbers above refer to the engine at main 6028144. Line references
+are evidence pointers only; the projection reads the report, never engine
+code.
+
 Placeholders
 
 `@RELEASE_COMMIT@` `@ENGINE_DIR@` `@DOCKER@` `@TIMEOUT@` `@FLOCK@`
@@ -238,7 +376,9 @@ Placeholders
 also uses `@STUB_FIXTURE@`; `@TARGET_NAME@` is set by the renderer. The
 container stage plans use `@CONTAINER@` `@CONTAINER_USER@`
 `@CONTAINER_ENGINE_DIR@` `@CONTAINER_PYTHON@` `@CONTAINER_PROJECT_DIR@`
-`@ADOPTION_CONFIG@` `@CONTAINER_APPROVAL_FILE@`.
+`@ADOPTION_CONFIG@` `@CONTAINER_APPROVAL_FILE@`. The Phase 2 vision plan
+(`live-ocr-vision-container.json.in`) also uses
+`@CONTAINER_OCR_VISION_CONFIG@`.
 
 `ENGINE_DIR` is the host path of the pinned engine source tree. The wrapper
 runs the orchestrator and notify from it via `PYTHONPATH`. `TIMEOUT` and
