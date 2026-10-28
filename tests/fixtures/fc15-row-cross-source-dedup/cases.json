@@ -1,0 +1,14 @@
+{
+  "schema": "fc15-row-cross-source-dedup/v1",
+  "case_ids": ["same_semantics", "different_values", "third_occurrence", "scope_separation", "permutations", "control_and_flags"],
+  "event_id": "fictional-event-15",
+  "event_at": "2020-02-03T04:05:06+00:00",
+  "purpose": "fictional specific case",
+  "outlier_purpose": "fictional different case",
+  "user_id": "fictional-user-15",
+  "artifacts": [
+    {"label": "fictional-original-A", "headers": ["A event", "A time", "A purpose", "A user"]},
+    {"label": "fictional-original-B", "headers": ["B event", "B time", "B purpose", "B user"]},
+    {"label": "fictional-original-C", "headers": ["C event", "C time", "C purpose", "C user"]}
+  ]
+}

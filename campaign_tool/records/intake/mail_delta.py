@@ -489,6 +489,7 @@ def ledger_import(db, out, root, identity, items, created):
             "quarantined_path")
     records = [occurrence(item, identity, root, items[0]["sha"]) for item in items]
     changed = False
+    undeclared = False
     for item, record in zip(items, records):
         old_doc = db.execute("SELECT bytes FROM docs WHERE sha=?", (item["sha"],)).fetchone()
         require(old_doc is None or old_doc[0] == item["size"], "document_size_conflict")
@@ -504,6 +505,7 @@ def ledger_import(db, out, root, identity, items, created):
                                   (item["sha"],)).fetchone()
         require(preservation is None or preservation[0] == item["size"],
                 "preservation_size_conflict")
+        undeclared |= preservation is None
     for item in items[1:]:
         parent = item.get("parent_sha", items[0]["sha"])
         loc = edge_locator(item)
@@ -512,6 +514,9 @@ def ledger_import(db, out, root, identity, items, created):
         require(edge is None or edge[0] == item["sha"], "parent_edge_conflict")
         changed |= edge is None
     if not changed:
+        # An unchanged replay claims every item is already preserved; refuse
+        # (never repair) when any preservation declaration is missing.
+        require(not undeclared, "existing_blob_invalid")
         for item in items:
             try:
                 verified = folder.verify_blob(item["sha"], out)
