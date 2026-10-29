@@ -253,10 +253,18 @@ class FlockOcrPinsTests(unittest.TestCase):
         from campaign_tool import __version__
         engine = PINS["engine"]
         self.assertEqual(engine["wheel_filename"], f"deflock_campaign_tool-{engine['package_version']}-py3-none-any.whl")
-        # The pinned commit is an ancestor of this tree; the lock is unchanged since then.
         self.assertEqual(__version__, engine["package_version"])
-        lock = (ROOT / "requirements-records-test.txt").read_bytes()
+        # The image builds engine.commit, not HEAD. Its historical lock must stay
+        # pinned even when this branch adds test dependencies (such as Pillow).
+        # Keep the exact historical bytes available in shallow/offline checkouts.
+        lock = (ROOT / "tests/fixtures/flock-ocr-pinned-requirements.txt").read_bytes()
         self.assertEqual(hashlib.sha256(lock).hexdigest(), engine["dependency_lock_sha256"])
+        probe = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", f"{engine['commit']}^{{commit}}"],
+                               capture_output=True, check=False)
+        if probe.returncode == 0:
+            committed_lock = subprocess.check_output(
+                ["git", "-C", str(ROOT), "show", f"{engine['commit']}:requirements-records-test.txt"])
+            self.assertEqual(lock, committed_lock)
 
     def test_package_file_count_equals_committed_package_files_at_pinned_commit(self):
         # build_wheel.check_wheel compares len(manifest.package_files) with this pin, so a
