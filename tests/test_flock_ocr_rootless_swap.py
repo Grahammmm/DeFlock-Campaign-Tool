@@ -192,6 +192,10 @@ class FakeSystem:
         if argv[0] == sys.executable:
             script = Path(argv[2]).name
             if script == "build_wheel.py":
+                dist = Path(argv[argv.index("--dist") + 1])
+                dist.mkdir()
+                wheel = json.loads((RECIPE / "pins.json").read_text())["engine"]["wheel_filename"]
+                (dist / wheel).write_bytes(b"synthetic wheel")
                 return 0, "{}\nWHEEL_SHA256=" + WHEEL_SHA + "\n", ""
             if script in ("preflight.py", "verify.py"):
                 return 0, ("preflight: OK\n" if script == "preflight.py" else "PASS x\nverify: OK\n"), ""
@@ -362,8 +366,6 @@ class RunMixin:
         self.fake = FakeSystem(self.tmp)
         self.private = self.tmp / "private"
         self.dist = self.tmp / "checkout-dist"
-        self._orig_dist, swap.DIST = swap.DIST, self.dist
-        self.addCleanup(setattr, swap, "DIST", self._orig_dist)
         self.live_before = {"vol": evidence.manifest(self.fake.volume), "bind": evidence.manifest(self.fake.bind)}
 
     def args(self, mode="--apply", **extra):
@@ -375,7 +377,8 @@ class RunMixin:
 
     def run_swap(self, argv):
         out = io.StringIO()
-        code = swap.main(argv, system=self.fake, out=out)
+        with mock.patch.object(swap, "DIST", self.dist):
+            code = swap.main(argv, system=self.fake, out=out)
         return code, out.getvalue()
 
     def run_dir(self):
@@ -1727,39 +1730,42 @@ class PreflightCatchesHistoricalFailuresTests(RunMixin, unittest.TestCase):
                                       "restore_preservation", "largest_extract", "margin"})
         self.assertEqual(parts["margin"], 512 << 20)
         self.assertEqual(parts["s1_archives"], parts["a2_archives"])
+        copies = sum(evidence.survey(root)["estimated_copy_bytes"]
+                     for root in (self.fake.volume, self.fake.bind))
+        need = max(need, 7 * copies + (512 << 20))
         self.fake.free = need - 1
         code, out = self.run_swap(self.args())
         self.assert_refused_before_any_change(
             code, out, f"private dir has {need - 1} bytes free, the run needs {need} (s1_archives ")
         self.assertIn("free 1 bytes first", out)
 
-    def test_a2_gate_is_one_archive_set_plus_512_mib(self):
-        _, need = self.expected_need()
-        tar = sum(evidence.space_estimate(evidence.manifest(d)["entries"])["tar_bytes"]
-                  for d in (self.fake.volume, self.fake.bind))
+    def test_a2_gate_rechecks_all_remaining_copies(self):
+        # The hardening retains R1's early check and strengthens the later A2
+        # gate: remaining backups, scratch and rollback also need free space.
+        total = sum(((e.get("size", 0) + 4095) // 4096) * 4096 + 4096
+                    for d in (self.fake.volume, self.fake.bind)
+                    for e in evidence.manifest(d)["entries"].values())
+        need = 7 * total + (512 << 20)
+        remaining = 5 * total + (512 << 20)
         seen = []
 
         def free(path):
             seen.append(path)
-            # preflight and S1 see the full budget; A2 sees only one archive set + margin,
-            # far below the 3x + 512 MiB the old A2 check demanded
-            return need if len(seen) <= 2 else tar + (512 << 20)
+            return need if len(seen) <= 2 else remaining
         self.fake.free = free
         code, out = self.run_swap(self.args())
         self.assertEqual(code, 0, out)
         self.assertEqual(len(seen), 3)
-        self.assertIn(f"space: {tar + (512 << 20)} bytes free, {tar + (512 << 20)} needed for the A2 archives "
-                      "(1x + 512 MiB)", out)
-        self.assertLess(tar + (512 << 20), 3 * tar + (512 << 20))
+        budget = json.loads((self.run_dir() / "a2/space-budget.json").read_text())
+        self.assertEqual(budget["required_free_bytes"], remaining)
         shutil.rmtree(self.private)
         self.fake = FakeSystem(self.tmp / "short")
         self.private = self.fake.tmp / "private"
         seen.clear()
-        self.fake.free = lambda path: (seen.append(path), need if len(seen) <= 2 else tar + (512 << 20) - 1)[1]
+        self.fake.free = lambda path: (seen.append(path), need if len(seen) <= 2 else remaining - 1)[1]
         code, out = self.run_swap(self.args())
         self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
-        self.assertIn(f"FAIL at [A2]: private dir has {tar + (512 << 20) - 1} bytes free, needs "
-                      f"{tar + (512 << 20)} for the A2 archives (1x + 512 MiB)", out)
+        self.assertIn(f"FAIL at [A2]: private dir has {remaining - 1} bytes free, needs {remaining}", out)
 
 
 class SurveyAndBudgetTests(unittest.TestCase):
@@ -1896,7 +1902,8 @@ class RehearsalFaultModeTests(RunMixin, unittest.TestCase):
                 mock.patch.object(swap.secrets, "token_hex", return_value=self.token), \
                 mock.patch.object(swap.Rehearsal, "base_image", return_value=OLD_IMAGE), \
                 mock.patch.object(swap.Rehearsal, "setup", return_value=self.fixture), \
-                mock.patch.object(swap.Rehearsal, "cleanup"):
+                mock.patch.object(swap.Rehearsal, "cleanup"), \
+                mock.patch.object(swap, "DIST", self.dist):
             code = swap.Rehearsal(args, system=self.fake, out=out).run()
         return code, out.getvalue()
 
