@@ -37,5 +37,5 @@ jobs:
         # generated (synthetic projects with sha256 provenance fields), so it is
         # never tracked source; every tracked path is still scanned.
         run: |
-          detect-secrets scan --all-files --exclude-files '^(\.git|build)/' --no-verify > "$RUNNER_TEMP/secret-scan.json"
+          detect-secrets scan --all-files --exclude-files '^(\.git|build|dist|\.venv)/' --no-verify > "$RUNNER_TEMP/secret-scan.json"
           python tools/check_secret_report.py "$RUNNER_TEMP/secret-scan.json"
