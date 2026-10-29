@@ -123,6 +123,25 @@ class Behavior(Fixture):
             with self.subTest(kind=bodies):
                 self.refuse(bodies)
 
+    def test_enroll_export_conflicting_replays_preserve_completed_empty(self):
+        self.create()
+        self.reopen()
+        discover = self.inventory.discover
+        before = self.snapshot()
+        for changed in (DOCUMENT, COLLECTION):
+            # Simulate changed body-link extraction from the same preserved
+            # receipt, while running the real discover and enrollment handler.
+            with patch.object(self.inventory, "discover",
+                              side_effect=lambda event, bodies: discover(event, changed)):
+                for attempt in range(2):
+                    with self.subTest(bodies=changed, attempt=attempt):
+                        with root_lock(self.root.path), self.assertRaises(PortalError) as caught:
+                            enroll_export(self.receipt, export_root=self.export,
+                                          backend=self.backend, inventory=self.inventory)
+                        self.assertEqual(str(caught.exception), "body_discovery_conflict")
+                        self.assertEqual(self.status(), "enumerated")
+                        self.assertEqual(self.snapshot(), before)
+
     def test_nonempty_to_empty_refuses(self):
         self.pending(DOCUMENT)
         self.reopen()

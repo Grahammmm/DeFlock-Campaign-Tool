@@ -57,7 +57,11 @@ def enroll_export(receipt_path, *, export_root, backend, inventory):
             text = payload.decode(part.get_content_charset() or "ascii", errors="strict")
             bodies.append((candidate["locator"], text, candidate["content_type"]))
         inventory.discover(value.message_id, bodies)
-    except Exception:
-        inventory.discovery_failed(value.message_id)
+    except Exception as error:
+        from .portal.policy import PortalError
+        # A contradictory replay must not erase a completed enumeration: an
+        # empty one has no saved link rows to distinguish it from pending work.
+        if not (isinstance(error, PortalError) and str(error) == "body_discovery_conflict"):
+            inventory.discovery_failed(value.message_id)
         raise
     return value
