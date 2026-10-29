@@ -139,6 +139,49 @@ def _write_new(path: Path, content: bytes) -> None:
         os.close(parent)
 
 
+def _owner_only(path: Path) -> None:
+    """Tighten an owner-owned regular OCR artifact to owner-only; never loosens a mode.
+
+    Children run under umask 077 (``_limit_child``), but on a tree with a default ACL
+    (the records workspace) the kernel ignores the umask and derives the group class of a
+    child-created file from the ACL mask. pdftoppm creates ``page.png`` with 0666, so it
+    lands as 0660 while every engine-written artifact (``_write_new``) is 0600. Enrollment
+    reads OCR closure artifacts only when owner-only (``extraction_ledger.read_file``), so
+    the page's valid receipt was refused as ``ocr_receipt_unverified``. The check stays
+    strict: anything not an owner-owned regular file is refused here as well.
+    """
+    parent = _directory(path.parent)
+    try:
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | O_NOFOLLOW, dir_fd=parent)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise ValueError("symlink_file_rejected") from error
+            raise
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+                raise ValueError("ocr_artifact_not_owner_regular_file")
+            mode = stat.S_IMODE(info.st_mode)
+            if mode & 0o077:
+                os.fchmod(fd, mode & 0o700)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+
+
+def _owner_only_artifacts(directory: Path, receipt: dict) -> None:
+    """Apply ``_owner_only`` to a published receipt's artifacts before it is reused.
+
+    Receipts published before the child-output fix keep a 0660 ``page.png``; tightening
+    it (content and hashes unchanged) lets the next run reuse the receipt instead of the
+    document staying refused.
+    """
+    for name in receipt["artifact_sha256"]:
+        _owner_only(directory / name)
+
+
 def _link_new(source: Path, destination: Path) -> bool:
     source_parent = _directory(source.parent)
     dest_parent = _directory(destination.parent)
@@ -653,6 +696,7 @@ def extract_image_only_pages(
             prior = _load_receipt(final, identity)
             if prior is not None:
                 receipt, receipt_sha, manifest_sha = prior
+                _owner_only_artifacts(final, receipt)
                 _index(output, receipt, receipt_sha, manifest_sha)
                 receipts.append(receipt)
                 continue
@@ -699,6 +743,7 @@ def extract_image_only_pages(
                                       "-r", str(RASTER_DPI), "-png", str(page_pdf),
                                       str(temporary / "page")], timeout, child_env)
                         image = temporary / "page.png"
+                        _owner_only(image)  # a default ACL overrides the child's umask
                         artifacts["page.png"] = _hash(_read(image, 128 * 1024 * 1024))
                         # One tesseract run yields both the text and its word confidences,
                         # so the receipt's confidence describes exactly the recorded text.
