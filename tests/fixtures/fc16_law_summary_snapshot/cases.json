@@ -1,0 +1,60 @@
+{
+  "case_id": "FC16-LAW-SUMMARY-SNAPSHOT",
+  "provenance": {
+    "source_repository": "Grahammmm/DeFlock-Campaign-Tool",
+    "source_commit_prefix": "32eda305",
+    "source_tree_prefix": "a9a69345",
+    "source_identity_note": "Full commit and tree are bound by SOURCE-MANIFEST.json and checked by the recorder; only prefixes are stored so no scanner exception is needed.",
+    "source_package": "campaign_tool/_resources/jurisdictions/us-ca/package.json",
+    "shape": "Literal oracle values transcribed from the declared us-ca package and law.summary at the source commit. Reviewer strings are synthetic and only overlay reviewed_by; no operational content and no legal conclusion."
+  },
+  "synthetic_overlay": {
+    "status": "reviewed",
+    "reviewed_at": "2026-01-02",
+    "reviewed_by": ["Synthetic Reviewer A", " Synthetic Reviewer B ", "Synthetic R\u00e9viewer C", "Synthetic Reviewer A"]
+  },
+  "declared_oracle": {
+    "keys": ["jurisdiction", "status", "reviewed_by", "reviewed_at", "records_law", "rule_count", "review_counts", "rules", "request_scopes", "note"],
+    "jurisdiction": "us-ca",
+    "status": "draft",
+    "reviewed_by": [],
+    "reviewed_at": null,
+    "records_law": {
+      "name": "California Public Records Act",
+      "citation": "Gov. Code \u00a7 7920.000 et seq. (recodified by AB 473, Stats. 2021, ch. 614; operative 2023-01-01)",
+      "determination_days": 10,
+      "determination_extension_days": 14,
+      "day_type": "calendar"
+    },
+    "rule_count": 12,
+    "review_counts": {"verified": 8, "likely": 1, "needs_attorney_review": 3},
+    "rule_ids": [
+      "ca-civ-1798.90.5-definitions",
+      "ca-civ-1798.90.51-security-procedures",
+      "ca-civ-1798.90.51-usage-and-privacy-policy",
+      "ca-civ-1798.90.52-access-records",
+      "ca-civ-1798.90.53-end-user-usage-and-privacy-policy",
+      "ca-civ-1798.90.54-civil-action",
+      "ca-civ-1798.90.55-public-comment-before-implementation",
+      "ca-civ-1798.90.55-sharing-limits",
+      "ca-veh-2413-chp-lpr-retention-and-sharing",
+      "ca-gov-7284.6-values-act-immigration-enforcement-limits",
+      "ca-oag-2023-dle-06-out-of-state-sharing-guidance",
+      "ca-gov-7922.535-determination-and-extension-2026"
+    ],
+    "rule_reviews": [
+      "needs_attorney_review", "verified", "verified", "verified", "verified", "verified",
+      "verified", "verified", "verified", "needs_attorney_review", "likely", "needs_attorney_review"
+    ],
+    "rule_keys": ["rule_id", "citation", "effective_from", "effective_to", "review"],
+    "request_scopes": ["agreements", "policies", "sharing", "audit-logs", "compliance", "hearing-records"],
+    "note_fragments": ["not legal due dates", "Saturday and Sunday only", "public holidays are not modeled"]
+  },
+  "case_map": {
+    "two_way": ["caller_append", "caller_replace", "caller_remove", "summary_append", "summary_replace", "summary_remove", "empty_caller_append", "empty_summary_append"],
+    "repeat": ["mutate_first", "mutate_second", "fresh_after"],
+    "empty_and_order": ["empty_draft", "ordered_overlay"],
+    "projection": ["declared_package", "overlay_package"],
+    "deciding_control": ["mutant_caller_append", "mutant_caller_replace", "mutant_caller_remove", "mutant_summary_append", "mutant_summary_replace", "mutant_summary_remove", "mutant_equality_still_passes", "restored_positive"]
+  }
+}

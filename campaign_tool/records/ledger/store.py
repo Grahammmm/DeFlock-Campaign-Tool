@@ -3,8 +3,9 @@
 Imported declarations do not satisfy stage gates. This module intentionally has
 no public promotion, scheduling, network, model, or publication operations.
 """
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 import base64
 import hashlib
 import json
@@ -119,16 +120,40 @@ def ledger(path, *, readonly=False):
         con.execute("PRAGMA recursive_triggers=ON")
         if readonly:
             con.execute("PRAGMA query_only=ON")
-        else:
-            con.execute("PRAGMA journal_mode=WAL")
         if con.execute("PRAGMA user_version").fetchone()[0] != v001.VERSION:
             raise ValueError("unsupported ledger schema")
         row = con.execute("SELECT checksum FROM schema_migrations WHERE version=?", (v001.VERSION,)).fetchone()
         if row is None or row[0] != SCHEMA_HASH:
             raise ValueError("ledger migration identity mismatch")
+        # Markers alone survive a dropped/replaced guard; compare the stored
+        # definitions before the journal mode changes or a connection escapes.
+        _verify_base_schema(con)
+        if not readonly:
+            con.execute("PRAGMA journal_mode=WAL")
         yield con
     finally:
         con.close()
+
+
+@lru_cache(maxsize=2)
+def _base_schema(sql):
+    """Every object the unchanged v001 SQL creates, from an isolated in-memory reference."""
+    with closing(sqlite3.connect(":memory:")) as reference:
+        reference.executescript(sql)
+        return tuple(tuple(row) for row in reference.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY name"))
+
+
+def _verify_base_schema(con):
+    # Required base tables, indexes and triggers must match exactly; supported
+    # additive extension objects are not part of this comparison. Read-only.
+    expected = _base_schema(v001.SQL)
+    names = [row[1] for row in expected]
+    actual = tuple(tuple(row) for row in con.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name IN (" +
+        ",".join("?" for _ in names) + ") ORDER BY name", names))
+    if actual != expected:
+        raise ValueError("ledger base schema mismatch")
 
 
 def effective_original(connection, subject):
