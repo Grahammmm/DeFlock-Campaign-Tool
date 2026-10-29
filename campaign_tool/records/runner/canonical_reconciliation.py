@@ -47,47 +47,53 @@ class CanonicalOriginalReconciler(CanonicalMailBackend):
             return outcome
 
     def enroll_local_capture(self, source_path, *, original_sha256):
-        """Append capture/resolution only; stage and receipt history stays untouched."""
+        """Public callback retains the exclusive non-reentrant root lock."""
         from ..run import root_lock
-        subject = local_capture.sha(original_sha256)
         with root_lock(Path(self.database).parent):
-            with self.store.ledger(self.database, readonly=True) as con:
+            return self._enroll_local_capture_locked(source_path, original_sha256=original_sha256)
+
+    def _enroll_local_capture_locked(self, source_path, *, original_sha256):
+        """Internal batch callback; caller must hold the shared root lock."""
+        from ..run import require_root_lock
+        require_root_lock(Path(self.database).parent)
+        subject = local_capture.sha(original_sha256)
+        with self.store.ledger(self.database, readonly=True) as con:
+            self._live_run(con)
+            declared = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
+            local_capture.require(declared is not None, "canonical_original_missing")
+            declared = dict(declared)
+            self.policy.admission(subject, declared["bytes"])
+            local_capture.require(declared["scope"] != "out_of_scope", "original_out_of_scope")
+        receipt, receipt_hash, occurrence = local_capture.capture(source_path, self.output, subject, self.policy)
+        with self.store.ledger(self.database) as con:
+            con.execute("BEGIN IMMEDIATE")
+            try:
                 self._live_run(con)
-                declared = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
-                local_capture.require(declared is not None, "canonical_original_missing")
-                declared = dict(declared)
-                self.policy.admission(subject, declared["bytes"])
-                local_capture.require(declared["scope"] != "out_of_scope", "original_out_of_scope")
-            receipt, receipt_hash, occurrence = local_capture.capture(source_path, self.output, subject, self.policy)
-            with self.store.ledger(self.database) as con:
-                con.execute("BEGIN IMMEDIATE")
-                try:
-                    self._live_run(con)
-                    current = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
-                    local_capture.require(dict(current) == declared, "canonical_original_changed")
-                    storage = str(self.output / "blobs" / subject)
-                    unresolved = declared["role"] == declared["scope"] == "unresolved" and declared["storage_path"] is None
-                    local_capture.require(unresolved or (declared["role"] == "original"
-                        and declared["scope"] == "in_scope" and declared["storage_path"] == storage),
-                        "canonical_original_binding_conflict")
-                    prior = con.execute("SELECT * FROM occurrences WHERE id=?", (occurrence["id"],)).fetchone()
-                    if prior:
-                        local_capture.require(dict(prior) == occurrence, "canonical_capture_identity_conflict")
-                    else:
-                        con.execute("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)", tuple(occurrence.values()))
-                    local_capture.verify_occurrence(occurrence, self.output, subject, expected_policy=self.policy.sha256)
-                    resolution, reused = (None, bool(prior))
-                    if unresolved:
-                        resolution, reused = original_resolution.append_initial(con, subject=subject,
-                            policy_sha256=self.policy.sha256, capture_receipt_sha256=receipt_hash,
-                            capture_occurrence_id=occurrence["id"], storage_path=storage)
-                    con.commit()
-                except BaseException:
-                    con.rollback()
-                    raise
-            return {"original_sha256": subject, "occurrence_id": occurrence["id"],
-                    "resolution_sha256": resolution, "capture_receipt_sha256": receipt_hash,
-                    "reused": reused, "stage_promotions": 0, "semantic_acceptance": False}
+                current = con.execute("SELECT * FROM originals WHERE sha256=?", (subject,)).fetchone()
+                local_capture.require(dict(current) == declared, "canonical_original_changed")
+                storage = str(self.output / "blobs" / subject)
+                unresolved = declared["role"] == declared["scope"] == "unresolved" and declared["storage_path"] is None
+                local_capture.require(unresolved or (declared["role"] == "original"
+                    and declared["scope"] == "in_scope" and declared["storage_path"] == storage),
+                    "canonical_original_binding_conflict")
+                prior = con.execute("SELECT * FROM occurrences WHERE id=?", (occurrence["id"],)).fetchone()
+                if prior:
+                    local_capture.require(dict(prior) == occurrence, "canonical_capture_identity_conflict")
+                else:
+                    con.execute("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)", tuple(occurrence.values()))
+                local_capture.verify_occurrence(occurrence, self.output, subject, expected_policy=self.policy.sha256)
+                resolution, reused = (None, bool(prior))
+                if unresolved:
+                    resolution, reused = original_resolution.append_initial(con, subject=subject,
+                        policy_sha256=self.policy.sha256, capture_receipt_sha256=receipt_hash,
+                        capture_occurrence_id=occurrence["id"], storage_path=storage)
+                con.commit()
+            except BaseException:
+                con.rollback()
+                raise
+        return {"original_sha256": subject, "occurrence_id": occurrence["id"],
+                "resolution_sha256": resolution, "capture_receipt_sha256": receipt_hash,
+                "reused": reused, "stage_promotions": 0, "semantic_acceptance": False}
 
     def _validator(self, context):
         # This adapter cannot silently fall back to mutating mail replay.
@@ -193,47 +199,53 @@ class CanonicalOriginalReconciler(CanonicalMailBackend):
                 "test_only": False, "semantic_acceptance": False}
 
     def accept(self, original_sha256):
-        """Explicit canonical-ID callback using installed functional preserver only."""
+        """Public callback retains the exclusive non-reentrant root lock."""
         from ..run import root_lock
-        subject = local_capture.sha(original_sha256)
         with root_lock(Path(self.database).parent):
-            with self.store.ledger(self.database, readonly=True) as con:
-                self._live_run(con)
-                original = self.store.effective_original(con, subject)
-                local_capture.require(original is not None, "canonical_original_missing")
-                self.policy.admission(subject, original["bytes"])
-                state = con.execute("SELECT * FROM stage_state WHERE original_sha256=? AND stage='preserve'", (subject,)).fetchone()
-                rows = list(con.execute("SELECT * FROM occurrences WHERE original_sha256=? "
-                                        "AND acquisition_method='verified_local_capture' ORDER BY id LIMIT 1025", (subject,)))
-                local_capture.require(len(rows) <= 1024, "preservation_occurrence_bound")
-                rows = [row for row in rows if local_capture.decode(row["evidence"]).get("policy_sha256") == self.policy.sha256]
-                local_capture.require(rows, "verified_local_capture_required")
-                if original.get("resolution_sha256"):
-                    binding = con.execute("SELECT capture_occurrence_id FROM original_resolutions WHERE original_sha256=?", (subject,)).fetchone()
-                    rows = [row for row in rows if row["id"] == binding[0]]
-                local_capture.require(rows, "original_resolution_capture_unbound")
-                receipt_hash = local_capture.verify_occurrence(rows[0], self.output, subject, expected_policy=self.policy.sha256)
-                if state["status"] == "done":
-                    return self._accepted_replay(con, subject)
-            envelope = {"schema": "preservation-evidence-v1", "original_sha256": subject,
-                "byte_length": original["bytes"], "storage_ref": original["storage_path"],
-                "verification_receipt_sha256": receipt_hash, "occurrence_ids": [row["id"] for row in rows]}
+            return self._accept_locked(original_sha256)
+
+    def _accept_locked(self, original_sha256):
+        """Internal batch callback; caller must hold the shared root lock."""
+        from ..run import require_root_lock
+        require_root_lock(Path(self.database).parent)
+        subject = local_capture.sha(original_sha256)
+        with self.store.ledger(self.database, readonly=True) as con:
+            self._live_run(con)
+            original = self.store.effective_original(con, subject)
+            local_capture.require(original is not None, "canonical_original_missing")
+            self.policy.admission(subject, original["bytes"])
+            state = con.execute("SELECT * FROM stage_state WHERE original_sha256=? AND stage='preserve'", (subject,)).fetchone()
+            rows = list(con.execute("SELECT * FROM occurrences WHERE original_sha256=? "
+                                    "AND acquisition_method='verified_local_capture' ORDER BY id LIMIT 1025", (subject,)))
+            local_capture.require(len(rows) <= 1024, "preservation_occurrence_bound")
+            rows = [row for row in rows if local_capture.decode(row["evidence"]).get("policy_sha256") == self.policy.sha256]
+            local_capture.require(rows, "verified_local_capture_required")
             if original.get("resolution_sha256"):
-                envelope["resolution_sha256"] = original["resolution_sha256"]
-            local_capture.require(self._validator({"receipt": {"subject_sha256": subject, "stage": "preserve"},
-                "content_kind": "preservation_evidence", "preservation_evidence": envelope}),
-                "local_capture_domain_validation_failed")
-            if self.stage_runner is None:
-                self.stage_runner = installed_preservation_runner(self.stages, self.database,
-                    self.run_identity, self._validator, binding_context=self._binding_context())
-            registered = self.stage_runner.set_preservation_evidence(subject, envelope, author_id="runner-preserver", tier="A")
-            claim = self.stage_runner.claim(subject, "preserve", ttl_seconds=300)
-            packet = {"schema": "ledger-stage-receipt-v1", "subject_sha256": subject, "stage": "preserve",
-                "content_sha256": registered["content_sha256"], "author_id": "runner-preserver", "tier": "A",
-                "reviewer_id": "runner-preserver", "role": "preserver", "verdict": "pass",
-                "coverage": {"denominator": {"kind": "bytes", "total": original["bytes"]}, "covered": original["bytes"], "scope": "selected"},
-                "locators": ["cas:" + subject], "rationale": "Verified current local byte capture; no mail provenance or content review.",
-                "model_or_tool": "local-capture-preserver-v1", "created_at_tz": datetime.now(timezone.utc).isoformat(),
-                "input_hashes": {"original": subject}}
-            result = self.stage_runner.promote(subject, "preserve", json.dumps(packet, sort_keys=True).encode(), claim_id=claim["claim_id"])
-            return {**result, "semantic_acceptance": False}
+                binding = con.execute("SELECT capture_occurrence_id FROM original_resolutions WHERE original_sha256=?", (subject,)).fetchone()
+                rows = [row for row in rows if row["id"] == binding[0]]
+            local_capture.require(rows, "original_resolution_capture_unbound")
+            receipt_hash = local_capture.verify_occurrence(rows[0], self.output, subject, expected_policy=self.policy.sha256)
+            if state["status"] == "done":
+                return self._accepted_replay(con, subject)
+        envelope = {"schema": "preservation-evidence-v1", "original_sha256": subject,
+            "byte_length": original["bytes"], "storage_ref": original["storage_path"],
+            "verification_receipt_sha256": receipt_hash, "occurrence_ids": [row["id"] for row in rows]}
+        if original.get("resolution_sha256"):
+            envelope["resolution_sha256"] = original["resolution_sha256"]
+        local_capture.require(self._validator({"receipt": {"subject_sha256": subject, "stage": "preserve"},
+            "content_kind": "preservation_evidence", "preservation_evidence": envelope}),
+            "local_capture_domain_validation_failed")
+        if self.stage_runner is None:
+            self.stage_runner = installed_preservation_runner(self.stages, self.database,
+                self.run_identity, self._validator, binding_context=self._binding_context())
+        registered = self.stage_runner.set_preservation_evidence(subject, envelope, author_id="runner-preserver", tier="A")
+        claim = self.stage_runner.claim(subject, "preserve", ttl_seconds=300)
+        packet = {"schema": "ledger-stage-receipt-v1", "subject_sha256": subject, "stage": "preserve",
+            "content_sha256": registered["content_sha256"], "author_id": "runner-preserver", "tier": "A",
+            "reviewer_id": "runner-preserver", "role": "preserver", "verdict": "pass",
+            "coverage": {"denominator": {"kind": "bytes", "total": original["bytes"]}, "covered": original["bytes"], "scope": "selected"},
+            "locators": ["cas:" + subject], "rationale": "Verified current local byte capture; no mail provenance or content review.",
+            "model_or_tool": "local-capture-preserver-v1", "created_at_tz": datetime.now(timezone.utc).isoformat(),
+            "input_hashes": {"original": subject}}
+        result = self.stage_runner.promote(subject, "preserve", json.dumps(packet, sort_keys=True).encode(), claim_id=claim["claim_id"])
+        return {**result, "semantic_acceptance": False}
