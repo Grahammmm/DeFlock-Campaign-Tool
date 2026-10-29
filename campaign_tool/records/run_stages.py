@@ -910,6 +910,8 @@ def stage_outputs(args):
         name = "".join(ch for ch in args.run_id if ch.isalnum() or ch in "-_.") or "run"
         target = directory / f"{name}.json"
         temporary = directory / f".{name}.json.tmp"
+        from .outcomes.factsheets import write_run_factsheets
+        write_run_factsheets(processing, directory / name, args.run_id)
         temporary.write_text(json.dumps(snapshot, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, target)
     except OSError:
