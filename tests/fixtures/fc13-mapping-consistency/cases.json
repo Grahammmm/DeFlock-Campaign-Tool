@@ -1,0 +1,86 @@
+{
+  "schema": "fc13-mapping-consistency-cases/v1",
+  "synthetic_only": true,
+  "description": "Frozen FC13 matrix: one extracted source unit maps to one canonical normalized record. Fictional inputs built from the existing synthetic detector fixtures; no records, extraction, IO or network.",
+  "conflict_reason": "normalized_source_record_conflict",
+  "dimensions": [
+    "normal_one_record_per_source",
+    "exact_duplicate_mapping",
+    "same_source_conflict",
+    "independent_source_same_event",
+    "prerequisite_control"
+  ],
+  "negative_control": {
+    "id": "disable-per-source-record-comparison",
+    "case": "retention-conflict-event-id-append",
+    "restored_positive_cases": [
+      "retention-conflict-event-id-append",
+      "retention-exact-duplicate-append",
+      "retention-independent-source-same-locator-append"
+    ],
+    "mutant_expectation": {"evaluated": 2, "hit_count": 2},
+    "assertion_marker": "FC13_CONFLICT_ASSERTION"
+  },
+  "cases": [
+    {"id": "retention-normal", "dimension": "normal_one_record_per_source", "detector": "retention-over-policy", "target": "subject", "operation": "none", "placement": null, "mutation": null,
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 2, "unique_records": 2, "duplicate_rows": 0, "references": 1}},
+
+    {"id": "retention-exact-duplicate-append", "dimension": "exact_duplicate_mapping", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": null,
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 1, "hits_equal_normal": true}},
+    {"id": "retention-exact-duplicate-prepend", "dimension": "exact_duplicate_mapping", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "prepend", "mutation": null,
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 1, "hits_equal_normal": true}},
+    {"id": "retention-exact-duplicate-reordered-keys", "dimension": "exact_duplicate_mapping", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "adjacent", "mutation": {"field": "key_order", "value": null},
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 1, "hits_equal_normal": true}},
+    {"id": "retention-exact-duplicate-policy-unit", "dimension": "exact_duplicate_mapping", "detector": "retention-over-policy", "target": "policy", "operation": "duplicate_mapping", "placement": "prepend", "mutation": null,
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 1, "hits_equal_normal": true}},
+
+    {"id": "retention-conflict-event-id-append", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-event-id-prepend", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "prepend", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-event-id-adjacent", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "adjacent", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-record-type-append", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "record_type", "value": "audit"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-record-type-prepend", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "prepend", "mutation": {"field": "record_type", "value": "audit"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-record-type-adjacent", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "adjacent", "mutation": {"field": "record_type", "value": "audit"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-fields-append", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "fields.retention_days", "value": 45}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-fields-prepend", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "prepend", "mutation": {"field": "fields.retention_days", "value": 45}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-fields-adjacent", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "adjacent", "mutation": {"field": "fields.retention_days", "value": 45}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-event-at-append", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_at", "value": "2020-01-21T12:00:00+00:00"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-event-at-prepend", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "prepend", "mutation": {"field": "event_at", "value": "2020-01-21T12:00:00+00:00"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-event-at-adjacent", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "adjacent", "mutation": {"field": "event_at", "value": "2020-01-21T12:00:00+00:00"}, "expect": {"outcome": "conflict"}},
+    {"id": "retention-conflict-policy-unit-event-id", "dimension": "same_source_conflict", "detector": "retention-over-policy", "target": "policy", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "policy-unit-reinterpreted"}, "expect": {"outcome": "conflict"}},
+
+    {"id": "retention-independent-source-same-locator-append", "dimension": "independent_source_same_event", "detector": "retention-over-policy", "target": "subject", "operation": "independent_source", "placement": "append", "mutation": null,
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 1}},
+    {"id": "retention-independent-source-same-locator-prepend", "dimension": "independent_source_same_event", "detector": "retention-over-policy", "target": "subject", "operation": "independent_source", "placement": "prepend", "mutation": null,
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 1}},
+    {"id": "retention-independent-source-other-locator-append", "dimension": "independent_source_same_event", "detector": "retention-over-policy", "target": "subject", "operation": "independent_source", "placement": "append", "mutation": {"field": "locator", "value": {"row": 2}},
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 2}},
+    {"id": "retention-independent-source-other-locator-prepend", "dimension": "independent_source_same_event", "detector": "retention-over-policy", "target": "subject", "operation": "independent_source", "placement": "prepend", "mutation": {"field": "locator", "value": {"row": 2}},
+     "expect": {"outcome": "evaluated", "evaluated": 1, "hit_count": 1, "input_rows": 3, "unique_records": 2, "duplicate_rows": 1, "references": 2}},
+
+    {"id": "retention-control-missing-source", "dimension": "prerequisite_control", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "source.unit_id", "value": "unbound-unit", "and_event_id": "event-1-reinterpreted"},
+     "expect": {"outcome": "blocked", "reason": "normalized_source_missing_or_changed"}},
+    {"id": "retention-control-changed-artifact", "dimension": "prerequisite_control", "detector": "retention-over-policy", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "source.artifact_sha256", "value": "fc13 changed synthetic artifact", "and_event_id": "event-1-reinterpreted"},
+     "expect": {"outcome": "blocked", "reason": "normalized_source_missing_or_changed"}},
+
+    {"id": "search-before-training-normal", "dimension": "normal_one_record_per_source", "detector": "search-before-training", "target": "subject", "operation": "none", "placement": null, "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 0, "hits_equal_normal": true}},
+    {"id": "purpose-quality-normal", "dimension": "normal_one_record_per_source", "detector": "purpose-quality", "target": "subject", "operation": "none", "placement": null, "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 0, "hits_equal_normal": true}},
+    {"id": "external-sharing-normal", "dimension": "normal_one_record_per_source", "detector": "external-sharing", "target": "subject", "operation": "none", "placement": null, "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 0, "hits_equal_normal": true}},
+    {"id": "audit-gap-normal", "dimension": "normal_one_record_per_source", "detector": "audit-gap", "target": "subject", "operation": "none", "placement": null, "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 0, "hits_equal_normal": true}},
+    {"id": "cpra-deadline-normal", "dimension": "normal_one_record_per_source", "detector": "cpra-deadline", "target": "subject", "operation": "none", "placement": null, "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 0, "hits_equal_normal": true}},
+    {"id": "volume-anomaly-normal", "dimension": "normal_one_record_per_source", "detector": "volume-anomaly", "target": "subject", "operation": "none", "placement": null, "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 0, "hits_equal_normal": true}},
+
+    {"id": "search-before-training-exact-duplicate", "dimension": "exact_duplicate_mapping", "detector": "search-before-training", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 1, "hits_equal_normal": true}},
+    {"id": "purpose-quality-exact-duplicate", "dimension": "exact_duplicate_mapping", "detector": "purpose-quality", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 1, "hits_equal_normal": true}},
+    {"id": "external-sharing-exact-duplicate", "dimension": "exact_duplicate_mapping", "detector": "external-sharing", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 1, "hits_equal_normal": true}},
+    {"id": "audit-gap-exact-duplicate", "dimension": "exact_duplicate_mapping", "detector": "audit-gap", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 1, "hits_equal_normal": true}},
+    {"id": "cpra-deadline-exact-duplicate", "dimension": "exact_duplicate_mapping", "detector": "cpra-deadline", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 1, "hits_equal_normal": true}},
+    {"id": "volume-anomaly-exact-duplicate", "dimension": "exact_duplicate_mapping", "detector": "volume-anomaly", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": null, "expect": {"outcome": "evaluated", "duplicate_rows": 1, "hits_equal_normal": true}},
+
+    {"id": "search-before-training-conflict-event-id", "dimension": "same_source_conflict", "detector": "search-before-training", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "purpose-quality-conflict-event-id", "dimension": "same_source_conflict", "detector": "purpose-quality", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "external-sharing-conflict-event-id", "dimension": "same_source_conflict", "detector": "external-sharing", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "audit-gap-conflict-event-id", "dimension": "same_source_conflict", "detector": "audit-gap", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "cpra-deadline-conflict-event-id", "dimension": "same_source_conflict", "detector": "cpra-deadline", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}},
+    {"id": "volume-anomaly-conflict-event-id", "dimension": "same_source_conflict", "detector": "volume-anomaly", "target": "subject", "operation": "duplicate_mapping", "placement": "append", "mutation": {"field": "event_id", "value": "event-1-reinterpreted"}, "expect": {"outcome": "conflict"}}
+  ]
+}
