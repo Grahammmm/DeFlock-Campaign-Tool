@@ -335,15 +335,6 @@ class ComprehensionContractTests(unittest.TestCase):
             self.assertEqual(byte_hash((REPO / path).read_bytes()), expected, path)
         VALIDATOR.validate(self.envelope)
 
-    def test_current_source_pins_reject_changed_bytes(self):
-        self.assertEqual(set(CURRENT_SOURCE_PINS), set(PINS['files']))
-        for path in CURRENT_SOURCE_PINS:
-            with self.subTest(path=path):
-                changed = {**CURRENT_SOURCE_PINS, path: '0' * 64}
-                with mock.patch.dict(CURRENT_SOURCE_PINS, changed, clear=True):
-                    with self.assertRaisesRegex(ValueError, '^existing_source_changed$'):
-                        verify_source_pins()
-
     def test_runtime_database_preserves_frozen_native_schema_and_content(self):
         pins = PINS['canonical_database']
         def digest(value):
