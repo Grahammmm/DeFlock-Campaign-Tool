@@ -369,7 +369,7 @@ def summary(package):
     return {
         "jurisdiction": package["jurisdiction"],
         "status": package["status"],
-        "reviewed_by": package["reviewed_by"],
+        "reviewed_by": list(package["reviewed_by"]),
         "reviewed_at": package["reviewed_at"],
         "records_law": {
             "name": law["name"], "citation": law["citation"],
