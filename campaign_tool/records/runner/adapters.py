@@ -1,4 +1,5 @@
 """Offline exporter and explicit legacy intake bridge. No live mail connection."""
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -21,7 +22,8 @@ class LegacyIntakeBackend:
         extended = receipt.get("schema") == "mail-wire-receipt-v2"
         native_items = tuple({key:value for key,value in item.items() if key not in {"manifest_path","streams"}}
                              for item in receipt.get("native_items", [])) if extended else ()
-        with sqlite3.connect(self.output/'intake.sqlite') as con:
+        # closing(): sqlite3's own context manager only ends the transaction.
+        with closing(sqlite3.connect(self.output/'intake.sqlite')) as con, con:
             for item in items[1:]:
                 oid=intake_folder.hid(intake_folder.js(['mail-receipt-v1',*identity,item['part']]))
                 row=con.execute('SELECT sha,locator FROM occurrences WHERE oid=?',(oid,)).fetchone()

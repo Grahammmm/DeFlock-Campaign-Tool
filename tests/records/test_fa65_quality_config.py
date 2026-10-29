@@ -6,6 +6,7 @@ it is a mutation, not the implementation tested by Regression.
 """
 import argparse
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
+import gc
 import io
 import json
 from pathlib import Path
@@ -257,8 +258,15 @@ class ControlOutputRegression(unittest.TestCase):
     def test_expected_negative_controls_are_silent_and_pass(self):
         stdout, stderr, report = io.StringIO(), io.StringIO(), io.StringIO()
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(GateControl)
+        # Cyclic garbage from earlier tests (e.g. unclosed sqlite3 connections,
+        # a ResourceWarning on 3.13+) is finalized whenever the collector next
+        # runs. Collect it here, on the real stderr, so this capture holds only
+        # the controls' own output; the second collect, inside the capture,
+        # makes any resource the controls themselves leak fail this test.
+        gc.collect()
         with redirect_stdout(stdout), redirect_stderr(stderr):
             result = unittest.TextTestRunner(stream=report, verbosity=2).run(suite)
+            gc.collect()
         self.assertTrue(result.wasSuccessful(), report.getvalue())
         self.assertEqual(result.testsRun, 2, report.getvalue())
         self.assertEqual(stdout.getvalue(), "")
