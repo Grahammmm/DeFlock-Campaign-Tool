@@ -230,6 +230,49 @@ class ParityTests(unittest.TestCase):
         self.assertEqual(facts.validate(bundle, [candidate()])['dropped'][0]['reason'],
                          'quote_spans_units')
 
+    def test_repeated_physical_page_preserves_selected_receipt(self):
+        receipts = sorted([RECEIPT, evidence.sha(b'second synthetic receipt')])
+        for texts in ([f'É 😀 prefix. {QUOTE}', 'A different synthetic page.'],
+                      ['A different synthetic page.', f'É 😀 prefix. {QUOTE}'],
+                      [QUOTE, QUOTE]):
+            units = [evidence.unit({'kind': 'pdf_page', 'locator': {'page': 1},
+                                    'text': text, 'data': {}}, SUBJECT, receipt, 1)
+                     for text, receipt in zip(texts, receipts)]
+            bundle = evidence.bundle(units, {SUBJECT: {}}, [
+                {'original_sha256': SUBJECT, 'receipt_sha256': receipt,
+                 'attempt_kind': 'native', 'declared_unit_count': 1,
+                 'normalized_unit_count': 1} for receipt in receipts])
+            for page in (1, None, 99):
+                with self.subTest(texts=texts, page=page):
+                    result = facts.validate(bundle, [candidate(page=page)])
+                    if texts == [QUOTE, QUOTE]:
+                        self.assertEqual(result['dropped'], [
+                            {'index': 0, 'reason': 'quote_ambiguous_page'}])
+                        continue
+                    self.assertEqual(result['dropped'], [])
+                    fact = result['verified'][0]
+                    self.assertEqual(fact['page'], 1)
+                    if page == 1:
+                        self.assertNotIn('page_relocated_from', fact)
+                    else:
+                        self.assertEqual(fact['page_relocated_from'], page)
+                    support = fact['citations'][0]
+                    selected = next(u for u in units if QUOTE in u['text'])
+                    self.assertEqual(support['unit_id'], selected['unit_id'])
+                    self.assertEqual(support['quote'], QUOTE)
+                    self.assertEqual(support['span']['start_byte'], len('É 😀 prefix. '.encode()))
+                    evidence.validate_citation(support, bundle)
+
+    def test_supplied_page_disambiguates_repeated_quote(self):
+        bundle = make_bundle([QUOTE, QUOTE])
+        for page in (1, 2):
+            result = facts.validate(bundle, [candidate(page=page)])
+            fact = result['verified'][0]
+            self.assertEqual(fact['page'], page)
+            self.assertNotIn('page_relocated_from', fact)
+            self.assertEqual(fact['citations'][0]['unit_id'], bundle['units'][page - 1]['unit_id'])
+            evidence.validate_citation(fact['citations'][0], bundle)
+
     def test_claim_and_value_bounds(self):
         f = candidate(claim=QUOTE + ' ' * 1100 + QUOTE, value=' ' + '30 ' * 80)
         fact = facts.validate(make_bundle([QUOTE]), [f])['verified'][0]

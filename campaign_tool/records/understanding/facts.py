@@ -391,7 +391,8 @@ def _pages(units):
             text += u['text']
             segments.append((s, len(text), u))
             text += '\n'
-        spans.append({'page': page, 'start': start, 'end': len(text) - 1})
+        # Snapshot maps are page-keyed; receipt-local physical pages can repeat.
+        spans.append({'page': len(spans) + 1, 'source_page': page, 'start': start, 'end': len(text) - 1})
     # An explicitly empty page list must not trigger page_texts' whole-text fallback.
     return text, {'page_spans': spans or [{'page': 1, 'start': 0, 'end': 0}]}, segments
 
@@ -428,7 +429,10 @@ def validate(bundle, candidates, *, strict=True, allowed=frozenset()) -> dict:
         item, reason = None, 'unknown_document'
         if f['original_sha256'] in prepared:
             text, row, segments = prepared[f['original_sha256']]
-            item, reason = check_fact(f, f['original_sha256'], row, text, strict, allowed)
+            hits = [p['page'] for p in row['page_spans'] if p.get('source_page') == f['page']
+                    and locate_quote(text, p['start'], p['end'], f['quote'])]
+            adapted = dict(f, page=hits[0] if len(hits) == 1 else None)
+            item, reason = check_fact(adapted, f['original_sha256'], row, text, strict, allowed)
             if item is not None:
                 cit = item['citations'][0]
                 matches = [(s, u) for s, e, u in segments if s <= cit['start'] < cit['end'] <= e]
@@ -438,9 +442,9 @@ def validate(bundle, candidates, *, strict=True, allowed=frozenset()) -> dict:
                     s, u = matches[0]
                     start, end = cit['start'] - s, cit['end'] - s
                     item['citations'] = [evidence.citation(u, len(u['text'][:start].encode()), len(u['text'][:end].encode()))]
-                    item['page'] = cit['page']
-                    if 'page_relocated_from' in cit:
-                        item['page_relocated_from'] = cit['page_relocated_from']
+                    item['page'] = u['locator']['page'] if u['kind'] == 'pdf_page' else 1
+                    if item['page'] != f['page']:
+                        item['page_relocated_from'] = f['page']
         if reason:
             dropped.append({'index': index, 'reason': reason})
             reasons[reason] = reasons.get(reason, 0) + 1
