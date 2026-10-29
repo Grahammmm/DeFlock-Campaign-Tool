@@ -123,12 +123,15 @@ def restore_fixture_hashes(raw):
 
 PINS = json.loads(restore_fixture_hashes((FIX / 'source-pins.json').read_bytes()))
 # Frozen fixture provenance stays unchanged. The live import closure includes
-# FC7's stricter run-clock admission, so pin those exact current source bytes
-# separately rather than rewriting historical fixtures or dropping the gate.
+# FC7's stricter run-clock admission and main's fact-sheet output integration, so
+# pin those exact current source bytes separately rather than rewriting historical
+# fixtures or dropping the gate.
 CURRENT_SOURCE_PINS = {
     **PINS['files'],
     'campaign_tool/records/detectors/persistence.py':
-        '683cb632e3845ecb2687e0b586efaac538b9fcff7744e5e9d834fd79f932529a',
+        '683cb632e3845ecb2687e0b586efaac538b9fcff7744e5e9d834fd79f932529a',  # pragma: allowlist secret -- public source digest
+    'campaign_tool/records/run_stages.py':
+        'a865bdcbd189c8c22bfe5c2b40f1aef91c25c6628e64a7660b3dc06383921aa5',  # pragma: allowlist secret -- public source digest
 }
 
 
