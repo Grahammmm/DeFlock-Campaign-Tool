@@ -7,12 +7,10 @@ name: flock-swap-rehearsal
 # nothing leaves the runner.
 
 on:
-  pull_request:
-    paths:
-      - "container/flock-ocr/**"
-      - "tests/test_flock_ocr_rootless_swap.py"
-      - "docs/RECORDS-OCR-CONTAINER-ROOTLESS.md"
-      - ".github/workflows/flock-swap-rehearsal.yml"
+  schedule:
+    - cron: '17 7 * * *'
+  # Container rehearsal is full-tier only; Python driver regressions are owned
+  # by the affected source tests on PRs. No PR image builds or daemon setup.
   push:
     branches: [main]
     paths:

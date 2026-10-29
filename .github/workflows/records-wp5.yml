@@ -1,5 +1,7 @@
 name: WP5 pinned catalog composition
 on:
+  schedule:
+    - cron: '17 7 * * *'
   pull_request:
   merge_group:
     types: [checks_requested]
@@ -23,6 +25,7 @@ env:
   # touches none of these paths the composition steps are skipped, while both
   # whole-tree credential scans still run.
   PR_SCOPE: |
+    **
     campaign_tool/**
     tests/__init__.py
     tests/records/**
@@ -36,13 +39,13 @@ env:
     .github/workflows/records-wp5.yml
 jobs:
   wp5:
-    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         # PRs: one interpreter (the merge clock). Main push: full matrix.
-        python: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
+        python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
     steps:
       - name: Checkout WP5 candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret

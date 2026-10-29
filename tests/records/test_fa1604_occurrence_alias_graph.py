@@ -61,6 +61,10 @@ def synthetic_boundary(root):
 
     def synthetic_sqlite(database, *args, **kwargs):
         text = os.fspath(database)
+        # SQLite's exact private-memory target cannot access real data. Do not
+        # exempt file: URIs, empty targets, or filesystem paths from confinement.
+        if text == ":memory:":
+            return connect(database, *args, **kwargs)
         target = unquote(urlsplit(text).path) if text.startswith("file:") else text
         if not ancestry(target).is_relative_to(root):
             raise RuntimeError("FA1604 real-data SQLite sentinel")
@@ -110,6 +114,9 @@ class AliasGraphTests(unittest.TestCase):
         self.enterContext(synthetic_boundary(self.root))
         from campaign_tool.records.ledger import occurrence_projection, store
         self.projector, self.store = occurrence_projection, store
+        # Exercise reference-schema construction under the guard every time;
+        # correctness must not depend on another module warming this cache.
+        store._base_schema.cache_clear()
         self.mail_sha = hashlib.sha256(b"FA1604 fictional identical message octets").hexdigest()
         self.part_sha = hashlib.sha256(b"FA1604 fictional identical attachment octets").hexdigest()
 

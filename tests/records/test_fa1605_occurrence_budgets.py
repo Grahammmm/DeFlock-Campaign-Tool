@@ -43,6 +43,10 @@ def offline(root):
             raise RuntimeError('real_data_access_refused')
 
     def database(value, *args, **kwargs):
+        # Only SQLite's exact private-memory target is non-filesystem. Keep
+        # file: URIs and every real database path subject to the same guard.
+        if os.fspath(value) == ':memory:':
+            return connect(value, *args, **kwargs)
         path_checked(value, write=True)
         return connect(value, *args, **kwargs)
 
@@ -127,8 +131,10 @@ class OccurrenceBudgetTests(unittest.TestCase):
         self.guard = offline(self.root)
         self.guard.__enter__()
         self.addCleanup(self.guard.__exit__, None, None, None)
-        from campaign_tool.records.ledger import occurrence_projection
+        from campaign_tool.records.ledger import occurrence_projection, store
         self.projection = occurrence_projection
+        # Prove cold-cache execution under the sentinels on every test.
+        store._base_schema.cache_clear()
         self.database, self.import_id, self.payloads = capture(self.root)
         self.rows = len(self.payloads)
         self.bytes = sum(map(len, self.payloads))

@@ -111,6 +111,17 @@ Nonempty byte-identical originals, printed private hashes (including the empty
 hash), denied paths, correspondence and credentials still block. No finding is
 waived because another match was classified non-content.
 
+## CI tiers and portable build parity
+
+[CI ownership and tiers](RECORDS-CI.md) inventories every source-test owner.
+PR and merge-group checks use Python 3.12 and do not build wheels or images.
+Main/nightly retain the records wheel's 3.11–3.13 installed-artifact contract,
+container checks and release reproducibility. The portable wheel command above
+is the real records-release.yml command: `pip wheel --no-deps
+--no-build-isolation --wheel-dir "$WHEEL_OUTPUT" .` with the pinned build
+requirements installed first. Run it from clean, committed source; this is not
+`python -m build`, an editable install or a deployment command.
+
 ## Acceptance and owner release action
 
 `test_wp0_acceptance` exercises the version CLI, old gate commands and strict

@@ -1,5 +1,7 @@
 name: Records intake checks
 on:
+  schedule:
+    - cron: '17 7 * * *'
   push:
     branches: [main]
   workflow_dispatch:
@@ -10,7 +12,7 @@ permissions:
   contents: read
 jobs:
   intake:
-    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     # The full synthetic suite measured 631-1041 s on successful hosted runs
     # (2026-10-25) and was killed at the former 18-minute step cap on main and
     # PRs alike; keep the cap well above the measured maximum.
@@ -19,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         # PRs: one interpreter (the merge clock). Main push: full matrix.
-        python: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
+        python: ['3.12']
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -29,9 +31,8 @@ jobs:
           python-version: '${{ matrix.python }}'
       - name: Install test parsers in disposable CI only
         run: python -m pip install -r requirements-records-test.txt
-      - name: Synthetic offline extraction tests
-        timeout-minutes: 30
-        run: python -B -m unittest discover -v
+      # Source tests have one owner in tools/ci_affected.py. This workflow owns
+      # only the detect-secrets scan, not another full discovery invocation.
       - name: Credential scan without network verification
         # The default Git-tracked scope excludes generated/untracked output
         # wherever it is written, while keeping every tracked path in scope.
