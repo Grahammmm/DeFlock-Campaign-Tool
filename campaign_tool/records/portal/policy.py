@@ -65,8 +65,20 @@ def hostname(value):
     return value
 
 
+def _utf8_encodable(url):
+    """True only when the URL string encodes as strict UTF-8 (no lone surrogates)."""
+    try:
+        url.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def url_parts(url):
-    if not isinstance(url, str) or len(url) > 16384 or any(ord(c) < 33 or ord(c) == 127 for c in url):
+    # Strict UTF-8 is checked before parsing so a lone surrogate never reaches
+    # urlsplit or any later url.encode() identity hash. Nothing is replaced.
+    if not isinstance(url, str) or len(url) > 16384 or not _utf8_encodable(url) \
+            or any(ord(c) < 33 or ord(c) == 127 for c in url):
         raise PortalError("invalid_url")
     try:
         p = urlsplit(url)
