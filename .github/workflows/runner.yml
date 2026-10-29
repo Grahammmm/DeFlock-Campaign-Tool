@@ -1,5 +1,7 @@
 name: Runner checks
 on:
+  schedule:
+    - cron: '17 7 * * *'
   pull_request:
   merge_group:
     types: [checks_requested]
@@ -16,6 +18,7 @@ env:
   # .github/required-checks.json, so they always start and report; on a PR that
   # touches none of these paths their check steps are skipped (job succeeds).
   PR_SCOPE: |
+    **
     runner/**
     tests/runner/**
     tests/__init__.py
@@ -37,7 +40,7 @@ env:
     .github/workflows/runner.yml
 jobs:
   runner:
-    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -73,7 +76,7 @@ jobs:
       - run: python3 -B tools/check_public_tree.py
         if: steps.scope.outputs.run == 'true'
   image:
-    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -93,15 +96,15 @@ jobs:
           printf 'In-scope changes:\n%s\n' "${changed:-none, so the check steps are skipped}"
           if [[ -n "$changed" ]]; then echo run=true; else echo run=false; fi >> "$GITHUB_OUTPUT"
       - name: Build the runner image (includes its own --once --fake smoke test)
-        if: steps.scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && steps.scope.outputs.run == 'true'
         run: docker build -f runner/Dockerfile -t deflock-runner:ci .
       - name: Image runs as non-root and refuses to start without a workspace
-        if: steps.scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && steps.scope.outputs.run == 'true'
         run: |
           test "$(docker run --rm --entrypoint id deflock-runner:ci -u)" = "10001"
           if docker run --rm deflock-runner:ci --once; then echo "expected usage error"; exit 1; fi
           docker run --rm -e PRIVACY_TIER=strict_local -e MODEL_BASE_URL=https://api.example.invalid/v1 deflock-runner:ci --once --fake && exit 1 || true
       - name: Image contains no test fixtures or private paths
-        if: steps.scope.outputs.run == 'true'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && steps.scope.outputs.run == 'true'
         run: |
           docker run --rm --entrypoint sh deflock-runner:ci -c 'test ! -e /app/tests && test ! -e /app/examples && test ! -e /app/.git && test ! -e /app/private'

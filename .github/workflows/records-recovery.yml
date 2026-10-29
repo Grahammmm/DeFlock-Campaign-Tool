@@ -1,5 +1,7 @@
 name: WP9 recovery and pinned WP8 composition
 on:
+  schedule:
+    - cron: '17 7 * * *'
   pull_request:
   merge_group:
     types: [checks_requested]
@@ -16,6 +18,7 @@ env:
   # in .github/required-checks.json, so it always starts and reports; on a PR
   # that touches none of these paths its check steps are skipped (job succeeds).
   PR_SCOPE: |
+    **
     campaign_tool/**
     tests/__init__.py
     tests/records/**
@@ -29,13 +32,13 @@ env:
     .github/workflows/records-recovery.yml
 jobs:
   recovery-composition:
-    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         # PRs: one interpreter (the merge clock). Main push: full matrix.
-        python: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
+        python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
     steps:
       - name: Check out WP9 candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
