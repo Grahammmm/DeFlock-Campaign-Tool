@@ -223,12 +223,19 @@ def write_run_factsheets(processing, output, run_id):
         rendered = markdown(report).encode()
         _need(len(encoded) + len(rendered) <= MAX_OUTPUT_BYTES, "factsheet_output_bound")
         files = (("agency-factsheets.json", encoded), ("agency-factsheets.md", rendered))
+        own = {name for name, _ in files}
         if output.exists():
-            _need({p.name for p in output.iterdir()} == {name for name, _ in files}, "factsheet_existing_output")
-            for name, raw in files:
-                read_pinned(output / name, sha(raw), MAX_OUTPUT_BYTES)
-            return
-        output.mkdir(mode=0o700)  # Refuse existing output, including any symlink.
+            # The per-run directory is shared with the comparison and register
+            # outputs; only this adapter's own pair is verified or refused.
+            _need(output.is_dir(), "factsheet_existing_output")
+            present = own & {p.name for p in output.iterdir()}
+            if present == own:
+                for name, raw in files:
+                    read_pinned(output / name, sha(raw), MAX_OUTPUT_BYTES)
+                return
+            _need(not present, "factsheet_existing_output")  # A partial pair is never repaired.
+        else:
+            output.mkdir(mode=0o700)  # Symlinked paths were refused above.
         for name, raw in files:
             fd = os.open(output / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as stream:

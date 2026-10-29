@@ -148,7 +148,11 @@ class FactSheetsTests(unittest.TestCase):
         code, result = self.stage()
         self.assertEqual((code, result["status"], result["counts"]["output"]), (0, "ok", 1))
         output = self.project / "run-outputs" / "test-run"
-        self.assertEqual({p.name for p in output.iterdir()}, {"agency-factsheets.json", "agency-factsheets.md"})
+        # The per-run directory also carries the comparison and request-register pairs.
+        own = {"agency-factsheets.json", "agency-factsheets.md"}
+        self.assertEqual({p.name for p in output.iterdir()} - {
+            "comparison.json", "comparison.md",
+            "CURRENT-REQUEST-REGISTER.json", "CURRENT-REQUEST-REGISTER.md"}, own)
         report = json.loads((output / "agency-factsheets.json").read_text())
         text = (output / "agency-factsheets.md").read_text()
         self.assertEqual(text, fs.markdown(report))
@@ -173,6 +177,29 @@ class FactSheetsTests(unittest.TestCase):
         self.assertEqual(path.stat().st_ino, identity)
         self.assertEqual(self.stage("second-run")[0], 0)
         self.assertTrue((self.project / "run-outputs" / "second-run" / path.name).is_file())
+
+    def test_shared_run_directory_sibling_outputs_and_partial_pair(self):
+        # Sibling outcome writers share run-outputs/<run>/: their files never
+        # block a fact-sheet replay, while a partial own pair is never repaired.
+        self.assertEqual(self.stage()[0], 0)
+        output = self.project / "run-outputs" / "test-run"
+        self.assertIn("comparison.json", {p.name for p in output.iterdir()})
+        identity = (output / "agency-factsheets.md").stat().st_ino
+        self.assertEqual(self.stage()[0], 0)
+        self.assertEqual((output / "agency-factsheets.md").stat().st_ino, identity)
+        sibling = self.project / "run-outputs" / "sibling-run"
+        sibling.mkdir(mode=0o700, parents=True)
+        (sibling / "foreign.txt").write_text("sibling writer")
+        self.assertEqual(self.stage("sibling-run")[0], 0)
+        self.assertTrue((sibling / "agency-factsheets.json").is_file())
+        self.assertEqual((sibling / "foreign.txt").read_text(), "sibling writer")
+        partial = self.project / "run-outputs" / "partial-run"
+        partial.mkdir(mode=0o700)
+        (partial / "agency-factsheets.md").write_text("prior half")
+        code, result = self.stage("partial-run")
+        self.assertEqual((code, result["error_code"]), (1, "OUTPUTS_WRITE_FAILED"))
+        self.assertFalse((partial / "agency-factsheets.json").exists())
+        self.assertEqual((partial / "agency-factsheets.md").read_text(), "prior half")
 
     def test_changed_existing_output_refused_without_overwrite(self):
         self.assertEqual(self.stage()[0], 0)
