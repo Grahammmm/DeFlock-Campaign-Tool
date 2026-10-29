@@ -73,10 +73,40 @@ def day(value):
     return result
 
 
+_OFFSET = re.compile(r"[+-]([0-9]{2})(?::?([0-9]{2}))?(?::?([0-9]{2}))?(?:[.,][0-9]+)?\Z")
+
+
+def _offset_components(text):
+    """Refuse impossible lexical offset components before the parser can normalize them.
+
+    datetime.fromisoformat folds an out-of-range minute or second into the
+    offset (+00:99 becomes +01:39). Only a suffix that follows a date-time head
+    is an offset; a date-only head means the suffix is a time, so its existing
+    timezone-required refusal is unchanged. Syntax remains the parser's decision.
+    """
+    match = _OFFSET.search(text)
+    if match is None:
+        return
+    head = text[:match.start()]
+    try:
+        date.fromisoformat(head)
+        return
+    except ValueError:
+        pass
+    try:
+        datetime.fromisoformat(head)
+    except ValueError:
+        return
+    hours, minutes, seconds = (int(part or 0) for part in match.group(1, 2, 3))
+    need(hours <= 23 and minutes <= 59 and seconds <= 59, "event_time_invalid")
+
+
 def moment(value):
     need(isinstance(value, str), "event_time_missing")
+    text = value.replace("Z", "+00:00")
+    _offset_components(text)
     try:
-        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        result = datetime.fromisoformat(text)
     except ValueError as exc:
         raise Blocked("event_time_invalid") from exc
     need(result.tzinfo is not None and result.utcoffset() is not None, "event_timezone_missing")
