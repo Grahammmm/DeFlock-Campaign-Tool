@@ -1161,14 +1161,20 @@ def case_compatibility(run):
 
 
 def baseline_source():
-    """Newest first-parent ancestor whose ocr.py differs from the working tree."""
-    current = sha256_bytes((REPO / OCR_SOURCE).read_bytes())
-    revisions = (git("rev-list", "--first-parent", "--max-count=200", "HEAD") or "").split()
-    for revision in revisions:
-        done = subprocess.run(["git", "-C", str(REPO), "show", f"{revision}:{OCR_SOURCE}"],
-                              capture_output=True, check=False)
-        if done.returncode == 0 and sha256_bytes(done.stdout) != current:
-            return revision, done.stdout
+    """Preserved upstream ocr.py at the current integration base.
+
+    First-parent history can contain earlier versions of this PR's own fix after
+    main merges. A merely different blob is therefore not a broken baseline.
+    Use the merge base with upstream instead; the negative control still fails
+    closed if that baseline no longer demonstrates the original defect.
+    """
+    revision = git("merge-base", "HEAD", "origin/main")
+    if revision is None:
+        return None, None
+    done = subprocess.run(["git", "-C", str(REPO), "show", f"{revision}:{OCR_SOURCE}"],
+                          capture_output=True, check=False)
+    if done.returncode == 0:
+        return revision, done.stdout
     return None, None
 
 
