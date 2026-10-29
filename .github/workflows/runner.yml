@@ -1,26 +1,6 @@
 name: Runner checks
 on:
   pull_request:
-    # PR-only path filter (none of these checks is a required status check);
-    # merge_group and push to main always run the full workflow.
-    paths:
-      - "runner/**"
-      - "tests/runner/**"
-      - "tests/__init__.py"
-      - "tests/test_outbox.py"
-      - "tests/test_outbox_gateway.py"
-      - "tests/test_redact.py"
-      - "campaign_tool/**"
-      - "jurisdictions/**"
-      - "templates/**"
-      - "schemas/**"
-      - "tools/check_public_tree.py"
-      - "scripts/scan-secrets.mjs"
-      - ".dockerignore"
-      - "pyproject.toml"
-      - "setup.py"
-      - "requirements-*.txt"
-      - ".github/workflows/runner.yml"
   merge_group:
     types: [checks_requested]
   push:
@@ -31,34 +11,97 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+env:
+  # PR path scope (git glob pathspecs). "runner" and "image" are listed in
+  # .github/required-checks.json, so they always start and report; on a PR that
+  # touches none of these paths their check steps are skipped (job succeeds).
+  PR_SCOPE: |
+    runner/**
+    tests/runner/**
+    tests/__init__.py
+    tests/test_outbox.py
+    tests/test_outbox_gateway.py
+    tests/test_redact.py
+    campaign_tool/**
+    jurisdictions/**
+    templates/**
+    schemas/**
+    tools/check_public_tree.py
+    scripts/scan-secrets.mjs
+    .dockerignore
+    pyproject.toml
+    setup.py
+    requirements*.txt
+    constraints*.txt
+    *.lock
+    .github/workflows/runner.yml
 jobs:
   runner:
     runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2
+      - name: PR path scope (other events always run every step)
+        id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT" != pull_request ]]; then echo run=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          specs=(); while IFS= read -r p; do [[ -n "$p" ]] && specs+=(":(glob)$p"); done <<< "$PR_SCOPE"
+          if ! changed="$(git diff --name-only HEAD^1 HEAD -- "${specs[@]}")"; then
+            echo "::warning::PR diff unavailable; running every step"; echo run=true >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          printf 'In-scope changes:\n%s\n' "${changed:-none, so the check steps are skipped}"
+          if [[ -n "$changed" ]]; then echo run=true; else echo run=false; fi >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: steps.scope.outputs.run == 'true'
         with:
           python-version: '3.12'
       - run: python3 -m pip install -r requirements-runner.txt -r requirements-records-test.txt
+        if: steps.scope.outputs.run == 'true'
       - name: Runner, digest and outbox tests (synthetic fixtures, no network)
+        if: steps.scope.outputs.run == 'true'
         run: python3 -B -m unittest discover -s tests/runner -t . -v && python3 -B -m unittest tests.test_outbox tests.test_outbox_gateway tests.test_redact -v
       - name: Fake workspace smoke (exit 3 = idle)
+        if: steps.scope.outputs.run == 'true'
         run: python3 -B -m runner --once --fake || test "$?" -eq 3
       - run: node scripts/scan-secrets.mjs
+        if: steps.scope.outputs.run == 'true'
       - run: python3 -B tools/check_public_tree.py
+        if: steps.scope.outputs.run == 'true'
   image:
     runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2
+      - name: PR path scope (other events always run every step)
+        id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT" != pull_request ]]; then echo run=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          specs=(); while IFS= read -r p; do [[ -n "$p" ]] && specs+=(":(glob)$p"); done <<< "$PR_SCOPE"
+          if ! changed="$(git diff --name-only HEAD^1 HEAD -- "${specs[@]}")"; then
+            echo "::warning::PR diff unavailable; running every step"; echo run=true >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          printf 'In-scope changes:\n%s\n' "${changed:-none, so the check steps are skipped}"
+          if [[ -n "$changed" ]]; then echo run=true; else echo run=false; fi >> "$GITHUB_OUTPUT"
       - name: Build the runner image (includes its own --once --fake smoke test)
+        if: steps.scope.outputs.run == 'true'
         run: docker build -f runner/Dockerfile -t deflock-runner:ci .
       - name: Image runs as non-root and refuses to start without a workspace
+        if: steps.scope.outputs.run == 'true'
         run: |
           test "$(docker run --rm --entrypoint id deflock-runner:ci -u)" = "10001"
           if docker run --rm deflock-runner:ci --once; then echo "expected usage error"; exit 1; fi
           docker run --rm -e PRIVACY_TIER=strict_local -e MODEL_BASE_URL=https://api.example.invalid/v1 deflock-runner:ci --once --fake && exit 1 || true
       - name: Image contains no test fixtures or private paths
+        if: steps.scope.outputs.run == 'true'
         run: |
           docker run --rm --entrypoint sh deflock-runner:ci -c 'test ! -e /app/tests && test ! -e /app/examples && test ! -e /app/.git && test ! -e /app/private'
