@@ -94,7 +94,8 @@ def initialize(path):
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-        with sqlite3.connect(path) as ready:
+        # sqlite3's own context manager only ends the transaction; close too.
+        with closing(sqlite3.connect(path)) as ready, ready:
             ready.execute("PRAGMA journal_mode=WAL")
     finally:
         if con is not None:
