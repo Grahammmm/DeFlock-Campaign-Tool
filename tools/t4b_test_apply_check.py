@@ -32,8 +32,8 @@ PINS = {
         "b17d3d92" "6d7894dc" "bd527e18" "4d7d8394"
     ),
     "campaign_tool/records/mail_adoption.py": (
-        "c642f11c" "433c63d3" "abc15d17" "814e95df"
-        "9d958e6d" "73832c17" "9ca781a3" "054db6d9"
+        "f9038893" "32c84e39" "c2e2cee1" "0cfcac7b"
+        "fc33e439" "48a8cc1e" "28e43f63" "b0d6eda1"
     ),
     "campaign_tool/records/cli.py": (
         "7ab73a9d" "4cdd9c38" "a37fa374" "3493f0e0"
