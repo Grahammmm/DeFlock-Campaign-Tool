@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rootless driver for the OCR container swap (docs/RECORDS-OCR-CONTAINER-ROOTLESS.md).
 
-One script, five modes:
+One script, five swap modes and a prune subcommand:
 
   --dry-run   Read-only. Runs R1 discovery (docker info/inspect/ps, systemctl
               --user show) and prints every later command without running it.
@@ -18,6 +18,7 @@ One script, five modes:
               against it with stand-ins only for the engine build ([B1], [B2],
               [V1], [A4]) and a simulated pause unit, checks the result and
               removes everything it created. CI runs it on rootless Docker.
+  prune       List superseded run directories; delete only with --apply.
 
 [R1] ends with a preflight that refuses the run, before anything is stopped,
 on each failure an earlier attempt met late: an off-main or stale checkout, a
@@ -57,7 +58,7 @@ import urllib.parse
 from pathlib import Path
 
 RECIPE = Path(__file__).resolve().parent
-DIST = RECIPE / "dist"  # build_wheel.py output and the Dockerfile build context's only wheel
+DIST = RECIPE / "dist"
 RUNBOOK = RECIPE / "runbook-rootless.json"
 LIVE, PRIV, REC = "/live", "/private", "/recipe"
 HELPER_LABEL = "deflock.flock-swap.helper=1"
@@ -121,6 +122,7 @@ def _load(name, filename):
 snapshot_evidence = _load("flock_ocr_snapshot_evidence", "snapshot_evidence.py")
 preflight = _load("flock_ocr_preflight", "preflight.py")
 check_runbook = _load("flock_ocr_check_runbook", "check_runbook.py")
+prune_runs = _load("flock_ocr_prune_runs", "prune_runs.py")
 
 
 class StepFailed(Exception):
@@ -682,25 +684,40 @@ class Swap:
                 if unmapped:
                     self.fail(f"{label}: {len(unmapped)} entr(y/ies) owned by an ID outside the "
                               "rootless namespace (overflow 65534); a rootless archive cannot preserve them")
-                total += sum(e.get("size", 0) for e in baseline["entries"].values())
+                # Round file payloads to filesystem blocks and allow tar/PAX
+                # headers, directory entries and metadata per manifest entry.
+                total += snapshot_evidence.copy_estimate(baseline["entries"])
             baselines[label] = baseline
         if not self.dry:
+            # S1 and A2 each retain an archive plus SQLite backups (2 copies).
+            # One evidence/restore-test extract can remain after a failure;
+            # rollback then needs a current-state archive and its verify extract.
+            # At A2, S1 is already on disk, so only budget remaining allocations.
+            copies = {"s1_evidence": 2 if prefix == "s1" else 0,
+                      "a2_evidence": 2, "scratch_extract": 1, "rollback_preservation": 2}
+            need = sum(copies.values()) * total + (512 << 20)
+            # Keep main's format-aware tar/extract floor as well: small mounts
+            # still need tar record padding even when the copy estimate is tiny.
             estimates = [snapshot_evidence.space_estimate(b["entries"]) for b in baselines.values()]
             tar = sum(e["tar_bytes"] for e in estimates)
             if prefix == "s1":
-                # The whole run from here on, as budgeted by the preflight in [R1].
                 sqlite = int((self.state.get("preflight") or {}).get("sqlite_bytes", 0))
-                _, need = space_budget(tar, max(e["extract_bytes"] for e in estimates), sqlite)
-                what = "S1 through a rollback after A2 (the R1 preflight budget)"
+                _, format_need = space_budget(tar, max(e["extract_bytes"] for e in estimates), sqlite)
             else:
-                # A2 only archives for comparison; its extracts, backups and a
-                # rollback's preservation were budgeted at [R1] and [S1].
-                need = tar + MARGIN
-                what = "the A2 archives (1x + 512 MiB)"
+                format_need = tar + MARGIN
+            need = max(need, format_need)
             free = self.system.disk_free(self.run_dir)
+            self.write_json(f"{prefix}/space-budget.json", {
+                "format_budget_bytes": format_need,
+                "estimated_copy_bytes": total, "copies": copies, "reserve_bytes": 512 << 20,
+                "required_free_bytes": need, "available_bytes": free})
+            self.log(f"    {prefix} space budget: {copies}, {total} bytes/copy + 512 MiB reserve; "
+                     f"needs {need}, available {free}")
             if free < need:
-                self.fail(f"private dir has {free} bytes free, needs {need} for {what}")
-            self.log(f"    space: {free} bytes free, {need} needed for {what} ({total} bytes of data)")
+                self.fail(f"private dir has {free} bytes free, needs {need}")
+        else:
+            self.log(f"    would budget {'S1 + ' if prefix == 's1' else ''}A2 archives/backups, "
+                     "scratch extract and rollback preservation/verify together + 512 MiB")
         self.mkdir(prefix)
         for mount in self.state["mounts"]:
             label = mount["label"]
@@ -1155,9 +1172,12 @@ class Swap:
         tar = sum(r["tar_bytes"] for r in surveys.values())
         extract = max(r["extract_bytes"] for r in surveys.values())
         sqlite = sum(r["sqlite_bytes"] for r in surveys.values())
-        parts, need = space_budget(tar, extract, sqlite)
+        parts, format_need = space_budget(tar, extract, sqlite)
+        total = sum(r["estimated_copy_bytes"] for r in surveys.values())
+        need = max(7 * total + MARGIN, format_need)
         free = self.system.disk_free(self.run_dir)
-        self.state["preflight"].update({"budget": parts, "need": need, "free": free, "sqlite_bytes": sqlite})
+        self.state["preflight"].update({"budget": parts, "need": need, "free": free, "sqlite_bytes": sqlite,
+                                       "estimated_copy_bytes": total, "format_budget_bytes": format_need})
         shown = ", ".join(f"{k} {v}" for k, v in parts.items())
         if free < need:
             self.fail(f"preflight: private dir has {free} bytes free, the run needs {need} ({shown}); free "
@@ -1210,6 +1230,10 @@ class Swap:
         self.write_json("snapshot-receipt.json", receipt)
         self.state["archives_sha256"] = archives
 
+    @property
+    def build_context(self):
+        return self.build_dir
+
     def b1_wheel(self):
         self.require_gate()
         reuse = self.state.get("reuse")
@@ -1217,11 +1241,14 @@ class Swap:
             self.state["wheel_sha256"] = reuse["wheel_sha256"]
             self.log(f"    not rebuilt: reusing wheel sha256 {reuse['wheel_sha256']} recorded by {reuse['run_dir']}")
             return
-        # Build output lives in this run's directory, never in the recipe's
-        # dist/: a failed run can no longer break the next one at [B1].
-        self.mkdir("build")
+        if self.dry:
+            self.log(f"    would create isolated build context {self.build_context}")
+        else:
+            self.build_context.mkdir(parents=True, mode=0o700)
+            for name in (".dockerignore", "requirements.lock"):
+                shutil.copyfile(RECIPE / name, self.build_context / name)
         _, out, _ = self.sh([sys.executable, "-B", RECIPE / "build_wheel.py", "--build-python",
-                             self.state["build_python"], "--dist", self.build_dir / "dist", "--provenance-out",
+                             self.state["build_python"], "--dist", self.build_context / "dist", "--provenance-out",
                              Path(self.state["run_dir"]) / "wheel-provenance.json"], effect=True, timeout=3600)
         if self.dry:
             self.state["wheel_sha256"] = "<WHEEL_SHA256>"
@@ -1252,10 +1279,12 @@ class Swap:
                 shutil.copy2(RECIPE / name, context / name)
         self.sh([sys.executable, "-B", RECIPE / "preflight.py", "--base-image", st["old_image"],
                  "--engine-commit", commit, "--wheel-sha256", st["wheel_sha256"], "--tag", st["new_tag"],
-                 "--context", context], effect=True, timeout=300)
+                 "--context", self.build_context],
+                effect=True, timeout=300)
         command = preflight.build_command(argparse.Namespace(
             base_image=st["old_image"], engine_commit=commit, wheel_sha256=st["wheel_sha256"],
-            engine_manifest_sha256=self.pins["engine"]["manifest_sha256"], tag=st["new_tag"], context=context))
+            engine_manifest_sha256=self.pins["engine"]["manifest_sha256"], tag=st["new_tag"],
+            context=self.build_context))
         self.sh(command, effect=True, timeout=7200)
         _, out, _ = self.sh(["docker", "image", "inspect", "--format", "{{.Id}}", st["new_tag"]], effect=True)
         st["new_image_id"] = "<NEW_IMAGE_ID>" if self.dry else out.strip()
@@ -2099,11 +2128,16 @@ def _lock(private):
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        handle.close()
         raise SystemExit("another rootless_swap.py run holds the lock")
     return handle
 
 
 def main(argv=None, system=None, out=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "prune":
+        return prune_runs.main(argv[1:], system=system or System(), out=out,
+                               swap_class=Swap, lock=_lock)
     args = parse_args(argv)
     if args.mode == "rehearse":
         return Rehearsal(args, system=system, out=out).run()
