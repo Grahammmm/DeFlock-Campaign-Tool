@@ -117,6 +117,52 @@ def gate(root, config):
     return result
 
 
+def _bound_receipt_bytes(path, declaration):
+    """Read the receipt once more and return those bytes only if they are ``declaration``.
+
+    ``mail_delta.load_receipt`` (the real parser) has already validated
+    ``declaration``. The bytes hashed for ``receipt_sha256`` are read once,
+    bounded by the receipt cap, through ``secure_open`` (no symlinks, regular
+    file only); the descriptor identity and metadata must be unchanged across
+    the read and still be the file at ``path``. Those same bytes must parse to
+    exactly the validated declaration, so a receipt changed between or during
+    the reads (including A-to-B-to-A) is refused as ``receipt_changed`` rather
+    than hashed. Formatting-only differences that parse to the identical typed
+    declaration are accepted, and the returned bytes are the ones hashed.
+    """
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise mail_delta.Rejected("receipt_changed")
+    except FileNotFoundError:
+        raise mail_delta.Rejected("receipt_changed") from None
+    with intake_folder.secure_open(path) as stream:
+        before = os.fstat(stream.fileno())
+        if before.st_size > mail_delta.MAX_RECEIPT:
+            raise mail_delta.Rejected("receipt_size_limit")
+        raw = stream.read(mail_delta.MAX_RECEIPT + 1)
+        after = os.fstat(stream.fileno())
+    keys = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if (any(getattr(before, key) != getattr(after, key) for key in keys)
+            or len(raw) != before.st_size):
+        raise mail_delta.Rejected("receipt_changed")
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        raise mail_delta.Rejected("receipt_changed") from None
+    if any(getattr(current, key) != getattr(after, key) for key in keys):
+        raise mail_delta.Rejected("receipt_changed")
+    try:
+        parsed = json.loads(raw)
+        # Canonical JSON preserves JSON scalar types (unlike Python ==,
+        # where True == 1 == 1.0), object order is irrelevant, arrays are not.
+        same = json.dumps(parsed, sort_keys=True) == json.dumps(declaration, sort_keys=True)
+    except (UnicodeError, ValueError, RecursionError):
+        raise mail_delta.Rejected("receipt_changed") from None
+    if not same:
+        raise mail_delta.Rejected("receipt_changed")
+    return raw
+
+
 def discover(mail_root, output):
     """Load every receipt under ``<mail_root>/receipts``; invalid ones become coded gaps."""
     receipts_dir = mail_root / "receipts"
@@ -144,8 +190,7 @@ def discover(mail_root, output):
                       if declaration.get("schema") == "mail-wire-receipt-v2" else None)
             native_shas = frozenset(entry.get("source_original_sha256") for entry in native or ()
                                     if isinstance(entry, dict))
-            with intake_folder.secure_open(path) as stream:
-                receipt_sha = hashlib.sha256(stream.read(mail_delta.MAX_RECEIPT + 1)).hexdigest()
+            receipt_sha = hashlib.sha256(_bound_receipt_bytes(path, declaration)).hexdigest()
         except mail_delta.Rejected as error:
             gaps[str(error)] += 1
             continue

@@ -1,5 +1,6 @@
 """Cited factual reconciliation with explicit applicability and legal holds."""
 from collections import defaultdict
+from copy import deepcopy
 from . import evidence,policy
 VERSION="records-evidence-reconciliation-v1"
 UNKNOWN={"","n/a","na","unknown","not provided","not available","null","none"}
@@ -57,7 +58,7 @@ def compare(facts,versions,*,bundle,agency_id,jurisdiction,regulated_role,event_
  evidence.need(type(facts)is list and len(facts)<=10000,"fact_count_bound")
  evidence.need(all(type(x)is str and x for x in (agency_id,jurisdiction,regulated_role)),"reconciliation_context")
  checked=policy.validate_versions(versions)
- if not checked["valid"]:return {"schema":VERSION,"findings":[],"gaps":checked["issues"],"status":"invalid_versions","review_acceptance":False,"legal_conclusions":0}
+ if not checked["valid"]:return deepcopy({"schema":VERSION,"findings":[],"gaps":checked["issues"],"status":"invalid_versions","review_acceptance":False,"legal_conclusions":0})
  byfield=defaultdict(list);fact_gaps=[];ids=set()
  for f in facts:
   evidence.need(type(f)is dict and type(f.get("fact_id"))is str and f["fact_id"] not in ids and type(f.get("field"))is str and f["field"],"fact_identity")
@@ -103,4 +104,5 @@ def compare(facts,versions,*,bundle,agency_id,jurisdiction,regulated_role,event_
      else:classification="potential_conflict";reason="authenticated_factual_exception_and_terms_review_not_established"
     base.update(classification=classification,reason=reason,next_action="Resolve source/applicability/record gaps or independently review cited facts; do not infer legal violation.")
     findings.append(base)
- return {"schema":VERSION,"snapshot_sha256":bundle["snapshot_sha256"],"context":{"agency_id":agency_id,"request_number":request_number,"jurisdiction":jurisdiction,"regulated_role":regulated_role,"event_at":event_at},"findings":findings,"gaps":fact_gaps,"status":"derived_findings_needing_review","review_acceptance":False,"legal_conclusions":0}
+ # Snapshot only the public return boundary; identity preimages and classification stay unchanged.
+ return deepcopy({"schema":VERSION,"snapshot_sha256":bundle["snapshot_sha256"],"context":{"agency_id":agency_id,"request_number":request_number,"jurisdiction":jurisdiction,"regulated_role":regulated_role,"event_at":event_at},"findings":findings,"gaps":fact_gaps,"status":"derived_findings_needing_review","review_acceptance":False,"legal_conclusions":0})
