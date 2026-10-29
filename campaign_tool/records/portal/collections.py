@@ -53,8 +53,14 @@ def _require_member_shape(member):
 
 def normalized(url):
     p = url_parts(url)
-    # Do not reorder/decode a potentially signed query. Fragments, credentials,
-    # non-HTTPS and unsafe paths are rejected by the existing portal policy.
+    # Reject unsafe NextRequest request queries before discovery persists even
+    # excluded/blocked links. Only the profile's bounded page cursor is valid.
+    # Import lazily to keep collection/profile registry initialization acyclic.
+    from .nextrequest import REQUEST_PATH, _query
+    if (p.hostname or "").endswith(".nextrequest.com") and REQUEST_PATH.fullmatch(p.path):
+        _query(url)
+    # Other providers retain their existing signed-query policy. Fragments,
+    # credentials, non-HTTPS and unsafe paths are rejected by url_parts.
     return urlunsplit(("https", p.hostname, p.path or "/", p.query, ""))
 
 
@@ -172,6 +178,12 @@ class CollectionInventory:
             return url, "excluded", "explicit_scope_exclusion"
         if p.hostname not in self.scope.hosts:
             return url, "blocked", "unapproved_origin"
+        if any((p.hostname or "") == suffix or (p.hostname or "").endswith("." + suffix)
+               for suffix in ("mycusthelp.com", "govqa.us", "civicplus.com")):
+            return url, "blocked", "unsupported_provider"
+        if ((p.hostname or "").endswith(".nextrequest.com") and re.fullmatch(
+                r"/requests/[A-Za-z0-9][A-Za-z0-9_-]{0,159}(?:/documents)?/?", p.path)):
+            return url, "collection", None
         if p.path.lower().endswith(("/browse.aspx", "/browse", "/collection", "/index")):
             return url, "collection", None
         if re.fullmatch(r"/documents/[A-Za-z0-9_-]+(?:/download)?", p.path) or re.search(
@@ -282,7 +294,17 @@ class CollectionInventory:
             if url_parts(url).hostname not in self.scope.hosts:
                 raise PortalError("unapproved_origin")
             ids.add(key)
-            plan.append({"id": key, "kind": kind, "url": url})
+            entry = {"id": key, "kind": kind, "url": url}
+            # Optional provider evidence is retained in the hash-bound page
+            # manifest, without changing document identities or the schema.
+            for field in ("filename", "released_date"):
+                if field in member:
+                    value = member[field]
+                    if value is not None and (not isinstance(value, str) or len(value) > 1024
+                            or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+                        raise PortalError("collection_member_invalid")
+                    entry[field] = value
+            plan.append(entry)
         manifest = encoded({"members": plan, "next": next_cursor, "total": expected_total})
         pages = self.queue.db.execute("SELECT * FROM export_collection_pages WHERE collection=?", (collection,)).fetchall()
         old = next((r for r in pages if r["cursor_private"] == cursor), None)
@@ -328,7 +350,7 @@ class CollectionInventory:
     def block(self, collection, reason):
         self._require_writer()
         self._node(collection)
-        if reason not in {"authorization_required", "expired_link", "unsupported_navigation",
+        if reason not in {"authorization_required", "expired_link", "inaccessible", "unsupported_navigation",
                           "pagination_loop_or_bound", "retry_exhausted", "missing_or_conflicting_members"}:
             raise PortalError("invalid_collection_exception")
         with self.queue.lock(), self.queue.db:
