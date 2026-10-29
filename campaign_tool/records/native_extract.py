@@ -225,6 +225,14 @@ def classify_form(pipeline, subject, *, missing):
         _hold(pipeline, subject, ERROR_CODE)  # retryable: held after MAX_ATTEMPTS runs
         return None, ERROR
     if form in extraction_routes.IMAGES:
+        if getattr(pipeline, 'ocr_tools', None):
+            from PIL import Image
+            try:
+                with Image.open(pipeline._original(subject)['storage_path']) as image:
+                    if getattr(image, 'n_frames', 1) == 1:
+                        return form, None
+            except (ValueError, OSError, Image.DecompressionBombError):
+                return form, None  # bounded parser reports corrupt/resource-limited images
         return form, AWAITING_OCR  # Phase 1: image originals wait for OCR/vision
     if form not in extraction_routes.SUPPORTED and form != "msg":
         return form, DECODER_NEEDED

@@ -138,6 +138,35 @@ engine counts.
   minimal environment, and the whole session is killed on timeout or exit. The
   stage deadline is a `BaseException`, so no backend handler can swallow it.
 
+## Images (D-E)
+
+With OCR configured, native extraction wraps each single-frame image original in
+a deterministic one-page PDF using Pillow (`pillow-pdf`, 72 dpi, fixed epoch PDF
+dates). The bounded image parser retains its pixel/frame limits. No OCR runtime:
+images remain `AWAITING_OCR`. Multi-frame GIF/TIFF images still wait and are
+counted in `awaiting_ocr_images`; they are not placed in the PDF-only queue.
+
+The wrapper is a **derived artifact, not a canonical child original**. Its
+write-once, owner-only bytes live at
+`<ocr_output_root>/derived-pdf-v1/blobs/<derived_sha256>` (0400). Extraction
+metadata and the source receipt carry `derived`, never a `children` member:
+`schema: image-pdf-wrapper-v1`, `parent_sha256`, `derived_sha256`,
+`method: pillow-pdf`, `pillow_version`, and `frame: 1`. Existing `children`
+remains empty. No new original/occurrence or schema is introduced.
+
+Page 1 reuses the existing budgeted PDF page-OCR chain and confidence threshold
+(80). The OCR receipt's source identity is the **derived PDF hash**; the units
+and page state belong to the **parent image**. The extraction route is
+`extract:image-pdf-wrapper`. Enrollment and the installed validator re-derive
+the wrapper from canonical image bytes, bind exactly one page-1 OCR receipt,
+and verify the units against its text. They refuse changed derivations,
+wrong-source/extra/missing receipts, and attempts to declare canonical children.
+
+All wrapped pages keep `needs_visual_review: True`. Machine-valid extraction
+does not grant visual, legal, privacy or publication acceptance. No vision
+adapter is enabled by the image route. This does not authorize a live run or
+rehearsal: live OCR enablement stays with the attended T8 operator session.
+
 ## For the T6 live wiring check
 
 - Done in T6 (engine code, synthetic tests only): WP4 binds vision receipts in
