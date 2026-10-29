@@ -316,6 +316,11 @@ def _round_up(value, unit):
     return -(-value // unit) * unit
 
 
+def copy_estimate(entries):
+    """Block-rounded payload plus one metadata block per manifest/survey entry."""
+    return sum(_round_up(e.get("size", 0), FS_BLOCK) + FS_BLOCK for e in entries.values())
+
+
 def space_estimate(entries):
     """Upper-bound bytes for one GNU tar archive and one extracted copy of entries.
 
@@ -412,7 +417,8 @@ def survey(root, accepted=None):
     estimate = space_estimate(entries)
     return {"survey_version": 1, "entries": len(entries),
             "files": sum(e["type"] == "f" for e in entries.values()), "bytes": total,
-            **estimate, "sqlite_bytes": sqlite_bytes, "sqlite": dict(sorted(report.items())),
+            **estimate, "estimated_copy_bytes": copy_estimate(entries),
+            "sqlite_bytes": sqlite_bytes, "sqlite": dict(sorted(report.items())),
             "non_archivable": dict(sorted(special.items())), "overflow_owned": sorted(overflow),
             "pins": dict(sorted(pins.items()))}
 
