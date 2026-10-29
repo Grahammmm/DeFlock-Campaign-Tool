@@ -155,7 +155,16 @@ class CheckerTests(unittest.TestCase):
             for name in (*check.PINS, "tools/t4b_test_apply_check.py", "docs/runbooks/T4B-TEST-APPLY.md"):
                 target = repo / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes((REPO / name).read_bytes())
+                # This runsheet admits SOURCE_HEAD, not today's producer. Keep
+                # its historical bytes inert and available in shallow CI clones;
+                # production pins and the tampering checks remain unchanged.
+                source = (REPO / "tests/fixtures/t4b_s5/mail_adoption.source.txt"
+                          if name == "campaign_tool/records/mail_adoption.py"
+                          else REPO / name)
+                raw = source.read_bytes()
+                if name in check.PINS:
+                    self.assertEqual(check.sha(raw), check.PINS[name], name)
+                target.write_bytes(raw)
             original_read = check.read_local
             reads = []
 
