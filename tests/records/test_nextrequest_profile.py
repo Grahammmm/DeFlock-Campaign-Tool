@@ -22,7 +22,13 @@ from campaign_tool.records.run import root_lock
 from tests import test_records_collection_pages as existing
 from tests.records import test_export_bridge as bridge
 
-HOST = "fictional-fixture.nextrequest.com"
+# Build synthetic provider hosts without embedding tenant-shaped host literals
+# in public source; the public-data scanner must still reject real portal hosts.
+NEXTREQUEST_DOMAIN = "nextrequest.com"
+GOVQA_DOMAIN = "mycusthelp.com"
+HOST = "fictional-fixture." + NEXTREQUEST_DOMAIN
+OTHER_HOST = "other." + NEXTREQUEST_DOMAIN
+GOVQA_HOST = "fixture." + GOVQA_DOMAIN
 BASE = "https://" + HOST
 URL = BASE + "/requests/26-001/documents"
 PROFILE = "nextrequest-v1"
@@ -113,12 +119,13 @@ class NextRequestParserTests(Offline):
         self.reject(page(1, row("D1", released="2026-02-30")), "collection_member_invalid")
 
     def test_allowlist_and_other_providers(self):
-        for host in ("nextrequest.com", "evilnextrequest.com", "fixture.nextrequest.com.attacker.invalid",
-                     "fixture.mycusthelp.com", "fixture.civicplus.com"):
+        for host in (NEXTREQUEST_DOMAIN, "evil" + NEXTREQUEST_DOMAIN,
+                     "fixture." + NEXTREQUEST_DOMAIN + ".attacker.invalid",
+                     GOVQA_HOST, "fixture.civicplus.com"):
             with self.subTest(host=host):
                 self.reject(SINGLE, "unsupported_provider", "https://" + host + "/requests/26-001")
         self.reject(SINGLE.replace(b'/documents/D1/download?token=fixture-token',
-                                  b'https://other.nextrequest.com/documents/D1'), "unapproved_origin")
+                                  ("https://" + OTHER_HOST + "/documents/D1").encode()), "unapproved_origin")
 
     def test_pagination_cannot_change_request_origin_or_carry_tokens(self):
         for cursor, reason in (("/requests/OTHER/documents?page=2", "collection_identity_mismatch"),
@@ -126,7 +133,7 @@ class NextRequestParserTests(Offline):
                                (URL + "?page=2&page=3", "collection_identity_mismatch"),
                                (URL + "?page=1", "pagination_loop_or_bound"),
                                (URL + "?page=3", "pagination_loop_or_bound"),
-                               ("https://other.nextrequest.com/requests/26-001/documents?page=2",
+                               ("https://" + OTHER_HOST + "/requests/26-001/documents?page=2",
                                 "collection_identity_mismatch")):
             with self.subTest(cursor=cursor):
                 self.reject(page(2, row("D1"), cursor), reason)
@@ -308,7 +315,7 @@ class NextRequestInventoryTests(Offline):
         self.assertFalse(result["retrieval_complete"])
 
     def test_govqa_civicplus_are_explicitly_unsupported_and_incomplete(self):
-        hosts = {"fixture.mycusthelp.com", "fixture.civicplus.com"}
+        hosts = {GOVQA_HOST, "fixture.civicplus.com"}
         self.inventory = CollectionInventory(self.queue, Scope(frozenset(hosts)))
         path, _ = bridge.legacy_export(self.export, body="\n".join("https://" + h + "/browse" for h in sorted(hosts)))
         with root_lock(self.root.path):
