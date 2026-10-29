@@ -1,9 +1,12 @@
 # Immutable S5 source fixture
 
 These four inert `.txt` files are byte-for-byte copies of public engine sources
-at `93995a1a615f6aaca7bfb0fbeb39a7f3aa367997`, the unchanged `SOURCE_HEAD` in
-`tools/t4b_test_apply_check.py`. Their relative names, without the final `.txt`,
-and SHA-256 digests must match that checker's complete, unchanged `PINS` map.
+matching the `PINS` map in `tools/t4b_test_apply_check.py`. Three retain the
+historical `SOURCE_HEAD` (`93995a1a615f6aaca7bfb0fbeb39a7f3aa367997`);
+`campaign_tool/records/mail_adoption.py.txt` contains the reviewed #202 source,
+as re-pinned by #383 (commit `26b06e94e2ed38113a4d27fb2b0500eef4416f3a`).
+Their relative names, without the final `.txt`, and SHA-256 digests must match
+the checker's complete `PINS` map.
 The tests assert both the exact file set and every digest.
 
 The checker intentionally qualifies only this historical source contract. A
