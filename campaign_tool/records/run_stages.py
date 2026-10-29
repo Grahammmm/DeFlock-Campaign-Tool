@@ -887,6 +887,35 @@ def stage_digest_gates(args):
 
 
 def stage_outputs(args):
+    # Per-run outcome files share run-outputs/<run>/: agency fact sheets,
+    # policy comparison and request register each own (and verify) only their
+    # own file pair there. F-043 in-process digest seam: F-046 owns
+    # plan/CLI/handoff composition. Validate all enabled digest inputs/roots
+    # BEFORE snapshot reads or any output write.
+    prepared_digest = None
+    digest_context = getattr(args, "digest_context", None)
+    if digest_context is not None:
+        from .understanding import digest as usage_digest
+        try:
+            usage_digest.need(type(digest_context) is dict, "digest_context_shape")
+            if usage_digest.enabled(digest_context.get("plan")):
+                usage_digest.need(digest_context.get("run_id") == args.run_id,
+                                  "digest_run_mismatch")
+                usage_digest.need(str(digest_context.get("admitted_root")) == str(args.project),
+                                  "digest_project_root_mismatch")
+                output = usage_digest.validate_roots(digest_context.get("admitted_root"),
+                                                    digest_context.get("output_root"))
+                usage_digest.need(output.name not in {"run-outputs", "processing-v1",
+                                                      "portal-queue-v1", "mail"},
+                                  "digest_reserved_project_entry")
+                # Existing snapshot IO also stays inside the synthetic project.
+                for relative in ("processing-v1/ledger.sqlite", "portal-queue-v1/portal.sqlite",
+                                 "run-outputs", f"run-outputs/{args.run_id}.json",
+                                 f"run-outputs/.{args.run_id}.json.tmp"):
+                    usage_digest._root(str(Path(args.project) / relative))
+            prepared_digest = usage_digest.prepare_digest(**digest_context)
+        except (usage_digest.DigestRefused, TypeError, ValueError):
+            return result("fail", {"failed": 1}, "OUTPUTS_DIGEST_REFUSED"), 1
     mail, processing, portal = paths(args.project)
     try:
         with ledger_ro(processing) as db:
@@ -910,13 +939,39 @@ def stage_outputs(args):
         name = "".join(ch for ch in args.run_id if ch.isalnum() or ch in "-_.") or "run"
         target = directory / f"{name}.json"
         temporary = directory / f".{name}.json.tmp"
+        # Fact sheets first: a refused or failed sheet keeps the prior snapshot.
+        from .outcomes.factsheets import write_run_factsheets
+        write_run_factsheets(processing, directory / name, args.run_id)
         temporary.write_text(json.dumps(snapshot, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, target)
+        from .outcomes.comparison import write_run_comparison
+        write_run_comparison(args.project, args.run_id)
     except OSError:
         return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
     finally:
         os.umask(old)
-    return result("ok", {"input": 1, "output": 1}), 0
+    warning = None
+    # The additive register must never suppress the counts snapshot or the digest.
+    try:
+        from .outcomes.register import write_for_run
+        write_for_run(args.project, args.run_id)
+    except StageTimeout:
+        raise  # Preserve the run's hard deadline, not a recoverable register warning.
+    except Exception:  # noqa: BLE001 - isolate register errors; never expose private exception text
+        warning = "OUTPUTS_REGISTER_UNAVAILABLE"
+    produced = 1
+    if prepared_digest is not None:
+        try:
+            digest_outcome = usage_digest.commit_digest(prepared_digest)
+        except (OSError, usage_digest.DigestRefused):
+            return result("fail", {"input": 1, "output": 1, "failed": 1},
+                          "OUTPUTS_DIGEST_WRITE_FAILED"), 1
+        produced = 3
+        if digest_outcome["status"] == "unresolved":
+            warning = "OUTPUTS_DIGEST_UNRESOLVED"
+    if warning:
+        return result("warn", {"input": 1, "output": produced}, warning), 0
+    return result("ok", {"input": 1, "output": produced}), 0
 
 
 HANDLERS = {"sync": stage_sync, "delta": stage_delta, "adoption": stage_adoption,

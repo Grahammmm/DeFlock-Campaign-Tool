@@ -171,7 +171,10 @@ the envelope. Identical run/content bindings give byte-identical serialization;
 new producer instances keep their own IDs rather than pretending to be a replay.
 
 Pinned host source: campaign_tool/records/run_stages.py,
-SHA256 2a24a0da325a528bc19ba7c3971c62a85bfb521304fa8a87ff18c04a47f25e1a.
+SHA256 26e34c407c76d1484600cc92121e0b78893b69e864f78b67d305fd80e33dc94f
+(re-pinned after the additive per-run fact-sheet, comparison and request-register
+writers and the disabled-by-default private digest seam in stage_outputs;
+STAGES, HANDLERS and the stage_outputs(args) signature are unchanged).
 STAGES/HANDLERS remain sync, delta, adoption, portal, extract, digest_gates,
 outputs. F-046 will add an explicitly enabled INTERNAL comprehension adapter
 at stage_outputs(args), after extraction/gating, then digest generation. There

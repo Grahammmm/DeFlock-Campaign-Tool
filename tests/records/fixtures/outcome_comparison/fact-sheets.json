@@ -1,0 +1,33 @@
+{
+  "schema": "records-agency-fact-sheets-v1",
+  "agencies": [
+    {
+      "agency_id": "synthetic-harbor-pd",
+      "name": "Invented Harbor Police",
+      "jurisdiction": "us-ca",
+      "regulated_roles": ["operator", "end_user", "public_agency"],
+      "facts": {
+        "retention_practice": {"state": "observed", "applicability_confirmed": true, "value": {"native_coverage_complete": true, "policy_version": "synthetic-policy-204", "policy_modality": "should", "exceptions_resolved": true, "data_layer": "downloaded server data", "policy_data_layer": "downloaded server data", "min_days": 365, "observed_days": 400}, "citations": [{"source_id": "synthetic-policy-and-retention-export", "locator": "policy section 4 and effective settings row 1"}]},
+        "sharing_practice": {"state": "observed", "applicability_confirmed": true, "value": {"native_coverage_complete": true, "policy_version": "synthetic-policy-204", "policy_modality": "shall", "exceptions_resolved": true, "event_type": "disclosure", "recipient_scope_matches_policy": true, "purpose_matches_policy": true, "approval_process_matches_policy": true}, "citations": [{"source_id": "synthetic-policy-and-disclosure-log", "locator": "policy section 5, disclosure row 2 and approval row 1"}]},
+        "audit_practice": {"state": "observed", "applicability_confirmed": true, "value": {"native_coverage_complete": true, "policy_version": "synthetic-policy-204", "policy_modality": "should", "exceptions_resolved": true, "process_followed": true}, "citations": [{"source_id": "synthetic-policy-and-audit-export", "locator": "policy section 6 and audit rows 1-5"}]},
+        "usage_policy_published": {"state": "observed", "applicability_confirmed": true, "value": {"written_public": true, "has_website": true, "conspicuous_online": true}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 1, public posting"}]},
+        "authorized_purposes": {"state": "observed", "applicability_confirmed": true, "value": {"purposes_documented": true}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 2"}]},
+        "authorized_users_training": {"state": "observed", "applicability_confirmed": true, "value": {"authorized_designations_documented": true, "training_requirements_documented": true}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 3"}]},
+        "retention": {"state": "observed", "applicability_confirmed": true, "value": {"data_layer": "cloud captures", "length_documented": true, "destruction_process_documented": true, "retention_days": 37}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 4"}]},
+        "sharing_limits": {"state": "observed", "applicability_confirmed": true, "value": {"purposes_documented": true, "process_documented": true, "restrictions_documented": true}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 5"}]},
+        "audit_process": {"state": "observed", "applicability_confirmed": true, "value": {"monitoring_documented": true, "periodic_audit_process_documented": true}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 6"}]},
+        "access_logs": {"state": "observed", "applicability_confirmed": true, "value": {"date_time": true, "query_elements": true, "username": true, "affiliation": true, "purpose": true, "authorized_purpose_control": true}, "citations": [{"source_id": "synthetic-access-export", "locator": "native schema and control description, rows 1-4"}]},
+        "custodian": {"state": "observed", "applicability_confirmed": true, "value": {"title_documented": true}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 7"}]},
+        "accuracy_correction": {"state": "observed", "applicability_confirmed": true, "value": {"measures_documented": true}, "citations": [{"source_id": "synthetic-policy-204", "locator": "section 8"}]},
+        "safeguards": {"state": "observed", "applicability_confirmed": true, "value": {"operational": true, "administrative": true, "technical": true, "physical": true}, "citations": [{"source_id": "synthetic-controls", "locator": "sections A-D"}]},
+        "public_comment": {"state": "observed", "applicability_confirmed": true, "value": {"regular_meeting": true, "public_comment_opportunity": true, "before_implementation": true}, "citations": [{"source_id": "synthetic-minutes", "locator": "2026-02-12 item 8 (invented)"}]}
+      },
+      "requests": [{"request_id": "synthetic-request-77", "applicability_confirmed": true, "receipt_confirmed": true, "received_on": "2026-04-06", "determination_state": "made", "determination_on": "2026-04-16", "extension_claimed": false, "calendar_confirmed": true, "calendar_start": "2026-01-01", "calendar_end": "2026-12-31", "holidays": [], "citations": [{"source_id": "synthetic-receipt-and-determination", "locator": "receipt, notice and approved synthetic calendar"}]}]
+    },
+    {"agency_id": "synthetic-mesa-pd", "name": "Invented Mesa Police", "jurisdiction": "us-ca", "regulated_roles": ["operator", "end_user", "public_agency"], "facts": {
+      "usage_policy_published": {"state": "observed", "applicability_confirmed": true, "value": {"written_public": false, "has_website": false}, "citations": [{"source_id": "synthetic-complete-policy-inventory", "locator": "express statement, paragraph 2"}]},
+      "audit_process": {"state": "redacted", "applicability_confirmed": true, "value": null, "citations": [{"source_id": "synthetic-response", "locator": "paragraph 3"}]},
+      "vendor_name": {"state": "observed", "value": "Invented Lens"}
+    }}
+  ]
+}
