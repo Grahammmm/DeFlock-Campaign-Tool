@@ -52,6 +52,10 @@ def offline(stack, root):
 
     def synthetic_connect(database, *args, **kwargs):
         name = os.fspath(database)
+        # SQLite's exact private-memory target cannot access real data. Do not
+        # exempt file: URIs, empty targets, or filesystem paths from confinement.
+        if name == ":memory:":
+            return connect(database, *args, **kwargs)
         if name.startswith("file:"):
             name = unquote(name[5:].split("?", 1)[0])
         path = Path(os.path.abspath(name))
@@ -88,6 +92,9 @@ class LocatorLexemeTests(unittest.TestCase):
         from campaign_tool.records.ledger import store, unit_projection
         from tests.records import test_ledger
         self.store, self.projection = store, unit_projection
+        # Exercise reference-schema construction under the guard every time;
+        # correctness must not depend on another module warming this cache.
+        store._base_schema.cache_clear()
         self.fixture_class = test_ledger.LedgerTests
         self.database = self.root / "ledger" / "ledger.sqlite"
 
