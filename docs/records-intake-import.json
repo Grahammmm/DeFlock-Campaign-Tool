@@ -18,7 +18,7 @@
       "source_relative_path": "scripts/scope_quarantine.py",
       "source_sha256": "303f96799d7818aec23895d6667e14bed6441ad0dbbb7f561a8c7d28fc286d7f",
       "engine_path": "campaign_tool/records/intake/scope_quarantine.py",
-      "engine_sha256": "61114b1b3b2bfbc1fb4e201f5b66bb0ecb291eb9a5e602852f2b005480eb4f0e"
+      "engine_sha256": "14028e685bb9958e6dd663f01a39f7381fccaa5700a5283f60ec8ced34c6d077"
     },
     {
       "source_relative_path": "tests/test_intake.py",
@@ -50,7 +50,8 @@
     "Native EML/MSG exact-wire inventory and derived-item provenance retain lower shared budgets; extraction edges bind verified immediate parent hashes",
     "Respect inherited extraction resource limits and include effective worker memory in parser-budget cache identity",
     "C20: strict CSV/TSV record parsing with logical/physical error spans; ragged rows retain values with ambiguous column mapping; version CSV extraction policy",
-    "C20 acceptance reconciliation: ragged CSV/TSV records retain values and exact locators without inferred missing header fields; well-shaped empty cells retain empty presence"
+    "C20 acceptance reconciliation: ragged CSV/TSV records retain values and exact locators without inferred missing header fields; well-shaped empty cells retain empty presence",
+    "H1: quarantine only downward from named hashes and direct containers; retain hashes with outside parents or unnamed top-level uses and exclude unsafe named paths without globally excluding shared bytes, reporting retained named paths"
   ],
   "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported",
   "engine_revision": "portable-intake-3"
