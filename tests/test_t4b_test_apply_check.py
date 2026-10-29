@@ -18,6 +18,7 @@ from tools import t4b_test_apply_check as check
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURE = REPO / "tests/fixtures/t4b_s5/valid.json"
+PINNED_SOURCE = FIXTURE.parent / "pinned-source"
 RUN_ID = "synthetic-s5-f011"
 DECISION = "2026-10-24T18:10:00Z"
 
@@ -147,12 +148,18 @@ class CheckerTests(unittest.TestCase):
 
     @contextlib.contextmanager
     def runsheet_repo(self):
-        """Copy only admitted source closure, then forbid every read outside it."""
+        """Use exact historical pins, not a moving checkout; keep reads hermetic."""
         out = REPO.parent / "out"
         out.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="s5-hermetic-", dir=out) as temp:
             repo = Path(temp) / "repo"
-            for name in (*check.PINS, "tools/t4b_test_apply_check.py", "docs/runbooks/T4B-TEST-APPLY.md"):
+            for name, expected in check.PINS.items():
+                raw = (PINNED_SOURCE / (name + ".txt")).read_bytes()
+                self.assertEqual(check.sha(raw), expected, name)
+                target = repo / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+            for name in ("tools/t4b_test_apply_check.py", "docs/runbooks/T4B-TEST-APPLY.md"):
                 target = repo / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes((REPO / name).read_bytes())
@@ -360,6 +367,29 @@ class CheckerTests(unittest.TestCase):
         for raw in ('{"a":1,"a":2}', '{"x":NaN}', '{} trailing'):
             with self.subTest(raw=raw), self.assertRaises(check.CheckError):
                 check.parse(raw)
+
+    def test_snapshot_matches_complete_original_pin_map(self):
+        self.assertEqual(
+            {str(path.relative_to(PINNED_SOURCE)) for path in PINNED_SOURCE.rglob("*.txt")},
+            {name + ".txt" for name in check.PINS},
+        )
+        for name, expected in check.PINS.items():
+            with self.subTest(source=name):
+                self.assertEqual(check.sha((PINNED_SOURCE / (name + ".txt")).read_bytes()), expected)
+
+    def test_checkout_drift_is_still_refused_with_original_pins(self):
+        with self.runsheet_repo() as (repo, reads):
+            text = (repo / "docs/runbooks/T4B-TEST-APPLY.md").read_text()
+            self.assertTrue(check.validate_runsheet(text, repo=repo))
+            original_pins = check.PINS.copy()
+            # A normal new checkout must never refresh or bypass historical pins.
+            name = "campaign_tool/records/mail_adoption.py"
+            raw = (REPO / name).read_bytes() + b"\n# synthetic future checkout drift\n"
+            self.assertNotEqual(check.sha(raw), original_pins[name])
+            (repo / name).write_bytes(raw)
+            with self.assertRaisesRegex(check.CheckError, "^pinned_source_changed$"):
+                check.validate_runsheet(text, repo=repo)
+            self.assertEqual(check.PINS, original_pins)
 
     def test_runsheet_positive_and_inert_negatives(self):
         with self.runsheet_repo() as (repo, reads):

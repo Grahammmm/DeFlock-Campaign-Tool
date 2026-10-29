@@ -401,6 +401,28 @@ _EVIDENCE_KEYS = frozenset({"receipt_sha256", "cas_sha256", "bytes", "export_rec
                             "verification_receipt_path"})
 
 
+def _reject_duplicate_members(pairs):
+    value = {}
+    for key, member in pairs:
+        if key in value:
+            raise ValueError("evidence_duplicate_member")
+        value[key] = member
+    return value
+
+
+def _strict_evidence(text):
+    """Decode stored occurrence evidence, refusing ambiguous serialized members.
+
+    A plain decode keeps the last of duplicate object members, so evidence
+    holding a wrong then a correct value would compare equal. Any duplicate
+    member at any depth, or nesting too deep to decode, raises ValueError.
+    """
+    try:
+        return json.loads(text, object_pairs_hook=_reject_duplicate_members)
+    except RecursionError:
+        raise ValueError("evidence_nesting_bound") from None
+
+
 def _occurrence_groups(con, wanted):
     """Every mail/attachment occurrence whose source_ref names a wanted identity.
 
@@ -412,6 +434,11 @@ def _occurrence_groups(con, wanted):
                            "WHERE kind IN ('mail','attachment')"):
         try:
             source = json.loads(row["source_ref"])
+            if not isinstance(source, dict):
+                continue
+            if (not isinstance(source.get("account"), str)
+                    or not isinstance(source.get("folder"), str)):
+                continue
             key = (source["account"], source["folder"], str(source["uidvalidity"]), str(source["uid"]))
         except (ValueError, KeyError, TypeError):
             continue
@@ -567,7 +594,7 @@ def identity_conflict(con, store, blobs, item, rows, occurrences, intake=None, p
         return "identity_attachment_set_changed"
     for occurrence in occurrences:
         try:
-            evidence = json.loads(occurrence["evidence"])
+            evidence = _strict_evidence(occurrence["evidence"])
         except (TypeError, ValueError):
             return "identity_evidence_unreadable"
         if not isinstance(evidence, dict) or evidence.get("receipt_sha256") != item["receipt_sha256"]:
@@ -601,7 +628,10 @@ def identity_conflict(con, store, blobs, item, rows, occurrences, intake=None, p
             return "identity_locator_changed"
         if row["parent_occurrence_id"] != parent:
             return "identity_parent_changed"
-        evidence = json.loads(row["evidence"])
+        try:
+            evidence = _strict_evidence(row["evidence"])
+        except (TypeError, ValueError):
+            return "identity_evidence_unreadable"
         if not isinstance(evidence, dict) or evidence.get("receipt_sha256") != item["receipt_sha256"]:
             return "identity_receipt_changed"
         original = store.effective_original(con, sha)
