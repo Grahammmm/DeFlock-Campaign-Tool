@@ -185,7 +185,9 @@ def _confidence(tsv: str) -> float | None:
             or reader.fieldnames.count("text") != 1):
         return None
     for row in reader:
-        if not row.get("text", "").strip():
+        # A truncated row has no text cell (None); it is unusable evidence, like empty text.
+        text = row.get("text")
+        if not isinstance(text, str) or not text.strip():
             continue
         try:
             value = float(row["conf"])

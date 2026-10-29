@@ -1,0 +1,94 @@
+{
+  "schema": "n3-agency-timeline-fixture-v1",
+  "note": "Synthetic only. No real agency, person, address, subject, filename, URL or document text. Sentinels must never appear in any report output.",
+  "sentinels": [
+    "N3SENTINELNAME",
+    "N3SENTINELSUBJECT",
+    "n3-sentinel-addr",
+    "N3SENTINELFILE",
+    "N3SENTINELBODY",
+    "N3SENTINELREF",
+    "N3SENTINELTITLE",
+    "N3SENTINELLOCATOR",
+    "N3SENTINELJURISDICTION",
+    "portal.n3-sentinel.invalid"
+  ],
+  "agencies": [
+    {"id": "agency-alpha", "name": "Fictional N3SENTINELNAME Alpha Office", "jurisdiction": "N3SENTINELJURISDICTION"},
+    {"id": "agency-bravo", "name": "Fictional N3SENTINELNAME Bravo Office", "jurisdiction": "N3SENTINELJURISDICTION"},
+    {"id": "agency-charlie", "name": "Fictional N3SENTINELNAME Charlie Office", "jurisdiction": "N3SENTINELJURISDICTION"}
+  ],
+  "requests": [
+    {"id": "req-alpha-1", "agency": "agency-alpha", "external_ref": "N3SENTINELREF-A1",
+     "submitted_at": "2026-07-03T16:00:00Z", "determination_due_at": "2026-07-20T00:00:00Z",
+     "determination_at": "2026-07-18T10:30:00-07:00", "production_at": null, "status": "awaiting_production"},
+    {"id": "req-bravo-1", "agency": "agency-bravo", "external_ref": "N3SENTINELREF-B1",
+     "submitted_at": "2026-08-05", "determination_due_at": null,
+     "determination_at": null, "production_at": null, "status": "open"}
+  ],
+  "originals": [
+    {"label": "mail-1", "mime": "message/rfc822"},
+    {"label": "mail-2", "mime": "message/rfc822"},
+    {"label": "mail-3", "mime": "message/rfc822"},
+    {"label": "mail-4", "mime": "message/rfc822"},
+    {"label": "mail-5", "mime": "message/rfc822"},
+    {"label": "mail-6", "mime": "message/rfc822"},
+    {"label": "mail-7", "mime": "message/rfc822"},
+    {"label": "mail-8", "mime": "message/rfc822"},
+    {"label": "mail-9", "mime": "message/rfc822", "scope": "out_of_scope"},
+    {"label": "attachment-shared", "mime": "application/pdf"},
+    {"label": "attachment-alpha", "mime": "application/pdf"},
+    {"label": "attachment-unknown", "mime": "application/pdf"},
+    {"label": "attachment-excluded", "mime": "application/pdf"},
+    {"label": "portal-doc", "mime": "application/pdf"}
+  ],
+  "occurrences": [
+    {"id": "m1", "original": "mail-1", "kind": "mail", "parent": null},
+    {"id": "m2", "original": "mail-2", "kind": "mail", "parent": null},
+    {"id": "m3", "original": "mail-3", "kind": "mail", "parent": null},
+    {"id": "m4", "original": "mail-4", "kind": "mail", "parent": null},
+    {"id": "m5", "original": "mail-5", "kind": "mail", "parent": null},
+    {"id": "m6", "original": "mail-6", "kind": "mail", "parent": null},
+    {"id": "m7", "original": "mail-7", "kind": "mail", "parent": null},
+    {"id": "m8", "original": "mail-8", "kind": "mail", "parent": null},
+    {"id": "m9", "original": "mail-9", "kind": "mail", "parent": null},
+    {"id": "att-shared-a", "original": "attachment-shared", "kind": "attachment", "parent": "m2"},
+    {"id": "att-shared-b", "original": "attachment-shared", "kind": "attachment", "parent": "m5"},
+    {"id": "att-alpha-2", "original": "attachment-alpha", "kind": "attachment", "parent": "m2"},
+    {"id": "att-unknown", "original": "attachment-unknown", "kind": "attachment", "parent": "m8"},
+    {"id": "att-excluded", "original": "attachment-excluded", "kind": "attachment", "parent": "m9"},
+    {"id": "portal-doc-occ", "original": "portal-doc", "kind": "portal", "parent": null}
+  ],
+  "mail": [
+    {"id": "m1", "original": "mail-1", "folder": "Sent", "uid": 1, "received_at": "2026-07-03T16:05:00Z"},
+    {"id": "m2", "original": "mail-2", "folder": "INBOX", "uid": 2, "received_at": "2026-07-05T10:00:00-07:00"},
+    {"id": "m3", "original": "mail-3", "folder": "INBOX", "uid": 3, "received_at": "2026-08-18T09:00:00Z"},
+    {"id": "m4", "original": "mail-4", "folder": "[Synthetic]/Sent Mail", "uid": 4, "received_at": "2026-08-05T15:00:00Z"},
+    {"id": "m5", "original": "mail-5", "folder": "INBOX", "uid": 5, "received_at": "2026-09-01T01:30:00+02:00"},
+    {"id": "m6", "original": "mail-6", "folder": "INBOX", "uid": 6, "received_at": "2026-10-01T12:00:00Z"},
+    {"id": "m7", "original": "mail-7", "folder": "INBOX", "uid": 7, "received_at": null},
+    {"id": "m8", "original": "mail-8", "folder": "INBOX", "uid": 8, "received_at": "2026-09-15T08:00:00Z"},
+    {"id": "m9", "original": "mail-9", "folder": "INBOX", "uid": 9, "received_at": "2026-07-01T00:00:00Z"}
+  ],
+  "joins": [
+    {"id": "j1", "original": "mail-1", "agency": "agency-alpha", "request": "req-alpha-1", "status": "typed"},
+    {"id": "j2", "original": "mail-2", "agency": "agency-alpha", "request": "req-alpha-1", "status": "typed"},
+    {"id": "j3", "original": "mail-3", "agency": "agency-alpha", "request": null, "status": "typed"},
+    {"id": "j4", "original": "mail-4", "agency": "agency-bravo", "request": "req-bravo-1", "status": "typed"},
+    {"id": "j5", "original": "mail-5", "agency": "agency-bravo", "request": null, "status": "typed"},
+    {"id": "j6", "original": "mail-6", "agency": "agency-charlie", "request": null, "status": "typed"},
+    {"id": "j7", "original": "mail-7", "agency": "agency-charlie", "request": null, "status": "typed"},
+    {"id": "j8", "original": "mail-8", "agency": "agency-charlie", "request": null, "status": "hinted"},
+    {"id": "j9", "original": "mail-3", "agency": "agency-bravo", "request": null, "status": "blocked"},
+    {"id": "j10", "original": "mail-8", "agency": null, "request": null, "status": "hinted"},
+    {"id": "j11", "original": "mail-9", "agency": "agency-alpha", "request": null, "status": "typed"}
+  ],
+  "portal_items": [
+    {"id": "p1", "request_ref": "N3SENTINELREF-P1", "item_id": "1", "agency": "agency-alpha",
+     "retrieval_status": "pending", "original": null},
+    {"id": "p2", "request_ref": "N3SENTINELREF-P2", "item_id": "2", "agency": "agency-bravo",
+     "retrieval_status": "retrieved", "original": "portal-doc"},
+    {"id": "p3", "request_ref": "N3SENTINELREF-P3", "item_id": "3", "agency": null,
+     "retrieval_status": "pending", "original": null}
+  ]
+}
