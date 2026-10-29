@@ -85,6 +85,68 @@ owner has reviewed that diff. To roll it back instead, use
 run: it takes the rollback path of the step recorded in `state.json`. Only one
 run at a time can hold the lock in `$PRIVATE`.
 
+## Pruning superseded runs (separate operator action)
+
+Pruning is never automatic on rollback. First review the dry-run listing:
+
+    python3 "$S" prune --private "$PRIVATE"
+    python3 "$S" prune --private "$PRIVATE" --reuse-image "$KEEP_FOR_NEXT_RUN"
+
+Only after confirming the listed evidence is no longer needed, repeat with
+`--apply` (and the same `--reuse-image` protections). Explicit `--dry-run` is
+also accepted. `--reuse-image` is repeatable here and protects a run planned
+for a future swap; existing reference targets in every run's `state.json` are
+protected automatically, even if the referring run is also a prune candidate.
+A persisted reference to an already absent, correctly named direct run under
+`--private` is logged as `reference target already absent` and ignored. Missing
+explicit `--reuse-image` targets and references outside `--private` still refuse.
+
+The newest timestamp-named run is always kept. The newest `complete` run is also
+always kept as the `latest completed swap rollback point`, even when a later run
+was refused. Other older runs whose phase is `complete`, `rolled_back` or
+`refused` are eligible. Held, running, escalated, interrupted rollback and unknown
+phases stay untouched. Invalid state, foreign identities, symlinked runs/state,
+unknown run names, or invalid reuse references refuse the whole selection rather
+than guessing. The private path
+must already be a real, owner-owned mode-0700 directory outside Git.
+
+A correctly named run without `state.json` is listed as an `orphan remnant` and
+kept by default. This covers early failed attempts that left only `s2/` or `s3/`
+contents. To opt in, preview with both flags before repeating with `--apply`:
+
+    python3 "$S" prune --private "$PRIVATE" --include-orphans --helper-image "$HELPER_IMAGE"
+
+`$HELPER_IMAGE` must be an immutable image ID or digest reference. An orphan is
+eligible only if it is not newest, has no reuse references, and its top level
+contains only real directories named `s1`, `s2`, `s3`, `a2`, `b1` or `rollback`
+(an empty run is also eligible). Unexpected entries, files or symlinks at that
+level keep the orphan protected. No state or helper identity is inferred.
+
+Apply holds the same lock as swap/resume/rollback and refuses a non-rootless
+daemon. Before deleting anything it checks all helper images locally (no pull),
+all containers including stopped ones for overlapping mounts, and own-user
+process use. Each eligible run's recorded immutable helper image is used;
+`--helper-image <image ID or digest>` can override it if the old image is gone.
+The helper needs Python 3.11+ with fd-safe `shutil.rmtree`.
+
+Each cleanup helper has the existing namespace-root user, capabilities and
+network isolation. It mounts only the selected run writable at `/private` and
+the recipe readonly: no live mount and no writable private parent or sibling.
+It rejects nested mounts and unlinks symlinks without following them, removes
+the run's contents including subuid-owned remnants, and leaves `state.json`
+until last. The host then removes the empty directory and verifies absence.
+It never removes an image/container or changes a service/timer. Dry-run starts
+no helper and creates no file; it checks an existing lock read-only.
+
+Deletion is irreversible and not transactional across runs. A helper failure
+stops further deletion with exit 2; earlier successfully pruned runs stay gone.
+If interrupted after state removal but before directory removal, the next
+preview lists the empty orphan; the same explicit orphan opt-in can remove it.
+Ordinary host-root files outside the daemon's namespace may still fail cleanup; do not
+add privileges or bypass that denial. Exit 0 means preview/apply finished,
+not that any retained evidence received semantic review. Never prune while an
+operator's live attempt or evidence review still needs these directories.
+
 ## Helper containers
 
 Every helper is
@@ -131,8 +193,50 @@ appears as (for example, a file created by host root). A rootless archive
 cannot restore such a file to its real owner, so the run stops before any
 archive is taken.
 
-The disk-space check needs three times the mount data plus 512 MiB free in the
-private directory.
+Before writing the first archive, [S1] budgets the whole run's private-storage
+peak, not just the initial snapshot: seven estimated copies plus 512 MiB free.
+The copies cover S1 archive + SQLite backups (2), A2 archive + SQLite backups
+(2), one evidence/restore-test extract that can remain after a failure (1),
+and rollback current-state preservation + verification extract (2). Each copy
+estimate rounds entry sizes up to 4 KiB and adds 4 KiB per entry for tar/PAX
+and filesystem metadata. [A2] remeasures the current mounts and requires five
+copies plus 512 MiB of *remaining free space*: S1 is already on disk and must
+not be charged twice. Insufficient space fails before that phase's archive.
+Both checks write `$RUN/{s1,a2}/space-budget.json` with the components, required
+bytes and available bytes. The format-aware tar/extract estimate from main is
+also retained as a minimum, so padding on small mounts cannot weaken the gate.
+Dry-run prints the policy without scanning mounts.
+
+This is a conservative data-storage estimate, not a reservation or a promise
+against unlimited growth, unusually large xattrs, another disk user or repeated
+interrupted rollbacks. Wheel/image builds also need their own space (possibly on
+another filesystem); the 512 MiB margin does not bound Docker's build cache.
+Do not remove S1 to make A2 fit. Preview pruning old runs instead.
+
+## [R1] preflight
+
+Swap attempts 1 to 6 (2026-10-19/20) each failed at a new gate after the
+snapshot had been taken: [S2] on an intentionally corrupt test fixture, [S3] on
+sockets, [C2] on API defaults in the inspect diff, [B1] on a wheel an earlier
+attempt left in `dist/`, twice on a checkout that was not main, and [A2] 146 MB
+short of free space. Each cost a ~130 GB snapshot and a rollback. [R1] now ends
+with a preflight that checks each of these before anything is stopped. Any
+finding refuses the run (exit 2, nothing changed). The findings go to
+`$RUN/preflight.json` and `$RUN/preflight/`.
+
+| Earlier failure | Preflight check |
+|---|---|
+| off-main or stale checkout | The checkout running the driver must be on `main`, `HEAD` must equal `refs/remotes/origin/main` (run `git fetch origin` first), tracked files must be unmodified and the recipe directory must have no untracked files. The commit goes into `state.json` as `recipe_commit`. |
+| [B1] leftover `dist/` | `container/flock-ocr/dist` must be absent or empty. [B1]/[B2] now build in `$RUN/build`, so no run writes there; anything found is left by an older driver or by hand and is refused, never moved or deleted. |
+| [S2] malformed fixture | A read-only `snapshot_evidence.py survey` of each live mount, in a helper with the mount read-only. Every SQLite database is opened only as `file:...?mode=ro&immutable=1`: no lock, no WAL replay, no sidecar. An unpinned database that fails `integrity_check`, or an `--accept-malformed-sqlite` pin that no mount holds at its hash, refuses the run. A database being written at that moment can read as malformed; that is a false refusal before any change, and [S2] still checks the isolated copy as before. |
+| overflow owners | The same survey refuses entries owned by uid or gid 65534 (formerly found only at [S1], after the stop). |
+| [S3] sockets | The survey names every socket, fifo and device per mount. They are excluded from every equality check (see "Sockets and other special files"). |
+| [C2] settings diff | A create-only probe: `POST /containers/create` of `<name>-swap-probe` with the saved settings and the old image, without `Binds`, `Mounts` and `VolumesFrom` (it never mounts live data), never started. Its inspect is diffed with the same rules as [C2] (name and mounts left out), then it is removed with `docker rm -v`. Any difference refuses the run. |
+| [A2] free space | The survey sizes give one archive set (tar headers, pax reserve, long names, padding, record rounding) `T`, the largest extracted mount `L` and the SQLite data `D`. Let `C` be the sum of each entry's payload rounded up to 4 KiB plus 4 KiB per entry. R1 requires `max(7C + 512 MiB, 3T + 2D + L + 512 MiB)` free, matching S1's backstop: S1 archives, S2 backups, A2 archives and backups, scratch extraction, and the preserved current state plus its verify extract of an [RB-C] restore after [A2]. The format-aware floor counts only the largest extract because extracts run one mount at a time and are deleted. |
+
+Freeing space is the operator's job. Superseded run directories under
+`--private` are never deleted by the driver during a swap. The owner's retention
+rule governs the explicit operator action `rootless_swap.py prune ... --apply`.
 
 ## Rootless owner runbook
 
@@ -161,7 +265,9 @@ container check is the primary control.
    list from its `Mounts`. List the mount users: every container whose mounts
    overlap one of those, in any state. Record which users were running and
    whether each pause timer was active. Save `docker top` of the target (the
-   app-server inside it). Probe the helper image. Nothing has changed yet.
+   app-server inside it). Probe the helper image. Run the preflight (see
+   "[R1] preflight"); its only change is the create-only probe, which is
+   removed before [R1] ends. Nothing else has changed yet.
 
 ### Quiesce and snapshot gate
 
@@ -204,12 +310,21 @@ container check is the primary control.
 
 ### Build and verify (mounts stay quiescent)
 
-8. [B1] `build_wheel.py --build-python "$BUILD_PY" --provenance-out
-   "$RUN/wheel-provenance.json"`. The driver takes `WHEEL_SHA256` from its
-   last line. With `--reuse-image` it builds nothing and takes the wheel
-   SHA-256 recorded by the earlier run.
+8. [B1] Create `$RUN/build` with just the recipe's `.dockerignore` and
+   `requirements.lock`. Run `build_wheel.py --build-python "$BUILD_PY" --dist
+   "$RUN/build/dist" --provenance-out "$RUN/wheel-provenance.json"`.
+   The driver takes `WHEEL_SHA256` from its last line. Every run owns its output,
+   including a failed or interrupted build; no new wheel goes into the shared
+   `container/flock-ocr/dist`, and any legacy contents there are left untouched.
+   The next run uses a fresh context and cannot be blocked by an old run's wheel.
+   R1 still refuses legacy contents in the recipe's shared `dist/`; move those
+   aside by hand before starting, as described in the preflight table.
+   With `--reuse-image` it creates no context and takes the wheel SHA-256
+   recorded by the earlier run.
 
-9. [B2] `preflight.py` against the old image ID. Then the
+9. [B2] `preflight.py --context "$RUN/build"` against the old image ID.
+   Context validation still requires exactly the lock plus one hashed wheel.
+   The Dockerfile stays in the recipe; only the isolated context is sent. Then the
    `docker build --pull=false` command that `preflight.build_command` produces.
    Then resolve the new image ID. With `--reuse-image` it builds nothing: the
    tag must still resolve to the image ID checked at [R1].
@@ -473,5 +588,66 @@ Alternatively, choose a new `--new-tag` and let the run build again.
 - Open-file detection sees only this user's processes.
 - The private directory is usually on the same filesystem as the Docker data
   root. The archives protect against a bad swap, not against disk loss.
-- The driver has been exercised only against the fake in the tests. Run
+- The fake in the tests covers every step and rollback path. `--rehearse`
+  (below) runs the real sequence against real rootless Docker, but on a
+  throwaway target with synthetic data and stand-in engine build steps. Run
   `--dry-run` first and review its output before `--apply`.
+
+## Rehearsal (`--rehearse`)
+
+```
+python3 container/flock-ocr/rootless_swap.py --rehearse --private "$SCRATCH" \
+  [--rehearse-image python:3.12-slim-bookworm] [--rehearse-mib 1024] \
+  [--rehearse-fault unpinned-fixture] [--rehearse-keep]
+```
+
+`--private` is the rehearsal's own scratch root, outside Git. The rehearsal
+never takes a container, unit, tag, pin or reuse argument; it makes its own.
+Each invocation has its own owner identity `<stamp>`, the UTC second plus 32
+random bits (`20261020t160000z-0a1b2c3d`), so two rehearsals started in the
+same second on one daemon never share a name, label, tag or directory:
+
+1. Its own private directory `flock-swap-rehearsal-<stamp>-private` (the
+   driver's `--private`, holding `$RUN`), a volume
+   `flock-swap-rehearsal-<stamp>-data` and a bind directory
+   `flock-swap-rehearsal-<stamp>-bind` under the scratch root. Each is created
+   exclusively: an existing directory or volume of that name is refused, never
+   adopted, and the new volume must carry this invocation's label (`docker
+   volume create` silently reuses an existing name). The volume and bind are
+   filled by `rehearsal_fixture.py` in a helper: ~1 GiB of bulk
+   files (`--rehearse-mib`), a WAL database with its sidecars, a hash-pinned
+   corrupt test fixture, a left-behind Unix socket, a symlink, 0600/0640 modes
+   and a file owned by namespace uid 1000.
+2. A throwaway target `flock-swap-rehearsal-<stamp>` (labelled
+   `deflock.flock-swap.rehearsal=<stamp>`) on the rehearsal image: the volume,
+   the bind, a tmpfs, `--init`, a restart policy, a health check, no network.
+3. The real driver, `--apply` code, from the [R1] preflight through [A5]. Only
+   four steps are stand-ins, because they need the pinned engine build: [B1]
+   writes a synthetic wheel into `$RUN/build/dist`, [B2] layers it onto the
+   target's image with `docker build`, [V1] checks the image's layers and the
+   wheel hash in the image, [A4] checks the wheel hash in the running
+   replacement. The pause unit `<name>-mail` is simulated in memory; no real
+   systemd unit is touched. The checkout check reports instead of refusing
+   (CI rehearses pull-request heads).
+4. A check that the replacement runs the new image under the name, the old
+   container is kept stopped as `<name>-pre-ocr`, the timer was released and
+   the run completed at [A5].
+5. Cleanup, of only what this invocation proved it created: once its volume
+   exists, every container carrying its own label value (`docker rm -f -v`);
+   the tag only if the image's `deflock.flock-swap.rehearsal.image` label names
+   this target (built by its [B2]); its volume; then its bind and private
+   directories, removed as namespace root by a helper confined to the scratch
+   root. A setup failure on a name collision removes nothing it did not
+   create. `--rehearse-keep` keeps the data and private directory.
+
+`--rehearse-fault unpinned-fixture` withholds the fixture's pin. The rehearsal
+passes only if the driver refuses inside [R1] (exit 2, no step done, the
+simulated pause unit untouched, the target still running unchanged) and the
+preflight survey's own findings name exactly the fixture's withheld paths and
+nothing else. Any other refusal (not rootless, target missing, a leftover
+`dist/`, an unrelated survey finding) fails the fault rehearsal.
+
+The workflow `.github/workflows/flock-swap-rehearsal.yml` runs both on rootless
+Docker in CI. Never run `--rehearse` on a host while a live swap is running on
+the same daemon: a rehearsal container that disappears between a live run's
+`docker ps` and its `docker inspect` would fail that run's mount-user check.
