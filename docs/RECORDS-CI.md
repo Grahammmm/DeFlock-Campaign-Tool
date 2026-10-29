@@ -49,7 +49,11 @@ modules on both tiers and are excluded from offline selection.
 Python 3.12 only. Offline engine checks runs three deterministic disjoint shards
 of affected source tests. The required `offline (3.12)` check aggregates their
 results and fails unless every shard succeeded. Pin guard and public-tree scan
-remain explicit checks. The selector's unit checks use only synthetic graphs;
+remain explicit checks. The PR/merge-group `pin-guard` job also owns exactly one
+`python -B -m campaign_tool.records scan-public --patterns-only` invocation,
+without path filtering or affected-test dependencies: docs-only and unknown-path
+changes receive the same strict-pattern gate. Release artifact steps remain
+full-tier-only. The selector's unit checks use only synthetic graphs;
 they do not assert the contents of other tests or workflows.
 
 Selection follows static Python imports transitively. Dynamic CLI/import callers
