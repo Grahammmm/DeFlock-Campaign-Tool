@@ -476,32 +476,47 @@ def track(events: Iterable[dict], *, as_of: str | datetime, deadline_rules: Iter
             "semantic_assessment": "NOT_ASSESSED", "review_acceptance": False})
 
 
-def _header_pairs(unit: dict) -> list[tuple[int, str, str]]:
+def _json_pointer_token(key: str) -> str:
+    """Escape one JSON-pointer reference token (RFC 6901: ``~`` then ``/``)."""
+    return key.replace("~", "~0").replace("/", "~1")
+
+
+def _header_pairs(unit: dict) -> list[tuple[int, str, str, str | None]]:
+    """Return (index, name, value, retained data pointer or None) header rows.
+
+    The pointer addresses the exact scalar the value was read from inside
+    ``unit["data"]``. Raw ``"Name: value"`` strings have no value-only scalar
+    and therefore carry no pointer.
+    """
     data = unit.get("data") if isinstance(unit.get("data"), dict) else {}
     headers = data.get("headers")
-    rows: list[tuple[int, str, str]] = []
+    rows: list[tuple[int, str, str, str | None]] = []
     if isinstance(headers, dict):
         for index, (key, value) in enumerate(headers.items()):
+            base = "/headers/" + _json_pointer_token(str(key))
             values = value if isinstance(value, list) else [value]
-            for item in values:
+            for position, item in enumerate(values):
+                path = base + "/" + str(position) if isinstance(value, list) else base
                 if isinstance(item, str):
-                    rows.append((index, str(key).strip(), item.strip()))
+                    rows.append((index, str(key).strip(), item.strip(), path))
                 elif isinstance(item, dict):
-                    header_value = item.get("value") or item.get("raw")
+                    field = "value" if item.get("value") else "raw"
+                    header_value = item.get(field)
                     if isinstance(header_value, str):
-                        rows.append((index, str(key).strip(), header_value.strip()))
+                        rows.append((index, str(key).strip(), header_value.strip(), path + "/" + field))
     elif isinstance(headers, list):
         for index, item in enumerate(headers):
             if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(part, str) for part in item):
-                rows.append((index, item[0].strip(), item[1].strip()))
+                rows.append((index, item[0].strip(), item[1].strip(), "/headers/%d/1" % index))
             elif isinstance(item, str) and ":" in item:
                 key, value = item.split(":", 1)
-                rows.append((index, key.strip(), value.strip()))
+                rows.append((index, key.strip(), value.strip(), None))
             elif isinstance(item, dict):
                 key = item.get("name") or item.get("key")
-                value = item.get("value") or item.get("raw")
+                field = "value" if item.get("value") else "raw"
+                value = item.get(field)
                 if isinstance(key, str) and isinstance(value, str):
-                    rows.append((index, key.strip(), value.strip()))
+                    rows.append((index, key.strip(), value.strip(), "/headers/%d/%s" % (index, field)))
     return rows
 
 
@@ -516,9 +531,15 @@ def _exact_header_citation(unit: dict, value: str, bundle: dict,
             evidence.validate_citation(cite, bundle)
             return cite
     if pointer:
-        cite = evidence.grounded_evidence.data_pointer_support(unit, pointer)
-        evidence.grounded_evidence.validate_support(cite, bundle)
-        return cite
+        # A missing path, non-scalar target or transformed (e.g. stripped)
+        # value has no exact projection: the caller holds it as unlocatable.
+        try:
+            cite = evidence.grounded_evidence.data_pointer_support(unit, pointer)
+            evidence.grounded_evidence.validate_support(cite, bundle)
+            pointed = json.loads(cite["quote"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return cite if isinstance(pointed, str) and pointed == value else None
     return None
 
 def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
@@ -529,25 +550,39 @@ def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
         if not headers:
             continue
         original = unit.get("original_sha256")
-        row = {"message_ids": [], "dates": [], "unit_id": unit.get("unit_id")}
-        for header_index, key, value in headers:
+        row = {"message_ids": [], "dates": [], "unlocated": [], "unit_id": unit.get("unit_id")}
+        for header_index, key, value, pointer in headers:
             folded = key.casefold()
             if folded not in {"message-id", "date"}:
                 continue
-            citation = _exact_header_citation(
-                unit, value, bundle, pointer=f"/headers/{header_index}/1")
-            if citation is None:
-                holds.append({"original_sha256": original, "unit_id": unit.get("unit_id"),
-                               "reason": f"{folded.replace('-', '_')}_header_unlocatable"})
-                continue
-            if folded == "message-id":
-                row["message_ids"].append({"value": value, "citation": citation})
-            else:
-                parsed = None
+            citation = _exact_header_citation(unit, value, bundle, pointer=pointer)
+            parsed = None
+            if folded == "date":
                 try:
                     parsed = parsedate_to_datetime(value)
                 except (TypeError, ValueError, OverflowError):
                     pass
+            if citation is None:
+                holds.append({"original_sha256": original, "unit_id": unit.get("unit_id"),
+                               "reason": f"{folded.replace('-', '_')}_header_unlocatable"})
+                # Keep the uncited value for same-field reconciliation only: it
+                # can never become the resolved value, but a contradiction with
+                # it leaves that field unknown instead of promoting a peer.
+                recon = "raw:" + value
+                if folded == "message-id":
+                    recon = value.casefold()
+                elif parsed is not None and parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    # Fail closed: an out-of-range instant keeps its raw key,
+                    # so the field stays unknown or conflicting, never aborts.
+                    try:
+                        recon = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                    except (OverflowError, ValueError):
+                        pass
+                row["unlocated"].append((folded, recon))
+                continue
+            if folded == "message-id":
+                row["message_ids"].append({"value": value, "citation": citation})
+            else:
                 utc = None
                 if parsed is not None and parsed.tzinfo is not None and parsed.utcoffset() is not None:
                     utc = _to_utc(parsed)
@@ -569,14 +604,17 @@ def _message_metadata(bundle: dict) -> tuple[dict[str, dict], list[dict]]:
         dates = [item for row in rows for item in row["dates"]]
         unique_ids = {item["value"].casefold(): item for item in ids}
         unique_dates = {item["normalized"] or ("raw:" + item["value"]): item for item in dates}
+        unlocated = {(field, key) for row in rows for field, key in row["unlocated"]}
+        id_keys = set(unique_ids) | {key for field, key in unlocated if field == "message-id"}
+        date_keys = set(unique_dates) | {key for field, key in unlocated if field == "date"}
         meta = {}
-        if len(unique_ids) == 1:
+        if len(unique_ids) == 1 and len(id_keys) == 1:
             meta["message_id"] = next(iter(unique_ids.values()))
-        elif len(unique_ids) > 1:
+        elif len(id_keys) > 1:
             holds.append({"original_sha256": original, "reason": "message_id_header_conflict"})
-        if len(unique_dates) == 1:
+        if len(unique_dates) == 1 and len(date_keys) == 1:
             meta["message_date"] = next(iter(unique_dates.values()))
-        elif len(unique_dates) > 1:
+        elif len(date_keys) > 1:
             holds.append({"original_sha256": original, "reason": "message_date_header_conflict"})
         result[original] = meta
     return result, holds
