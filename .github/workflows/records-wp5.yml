@@ -149,8 +149,9 @@ jobs:
         working-directory: engine
         run: python -B tools/check_public_tree.py
       - name: Credential scan without network verification
+        # Use the default Git-tracked scope, not a generated-directory denylist.
         if: always()
         working-directory: engine
         run: |
-          detect-secrets scan --all-files --exclude-files '^(\.git|build|dist|\.venv)/' --no-verify > "$RUNNER_TEMP/wp5-secret-scan.json"
+          detect-secrets scan --no-verify > "$RUNNER_TEMP/wp5-secret-scan.json"
           python tools/check_secret_report.py "$RUNNER_TEMP/wp5-secret-scan.json"

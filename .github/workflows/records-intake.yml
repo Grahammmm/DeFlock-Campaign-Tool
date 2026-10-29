@@ -33,9 +33,8 @@ jobs:
         timeout-minutes: 30
         run: python -B -m unittest discover -v
       - name: Credential scan without network verification
-        # build/ is git-ignored and holds only output the test step above just
-        # generated (synthetic projects with sha256 provenance fields), so it is
-        # never tracked source; every tracked path is still scanned.
+        # The default Git-tracked scope excludes generated/untracked output
+        # wherever it is written, while keeping every tracked path in scope.
         run: |
-          detect-secrets scan --all-files --exclude-files '^(\.git|build|dist|\.venv)/' --no-verify > "$RUNNER_TEMP/secret-scan.json"
+          detect-secrets scan --no-verify > "$RUNNER_TEMP/secret-scan.json"
           python tools/check_secret_report.py "$RUNNER_TEMP/secret-scan.json"
