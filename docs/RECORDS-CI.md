@@ -46,7 +46,7 @@ modules on both tiers and are excluded from offline selection.
 
 ## Fast tier: PR and merge group
 
-Python 3.12 only. Offline engine checks runs three deterministic disjoint shards
+Python 3.12 only. Offline engine checks runs five deterministic disjoint shards
 of affected source tests. The required `offline (3.12)` check aggregates their
 results and fails unless every shard succeeded. Pin guard and public-tree scan
 remain explicit checks. The PR/merge-group `pin-guard` job also owns exactly one
@@ -61,7 +61,7 @@ are conservatively included for source changes. Shared ledger/runtime changes,
 unknown paths, fixtures/build metadata, missing diffs, syntax-analysis failures,
 empty selection and deleted/unmapped modules select broader coverage rather than
 an empty successful suite. Very narrow selections broaden if needed to populate
-all three shards. `--list` prints the exact planned module set without running it.
+all five shards. `--list` prints the exact planned module set without running it.
 Shard packing is deterministic largest-source-first, not a claimed duration model.
 
 WP5/recovery/runner source checks run for unknown paths too. Existing required

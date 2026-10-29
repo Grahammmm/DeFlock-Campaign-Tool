@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2]
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -35,7 +35,7 @@ jobs:
       - name: Changed-area source tests (disjoint shards)
         env:
           TMPDIR: /var/tmp
-        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 3
+        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5
   offline:
     # Preserve the required check name, and fail closed on any failed shard.
     needs: affected
