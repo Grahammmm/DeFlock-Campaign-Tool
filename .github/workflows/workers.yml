@@ -1,6 +1,23 @@
 name: Workers checks
 on:
   pull_request:
+    # PR-only path filter (none of these checks is a required status check);
+    # merge_group and push to main always run the full workflow.
+    paths:
+      - "workers/**"
+      - "runner/outbox_gateway.py"
+      - "campaign_tool/__init__.py"
+      - "campaign_tool/outbox.py"
+      - "campaign_tool/review.py"
+      - "tests/test_review_fixture.py"
+      - "tests/fixtures/review-cases.json"
+      - "tools/test_hosted_outbox_bridge.py"
+      - "tools/check_public_tree.py"
+      - "scripts/scan-secrets.mjs"
+      - "pyproject.toml"
+      - "setup.py"
+      - "requirements-*.txt"
+      - ".github/workflows/workers.yml"
   merge_group:
     types: [checks_requested]
   push:

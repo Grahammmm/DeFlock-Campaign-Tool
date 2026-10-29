@@ -1,6 +1,18 @@
 name: WP9 recovery and pinned WP8 composition
 on:
   pull_request:
+    # PR-only path filter (none of these checks is a required status check);
+    # merge_group and push to main always run the full workflow.
+    paths:
+      - "campaign_tool/**"
+      - "tests/__init__.py"
+      - "tests/records/**"
+      - "tests/fixtures/**"
+      - "tools/**"
+      - "pyproject.toml"
+      - "setup.py"
+      - "requirements-*.txt"
+      - ".github/workflows/records-recovery.yml"
   merge_group:
     types: [checks_requested]
   push:

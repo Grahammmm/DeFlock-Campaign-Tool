@@ -1,6 +1,26 @@
 name: Runner checks
 on:
   pull_request:
+    # PR-only path filter (none of these checks is a required status check);
+    # merge_group and push to main always run the full workflow.
+    paths:
+      - "runner/**"
+      - "tests/runner/**"
+      - "tests/__init__.py"
+      - "tests/test_outbox.py"
+      - "tests/test_outbox_gateway.py"
+      - "tests/test_redact.py"
+      - "campaign_tool/**"
+      - "jurisdictions/**"
+      - "templates/**"
+      - "schemas/**"
+      - "tools/check_public_tree.py"
+      - "scripts/scan-secrets.mjs"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "setup.py"
+      - "requirements-*.txt"
+      - ".github/workflows/runner.yml"
   merge_group:
     types: [checks_requested]
   push:
