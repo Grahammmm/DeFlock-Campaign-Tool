@@ -11,6 +11,10 @@ guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 
 
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
 class PinGuardTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -18,16 +22,19 @@ class PinGuardTest(unittest.TestCase):
         self.root = Path(tmp.name)
         (self.root / "a.py").write_bytes(b"pinned\n")
         (self.root / "b.py").write_bytes(b"also pinned\n")
-        pins = {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest()
-                for name in ("a.py", "b.py")}
+        (self.root / "m.json").write_bytes(b"token-1\n")
+        expand = lambda raw: raw.replace(b"token-1", b"real-value")  # noqa: E731
+        pins = [("a.py", sha(b"pinned\n"), None), ("b.py", sha(b"also pinned\n"), None),
+                ("m.json", sha(b"token-1\n"), None), ("m.json", sha(b"real-value\n"), expand)]
         patcher = mock.patch.dict(guard.REGISTRIES, {"synthetic": (("pins.json",), lambda repo: pins)},
                                   clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.pins = pins
 
     def test_unrelated_or_unmodified_changes_pass(self):
         self.assertEqual(guard.violations(self.root, {"c.py"}), [])
-        self.assertEqual(guard.violations(self.root, {"a.py"}), [])
+        self.assertEqual(guard.violations(self.root, {"a.py", "m.json"}), [])
 
     def test_changed_pinned_file_without_repin_fails(self):
         (self.root / "a.py").write_bytes(b"edited\n")
@@ -35,6 +42,12 @@ class PinGuardTest(unittest.TestCase):
                          [("synthetic", "a.py", "content differs from its pin")])
         # Not in the diff: left to the full suite, not blamed on this PR.
         self.assertEqual(guard.violations(self.root, {"c.py"}), [])
+
+    def test_stale_materialized_pin_fails_even_with_raw_repin(self):
+        (self.root / "m.json").write_bytes(b"token-1 edited\n")
+        self.pins[2] = ("m.json", sha(b"token-1 edited\n"), None)  # raw pin updated, materialized not
+        self.assertEqual(guard.violations(self.root, {"m.json"}),
+                         [("synthetic", "m.json", "materialized content (hash anchors restored) differs from its pin")])
 
     def test_registry_change_or_all_checks_every_pin(self):
         (self.root / "b.py").unlink()
@@ -50,15 +63,17 @@ class RealRegistriesTest(unittest.TestCase):
             self.assertTrue(pins, name)
             for holder in holders:
                 self.assertTrue((REPO / holder).is_file(), holder)
-            for digest in pins.values():
+            for _path, digest, _transform in pins:
                 self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
 
     def test_known_pinned_sources_are_covered(self):
-        pinned = set()
+        pinned = {}
         for _holders, loader in guard.REGISTRIES.values():
-            pinned.update(loader(REPO))
+            for path, _digest, transform in loader(REPO):
+                pinned.setdefault(path, set()).add(transform is not None)
         self.assertIn("campaign_tool/records/run_stages.py", pinned)
         self.assertIn("campaign_tool/records/mail_adoption.py", pinned)
+        self.assertEqual(pinned["tests/fixtures/comprehension/rules.json"], {False, True})
 
 
 if __name__ == "__main__":

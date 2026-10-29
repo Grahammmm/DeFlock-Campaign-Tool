@@ -35,15 +35,20 @@ COMPREHENSION = "tests/fixtures/comprehension"
 TOKEN = re.compile(rb"(?<![a-f0-9])(?:[a-f0-9]{64}|[a-f0-9]{40})(?![a-f0-9])")
 
 
+def _restorer(anchors):
+    """Same token restoration as restore_fixture_hashes() in the contract test."""
+    return lambda raw: TOKEN.sub(lambda m: anchors.get(m[0].decode(), m[0].decode()).encode(), raw)
+
+
 def _comprehension_pins(repo):
-    """Mirror tests/test_comprehension_contract.py: tokens -> real hashes."""
+    """Mirror tests/test_comprehension_contract.py: raw and materialized pins."""
     fix = repo / COMPREHENSION
-    anchors = ast.literal_eval((fix / "hash-anchors.py").read_text(encoding="utf-8"))
-    raw = TOKEN.sub(lambda m: anchors.get(m[0].decode(), m[0].decode()).encode(),
-                    (fix / "source-pins.json").read_bytes())
-    pins = json.loads(raw)
-    out = dict(pins["files"])
-    out.update({f"{COMPREHENSION}/{name}": digest for name, digest in pins["fixture_files"].items()})
+    restore = _restorer(ast.literal_eval((fix / "hash-anchors.py").read_text(encoding="utf-8")))
+    pins = json.loads(restore((fix / "source-pins.json").read_bytes()))
+    out = [(path, digest, None) for path, digest in pins["files"].items()]
+    out += [(f"{COMPREHENSION}/{name}", digest, None) for name, digest in pins["fixture_files"].items()]
+    out += [(f"{COMPREHENSION}/{name}", digest, restore)
+            for name, digest in pins["materialized_fixture_files"].items()]
     return out
 
 
@@ -53,11 +58,12 @@ def _t4b_pins(repo):
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == "PINS" for t in node.targets):
-            return dict(ast.literal_eval(node.value))
+            return [(path, digest, None) for path, digest in ast.literal_eval(node.value).items()]
     raise ValueError("PINS not found in tools/t4b_test_apply_check.py")
 
 
-# name -> (files that hold the pins, loader returning {repo path: sha256})
+# name -> (files that hold the pins, loader returning [(repo path, sha256, transform or None)]).
+# transform maps the file bytes before hashing (None = raw bytes).
 REGISTRIES = {
     "comprehension contract (tests/fixtures/comprehension/source-pins.json + hash-anchors.py)": (
         (f"{COMPREHENSION}/source-pins.json", f"{COMPREHENSION}/hash-anchors.py"),
@@ -82,16 +88,18 @@ def violations(repo, changed):
     found = []
     for name, (holders, loader) in REGISTRIES.items():
         pins = loader(repo)
-        if changed is None or any(h in changed for h in holders):
-            targets = sorted(pins)
-        else:
-            targets = sorted(p for p in pins if p in changed)
-        for path in targets:
+        if changed is not None and not any(h in changed for h in holders):
+            pins = [pin for pin in pins if pin[0] in changed]
+        for path, digest, transform in sorted(pins, key=lambda pin: (pin[0], pin[2] is not None)):
             target = repo / path
             if not target.is_file():
-                found.append((name, path, "pinned file missing"))
-            elif hashlib.sha256(target.read_bytes()).hexdigest() != pins[path]:
-                found.append((name, path, "content differs from its pin"))
+                if (name, path, "pinned file missing") not in found:
+                    found.append((name, path, "pinned file missing"))
+                continue
+            data = target.read_bytes()
+            if hashlib.sha256(transform(data) if transform else data).hexdigest() != digest:
+                found.append((name, path, "materialized content (hash anchors restored) differs from its pin"
+                              if transform else "content differs from its pin"))
     return found
 
 
