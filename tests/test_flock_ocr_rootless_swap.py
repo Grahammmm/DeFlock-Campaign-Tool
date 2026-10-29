@@ -1767,7 +1767,7 @@ class SurveyAndBudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "m"
             (root / "db").mkdir(parents=True)
-            subprocess.run([sys.executable, "-B", "-c", _WAL_WRITER, str(root / "db" / "live.db")], check=True)
+            subprocess.run([sys.executable, "-B", _WAL_WRITER, str(root / "db" / "live.db")], check=True)
             digest = malformed_sqlite(root / "fx" / "ledger.sqlite")
             (root / "blob.bin").write_bytes(b"x" * 5000)
             make_socket(root / "run", "s.sock")
