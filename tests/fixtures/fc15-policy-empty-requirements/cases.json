@@ -1,0 +1,39 @@
+{
+  "schema": "fc15-policy-empty-requirements/v1",
+  "fictional": true,
+  "scope": {
+    "agency_id": "fictional-fc15-agency",
+    "jurisdiction": "fictional-fc15-jurisdiction",
+    "regulated_role": "operator",
+    "event_at": "2030-06-15"
+  },
+  "version": {
+    "version_id": "empty-v1",
+    "family_id": "empty-family",
+    "agency_id": "*",
+    "jurisdiction": "fictional-fc15-jurisdiction",
+    "regulated_roles": ["operator"],
+    "effective_from": "2030-01-01",
+    "issued_at": "2029-12-01",
+    "retrieved_at": "2031-01-01",
+    "supersession_status": "not_superseded_as_of_retrieval",
+    "source": {
+      "source_id": "fictional-fc15-policy",
+      "url": "https://example.invalid/fc15-policy",
+      "locator": "fictional section 1",
+      "verification_status": "verified"
+    }
+  },
+  "requirement_text": "Fictional retention setting equals 30 days.",
+  "exception_text": "Fictional exception candidate requires separate review.",
+  "term_text": "Fictional incorporated term: retained day.",
+  "fact_text": "{\"retention_days\":30,\"other_observation\":\"present\"}",
+  "cases": {
+    "selected_empty": ["omitted-empty-facts", "explicit-empty-facts"],
+    "exceptions_only": ["exception", "term", "both"],
+    "facts_not_rules": ["omitted-supplied-facts", "explicit-supplied-facts"],
+    "mixed_families": ["empty-and-transcribed"],
+    "nonempty_positive": ["complete-cited-positive"],
+    "replay_preservation": ["permuted-inputs", "source-hold", "applicability-hold"]
+  }
+}
