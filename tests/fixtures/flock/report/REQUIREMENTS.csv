@@ -1,0 +1,8 @@
+source,version,section,quote,req_id,page
+Sample City ALPR policy,2026-01-01,4.2,Plate reads are deleted after 30 days.,SC-RET-1,2
+Sample State Code,fictional 2026,10(b),The agency shall audit system use each year.,SC-AUD-1,
+Sample City ALPR policy,2026-01-01,4.3,Each search records a stated reason.,SC-LOG-1,2
+Sample City ALPR policy,2026-01-01,4.5,The policy lists each outside agency with access.,SC-ACC-1,3
+Sample City ALPR policy,2026-01-01,1.1,The policy names the system vendor.,SC-VEN-1,1
+Sample City ALPR policy,2026-01-01,6.1,Users complete system training each year.,SC-TRN-1,4
+Sample State Code,fictional 2026,1(a),Operator means a person who runs the system.,SC-DEF-1,
