@@ -99,8 +99,28 @@ An empty text unit is likewise `text_table_row_ambiguous`, not silently skipped.
 Native PDF `{page: n}`, text `{line: n}` and CSV record/line-start/line-end locators
 are preserved exactly. A native PDF page contains the whole page text; a header
 plus a data row on the same page therefore stays ambiguous, not split into units.
-Sheet/row workbook mapping is intentionally deferred to F-040b; workbook inputs
-are unresolved, with all original holds retained. No raw workbook is opened.
+Qualified native `workbook_row` mappings add exactly one key, `sheet` (a string
+of 1–31 characters), and require `delimiter: ","` (ignored for workbook cells).
+No raw workbook is opened. `MAPPING_SCHEMA` and `VERSION` remain unchanged.
+The mapped sheet's row 1 is the header: string values in column-letter order
+must exactly equal the declared names, or `header_mapping_mismatch` results.
+The header is structural (`record_type: other`, `event_id: unit_id`); its cell
+letters bind column names. Data rows retain their exact `{sheet, row}` locator.
+A cell outside those header letters is `unmapped_columns`; an absent cell has
+`{state: missing}`. Cells must have exactly `{cell, value, type}`, no formula type
+or null value, and a cell reference matching the unit row; otherwise they are
+`workbook_cell_unqualified`. Native values must match the declared `str`, `int`
+(excluding bool), or `bool` type without coercion; `json` columns and mismatches
+are `cell_type_invalid`. String blanks and redaction markers retain existing states.
+`workbook_sheet` units are structural. Rows on another sheet remain cited and
+`unit_mapping_unresolved`, never silently omitted. A missing mapped sheet unit
+is `workbook_sheet_unbound`. A hidden or veryHidden mapped sheet marks every
+row diagnostic on that sheet `hidden_sheet: true` and adds upstream reason
+`workbook_hidden_sheet`, keeping `complete=false`. Any workbook receipt issue,
+including `workbook_cached_values_and_objects_not_reviewed`, still produces
+`upstream_not_clear` and `complete=false`. Machine-valid output remains review
+required, unqualified, and barred from activation/publication. No held workbook
+material, original locators, qualification policy or canonical store is changed.
 
 `str` copies observed text verbatim. `int` accepts only signed decimal integer
 syntax without leading zeros; `bool` accepts exactly `true`/`false`; `json` accepts

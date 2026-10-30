@@ -47,16 +47,20 @@ def _decode(raw):
 
 
 def _mapping(value):
-    require(type(value) is dict and set(value) == {
-        "schema", "version", "artifact_sha256", "agency_id", "record_type",
-        "unit_kind", "delimiter", "columns"}, "mapping_shape")
+    workbook = type(value) is dict and value.get("unit_kind") == "workbook_row"
+    keys = {"schema", "version", "artifact_sha256", "agency_id", "record_type",
+            "unit_kind", "delimiter", "columns"} | ({"sheet"} if workbook else set())
+    require(type(value) is dict and set(value) == keys, "mapping_shape")
+    if workbook:
+        require(type(value["sheet"]) is str and 1 <= len(value["sheet"]) <= 31, "mapping_sheet")
+        require(value["delimiter"] == ",", "mapping_delimiter")
     require(value["schema"] == MAPPING_SCHEMA, "mapping_schema")
     for key in ("version", "agency_id"):
         require(type(value[key]) is str and 0 < len(value[key].strip()) <= 256,
                 "mapping_identity")
     require(evidence.is_hash(value["artifact_sha256"]), "mapping_artifact_hash")
     require(value["record_type"] in KNOWN_TYPES - {"other"}, "mapping_record_type")
-    require(value["unit_kind"] in TEXT_KINDS | {"csv_row"}, "mapping_unit_kind")
+    require(value["unit_kind"] in TEXT_KINDS | {"csv_row", "workbook_row"}, "mapping_unit_kind")
     require(type(value["delimiter"]) is str and len(value["delimiter"]) == 1
             and value["delimiter"] not in '\r\n\x00"', "mapping_delimiter")
     columns = value["columns"]
@@ -114,6 +118,44 @@ def _cell(value, codec):
         return {"state": "observed", "value": converted}
     except (ValueError, TypeError, RecursionError):
         raise RowsError("cell_type_invalid") from None
+
+
+def _workbook_cells(unit):
+    cells = unit["data"].get("cells")
+    require(type(cells) is list, "workbook_cell_unqualified")
+    bound = {}
+    row = unit["locator"].get("row")
+    require(type(row) is int and row > 0, "workbook_cell_unqualified")
+    for cell in cells:
+        require(type(cell) is dict and set(cell) == {"cell", "value", "type"}
+                and cell["type"] != "f" and cell["value"] is not None
+                and type(cell["cell"]) is str, "workbook_cell_unqualified")
+        match = re.fullmatch(r"([A-Z]{1,3})([1-9][0-9]{0,6})", cell["cell"])
+        require(match is not None and int(match[2]) == row and match[1] not in bound,
+                "workbook_cell_unqualified")
+        bound[match[1]] = cell["value"]
+    return dict(sorted(bound.items(), key=lambda item: (len(item[0]), item[0])))
+
+
+def _workbook_values(unit, mapping, headers, sheets):
+    require(len(sheets) == 1 and sheets[0]["data"].get("state") in
+            {"visible", "hidden", "veryHidden"}, "workbook_sheet_unbound")
+    require(len(headers) == 1, "header_mapping_mismatch")
+    header = _workbook_cells(headers[0])
+    require(list(header.values()) == [c["name"] for c in mapping["columns"]]
+            and all(type(v) is str for v in header.values()), "header_mapping_mismatch")
+    cells = _workbook_cells(unit)
+    require(set(cells) <= set(header), "unmapped_columns")
+    return [cells.get(letter) for letter in header]
+
+
+def _workbook_cell(value, codec):
+    require(codec != "json", "cell_type_invalid")
+    if value is None:
+        return {"state": "missing"}
+    require(codec in {"str", "int", "bool"} and
+            type(value) is {"str": str, "int": int, "bool": bool}.get(codec), "cell_type_invalid")
+    return _cell(value, codec) if codec == "str" else {"state": "observed", "value": value}
 
 
 def _values(unit, mapping):
@@ -218,19 +260,38 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
     require(set(by_original) <= seen, "mapping_source_missing")
     require({u["unit_id"] for u in units} == set(sources), "source_inventory_coverage_mismatch")
     normalized, diagnostics, grouped = [], [], {}
-    headers = {}
+    headers, workbook_headers, workbook_sheets = {}, {}, {}
     for unit in units:
         if unit["kind"] == "csv_header":
             headers.setdefault(unit["original_sha256"], []).append(unit)
+        key = (unit["original_sha256"], unit["locator"].get("sheet"))
+        if unit["kind"] == "workbook_sheet":
+            workbook_sheets.setdefault(key, []).append(unit)
+        elif unit["kind"] == "workbook_row" and unit["locator"].get("row") == 1:
+            workbook_headers.setdefault(key, []).append(unit)
+    hidden = set()
+    for subject, mapping in by_original.items():
+        if mapping["unit_kind"] == "workbook_row":
+            key = (subject, mapping["sheet"])
+            if any(u["data"].get("state") in {"hidden", "veryHidden"}
+                   for u in workbook_sheets.get(key, [])):
+                hidden.add(key)
+                upstream.append({"artifact_sha256": subject, "reason": "workbook_hidden_sheet"})
     for unit in sorted(units, key=lambda u: u["unit_id"]):
         subject, uid = unit["original_sha256"], unit["unit_id"]
         mapping = by_original.get(subject)
+        workbook = mapping is not None and mapping["unit_kind"] == "workbook_row"
+        key = (subject, mapping["sheet"]) if workbook else None
         record = {"original_sha256": subject, "locator": unit["locator"],
                   "record_type": "unknown", "event_id": None, "event_at": None, "fields": {}}
         reasons, cell_states = [], {}
         agency = mapping["agency_id"] if mapping else None
         if mapping is None:
             reasons.append("mapping_unresolved")
+        elif workbook and unit["kind"] == "workbook_sheet":
+            record["record_type"], record["event_id"] = "other", uid
+        elif workbook and unit["locator"].get("sheet") != mapping["sheet"]:
+            reasons.append("unit_mapping_unresolved")
         elif unit["kind"] == "csv_header" and mapping["unit_kind"] == "csv_row":
             if _decode(unit["text"]) == [c["name"] for c in mapping["columns"]]:
                 record["record_type"] = "other"  # Explicitly bound structural header only.
@@ -245,9 +306,10 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
                     bound_headers = headers.get(subject, [])
                     require(len(bound_headers) == 1 and _decode(bound_headers[0]["text"]) ==
                             [c["name"] for c in mapping["columns"]], "header_mapping_mismatch")
-                values = _values(unit, mapping)
+                values = (_workbook_values(unit, mapping, workbook_headers.get(key, []),
+                          workbook_sheets.get(key, [])) if workbook else _values(unit, mapping))
                 names = [c["name"] for c in mapping["columns"]]
-                if unit["kind"] in TEXT_KINDS and values == names:
+                if (workbook and unit["locator"]["row"] == 1) or (unit["kind"] in TEXT_KINDS and values == names):
                     # Only an exact declared header is structural, never an event.
                     record["record_type"] = "other"
                     record["event_id"] = uid
@@ -263,7 +325,8 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
                     require(all(c["target"] is not None for c in mapping["columns"]), "unmapped_columns")
                     record["record_type"] = mapping["record_type"]
                     for index, column in enumerate(mapping["columns"]):
-                        state = _cell(values[index] if index < len(values) else None, column["type"])
+                        state = (_workbook_cell if workbook else _cell)(
+                            values[index] if index < len(values) else None, column["type"])
                         target = column["target"]
                         cell_states[target] = state
                         if target in {"event_id", "event_at"}:
@@ -289,6 +352,8 @@ def _normalize(*, run_id, receipts, source_bindings, mappings):
         normalized.append(item)
         diagnostic = {"unit_id": uid, "agency_id": agency, "reasons": reasons, "cells": cell_states,
                       "status": "unresolved" if reasons else "mapped"}
+        if unit["kind"] == "workbook_row" and (subject, unit["locator"].get("sheet")) in hidden:
+            diagnostic["hidden_sheet"] = True
         diagnostics.append(diagnostic)
         if record["event_id"] is not None and record["record_type"] != "other":
             key = canonical([agency, record["record_type"], record["event_id"]])
