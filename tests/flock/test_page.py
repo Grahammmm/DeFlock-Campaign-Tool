@@ -97,6 +97,46 @@ class FlockPageTest(unittest.TestCase):
                 self.assertRegex(out.splitlines()[-1], r"^cards=\d+ admissions=\d+ sources=\d+ records_messages=\d+ "
                                                        r"dropped_outreach=\d+ errors=[1-9]\d*$")
 
+    def test_lint_rejects_common_phone_formats_without_echoing_them(self):
+        for phone in ("415.555.0199", "415 555 0199", "415-555-0199", "(415) 555-0199"):
+            with self.subTest(phone=phone):
+                story = json.loads(json.dumps(self.story))
+                story["dek"] += " Call " + phone
+                code, out = self.lint(story)
+                self.assertEqual(code, 1, out)
+                self.assertIn("dek 0: R9 phone-like string", out)
+                self.assertNotIn(phone, out)
+
+    def test_lint_requires_resolving_bracketed_citations(self):
+        for area in ("admissions", "findings", "retention"):
+            for cite in ("", "[]", "not cited", "9", "source 9", "[9,]", "[9] garbage", "[0]", "[12]"):
+                with self.subTest(area=area, cite=cite):
+                    story = json.loads(json.dumps(self.story))
+                    story[area][0]["cite"] = cite
+                    code, out = self.lint(story)
+                    self.assertEqual(code, 1, out)
+                    self.assertIn(area + " 0: R7", out)
+        for cite in ("[1]", "[9]", "[9, 10]", "[9] [10]"):
+            with self.subTest(valid_cite=cite):
+                story = json.loads(json.dumps(self.story))
+                story["admissions"][0]["cite"] = cite
+                code, out = self.lint(story)
+                self.assertEqual(code, 0, out)
+
+    def test_lint_requires_affirmative_public_upload_verification(self):
+        for verification in (None, {}, {"verified_at": "2026-10-01"}, {"public_get_sha_ok": False},
+                             {"public_get_sha_ok": "true"}, {"public_get_sha_ok": 1}, True):
+            with self.subTest(verification=verification):
+                thread = json.loads(json.dumps(self.thread))
+                thread["documents"][0]["upload_verification"] = verification
+                code, out = self.lint(thread=thread)
+                self.assertEqual(code, 1, out)
+                self.assertIn("extraSources 1: R8 inventory document not posted", out)
+        thread = json.loads(json.dumps(self.thread))
+        thread["documents"][0]["upload_verification"] = {"public_get_sha_ok": True}
+        code, out = self.lint(thread=thread)
+        self.assertEqual(code, 0, out)
+
     def test_lint_output_never_echoes_card_text(self):
         secrets = {v for c in self.story["findings"] + self.story["admissions"] + self.story["retention"] + self.story["milestones"]
                    for k, v in c.items() if k in ("text", "label")}

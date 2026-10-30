@@ -19,7 +19,7 @@ KEYS = ("title eyebrow headline dek firstRequest asOf programStart programNote p
         "retention retentionCaption milestones extraSources").split()
 META = "title eyebrow headline dek firstRequest asOf programStart programNote overview retentionCaption".split()
 CITED = ("admissions", "findings", "retention", "milestones")
-EMAIL, PHONE = re.compile(r"\S+@\S+\.\w+"), re.compile(r"\(?\d{3}\)?[ .-]\d{3}-\d{4}")
+EMAIL, PHONE = re.compile(r"\S+@\S+\.\w+"), re.compile(r"\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}")
 URL, ACCESS = re.compile(r"https?://[^\s\"'<>]+", re.I), re.compile(r"[?&](token|key|sig|signature|auth|access|code)=", re.I)
 CUT = re.compile(r"^\d[\d,]*\s+(cut|dropped|removed|fewer|more|less|added|lost|gained|down|up)\b", re.I)
 OUTREACH, INVDOC = re.compile(r"\boutreach\b", re.I), re.compile(r"inventory documents? (\d+)", re.I)
@@ -43,7 +43,8 @@ def load(path): return json.loads(Path(os.path.expanduser(path)).read_text(encod
 def lint(story, thread, location, base, hidden_ids=(), hidden_titles=()):
     errs, loc_reqs = [], {r["id"] for r in location["requests"]}
     loc_docs = {d["document_id"] for d in location["documents"]}
-    verified = {d["document_id"] for d in thread["documents"] if d.get("upload_verification")}
+    verified = {d["document_id"] for d in thread["documents"]
+                if isinstance(v := d.get("upload_verification"), dict) and v.get("public_get_sha_ok") is True}
     n = dict(cards=len(story.get("findings") or ()), admissions=len(story.get("admissions") or ()),
              sources=len(story.get("extraSources") or ()), records_messages=0, dropped_outreach=0)
     if list(story) != KEYS:
@@ -112,9 +113,13 @@ def lint(story, thread, location, base, hidden_ids=(), hidden_titles=()):
         errs.append("extraSources 0: R7 numbers not contiguous from %d" % (base + 1))
     for area in CITED:
         for i, item in enumerate(story.get(area) or ()):
-            cite = str(item.get("cite", ""))
-            errs += ["%s %d: R7 empty cite" % (area, i)] * (area != "milestones" and not cite.strip())
-            for k in map(int, re.findall(r"\d+", cite)):
+            cite = str(item.get("cite", "")).strip()
+            if not cite and area == "milestones":
+                continue
+            if not re.fullmatch(r"\[\s*[0-9]+(?:\s*,\s*[0-9]+)*\s*\](?:\s*\[\s*[0-9]+(?:\s*,\s*[0-9]+)*\s*\])*", cite):
+                errs.append("%s %d: R7 invalid or empty cite" % (area, i))
+                continue
+            for k in map(int, re.findall(r"[0-9]+", cite)):
                 cited.add(k)
                 errs += ["%s %d: R7 cite has no source" % (area, i)] * (k > base and k not in declared or k < 1)
     errs += ["extraSources %d: R7 never cited" % i for k, i in declared.items() if k not in cited]
