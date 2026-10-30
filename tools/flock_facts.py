@@ -58,8 +58,8 @@ def validate(row, v2, folder=None, kind="record"):
 def load(path, folder=None, kind="record"):
     with open(path, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
-    if not records or records[0] not in (V1, V2):
-        return False, [], ["row 1: header is not the v1 or v2 header"]
+    if not records or records[0] not in (V1, V2) or (folder is not None and records[0] != V2):
+        return False, [], ["row 1: header is not an accepted header"]
     v2, rows, errors = records[0] == V2, [], []
     for number, rec in enumerate(records[1:], 2):
         if not rec:
@@ -86,7 +86,7 @@ def check_path(target):
     if not Path(target).is_dir():
         return check_file(target)
     files = sorted(Path(target).glob("agencies/*/FACTS.csv"))
-    return ["%s: %s" % (f.parent.name, e) for f in files for e in check_file(f, f.parent.name)] \
+    return ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)] \
         or ([] if files else ["no FACTS.csv files in store"])
 
 
@@ -113,10 +113,10 @@ def do_import(args):
             row = dict(row, kind=args.kind, effective_from="", effective_to="", added_by=args.added_by,
                        added_at=args.date, status=args.status, fact_id=fact_id(row))
         by_slug.setdefault(slugify(row["agency"]), []).append(row)
-    for slug in by_slug if not errors else ():
+    for n, slug in enumerate(by_slug if not errors else (), 1):
         path = store / "agencies" / slug / "FACTS.csv"
-        file_v2, found, errs = load(path, slug) if path.exists() else (True, [], [])
-        errors += ["%s: %s" % (slug, e) for e in errs + ([] if file_v2 else ["row 1: store file is not v2"])]
+        _, found, errs = load(path, slug) if path.exists() else (True, [], [])
+        errors += ["store file %d: %s" % (n, e) for e in errs]
         old[slug] = [r for _, r in found]
     if errors:
         print("\n".join(errors))

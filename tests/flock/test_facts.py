@@ -71,6 +71,21 @@ class FlockFactsTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("row 8: duplicate of row 2", out)
 
+    def test_store_check_rejects_v1_and_wrong_folder_without_leaking_slugs(self):
+        wrong = self.store / "agencies" / "wrong-agency"
+        wrong.mkdir(parents=True)
+        (wrong / "FACTS.csv").write_bytes(FIXTURE.read_bytes())
+        code, out = run("--check", str(self.store))
+        self.assertEqual((code, "wrong-agency" in out), (1, False))
+        self.assertIn("file 1: row 1: header", out)
+        (wrong / "FACTS.csv").unlink()
+        self.assertEqual(self.do_import(str(FIXTURE))[0], 0)
+        path = self.store / "agencies" / "testville-pd" / "FACTS.csv"
+        path.write_text(path.read_text().replace(",12,", ",,", 1))
+        for code, out in (run("--check", str(self.store)), self.do_import(str(FIXTURE))):
+            self.assertEqual(code, 1)
+            self.assertFalse(any(s in out.lower() for s in ("testville", "sampleton")))
+
 
 if __name__ == "__main__":
     unittest.main()
