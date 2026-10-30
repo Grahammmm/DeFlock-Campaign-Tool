@@ -167,6 +167,21 @@ class RunnerCoverageTests(unittest.TestCase):
             self.assertEqual(rejected["resume"], {"status": "rejected", "reason": "checkpoint_sha256_mismatch"})
             self.assertEqual(rejected["checkpoint"]["attempts"], [])
 
+    def test_request_records_only_verified_whole_views(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, subject, rows, extraction, current = self.fixture(d)
+            units, inventory, bound = runner_coverage.unit_view(p, subject, 3)
+            progress = runner_coverage.processing_coverage(p, subject, units, inventory, bound, stage="review")
+            text = json.dumps({"record_text": ['{"unit": 0}\tsynthetic text'], "truncated": True})
+            recorded = runner_coverage.record_request(progress, text, [u["unit_id"] for u in units])
+            self.assertEqual(progress["checkpoint"]["attempts"], [])
+            self.assertEqual(recorded["request"]["verified_units"], 1)
+            self.assertEqual(recorded["summary"]["emitted_chars"], len("synthetic text"))
+            self.assertEqual(recorded["summary"]["unemitted_units"], [u["unit_id"] for u in units[1:]])
+            self.assertEqual(recorded["status"], "emission_partial")
+            self.assertEqual(recorded["summary"]["unemitted_chunks"], 1)
+            self.assertEqual(recorded["summary"]["accepted_units"], 0)
+
     def test_zero_coverage_is_valid_only_for_denied_review(self):
         receipt = {"coverage": {"denominator": {"kind": "items", "total": 3},
                                 "covered": 0, "scope": "selected"}, "verdict": "challenge",
