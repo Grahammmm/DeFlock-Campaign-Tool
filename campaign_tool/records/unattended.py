@@ -10,6 +10,8 @@ import sys
 
 from . import run as manual
 from . import context_runtime, extraction_routes
+from . import export_selection
+from .intake import export_snapshot, mail_delta
 from .intake import eml_export, folder, imap_intake
 from .ledger import store
 from .runner.canonical_mail import CanonicalMailBackend
@@ -257,6 +259,61 @@ class UnattendedPipeline(manual.Pipeline):
                                {"messages": len(report["preserved"]), "failures": len(report["failures"])})
         return report
 
+    def ingest_exports(self, selected, manifest):
+        from .export_bridge import enroll_export
+        root, inventory = selected["root"], selected["inventory"]
+        receipts = tuple(str(p.relative_to(root)) for p in selected["receipts"])
+        report = dict(input_mode="exports", manifest_sha256=manifest, messages=len(receipts),
+                      preserved=[], replayed=[], failures=[], events=[], deferred=0)
+        try:
+            snapshot = export_snapshot.snapshot(root, receipts, canonical_root=self.root.path, expected=manifest)
+        except Exception:
+            self.safety.stop("retention_integrity_failed")
+            return report
+        try:
+            folder.check_space(self.root.intake, snapshot["bytes"])
+        except OSError:
+            self.safety.stop("fetch_or_preserve_failed")
+            report["refusal"] = "insufficient_disk_for_preservation"
+            return report
+        backend = CanonicalMailBackend(root, self.root.intake, self.root.ledger)
+        identity = dict(self._identity(), run_id="export-" + self.run_id)
+        backend.start_run(identity)
+        try:
+            for position, receipt in enumerate(receipts):
+                binding = digest([self.account, "export", manifest, receipt])
+                if not self.safety.begin("intake", binding):
+                    report["deferred"] = len(receipts) - position
+                    break
+                try:
+                    try:
+                        export_snapshot.snapshot(root, receipts, canonical_root=self.root.path, prior=snapshot)
+                    except Exception:
+                        self.safety.stop("retention_integrity_failed")
+                        raise ValueError("retention_integrity_failed") from None
+                    path = root / receipt
+                    _, scope, _ = mail_delta.load_receipt(path)
+                    seen = self._query("SELECT id FROM mail_messages WHERE account=? AND folder=? AND uidvalidity=? AND uid=?",
+                                       (scope[0], scope[1], int(scope[2]), int(scope[3])))
+                    value = enroll_export(path, export_root=root, backend=backend, inventory=inventory)
+                    report["replayed" if seen else "preserved"].append({"eml_sha256": value.eml_sha256})
+                    report["events"].append(inventory.readiness(value.message_id))
+                    self.safety.finish()
+                except Exception as error:
+                    code = "retention_integrity_failed" if self.safety.state["hold"] == "retention_integrity_failed" else fixed_code(error)
+                    self.safety.finish("fault", code)
+                    if code == "retention_integrity_failed":
+                        self.safety.state["hold"] = code  # Keep integrity stop over the generic rate stop.
+                        self.safety.stop(code)
+                    report["failures"].append({"code": code})
+                    if self.safety.stopped:
+                        report["deferred"] = len(receipts) - position - 1
+                        break
+        finally:
+            backend.finish_run(identity, "completed_with_gaps" if report["failures"] or self.safety.stopped else "slice_completed",
+                               {"messages": len(receipts), "failures": len(report["failures"])})
+        return report
+
     def _advance_resume(self):
         path = self.root.sub("reports") / "unattended-advance-resume.json"
         empty = {"schema": "records-advance-resume-v1", "cursor": None, "frontier": None}
@@ -450,7 +507,9 @@ class UnattendedPipeline(manual.Pipeline):
             self._save_advance_resume(path, resume)
         return report
 
-    def run(self, inbox=None, mail_config=None, client_factory=None, *, documents=None, document_manifest_sha256=None):
+    def run(self, inbox=None, mail_config=None, client_factory=None, *, documents=None, document_manifest_sha256=None, exports=None, export_manifest_sha256=None):
+        if bool(exports) != bool(export_manifest_sha256) or exports and (inbox or mail_config or documents or document_manifest_sha256):
+            raise manual.RunError('invalid_input_selection')
         if bool(documents) != bool(document_manifest_sha256) or documents and (inbox or mail_config):
             raise manual.RunError('invalid_input_selection')
         with manual.root_lock(self.root.path):
@@ -466,6 +525,12 @@ class UnattendedPipeline(manual.Pipeline):
                 self._arm_review_retirement()
                 if self.model is not None or self.challenge is not None:
                     self.safety.stop("model_configuration_forbidden")
+                if self.safety.check() and exports:
+                    try:
+                        with exports.open(self.root.path) as selected:
+                            intake = self.ingest_exports(selected, export_manifest_sha256)
+                    except Exception:
+                        self.safety.stop("retention_integrity_failed")
                 if self.safety.check() and documents:
                     intake = self.ingest_documents(documents, document_manifest_sha256)
                 if self.safety.check() and inbox:
@@ -483,6 +548,7 @@ class UnattendedPipeline(manual.Pipeline):
             held = self.safety.state["hold"] in EXPECTED_HELDS
             gaps = bool(self.review_holds_retained) or any(p["failed"] or p["held"] or p["review_required"] for p in self.safety.phases.values())
             gaps = gaps or bool(mailbox and mailbox["failures"]) or bool(intake and intake["failures"])
+            gaps = gaps or any(not e["retrieval_complete"] for e in (intake or {}).get("events", []))
             gaps = gaps or self.review_retirement["state"] == "pending"
             status = "interrupted" if interrupted else "held" if held else "failed" if self.safety.stopped else "completed_with_gaps" if gaps else "completed"
             summary = manual.stages.counts(self.root.ledger)
@@ -536,6 +602,11 @@ def main(argv=None):
     parser.add_argument("--mail-config")
     parser.add_argument("--documents")
     parser.add_argument("--document-manifest-sha256")
+    parser.add_argument("--export-root")
+    parser.add_argument("--export-receipt", action="append")
+    parser.add_argument("--export-manifest-sha256")
+    parser.add_argument("--collection-host", action="append")
+    parser.add_argument("--collection-exclude-host", action="append")
     parser.add_argument("--jurisdiction", default="us-ca")
     parser.add_argument("--account", default="local")
     parser.add_argument("--event-date")
@@ -544,6 +615,14 @@ def main(argv=None):
     parser.add_argument("--ocr", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    try:
+        exports = export_selection.from_cli(args)
+        if bool(exports) != bool(args.export_manifest_sha256):
+            raise ValueError()
+        if exports:
+            export_snapshot.receipt_paths(tuple(args.export_receipt))
+    except Exception:
+        parser.error('invalid_input_selection')
     if bool(args.documents) != bool(args.document_manifest_sha256) or args.documents and (args.inbox or args.mail_config):
         parser.error('invalid_input_selection')
     from .runtime import require
@@ -556,6 +635,7 @@ def main(argv=None):
                                       event_date=manual.date.fromisoformat(args.event_date) if args.event_date else None,
                                       extraction_timeout=args.timeout, policy=policy,
                                       ocr_tools=tools, ocr_tool_signature=signature)
+
         # Check configuration presence, never inspect or report environment values.
         forbidden_model = any(os.environ.get(prefix + "MODEL_BASE_URL") for prefix in ("", "CHALLENGE_"))
         if forbidden_model or (args.ocr and tools is None):
@@ -563,6 +643,7 @@ def main(argv=None):
                 safety = RunSafety(pipeline.root.ledger, policy)
                 safety.stop("model_configuration_forbidden" if forbidden_model else "ocr_runtime_unavailable")
         report = pipeline.run(args.inbox, args.mail_config, documents=args.documents,
+                              **(dict(exports=exports, export_manifest_sha256=args.export_manifest_sha256) if exports else {}),
                               document_manifest_sha256=args.document_manifest_sha256)
     except Exception:
         print(json.dumps({"status": "failed", "exit_code": 2, "failure_code": "unattended_setup_failed"}))

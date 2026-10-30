@@ -220,7 +220,17 @@ def locked(directory, name, *, wait=0):
 def input_selection(paths):
     """Fixed selectors only. Legacy profiles/entrypoints remain mailbox mode."""
     mode = paths.get("input_mode") or "mailbox"
-    require(mode in {"mailbox", "inbox", "documents"})
+    require(mode in {"mailbox", "inbox", "documents", "exports"})
+    if mode == "exports":
+        from .intake.export_snapshot import receipt_paths
+        require(all(paths.get(k) is None for k in ("mail_config", "inbox", "documents", "inbox_manifest_sha256", "document_manifest_sha256")))
+        require(type(paths.get("export_receipts")) in (list, tuple))
+        receipt_paths(tuple(paths["export_receipts"]))
+        _absolute(paths.get("exports"))
+        manifest = paths.get("export_manifest_sha256")
+        require(isinstance(manifest, str) and SHA.fullmatch(manifest))
+        return mode, "exports", paths["exports"], manifest
+    require(all(paths.get(k) is None for k in ("exports", "export_receipts", "export_manifest_sha256")))
     keys = {"mailbox": "mail_config", "inbox": "inbox", "documents": "documents"}
     selected = keys[mode]
     require(all(paths.get(key) is None for key in keys.values() if key != selected))
@@ -238,6 +248,9 @@ def input_selection(paths):
 
 def input_arguments(paths):
     mode, key, path, manifest = input_selection(paths)
+    if mode == "exports":
+        return ["--input-mode", mode, "--export-root", path, "--export-manifest-sha256", manifest,
+                *[arg for receipt in paths["export_receipts"] for arg in ("--export-receipt", receipt)]]
     if mode == "mailbox":
         return ["--mail-config", path]
     flag = "--inbox-manifest-sha256" if mode == "inbox" else "--document-manifest-sha256"
@@ -249,7 +262,10 @@ def document_snapshot(path, **options):
     return snapshot(path, **options)
 
 
-def offline_snapshot(mode, path, **options):
+def offline_snapshot(mode, path, *, receipts=None, **options):
+    if mode == "exports":
+        from .intake.export_snapshot import snapshot
+        return snapshot(path, tuple(receipts), **options)
     return (inbox_snapshot if mode == "inbox" else document_snapshot)(path, **options)
 
 
@@ -390,13 +406,14 @@ class Profile:
             value = decoded(self.raw, 16384)
             require(isinstance(value, dict) and set(value) in (
                 PROFILE_KEYS, PROFILE_KEYS | {"input_mode"},
+                (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "exports", "export_receipts", "export_manifest_sha256"},
                 (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "inbox", "inbox_manifest_sha256"},
                 (PROFILE_KEYS - {"mail_config"}) | {"input_mode", "documents", "document_manifest_sha256"})
                 and type(value["schema"]) is int and value["schema"] == 1)
             require("input_mode" not in value or type(value["input_mode"]) is str
-                    and value["input_mode"] in {"mailbox", "inbox", "documents"})
+                    and value["input_mode"] in {"mailbox", "inbox", "documents", "exports"})
             mode, input_key, _, _ = input_selection(value)
-            for key in PATH_KEYS | {"inbox", "documents"}:
+            for key in PATH_KEYS | {"inbox", "documents", "exports"}:
                 if key in value:
                     _absolute(value[key])
             require(isinstance(value["name_prefix"], str)
@@ -624,8 +641,8 @@ class Docker:
                 require(self.input_anchor is None or anchor == self.input_anchor)
                 self.input_anchor = anchor
                 if anchor[0] == os.getuid():
-                    self.input_snapshot = offline_snapshot(mode,
-                        mount["source"], expected=manifest, prior=self.input_snapshot)
+                    self.input_snapshot = offline_snapshot(mode, mount["source"],
+                        expected=manifest, prior=self.input_snapshot, **(dict(receipts=p["export_receipts"]) if mode == "exports" else {}))
                 # A mapped owner0700 bind cannot be read by the host UID. Do not
                 # chmod, chown or relax PrivateDir. Exact runtime mount identity,
                 # strict worker ownership/RO bytes and the manifest are mandatory
@@ -1139,15 +1156,17 @@ def entry(paths):
                 time.sleep(.02)
     if role == "worker":
         if mode != "mailbox":
-            offline_snapshot(mode, input_path, expected=manifest, readonly=True)
+            offline_snapshot(mode, input_path, expected=manifest, readonly=True, **(dict(receipts=paths["export_receipts"]) if mode == "exports" else {}))
         argv = [paths["python"], "-B", "-m", WORKER_MODULE, "supervise", "--state-dir",
                 paths["worker_state_parent"] + "/" + job_id, "--wall-seconds", str(paths["wall_seconds"]),
                 "--term-seconds", "5", "--kill-seconds", "5", "--", paths["python"], "-B", "-m",
                 "campaign_tool.records", "run", "--root", paths["root"],
-                "--" + ({"mailbox": "mail-config", "inbox": "inbox", "documents": "documents"}[mode]), input_path,
+                "--" + ({"mailbox": "mail-config", "inbox": "inbox", "documents": "documents", "exports": "export-root"}[mode]), input_path,
                 "--unattended", "--max-originals-per-run", "200", "--ocr", "--json"]
         if mode == "documents":
             argv.extend(["--document-manifest-sha256", manifest])
+        if mode == "exports":
+            argv.extend(["--export-manifest-sha256", manifest, *[arg for receipt in paths["export_receipts"] for arg in ("--export-receipt", receipt)]])
         os.execve(paths["python"], argv, dict(os.environ))
         raise Rejected()
     return postrun_entry(paths)
@@ -1188,7 +1207,7 @@ def probe(paths):
             pass
     mode, _, input_path, manifest = input_selection(paths)
     if mode != "mailbox":
-        offline_snapshot(mode, input_path, expected=manifest, readonly=True)
+        offline_snapshot(mode, input_path, expected=manifest, readonly=True, **(dict(receipts=paths["export_receipts"]) if mode == "exports" else {}))
     else:
         with PrivateDir(str(Path(input_path).parent), private=False) as directory:
             fd = directory.open_file(Path(input_path).name)
@@ -1336,11 +1355,14 @@ def build_board(root, output, state_dir, job_id):
 
 
 def _input_options(command):
-    command.add_argument("--input-mode", choices=("mailbox", "inbox", "documents"))
+    command.add_argument("--input-mode", choices=("mailbox", "inbox", "documents", "exports"))
     selector = command.add_mutually_exclusive_group(required=True)
     selector.add_argument("--mail-config")
     selector.add_argument("--inbox")
     selector.add_argument("--documents")
+    selector.add_argument("--export-root", dest="exports")
+    command.add_argument("--export-receipt", dest="export_receipts", action="append")
+    command.add_argument("--export-manifest-sha256")
     command.add_argument("--inbox-manifest-sha256")
     command.add_argument("--document-manifest-sha256")
 
@@ -1362,6 +1384,9 @@ def main(arguments=None):
         command.add_argument("--inbox", required=True)
         command = commands.add_parser("document-manifest", add_help=False)
         command.add_argument("--documents", required=True)
+        command = commands.add_parser("export-manifest", add_help=False)
+        command.add_argument("--exports", required=True)
+        command.add_argument("--export-receipt", action="append", required=True)
         command = commands.add_parser("probe", add_help=False)
         _input_options(command)
         for name in ("root", "tmp_dir", "worker_state_parent", "board_dir", "release_root", "parser_path"):
@@ -1394,6 +1419,10 @@ def main(arguments=None):
             snapshot = document_snapshot(args.documents)
             result = {k: snapshot[k] for k in ("sha256", "documents", "bytes")}
             result.update(schema=1, status="document_manifest")
+        elif args.action == "export-manifest":
+            snapshot = offline_snapshot("exports", args.exports, receipts=args.export_receipt)
+            result = {k: snapshot[k] for k in ("sha256", "receipts", "members", "bytes")}
+            result.update(schema=1, status="export_manifest")
         elif args.action == "inbox-manifest":
             snapshot = inbox_snapshot(args.inbox)
             result = {k: snapshot[k] for k in ("sha256", "messages", "bytes")}
@@ -1403,6 +1432,8 @@ def main(arguments=None):
     except BaseException:
         result = _output("invalid_state")
     print(json.dumps(result, sort_keys=True), flush=True)
+    if result["status"] == "export_manifest":
+        return 0
     return {"completed": 0, "quiescent": 0, "runtime_ready": 0, "board_ready": 0, "inbox_manifest": 0, "document_manifest": 0,
             "admitted": 0, "postrun_failed": 0 if getattr(locals().get("args"), "action", None) == "entry" else 10, "held": 32, "invalid_state": 30}[result["status"]]
 
