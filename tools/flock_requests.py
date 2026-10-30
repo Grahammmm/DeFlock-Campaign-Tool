@@ -28,9 +28,10 @@ def day(value):
 
 def check_row(r, folder, ids, bad):
     rid = r["request_id"]
-    if not rid or rid in ids:
+    identity = (slug(r["agency"]), rid)
+    if not rid or identity in ids:
         bad("request_id", "is empty or duplicates an earlier row")
-    ids.add(rid)
+    ids.add(identity)
     if not r["agency"] or (folder and slug(r["agency"]) != folder):
         bad("agency", "is empty or does not match its folder")
     d = {k: day(r[k]) for k in DATES}
