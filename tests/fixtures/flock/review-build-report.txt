@@ -1,0 +1,4 @@
+findings=12 errors=0
+requirement: 8 {'cannot tell': 2, 'contradicted': 1, 'met': 3, 'n/a': 1, 'not met': 1}
+claim: 4 {'cannot tell': 1, 'contradicted': 1, 'met': 2}
+analysis_only rows: 1
