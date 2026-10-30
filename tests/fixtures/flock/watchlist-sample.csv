@@ -1,0 +1,4 @@
+agency,kind,url,query,official_domain,last_seen_hash
+Example City,agenda,https://www.city.example/agendas,,city.example,
+Example City,news,https://www.city.example/news,,city.example,
+Example City,social,,Example City license plate cameras,city.example,
