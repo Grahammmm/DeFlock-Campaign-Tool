@@ -667,6 +667,10 @@ class Pipeline:
                                       coverage=coverage, locators=locators[:1024])
 
     def stage_review(self, subject, stage):
+        from campaign_tool.digest.model import build_user_message
+        from .runner_coverage import processing_coverage, record_request
+
+        event_date = self._event_date(subject)
         units, inventory, extraction = self._unit_view(subject)
         text_units = [{"locator": u["locator"], "text": u["text"]} for u in units]
         if not text_units:
@@ -675,7 +679,7 @@ class Pipeline:
         digest = build_digest(subject, text_units, self.package, self.jurisdiction,
                               str(self.package.get("schema_version")), tier, model_config=None if self._event_date(subject) is None else self.model,
                               allowlist=self.allowlist, denylist=self.denylist,
-                              event_date=self._event_date(subject), opener=self.opener)
+                              event_date=event_date, opener=self.opener)
         ocr_pages = sorted({u["locator"].get("page") for u in units if u["ocr"]} - {None})
         if ocr_pages:
             digest["limitations"].append(
@@ -686,8 +690,27 @@ class Pipeline:
                                                 allowlist=self.allowlist, denylist=self.denylist)
         if self._event_date(subject) is None:
             digest["limitations"].append("Conduct date and rule applicability are unresolved; no dated model narrative was requested.")
-        from .runner_coverage import processing_coverage
-        progress = processing_coverage(self, subject, units, inventory, extraction, stage="review")
+        try:
+            prior_content = self._content(subject, "review")
+        except RunError:
+            prior = None
+        else:
+            stored = prior_content.get("processing_coverage")
+            prior = stored.get("checkpoint") if isinstance(stored, dict) else {}
+            if not isinstance(prior, dict):
+                prior = {}
+        progress = processing_coverage(self, subject, units, inventory, extraction, stage="review", checkpoint=prior)
+        if digest.get("model_id"):
+            text = build_user_message(redacted, digest["hits"], rules_in_force(self.package, event_date),
+                                      allowlist=self.allowlist, denylist=self.denylist)
+            progress = record_request(progress, text, [u["unit_id"] for u in units])
+            request = progress["request"]
+            if request["truncated"] or request["unverified_units"]:
+                digest["limitations"].append(
+                    "The model request carried " + str(request["verified_units"]) + " of " + str(len(units)) +
+                    " selected units; the rest remain processing-coverage gaps.")
+        else:
+            progress["request"] = {"status": "not_sent"}
         digest["limitations"].append(
             "Coverage is selected: unit and model-prompt caps may omit text. Automated output "
             "accepts no semantic-review ranges; independent factual review remains required.")

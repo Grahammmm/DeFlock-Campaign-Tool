@@ -7,6 +7,26 @@
   "additionalProperties": false,
   "required": ["stage_result_version", "status", "counts"],
   "properties": {
+    "ocr": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pages_ocr", "pages_conf_ge80", "pages_conf_lt80", "pages_conf_unknown", "pages_reviewed", "awaiting_ocr_images"],
+      "properties": {
+        "pages_ocr": {"$ref": "#/$defs/count"},
+        "pages_conf_ge80": {"$ref": "#/$defs/count"},
+        "pages_conf_lt80": {"$ref": "#/$defs/count"},
+        "pages_conf_unknown": {"$ref": "#/$defs/count"},
+        "pages_reviewed": {"$ref": "#/$defs/count"},
+        "awaiting_ocr_images": {"$ref": "#/$defs/count"}
+      }
+    },
+    "refusals": {
+      "type": "object", "additionalProperties": false,
+      "required": ["not_accepted_coded", "unlisted"],
+      "properties": {
+        "not_accepted_coded": {"$ref": "#/$defs/count"},
+        "unlisted": {"$ref": "#/$defs/count"}
+      }
+    },
     "stage_result_version": {"const": 1},
     "status": {"type": "string", "enum": ["ok", "warn", "fail", "skipped"]},
     "counts": {

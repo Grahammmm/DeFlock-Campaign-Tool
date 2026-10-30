@@ -1,7 +1,9 @@
 """Current extraction inventory and conservative runner processing coverage.
 
 No new registry, semantic acceptance, model dispatch or independent review.
-Progress uses the existing semantic-coverage API and stage-content artifacts.
+Progress uses existing stage-content checkpoints for verified whole-unit primary
+requests rebuilt with the model's public builder, not observed at transport.
+Interrupted requests record nothing; emission is never semantic acceptance.
 """
 import hashlib
 import json
@@ -110,3 +112,46 @@ def record_emission(progress, chunk_id, *, payload_sha256, receipt_sha256, compl
     checkpoint = sc.record_emission(progress["manifest"], progress["checkpoint"], chunk_id,
         payload_sha256=payload_sha256, receipt_sha256=receipt_sha256, completed=completed)
     return _progress(progress, checkpoint)
+
+
+def record_request(progress, request_text, unit_ids):
+    """Account for verified whole views in a rebuilt primary request; never accept."""
+    try:
+        request = json.loads(request_text)
+        lines = request["record_text"]
+        if not isinstance(lines, list) or type(request.get("truncated")) is not bool:
+            raise ValueError
+        sent, previous = {}, -1
+        for line in lines:
+            left, text = line.split("\t", 1)
+            reference = json.loads(left)
+            index = reference["unit"]
+            if (type(index) is not int or not previous < index < len(unit_ids) or
+                    left != json.dumps({"unit": index})):
+                raise ValueError
+            sent[unit_ids[index]], previous = text, index
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise ValueError("request_shape") from None
+    manifest, checkpoint = progress["manifest"], progress["checkpoint"]
+    verified = {u["unit_id"] for u in manifest["units"] if u["unit_id"] in sent and
+                len(sent[u["unit_id"]]) == u["view_chars"] and
+                _hash(sent[u["unit_id"]].encode("utf-8")) == u["view_sha256"]}
+    request_hash, refused = _hash(request_text.encode("utf-8")), []
+    for chunk in manifest["chunks"]:
+        visible = [r for r in chunk["ranges"] if r["unit_id"] in verified]
+        if not visible:
+            continue
+        receipt = _hash(json.dumps({"schema": "records-review-emission-v1",
+            "request_sha256": request_hash, "chunk_id": chunk["chunk_id"]},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("utf-8"))
+        attempts = [a for a in checkpoint["attempts"] if a["chunk_id"] == chunk["chunk_id"]]
+        if (len(attempts) >= sc.MAX_EMISSIONS_PER_CHUNK and
+                not any(a["receipt_sha256"] == receipt for a in attempts)):
+            refused.append({"ordinal": chunk["ordinal"], "reason": "emission_attempts_exhausted"})
+            continue
+        checkpoint = sc.record_attempt(manifest, checkpoint, chunk["chunk_id"],
+            visible_ranges=visible, accepted_ranges=[], receipt_sha256=receipt, completed=True)
+    return {**_progress(progress, checkpoint), "request": {"status": "recorded",
+        "request_sha256": request_hash, "sent_units": len(lines), "verified_units": len(verified),
+        "unverified_units": len(lines) - len(verified), "truncated": request["truncated"],
+        "refused_chunks": refused}}
