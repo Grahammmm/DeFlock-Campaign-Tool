@@ -1,0 +1,7 @@
+agency,request,fact_type,value,source_sha256,page,verbatim_quote
+Testville PD,REQ-001,camera_count,12,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,1,There are 12 cameras.
+Testville PD,REQ-001,retention_days,30,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,2,Retained for 30 days.
+Testville PD,REQ-001,sharing,UNREADABLE,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,3,
+Sampleton Sheriff,REQ-002,camera_count,5,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,1,5 units installed.
+Sampleton Sheriff,REQ-002,retention_days,60,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,4,"Footage kept 60 days, then deleted."
+Sampleton Sheriff,REQ-002,vendor,Acme ALPR,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,2,Vendor is Acme ALPR.
