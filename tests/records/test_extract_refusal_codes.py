@@ -247,7 +247,9 @@ class StageRefusalDiagnosticsTests(ExtractStageCase):
         body = json.loads((self.processing / 'runs' / 'extract-run-t11k.json').read_text())
         return body['documents']
 
-    def test_recorded_main_decision_table(self):
+    @mock.patch.object(ne, 'missing_parsers', return_value=[])
+    def test_recorded_main_decision_table(self, _missing_parsers):
+        # Extraction is mocked; parser availability must not change these cases.
         # Recorded against main a1c58131: outcome, attempted, unexpected, hold.
         cases = (
             ('binding', ExtractionBindingError('pdf_page_denominator_missing'), None, 'pdf', ne.NOT_ACCEPTED, 2, 2, ne.REFUSED_CODE),
