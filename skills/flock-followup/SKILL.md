@@ -1,21 +1,23 @@
 ---
 name: flock-followup
-description: Use when listing which open ALPR public-records requests need a provisional determination reminder. Reads a private REQUESTS.csv and prints reminders only; never sends or concludes lateness.
-skill_version: 1.0
+description: Use when listing which open ALPR public-records requests need a provisional determination reminder, or when turning F4's QUESTIONS.md into a follow-up request draft. Reads private files; never sends or concludes lateness.
+skill_version: 1.1
 ---
 
-# Flock follow-up (part 1: CPRA request tracker)
+# Flock follow-up (CPRA request tracker and follow-up draft)
 
 `REQUESTS.csv` is a private reminder list, not a request registry. `request_id` copies the
 agency's own request number. The canonical ledger wins any disagreement: fix the row by hand,
 never the ledger. Reminder dates come from the us-ca law package (`status: draft`), which this
-skill never upgrades. Drafting a follow-up is a later version and is not part of v1.0.
+skill never upgrades. Version 1.1 adds a draft-only follow-up request (`draft`); it is never sent by this tool.
 
 ## Inputs
 
 - `<store>/agencies/<slug>/REQUESTS.csv` (v1), `<slug>` = lowercase agency name, each run of
   non-`[a-z0-9]` replaced by `-`, ends stripped. Kept in the private store, never in a repository.
 - Header, exactly: `request_id,agency,sent,receipt_evidence,receipt_date,determination_date,extension_notice_date,status,source_sha256`
+- `<store>/agencies/<slug>/runs/<date>/QUESTIONS.md` (from flock-verify, F4), for `draft` only. Its
+  records_sought lines already ask for existing records only.
 - `status` is one of open, determined, produced, closed, withdrawn. Dates are YYYY-MM-DD.
 - Non-empty `receipt_evidence` (120 characters at most) needs `receipt_date` and a 64-hex
   `source_sha256`. A `receipt_date` with empty evidence is an error.
@@ -29,19 +31,27 @@ skill never upgrades. Drafting a follow-up is a later version and is not part of
    `row N: <field> <reason>` line (N is the spreadsheet row) until it ends with `errors=0`.
 3. List reminders: `python3 tools/flock_requests.py due <file or store dir>`. One line per open
    row, soonest first, unknown receipts last. With any error it prints nothing and exits 1.
+4. Draft a follow-up: `python3 tools/flock_requests.py draft <run folder> --requests <REQUESTS.csv or store dir>
+   --from YYYY-MM-DD --to YYYY-MM-DD`. It checks every QUESTIONS.md line, holds back any item whose
+   prior request is still `open` and any exact repeat, and exits 1 with `line N: <reason>` or
+   `no items to draft` and no file. It never overwrites an existing FOLLOWUP-DRAFT.md. Read the
+   held list at the end of the file, remove it, and leave sending to G's approval.
 
 ## Outputs
 
 stdout only. Known receipt: `provisional reminder | id | agency | determination DATE | receipt DATE + N
 calendar days[ + M extension notice] | Gov. Code 7922.535 | not a legal due date`. No evidence:
-`... | receipt unknown | no date computed`, with no date on that line. The tool writes no file.
+`... | receipt unknown | no date computed`, with no date on that line. `draft` prints `items=I held=H written=FOLLOWUP-DRAFT.md` and writes only
+`<run folder>/FOLLOWUP-DRAFT.md` (mode 0600), headed `DRAFT - not sent - G approval required`, for
+existing records only. `due` and `--check` write no file.
 
 ## Never
 
 - State or compute a date without receipt evidence.
 - Use the words late, overdue or violation, or conclude lateness (the quoted package note is the
   only exception); holidays are not modelled.
-- Send, schedule or draft a message, or read mail, the ledger or the network from this tool.
+- Send or schedule a message, or remove the DRAFT header, or read mail, the ledger or the network from this tool.
+- Ask for explanations, opinions or answers, or repeat an open request.
 - Treat REQUESTS.csv as a registry in place of the canonical ledger, or commit or quote real rows.
 
 ## Golden case
@@ -49,6 +59,10 @@ calendar days[ + M extension notice] | Gov. Code 7922.535 | not a legal due date
 `tests/fixtures/flock/requests-sample.csv` (synthetic):
 `python3 -B tools/flock_requests.py --check tests/fixtures/flock/requests-sample.csv`
 
+Draft: `tests/fixtures/flock/questions-sample.md` (synthetic) for agency folder
+`sample-city-police-department`; see `tests/flock/test_requests.py`.
+
 ## Changelog
 
+- 1.1: `draft` writes FOLLOWUP-DRAFT.md (draft only, held items listed).
 - 1.0: REQUESTS.csv v1, `--check` and `due`.

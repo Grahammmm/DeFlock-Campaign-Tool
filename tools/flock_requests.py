@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Private CPRA request reminder list (REQUESTS.csv v1): --check and due. Prints only."""
 import csv
+import os
 import re
 import sys
 from datetime import date
@@ -107,9 +108,87 @@ def due(rows):
     return lines
 
 
+QLINE1 = "Research draft - not legal advice. Records to seek; not allegations."
+QLINE = re.compile(r"- Q (\S+) \| ([^|]+?) \| prior (\S+) \| ([^|]+)")
+ASKS = re.compile(r"\b(explain\w*|why|justif\w*|answer\w*)\b", re.I)
+LEGAL = re.compile(r"\b(late|overdue)\b|violat", re.I)
+INTRO = ("Under the California Public Records Act, I request electronic copies of the existing records listed below. "
+         "This is a new, focused records request related to requests %s.")
+FORMAT = ("Please provide existing electronic files in their maintained native format with their existing fields, or an "
+          "ordinarily available electronic export, with reasonably segregable nonexempt portions released under "
+          "Government Code section 7922.525(b). This request does not require custom programming, a new compilation, "
+          "answers to questions, opinions or written explanations.")
+WITHHELD = "If any responsive record is withheld in whole or in part, please identify records withheld and the basis for withholding."
+END = "END OF REQUEST DRAFT. Do not submit without G's approval. Requester and contact details are intentionally omitted."
+
+
+def parse_questions(text, mine):
+    """Return (items, errors); item = (finding_id, topic, prior ids, records_sought, held reason or None)."""
+    items, errs, seen, lines = [], [], set(), text.splitlines()
+    if not lines or lines[0] != QLINE1:
+        return [], ["line 1: header does not match QUESTIONS.md"]
+    status = {r["request_id"]: r["status"] for r in mine}
+    for n, line in enumerate(lines[1:], 2):
+        m = QLINE.fullmatch(line)
+        if not m:
+            errs += [f"line {n}: not a '- Q <id> | <topic> | prior <ids> | <records_sought>' line"] if line.strip() else []
+            continue
+        fid, topic, prior, sought = m.groups()
+        prior = [] if prior == "-" else prior.split(";")
+        if not sought.startswith("Existing ") or "?" in line or ASKS.search(sought) or LEGAL.search(line):
+            errs.append(f"line {n}: records_sought must ask for existing records only, without lateness wording")
+        elif any(i not in status for i in prior):
+            errs.append(f"line {n}: prior {next(i for i in prior if i not in status)} not in REQUESTS")
+        else:
+            opened = [i for i in prior if status[i] == "open"]
+            held = "open " + ",".join(opened) if opened else "duplicate" if sought in seen else None
+            items.append((fid, topic, prior, sought, held))
+        seen.add(sought)
+    return items, errs
+
+
+def draft(rundir, requests, start, end):
+    run = Path(rundir)
+    rows, errs = load(requests)
+    mine = [r for r in rows if slug(r["agency"]) == run.parent.parent.name]
+    errs = errs or ([] if mine else ["draft: no requests for agency"])
+    try:
+        text = (run / "QUESTIONS.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    items, qerrs = parse_questions(text, mine) if not errs else ([], [])
+    out, errs = run / "FOLLOWUP-DRAFT.md", errs + qerrs
+    inc, held = [i for i in items if not i[4]], [i for i in items if i[4]]
+    errs = errs or ([] if inc else ["draft: no items to draft"])
+    if errs:
+        return print("\n".join(errs), file=sys.stderr) or 1
+    topics = ", ".join(dict.fromkeys(i[1] for i in inc))
+    prior = ", ".join(sorted({p for i in inc for p in i[2]})) or "none on file"
+    body = ["DRAFT - not sent - G approval required", f"# {mine[0]['agency']} follow-up records request - DRAFT ONLY",
+            f"Subject: CPRA request - existing records follow-up ({topics})", "", INTRO % prior, "",
+            f"Unless a narrower period is stated, the period is {start} through {end}.", ""]
+    body += [f"{n}. {i[3]}" for n, i in enumerate(inc, 1)] + ["", FORMAT, "", WITHHELD, "", END]
+    if held:
+        body.append("Held (internal, not part of the request): " + "; ".join(f"{i[0]} {i[4]}" for i in held))
+    tmp = run / ".FOLLOWUP-DRAFT.md.tmp"
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(body) + "\n")
+    try:
+        os.link(tmp, out)
+    except FileExistsError:
+        return print("draft: FOLLOWUP-DRAFT.md already exists", file=sys.stderr) or 1
+    finally:
+        os.unlink(tmp)
+    return print(f"items={len(inc)} held={len(held)} written=FOLLOWUP-DRAFT.md") or 0
+
+
 def main(argv):
+    if len(argv) == 8 and argv[0] == "draft" and argv[2::2] == ["--requests", "--from", "--to"]:
+        start, end = day(argv[5]), day(argv[7])
+        if start and end and start <= end:
+            return draft(argv[1], argv[3], argv[5], argv[7])
     if len(argv) != 2 or argv[0] not in ("--check", "due"):
-        print("usage: flock_requests.py --check PATH | due PATH", file=sys.stderr)
+        print("usage: flock_requests.py --check PATH | due PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD", file=sys.stderr)
         return 2
     rows, errs = load(argv[1])
     if argv[0] == "--check":
