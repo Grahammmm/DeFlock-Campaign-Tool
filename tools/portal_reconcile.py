@@ -148,7 +148,7 @@ def _walk_parent(path):
     """Return a pinned parent fd and leaf, with no symlink traversal."""
     spelling = os.fspath(path)
     parts = spelling.split("/")
-    if not parts[-1] or ".." in parts:
+    if parts[-1] in ("", ".") or ".." in parts:
         raise OSError("unsafe_path")
     parts = [part for part in parts if part and part != "."]
     if not parts:

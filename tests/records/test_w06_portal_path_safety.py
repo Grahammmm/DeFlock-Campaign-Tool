@@ -137,14 +137,17 @@ class Behavior(unittest.TestCase):
 
     def test_missing_dotdot_and_empty_names(self):
         for path in (self.base / "missing/obs", self.base / "missing",
-                     str(self.base) + "/../base/obs.json", "", str(self.base) + "/"):
+                     str(self.base) + "/../base/obs.json", "", str(self.base) + "/",
+                     str(self.obs) + "/."):
             with self.subTest(input=str(path)):
                 self.refused(path, "obs")
         for path in (self.base / "missing/report", str(self.base) + "/../base/report.json",
-                     str(self.base) + "/"):
+                     str(self.base) + "/", str(self.base) + "/newname/.",
+                     str(self.base) + "/."):
             with self.subTest(output=str(path)):
                 self.refused(path, "output")
         self.assertFalse((self.base / "missing").exists())
+        self.assertFalse((self.base / "newname").exists())
 
     def test_parent_swap_after_walk_keeps_original_inode(self):
         real_open, real_sync = os.open, os.fsync
