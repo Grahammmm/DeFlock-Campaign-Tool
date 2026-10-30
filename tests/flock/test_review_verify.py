@@ -51,6 +51,32 @@ class FlockReviewVerifyTest(unittest.TestCase):
         (p["CO"] / "VERIFY.csv").write_text(HEAD + rows)
         (p["CO"] / "VERIFY.md").write_text(md)
 
+    def test_plan_reuses_identical_parameters_without_writing(self):
+        plan = self.tmp / "plan.json"
+        args = ("plan", FIX / "review-findings.csv", "--seed", 17, "--size", 3, "--out", plan)
+        self.assertEqual(vtool(*args)[0], 0)
+        # Non-default formatting makes any regeneration visible in the bytes.
+        plan.write_text(json.dumps(json.loads(plan.read_text()), indent=4) + "\n")
+        frozen, before = plan.read_bytes(), plan.stat()
+        code, out = vtool(*args)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(plan.read_bytes(), frozen)
+        after = plan.stat()
+        self.assertEqual((after.st_ino, after.st_mtime_ns), (before.st_ino, before.st_mtime_ns))
+        self.assertFalse(plan.with_name(plan.name + ".tmp").exists())
+
+    def test_plan_rejects_parameter_changes(self):
+        for seed, size in ((18, 3), (17, 4)):
+            with self.subTest(seed=seed, size=size):
+                plan = self.tmp / ("plan-%s-%s.json" % (seed, size))
+                args = ("plan", FIX / "review-findings.csv")
+                self.assertEqual(vtool(*args, "--seed", 17, "--size", 3, "--out", plan)[0], 0)
+                frozen = plan.read_bytes()
+                code, out = vtool(*args, "--seed", seed, "--size", size, "--out", plan)
+                self.assertEqual(code, 1, out)
+                self.assertIn("parameters", out)
+                self.assertEqual(plan.read_bytes(), frozen)
+
     def test_plan_and_happy_path(self):
         config, p, code, out = self.reach_verify()
         self.assertEqual(code, 3, out)

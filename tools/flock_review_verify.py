@@ -27,10 +27,13 @@ def cell(row, name): return (row.get(name) or "").strip()
 def plan(args):
     rows, digest, out = findings(args.findings), sha(args.findings), Path(args.out)
     if out.exists():
-        try: prior = json.loads(out.read_text(encoding="utf-8"))["findings_sha256"]
-        except (OSError, ValueError, KeyError, TypeError): prior = None
-        if prior != digest:
+        try: prior = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError): prior = None
+        if not isinstance(prior, dict) or prior.get("findings_sha256") != digest:
             return print("plan: %s exists for other findings" % out.name) or 1
+        if prior.get("seed") != args.seed or prior.get("sample_size") != args.size:
+            return print("plan: %s exists with different parameters" % out.name) or 1
+        return print("plan: %s reused (frozen)" % out.name) or 0
     ids = lambda *verdicts: [cell(r, "finding_id") for r in rows if cell(r, "verdict").lower() in verdicts]  # noqa: E731
     priority, pool = ids("contradicted", "not met"), ids("met", "cannot tell")
     sample = random.Random(args.seed).sample(pool, min(args.size, len(pool)))
