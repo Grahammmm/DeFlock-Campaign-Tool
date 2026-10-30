@@ -1,0 +1,12 @@
+{"schema": 1, "region": "sample-county", "jurisdiction": "us-ca", "county_fips": "06999", "law_package": "us-ca",
+ "agencies": [
+  {"slug": "sample-city-police", "watch_agency": "Sample City Police", "seed_agency_id": "ca-sample-city-police",
+   "in_scope": "yes", "applicability": "Sample city police; local ALPR policy applies", "official_domain": "city.example",
+   "site_slug": "sample-city",
+   "watch": [{"kind": "agenda", "url": "https://city.example/agendas"}, {"kind": "news", "url": "https://www.city.example/news"},
+             {"kind": "social", "query": "Sample City ALPR"}]},
+  {"slug": "sample-county-sheriff", "watch_agency": "Sample County Sheriff", "seed_agency_id": "ca-sample-county-sheriff",
+   "in_scope": "hold", "applicability": "", "official_domain": "", "site_slug": null, "watch": []},
+  {"slug": "campus-police", "watch_agency": "Sample Campus Police", "seed_agency_id": null,
+   "seed_note": "campus department; not in the agency seed", "in_scope": "no", "applicability": "", "official_domain": "",
+   "site_slug": null, "watch": []}]}
