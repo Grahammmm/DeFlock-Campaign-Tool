@@ -10,7 +10,7 @@ SCRIPTS = {"facts-intake": "inventory log_summary roster_summary ocr_log_counts 
 MODELS = {"anthropic": "claude-opus-5-5", "openai": "gpt-5.5"}
 WAITS = (("fact-drafts", "anthropic", "FO", "drafts/a.yaml"), ("rules-read", "anthropic", None, None),
          ("assess", "anthropic", "CO", "ASSESSMENTS.yaml"), ("f3-findings", "openai", "CO", "F3-FINDINGS.yaml"))
-STUB = '''import hashlib, json, sys
+STUB = '''import csv, hashlib, json, sys
 from pathlib import Path
 OVERRIDE, FIX = @OVR@, Path(@FIX@)
 me, a = Path(sys.argv[0]).stem, sys.argv[1:]
@@ -39,7 +39,16 @@ elif me == "rules_build":
     copy("policy-sample.csv", out / "F2" / "agencies" / cfg["review"]["slug"] / "POLICY.csv")
 elif me == "compare_build":
     sha = hashlib.sha256(Path(cfg["compare"]["assessments"]).read_bytes()).hexdigest()
-    put(Path(cfg["compare"]["out"]) / "FINDINGS.csv", "assessments," + sha + "\\n")
+    out = Path(cfg["compare"]["out"])
+    out.mkdir(parents=True, exist_ok=True)
+    header = "finding_id kind req_id source version section obligation topic requirement verdict basis fact_ids record_ids pages other_refs related_req_ids analysis_only next_step".split()
+    with (out / "FINDINGS.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        for fid, verdict in (("R001", "met"), ("R002", "contradicted")):
+            writer.writerow(dict(finding_id=fid, kind="requirement", req_id=fid, verdict=verdict,
+                                 basis="assessments sha256 " + sha, analysis_only="no"))
+    put(out / "BUILD-REPORT.txt", "findings=2 errors=0\\nrequirement: 2 {'contradicted': 1, 'met': 1}\\nanalysis_only rows: 0\\n")
 elif me == "f3_from_yaml":
     copy("findings-sample.csv", Path(a[1]) / "FINDINGS.csv")
 else:
@@ -59,7 +68,7 @@ def write_stub(method, name, override=""):
     path.write_text(STUB.replace("@OVR@", repr(override)).replace("@FIX@", repr(str(FIX))))
 
 
-def make_review(tmp, stubs=None, **config_overrides):
+def make_review(tmp, stubs=None, slug=None, **config_overrides):
     """Stub pipeline: stubs maps a script name to extra stub code (None = script absent); keys a__b__c set config a.b.c."""
     tmp, stubs = Path(tmp), {k.removesuffix(".py"): v for k, v in (stubs or {}).items()}
     out, method = tmp / "out", tmp / "method"
@@ -68,6 +77,8 @@ def make_review(tmp, stubs=None, **config_overrides):
             write_stub(method, name, stubs.get(name, ""))
     text = (FIX / "review-sample.json").read_text().replace("@OUT@", str(out)).replace("@METHOD@", str(method))
     cfg = json.loads(text.replace("@PY@", sys.executable))
+    if slug is not None:
+        cfg = json.loads(json.dumps(cfg).replace(SLUG, slug).replace("Sample City Police Department", slug))
     for key, value in config_overrides.items():
         *parents, last = key.split("__")
         node = cfg
@@ -80,7 +91,7 @@ def make_review(tmp, stubs=None, **config_overrides):
     config = tmp / "review.json"
     config.write_text(json.dumps(cfg))
     return config, {"out": out, "method": method, "FO": out / "facts", "RO": out / "rules", "CO": out / "compare",
-                    "calls": method / "CALLS.log", "RUN": out / "compare" / "store" / "agencies" / SLUG / "runs" / "2026-10-30"}
+                    "calls": method / "CALLS.log", "RUN": out / "compare" / "store" / "agencies" / cfg["review"]["slug"] / "runs" / "2026-10-30"}
 
 
 def mark_all(config_path, provider_by_stage):
@@ -159,6 +170,44 @@ class FlockReviewTest(unittest.TestCase):
         moved = list(p["out"].glob(".review/superseded/facts-import-*/store/agencies/%s/FACTS.csv" % SLUG))
         self.assertEqual(len(moved), 1)
         self.assertIn(b"Vigilent", moved[0].read_bytes())
+
+    def test_changed_fact_output_rebuilds_compare_and_f3(self):
+        config, p = make_review(self.tmp)
+        self.assertEqual(self.drive(config, p)[0], 0)
+        state_path = p["out"] / "REVIEW-STATE.json"
+        before = json.loads(state_path.read_text())["stages"]
+        wait_files = {name: (p["CO"] / name).read_bytes()
+                      for name in ("ASSESSMENTS.yaml", "F3-FINDINGS.yaml")}
+        write_stub(p["method"], "facts_build",
+                   '(Path(a[1]) / "FACTS-v1-record.csv").write_text('
+                   '(FIX / "compare-facts.csv").read_text().replace("Vigilant", "Vigilent")); sys.exit(0)')
+        code, out = tool("run", config)
+        self.assertEqual(code, 3, out)
+        self.assertIn("stage assess WAITING (upstream changed)", out)
+        after = json.loads(state_path.read_text())["stages"]
+        self.assertNotEqual(before["facts-import"]["outputs"], after["facts-import"]["outputs"])
+        self.assertEqual(mark_all(config, {"assess": "anthropic"}), [0])
+        code, out = tool("run", config)
+        self.assertEqual(code, 3, out)
+        self.assertIn("stage compare-build done rc=0", out)
+        self.assertIn("stage f3-findings WAITING (upstream changed)", out)
+        self.assertEqual(mark_all(config, {"f3-findings": "openai"}), [0])
+        code, out = tool("run", config)
+        self.assertEqual(code, 0, out)
+        self.assertIn("stage f3-scaffold done rc=0", out)
+        self.assertEqual(wait_files, {name: (p["CO"] / name).read_bytes() for name in wait_files})
+
+    def test_logs_change_rebuilds_facts_without_draft_remark(self):
+        config, p = make_review(self.tmp)
+        self.assertEqual(self.drive(config, p)[0], 0)
+        state_path = p["out"] / "REVIEW-STATE.json"
+        mark = json.loads(state_path.read_text())["stages"]["fact-drafts"]["mark"]
+        write_stub(p["method"], "log_summary",
+                   '(Path(a[1]) / "LOG-SUMMARY-by-user.csv").write_text("user,count\\nnew,1\\n"); sys.exit(0)')
+        code, out = tool("run", config)
+        self.assertEqual(code, 0, out)
+        self.assertIn("stage facts-build done rc=0", out)
+        self.assertEqual(json.loads(state_path.read_text())["stages"]["fact-drafts"]["mark"], mark)
 
     def test_fail_closed(self):
         cases = [({"compare__f3__slug": "other-city"}, "config: compare.f3.slug"),

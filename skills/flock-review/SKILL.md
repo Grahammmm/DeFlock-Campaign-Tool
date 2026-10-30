@@ -35,3 +35,15 @@ Exit codes: 0 done, 1 failed/validation/lock, 2 usage, 3 waiting. Logs: `<out>/.
 - Run two `run`s at once (the LOCK refuses the second).
 - Put a config or the out root inside the repository.
 - Treat `done` as reviewed or publishable: machine-valid output is review-required, and the public-output rules still apply.
+
+## Verify
+(filled in by G2)
+
+## Report
+(filled in by G3)
+
+## Golden
+(filled in by G5)
+
+## Batch
+(filled in by G6)

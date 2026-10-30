@@ -16,12 +16,12 @@ FI, RI, CP = "facts_intake", "rules_intake", "compare"
 SLUG, DIGITS, MODEL = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*"), re.compile(r"[0-9]+"), re.compile(r"[A-Za-z0-9._:-]{1,80}")
 STAGES = [  # (id, kind, deps) -- frozen; G2 appends after counts and never renumbers
     ("inventory", "run", ()), ("logs", "run", ("inventory",)), ("roster", "run", ("inventory",)), ("ocr-logs", "run", ("inventory",)),
-    ("fact-drafts", "wait", ("inventory", "logs", "roster", "ocr-logs")), ("facts-build", "run", ("fact-drafts",)),
+    ("fact-drafts", "wait", ("inventory",)), ("facts-build", "run", ("logs", "roster", "ocr-logs", "fact-drafts")),
     ("facts-import", "run", ("facts-build",)), ("rules-read", "wait", ()), ("rules-build", "run", ("rules-read",)),
     ("rules-diff", "run", ("rules-build",)), ("rules-selftest", "run", ("rules-build",)), ("joins", "run", ("logs",)),
-    ("assess", "wait", ("facts-import", "rules-build", "joins")), ("compare-build", "run", ("assess",)),
+    ("assess", "wait", ("facts-import", "rules-build", "joins")), ("compare-build", "run", ("facts-import", "rules-build", "joins", "assess")),
     ("compare-selftest", "run", ("compare-build",)), ("f3-findings", "wait", ("facts-import", "rules-build")),
-    ("f3-scaffold", "run", ("f3-findings",)), ("f3-write", "run", ("f3-scaffold",)), ("f3-check", "run", ("f3-write",)),
+    ("f3-scaffold", "run", ("facts-import", "rules-build", "f3-findings")), ("f3-write", "run", ("f3-scaffold",)), ("f3-check", "run", ("f3-write",)),
     ("counts", "run", ("compare-build",))]
 IDS = [s[0] for s in STAGES]
 METHOD = {n + ".py": d + "/scripts/" + n + ".py" for d, names in (
