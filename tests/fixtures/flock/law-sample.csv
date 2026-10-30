@@ -1,0 +1,4 @@
+rule_id,section,duty,official_url,text_sha256,accessed,effective_from,effective_to,review,added_by,added_at,status
+ca-civ-1798.90.52-access-records,Civ. Code 1798.90.52,Sample duty one,https://leginfo.legislature.ca.gov/sample/1,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,2026-10-01,2016-01-01,,verified,tester,2026-10-30,unreviewed
+ca-civ-1798.90.55-sharing-limits,Civ. Code 1798.90.55,Sample duty two,https://leginfo.legislature.ca.gov/sample/2,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,2026-10-01,2016-01-01,,verified,tester,2026-10-30,unreviewed
+ca-oag-2023-dle-06-out-of-state-sharing-guidance,OAG DLE-2023-06,Sample duty three,https://oag.ca.gov/sample/3,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,2026-10-01,2023-10-27,,likely,tester,2026-10-30,unreviewed
