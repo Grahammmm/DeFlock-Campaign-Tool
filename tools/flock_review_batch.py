@@ -63,17 +63,13 @@ def marks(c):  # provider of each stage mark, from REVIEW-STATE.json
     return {sid: ((stages.get(sid) or {}).get("mark") or {}).get("provider") or "" for sid in fr.IDS}
 
 
-def worked(p, since=0):  # real model work: a non-empty file no older than `since`; a CSV needs a row past its header (f4-start leaves a header-only one)
+def worked(p):  # real model work: a non-empty file; a CSV needs a row past its header (f4-start leaves a header-only one)
     try:
-        lines = [x for x in p.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()] if p.is_file() and p.stat().st_mtime_ns >= since else []
+        lines = [x for x in p.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()] if p.is_file() else []
     except OSError:
         return False
     return len(lines) > (1 if p.suffix == ".csv" else 0)
 
-
-def inputs(c, sid):  # rules-read: the source texts/PDFs it reads (input, never work); other wait stages have none
-    srcs = c["cfg"][fr.RI].get("sources") or [] if sid == "rules-read" else []
-    return [fr.P(s[k]) for s in srcs if isinstance(s, dict) for k in ("text", "pdf") if s.get(k)]
 
 
 def agency(c, roster):  # read-only; -> row dict (HEADER keys) plus 'files' (the wait stage's input files)
@@ -90,9 +86,10 @@ def agency(c, roster):  # read-only; -> row dict (HEADER keys) plus 'files' (the
         sid, kind = (fr.IDS[first], fr.STAGES[first][1]) if first is not None else ("", "")
         files = fr.wait_files(c, sid) if kind == "wait" else []
         present = bool(files) and all(p.is_file() for p in files)  # file presence only
-        src = inputs(c, sid)
-        since = max([p.stat().st_mtime_ns for p in src if p.is_file()] or [0])  # a spec older than its sources predates the read
-        active = (c["out"] / ".review" / "in-flight" / sid).is_file() or any(worked(p, since) for p in files if p not in src)
+        marked = ((state["stages"].get(sid) or {}).get("mark") or {}).get("files", {})
+        # Shared rules inputs do not establish agency-specific activity: only its explicit marker does.
+        active = (c["out"] / ".review" / "in-flight" / sid).is_file() or (sid != "rules-read" and any(
+            worked(p) and (str(p) not in marked or fr.fhash(p) != marked[str(p)]) for p in files))
     except (fr.Fail, OSError, KeyError, TypeError, ValueError):
         return row
     slug, scope = c["slug"], (roster or {}).get(c["slug"]) or {}

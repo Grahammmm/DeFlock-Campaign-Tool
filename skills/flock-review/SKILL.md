@@ -77,9 +77,10 @@ never touches kanban and never forces, re-marks or skips a stage.
 1. Write LIST: one agency config path per line (`#` comments ok); a config or slug listed twice is refused. Optional `--roster ROSTER.csv`
    (F10/F11 header): a slug missing from it, not `in_scope` yes or with another applicability is `held`.
 2. `python3 tools/flock_review_batch.py status LIST --roster ROSTER.csv --out DIR` (read-only; writes `DIR/BATCH-STATUS.csv`, outside the repo).
-   States: invalid, held, locked, failed, done, in-flight (model-written output present, or an operator marker), waiting (for a model step), ready.
-   `input_present` is file presence only. F4 scaffolding (a header-only VERIFY.csv) and the rules-read sources/specs that predate the read
-   are not work, so those agencies stay `waiting`. A CSV counts as work once it has a row past its header.
+   States: invalid, held, locked, failed, done, in-flight (new/changed model output since the last mark, or an operator marker), waiting (for a model step), ready.
+   `input_present` is file presence only. F4 scaffolding (a header-only VERIFY.csv) and unchanged previously marked output are not work.
+   A CSV counts as work once it has a row past its header. Rules-read relies only on its explicit operator marker: shared sources/specs
+   never establish agency-specific activity, regardless of their contents or timestamps.
 3. `... status LIST --run --golden-config MBCFG --golden-expect FILE` runs each `ready` agency one at a time (`run` exit 3 is normal).
 4. `... plan LIST --golden-config MBCFG --golden-expect FILE [--max 1|2]` prints at most 2 `[RUN]` card bodies (lane, method, files, mark
    command) for waiting agencies, less the in-flight ones. The operator creates the cards; after each card, `--run` again. To reserve a

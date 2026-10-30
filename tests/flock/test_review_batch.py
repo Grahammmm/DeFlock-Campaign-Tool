@@ -1,4 +1,4 @@
-import csv, json, subprocess, sys, tempfile, unittest
+import csv, json, os, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 from tests.flock.test_review import FIX, ROOT, SLUG, WAITS, make_review, mark_all, tool, tree
@@ -92,6 +92,62 @@ class FlockReviewBatchTest(unittest.TestCase):
         self.assertEqual(self.status()[0], 0)
         self.assertEqual([r["state"] for r in self.rows()[1]], ["in-flight", "in-flight", "held"])
         self.assertEqual(titles(batch("plan", self.list, "--roster", ROSTER, *self.gate)[1]), [])
+
+    def test_marked_drafts_wait_again_after_upstream_change(self):
+        self.world()
+        self.list.write_text(str(self.configs[0]) + "\n")
+        config, root = self.configs[0], self.outs[0]
+        self.assertEqual(tool("run", config)[0], 3)
+        draft = root / "facts" / "drafts" / "a.yaml"
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text("draft\n")
+        self.assertEqual(mark_all(config, {"fact-drafts": "anthropic"}), [0])
+        self.assertEqual(tool("run", config)[0], 3)
+        cfg = json.loads(config.read_text())
+        cfg["facts_intake"]["batch_revision"] = "new records"
+        config.write_text(json.dumps(cfg))
+        code, out = self.status("--run", *self.gate)
+        self.assertEqual(code, 0, out)
+        self.assertIn("rc=3 state=waiting", out)
+        self.assertEqual([(r["state"], r["next"]) for r in self.rows()[1]], [("waiting", "fact-drafts")])
+        args = ("plan", self.list, *self.gate)
+        self.assertEqual(titles(batch(*args)[1]), ["[RUN] %s fact-drafts 2026-10-30" % SLUG])
+        # A changed marked file or a new file still indicates real, unmarked work.
+        draft.write_text("revised draft\n")
+        self.assertEqual(titles(batch(*args)[1]), [])
+        draft.write_text("draft\n")
+        (draft.parent / "b.yaml").write_text("new draft\n")
+        self.assertEqual(titles(batch(*args)[1]), [])
+
+    def test_rules_read_shared_spec_touch_does_not_reserve_capacity(self):
+        rules = golden_review(self.tmp / "rules", until="rules-read")
+        golden = golden_review(self.tmp / "golden")
+        cfg = json.loads(rules.read_text())
+        spec = Path(cfg["rules_intake"]["law_specs"][0])
+        spec.write_text("rule,requirement\nR1,first\nR2,second\n")
+        source = Path(cfg["rules_intake"]["sources"][0]["text"])
+        os.utime(spec, ns=(1, 1))
+        listing, report = self.tmp / "list.txt", self.tmp / "batch"
+        listing.write_text(str(rules) + "\n")
+        args = ("plan", listing, "--golden-config", golden, "--golden-expect", SAMPLE)
+        for refreshed in (False, True):
+            with self.subTest(refreshed=refreshed):
+                if refreshed:
+                    stamp = source.stat().st_mtime_ns + 1_000_000_000
+                    os.utime(spec, ns=(stamp, stamp))
+                before = tree(Path(cfg["review"]["out"]))
+                self.assertEqual(batch("status", listing, "--out", report)[0], 0)
+                with (report / "BATCH-STATUS.csv").open(newline="") as handle:
+                    row = next(csv.DictReader(handle))
+                self.assertEqual((row["next"], row["state"]), ("rules-read", "waiting"))
+                self.assertEqual(titles(batch(*args)[1]), ["[RUN] %s rules-read 2026-10-30" % SLUG])
+                self.assertEqual(tree(Path(cfg["review"]["out"])), before)
+        marker = Path(cfg["review"]["out"]) / ".review" / "in-flight" / "rules-read"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        self.assertEqual(titles(batch(*args)[1]), [])
+        marker.unlink()
+        self.assertEqual(len(titles(batch(*args)[1])), 1)
 
     def test_scaffolded_f4_and_existing_rules_inputs_are_waiting(self):
         config, p = make_review(self.tmp / "f4", stubs={"compare_build": compare_build()})
