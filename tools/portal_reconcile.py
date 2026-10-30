@@ -53,7 +53,8 @@ unique URLs, and malformed rows never supply host policy or identity. Output
 is canonical JSON (sorted keys, no timestamps), so identical inputs give
 byte-identical output.
 
-This tool reads two files and writes one new file or stdout. It opens no
+This tool reads two files and writes one new file or stdout, with no symlink in any path component.
+It opens no
 network connection, database, mailbox, ledger, allowlist or queue store.
 Exit 0 means the report was produced; it is not acceptance of the counts.
 """
@@ -143,6 +144,28 @@ def _pairs_recorder(duplicates):
     return hook
 
 
+def _walk_parent(path):
+    """Return a pinned parent fd and leaf, with no symlink traversal."""
+    spelling = os.fspath(path)
+    parts = spelling.split("/")
+    if not parts[-1] or ".." in parts:
+        raise OSError("unsafe_path")
+    parts = [part for part in parts if part and part != "."]
+    if not parts:
+        raise OSError("unsafe_path")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    directory = os.open("/" if spelling.startswith("/") else ".", flags)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        return directory, parts[-1]
+    except BaseException:
+        os.close(directory)
+        raise
+
+
 def read_json(path, schema, list_key):
     """Read one bounded regular JSON file; refuse symlinks and FIFOs.
 
@@ -150,7 +173,12 @@ def read_json(path, schema, list_key):
     (duplicate_json_key) before the schema or rows are looked at.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        parent, leaf = _walk_parent(path)
+        try:
+            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=parent)
+        finally:
+            os.close(parent)
     except OSError:
         raise InputError("input_unreadable") from None
     try:
@@ -499,13 +527,9 @@ def render(report):
     return json.dumps(report, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
 
 
-def _sync_parent(path):
-    """Confirm the new report name's containing directory is durable."""
-    fd = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+def _sync_parent(directory_fd):
+    """Confirm the new name is durable on the same walked directory inode."""
+    os.fsync(directory_fd)
 
 
 def write_new(path, text):
@@ -516,12 +540,22 @@ def write_new(path, text):
     A same-name retry still refuses, so the caller must inspect the residue or
     explicitly choose a different output name. No parent directory is created.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    _sync_parent(path)
+    parent, leaf = _walk_parent(path)
+    try:
+        fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=parent)
+        try:
+            handle = os.fdopen(fd, "w", encoding="ascii")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _sync_parent(parent)
+    finally:
+        os.close(parent)
 
 
 class _CodedArgumentParser(argparse.ArgumentParser):

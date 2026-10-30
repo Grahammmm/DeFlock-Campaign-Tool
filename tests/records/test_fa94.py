@@ -55,14 +55,26 @@ class WriterCase(unittest.TestCase):
     def traced(self, fault=None):
         real_open, real_fdopen, real_fsync, real_close = os.open, os.fdopen, os.fsync, os.close
         events = self.events
+        writing = False
+        real_write = portal.write_new
+
+        def write_new(*args):
+            nonlocal writing
+            writing = True
+            try:
+                return real_write(*args)
+            finally:
+                writing = False
 
         def opening(path, flags, *args, **kwargs):
             directory = bool(flags & os.O_DIRECTORY)
-            if directory:
-                events.append("parent-open")
+            if directory and writing:
                 if fault == "parent-open":
                     raise OSError("private-input-marker-parent-open")
-            return real_open(path, flags, *args, **kwargs)
+            fd = real_open(path, flags, *args, **kwargs)
+            if directory and writing:
+                events.append("parent-open")
+            return fd
 
         def syncing(fd):
             kind = "parent-sync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file-sync"
@@ -107,15 +119,24 @@ class WriterCase(unittest.TestCase):
             return Handle(wrapped) if args and args[0] == "w" else wrapped
 
         def closing(fd):
-            if stat.S_ISDIR(os.fstat(fd).st_mode):
+            if writing and stat.S_ISDIR(os.fstat(fd).st_mode):
                 events.append("parent-close")
             return real_close(fd)
 
         with mock.patch.object(portal.os, "open", opening), \
                 mock.patch.object(portal.os, "fdopen", fdopening), \
                 mock.patch.object(portal.os, "fsync", syncing), \
-                mock.patch.object(portal.os, "close", closing):
+                mock.patch.object(portal.os, "close", closing), \
+                mock.patch.object(portal, "write_new", write_new):
             yield
+
+    def assert_events(self, phase):
+        prefix = self.events[:len(self.events) - len(phase)] if phase else self.events
+        self.assertTrue(all(event in ("parent-open", "parent-close") for event in prefix))
+        self.assertEqual(prefix.count("parent-open") - prefix.count("parent-close"),
+                         1 if phase else 0)
+        if phase:
+            self.assertEqual(self.events[-len(phase):], phase)
 
     def assert_saved(self, expected=None):
         raw = self.output.read_bytes()
@@ -143,8 +164,7 @@ class Behavior(WriterCase):
         with self.traced():
             self.assertEqual(self.invoke(), (0, "", ""))
         self.assert_saved()
-        self.assertEqual(self.events, ["write", "flush", "file-sync", "file-close",
-                                       "parent-open", "parent-sync", "parent-close"])
+        self.assert_events(["write", "flush", "file-sync", "file-close", "parent-sync", "parent-close"])
         report = json.loads(self.output.read_text())
         self.assertEqual(report["classes"]["fetched"], 1)
         self.assertTrue(report["counts_only"])
@@ -152,7 +172,7 @@ class Behavior(WriterCase):
         for marker in ("example.test", "r1", "i1", "private-input-marker"):
             self.assertNotIn(marker, self.output.read_text())
 
-    def test_symlinked_containing_directory_succeeds_with_order_and_reload(self):
+    def test_symlinked_containing_directory_is_refused_before_write(self):
         real = self.root / "real-parent"
         real.mkdir()
         link = self.root / "linked-parent"
@@ -163,36 +183,36 @@ class Behavior(WriterCase):
         self.output = link / "report.json"
         with self.traced():
             result = self.invoke()
-        self.assertEqual(result, (0, "", ""))
-        self.assertEqual(self.events, ["write", "flush", "file-sync", "file-close",
-                                       "parent-open", "parent-sync", "parent-close"])
-        self.assert_saved()
-        self.assertEqual((real / "report.json").read_bytes(), self.text.encode("ascii"))
-        self.assertEqual(stat.S_IMODE((real / "report.json").stat().st_mode), 0o600)
+        self.assertEqual(result, (2, "", '{"error": "output_not_created"}\n'))
+        self.assert_events([])
+        self.assertFalse((real / "report.json").exists())
         self.assertTrue(link.is_symlink())
         self.assertEqual(link.lstat().st_ino, link_inode)
         self.assertEqual(sentinel.read_bytes(), b"prior-report")
 
     def test_write_failure_preserves_partial_bytes_and_refuses_retry(self):
         self.failure_contract("write")
-        self.assertEqual(self.events, ["write", "file-close"])
+        self.assert_events(["write", "file-close", "parent-close"])
 
     def test_flush_failure_preserves_bytes_and_refuses_retry(self):
         self.failure_contract("flush")
-        self.assertEqual(self.events, ["write", "flush", "file-close"])
+        self.assert_events(["write", "flush", "file-close", "parent-close"])
 
     def test_file_sync_failure_preserves_bytes_and_refuses_retry(self):
         self.failure_contract("file-sync")
-        self.assertEqual(self.events, ["write", "flush", "file-sync", "file-close"])
+        self.assert_events(["write", "flush", "file-sync", "file-close", "parent-close"])
 
     def test_parent_open_failure_never_reports_success(self):
-        self.failure_contract("parent-open")
-        self.assertEqual(self.events, ["write", "flush", "file-sync", "file-close", "parent-open"])
+        with self.traced("parent-open"):
+            self.assertEqual(self.invoke(), (2, "", '{"error": "output_not_created"}\n'))
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.invoke(), (0, "", ""))
+        self.assert_saved()
 
     def test_parent_sync_failure_retains_complete_file_and_refuses_retry(self):
         self.failure_contract("parent-sync")
-        self.assertEqual(self.events, ["write", "flush", "file-sync", "file-close",
-                                       "parent-open", "parent-sync", "parent-close"])
+        self.assert_events(["write", "flush", "file-sync", "file-close", "parent-sync", "parent-close"])
 
     def test_each_failure_propagates_oserror_from_real_writer(self):
         for fault in ("write", "flush", "file-sync", "parent-open", "parent-sync"):
@@ -200,14 +220,14 @@ class Behavior(WriterCase):
                 path = self.root / (fault + ".json")
                 with self.traced(fault), self.assertRaises(OSError):
                     portal.write_new(path, self.text)
-                self.assertTrue(path.is_file())
+                self.assertEqual(path.is_file(), fault != "parent-open")
 
     def test_existing_file_is_never_overwritten_or_deleted(self):
         self.output.write_bytes(b"prior-report")
         before = self.output.stat()
         with self.traced():
             self.assertEqual(self.invoke(), (2, "", '{"error": "output_not_created"}\n'))
-        self.assertEqual(self.events, [])
+        self.assert_events([])
         self.assertEqual(self.output.read_bytes(), b"prior-report")
         self.assertEqual(self.output.stat().st_ino, before.st_ino)
 
@@ -218,7 +238,7 @@ class Behavior(WriterCase):
         before = self.output.lstat()
         with self.traced():
             self.assertEqual(self.invoke(), (2, "", '{"error": "output_not_created"}\n'))
-        self.assertEqual(self.events, [])
+        self.assert_events([])
         self.assertTrue(self.output.is_symlink())
         self.assertEqual(self.output.lstat().st_ino, before.st_ino)
         self.assertEqual(target.read_bytes(), b"prior-target")

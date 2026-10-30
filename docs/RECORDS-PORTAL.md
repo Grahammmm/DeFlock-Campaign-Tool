@@ -224,6 +224,14 @@ runner bridge use actual delivery counts and leave every newly enrolled stage pe
 
 ## Offline pointer reconciliation report
 
+Both inputs and the output must have no symlink in any path component,
+including ancestor directories. Absolute paths are walked from `/`; relative
+paths are walked from the process cwd (trusted as resolved by the kernel).
+`..` components and empty final names are refused, not normalized or resolved.
+Unsafe inputs return `input_unreadable`; unsafe outputs return `output_not_created`.
+These are the existing fixed codes; refusal never chooses a fallback path.
+The output parent must already exist and is synced using the walked descriptor.
+
 `tools/portal_reconcile.py` is a read-only, counts-only report. It compares a
 mail-derived pointer set (`portal-pointer-observations/v1`: host class, URL
 SHA-256, optional host, request id, item id or path) with a queue export
