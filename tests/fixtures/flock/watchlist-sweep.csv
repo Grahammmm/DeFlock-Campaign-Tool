@@ -1,0 +1,6 @@
+agency,kind,url,query,official_domain,last_seen_hash
+Sample City Police Department,agenda,https://www.sample-city.example/agendas,,sample-city.example,
+Second City Police,news,https://www.second-city.example/news,,second-city.example,
+Campus Police,news,https://police.campus.example/news,,campus.example,
+Parks,minutes,https://www.parks.example/minutes,,parks.example,
+Unlisted Agency,agenda,https://www.unlisted.example/agendas,,unlisted.example,
