@@ -1,0 +1,8 @@
+finding_id,verdict,reread_fact_id,reread_page,new_rating,records_sought,reason
+N1,confirm,F-090c3d39b556,2,strong,,Page 2 lists the search log fields and none is a search purpose.
+N2,confirm,F-090c3d39b556,2,medium,Existing access-record field list for the sample ALPR system,Page 2 supports a possible gap only.
+O1,confirm,F-76dbe8a9b4ac,3,strong,,Page 3 states the outside query access.
+O2,reject,F-76dbe8a9b4ac,3,,,Page 3 does not reach the sharing decision at all.
+A1,confirm,F-e1b1072c95c3,4,strong,,Page 4 states that no responsive audit reports were found.
+R1,downgrade,F-53baa6f20643,5,medium,Existing retention policy versions and their change approvals,Page 5 gives a period but the policy version in force is unconfirmed.
+T1,confirm,F-a71d059d7a51,6,strong,,Page 6 states that the training materials were withheld.
