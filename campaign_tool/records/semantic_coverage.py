@@ -3,7 +3,8 @@
 This module performs no extraction, model calls, review, or stage promotion. Its
 public JSON-compatible API is ``build_manifest``, ``render_chunk``,
 ``initial_checkpoint``, ``validate_checkpoint``, ``record_attempt``,
-``pending_chunks`` and ``coverage_summary``. Persist returned checkpoints
+``record_emission``, ``unemitted_chunks``, ``pending_chunks`` and
+``coverage_summary``. Persist returned checkpoints
 atomically in the caller's existing private ledger; an interrupted call before
 persistence can safely replay the same receipt.
 
@@ -46,6 +47,7 @@ import re
 
 VERSION = "semantic-coverage-v1"
 CHECKPOINT_VERSION = "semantic-progress-v1"
+MAX_EMISSIONS_PER_CHUNK = 8
 PAYLOAD_VERSION = "semantic-text-v1"
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -411,6 +413,33 @@ def record_attempt(manifest, checkpoint, chunk_id, *, visible_ranges, accepted_r
     return _signed(result, "checkpoint_sha256")
 
 
+def record_emission(manifest, checkpoint, chunk_id, *, payload_sha256, receipt_sha256, completed):
+    """Record whole-chunk mechanical emission, structurally excluding acceptance."""
+    validate_checkpoint(manifest, checkpoint)
+    _, chunks = _checked_manifest(manifest)
+    _known_chunk(chunk_id, chunks, "unknown_chunk")
+    chunk = chunks[chunk_id]
+    _require(payload_sha256 == chunk["payload_sha256"], "emission_payload_mismatch")
+    if not any(a["receipt_sha256"] == receipt_sha256 for a in checkpoint["attempts"]):
+        _require(sum(a["chunk_id"] == chunk_id for a in checkpoint["attempts"]) < MAX_EMISSIONS_PER_CHUNK,
+                 "emission_attempts_exhausted")
+    return record_attempt(manifest, checkpoint, chunk_id, visible_ranges=chunk["ranges"],
+                          accepted_ranges=[], receipt_sha256=receipt_sha256, completed=completed)
+
+
+def _emitted_ranges(manifest, checkpoint):
+    checkpoint = validate_checkpoint(manifest, checkpoint)
+    units = {u["unit_id"]: u for u in manifest["units"]}
+    return _normalize_ranges([r for a in checkpoint["attempts"] if a["completed"]
+                              for r in a["visible_ranges"]], units, reject_overlap=False)
+
+
+def unemitted_chunks(manifest, checkpoint):
+    """Return ordered chunks not wholly visible in completed attempts."""
+    emitted = _emitted_ranges(manifest, checkpoint)
+    return [c["chunk_id"] for c in manifest["chunks"] if _subtract(c["ranges"], emitted)]
+
+
 def _progress(manifest, checkpoint):
     checkpoint = validate_checkpoint(manifest, checkpoint)
     units = {u["unit_id"]: u for u in manifest["units"]}
@@ -463,7 +492,19 @@ def coverage_summary(manifest, checkpoint):
                          "unseen_ranges": unseen, "unaccepted_ranges": unaccepted})
     total = len(manifest["units"])
     all_accepted = bool(total and manifest["inventory_complete"] and accepted_units == total and not gaps)
+    emitted = _emitted_ranges(manifest, checkpoint)
+    unemitted = [u["unit_id"] for u in manifest["units"] if u["selected"] and u["view_chars"]
+                 and _subtract([_range(u["unit_id"], 0, u["view_chars"])], emitted)]
+    missing_chunks = unemitted_chunks(manifest, checkpoint)
+    completed = {a["chunk_id"] for a in checkpoint["attempts"] if a["completed"]}
+    interrupted = {a["chunk_id"] for a in checkpoint["attempts"] if not a["completed"]}
     return {"schema": VERSION, **_binding(manifest),
+            "planned_chars": sum(u["view_chars"] or 0 for u in manifest["units"] if u["selected"]),
+            "emitted_chars": sum(r["end"] - r["start"] for r in emitted),
+            "emitted_units": sum(bool(u["selected"] and u["view_chars"]) for u in manifest["units"]) - len(unemitted),
+            "interrupted_chunks": len(interrupted - completed), "unemitted_chunks": len(missing_chunks),
+            "unemitted_units": unemitted, "hidden_units": sum(u["hidden"] for u in manifest["units"]),
+            "emission_complete": bool(manifest["chunks"]) and not missing_chunks,
             "inventory_complete": manifest["inventory_complete"], "inventory_total": total,
             "selected_units": sum(u["selected"] for u in manifest["units"]),
             "known_view_chars": sum(u["view_chars"] or 0 for u in manifest["units"]),

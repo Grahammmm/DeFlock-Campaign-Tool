@@ -66,7 +66,7 @@ def unit_view(pipeline, subject, limit):
     return units, inventory, content
 
 
-def processing_coverage(pipeline, subject, units, inventory, extraction, *, stage):
+def processing_coverage(pipeline, subject, units, inventory, extraction, *, stage, checkpoint=None):
     """Plan redacted ranges; no automatic semantic acceptance or emission claims."""
     redacted, _ = redact_units(units, allowlist=pipeline.allowlist, denylist=pipeline.denylist)
     selected = {u["unit_id"]: u["text"] for u in redacted}
@@ -83,8 +83,30 @@ def processing_coverage(pipeline, subject, units, inventory, extraction, *, stag
         source_manifest_sha256=extraction["manifest_sha256"],
         extraction_version=extraction["parser"] + "/" + extraction["parser_version"],
         context_sha256=context, inventory_complete=True)
-    checkpoint = sc.initial_checkpoint(manifest)
-    summary = sc.coverage_summary(manifest, checkpoint)
-    return {"manifest": manifest, "checkpoint": checkpoint, "summary": summary,
-            "status": "planned_only", "model_emission_recorded": False,
-            "semantic_review_established": False}
+    resume = {"status": "fresh"}
+    if checkpoint is not None:
+        try:
+            checkpoint = sc.validate_checkpoint(manifest, checkpoint)
+            resume = {"status": "resumed"}
+        except ValueError as exc:
+            checkpoint = None
+            resume = {"status": "rejected", "reason": str(exc)}
+    if checkpoint is None:
+        checkpoint = sc.initial_checkpoint(manifest)
+    return _progress({"manifest": manifest, "resume": resume}, checkpoint)
+
+
+def _progress(progress, checkpoint):
+    summary = sc.coverage_summary(progress["manifest"], checkpoint)
+    recorded = bool(checkpoint["attempts"])
+    status = "emission_complete" if summary["emission_complete"] else "emission_partial"
+    return {**progress, "checkpoint": checkpoint, "summary": summary,
+            "status": status if recorded else "planned_only", "model_emission_recorded": recorded,
+            "semantic_review_established": False, "review_required": True}
+
+
+def record_emission(progress, chunk_id, *, payload_sha256, receipt_sha256, completed):
+    """Return mechanical progress only; never persist, dispatch or accept ranges."""
+    checkpoint = sc.record_emission(progress["manifest"], progress["checkpoint"], chunk_id,
+        payload_sha256=payload_sha256, receipt_sha256=receipt_sha256, completed=completed)
+    return _progress(progress, checkpoint)

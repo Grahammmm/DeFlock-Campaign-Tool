@@ -392,6 +392,89 @@ class SemanticCoverageTests(unittest.TestCase):
         restored["attempts"].clear()
         self.assertEqual(len(updated["attempts"]), 1)
 
+    def emit(self, manifest, checkpoint, chunk, receipt, completed=True, **options):
+        return sc.record_emission(manifest, checkpoint, chunk["chunk_id"],
+            payload_sha256=chunk["payload_sha256"], receipt_sha256=digest(receipt),
+            completed=completed, **options)
+
+    def test_mechanical_interrupt_resume_and_union_never_accept(self):
+        manifest = self.manifest(texts={unit(0)["unit_id"]: "x" * 400}, max_chunk_chars=256)
+        chunks = manifest["chunks"]
+        self.assertEqual(len(chunks), 3)
+        checkpoint = self.emit(manifest, sc.initial_checkpoint(manifest), chunks[0], "first")
+        checkpoint = self.emit(manifest, checkpoint, chunks[1], "interrupted", False)
+        checkpoint = sc.validate_checkpoint(manifest, json.loads(json.dumps(checkpoint)))
+        self.assertEqual(sc.unemitted_chunks(manifest, checkpoint), [c["chunk_id"] for c in chunks[1:]])
+        summary = sc.coverage_summary(manifest, checkpoint)
+        self.assertEqual((summary["interrupted_chunks"], summary["emitted_units"]), (1, 0))
+        self.assertEqual(summary["unemitted_units"], [unit(0)["unit_id"]])
+        for i, chunk in enumerate(chunks[1:]):
+            checkpoint = self.emit(manifest, checkpoint, chunk, "finished" + str(i))
+        replay = self.emit(manifest, checkpoint, chunks[-1], "finished1")
+        self.assertEqual(replay, checkpoint)
+        retried = self.emit(manifest, checkpoint, chunks[0], "new receipt")
+        self.assertEqual(len(retried["attempts"]), len(checkpoint["attempts"]) + 1)
+        for progress in (checkpoint, replay, retried):
+            summary = sc.coverage_summary(manifest, progress)
+            self.assertEqual((summary["emitted_chars"], summary["planned_chars"], summary["model_visible_chars"]),
+                             (400, 400, 400))
+            self.assertTrue(summary["emission_complete"])
+            self.assertEqual(summary["emitted_units"], 1)
+            self.assertEqual((summary["accepted_units"], summary["status"]), (0, "partial"))
+            self.assertFalse(summary["semantic_understanding_established"])
+            self.assertEqual(sc.pending_chunks(manifest, progress), [c["chunk_id"] for c in chunks])
+
+    def test_emission_refusals_and_bound_are_nonmutating(self):
+        manifest = self.manifest()
+        chunk = manifest["chunks"][0]
+        checkpoint = sc.initial_checkpoint(manifest)
+        options = dict(payload_sha256=chunk["payload_sha256"], receipt_sha256=digest("receipt"), completed=False)
+        for identity, changes, error, code in [
+                (chunk["chunk_id"], {"payload_sha256": digest("wrong")}, ValueError, "emission_payload_mismatch"),
+                ("missing", {}, ValueError, "unknown_chunk"), ([], {}, ValueError, "unknown_chunk"),
+                (chunk["chunk_id"], {"accepted_ranges": chunk["ranges"]}, TypeError, "accepted_ranges")]:
+            before = deepcopy(checkpoint)
+            with self.subTest(code=code), self.assertRaisesRegex(error, code):
+                sc.record_emission(manifest, checkpoint, identity, **{**options, **changes})
+            self.assertEqual(checkpoint, before)
+        self.assertEqual(sc.MAX_EMISSIONS_PER_CHUNK, 8)
+        for i in range(8):
+            checkpoint = self.emit(manifest, checkpoint, chunk, str(i), False)
+        before = deepcopy(checkpoint)
+        self.assertEqual(self.emit(manifest, checkpoint, chunk, "7", False), checkpoint)
+        with self.assertRaisesRegex(ValueError, "emission_attempts_exhausted"):
+            self.emit(manifest, checkpoint, chunk, "ninth")
+        with self.assertRaisesRegex(ValueError, "receipt_replay_conflict"):
+            self.emit(manifest, checkpoint, chunk, "7", True)
+        self.assertEqual(checkpoint, before)
+        self.assertEqual(sc.unemitted_chunks(manifest, checkpoint), [chunk["chunk_id"]])
+        # The bound does not change historical checkpoint validation or acceptance.
+        old = self.accept(manifest, checkpoint, chunk, digest("legacy ninth"))
+        self.assertEqual(sc.validate_checkpoint(manifest, old), old)
+
+    def test_emission_keeps_inventory_gaps_and_legacy_summary(self):
+        inventory = [unit(0), unit(1, view_chars=4, view_sha256=digest("text")),
+                     unit(2, locator=None, blocked_reason="synthetic missing"),
+                     unit(3), unit(4), unit(5, hidden=True)]
+        manifest = self.manifest(inventory, {unit(0)["unit_id"]: "visible", unit(3)["unit_id"]: ""})
+        checkpoint = self.emit(manifest, sc.initial_checkpoint(manifest), manifest["chunks"][0], "only")
+        summary = sc.coverage_summary(manifest, checkpoint)
+        self.assertTrue(summary["emission_complete"])
+        self.assertEqual((summary["inventory_total"], summary["hidden_units"]), (6, 1))
+        reasons = {r for gap in summary["gaps"] for r in gap["reasons"]}
+        self.assertTrue({"unit_not_selected", "source_unit_blocked", "empty_model_text",
+                         "unknown_model_text", "text_not_accepted"} <= reasons)
+        legacy = self.accept(manifest, sc.initial_checkpoint(manifest), manifest["chunks"][0])
+        summary = sc.coverage_summary(manifest, legacy)
+        self.assertEqual((summary["status"], summary["accepted_units"], summary["accepted_chars"],
+                          summary["model_visible_units"], summary["model_visible_chars"]), ("partial", 1, 7, 1, 7))
+        self.assertEqual(summary["gaps"][0], {"unit_id": unit(1)["unit_id"],
+            "reasons": ["unit_not_selected", "text_not_visible", "text_not_accepted"], "blocked_reason": None,
+            "unseen_ranges": [{"unit_id": unit(1)["unit_id"], "start": 0, "end": 4}],
+            "unaccepted_ranges": [{"unit_id": unit(1)["unit_id"], "start": 0, "end": 4}]})
+        empty = self.manifest([], {})
+        self.assertFalse(sc.coverage_summary(empty, sc.initial_checkpoint(empty))["emission_complete"])
+
 
 if __name__ == "__main__":
     unittest.main()

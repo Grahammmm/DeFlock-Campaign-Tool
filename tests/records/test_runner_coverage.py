@@ -85,6 +85,88 @@ class RunnerCoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "snapshot_changed"):
                 runner_coverage.unit_view(p, subject, 2)
 
+    def test_mechanical_runner_status_resume_and_model_claims(self):
+        import inspect
+        with tempfile.TemporaryDirectory() as d:
+            p, subject, rows, extraction, current = self.fixture(d, 6)
+            Path(rows[1]["derived_path"]).write_text("unreadable")
+            rows.pop(2)
+            units, inventory, bound = runner_coverage.unit_view(p, subject, 4)
+            progress = runner_coverage.processing_coverage(p, subject, units, inventory, bound, stage="review")
+            self.assertEqual(progress["resume"], {"status": "fresh"})
+            self.assertEqual(progress["status"], "planned_only")
+            self.assertTrue(progress["review_required"])
+            chunk = progress["manifest"]["chunks"][0]
+            claim = {"accepted_ranges": chunk["ranges"], "all_units_accepted": True, "status": "accepted_scope_complete"}
+            options = dict(payload_sha256=chunk["payload_sha256"], receipt_sha256=sha(json.dumps(claim).encode()))
+            initial = json.loads(json.dumps(progress))
+            progress = runner_coverage.record_emission(progress, chunk["chunk_id"], **options, completed=False)
+            self.assertEqual(progress["status"], "emission_partial")
+            self.assertEqual(initial["checkpoint"]["attempts"], [])
+            progress = runner_coverage.record_emission(progress, chunk["chunk_id"],
+                payload_sha256=chunk["payload_sha256"], receipt_sha256=sha(b"completed"), completed=True)
+            self.assertEqual(progress["status"], "emission_complete")
+            summary = progress["summary"]
+            self.assertEqual((summary["accepted_units"], summary["status"], summary["receipt_coverage"]["covered"]),
+                             (0, "partial", 0))
+            self.assertEqual(len(progress["manifest"]["units"]), 6)
+            self.assertEqual([u["blocked_reason"] for u in progress["manifest"]["units"]][1:3],
+                             ["canonical_unit_unreadable_or_unbound", "canonical_unit_missing"])
+            self.assertEqual(len(summary["gaps"]), 6)
+            for state in (initial, progress):
+                self.assertTrue(state["review_required"])
+                self.assertFalse(state["semantic_review_established"])
+            self.assertTrue(progress["model_emission_recorded"])
+            for name, function in vars(runner_coverage).items():
+                if not name.startswith("_") and callable(function):
+                    self.assertNotIn("accepted_ranges", inspect.signature(function).parameters)
+
+    def test_runner_restored_partial_and_stale_checkpoint_rejection(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, subject, rows, extraction, current = self.fixture(d)
+            units, inventory, bound = runner_coverage.unit_view(p, subject, 3)
+            p.model = SimpleNamespace(model_id="synthetic-model", privacy_tier="synthetic-local")
+            # Long synthetic views create multiple chunks under the default budget.
+            units = [{**u, "text": "x" * 13000} for u in units]
+            def build(**options):
+                return runner_coverage.processing_coverage(p, subject, units, inventory, bound, stage="review", **options)
+            progress = build()
+            for i, chunk in enumerate(progress["manifest"]["chunks"][:2]):
+                progress = runner_coverage.record_emission(progress, chunk["chunk_id"],
+                    payload_sha256=chunk["payload_sha256"], receipt_sha256=sha(str(i).encode()), completed=(i == 0))
+            restored = json.loads(json.dumps(progress["checkpoint"]))
+            resumed = build(checkpoint=restored)
+            self.assertEqual(resumed["resume"], {"status": "resumed"})
+            self.assertEqual(resumed["status"], "emission_partial")
+            self.assertEqual(resumed["checkpoint"]["attempts"], restored["attempts"])
+            for change in ("denylist", "model_id", "privacy_tier", "parser_version", "manifest_sha256", "subject"):
+                old_subject = subject
+                p.denylist = ()
+                p.model = SimpleNamespace(model_id="synthetic-model", privacy_tier="synthetic-local")
+                bound = dict(extraction)
+                if change == "denylist":
+                    p.denylist = ("synthetic",)
+                elif change in ("model_id", "privacy_tier"):
+                    setattr(p.model, change, "synthetic-changed")
+                elif change == "subject":
+                    subject = sha(b"other synthetic source")
+                elif change == "manifest_sha256":
+                    body = json.dumps({"unit_ids": json.loads(current["manifest_json"])["unit_ids"], "revision": 2})
+                    bound[change] = sha(body.encode())
+                else:
+                    bound[change] = "v2"
+                with self.subTest(change=change):
+                    rejected = build(checkpoint=restored)
+                    self.assertEqual(rejected["resume"], {"status": "rejected", "reason": "checkpoint_binding"})
+                    self.assertEqual(rejected["checkpoint"]["attempts"], [])
+                subject = old_subject
+            p.denylist, bound = (), extraction
+            p.model = SimpleNamespace(model_id="synthetic-model", privacy_tier="synthetic-local")
+            restored["attempts"][0]["completed"] = False
+            rejected = build(checkpoint=restored)
+            self.assertEqual(rejected["resume"], {"status": "rejected", "reason": "checkpoint_sha256_mismatch"})
+            self.assertEqual(rejected["checkpoint"]["attempts"], [])
+
     def test_zero_coverage_is_valid_only_for_denied_review(self):
         receipt = {"coverage": {"denominator": {"kind": "items", "total": 3},
                                 "covered": 0, "scope": "selected"}, "verdict": "challenge",
