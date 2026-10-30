@@ -1,0 +1,129 @@
+{
+  "schema": "mail-readiness-matrix-v1",
+  "rows": {
+    "S2": {
+      "purpose": "Read-only server census probe",
+      "tools": [{"name":"M-01 probe","status":"UNSUPPLIED","owner":"operator","prerequisite":"M-01 reviewed probe"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"C-1..C-8","what":"Discovery, capture window and approved time bound"},
+      "backup_receipt": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"read-only probe","what":"No store writes or body fetches"},
+      "rollback_rehearsal": {"required":false,"status":"NOT_APPLICABLE","owner":"custodian","prerequisite":"read-only probe","what":"Confirm lock release and unchanged status hashes"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"G","prerequisite":"PROBE","what":"G word PROBE at the console for this capture"}
+    },
+    "S3": {
+      "purpose": "Consistent snapshot copy",
+      "tools": [{"name":"stage_phase1_copy.py packet member","status":"NON_EXECUTABLE","owner":"custodian","prerequisite":"M-06 archive, member and manifest pin"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"M-06 and capacity preflight","what":"Window check, stable status hashes, free space at least twice source bytes plus one GiB"},
+      "backup_receipt": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"copy-only staging","what":"Live root untouched"},
+      "rollback_rehearsal": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"snapshot quarantine rehearsal","what":"Quarantine changed or failed copy, never delete"},
+      "authority": {"required":true,"status":"MET","owner":"operator","prerequisite":"operator admission","what":"Operator-owned offline copy; missing inputs still hold it"}
+    },
+    "S3e": {
+      "purpose": "Selected preserved-export intake; no collection-host scope",
+      "tools": [
+        {"name":"W12 export manifest","status":"EXECUTABLE","path":"campaign_tool/records/container_host.py","argv":["python3","-B","-m","campaign_tool.records.container_host","export-manifest","--exports","</private/selected-exports>","--export-receipt","</private/export-receipt.json>"],"owner":"operator","prerequisite":"W12 reviewed repo head"},
+        {"name":"W12 unattended export intake","status":"EXECUTABLE","path":"campaign_tool/records/unattended.py","argv":["python3","-B","-m","campaign_tool.records","run","--unattended","--root","</private/admitted-records-root>","--export-root","</private/selected-exports>","--export-receipt","</private/export-receipt.json>","--export-manifest-sha256","EXPORT_MANIFEST_SHA256"],"owner":"operator","prerequisite":"W12 reviewed repo head"}
+      ],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"sanitized source contract","what":"Selected receipt identities, manifest binding, scope and visible body-link gaps"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"exact intake backup receipt","what":"Admitted destination backup and selected immutable source receipts"},
+      "rollback_rehearsal": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"intake rollback rehearsal","what":"Attended recovery of admitted destination without mutating source exports"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"G","prerequisite":"separate exact-action approval","what":"G approval for this selected live intake; no source access granted here"}
+    },
+    "S4": {
+      "purpose": "Store verifier and census comparator; one capture only",
+      "tools": [{"name":"M-02 verifier and M-03 comparator","status":"UNSUPPLIED","owner":"operator","prerequisite":"M-02/M-03 reviewed interfaces"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"S3 manifest and status hashes A/B","what":"Snapshot identity and bound census comparison inputs"},
+      "backup_receipt": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"read-only comparison","what":"Frozen copy remains unchanged"},
+      "rollback_rehearsal": {"required":false,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"M-31","what":"Server nonmutation pre/post protocol; optional only for the one-capture claim"},
+      "authority": {"required":true,"status":"MET","owner":"operator","prerequisite":"operator admission","what":"Offline verification only, not proof of server nonmutation"}
+    },
+    "S4b": {
+      "purpose": "Historical coverage L-B: receipt provenance and analytical runtime attestations",
+      "tools": [
+        {"name":"M-26 historical coverage verdict","status":"EXECUTABLE","path":"tools/historical_coverage_check.py","argv":["python3","-B","tools/historical_coverage_check.py","--diff","</private/historical-diff.json>","--attestation","</private/historical-attestation.json>","--output","</private/new-coverage.json>"],"owner":"operator","prerequisite":"M-26 reviewed repo head"},
+        {"name":"receipt_inventory.py packet member","status":"NON_EXECUTABLE","owner":"custodian","prerequisite":"M-26 pinned packet and provenance"}
+      ],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"M-26 and M-29","what":"Per-root producer provenance and bound analytical baseline runtime attestations"},
+      "backup_receipt": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"offline historical checks","what":"Historical-only receipts retained, never deleted"},
+      "rollback_rehearsal": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"read-only inputs","what":"Reports only; no store mutation"},
+      "authority": {"required":true,"status":"MET","owner":"operator","prerequisite":"operator admission","what":"Offline checks only; custodian supplies source facts"}
+    },
+    "S5": {
+      "purpose": "Decode inventory and portal reconciliation",
+      "tools": [
+        {"name":"M-07 decode inventory","status":"UNSUPPLIED","owner":"operator","prerequisite":"M-07 reviewed decoder inventory"},
+        {"name":"M-09 portal reconciliation","status":"EXECUTABLE","path":"tools/portal_reconcile.py","argv":["python3","-B","tools/portal_reconcile.py","--observations","</private/portal-observations.json>","--queue-export","</private/queue-export.json>","--output","</private/new-portal-reconcile.json>"],"owner":"operator","prerequisite":"M-09 reviewed repo head"}
+      ],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"M-07/M-09 interface compatibility and S4 evidence","what":"Bound observations and custodian queue export; counts for every held or unproven pointer"},
+      "backup_receipt": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"offline reconciliation","what":"No portal fetch or queue write"},
+      "rollback_rehearsal": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"read-only inputs","what":"New report only"},
+      "authority": {"required":true,"status":"MET","owner":"operator","prerequisite":"operator admission","what":"Offline counts only, no acquisition"}
+    },
+    "S6": {
+      "purpose": "Adoption dry run on a frozen -TEST copy",
+      "tools": [{"name":"adoption TEST verifier","status":"EXECUTABLE","path":"scripts/verify_adoption_test.py","argv":["python3","-B","scripts/verify_adoption_test.py","--test-root","</private/frozen-TEST>","--config","</private/owner-only-adoption.json>","--receipt","</private/new-test-receipt.json>","--dry-run-only"],"owner":"operator","prerequisite":"reviewed engine pin"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"frozen TEST copy, engine pin and owner-only config","what":"Pinned engine and frozen snapshot plus processing-v1; expected coded-gap histogram and explained drift"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"TEST copy receipt","what":"TEST copies only; receipt outside the fixture"},
+      "rollback_rehearsal": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"dry-run-only","what":"No apply; live root untouched"},
+      "authority": {"required":true,"status":"MET","owner":"operator","prerequisite":"operator admission","what":"Offline TEST qualification only; no live activation"}
+    },
+    "S7": {
+      "purpose": "Engine pin and portal enable; live driver remains absent",
+      "tools": [
+        {"name":"run report checker","status":"EXECUTABLE","path":"tools/run_report_check.py","argv":["python3","-B","tools/run_report_check.py","</private/run-report.json>","--baseline","</private/reviewed-baseline.json>"],"owner":"operator","prerequisite":"reviewed repo head"},
+        {"name":"live apply driver, timer-gate CLI and DATA-restore CLI","status":"UNSUPPLIED","owner":"custodian","prerequisite":"reviewed live driver and attended recovery invocation"}
+      ],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"E-bound admission and pre-stop GO","what":"Engine pin, reviewed T2/T5/T9 evidence and pre-stop gate"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"data backup and LIVE.pre-E.json","what":"Matching host/container/SSD data hashes plus plan backup"},
+      "rollback_rehearsal": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"attended DATA restore rehearsal","what":"Scratch restore and baseline comparison; no automatic DATA restore"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"G","prerequisite":"G-log 468 exact scope with G present","what":"Portal enable requires exact-action attended authority"}
+    },
+    "S7r": {
+      "purpose": "Contained one-item resume plan only; no adapter admitted",
+      "tools": [{"name":"W13 contained resume plan","status":"EXECUTABLE","path":"campaign_tool/records/contained_resume.py","argv":["python3","-B","-m","campaign_tool.records.contained_resume"],"owner":"operator","prerequisite":"W13 reviewed repo head"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"one-item plan scope and adapter admission","what":"No admitted adapter; plan output cannot release a live hold"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"contained-resume backup receipt","what":"No recovery source inferred from another row"},
+      "rollback_rehearsal": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"contained-resume rollback rehearsal","what":"Separate reviewed adapter required for real effects"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"separate adapter admission","what":"Plan mode only; real adapters need their own admission"}
+    },
+    "S8": {
+      "purpose": "Live legacy-resolution session",
+      "tools": [{"name":"vector V rehearsal","status":"UNSUPPLIED","owner":"operator","prerequisite":"M-11/M-12 reviewed rehearsal invocation"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"apply-holder barrier and vector V","what":"Reviewed policy, replayable rehearsal and exact live vector comparison"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"data and plan backup","what":"Session-bound backup receipts"},
+      "rollback_rehearsal": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"restore rehearsal","what":"Mismatch with V requires attended rollback"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"G","prerequisite":"G-log 468 exact scope with G present","what":"G accepts V or orders rollback; T14 STOP is never replayed"}
+    },
+    "S9a": {
+      "purpose": "Comprehension TEST qualification F-047",
+      "tools": [{"name":"F-047 runbook","status":"UNSUPPLIED","owner":"operator admission","prerequisite":"reviewed F-047 runbook after F-046"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator admission","prerequisite":"F-047","what":"Acceptance from reviewed runbook; NOT_ESTABLISHED is never positive"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"TEST copy receipts","what":"Qualification on copies only"},
+      "rollback_rehearsal": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"TEST only","what":"No live flags changed"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"operator admission","prerequisite":"F-047 admission","what":"TEST-only qualification, not authority for S9b"}
+    },
+    "S9b": {
+      "purpose": "Comprehension LIVE activation F-048",
+      "tools": [{"name":"F-048 runbook","status":"UNSUPPLIED","owner":"operator admission","prerequisite":"reviewed F-048 runbook"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator admission","prerequisite":"F-048 and separate TEST evidence","what":"Positive S9a evidence alone never authorizes activation"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"data and plan backup","what":"Session-bound activation backups"},
+      "rollback_rehearsal": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"F-048 restore rehearsal","what":"Flags back to false and next run compared to baseline"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"G","prerequisite":"separate G exact-action approval","what":"Separate explicit G-attended approval for this activation, not G-log 468 or 527"}
+    },
+    "S10": {
+      "purpose": "Private plain-English counts report to G",
+      "tools": [],
+      "gate_evidence": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"report only","what":"What moved, what is held and why, what is next; counts only"},
+      "backup_receipt": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"report only","what":"No data mutation"},
+      "rollback_rehearsal": {"required":false,"status":"NOT_APPLICABLE","owner":"operator","prerequisite":"report only","what":"Nothing published"},
+      "authority": {"required":true,"status":"MET","owner":"operator","prerequisite":"report only","what":"Private counts only; not publication approval"}
+    },
+    "F1": {
+      "purpose": "Isolated-root fallback pull",
+      "tools": [{"name":"M-05b isolated-root parameterisation","status":"UNSUPPLIED","owner":"operator","prerequisite":"M-05b reviewed parameterisation"}],
+      "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"M-05b and bounded fallback packet","what":"Unexplained gap evidence, isolated root, size/time budgets and reviewed scope"},
+      "backup_receipt": {"required":true,"status":"UNSUPPLIED","owner":"custodian","prerequisite":"fallback backup receipt","what":"Canonical root untouched; approved isolated destination"},
+      "rollback_rehearsal": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"fallback rollback rehearsal","what":"Quarantine isolated output; no deletion or canonical mutation"},
+      "authority": {"required":true,"status":"UNSUPPLIED","owner":"G","prerequisite":"separate fallback exact-action approval","what":"Own approval after M-05b, never inherited from S2 or S4"}
+    }
+  }
+}
