@@ -29,8 +29,13 @@ Mechanical emission resume is available through the checkpoint API: only complet
 attempts cover emitted ranges, and interrupted chunks remain queued for emission.
 Emission is not acceptance or semantic understanding, and output remains
 review-required. Stale progress is rejected visibly rather than partially reused.
-`run.py` still records `planned_only` until the W15B persistence integration;
-this API neither stores checkpoints nor dispatches model calls.
+The runner persists verified whole-unit views from the primary model request only,
+restoring bookkeeping from existing review content without scheduling or skipping
+work. The request is rebuilt, not observed at transport; equality with sent bytes
+is tested only with synthetic loopback servers. Interrupted requests record
+nothing and leave the prior checkpoint intact. Empty units remain explicit
+zero-coverage inventory entries with no emitted ranges. Emission is not acceptance
+and output stays review-required; challenge requests do not count as emission.
 
 Validation uses synthetic fixtures only. Current-extraction tests cover selection
 caps, historical rows, missing/changed derivatives, redaction context drift and
