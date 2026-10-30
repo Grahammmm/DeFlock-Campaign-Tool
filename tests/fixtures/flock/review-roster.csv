@@ -1,0 +1,4 @@
+watch_agency,slug,in_scope,applicability,site_slug
+Sample City Police Department,sample-city-police-department,yes,Sample city police; local ALPR policy applies,
+Second City Police,second-city-police,yes,Sample city police; local ALPR policy applies,
+Campus Police,campus-police,hold,Sample city police; local ALPR policy applies,
