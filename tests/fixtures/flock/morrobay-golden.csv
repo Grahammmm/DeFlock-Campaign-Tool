@@ -1,0 +1,11 @@
+topic,claim_class,cited,max_rating
+na-search-purposes,record-gap,ca-civ-1798.90.52-access-records,strong
+na-search-purposes,duty-concern,ca-civ-1798.90.52-access-records,medium
+outside-agency-access,record-gap,ca-civ-1798.90.52-access-records,strong
+outside-agency-access,duty-concern,ca-civ-1798.90.55-sharing-limits,weak
+audits,record-gap,435.6(c),strong
+audits,duty-concern,ca-civ-1798.90.53-end-user-usage-and-privacy-policy,medium
+retention-changes,record-gap,435.5,strong
+retention-changes,duty-concern,ca-civ-1798.90.51-usage-and-privacy-policy,medium
+withheld-training,record-gap,435.4(d),strong
+withheld-training,duty-concern,ca-civ-1798.90.51-usage-and-privacy-policy,medium

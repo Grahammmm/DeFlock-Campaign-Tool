@@ -1,0 +1,8 @@
+finding_id,topic,claim_class,rating,claim,fact_ids,rule_ids,policy_refs,quote,quote_fact_id,next_step
+N1,na-search-purposes,record-gap,strong,The sample search log has no search-purpose field.,F-090c3d39b556,ca-civ-1798.90.52-access-records,,,,Ask how search purpose is recorded.
+N2,na-search-purposes,duty-concern,medium,The sample access record may not show the purpose of each search.,F-090c3d39b556,ca-civ-1798.90.52-access-records,,,,Request the access-record field list.
+O1,outside-agency-access,record-gap,strong,The sample record lists outside agencies with query access.,F-76dbe8a9b4ac,ca-civ-1798.90.52-access-records,,,,Request the outside-agency access log.
+O2,outside-agency-access,duty-concern,weak,Outside query access is not yet tied to a sharing decision.,F-76dbe8a9b4ac,ca-civ-1798.90.55-sharing-limits,,Twelve outside agencies have query access.,F-76dbe8a9b4ac,Request the sharing approvals.
+A1,audits,record-gap,strong,The sample department found no responsive audit reports.,F-e1b1072c95c3,,P-3ee5198a9319#435.6(c),,,Request the audit schedule.
+R1,retention-changes,record-gap,strong,The sample retention period differs from the policy text.,F-53baa6f20643,,P-3ee5198a9319#435.5,,,Request the retention change record.
+T1,withheld-training,record-gap,strong,The sample training materials were withheld.,F-a71d059d7a51,,P-3ee5198a9319#435.4(d),,,Ask for the withholding basis in writing.

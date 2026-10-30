@@ -1,0 +1,7 @@
+agency,request,fact_type,value,source_sha256,page,verbatim_quote
+Sample City Police Department,REQ-101,vendor,Vigilant Solutions,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,1,The ALPR vendor is Vigilant Solutions.
+Sample City Police Department,REQ-101,search_log_fields,date user plate,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,2,"The search log lists date, user and plate only."
+Sample City Police Department,REQ-101,outside_agencies,12,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,3,Twelve outside agencies have query access.
+Sample City Police Department,REQ-101,audit_reports,none produced,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,4,The department found no responsive audit reports.
+Sample City Police Department,REQ-101,retention_days,365,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,5,Plate reads are kept for 365 days.
+Sample City Police Department,REQ-101,training_records,withheld,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,6,Training materials are withheld.
