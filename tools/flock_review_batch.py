@@ -63,6 +63,19 @@ def marks(c):  # provider of each stage mark, from REVIEW-STATE.json
     return {sid: ((stages.get(sid) or {}).get("mark") or {}).get("provider") or "" for sid in fr.IDS}
 
 
+def worked(p, since=0):  # real model work: a non-empty file no older than `since`; a CSV needs a row past its header (f4-start leaves a header-only one)
+    try:
+        lines = [x for x in p.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()] if p.is_file() and p.stat().st_mtime_ns >= since else []
+    except OSError:
+        return False
+    return len(lines) > (1 if p.suffix == ".csv" else 0)
+
+
+def inputs(c, sid):  # rules-read: the source texts/PDFs it reads (input, never work); other wait stages have none
+    srcs = c["cfg"][fr.RI].get("sources") or [] if sid == "rules-read" else []
+    return [fr.P(s[k]) for s in srcs if isinstance(s, dict) for k in ("text", "pdf") if s.get(k)]
+
+
 def agency(c, roster):  # read-only; -> row dict (HEADER keys) plus 'files' (the wait stage's input files)
     row = dict.fromkeys(HEADER, "")
     row.update(slug=c["slug"], config=str(c["path"]), state="invalid", files=[])
@@ -76,13 +89,16 @@ def agency(c, roster):  # read-only; -> row dict (HEADER keys) plus 'files' (the
         first = bad[0] if bad else todo[0] if todo else None
         sid, kind = (fr.IDS[first], fr.STAGES[first][1]) if first is not None else ("", "")
         files = fr.wait_files(c, sid) if kind == "wait" else []
-        present = bool(files) and all(p.is_file() for p in files)
+        present = bool(files) and all(p.is_file() for p in files)  # file presence only
+        src = inputs(c, sid)
+        since = max([p.stat().st_mtime_ns for p in src if p.is_file()] or [0])  # a spec older than its sources predates the read
+        active = (c["out"] / ".review" / "in-flight" / sid).is_file() or any(worked(p, since) for p in files if p not in src)
     except (fr.Fail, OSError, KeyError, TypeError, ValueError):
         return row
     slug, scope = c["slug"], (roster or {}).get(c["slug"]) or {}
     held = roster is not None and ((scope.get("in_scope") or "").strip() != "yes" or (scope.get("applicability") or "") != c["appl"])
     word = "held" if held else "locked" if (c["out"] / ".review" / "LOCK").exists() else "failed" if bad else "done" if first is None \
-        else ("in-flight" if (c["out"] / ".review" / "in-flight" / sid).is_file() else "waiting") if kind == "wait" else "ready"
+        else ("in-flight" if active else "waiting") if kind == "wait" else "ready"
     row.update(state=word, stages_done=len(words) - len(todo), stages_total=len(words), next=sid, files=files, run_date=c["date"],
                input_present=("yes" if present else "no") if kind == "wait" else "", author_family=made.get("assess", ""),
                verifier_family=made.get("verify", ""), waiting_for=sid if word in ("waiting", "in-flight") else "")

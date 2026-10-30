@@ -82,15 +82,16 @@ class FlockReviewBatchTest(unittest.TestCase):
         draft.parent.mkdir(parents=True, exist_ok=True)
         draft.write_text("draft\n")
         self.assertEqual(self.status()[0], 0)
-        self.assertEqual([r["state"] for r in self.rows()[1]], ["waiting", "waiting", "held"])
-        active = self.outs[0] / ".review" / "in-flight" / "fact-drafts"
-        active.parent.mkdir(parents=True, exist_ok=True)
-        active.touch()  # explicit operator record, independent of input presence
-        self.assertEqual(self.status()[0], 0)
-        self.assertEqual([r["state"] for r in self.rows()[1]], ["in-flight", "waiting", "held"])
+        self.assertEqual([r["state"] for r in self.rows()[1]], ["in-flight", "waiting", "held"])  # written, not marked: a card is working
         code, out = batch("plan", self.list, "--roster", ROSTER, *self.gate)
         self.assertEqual(titles(out), ["[RUN] %s fact-drafts 2026-10-30" % SLUGS[1]])
         self.assertEqual(batch("plan", self.list, "--max", 3, *self.gate)[0], 2)
+        active = self.outs[1] / ".review" / "in-flight" / "fact-drafts"
+        active.parent.mkdir(parents=True, exist_ok=True)
+        active.touch()  # an explicit operator marker also reserves a slot before any file is written
+        self.assertEqual(self.status()[0], 0)
+        self.assertEqual([r["state"] for r in self.rows()[1]], ["in-flight", "in-flight", "held"])
+        self.assertEqual(titles(batch("plan", self.list, "--roster", ROSTER, *self.gate)[1]), [])
 
     def test_scaffolded_f4_and_existing_rules_inputs_are_waiting(self):
         config, p = make_review(self.tmp / "f4", stubs={"compare_build": compare_build()})
@@ -136,6 +137,10 @@ class FlockReviewBatchTest(unittest.TestCase):
                 self.assertEqual(titles(batch(*args)[1]), [])
                 active.unlink()
                 self.assertEqual(len(titles(batch(*args)[1])), 1)
+        with (p["RUN"] / "VERIFY.csv").open("a") as handle:  # a row past the header: the f4 card is working, unmarked
+            handle.write("x,agree,checked,p.2\n")
+        listing.write_text(str(config) + "\n")
+        self.assertEqual(titles(batch("plan", listing, "--golden-config", golden, "--golden-expect", SAMPLE)[1]), [])
 
     def test_fail_closed(self):
         self.world()
