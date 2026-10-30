@@ -135,6 +135,68 @@ class SandboxBaselineTests(unittest.TestCase):
                          query(self.test / "processing-v1" / "ledger.sqlite", "SELECT count(*) FROM mail_messages"))
         self.assertEqual(tree_digest(self.test), self.test_digest)  # TEST only read
 
+    def test_seeded_historical_preservation_replays_without_identity_conflict(self):
+        from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
+        from campaign_tool.records.runner.adapters import LegacyIntakeBackend
+        from campaign_tool.records.runner.contracts import Folder
+        intake = self.sandbox / 'processing-v1/intake/intake.sqlite'
+        unchanged = "SELECT oid,sha,path,parent,locator,receipt FROM occurrences ORDER BY oid"
+        before = query(self.backup / 'intake.sqlite', unchanged)
+        result = self.seed()
+        self.assertGreater(result['intake_occurrences_relocated'], 0)
+        self.assertEqual(query(intake, unchanged), before)
+        roots = query(intake, "SELECT DISTINCT root FROM occurrences WHERE json_extract(receipt,'$.source')='mail_delta'")
+        self.assertEqual(roots, [(str(self.sandbox / 'mail-history'),)])
+        root = self.sandbox / "processing-v1"
+        backend = CanonicalMailBackend(self.sandbox / "mail-history", root / "intake", root / "ledger.sqlite")
+        historical = query(root / "ledger.sqlite", "SELECT DISTINCT original_sha256 FROM occurrences "
+                           "WHERE acquisition_method='verified_mail_export'")
+        self.assertTrue(historical)
+        for (subject,) in historical:
+            # T4-era preservation used raw stage content. Modern synthetic adoption
+            # emits envelopes with absolute storage_ref, outside this legacy replay case.
+            context = {'receipt': {'subject_sha256': subject, 'stage': 'preserve'},
+                       'content': (root / 'intake/blobs' / subject).read_bytes(),
+                       'content_kind': 'raw', 'preservation_evidence': None}
+            self.assertTrue(backend._validator(context), subject)
+        evidence, source = query(root / "ledger.sqlite", "SELECT evidence,source_ref FROM occurrences "
+                                 "WHERE kind='mail' AND acquisition_method='verified_mail_export'")[0]
+        evidence, source = json.loads(evidence), json.loads(source)
+        intake = root / "intake/intake.sqlite"
+        before = query(intake, "SELECT oid,sha,path,parent,locator,receipt FROM occurrences ORDER BY oid")
+        value = LegacyIntakeBackend.preserve(backend, evidence['verification_receipt_path'], source['account'],
+                                             Folder(source['folder'], source['uidvalidity']), source['uid'])
+        self.assertEqual(value.receipt_sha256, evidence['receipt_sha256'])
+        self.assertEqual(query(intake, "SELECT oid,sha,path,parent,locator,receipt FROM occurrences ORDER BY oid"), before)
+        self.assertEqual(tree_digest(self.test), self.test_digest)
+
+    def test_intake_relocation_refuses_mismatched_source_bytes(self):
+        intake = self.sandbox / 'processing-v1/intake/intake.sqlite'
+        # Work with the copied pre-relocation intake only; no source store write.
+        shutil.copy2(self.backup / 'intake.sqlite', intake)
+        path, = query(intake, "SELECT path FROM occurrences WHERE json_extract(receipt,'$.source')='mail_delta' LIMIT 1")[0]
+        target = self.sandbox / 'mail-history' / path
+        target.chmod(0o600)
+        target.write_bytes(b'synthetic corrupt source')
+        before = sha256_file(intake)
+        with self.assertRaisesRegex(baseline.Refused, '^intake_source_bytes_mismatch$'):
+            baseline.relocate_intake(intake, self.sandbox, self.roots)
+        self.assertEqual(sha256_file(intake), before)
+        self.assertEqual(tree_digest(self.test), self.test_digest)
+
+    def test_intake_relocation_refuses_symlinked_source(self):
+        intake = self.sandbox / 'processing-v1/intake/intake.sqlite'
+        shutil.copy2(self.backup / 'intake.sqlite', intake)
+        path, = query(intake, "SELECT path FROM occurrences WHERE json_extract(receipt,'$.source')='mail_delta' LIMIT 1")[0]
+        target = self.sandbox / 'mail-history' / path
+        target.rename(target.with_suffix('.saved'))
+        target.symlink_to(self.test / 'mail-history' / path)
+        before = sha256_file(intake)
+        with self.assertRaisesRegex(baseline.Refused, '^sandbox_path_not_contained$'):
+            baseline.relocate_intake(intake, self.sandbox, self.roots)
+        self.assertEqual(sha256_file(intake), before)
+        self.assertEqual(tree_digest(self.test), self.test_digest)
+
     def test_the_main_entry_prints_one_json_line(self):
         import contextlib
         import io
