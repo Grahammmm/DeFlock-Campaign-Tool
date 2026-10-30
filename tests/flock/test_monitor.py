@@ -1,0 +1,98 @@
+import contextlib
+import csv
+import hashlib
+import importlib.util
+import io
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = ROOT / "tests" / "fixtures" / "flock"
+SPEC = importlib.util.spec_from_file_location("flock_monitor", ROOT / "tools" / "flock_monitor.py")
+monitor = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(monitor)
+DATE = "2026-10-30"
+BODY = (FIXTURES / "index-sample.html").read_bytes()
+
+
+class FakeFetch:  # records every fetch; never opens a socket
+    def __init__(self, ctype="text/html; charset=utf-8"):
+        self.calls, self.ctype = [], ctype
+
+    def __call__(self, url, official_domain):
+        self.calls.append(url)
+        return url, self.ctype, BODY
+
+
+def rows(path):
+    with open(path, encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+class MonitorTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.watchlist = Path(tmp.name) / "WATCHLIST.csv"
+        self.store = Path(tmp.name) / "store"
+        shutil.copy(FIXTURES / "watchlist-sample.csv", self.watchlist)
+
+    def run_main(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = monitor.main(list(args))
+        return code, out.getvalue().splitlines()
+
+    def test_happy_path_records_links_dedupes_and_digests(self):
+        fake = FakeFetch()
+        lines = monitor.scan(self.watchlist, self.store, DATE, fetch=fake)
+        self.assertEqual(lines, ["scanned=2 unchanged=0 new_items=3 refused=0 offdomain_links=4 skipped_social=1"])
+        items = rows(self.store / "MONITOR.csv")
+        self.assertEqual(sorted(r["url"] for r in items), ["https://www.city.example/agendas/2026-10-13",
+                                                            "https://www.city.example/files/packet.pdf",
+                                                            "https://www.city.example/news/cameras"])
+        self.assertTrue(all(r["kind"] == "public" and r["status"] == "unreviewed" and r["seen_at"] == DATE for r in items))
+        self.assertIn("Council agenda 2026-10-13", [r["title"] for r in items])
+        page = hashlib.sha256(BODY).hexdigest()
+        self.assertEqual([r["last_seen_hash"] for r in rows(self.watchlist)], [page, page, ""])
+        again = monitor.scan(self.watchlist, self.store, "2026-10-31", fetch=fake)
+        self.assertEqual(again, ["scanned=2 unchanged=2 new_items=0 refused=0 offdomain_links=0 skipped_social=1"])
+        code, out = self.run_main("digest", "--store", str(self.store), "--date", DATE)
+        self.assertEqual(code, 0)
+        digest = Path(out[0]).read_text(encoding="utf-8").splitlines()
+        self.assertLessEqual(len(digest), 40)
+        self.assertEqual(digest[0], "Flock monitor 2026-10-30: 3 new items (public, unreviewed)")
+        self.assertEqual(len(digest), 4)
+        code, out = self.run_main("digest", "--store", str(self.store), "--date", "2026-10-31")
+        self.assertEqual(Path(out[0]).read_text(encoding="utf-8"), "Flock monitor 2026-10-31: no new items\n")
+
+    def test_scope_fails_closed(self):
+        text = self.watchlist.read_text(encoding="utf-8")
+        self.watchlist.write_text(text.replace("www.city.example/news", "other.example/news"), encoding="utf-8")
+        monitor.fetch, original = FakeFetch(), monitor.fetch
+        self.addCleanup(setattr, monitor, "fetch", original)
+        code, out = self.run_main("scan", str(self.watchlist), "--store", str(self.store), "--date", DATE)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, ["row 3: url host is outside official_domain"])
+        self.assertEqual(monitor.fetch.calls, [])
+        shutil.copy(FIXTURES / "watchlist-sample.csv", self.watchlist)
+        lines = monitor.scan(self.watchlist, self.store, DATE, fetch=FakeFetch("application/pdf"))
+        self.assertEqual(lines[:2], ["row %d: refused content-type not text/html" % n for n in (2, 3)])
+        self.assertIn("new_items=0 refused=2", lines[2])
+        self.assertFalse((self.store / "MONITOR.csv").exists())
+        guard = monitor.RedirectGuard("city.example")
+        for newurl in ("https://other.example/x", "http://www.city.example/x", "https://evilcity.example/x"):
+            with self.subTest(newurl=newurl), self.assertRaises(monitor.Refused):
+                guard.redirect_request(None, None, 302, "Found", {}, newurl)
+
+    def test_pdf_link_is_recorded_but_never_fetched(self):
+        fake = FakeFetch()
+        monitor.scan(self.watchlist, self.store, DATE, fetch=fake)
+        self.assertEqual(fake.calls, ["https://www.city.example/agendas", "https://www.city.example/news"])
+        self.assertIn("https://www.city.example/files/packet.pdf", [r["url"] for r in rows(self.store / "MONITOR.csv")])
+
+
+if __name__ == "__main__":
+    unittest.main()
