@@ -812,7 +812,17 @@ def stage_extract(args):
         return result("fail", {"failed": 1}, "EXTRACT_RUN_FAILED"), 1
     except (sqlite3.Error, ValueError, OSError):
         return result("fail", {"failed": 1}, "EXTRACT_LEDGER_UNREADABLE"), 1
-    return extract_result(summary)
+    stage, code = extract_result(summary)
+    from .ocr_review import ChainBroken, pending
+    try:
+        with ledger_ro(processing) as db:
+            count = len(pending(db, Path(args.project) / 'ocr-review-v1' / 'reviews.jsonl'))
+        stage['review_required'] = count
+    except ChainBroken:
+        return result('fail', {'failed': 1}, 'ocr_review_chain_broken'), 1
+    except (LedgerBusy, sqlite3.Error, OSError):
+        pass  # Count unavailable; keep the extraction outcome unchanged.
+    return stage, code
 
 
 EXTRACT_NEEDS = (
