@@ -2,6 +2,7 @@
 
 This module does not discover adapters, load configuration, read credentials,
 or bind a live mail/backup implementation. It is not a sandbox for untrusted code.
+Leader completion alone never proves descendant quiescence; use contained_resume.
 """
 import argparse
 import contextlib
@@ -49,6 +50,13 @@ def _worker(adapter, request, deadline, connection):
         connection.close()
 
 
+def _wait_leader(process, seconds):
+    """waitpid-backed polling: inherited sentinel writers cannot delay reaping."""
+    deadline = time.monotonic() + seconds
+    while process.is_alive() and time.monotonic() < deadline:
+        time.sleep(min(0.025, max(0, deadline - time.monotonic())))
+
+
 def _stop(process):
     # Only the owned worker is guaranteed to be cleaned up. Admission requires
     # separately reviewed adapters and their dependencies to spawn no children.
@@ -63,7 +71,7 @@ def _stop(process):
             process.kill()
     except ProcessLookupError:
         pass
-    process.join(2)
+    _wait_leader(process, 2)
     if process.is_alive():
         raise RuntimeError('worker_cleanup_failed')
 
@@ -86,7 +94,7 @@ def run_once(adapter=None, *, execute=False, seconds=120):
     try:
         process.start()
         writer.close()
-        process.join(seconds)
+        _wait_leader(process, seconds)
         if process.is_alive():
             _stop(process)
             return {'status': 'timed_out', 'completion_claimed': False}
@@ -94,10 +102,14 @@ def run_once(adapter=None, *, execute=False, seconds=120):
             result = reader.recv() if reader.poll() else 'failed'
         except EOFError:
             result = 'failed'
-        return {'status': result, 'completion_claimed': result == 'completed'}
+        if result == 'completed':
+            return {'status': 'leader_completed', 'completion_claimed': False,
+                    'quiescence': 'unproved'}
+        return {'status': result, 'completion_claimed': False}
     finally:
         if process.pid is not None:
             _stop(process)
+            process.close()
         reader.close()
         writer.close()
 

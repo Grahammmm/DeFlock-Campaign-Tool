@@ -8,6 +8,7 @@ a producer-shaped synthetic snapshot (seeded like tests.records.test_ledger_cata
 evidence encoded with the ledger's canonical writer) and mutate only the typed
 join evidence text. All data is synthetic; nothing touches a real ledger.
 """
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -47,7 +48,7 @@ class CatalogJoinJsonTests(unittest.TestCase):
         self.db = self.root / "ledger.sqlite"
         self.snapshots = 0
         store.initialize(self.db)
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             columns = {row[1] for row in con.execute("PRAGMA table_info(joins)")}
             self.assertTrue(set(JOIN_COLUMNS) <= columns, "synthetic snapshot must carry the projected join columns")
             con.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -69,7 +70,7 @@ class CatalogJoinJsonTests(unittest.TestCase):
 
     # helpers ---------------------------------------------------------------
     def set_join(self, evidence, *, identifier="join-typed", sha=H1, status="typed"):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("DELETE FROM joins")
             con.execute("INSERT INTO joins VALUES(?,?,?,?,?,?,?,?)",
                         (identifier, sha, "agency:north", "request:north", "agreement_party", evidence, status, None))
@@ -79,13 +80,14 @@ class CatalogJoinJsonTests(unittest.TestCase):
         source_before = self.db.read_bytes()
         self.snapshots += 1
         copy = self.root / ("snapshot-%d.sqlite" % self.snapshots)
-        with sqlite3.connect(self.db) as source, sqlite3.connect(copy) as dest:
+        with (closing(sqlite3.connect(self.db)) as source, source,
+              closing(sqlite3.connect(copy)) as dest, dest):
             source.backup(dest)
         copy.chmod(0o600)
         counts = query_counts(copy)
         snapshot_before = copy.read_bytes()
         try:
-            with sqlite3.connect(copy) as con:
+            with closing(sqlite3.connect(copy)) as con, con:
                 con.row_factory = sqlite3.Row
                 con.execute("PRAGMA query_only=ON")
                 return module.project(con, counts)
@@ -201,7 +203,7 @@ class CatalogJoinJsonTests(unittest.TestCase):
         self.assertNotIn(SHADOW, module.encoded(hinted).decode())
         # Scope exclusion still wins before any evidence is decoded.
         excluded = hashlib.sha256(b"synthetic excluded original").hexdigest()
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (excluded, 12, "text/plain", STAMP, "record", "out_of_scope", None, "captured", "text", "{}"))
             for stage in module.STAGES:

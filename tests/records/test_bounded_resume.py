@@ -17,6 +17,43 @@ from campaign_tool.records import bounded_resume as bounded
 
 
 class BoundedResumeTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'linux' and os.getuid() != 0,
+                         'unprivileged Linux pidfd regression')
+    def test_inherited_sentinel_does_not_delay_leader(self):
+        import select
+        from campaign_tool.records import worker_lifecycle as lifecycle
+        reader, writer = os.pipe()
+        def adapter(request):
+            if os.fork() == 0:
+                identity, _ = lifecycle._identity(os.getpid())
+                os.write(writer, json.dumps(identity).encode() + b'\n')
+                time.sleep(3)
+                os._exit(0)
+        fd = None
+        try:
+            started = time.monotonic()
+            result = bounded.run_once(adapter, execute=True, seconds=5)
+            elapsed = time.monotonic() - started
+            self.assertTrue(select.select([reader], [], [], 1)[0])
+            expected = json.loads(os.read(reader, 4096))
+            try:
+                before, _ = lifecycle._identity(expected['pid'])
+                self.assertEqual(before, expected)
+                fd = os.pidfd_open(expected['pid'])
+                self.assertEqual(lifecycle._identity(expected['pid'])[0], expected)
+            except FileNotFoundError:
+                self.fail('descendant exited before identity pin')
+            self.assertLess(elapsed, 1.5)
+            self.assertEqual(result, {'status': 'leader_completed',
+                                     'completion_claimed': False, 'quiescence': 'unproved'})
+        finally:
+            if fd is not None:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+                self.assertTrue(select.select([fd], [], [], 2)[0])
+                os.close(fd)
+            os.close(reader)
+            os.close(writer)
+
     def test_plan_never_calls_adapter(self):
         def forbidden(request):
             self.fail('plan executed adapter')
@@ -74,7 +111,7 @@ class BoundedResumeTests(unittest.TestCase):
             assert not request.notify and not request.prune
             assert not request.spawn_children
             print('synthetic output must not be returned')
-        self.assertEqual(bounded.run_once(adapter, execute=True, seconds=1)['status'], 'completed')
+        self.assertEqual(bounded.run_once(adapter, execute=True, seconds=1)['status'], 'leader_completed')
 
     @unittest.skipUnless(platform.system() == 'Linux', 'qualified Linux supervisor case')
     def test_timeout_cannot_claim_completion_even_if_alarm_is_disabled(self):
@@ -108,7 +145,7 @@ print(json.dumps(run_once(adapter, execute=True, seconds=2)))
 '''
         result = subprocess.run([sys.executable, '-B', '-c', source], capture_output=True,
                                 text=True, timeout=5, check=True)
-        self.assertEqual(json.loads(result.stdout)['status'], 'completed')
+        self.assertEqual(json.loads(result.stdout)['status'], 'leader_completed')
         self.assertEqual(result.stderr, '')
         self.assertNotIn('synthetic-private', result.stdout)
 
