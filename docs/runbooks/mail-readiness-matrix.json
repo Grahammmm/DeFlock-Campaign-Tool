@@ -69,7 +69,7 @@
     "S7": {
       "purpose": "Engine pin and portal enable; live driver remains absent",
       "tools": [
-        {"name":"run report checker","status":"EXECUTABLE","path":"tools/run_report_check.py","argv":["python3","-B","tools/run_report_check.py","</private/run-report.json>","--baseline","baselines/flock-baseline-20261024.json"],"owner":"operator","prerequisite":"reviewed repo head"},
+        {"name":"run report checker","status":"EXECUTABLE","path":"tools/run_report_check.py","argv":["python3","-B","tools/run_report_check.py","</private/run-report.json>","--baseline","</private/reviewed-baseline.json>"],"owner":"operator","prerequisite":"reviewed repo head"},
         {"name":"live apply driver, timer-gate CLI and DATA-restore CLI","status":"UNSUPPLIED","owner":"custodian","prerequisite":"reviewed live driver and attended recovery invocation"}
       ],
       "gate_evidence": {"required":true,"status":"UNSUPPLIED","owner":"operator","prerequisite":"E-bound admission and pre-stop GO","what":"Engine pin, reviewed T2/T5/T9 evidence and pre-stop gate"},

@@ -177,8 +177,12 @@ DATA-restore CLI are UNSUPPLIED. HELD: custodian must supply reviewed live drive
 and attended recovery invocation; this offline report command does not enable it.
 
 ```sh
-python3 -B tools/run_report_check.py </private/run-report.json> --baseline baselines/flock-baseline-20261024.json
+python3 -B tools/run_report_check.py </private/run-report.json> --baseline </private/reviewed-baseline.json>
 ```
+
+The baseline is a reviewed, operator-supplied private JSON input, not a file
+bundled with this repository. Replace its entire angle-bracket token with the
+safely quoted absolute path; STOP if that baseline has not been supplied.
 
 STOP without reviewed T2/T5/T9 evidence, pre-stop GO, exact engine pin, backups,
 restore rehearsal and G-log 468 exact scope with G present. No live invocation is
