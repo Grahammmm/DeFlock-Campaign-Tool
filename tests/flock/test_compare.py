@@ -71,6 +71,11 @@ class FlockCompareTest(unittest.TestCase):
                 self.assertTrue(out.endswith("errors=1\n"), out)
                 self.assertNotIn(fields.get("claim", "\0"), out)
         self.assertEqual(self.scaffold()[0], 1)
+        self.mutate(1)
+        (self.store / "agencies" / AGENCY / "POLICY.csv").unlink()
+        code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("store: POLICY.csv", out)
 
     def test_golden(self):
         golden = str(FIXTURES / "morrobay-golden.csv")

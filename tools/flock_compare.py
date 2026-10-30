@@ -139,8 +139,7 @@ def check(rundir, golden=None):
     store_errs = facts_tool.check_file(facts_path, agency.name) if facts_path.is_file() else ["FACTS.csv missing"]
     law_rows, e = law_policy.load_law(store / "LAW.csv")
     store_errs += ["LAW.csv " + x for x in e]
-    policy_rows, e = law_policy.load_policy(agency / "POLICY.csv", agency.name) \
-        if (agency / "POLICY.csv").is_file() else ([], [])
+    policy_rows, e = law_policy.load_policy(agency / "POLICY.csv", agency.name)
     store_errs += ["POLICY.csv " + x for x in e]
     errs += ["store: " + x for x in store_errs]
     facts = {r["fact_id"]: r for _, r in facts_tool.load(facts_path, agency.name)[1]} if facts_path.is_file() else {}
