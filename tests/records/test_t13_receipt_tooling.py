@@ -153,12 +153,14 @@ class SandboxBaselineTests(unittest.TestCase):
                            "WHERE acquisition_method='verified_mail_export'")
         self.assertTrue(historical)
         for (subject,) in historical:
-            # T4-era preservation used raw stage content. Modern synthetic adoption
-            # emits envelopes with absolute storage_ref, outside this legacy replay case.
-            context = {'receipt': {'subject_sha256': subject, 'stage': 'preserve'},
-                       'content': (root / 'intake/blobs' / subject).read_bytes(),
-                       'content_kind': 'raw', 'preservation_evidence': None}
+            context = backend._existing_preservation_context(subject)
+            self.assertNotEqual(context['preservation_evidence']['storage_ref'], str(root / 'intake/blobs' / subject))
             self.assertTrue(backend._validator(context), subject)
+            # No caller can turn an invented old locator into accepted history.
+            forged = dict(context['preservation_evidence'], storage_ref='/synthetic/unaccepted/blobs/' + subject)
+            rejected = dict(context, preservation_evidence=forged, content=json.dumps(forged).encode())
+            self.assertFalse(backend._validator(rejected))
+            self.assertFalse(backend._validator(dict(context, preservation_evidence=forged)))
         evidence, source = query(root / "ledger.sqlite", "SELECT evidence,source_ref FROM occurrences "
                                  "WHERE kind='mail' AND acquisition_method='verified_mail_export'")[0]
         evidence, source = json.loads(evidence), json.loads(source)
@@ -168,6 +170,16 @@ class SandboxBaselineTests(unittest.TestCase):
                                              Folder(source['folder'], source['uidvalidity']), source['uid'])
         self.assertEqual(value.receipt_sha256, evidence['receipt_sha256'])
         self.assertEqual(query(intake, "SELECT oid,sha,path,parent,locator,receipt FROM occurrences ORDER BY oid"), before)
+        history = query(root / 'ledger.sqlite', "SELECT * FROM stage_content WHERE stage='preserve' ORDER BY subject_sha256,revision")
+        shared, = query(root / 'ledger.sqlite', "SELECT original_sha256 FROM occurrences WHERE kind='attachment' LIMIT 1")[0]
+        write_receipt(self.sandbox / 'mail-history', 35, body='Synthetic second receipt for a preserved attachment.',
+                      attachments=[('shared.pdf', (root / 'intake/blobs' / shared).read_bytes())])
+        report = adopt(self.sandbox)
+        self.assertEqual(report['failures'], {})
+        self.assertEqual(report['adopted_messages'], 3)
+        self.assertEqual(report['after']['pending_messages'], 0)
+        after = query(root / 'ledger.sqlite', "SELECT * FROM stage_content WHERE stage='preserve' ORDER BY subject_sha256,revision")
+        self.assertTrue(all(row in after for row in history))  # immutable historical artifacts retained
         self.assertEqual(tree_digest(self.test), self.test_digest)
 
     def test_intake_relocation_refuses_mismatched_source_bytes(self):
