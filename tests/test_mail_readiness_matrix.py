@@ -148,6 +148,27 @@ class RowTests(unittest.TestCase):
 
 
 class DocTests(unittest.TestCase):
+    def test_interleaved_containers_fail_closed_in_checker_and_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'synthetic.md'
+            for prefix in ('- > ', '1. > ', '> - > ', '+ > 1. > ', '> > - > '):
+                for code in ('    cp a b; mv b c', '\tcp a b; mv b c'):
+                    text = prefix + code
+                    with self.subTest(text=text):
+                        self.assertEqual(check_runbook(text), ['unsupported_code_container'])
+                        path.write_text(text)
+                        result = subprocess.run(
+                            [sys.executable, '-B', str(ROOT / 'tools/mail_readiness_matrix.py'),
+                             str(ROOT / 'docs/runbooks/mail-readiness-matrix.json'),
+                             '--runbook', str(path)], capture_output=True, text=True, check=False)
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        self.assertEqual(json.loads(result.stdout)['runbook_codes'],
+                                         ['unsupported_code_container'])
+                        self.assertNotIn('cp a b', result.stdout)
+        self.assertEqual(check_runbook('- > Prose; clean.\n> - > More prose; clean.\n'
+                                       '\n| a | b |\n|---|---|\n'
+                                       '\n```sh\npython3 tool.py </private/input>\n```'), [])
+
     def test_containers_and_tokens(self):
         for text in ['> ```sh\nsudo x\n> ```', '> ~~~~sh\nx\n> ~~~~',
                      '- ```sh\nx\n  ```', '>     cp a b; mv b c',

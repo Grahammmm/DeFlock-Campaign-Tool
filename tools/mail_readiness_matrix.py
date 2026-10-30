@@ -158,9 +158,11 @@ def check_runbook(text):
             fence = True
             continue
         # Reject code outside the sole supported container, including nested containers.
-        stripped = re.sub(r'^(?:\s*> ?)+', '', line)
-        listed = re.sub(r'^\s*(?:[-+*]|\d+[.)]) ', '', stripped)
-        if re.search(r'`{3,}|~{3,}', line) or re.match(r'^(?: {4}|\t)\S?', listed):
+        content = line
+        # Peel one quote/list marker at a time in any order. Never consume code indentation.
+        while prefix := re.match(r'^ {0,3}(?:> ?|(?:[-+*]|\d+[.)])[ \t])', content):
+            content = content[prefix.end():]
+        if re.search(r'`{3,}|~{3,}', line) or re.match(r'^(?: {4}|\t)\S?', content):
             codes.add('unsupported_code_container')
     if fence:
         codes.add('unsupported_code_container')
