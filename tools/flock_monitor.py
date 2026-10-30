@@ -14,14 +14,20 @@ DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[
 COUNTS = ("scanned", "unchanged", "new_items", "refused", "offdomain_links", "skipped_social")
 
 class Refused(Exception): """A fetch the scope guard will not make or accept. Recorded as data and never retried."""
-
 class Fail(Exception): """Validation or IO error (exit 1)."""
 
 def slug(agency):  # F1 rule
     return re.sub(r"[^a-z0-9]+", "-", agency.lower()).strip("-")
 
-def in_scope(url, domain):  # https only, host == official domain or a subdomain of it
-    parts = urlsplit(url or "")
+def absolute(href, base=""):  # fragment-free absolute URL, or "" when the URL parser rejects it (e.g. "https://[x")
+    try:
+        url = urldefrag(urljoin(base, href or ""))[0]
+        return url if urlsplit(url) else ""  # urlsplit raises ValueError on a malformed URL
+    except ValueError:
+        return ""
+
+def in_scope(url, domain):  # https only, host == official domain or a subdomain of it; malformed URLs are out of scope
+    parts = urlsplit(absolute(url))
     host = (parts.hostname or "").rstrip(".")
     return parts.scheme == "https" and bool(domain) and (host == domain or host.endswith("." + domain))
 
@@ -32,13 +38,11 @@ def require(dom, final, ctype, body=b""):
         raise Refused(why)
 
 class RedirectGuard(urllib.request.HTTPRedirectHandler):
-    def __init__(self, domain):
-        self.domain = domain
+    def __init__(self, domain): self.domain = domain
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if in_scope(newurl, self.domain):
             return super().redirect_request(req, fp, code, msg, headers, newurl)
-        if fp is not None:
-            fp.close()
+        fp.close() if fp is not None else None
         raise Refused("redirect outside official domain")
 
 def fetch(url, official_domain):
@@ -53,8 +57,8 @@ def fetch(url, official_domain):
     except urllib.error.HTTPError as err:
         err.close()
         raise Refused("http %d" % err.code) from None
-    except (urllib.error.URLError, OSError) as err:
-        raise Refused("network %s" % type(err).__name__) from None
+    except (urllib.error.URLError, OSError, ValueError) as err:  # ValueError: malformed redirect Location or URL
+        raise Refused("malformed url" if isinstance(err, ValueError) else "network %s" % type(err).__name__) from None
     require(official_domain, final, ctype, body)
     return final, ctype, body
 
@@ -78,8 +82,7 @@ class Links(html.parser.HTMLParser):
             self.href, self.text = None, []
 
 def read_csv(path, header, missing_ok=False):
-    if missing_ok and not Path(path).exists():
-        return []
+    if missing_ok and not Path(path).exists(): return []
     with open(path, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
     if not records or records[0] != header:
@@ -96,8 +99,9 @@ def row_errors(row):
               ("official_domain", DOMAIN.fullmatch(dom), "is not a bare lowercase hostname"),
               ("query", bool(row["query"].strip()) == social, "must be set for social rows only"),
               ("url", not url if social else url.startswith("https://"), "must be empty for social, else https://"),
-              ("url", social or in_scope(url, dom), "host is outside official_domain"),
-              ("url", social or not urlsplit(url).path.lower().endswith(".pdf"), "is a pdf"),
+              ("url", social or absolute(url), "is not a parseable URL"),
+              ("url", social or not absolute(url) or in_scope(url, dom), "host is outside official_domain"),
+              ("url", social or not urlsplit(absolute(url)).path.lower().endswith(".pdf"), "is a pdf"),
               ("last_seen_hash", re.fullmatch(r"(?:[0-9a-f]{64})?", row["last_seen_hash"]), "must be empty or 64 lowercase hex"))
     return ["%s %s" % (field, why) for field, ok, why in checks if not ok]
 
@@ -112,8 +116,7 @@ def write_atomic(path, text="", header=None, rows=()):
 
 def private_store(store):
     store = Path(store).resolve()
-    if store == REPO or REPO in store.parents:
-        raise Fail("store inside repository")
+    if store == REPO or REPO in store.parents: raise Fail("store inside repository")
     return store
 
 def scan(watchlist, store, date, fetch=fetch):
@@ -141,8 +144,8 @@ def scan(watchlist, store, date, fetch=fetch):
             counts["unchanged"] += 1
             continue
         for href, title in Links(body.decode("utf-8", "replace")).links:
-            url = urldefrag(urljoin(final, href))[0]
-            if not in_scope(url, dom):
+            url = absolute(href, final)
+            if not in_scope(url, dom):  # off-domain, non-https or malformed: dropped and counted
                 counts["offdomain_links"] += 1
                 continue
             item = "M-" + hashlib.sha256((slug(row["agency"]) + "\x1f" + url).encode()).hexdigest()[:12]
@@ -162,8 +165,7 @@ def digest(store, date):
     path = private_store(store) / "digest" / (date + ".md")
     rows = [r for _, r in read_csv(path.parents[1] / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
     items = [" ".join(("- %s %s: %s %s" % (r["agency"], r["watch_kind"], r["title"], r["url"])).split()) for r in rows]
-    head = "%d new items (public, unreviewed)" % len(rows) if rows else "no new items"
-    lines = ["Flock monitor %s: %s" % (date, head)]
+    lines = ["Flock monitor %s: %s" % (date, "%d new items (public, unreviewed)" % len(rows) if rows else "no new items")]
     lines += items if len(items) <= 39 else items[:38] + ["- … and %d more in MONITOR.csv" % (len(items) - 38)]
     write_atomic(path, "\n".join(lines) + "\n")
     return path
@@ -177,10 +179,9 @@ def main(argv=None):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
     args = parser.parse_args(argv)
-    date = args.date.isoformat()
     try:
-        print("\n".join(scan(args.watchlist, args.store, date, fetch=fetch)) if args.command == "scan"
-              else digest(args.store, date))
+        print("\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
+              else digest(args.store, args.date.isoformat()))
     except (Fail, OSError, UnicodeDecodeError) as err:
         print(err if isinstance(err, Fail) else "io error: %s" % type(err).__name__)
         return 1
