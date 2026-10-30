@@ -71,6 +71,9 @@ def load(path):
                     <= {'name', 'status', 'owner', 'prerequisite', 'path', 'sha256', 'argv'})
             require(all(text(tool[k]) for k in ('name', 'owner', 'prerequisite')))
             require(tool['status'] in ('EXECUTABLE', 'NON_EXECUTABLE', 'UNSUPPLIED'))
+            if 'path' in tool:
+                require(text(tool['path']) and not Path(tool['path']).is_absolute()
+                        and '..' not in Path(tool['path']).parts)
             if 'sha256' in tool:
                 require(isinstance(tool['sha256'], str) and
                         re.fullmatch(r'[0-9a-f]{64}', tool['sha256']) is not None)
