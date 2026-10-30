@@ -1,0 +1,3 @@
+[{"n": 1, "kind": "record", "label": "Request R-1, document 10000001 (Camera contract), page 2", "request": "R-1", "document_id": "10000001", "sha256": null, "pages": ["2"]},
+ {"n": 2, "kind": "record", "label": "Request R-1, document 10000002 (Hidden audit log), page 4, 5", "request": "R-1", "document_id": "10000002", "sha256": null, "pages": ["4", "5"]},
+ {"n": 3, "kind": "rule", "label": "Sample City Policy 4, 2026-01-01, section 4.1", "request": null, "document_id": null, "sha256": null, "pages": []}]
