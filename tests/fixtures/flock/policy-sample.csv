@@ -1,0 +1,3 @@
+policy_row_id,agency,policy_id,version_label,doc_sha256,footer_version_date,adoption_evidence,adoption_sha256,governs_from,governs_to,added_by,added_at,status
+P-3ee5198a9319,Sample City Police Department,435,26-55 copy,eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,2025-06-03,unverified,,,,tester,2026-10-30,unreviewed
+P-2745cbbfbcad,Sample City Police Department,435,2026-09-22 packet,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,2026-09-22,Council packet minutes adopt revised policy,ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff,2026-10-13,,tester,2026-10-30,unreviewed
