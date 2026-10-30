@@ -4,7 +4,7 @@
 Rows from not-posted records and rows the verifier disputed or could not source never appear; a final lint refuses to write
 otherwise. Prints counts and `line N: <rule>` / `row <id>: <rule>` errors only, never the offending text. No network.
 Exit 0 written, 1 validation/lint/IO, 2 usage. The draft is private: public use goes through F9, redaction, review and G."""
-import argparse, csv, hashlib, importlib.util, json, os, re, sys
+import argparse, csv, hashlib, importlib.util, json, os, re, sys, tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -171,9 +171,9 @@ def lint(c, report, sources_text, marks, body_end, entries, facts, inventory, er
     errs += ["%s: cite has no SOURCES entry" % where for k, where in cited.items() if k not in listed]
     errs += ["line %d: SOURCES entry never cited" % (body_end + 4 + i) for i, e in enumerate(entries) if e["n"] not in cited]
     errs += ["line %d: %s (SOURCES.json)" % (i, h) for i, line in enumerate(sources_text.splitlines(), 1) for h in hits(line)]
-def write(path, text):  # 0600 temp file next to its target; the caller renames both only after both are written
-    tmp = path.with_name("." + path.name + ".tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8", newline="") as out:
+def write(path, text):  # fresh exclusive 0600 temp (mkstemp: O_EXCL, random name, never reuses/follows one); caller renames both after
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
         out.write(text)
     return tmp, path
 def build(config, out):

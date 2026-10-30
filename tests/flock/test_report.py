@@ -105,6 +105,19 @@ class FlockReportTest(unittest.TestCase):
                                                           "withheld_analysis_only=0 withheld_verify=0 sources=0 errors=1\n"))
         self.assertFalse(inside.exists())
 
+    def test_preexisting_temp_names(self):
+        config, p = self.stage()
+        report, findings = p["CO"] / "report", p["CO"] / "FINDINGS.csv"
+        report.mkdir()
+        before = findings.read_bytes()
+        (report / ".REPORT-DRAFT.md.tmp").symlink_to(findings)
+        (report / ".SOURCES.json.tmp").write_text("stale")
+        (report / ".SOURCES.json.tmp").chmod(0o644)
+        self.assertEqual(build(config), (0, HAPPY))
+        self.assertEqual(findings.read_bytes(), before)
+        self.assertEqual((report / ".SOURCES.json.tmp").read_text(), "stale")
+        self.assertEqual({stat.S_IMODE((report / n).lstat().st_mode) for n in ("REPORT-DRAFT.md", "SOURCES.json")}, {0o600})
+
     def test_withholding(self):
         config, p = self.stage()
         self.assertEqual(build(config)[0], 0)
