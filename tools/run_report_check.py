@@ -1,7 +1,7 @@
 """Counts-only, local checks for a records-run-report-v1.
 
 Exit 0 means accounting/baseline checks passed, NOT production acceptance.
-P1-P9 describe one report; two consecutive scheduled runs and substantive human
+P1-P17 describe report checks; two consecutive scheduled runs and substantive human
 acceptance remain separate gates. V1 has no receipts, policy, rows, digest or
 rollback evidence, so those requirements cannot receive a positive verdict.
 
@@ -22,6 +22,10 @@ from campaign_tool.records.run_report import STAGE_ORDER, validate_run_report
 CODE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
 RUN_ID = re.compile(r"run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}")
 COUNT_KEYS = {"input", "output", "failed", "skipped"}
+KNOWN_OUTCOMES = {"EXTRACTED", "AWAITING_OCR", "CORRUPT_DOCUMENT", "EXTRACT_INCOMPLETE",
+                  "WORKBOOK_POLICY_REQUIRED", "PARSER_MISSING", "DECODER_NEEDED", "EXTRACT_TIMEOUT",
+                  "EXTRACT_NOT_ACCEPTED", "EXTRACT_ERROR", "PRESERVE_PENDING", "DEFERRED_RUN_BUDGET"}
+OPTIONAL_BASELINE = {"run_budget_seconds", "expected_outcomes", "expected_awaiting_ocr_images"}
 
 
 def is_count(value):
@@ -52,10 +56,22 @@ def code_counts(items, baseline=False):
 
 def validate_inputs(report, baseline):
     if (not isinstance(baseline, dict)
-            or set(baseline) != {"schema_version", "needs_g"}
+            or not {"schema_version", "needs_g"} <= set(baseline)
+            or set(baseline) - {"schema_version", "needs_g"} - OPTIONAL_BASELINE
             or type(baseline["schema_version"]) is not int
             or baseline["schema_version"] != 1):
         raise ValueError("invalid baseline")
+    if "run_budget_seconds" in baseline:
+        budget = baseline["run_budget_seconds"]
+        if type(budget) is not int or budget <= 120:
+            raise ValueError("invalid budget")
+    if "expected_outcomes" in baseline:
+        expected = baseline["expected_outcomes"]
+        if (not isinstance(expected, dict)
+                or any(k not in KNOWN_OUTCOMES or not is_count(v) for k, v in expected.items())):
+            raise ValueError("invalid expected outcomes")
+    if "expected_awaiting_ocr_images" in baseline and not is_count(baseline["expected_awaiting_ocr_images"]):
+        raise ValueError("invalid image baseline")
     accepted = code_counts(baseline["needs_g"], baseline=True)
     if not isinstance(report, dict):
         raise ValueError("invalid report")
@@ -73,15 +89,19 @@ def validate_inputs(report, baseline):
     return current, accepted
 
 
-def evaluate(report, baseline):
+def evaluate(report, baseline, prior=None, replay=False):
     """Return (exit code, safe lines); never include validation exception text."""
     try:
         current, accepted = validate_inputs(report, baseline)
+        if replay and prior is None:
+            raise ValueError("replay requires prior")
+        if prior is not None:
+            validate_inputs(prior, baseline)
     except (ValueError, TypeError, KeyError, OverflowError):
         return invalid_result()
 
     lines = [f"run_id={report['run_id']}",
-             "Exit gate: accounting + baseline + notify health only; not production acceptance.",
+             "Exit gate: accounting + baseline + notify health + run assertions; not production acceptance.",
              "Two consecutive scheduled runs: NA (one report supplied)."]
     balanced = True
     for stage in report["stages"]:
@@ -143,15 +163,59 @@ def evaluate(report, baseline):
     ]
     lines.append("Criterion Status Reason")
     lines.extend(f"P{i} {status} {reason}" for i, (status, reason) in enumerate(criteria, 1))
-    exit_code = int(not balanced or widened or not notify_ok)
+    extra = extra_criteria(report, baseline, prior, replay)
+    lines.extend(f"P{i} {status} {reason}" for i, (status, reason) in enumerate(extra, 10))
+    exit_code = int(not balanced or widened or not notify_ok or any(s == "FAIL" for s, _ in extra))
     lines.append(f"EXIT {exit_code}; machine checks only; review required")
     return exit_code, lines
+
+
+def outcome_counts(report):
+    counts = {}
+    for stage in report["stages"]:
+        for item in stage.get("outcomes", []):
+            counts[item["code"]] = counts.get(item["code"], 0) + item["count"]
+    return counts
+
+
+def extra_criteria(report, baseline, prior, replay):
+    def row(ok, reason, present=True):
+        return ("PASS" if ok else "FAIL", reason) if present else ("NA", "optional input absent")
+
+    outcomes = outcome_counts(report)
+    ocr, refusals = report.get("ocr"), report.get("refusals")
+    budget = baseline.get("run_budget_seconds")
+    expected = baseline.get("expected_outcomes")
+    images = baseline.get("expected_awaiting_ocr_images")
+    prior_outcomes = outcome_counts(prior) if prior is not None else {}
+    current_g = code_counts(report["needs_g"])
+    prior_g = code_counts(prior["needs_g"]) if prior is not None else {}
+    extract = report["stages"][4]
+    refused = sum(o["count"] for o in extract.get("outcomes", []) if o["code"] == "EXTRACT_NOT_ACCEPTED")
+    return [
+        row(budget is not None and report["duration_seconds"] < budget - 120,
+            "duration below budget minus 120 seconds", budget is not None),
+        row(all(outcomes.get(k, 0) == v for k, v in (expected or {}).items()),
+            "expected outcome counts equal", expected is not None),
+        row(set(outcomes) <= KNOWN_OUTCOMES, "known outcome codes only"),
+        row(ocr is not None and ocr["awaiting_ocr_images"] == images,
+            "image backlog equals baseline", ocr is not None and images is not None),
+        row(ocr is not None and report["review_required_count"] >= ocr["pages_ocr"] - ocr["pages_reviewed"],
+            "review count covers unreviewed OCR pages", ocr is not None),
+        row(outcomes.get("PRESERVE_PENDING", 0) <= prior_outcomes.get("PRESERVE_PENDING", 0),
+            "preserve pending did not grow", prior is not None),
+        row(report["new_data"]["documents"] == 0 and all(n <= prior_g.get(k, 0) for k, n in current_g.items()),
+            "replay adds no documents or needs_g counts", replay),
+        row(refusals is not None and refusals["not_accepted_coded"] == refused,
+            f"refusal coverage; unlisted={refusals['unlisted']}" if refusals is not None else "",
+            refusals is not None),
+    ]
 
 
 def invalid_result():
     return 1, ["CHECK INPUT FAIL invalid report or baseline; values suppressed",
                "Criterion Status Reason",
-               *(f"P{i} NA invalid input prevents assessment" for i in range(1, 10)),
+               *(f"P{i} NA invalid input prevents assessment" for i in range(1, 18)),
                "EXIT 1; machine checks only; review required"]
 
 
@@ -177,9 +241,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", help="records-run-report-v1 JSON")
     parser.add_argument("--baseline", required=True, help="accepted stage/code counts JSON")
+    parser.add_argument("--prior", help="prior synthetic or operator-local report")
+    parser.add_argument("--replay", action="store_true", help="assert replay adds nothing; requires --prior")
     args = parser.parse_args(argv)
     try:
-        result = evaluate(load_json(args.report), load_json(args.baseline))
+        prior = load_json(args.prior) if args.prior else None
+        if args.prior and prior is None:
+            raise ValueError("invalid prior")
+        result = evaluate(load_json(args.report), load_json(args.baseline), prior, args.replay)
     except (OSError, ValueError, UnicodeError, RecursionError):
         result = invalid_result()
     exit_code, lines = result

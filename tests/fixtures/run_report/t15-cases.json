@@ -1,0 +1,10 @@
+{
+  "P10": ["duration_seconds", 120],
+  "P11": ["expected_extracted", 1],
+  "P12": ["unknown_outcome", 1],
+  "P13": ["awaiting_ocr_images", 8],
+  "P14": ["review_required_count", 2],
+  "P15": ["preserve_pending_growth", 1],
+  "P16": ["new_documents", 1],
+  "P17": ["not_accepted_coded", 0]
+}
