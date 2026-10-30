@@ -33,22 +33,51 @@ do not restart exhausted acceptance cycles or repeat unchanged suites for handof
 CLI switch, configuration discovery, credential-file parser, adapter import path
 flag, live mail implementation, notification sender or retention operation here.
 
+`python3 -m campaign_tool.records.contained_resume` is also inert plan mode;
+`--execute` refuses with `authorized_adapter_required`. Its Python API,
+`run_contained(AdapterIdentity(path, sha256, attribute), execute=True,
+seconds=120, run_parent=...)`, requires an absolute adapter path and a private,
+owned 0700 run parent without symlinks. Linux, a non-root UID and working pidfds
+are required. The adapter is captured once through a no-follow regular-file
+descriptor (current UID, one link, at most 256 KiB) and hash-checked before launch.
+An owned 0600 binding carries those bytes; replacing the adapter path cannot
+change what executes. Captured bytes bind only this module, not its imports.
+
 An operator can bind a separately reviewed callable through `run_once`. That
 callable must already have authorized narrow dependencies and honor the immutable
 request: one item maximum, notifications false, pruning false. This contract is
 not a sandbox for arbitrary code and does not itself enforce adapter semantics.
 Adapters and their dependencies must spawn **no child processes**, even ordinary
-children in the same process group. The supervisor guarantees cleanup of its own
-worker only; it does not claim descendant cleanup after that worker exits.
+children in the same process group. Standalone `run_once` reports only
+`leader_completed`, with `completion_claimed: false` and `quiescence: unproved`.
+Its leader wait polls waitpid-backed state, not an inherited sentinel pipe.
+The contained path composes the existing pidfd/subreaper `worker_lifecycle`
+supervisor rather than adding a second supervisor. Descendant cleanup is a
+safety net, never permission for an adapter or its dependencies to spawn.
 Adapter admission must include a static dependency review and synthetic evidence
 of this no-child restriction. Adapters requiring subprocesses are inadmissible to
 this boundary and need a separately qualified runner. Adapters must not
 load an unapproved broad configuration file through a new route.
 
-Execution requires explicit opt-in and a supported Linux runtime. The child has
-an absolute deadline and the parent independently enforces at most 120 seconds.
+Execution requires explicit opt-in and a supported Linux runtime. Standalone
+execution enforces at most 120 seconds; the contained wall budget is 6–120 seconds
+plus two-second TERM and KILL graces and a five-second parent margin.
 Timeout/failure returns stable status and never claims completion. Both OS output
 file descriptors and Python output streams are redirected to the null sink.
+
+The internal `__supervised_worker__ <absolute binding path>` entry first verifies
+its parent PID and live identity against the supervisor's validated private
+state.json. A direct invocation without that binding exits 3 before loading
+adapter bytes. The captured module is re-hashed, compiled and executed only
+inside the existing fork fence, after setsid, alarm and output redirection.
+Only a persisted receipt matching the supervisor stdout, state identity, boot
+and run ID can establish `completed`: worker exit zero AND `quiescent: true`
+are required. Fixed result keys are `status`, `completion_claimed`, `quiescent`
+and `escalated`; absent or inconsistent evidence never claims completion.
+Parent timeout returns `not_quiescent`, not cleanup proof. Supervisor SIGKILL
+or crash containment remains a P1 deployment hold; this is not independently
+stoppable exec-only deployment. Mechanical completion is not semantic acceptance.
+
 Adapter output,
 exceptions and payloads are not returned. An interrupted operation can still have
 partial immutable writes; its adapter must supply idempotent recovery receipts.
