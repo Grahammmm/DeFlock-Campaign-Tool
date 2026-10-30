@@ -1,5 +1,6 @@
-import json, subprocess, sys, tempfile, unittest
+import json, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIX = ROOT / "tools" / "flock_review.py", ROOT / "tests" / "fixtures" / "flock"
@@ -33,7 +34,7 @@ elif me == "facts_build":
     copy("compare-facts.csv", Path(a[1]) / "FACTS-v1-record.csv")
 elif me == "rules_build":
     out = Path(cfg["rules_intake"]["out"])
-    put(out / "REQUIREMENTS.csv", "rule\\n")
+    put(out / "REQUIREMENTS.csv", "rule," + hashlib.sha256(Path(a[a.index("--f2-tool") + 1]).read_bytes()).hexdigest() + "\\n")
     put(out / "VERSION-DIFF.csv", "diff\\n")
     copy("law-sample.csv", out / "F2" / "LAW.csv")
     copy("policy-sample.csv", out / "F2" / "agencies" / cfg["review"]["slug"] / "POLICY.csv")
@@ -170,6 +171,45 @@ class FlockReviewTest(unittest.TestCase):
         moved = list(p["out"].glob(".review/superseded/facts-import-*/store/agencies/%s/FACTS.csv" % SLUG))
         self.assertEqual(len(moved), 1)
         self.assertIn(b"Vigilent", moved[0].read_bytes())
+
+    def test_f2_only_change_invalidates_rules_and_downstream(self):
+        engine = self.tmp / "engine"
+        shutil.copytree(ROOT / "tools", engine / "tools")
+        (engine / "campaign_tool").symlink_to(ROOT / "campaign_tool", target_is_directory=True)
+        golden = engine / "tests/fixtures/flock/morrobay-golden.csv"
+        golden.parent.mkdir(parents=True)
+        shutil.copyfile(FIX / golden.name, golden)
+        with patch(__name__ + ".TOOL", engine / "tools/flock_review.py"):
+            config, p = make_review(self.tmp)
+            self.assertEqual(self.drive(config, p)[0], 0)
+            code, out = tool("run", config)
+            self.assertEqual(code, 0, out)
+            self.assertIn("stage rules-build cached", out)
+            before = calls(p)
+            state_path = p["out"] / "REVIEW-STATE.json"
+            state = json.loads(state_path.read_text())["stages"]
+            f2 = engine / "tools/flock_law_policy.py"
+            f2.write_bytes(f2.read_bytes() + b"\n# F2-only revision\n")
+            code, out = tool("status", config)
+            self.assertEqual(code, 0, out)
+            self.assertIn("9 rules-build run stale", out)
+            self.assertIn("10 rules-diff run pending", out)
+            code, out = tool("run", config)
+            self.assertEqual(code, 3, out)
+            self.assertEqual(calls(p)[len(before):], ["rules_build", "diff_versions", "check_rules"])
+            self.assertIn("stage assess WAITING (upstream changed)", out)
+            after = json.loads(state_path.read_text())["stages"]
+            self.assertNotEqual(state["rules-build"]["fp"], after["rules-build"]["fp"])
+            self.assertEqual(state["rules-read"]["mark"], after["rules-read"]["mark"])
+            self.assertEqual(mark_all(config, {"assess": "anthropic"}), [0])
+            code, out = tool("run", config)
+            self.assertEqual(code, 3, out)
+            self.assertIn("stage compare-build done rc=0", out)
+            self.assertIn("stage f3-findings WAITING (upstream changed)", out)
+            self.assertEqual(mark_all(config, {"f3-findings": "openai"}), [0])
+            code, out = tool("run", config)
+            self.assertEqual(code, 0, out)
+            self.assertIn("stage f3-scaffold done rc=0", out)
 
     def test_changed_fact_output_rebuilds_compare_and_f3(self):
         config, p = make_review(self.tmp)

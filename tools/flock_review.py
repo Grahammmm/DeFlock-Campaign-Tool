@@ -153,6 +153,7 @@ def fingerprint(c, i, dig, state):  # stage, argv, script hashes, config blocks,
         steps, capture = plan(c, sid, state)
         body.update(capture=str(capture), steps=[s[1] if s[0] == "run" else [s[0]] + [str(x) for x in s[1:]] for s in steps],
                     scripts=[fhash(s[1][2]) for s in steps if s[0] == "run"])
+        if sid == "rules-build": body["scripts"].append(fhash(TOOLS / "flock_law_policy.py"))
     return digest(body)
 def wait_files(c, sid):  # the model-authored inputs a mark covers (set config paths only)
     if sid == "fact-drafts": return [p for p in sorted(c["FO"].glob("drafts/*.yaml")) if not p.name.endswith("-computed.yaml")]
