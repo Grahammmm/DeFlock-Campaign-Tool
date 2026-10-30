@@ -63,7 +63,13 @@ unreviewed rows (disagree / needs-source rows are withheld downstream, and verif
 - **Never:** hand-edit the report, include unchecked rows as findings, or name, quote or cite a not-posted record.
 
 ## Golden
-(filled in by G5)
+1. Run the golden before any new agency's compare runs: `python3 tools/flock_review_golden.py CONFIG --expect FILE`. It reads a
+   finished run (every stage through `counts` done or skip), recomputes the counts from the stage files (facts by kind, requirements,
+   findings by kind x verdict, analysis-only rows, F3 findings, F3 check errors) and compares them key by key to a counts-only JSON.
+2. `--write FILE` records the recomputed counts (0600, never overwrites, refused inside the repository). Write an expect file by hand
+   from the reference run's own outputs, keep it private for a real agency, and never commit real counts.
+3. A `golden: <key> expected X got Y` line is a method regression to diagnose (method script, repo tool or config). Never fix it by
+   editing the expect file or the inputs. `golden: <stage> not done` means finish the run first.
 
 ## Batch
 (filled in by G6)

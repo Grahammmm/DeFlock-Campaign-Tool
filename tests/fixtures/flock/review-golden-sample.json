@@ -1,0 +1,22 @@
+{
+ "analysis_only": 1,
+ "f3_errors": 0,
+ "f3_findings": 7,
+ "facts": 6,
+ "facts_by_kind": {
+  "record": 6
+ },
+ "findings": 3,
+ "findings_by_kind": {
+  "claim": {
+   "contradicted": 1
+  },
+  "requirement": {
+   "cannot tell": 1,
+   "met": 1
+  }
+ },
+ "requirements": 0,
+ "schema": 1,
+ "slug": "sample-city-police-department"
+}
