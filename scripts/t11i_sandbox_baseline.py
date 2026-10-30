@@ -21,7 +21,12 @@ different. So the harness:
    bound bytes, the originals immutability trigger is dropped only inside the
    rewrite transaction and must be identical and enforced afterwards, and no
    reference to a ``--from-root`` may remain anywhere in ``originals`` or
-   ``occurrences``.
+   ``occurrences``. It also relocates legacy intake ``occurrences.root`` for
+   ``mail_delta`` receipts from exactly ``<from-root>/mail-history`` to the sandbox
+   export. Each source must be a contained regular file with the catalogued length
+   and SHA-256; no other intake identity field changes. Without this step historical
+   preservation replay correctly refuses ``receipt_identity_conflict``. This is a
+   sandbox repair, not permission to change live identities or relax validation.
 
 Runs inside the Flock container as the ledger owner (``docker exec -u coder``), or
 locally in synthetic tests. Prints exactly one JSON line of counts, hashes and fixed
@@ -232,6 +237,48 @@ def relocate(ledger, sandbox, from_roots):
         con.close()
 
 
+def relocate_intake(database, project, from_roots):
+    """Relocate only verified mail-export roots on the private sandbox copy.
+
+    Legacy replay binds occurrences.root as well as canonical evidence paths.
+    Keep every other identity field unchanged; never relax the replay comparator.
+    """
+    export = contained_dir(project, "mail-history")
+    mapping = {root + "/mail-history": str(export) for root in from_roots}
+    con = sqlite3.connect(str(database), isolation_level=None)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        plan = []
+        for oid, sha, path, root, receipt in con.execute(
+                "SELECT oid,sha,path,root,receipt FROM occurrences"):
+            if not any(root == source or root.startswith(source + "/") for source in from_roots):
+                continue
+            if root not in mapping or json.loads(receipt).get("source") != "mail_delta":
+                raise Refused("intake_root_not_relocatable")
+            # Do not reach through links or trust a hash-only destination guess.
+            relative = Path(path)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise Refused("intake_source_not_contained")
+            target = contained_file(project, Path("mail-history") / relative)
+            size = con.execute("SELECT bytes FROM docs WHERE sha=?", (sha,)).fetchone()
+            if not regular(target) or not size or os.path.getsize(target) != size[0] or sha256_file(target) != sha:
+                raise Refused("intake_source_bytes_mismatch")
+            plan.append((mapping[root], oid, root))
+        moved = sum(con.execute("UPDATE occurrences SET root=? WHERE oid=? AND root=?", row).rowcount
+                    for row in plan)
+        if moved != len(plan) or con.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise Refused("intake_relocation_verification_failed")
+        con.execute("COMMIT")
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return {"intake_occurrences_relocated": moved}
+    except BaseException:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+
+
 def seed(project, backup, ledger_sha256, from_roots):
     project = check_sandbox(project)
     # The sandbox itself, not a symlink to it or through one: every write below must
@@ -272,6 +319,7 @@ def seed(project, backup, ledger_sha256, from_roots):
         if sha256_file(target) != sources[name][1]:
             raise Refused("baseline_copy_hash_mismatch")
     result = relocate(contained_file(project, DATABASES[0][1]), sandbox, roots)
+    result.update(relocate_intake(contained_file(project, DATABASES[1][1]), project, roots))
     if result["foreign_root_refs_after"] or result["integrity"] != "ok" or result["foreign_key_violations"] \
             or not result["immutability_trigger_enforced"]:
         raise Refused("baseline_not_consistent")
