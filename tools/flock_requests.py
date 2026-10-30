@@ -4,6 +4,7 @@ import csv
 import os
 import re
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -170,10 +171,10 @@ def draft(rundir, requests, start, end):
     body += [f"{n}. {i[3]}" for n, i in enumerate(inc, 1)] + ["", FORMAT, "", WITHHELD, "", END]
     if held:
         body.append("Held (internal, not part of the request): " + "; ".join(f"{i[0]} {i[4]}" for i in held))
-    tmp = run / ".FOLLOWUP-DRAFT.md.tmp"
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
-        fh.write("\n".join(body) + "\n")
+    fd, tmp = tempfile.mkstemp(dir=run, prefix=".FOLLOWUP-DRAFT.md.", suffix=".tmp")
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(body) + "\n")
         os.link(tmp, out)
     except FileExistsError:
         return print("draft: FOLLOWUP-DRAFT.md already exists", file=sys.stderr) or 1

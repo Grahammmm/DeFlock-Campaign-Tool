@@ -131,7 +131,23 @@ class RequestsTrackerTests(unittest.TestCase):
             self.assertIn("no items to draft", held.stderr)
             self.assertFalse(out.exists())
             self.assertEqual(self.draft(tmp)[0].returncode, 0)
+            before = out.read_bytes()
             self.assertEqual(self.draft(tmp)[0].returncode, 1)
+            self.assertEqual(out.read_bytes(), before)
+            self.assertEqual([p.name for p in out.parent.iterdir() if p.name.endswith(".tmp")], [])
+
+    def test_draft_is_private_despite_stale_temp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rundir = Path(tmp) / "agencies" / "sample-city-police-department" / "runs" / "2026-10-31"
+            rundir.mkdir(parents=True)
+            stale = rundir / ".FOLLOWUP-DRAFT.md.tmp"
+            stale.write_text("stale", encoding="utf-8")
+            stale.chmod(0o644)
+            done, out = self.draft(tmp)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(stale.read_text(encoding="utf-8"), "stale")
+            self.assertNotEqual(out.stat().st_ino, stale.stat().st_ino)
 
 
 if __name__ == "__main__":
