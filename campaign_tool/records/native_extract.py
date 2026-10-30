@@ -495,6 +495,8 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
         queue, images = awaiting_ocr_queue(pipeline, documents)
         write_awaiting_ocr(pipeline.root.path, queue)
     return {"documents": len(subjects), "outcomes": outcomes, "missing_parsers": missing,
+            "refusals": {"not_accepted_coded": sum(d['outcome'] == NOT_ACCEPTED and 'refusal_code' in d for d in documents),
+                         "unlisted": sum(d.get('refusal_code') == 'unlisted' for d in documents)},
             "attempted": attempted, "unexpected_failures": unexpected,
             "new_units": new_units, "new_pages": new_pages,
             "awaiting_ocr_queued": len(queue), "awaiting_ocr_images": images}

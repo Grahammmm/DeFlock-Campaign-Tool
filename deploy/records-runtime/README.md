@@ -86,7 +86,8 @@ Usage
 - `--dry-run` prints the preflight steps and all 8 stages, with each stage's
   exit code, timeout, failure policy and argv. It takes no lock, calls no
   docker and writes nothing.
-- `--scheduled` is passed by the unit and sets report mode `scheduled`. A
+- `--scheduled` sets report mode `scheduled` only with systemd's non-empty
+  `INVOCATION_ID`; running the flag by hand without it reports `manual`. A
   plan with mode `test` always reports `test`.
 - Receipts go to `RUNTIME_DIR/NAME/`: `run-report.json` (latest),
   `reports/<run_id>.json`, `alerts/`, `run-records.log` and `work/` (stage
@@ -96,7 +97,7 @@ Live runs (T16, T17)
 
 A live target is rendered from `targets/live-container.json.in` (mode `live`).
 The orchestrator reports mode `manual` for a manual run and `scheduled` for a
-`--scheduled` run; a `test` plan always reports `test`. T16's three manual
+`--scheduled` systemd invocation; a `test` plan always reports `test`. T16's three manual
 live runs use:
 
     run-records.sh --target LIVE

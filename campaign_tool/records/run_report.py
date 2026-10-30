@@ -59,6 +59,21 @@ def _nonfinite(value):
     return isinstance(value, float) and not math.isfinite(value)
 
 
+def check_ocr(block):
+    if sum(block[key] for key in ("pages_conf_ge80", "pages_conf_lt80", "pages_conf_unknown")) != block["pages_ocr"]:
+        raise ValueError("OCR bucket counts disagree")
+    if block["pages_reviewed"] > block["pages_ocr"]:
+        raise ValueError("OCR reviewed count exceeds pages")
+
+
+def check_refusals(block, extract_stage):
+    refused = sum(o["count"] for o in extract_stage.get("outcomes", []) if o["code"] == "EXTRACT_NOT_ACCEPTED")
+    if block["not_accepted_coded"] > refused:
+        raise ValueError("Coded refusal count exceeds refusals")
+    if block["unlisted"] > extract_stage["counts"]["input"]:
+        raise ValueError("Unlisted refusal count exceeds input")
+
+
 def validate_run_report(report, schema=None):
     """Raise ValueError when ``report`` does not satisfy run report v1."""
     schema = schema if schema is not None else load_schema()
@@ -68,6 +83,10 @@ def validate_run_report(report, schema=None):
     names = tuple(stage["name"] for stage in report["stages"])
     if names != STAGE_ORDER:
         raise ValueError(f"$.stages: expected stage order {list(STAGE_ORDER)}, got {list(names)}")
+    if "ocr" in report:
+        check_ocr(report["ocr"])
+    if "refusals" in report:
+        check_refusals(report["refusals"], report["stages"][4])
 
     started, finished = _parse_utc(report["started_at"]), _parse_utc(report["finished_at"])
     if finished < started:

@@ -142,7 +142,7 @@ class OCRReviewTests(unittest.TestCase):
                 self.assertFalse(out.exists())
                 self.assertEqual(self.mark(4), (1, 'ocr_review_chain_broken\n'))
                 stage = self.stage(expected_code=1)
-                self.assertEqual(stage['error_code'], 'ocr_review_chain_broken')
+                self.assertEqual(stage['error_code'], 'OCR_REVIEW_CHAIN_BROKEN')
                 with self.assertRaisesRegex(review.ChainBroken, 'ocr_review_chain_broken'):
                     review.page_use_allowed(self.page(1), self.reviews)
                 self.assertEqual(self.reviews.read_bytes(), damaged)

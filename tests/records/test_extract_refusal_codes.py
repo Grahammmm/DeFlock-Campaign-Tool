@@ -287,7 +287,7 @@ class StageRefusalDiagnosticsTests(ExtractStageCase):
         self.assertContract(code, parsed, raw)
         self.assertEqual(self.outcomes(parsed), {'EXTRACT_NOT_ACCEPTED': 2})
         self.assertEqual((parsed['status'], parsed['error_code']), ('warn', 'EXTRACT_DOCUMENT_FAILURES'))
-        self.assertNotIn('refusal', raw, 'the stage result line is unchanged')
+        self.assertEqual(parsed['refusals'], {'not_accepted_coded': 2, 'unlisted': 0}, 'counts only; decisions and private codes unchanged')
         self.assertNotIn('pdf_page_denominator_missing', raw)
         self.assertIsNotNone(run_orchestrator.parse_stage_result(raw.encode(), SCHEMA))
         documents = self.listing()

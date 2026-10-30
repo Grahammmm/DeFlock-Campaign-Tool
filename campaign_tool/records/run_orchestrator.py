@@ -191,6 +191,10 @@ def parse_stage_result(raw, schema):
     try:
         result = json.loads(lines[-1])
         law.validate(result, schema)
+        if "ocr" in result:
+            run_report.check_ocr(result["ocr"])
+        if "refusals" in result:
+            run_report.check_refusals(result["refusals"], result)
     except ValueError:
         return None
     if result["status"] in ("warn", "fail") and result.get("error_code") is None:
@@ -369,7 +373,7 @@ def _elapsed(started_at, finished_at):
     return int((parse(finished_at) - parse(started_at)).total_seconds())
 
 
-def build_report(run_id, mode, started_at, stages, new_data, review_required, needs_g):
+def build_report(run_id, mode, started_at, stages, new_data, review_required, needs_g, *, ocr=None, refusals=None):
     finished_at = utc_now()
     report = {
         "schema_version": 1,
@@ -386,6 +390,7 @@ def build_report(run_id, mode, started_at, stages, new_data, review_required, ne
         "notify_failed": False,
         "needs_g": needs_g,
     }
+    report.update({k: dict(v) for k, v in (("ocr", ocr), ("refusals", refusals)) if v is not None})
     run_report.validate_run_report(report)
     return report
 
@@ -395,6 +400,10 @@ def atomic_write_json(path, data):
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def scheduled_invocation(flag, environ):
+    return flag and bool(environ.get("INVOCATION_ID"))
 
 
 def report_mode(config, scheduled):
@@ -417,6 +426,7 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
     env = dict(os.environ if env is None else env)
     env.update({"RECORDS_RUN_ID": run_id, "RECORDS_RUN_TARGET": config["target"]})
     stages, new_data, needs_g = [], {}, {}
+    extract_blocks = {}
     review_required = 0
     blocked_by = None
     for entry in config["stages"]:
@@ -446,6 +456,8 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
         if result and result.get("outcomes") and dict(result["counts"]) == counts:
             stages[-1]["outcomes"] = [dict(item) for item in result["outcomes"]]
         if result:
+            if name == "extract":
+                extract_blocks = {k: result[k] for k in ("ocr", "refusals") if k in result}
             for key, value in result.get("new_data", {}).items():
                 new_data[key] = new_data.get(key, 0) + value
             review_required += result.get("review_required", 0)
@@ -460,7 +472,7 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
             blocked_by = "UPSTREAM_FAILED"
     stages.append(pending_notify())
     report = build_report(run_id, mode, started_at, stages, new_data, review_required,
-                          list(needs_g.values()))
+                          list(needs_g.values()), **extract_blocks)
     atomic_write_json(report_path, report)
     return first_failed_exit(stages)
 
@@ -876,7 +888,7 @@ def cmd_run(args):
     config = load_target_config(args.target_config)
     if args.expect_target and args.expect_target != config["target"]:
         raise TargetConfigError("target config names a different target")
-    mode = report_mode(config, args.scheduled)
+    mode = report_mode(config, scheduled_invocation(args.scheduled, os.environ))
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
     return execute(config, args.run_id, mode, args.started_at, args.deadline_epoch,
@@ -888,9 +900,9 @@ def cmd_abort(args):
     if not CODE_RE.match(args.reason):
         raise SystemExit("run_orchestrator: invalid reason code")
     try:
-        mode = report_mode(load_target_config(args.target_config), args.scheduled)
+        mode = report_mode(load_target_config(args.target_config), scheduled_invocation(args.scheduled, os.environ))
     except TargetConfigError:
-        mode = "scheduled" if args.scheduled else "manual"
+        mode = "scheduled" if scheduled_invocation(args.scheduled, os.environ) else "manual"
     report = abort_report(args.run_id, mode, args.started_at, args.reason, args.stage)
     atomic_write_json(args.report, report)
     return 0
