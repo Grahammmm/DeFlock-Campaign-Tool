@@ -5,7 +5,7 @@ skill_version: 1.0
 ---
 # flock-review: one agency config -> facts -> rules -> compare
 
-`tools/flock_review.py` walks a fixed 20-stage table (facts-intake 1-7, rules-intake 8-11, compare and F3 12-20). It runs the
+`tools/flock_review.py` walks a fixed 27-stage table (facts-intake 1-7, rules-intake 8-11, compare and F3 12-20, verify and F4 21-27). It runs the
 private agency-review method scripts (outside this repository; they need PyYAML) and the repo tools F1/F3, skips every stage whose
 inputs are unchanged, and stops at each model-authored step (`wait` stage) until that step is marked. It never runs a model, makes
 no network call and never deletes: superseded outputs move to `<out>/.review/superseded/`.
@@ -37,7 +37,20 @@ Exit codes: 0 done, 1 failed/validation/lock, 2 usage, 3 waiting. Logs: `<out>/.
 - Treat `done` as reviewed or publishable: machine-valid output is review-required, and the public-output rules still apply.
 
 ## Verify
-(filled in by G2)
+After `counts`, stages 21-27 plan and check an independent verify pass (a different model family than the author), then run F4.
+1. `run` writes `<CO>/VERIFY-PLAN.json` (seed = run_date digits, `review.verify_sample` rows, default 30: every contradicted / not met
+   row plus a seeded sample of met / cannot tell rows; FINDINGS sha256 frozen), recounts FINDINGS vs BUILD-REPORT and re-runs the
+   log summary into `<CO>/verify-recount` (byte-compared), then stops at `verify` (exit 3).
+2. A card of another provider writes `<CO>/VERIFY.csv` (`row_id,result,reason,page_cite`; result agree / disagree / needs-source)
+   and `<CO>/VERIFY.md` covering every planned id, priority first, each with a page cite. Not-posted ids stay out of both files.
+3. `mark CONFIG verify --provider <its provider> --model <its actual model>`: refused (exit 3) for `local` or the assess /
+   f3-findings provider. `run` writes `VERIFY-CHECK.txt` (counts only; errors name rows and fields, never text) and starts F4.
+4. The same card writes `<RUN>/VERIFY.csv` per `skills/flock-verify/PROMPT.md`, then `mark CONFIG f4` with the same provider; `run`
+   checks and finishes F4 (`PUBLIC-OK.csv`, `QUESTIONS.md`).
+Changed FINDINGS: the old plan moves aside, a new plan is made and the verify mark waits again (upstream changed).
+
+Never: re-sample after seeing results; edit FINDINGS after the plan; verify in the author's family; treat `agree` as acceptance of
+unreviewed rows (disagree / needs-source rows are withheld downstream, and verify is not review or release).
 
 ## Report
 1. After verify-check passes, run `python3 tools/flock_report.py build CONFIG` (default output `<compare.out>/report/`, never inside

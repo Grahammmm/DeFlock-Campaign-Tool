@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flock review: one agency through the agency-review method as a fixed 20-stage resumable pipeline.
+"""Flock review: one agency through the agency-review method as a fixed 27-stage resumable pipeline.
   --check CONFIG [--seed-dir DIR] | run CONFIG [--until STAGE] [--seed-dir DIR] | status CONFIG | mark CONFIG STAGE --provider P --model M
 Runs the private method scripts and F1/F3 tools, skipping stages whose inputs are unchanged; a wait stage closes only by mark (the card that
 wrote the input states its provider/model). Never runs a model, never deletes (old outputs move to <out>/.review/superseded), no network.
@@ -22,7 +22,9 @@ STAGES = [  # (id, kind, deps) -- frozen; G2 appends after counts and never renu
     ("assess", "wait", ("facts-import", "rules-build", "joins")), ("compare-build", "run", ("facts-import", "rules-build", "joins", "assess")),
     ("compare-selftest", "run", ("compare-build",)), ("f3-findings", "wait", ("facts-import", "rules-build")),
     ("f3-scaffold", "run", ("facts-import", "rules-build", "f3-findings")), ("f3-write", "run", ("f3-scaffold",)), ("f3-check", "run", ("f3-write",)),
-    ("counts", "run", ("compare-build",))]
+    ("counts", "run", ("compare-build",)),
+    ("verify-plan", "run", ("compare-build",)), ("verify-recount", "run", ("logs", "joins")), ("verify", "wait", ("verify-plan", "verify-recount")),
+    ("verify-check", "run", ("verify",)), ("f4-start", "run", ("f3-check",)), ("f4", "wait", ("f4-start",)), ("f4-finish", "run", ("f4",))]
 IDS = [s[0] for s in STAGES]
 METHOD = {n + ".py": d + "/scripts/" + n + ".py" for d, names in (
     ("facts-intake", "inventory log_summary roster_summary ocr_log_counts facts_build"), ("rules-intake", "rules_build diff_versions check_rules"),
@@ -30,6 +32,7 @@ METHOD = {n + ".py": d + "/scripts/" + n + ".py" for d, names in (
 SKIP = hashlib.sha256(b"skip").hexdigest()
 class Fail(Exception): code = 1
 class Usage(Fail): code = 2
+class Refused(Fail): code = 3  # family refusal at mark
 S = lambda v: v if isinstance(v, str) else ""  # noqa: E731
 def P(value, real=True):  # ~-expanded path, or None when unset
     path = os.path.expanduser(value) if S(value).strip() else None
@@ -91,7 +94,9 @@ def check(c, seed_dir=None):  # -> ["config: <field> <reason>", ...]
         ("compare.f3.policy", c["policy"], RO / "F2" / "agencies" / slug / "POLICY.csv"), ("compare.assessments", c["assess"], CO / "ASSESSMENTS.yaml"))]
     rules += [(f, under(have, base) and have != base, "is not under its step output") for f, have, base in (
         ("compare.log_by_user", c["lbu"], FO), ("compare.f3.store", c["store"], CO), ("review.f3_findings", c["f3f"], CO))]
-    rules += [("compare.f3.applicability", 1 <= len(c["appl"]) <= 200, "is not 1-200 chars"),
+    sample = r.get("verify_sample", 30)
+    rules += [("review.verify_sample", isinstance(sample, int) and not isinstance(sample, bool) and 1 <= sample <= 100, "is not an integer 1-100"),
+              ("compare.f3.applicability", 1 <= len(c["appl"]) <= 200, "is not 1-200 chars"),
               ("compare.f3.golden", golden is None or (S(golden) and not Path(golden).is_absolute() and under((REPO / golden).resolve(), REPO)
                                                        and (REPO / golden).is_file()), "is not a repo-relative file"),
               ("compare.roster_xlsx", c["tj"] is None or (c["xlsx"] and c["xlsx"].is_file()), "is missing (training_join set)"),
@@ -126,6 +131,23 @@ def plan(c, sid, state):  # -> (steps, stdout capture); a step is ("run", argv) 
     if sid == "rules-diff":
         return [m("diff_versions.py", cfg, f, *ids) for f, ids in families(c["cfg"])], c["RO"] / "VERSION-WORDDIFF.txt"
     golden = ["--golden", REPO / c["golden"]] if c["golden"] else []
+    rv, fnd, RUN, rc = "flock_review_verify.py", CO / "FINDINGS.csv", c["RUN"], CO / "verify-recount"
+    mk = (state["stages"].get("verify") or {}).get("mark") or {}  # f4-start takes the verifier from the verify mark
+    if sid == "verify-plan":
+        return [("stale", CO / "VERIFY-PLAN.json", fnd), t(rv, "plan", fnd, "--seed", int(c["date"].replace("-", "")), "--size", c["cfg"]["review"].get("verify_sample", 30),
+                                                          "--out", CO / "VERIFY-PLAN.json"), t(rv, "counts", fnd, CO / "BUILD-REPORT.txt")], None
+    if sid == "verify-recount":  # re-run the method scripts into a verify-owned folder and byte-compare with the originals
+        join = [m("training_vs_search.py", c["xlsx"], rc / "LOG-SUMMARY-by-user.csv"), ("cmpout", CO / ("TRAINING-VS-SEARCH-%s.txt" % c["tj"]))] if c["tj"] is not None else []
+        return [("mkdir", rc), m("log_summary.py", cfg, rc), ("same", FO, rc, "LOG-SUMMARY-*.csv")] + join, None
+    if sid == "verify-check":
+        ids = c["cfg"].get("not_posted_analysis_only_ids") or []
+        return [t(rv, "check", CO / "VERIFY-PLAN.json", fnd, CO / "VERIFY.csv", "--not-posted", *map(str, ids), "--md", CO / "VERIFY.md")], CO / "VERIFY-CHECK.txt"
+    if sid == "f4-start":
+        who = (mk.get("provider", ""), mk.get("model", ""))
+        return [("identity", RUN / "VERIFY.json", *who), t("flock_verify.py", "start", RUN, "--provider", who[0], "--model", who[1])], None
+    if sid == "f4-finish":
+        return [("aside", RUN / "PUBLIC-OK.csv"), ("aside", RUN / "QUESTIONS.md"), t("flock_verify.py", "--check", RUN),
+                t("flock_verify.py", "finish", RUN, *golden)], None
     return {"inventory": ([m("inventory.py", cfg, FO)], None), "logs": ([m("log_summary.py", cfg, FO)], None),
             "roster": ([m("roster_summary.py", cfg, FO, c["roster"])], None), "ocr-logs": ([m("ocr_log_counts.py", cfg, FO, *c["ocr"])], None),
             "facts-build": ([m("facts_build.py", cfg, FO, TOOLS / "flock_facts.py", *sorted(FO.glob("drafts/*.yaml")))], None),
@@ -144,7 +166,7 @@ def external(c, sid):
         items = [e for k in ("record_roots", "ocr_text_dirs", "extra_sources") for e in fi.get(k) or []]
         paths = [e.get("path") if isinstance(e, dict) else e for e in items] + [fi.get("portal_manifest"), fi.get("source_manifest")]
         return [listing(P(p)) for p in paths if S(p)]
-    return fhash(c["xlsx"]) if sid == "joins" and c["tj"] is not None else fhash(REPO / c["golden"]) if sid == "f3-check" and c["golden"] else None
+    return fhash(c["xlsx"]) if sid in ("joins", "verify-recount") and c["tj"] is not None else fhash(REPO / c["golden"]) if sid == "f3-check" and c["golden"] else None
 def fingerprint(c, i, dig, state):  # stage, argv, script hashes, config blocks, external inputs and the dep OUTPUT digests
     sid, kind, deps = STAGES[i]
     body = {"stage": sid, "deps": [dig[d] for d in deps], "external": external(c, sid),
@@ -157,6 +179,8 @@ def fingerprint(c, i, dig, state):  # stage, argv, script hashes, config blocks,
     return digest(body)
 def wait_files(c, sid):  # the model-authored inputs a mark covers (set config paths only)
     if sid == "fact-drafts": return [p for p in sorted(c["FO"].glob("drafts/*.yaml")) if not p.name.endswith("-computed.yaml")]
+    if sid == "verify": return [c["CO"] / "VERIFY.csv", c["CO"] / "VERIFY.md"]
+    if sid == "f4": return [c["RUN"] / "VERIFY.csv"]
     if sid != "rules-read": return [c["assess"] if sid == "assess" else c["f3f"]]
     ri = c["cfg"][RI]
     values = [s.get(k) for s in ri.get("sources") or [] if isinstance(s, dict) for k in ("text", "pdf")]
@@ -172,8 +196,8 @@ def evaluate(c, state, dig, i):  # -> (state, reason, fp); dig gains the stage's
         why = "not marked" if not mark else "changed since mark" if {str(p): fhash(p) for p in wait_files(c, sid)} != mark["files"] \
             else "upstream changed" if mark["fp"] != fp else None
         return ("waiting", why, fp) if why else dig.update({sid: digest(mark["files"])}) or ("done", None, fp)
-    later = {root(c, j) / rel for j in range(i + 1, len(STAGES)) if STAGES[j][1] == "run"
-             for rel in (state["stages"].get(IDS[j]) or {}).get("outputs", {})}  # a file a later stage rewrote is verified there
+    later = {root(c, j) / rel for j in range(i + 1, len(STAGES))
+             for rel in (state["stages"].get(IDS[j]) or {}).get("outputs", {})}  # a file a later stage rewrote or a later mark covers is verified there
     if rec.get("status") == "done" and rec.get("fp") == fp \
             and all(root(c, i) / rel in later or fhash(root(c, i) / rel) == h for rel, h in rec.get("outputs", {}).items()):
         return dig.update({sid: digest(rec["outputs"])}) or ("done", None, fp)
@@ -191,6 +215,25 @@ def aside(c, sid, path):  # never delete: move superseded outputs to .review/sup
     if path.exists():
         dest.mkdir(mode=0o700, parents=True)
         os.replace(path, dest / path.name)
+def local(c, sid, step, last):  # non-subprocess steps -> names that differ (compare steps only)
+    kind, path = step[0], step[1]
+    if kind == "aside": aside(c, sid, path)
+    elif kind == "copy": put(step[2], path.read_bytes())
+    elif kind == "mkdir": path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    elif kind == "stale":  # a verify plan made for other FINDINGS moves aside, never edited
+        try: fresh = json.loads(path.read_text(encoding="utf-8"))["findings_sha256"] == fhash(step[2])
+        except (OSError, ValueError, KeyError, TypeError): fresh = False
+        if path.exists() and not fresh: aside(c, sid, path)
+    elif kind == "identity":  # an F4 start for another verifier moves aside with its VERIFY.csv
+        try: have = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError): have = None
+        if path.exists() and (not isinstance(have, dict) or (have.get("verifier_provider"), have.get("verifier_model")) != tuple(step[2:4])):
+            aside(c, sid, path), aside(c, sid, path.with_name("VERIFY.csv"))
+    elif kind == "same":  # byte-compare step[3] files of two folders
+        names = sorted({p.name for d in (path, step[2]) for p in d.glob(step[3])})
+        return [n for n in names if not (path / n).is_file() or not (step[2] / n).is_file() or (path / n).read_bytes() != (step[2] / n).read_bytes()]
+    elif kind == "cmpout": return [] if path.is_file() and path.read_bytes() == last else [path.name]
+    return []
 def execute(c, i, state):
     sid, base = IDS[i], root(c, i)
     steps, capture = plan(c, sid, state)
@@ -198,7 +241,13 @@ def execute(c, i, state):
     for step in steps:
         try:
             if step[0] != "run":
-                aside(c, sid, step[1]) if step[0] == "aside" else put(step[2], step[1].read_bytes())
+                bad = local(c, sid, step, stdout[-1] if stdout else b"")
+                for name in bad:
+                    print("recount: %s differs" % name)
+                    logged.append(("# differs: %s\n" % name).encode())
+                if bad:
+                    rc = 1
+                    break
                 continue
             done = subprocess.run(step[1], stdin=subprocess.DEVNULL, capture_output=True, cwd=str(c["out"]), check=False)
             logged += [("# %s\n" % Path(step[1][2]).name).encode(), done.stdout, done.stderr]
@@ -208,7 +257,7 @@ def execute(c, i, state):
         if rc: break
     if capture and not rc: put(capture, b"".join(stdout))
     put(log, b"".join(logged))
-    return rc, {str(p.relative_to(base)): fhash(p) for p, v in snap(base, c["out"]).items() if before.get(p) != v}, log
+    return rc, {str(p.relative_to(base)): fhash(p) for p, v in snap(base, c["out"]).items() if before.get(p) != v and not (sid == "f4-start" and p.name == "VERIFY.csv")}, log
 def load_state(c):
     path = c["out"] / "REVIEW-STATE.json"
     try:
@@ -242,6 +291,10 @@ def run(c, until):
             halt["waiting"] = sid
         else:
             rc, outputs, log = execute(c, i, state)
+            if rc == 3 and sid == "f4-start":  # F4's own family refusal: nothing is recorded
+                print("stage f4-start WAITING (family refused)")
+                halt["waiting"] = sid
+                break
             state["stages"][sid] = {"status": "failed" if rc else "done", "fp": fp, "outputs": outputs, "rc": rc, "at": now()}
             save(c, state)
             print("stage %s %s rc=%d log=%s" % (sid, "failed" if rc else "done", rc, log))
@@ -251,6 +304,11 @@ def run(c, until):
     return 1 if halt["failed"] != "-" else 3 if halt["waiting"] != "-" else 0
 def mark(c, sid, provider, model):
     state, dig, i = load_state(c), {}, IDS.index(sid)
+    if sid in ("verify", "f4"):  # the verifier must be another family than the author marks, and the same card for F4
+        made = lambda s: ((state["stages"].get(s) or {}).get("mark") or {}).get("provider")  # noqa: E731
+        if provider == "local" or provider in (made("assess"), made("f3-findings")): raise Refused("mark: verifier family equals author family")
+        if sid == "f4" and made("verify") is None: raise Fail("mark: f4 needs the verify mark first")
+        if sid == "f4" and provider != made("verify"): raise Refused("mark: f4 provider differs from the verify mark")
     for j in range(i): evaluate(c, state, dig, j)
     for dep in (d for d in STAGES[i][2] if d not in dig): raise Fail("mark: %s needs %s done first" % (sid, dep))
     files = wait_files(c, sid)

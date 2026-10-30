@@ -57,7 +57,9 @@ else:
 '''
 
 
-def tool(*args):
+def tool(*args, full=False):  # G1's tests stop at counts; the verify stages 21-27 belong to test_review_verify
+    if args[0] == "run" and "--until" not in args and not full:
+        args += ("--until", "counts")
     done = subprocess.run([sys.executable, "-B", str(TOOL), *map(str, args)], capture_output=True, text=True, check=False)
     return done.returncode, done.stdout
 
@@ -130,7 +132,7 @@ class FlockReviewTest(unittest.TestCase):
     def test_happy_path_and_resume(self):
         config, p = make_review(self.tmp)
         code, out = tool("--check", config)
-        self.assertEqual((code, out), (0, "stages=20 skip=2 errors=0\n"))
+        self.assertEqual((code, out), (0, "stages=27 skip=2 errors=0\n"))
         code, out = self.drive(config, p)
         self.assertEqual(code, 0, out)
         stages = json.loads((p["out"] / "REVIEW-STATE.json").read_text())["stages"]
@@ -146,8 +148,11 @@ class FlockReviewTest(unittest.TestCase):
         code, out = tool("status", config)
         self.assertEqual(code, 0)
         self.assertIn("16 f3-findings wait done openai/gpt-5.5\n", out)
-        self.assertTrue(out.endswith("stages=20 done=18 stale=0 waiting=0 pending=0 failed=0 skip=2 next=- locked=no\n"))
+        self.assertTrue(out.endswith("stages=27 done=18 stale=0 waiting=0 pending=7 failed=0 skip=2 next=verify-plan locked=no\n"))
         self.assertEqual(tree(p["out"]), listing)
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 3, out)
+        self.assertIn("stage verify WAITING (not marked)", out)
 
     def test_invalidation(self):
         config, p = make_review(self.tmp)
