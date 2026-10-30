@@ -197,7 +197,11 @@ def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
     """Bind per-page OCR receipts: verified receipt bytes, sidecar text == unit text,
     native units of every other page untouched, unchanged page denominator."""
     entries=receipt.get("ocr_receipts")
-    if receipt.get("route",{}).get("route")!="extract:pdf" or not isinstance(entries,list) or not entries or len(entries)>MAX_UNITS:
+    image_wrapper=receipt.get('parser')=='image-pdf-wrapper'
+    if image_wrapper:
+        from .extraction_validation import image_wrapper_binding
+        subject=image_wrapper_binding(receipt,metadata,read_file(run/'input',MAX_SOURCE),subject)
+    if receipt.get("route",{}).get("route") not in ({'extract:image-pdf-wrapper'} if image_wrapper else {'extract:pdf'}) or not isinstance(entries,list) or not entries or len(entries)>MAX_UNITS:
         raise ExtractionBindingError("ocr_receipts_shape")
     if metadata.get("ocr_receipts")!=entries:raise ExtractionBindingError("ocr_receipts_metadata_mismatch")
     visions=receipt.get("vision_receipts")
@@ -223,7 +227,7 @@ def _bind_ocr_receipts(receipt,run,subject,metadata,units,artifacts,gaps):
         try:
             closure=ocr_closure.closure_artifacts(root, subject, page, checked_sha(entry["receipt_id"]))
             loaded=ocr_closure.load_cas_page(closure, subject, page, entry["receipt_id"])
-        except (ValueError,OSError):raise ExtractionBindingError("ocr_receipt_unverified") from None
+        except (ValueError,OSError):raise ExtractionBindingError("ocr_receipts_binding" if image_wrapper else "ocr_receipt_unverified") from None
         summary=routes.ocr_summary(loaded)
         if loaded["receipt_sha256"]!=entry["receipt_sha256"] or summary["status"]!=entry["status"]:
             raise ExtractionBindingError("ocr_receipt_hash_mismatch")
@@ -299,6 +303,9 @@ def validate_bundle(receipt_path,expected_receipt_sha,original_path,original):
     artifacts={"source_receipt":raw_receipt};unit_rows=[]
     if "ocr_derivative_sha256" in receipt or "ocr_derivative_path" in receipt:
         raise ExtractionBindingError("whole_document_ocr_unsupported")
+    if receipt.get('parser')=='image-pdf-wrapper':
+        from .extraction_validation import image_wrapper_binding
+        image_wrapper_binding(receipt,receipt,read_file(run/'input',MAX_SOURCE),subject)
     ocr="ocr_receipts" in receipt
     selected=run/("ocr-derived" if ocr else "derived")
     metadata_path=selected/"digest.json";units_path=selected/"units.jsonl"

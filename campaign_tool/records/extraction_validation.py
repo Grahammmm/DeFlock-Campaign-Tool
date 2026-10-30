@@ -121,6 +121,22 @@ def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root, vision_ids
     return pages
 
 
+def image_wrapper_binding(receipt, metadata, raw, subject):
+    """Re-derive from the canonical parent, not a receipt-selected derivative path."""
+    try:
+        _, expected = routes.image_pdf_wrapper(raw)
+    except (ValueError, OSError):
+        raise enrollment.ExtractionBindingError('image_wrapper_derivation_mismatch') from None
+    require(expected['parent_sha256'] == subject and
+            receipt.get('derived') == metadata.get('derived') == expected and
+            receipt.get('children') == metadata.get('children') == [], 'image_wrapper_derivation_mismatch')
+    entries = receipt.get('ocr_receipts')
+    require(isinstance(entries, list) and len(entries) == 1 and isinstance(entries[0], dict) and
+            type(entries[0].get('page')) is int and entries[0]['page'] == 1 and
+            not receipt.get('vision_receipts'), 'ocr_receipts_binding')
+    return expected['derived_sha256']
+
+
 def ocr_evidence_present(receipt):
     """Any OCR evidence keeps the visual-review hold: acceptance is refused."""
     pages = receipt.get("pages") if isinstance(receipt.get("pages"), list) else []
@@ -408,8 +424,19 @@ class _InstalledExtractionValidator:
                         "unexpected_ocr_closure")
             native_workbook = (receipt.get("parser") == "legacy-intake:xlsx" and self.native_workbook_policy is not None)
             workbook = None
-            ocr_pages = _accepted_ocr_pages(receipt, ocr_ids, artifacts=artifacts, scratch_root=self.evidence_root,
-                                            vision_ids=vision_ids) if ocr_ids else {}
+            image_wrapper = receipt.get('parser') == 'image-pdf-wrapper'
+            ocr_source = receipt
+            if image_wrapper:
+                derived_sha = image_wrapper_binding(receipt, metadata, raw_original, subject)
+                require(len(ocr_ids) == 1 and not vision_ids, 'ocr_receipts_binding')
+                ocr_source = dict(receipt, original_sha256=derived_sha)
+            try:
+                ocr_pages = _accepted_ocr_pages(ocr_source, ocr_ids, artifacts=artifacts, scratch_root=self.evidence_root,
+                                                vision_ids=vision_ids) if ocr_ids else {}
+            except enrollment.ExtractionBindingError:
+                if image_wrapper:
+                    raise enrollment.ExtractionBindingError('ocr_receipts_binding') from None
+                raise
             if ocr_pages:
                 # Per-page OCR: the source stays "partial" by construction (pages were not native
                 # text). Acceptance records the visual-review hold per page; it never clears it.
@@ -516,10 +543,13 @@ class _InstalledExtractionValidator:
                     "canonical_page_state_binding")
         # Independently establish denominator/content from canonical original bytes.
         form = parser.removeprefix("legacy-intake:")
-        require(parser == "legacy-intake:" + form and form in TEXT_FORMS | {"pdf"} | REPARSE_FORMS | ({"xlsx"} if native_workbook else set()),
+        require(image_wrapper or parser == "legacy-intake:" + form and form in TEXT_FORMS | {"pdf"} | REPARSE_FORMS | ({"xlsx"} if native_workbook else set()),
                 "unsupported_complete_parser")
-        require(receipt.get("route") == routes.route(form), "parser_route_binding")
+        expected_route = {'route':'extract:image-pdf-wrapper','owner':'runner','review_required':True} if image_wrapper else routes.route(form)
+        require(receipt.get("route") == expected_route, "parser_route_binding")
         components, runtime_hash = installed_parser_identity(form, self.native_workbook_policy)
+        if image_wrapper:
+            components = {'Pillow': routes._version('Pillow')}
         require(receipt.get("parser_components") == metadata.get("parser_components") == components,
                 "installed_parser_components_mismatch")
         # Legacy route receipts do not declare a runtime hash. The canonical content
@@ -528,7 +558,18 @@ class _InstalledExtractionValidator:
         if "parser_runtime_sha256" in receipt or "parser_runtime_sha256" in metadata:
             require(receipt.get("parser_runtime_sha256") == metadata.get("parser_runtime_sha256") == runtime_hash,
                     "installed_parser_runtime_mismatch")
-        if form in TEXT_FORMS:
+        if image_wrapper:
+            require(version == components['Pillow'] and counts.get('pages_expected') == 1 and
+                    set(ocr_pages) == {1}, 'image_wrapper_derivation_mismatch')
+            native = [{'kind':'pdf_page','locator':{'page':1},'text':'','data':{'ocr_needed':True}}]
+            require([enrollment.decode(line) for line in artifacts['native_units'].splitlines()] == native,
+                    'image_wrapper_derivation_mismatch')
+            merged = routes.merge_ocr_units(native, {1: routes.text_unit(1, ocr_pages[1]['summary'], ocr_pages[1]['text'])})
+            require(units == merged, 'ocr_unit_merge_mismatch')
+            require(pages == routes.page_manifest(merged, 1, parser, version,
+                    ocr_receipts={1: ocr_pages[1]['summary']}), 'ocr_page_state_binding')
+            denominator = {'kind':'pages','total':1}
+        elif form in TEXT_FORMS:
             require(version == folder.VERSION + "/" + folder.ENGINE_REVISION, "installed_parser_version_mismatch")
             text = raw_original.decode("utf-8", errors="strict")
             require("\ufffd" not in text, "replacement_text_unsupported")

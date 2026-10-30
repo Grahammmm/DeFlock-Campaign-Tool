@@ -85,6 +85,25 @@ def _image(source,raw):
             units.append({'kind':'image','locator':{'image':1,'frame':frame+1},'text':'','data':{'width':width,'height':height,'frames':frames,'format':form,'visual_review':'not_done'}})
     return units, 'pillow', _version('Pillow')
 
+def image_pdf_wrapper(raw):
+    """Deterministic single-frame D-E artifact; never a canonical child original."""
+    import io
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS=40000000
+    with Image.open(io.BytesIO(raw)) as image:
+        if getattr(image,'n_frames',1)!=1:raise ValueError('image_multiframe_awaiting_ocr')
+        if image.width*image.height>40000000:raise ValueError('image_resource_limit')
+        image.load()
+        with image.convert('RGB') as rgb:
+            out=io.BytesIO()
+            rgb.save(out,'PDF',resolution=72.0,title='image',author=None,
+                     creationDate=time.gmtime(0),modDate=time.gmtime(0))
+    pdf=out.getvalue()
+    return pdf,{'schema':'image-pdf-wrapper-v1','parent_sha256':hashlib.sha256(raw).hexdigest(),
+                'derived_sha256':hashlib.sha256(pdf).hexdigest(),'method':'pillow-pdf',
+                'pillow_version':_version('Pillow'),'frame':1}
+
+
 def _msg(source,raw,root):
     from .intake import mail_wire
     plan=mail_wire.prepare(raw,"msg",max_total_bytes=min(folder.LIMITS["expanded_bytes"],512*1024**2),
@@ -215,19 +234,35 @@ def vision_entries(results):
              'engine':r['summary']['vision']['engine'],'base_receipt_id':r['summary']['receipt_id']}
             for page,r in sorted(results.items()) if r['summary'].get('vision') is not None]
 
-def _child(source,sha,form,dest,root):
+def _child(source,sha,form,dest,root,wrap_image=False):
     if form in IMAGES or form=='msg':
         raw=_capture(source,sha)
         if form in IMAGES:
-            units,parser,version=_image(source,raw);children=[]
+            from PIL import Image
+            try:units,parser,version=_image(source,raw);children=[]
+            except (ValueError,Image.DecompressionBombError) as error:
+                if str(error)=='image_resource_limit' or isinstance(error,Image.DecompressionBombError):
+                    _write(dest/'failure.json',{'code':'image_resource_limit'})
+                raise
         else:
             units,parser,version,children=_msg(source,raw,root)
+        derived={}
+        if form in IMAGES and wrap_image and len(units)==1:
+            pdf,record=image_pdf_wrapper(raw)
+            fd=os.open(root/'wrapped.pdf',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
+            with os.fdopen(fd,'wb') as stream:stream.write(pdf)
+            units=[{'kind':'pdf_page','locator':{'page':1},'text':'','data':{'ocr_needed':True}}]
+            parser='image-pdf-wrapper';derived={'derived':record}
         with folder.private_file(dest/'units.jsonl',exclusive=True) as stream:
             for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
         issues=[{'code':'msg_attachment_bytes_not_preserved'}] if any(u['kind']=='msg_attachment' and not u['data']['bytes_preserved'] for u in units) else []
         metadata={'stage':'partial' if issues else 'complete','counts':{'units':len(units)},
                   'issues':issues,'children':children,'parser':parser,'parser_version':version,
-                  'artifacts':{'units.jsonl':hashlib.sha256((dest/'units.jsonl').read_bytes()).hexdigest()}}
+                  'artifacts':{'units.jsonl':hashlib.sha256((dest/'units.jsonl').read_bytes()).hexdigest()},**derived}
+        if derived:
+            metadata['stage']='partial'
+            metadata['counts']['pages_expected']=1
+            metadata['parser_components']={'Pillow':version}
         if form=='msg':
             metadata.update(parser='legacy-intake:msg',
                 parser_components={'intake':folder.VERSION+'/'+folder.ENGINE_REVISION,
@@ -435,13 +470,19 @@ def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_roo
         result['issues']=[{'code':'decoder_needed','owner':'runtime'}]
     else:
         args=[sys.executable,'-B','-m',__name__,'_worker',str(pinned),expected_sha,form,str(dest),str(run)]
+        if form in IMAGES and ocr_config is not None:args.append('wrap-image')
         try:
             child=run_bounded(args,timeout)
             if child.returncode:
                 result['issues']=[{'code':'decoder_unavailable_or_failed','owner':'runtime','exit_code':child.returncode}]
+                if form in IMAGES and (dest/'failure.json').is_file():
+                    result['issues']=[{'code':'image_resource_limit','owner':'runtime'}]
             else:
                 metadata,units,pages=_read_output(dest)
                 result.update(status=metadata['stage'],units=units,pages=pages,issues=metadata.get('issues',[]),parser=metadata.get('parser','unknown'),parser_version=metadata.get('parser_version','unknown'),parser_components=metadata.get('parser_components',{}),children=metadata.get('children',[]))
+                if form in IMAGES and 'derived' in metadata:
+                    _run_image_ocr(result,run,metadata,ocr_config,ocr_attempt_id,timeout,ocr_page_timeout,
+                                   ocr_vision_timeout,document_budget,started,clock,ocr_runner)
                 if form=='pdf' and any(p['status']!='ok' for p in pages):
                     result['status']='partial'
                     if ocr_config is None:
@@ -457,6 +498,32 @@ def extract(source,expected_sha,output_root,form=None,timeout=180,ocr_output_roo
             result['status']='blocked';result['issues'].append({'code':'invalid_or_bounded_parser_output','owner':'runtime'})
     result['receipt_sha256']=_write(run/'extraction.json',result)
     return result
+
+def _run_image_ocr(result,run,metadata,config,attempt_id,timeout,page_timeout,vision_timeout,budget,started,clock,runner):
+    from .extraction_ledger import store_blob,private_dir,read_file
+    record=metadata['derived'];pdf=read_file(run/'wrapped.pdf',MAX_UNIT_BYTES)
+    intake=config['root']/'derived-pdf-v1';intake.mkdir(mode=0o700,exist_ok=True);private_dir(intake)
+    blobs=intake/'blobs';blobs.mkdir(mode=0o700,exist_ok=True);private_dir(blobs)
+    digest,_=store_blob(blobs,pdf)
+    if digest!=record['derived_sha256']:raise ValueError('image_wrapper_derivation_mismatch')
+    result.update(derived=record,route={'route':'extract:image-pdf-wrapper','owner':'runner','review_required':True})
+    remaining=(lambda:float('inf')) if budget is None else (lambda:started+budget-clock())
+    results,done,pending=_ocr_pages_within_budget(digest,intake,config['root'],[1],config['tools'],
+        config['tool_signature'],attempt_id,remaining=remaining,page_timeout=page_timeout or timeout,
+        vision_timeout=vision_timeout or timeout,runner=runner)
+    result['status']='partial'
+    if pending:
+        result['status']='blocked'
+        result['issues'].append({'code':'extraction_timeout','owner':'runtime','ocr_pages_done':done,'ocr_pages_pending':pending})
+        return
+    units,pages,receipts=apply_ocr(result['units'],1,result['parser'],result['parser_version'],results)
+    output=run/'ocr-derived';output.mkdir(mode=0o700)
+    with folder.private_file(output/'units.jsonl',exclusive=True) as stream:
+        for unit in units:stream.write(json.dumps(unit,ensure_ascii=True,sort_keys=True)+'\n')
+    _write(output/'digest.json',{**metadata,'ocr_receipts':receipts})
+    result.update(units=units,pages=pages,ocr_receipts=receipts,ocr_output_root=str(config['root']),ocr_method=OCR_METHOD)
+    result['issues'].append({'code':'ocr_visual_review_required','owner':'visual-review'})
+
 
 def _run_page_ocr(result,run,raw,expected_sha,metadata,config,attempt_id,limits,runner):
     non_ok=[p['page_no'] for p in result['pages'] if p['status']!='ok']
@@ -502,7 +569,7 @@ def main():
         folder.apply_resource_limit(resource.RLIMIT_AS, folder.LIMITS['memory_bytes'])
         folder.apply_resource_limit(resource.RLIMIT_FSIZE, MAX_UNIT_BYTES)
         os.umask(0o077)
-        _child(sys.argv[2],sys.argv[3],sys.argv[4],Path(sys.argv[5]),Path(sys.argv[6]));return
+        _child(sys.argv[2],sys.argv[3],sys.argv[4],Path(sys.argv[5]),Path(sys.argv[6]),len(sys.argv)>7);return
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source',required=True);p.add_argument('--sha256',required=True);p.add_argument('--output-root',required=True);p.add_argument('--format')
     p.add_argument('--ocr-output-root',help='private per-page OCR receipt root; enables OCR of non-ok PDF pages')
