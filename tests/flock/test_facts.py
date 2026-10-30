@@ -81,6 +81,14 @@ class FlockFactsTest(unittest.TestCase):
         (wrong / "FACTS.csv").unlink()
         self.assertEqual(self.do_import(str(FIXTURE))[0], 0)
         path = self.store / "agencies" / "testville-pd" / "FACTS.csv"
+        misplaced = wrong / "FACTS.csv"
+        path.rename(misplaced)
+        self.assertEqual(run("--check", str(misplaced))[0], 0)
+        code, out = run("--check", str(self.store))
+        self.assertEqual(code, 1)
+        self.assertIn("agency is invalid", out)
+        self.assertFalse(any(s in out.lower() for s in ("wrong-agency", "testville", "sampleton")))
+        misplaced.rename(path)
         path.write_text(path.read_text().replace(",12,", ",,", 1))
         for code, out in (run("--check", str(self.store)), self.do_import(str(FIXTURE))):
             self.assertEqual(code, 1)
