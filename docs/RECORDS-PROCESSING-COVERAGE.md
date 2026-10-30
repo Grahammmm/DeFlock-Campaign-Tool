@@ -25,6 +25,13 @@ privacy receipts still require positive coverage, exact locators and all existin
 independent review gates. This change creates no schema, registry, schedule,
 model endpoint, corpus enrollment or runtime activation.
 
+Mechanical emission resume is available through the checkpoint API: only completed
+attempts cover emitted ranges, and interrupted chunks remain queued for emission.
+Emission is not acceptance or semantic understanding, and output remains
+review-required. Stale progress is rejected visibly rather than partially reused.
+`run.py` still records `planned_only` until the W15B persistence integration;
+this API neither stores checkpoints nor dispatches model calls.
+
 Validation uses synthetic fixtures only. Current-extraction tests cover selection
 caps, historical rows, missing/changed derivatives, redaction context drift and
 zero-coverage denial. PR81's 32 tests retain oversized Unicode, hidden/empty units,
