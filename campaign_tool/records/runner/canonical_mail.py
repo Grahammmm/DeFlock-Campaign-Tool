@@ -365,6 +365,12 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                 ids=[row[0] for row in c.execute("SELECT id FROM occurrences WHERE original_sha256=? "
                     "AND acquisition_method IN ('verified_mail_export','verified_local_document_drop','verified_local_capture') "
                     "ORDER BY id LIMIT 1025",(sha,))]
+                # A legacy declaration may carry no first_seen_at (NULL); the receipt
+                # then uses the acquisition time of its first canonical occurrence,
+                # which is deterministic across replays/resumes and timezone-aware.
+                created=original['first_seen_at']
+                if created is None and ids:
+                    created=c.execute('SELECT acquired_at FROM occurrences WHERE id=?',(ids[0],)).fetchone()[0]
             if len(ids)>1024:raise IntegrationGap('preservation_occurrence_bound')
             envelope={'schema':'preservation-evidence-v1','original_sha256':sha,'byte_length':proof['bytes'],
                 'storage_ref':str(self.output/'blobs'/sha),'verification_receipt_sha256':value.receipt_sha256,'occurrence_ids':ids}
@@ -382,6 +388,6 @@ class CanonicalMailBackend(LegacyIntakeBackend):
                     'author_id':'runner-preserver','tier':'A','reviewer_id':'runner-preserver','role':'preserver','verdict':'pass',
                     'coverage':{'denominator':{'kind':'bytes','total':proof['bytes']},'covered':proof['bytes'],'scope':'selected'},
                     'locators':['cas:'+sha],'rationale':'CAS hash/length and canonical mail occurrence verified',
-                    'model_or_tool':'runner-cas-preserver-v3','created_at_tz':original['first_seen_at'],'input_hashes':{'original':sha}}
+                    'model_or_tool':'runner-cas-preserver-v3','created_at_tz':created,'input_hashes':{'original':sha}}
             self.stage_runner.promote(sha,'preserve',json.dumps(packet,sort_keys=True).encode(),claim_id=claim['claim_id'])
         return value

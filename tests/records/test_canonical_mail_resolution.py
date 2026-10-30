@@ -61,7 +61,8 @@ def export(root, uid, duplicate=False):
 
 
 class World:
-    def __init__(self, owner, *, eml=True, attachment=False, duplicate=False, larger=False):
+    def __init__(self, owner, *, eml=True, attachment=False, duplicate=False, larger=False,
+                 first_seen="2000-01-01T00:00:00Z"):
         self.helper = projection_fixtures.OccurrenceProjectionTests()
         self.helper.setUp()
         owner.addCleanup(self.helper.doCleanups)
@@ -81,7 +82,7 @@ class World:
         with sqlite3.connect(self.helper.snapshot / "intake.sqlite") as con:
             for sha, size, form in declared:
                 con.execute("INSERT INTO docs VALUES(?,?,?,?,?,?,?,?)", (sha, size, form, "complete",
-                            "2000-01-01T00:00:00Z", "full", "synthetic", "{}"))
+                            first_seen, "full", "synthetic", "{}"))
         for sha, _, _ in declared:
             self.helper.add_occurrence("declared-" + sha, sha)
         import_id = self.helper.capture()
@@ -175,6 +176,22 @@ class CanonicalMailResolutionTests(unittest.TestCase):
         self.assertEqual(w.snapshot(), before)
         self.assertEqual(w.rows("PRAGMA foreign_key_check"), [])
         self.assertEqual(w.rows("PRAGMA quick_check"), [("ok",)])
+
+    def test_legacy_declaration_without_first_seen_preserves_with_occurrence_time(self):
+        # Real legacy declarations can lack first_seen; the preserve receipt then
+        # needs a valid timezone-aware time instead of NULL (invalid_timestamp).
+        w = self.world(first_seen=None)
+        self.assertEqual(w.rows("SELECT first_seen_at FROM originals WHERE sha256=?", (w.eml,)), [(None,)])
+        w.preserve()
+        self.assertEqual(w.rows("SELECT status FROM stage_state WHERE original_sha256=? AND stage='preserve'", (w.eml,)), [("done",)])
+        acquired = w.rows("SELECT acquired_at FROM occurrences WHERE id=?", (w.mid(41),))[0][0]
+        created = w.rows("SELECT r.created_at_tz FROM receipts r JOIN stage_state s ON s.receipt_sha256=r.sha256 "
+                         "WHERE s.original_sha256=? AND s.stage='preserve'", (w.eml,))
+        self.assertEqual(created, [(acquired,)])
+        self.assertEqual(w.rows("SELECT first_seen_at FROM originals WHERE sha256=?", (w.eml,)), [(None,)])
+        before = w.snapshot()
+        w.preserve()
+        self.assertEqual(w.snapshot(), before)
 
     def test_d19_missing_attachment_policy_rolls_back_whole_receipt(self):
         w = self.world(attachment=True)
