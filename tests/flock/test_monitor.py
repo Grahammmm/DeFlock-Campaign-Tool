@@ -16,20 +16,17 @@ SPEC.loader.exec_module(monitor)
 DATE = "2026-10-30"
 BODY = (FIXTURES / "index-sample.html").read_bytes()
 
-
 class FakeFetch:  # records every fetch; never opens a socket
-    def __init__(self, ctype="text/html; charset=utf-8"):
-        self.calls, self.ctype = [], ctype
+    def __init__(self, ctype="text/html; charset=utf-8", body=BODY):
+        self.calls, self.ctype, self.body = [], ctype, body
 
     def __call__(self, url, official_domain):
         self.calls.append(url)
-        return url, self.ctype, BODY
-
+        return url, self.ctype, self.body
 
 def rows(path):
     with open(path, encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
-
 
 class MonitorTests(unittest.TestCase):
     def setUp(self):
@@ -74,16 +71,20 @@ class MonitorTests(unittest.TestCase):
         monitor.fetch, original = FakeFetch(), monitor.fetch
         self.addCleanup(setattr, monitor, "fetch", original)
         code, out = self.run_main("scan", str(self.watchlist), "--store", str(self.store), "--date", DATE)
-        self.assertEqual(code, 1)
-        self.assertEqual(out, ["row 3: url host is outside official_domain"])
-        self.assertEqual(monitor.fetch.calls, [])
+        self.assertEqual((code, out, monitor.fetch.calls), (1, ["row 3: url host is outside official_domain"], []))
+        self.watchlist.write_text(text.replace("www.city.example/news", "[invalid"), encoding="utf-8")
+        code, out = self.run_main("scan", str(self.watchlist), "--store", str(self.store), "--date", DATE)
+        self.assertEqual((code, out, monitor.fetch.calls), (1, ["row 3: url is not a parseable URL"], []))
         shutil.copy(FIXTURES / "watchlist-sample.csv", self.watchlist)
         lines = monitor.scan(self.watchlist, self.store, DATE, fetch=FakeFetch("application/pdf"))
         self.assertEqual(lines[:2], ["row %d: refused content-type not text/html" % n for n in (2, 3)])
         self.assertIn("new_items=0 refused=2", lines[2])
         self.assertFalse((self.store / "MONITOR.csv").exists())
+        lines = monitor.scan(self.watchlist, self.store, DATE, fetch=FakeFetch(body=BODY + b'<a href="https://[x">Bad</a>'))
+        self.assertEqual(lines, ["scanned=2 unchanged=0 new_items=3 refused=0 offdomain_links=6 skipped_social=1"])
+        self.assertRaises(monitor.Refused, monitor.require, "city.example", "https://[x", "text/html")
         guard = monitor.RedirectGuard("city.example")
-        for newurl in ("https://other.example/x", "http://www.city.example/x", "https://evilcity.example/x"):
+        for newurl in ("https://other.example/x", "http://www.city.example/x", "https://evilcity.example/x", "https://[x"):
             with self.subTest(newurl=newurl), self.assertRaises(monitor.Refused):
                 guard.redirect_request(None, None, 302, "Found", {}, newurl)
 
@@ -92,7 +93,6 @@ class MonitorTests(unittest.TestCase):
         monitor.scan(self.watchlist, self.store, DATE, fetch=fake)
         self.assertEqual(fake.calls, ["https://www.city.example/agendas", "https://www.city.example/news"])
         self.assertIn("https://www.city.example/files/packet.pdf", [r["url"] for r in rows(self.store / "MONITOR.csv")])
-
 
 if __name__ == "__main__":
     unittest.main()
