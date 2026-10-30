@@ -5,9 +5,7 @@ skill_version: 1.0
 ---
 
 # Flock email (draft only)
-
 Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool cannot send.
-
 ## Inputs
 
 - `<store>/agencies/<slug>/runs/<date>/FOLLOWUP-DRAFT.md` (flock-followup).
