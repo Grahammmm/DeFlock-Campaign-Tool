@@ -171,8 +171,8 @@ the envelope. Identical run/content bindings give byte-identical serialization;
 new producer instances keep their own IDs rather than pretending to be a replay.
 
 Pinned host source: campaign_tool/records/run_stages.py,
-SHA256 26e34c407c76d1484600cc92121e0b78893b69e864f78b67d305fd80e33dc94f
-(re-pinned after the additive per-run fact-sheet, comparison and request-register
+SHA256 a863da2dabbb49efc4e0c75333087b9cb8e7c4cf646cf938bb7363ab480339d4
+(re-pinned for the additive OCR human-review count; previously re-pinned after the additive per-run fact-sheet, comparison and request-register
 writers and the disabled-by-default private digest seam in stage_outputs;
 STAGES, HANDLERS and the stage_outputs(args) signature are unchanged).
 STAGES/HANDLERS remain sync, delta, adoption, portal, extract, digest_gates,
