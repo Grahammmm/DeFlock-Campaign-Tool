@@ -59,12 +59,25 @@ they do not grant HTTP/credential permission. Omitted hosts leave links explicit
 unapproved rather than silently complete. Scope changes do not refresh exhausted
 attempts. Unresolved retrieval keeps `completed_with_gaps` and exit code 3.
 
-`--unattended` rejects these flags. Ordinary inbox/IMAP discovery, unattended
-export accounting, real provider parsing/acquisition and installed adoption are
-separate open work. Synthetic CLI/adapter checks in
-`tests.records.test_export_selection_cli` do not qualify a functional ledger,
-native extraction, model route or private input. Existing library callers and
-their explicit mappings retain their interface.
+`--unattended` accepts a separate, hash-bound export selection: add
+`--export-manifest-sha256 SHA` to `--export-root` and 1–60 relative
+`--export-receipt` paths. The manifest binds receipt bytes and every declared
+original/attachment (sha256 and size), in selection order, with a 1 GiB cap.
+All components must be unlinked owner-only directories/files (0700/0600).
+There is no discovery; changed bytes, metadata or inode identity stop intake
+before enrollment. Disk capacity is checked before starting the mail backend.
+One backend lifecycle preserves original identities; identical replays add no mail.
+Reports omit paths, accounts and URLs. Incomplete retrieval remains exit 3.
+Inbox, mailbox and document selectors cannot be combined with exports.
+
+The container host's `export-manifest` command produces the sanitized hash/counts;
+exports profiles require an exact read-only mount and network `none`. Container
+entry forwards no collection-host approval: every unresolved body link stays a gap.
+Synthetic checks do not authorize real intake, source acquisition, installed
+profiles/timers, macOS qualification, legal acceptance, publication or email.
+Real exports need the custodian's separate sanitized source contract/admission;
+canonical stores and the existing Qwen queue remain with their existing owners.
+Existing library callers and their explicit mappings retain their interface.
 
 ## Expectations before retrieval
 
