@@ -1,0 +1,9 @@
+finding_id,kind,req_id,source,version,section,obligation,topic,requirement,verdict,basis,fact_ids,record_ids,pages,other_refs,related_req_ids,analysis_only,next_step
+SC-01,requirement,SC-RET-1,Sample City ALPR policy,2026-01-01,4.2,duty,retention,Plate reads are deleted after 30 days,contradicted,Plate reads are kept for 365 days.,F-53baa6f20643,1001,1001 p5,,,no,
+SC-02,requirement,SC-AUD-1,Sample State Code,fictional 2026,10(b),duty,audit,The agency audits system use every year,not met,The department found no responsive audit reports.,F-e1b1072c95c3,1001,1001 p4,,,no,
+SC-03,requirement,SC-LOG-1,Sample City ALPR policy,2026-01-01,4.3,duty,search-log,Every search records a stated reason,contradicted,The search log lists date and plate only.,F-090c3d39b556,1001,1001 p2,,,yes,
+SC-04,claim,SC-ACC-1,Sample City ALPR policy,2026-01-01,4.5,claim,sharing,The policy lists each outside agency with access,met,Twelve outside agencies have query access.,F-76dbe8a9b4ac,1001,1001 p3,,,no,
+SC-05,requirement,SC-VEN-1,Sample City ALPR policy,2026-01-01,1.1,duty,vendor,The policy names the system vendor,met,The records name the same vendor as the policy.,F-daaccd54da05,1001,1001 p1,,,no,
+SC-06,requirement,SC-TRN-1,Sample City ALPR policy,2026-01-01,6.1,duty,training,Users complete annual system training,cannot tell,Training materials are withheld.,F-a71d059d7a51,1001,1001 p6,,,no,
+SC-07,setting,,,,,setting,sharing,Outside agency sharing setting,cannot tell,The records list agencies but not the setting.,F-76dbe8a9b4ac,1001,1001 p3,,,no,
+SC-08,requirement,SC-DEF-1,Sample State Code,fictional 2026,1(a),definition,definition,Meaning of plate reader operator,n/a,A definition only.,,,,,,no,

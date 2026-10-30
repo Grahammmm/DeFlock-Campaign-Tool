@@ -40,7 +40,14 @@ Exit codes: 0 done, 1 failed/validation/lock, 2 usage, 3 waiting. Logs: `<out>/.
 (filled in by G2)
 
 ## Report
-(filled in by G3)
+1. After verify-check passes, run `python3 tools/flock_report.py build CONFIG` (default output `<compare.out>/report/`, never inside
+   the repository). It writes `REPORT-DRAFT.md` and `SOURCES.json` only when its final lint passes.
+2. Shown: priority rows (contradicted / not met) and sample rows the independent check agreed with, each with numbered cites to a
+   record page or rule section. Withheld and only counted: not-posted rows and rows the check disputed or could not source.
+3. On `row <id>: <rule>` or `line N: <rule>`, fix the wording in ASSESSMENTS (G1 `assess` re-mark) or add the derived name to
+   `review.report_denylist`, then re-run. Errors never echo the offending text.
+4. REPORT-DRAFT.md is a private research draft, not legal advice. Publication goes through F9, redaction, review and G.
+- **Never:** hand-edit the report, include unchecked rows as findings, or name, quote or cite a not-posted record.
 
 ## Golden
 (filled in by G5)
