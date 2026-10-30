@@ -42,6 +42,7 @@ storage and never goes into the report.
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 import time
 
@@ -87,6 +88,44 @@ MIN_DOCUMENT_SECONDS = 10
 DEADLINE_MARGIN = 15
 # Queue file for the OCR stage (awaiting-ocr-v1 JSON Lines), rewritten every run.
 AWAITING_OCR_QUEUE = "awaiting-ocr.jsonl"
+REFUSAL_CODE_PATTERN = re.compile(r"[a-z_]{1,64}")
+UNLISTED_CODE = "unlisted"
+ACCEPT_STATUS_PREFIX = "accept_status_"
+REFUSAL_SOURCES = ("binding_error", "value_error", "exception", "accept_status", "form_resolution", "held_alert")
+
+
+def refusal_code(error):
+    """Keep only a fixed code from the first argument, never exception message text."""
+    first = error.args[0] if error.args else None
+    # Surrounding horizontal whitespace is harmless; line breaks are never a code.
+    token = first.split(";", 1)[0] if isinstance(first, str) else ""
+    code = token.strip() if "\n" not in token and "\r" not in token else ""
+    return code if REFUSAL_CODE_PATTERN.fullmatch(code) else UNLISTED_CODE
+
+
+def accept_status_code(status):
+    status = "missing" if status is None else status
+    if not isinstance(status, str) or not REFUSAL_CODE_PATTERN.fullmatch(status):
+        return UNLISTED_CODE, UNLISTED_CODE
+    code = ACCEPT_STATUS_PREFIX + status
+    return (status, code) if REFUSAL_CODE_PATTERN.fullmatch(code) else (UNLISTED_CODE, UNLISTED_CODE)
+
+
+def refusal_detail(code, source, accept_status=None):
+    return {"refusal_code": code, "accept_status": accept_status, "refusal_source": source}
+
+
+def refusal_code_histogram(documents):
+    """Pure counts of fixed codes, without identities, paths or report changes."""
+    counts = {}
+    for document in documents:
+        if "refusal_code" not in document:
+            continue
+        code = document["refusal_code"]
+        if not isinstance(code, str) or not REFUSAL_CODE_PATTERN.fullmatch(code):
+            code = UNLISTED_CODE
+        counts[code] = counts.get(code, 0) + 1
+    return counts
 
 
 class RootNotInitialized(Exception):
@@ -165,6 +204,21 @@ def open_alerts(pipeline, subject):
                            (len(ALERT_PREFIX) + len(subject) + 1, ALERT_PREFIX + subject + ":"))
 
 
+def alert_codes(key):
+    head, _, _ = key.rpartition(":")
+    if head.startswith(ALERT_PREFIX) and head.count(":") == 2 and head.endswith(":" + REFUSED_CODE):
+        return [REFUSED_CODE]
+    return key.rsplit(":", 1)[-1].split(",")
+
+
+def held_refusal_detail(key):
+    head, _, tail = key.rpartition(":")
+    suffixed = head.startswith(ALERT_PREFIX) and head.count(":") == 2 and head.endswith(":" + REFUSED_CODE)
+    code = tail if suffixed and REFUSAL_CODE_PATTERN.fullmatch(tail) else UNLISTED_CODE
+    status = code[len(ACCEPT_STATUS_PREFIX):] if code.startswith(ACCEPT_STATUS_PREFIX) else ""
+    return refusal_detail(code, "held_alert", status if REFUSAL_CODE_PATTERN.fullmatch(status) else None)
+
+
 def held_outcome(pipeline, subject, *, ocr_enabled=False):
     """Outcome of an earlier run's open extract alert that holds the document, else None.
 
@@ -174,20 +228,25 @@ def held_outcome(pipeline, subject, *, ocr_enabled=False):
     missing OCR runtime (``ocr_released``) no longer holds it, so a PDF queued
     ``AWAITING_OCR`` in Phase 1 is extracted with OCR on the first OCR-enabled run.
     """
+    return _holding_alert(pipeline, subject, ocr_enabled=ocr_enabled)[0]
+
+
+def _holding_alert(pipeline, subject, *, ocr_enabled=False):
+    """Single hold decision loop, returning its key without another query or write."""
     for row in open_alerts(pipeline, subject):
-        codes = row["key"].rsplit(":", 1)[-1].split(",")
+        codes = alert_codes(row["key"])
         if ocr_enabled and ocr_released(codes):
             continue
         outcome = classify_codes(codes)
         if outcome not in RETRYABLE or row["count"] >= MAX_ATTEMPTS:
-            return outcome
-    return None
+            return outcome, row["key"]
+    return None, None
 
 
 def resolve_ocr_released(pipeline, subject):
     """Mark the subject's OCR-runtime-only alerts resolved after it is extracted with OCR."""
     keys = [row["key"] for row in open_alerts(pipeline, subject)
-            if ocr_released(row["key"].rsplit(":", 1)[-1].split(","))]
+            if ocr_released(alert_codes(row["key"]))]
     if keys and hasattr(pipeline, "_resolve_alert"):
         for key in keys:
             try:
@@ -208,7 +267,7 @@ def _pages(pipeline, import_id):
                            (import_id,))[0]["n"]
 
 
-def classify_form(pipeline, subject, *, missing):
+def classify_form(pipeline, subject, *, missing, diagnostics=None):
     """``(form, outcome)`` before any parse; ``outcome`` is None when the original needs parsing.
 
     This only resolves the declared form (a ledger read and a bounded head read). It
@@ -221,8 +280,10 @@ def classify_form(pipeline, subject, *, missing):
 
     try:
         form = pipeline._form(subject, pipeline._original(subject))
-    except Exception:  # noqa: BLE001 - unresolved declarations or unreadable original
+    except Exception as error:  # noqa: BLE001 - unresolved declarations or unreadable original
         _hold(pipeline, subject, ERROR_CODE)  # retryable: held after MAX_ATTEMPTS runs
+        if diagnostics is not None:
+            diagnostics.update(refusal_detail(refusal_code(error), "form_resolution"))
         return None, ERROR
     if form in extraction_routes.IMAGES:
         if getattr(pipeline, 'ocr_tools', None):
@@ -268,14 +329,17 @@ def extract_one(pipeline, stage, subject, *, form, timeout):
     except (ExtractionBindingError, ValueError) as error:
         # Parsed and possibly enrolled, but the installed extraction check refused it.
         # Held, so later runs do not parse and enroll the same document again.
+        code = refusal_code(error)
+        source = "binding_error" if isinstance(error, ExtractionBindingError) else "value_error"
+        detail = refusal_detail(code, source)
         if _workbook_refusal(form, error):
             _hold(pipeline, subject, WORKBOOK_REFUSED_CODE)
-            return WORKBOOK_HELD, form, 0, 0, {}
-        _hold(pipeline, subject, REFUSED_CODE)
-        return NOT_ACCEPTED, form, 0, 0, {}
-    except Exception:  # noqa: BLE001 - one document never stops the stage
+            return WORKBOOK_HELD, form, 0, 0, detail
+        _hold(pipeline, subject, REFUSED_CODE + ":" + code)
+        return NOT_ACCEPTED, form, 0, 0, detail
+    except Exception as error:  # noqa: BLE001 - one document never stops the stage
         _hold(pipeline, subject, ERROR_CODE)
-        return ERROR, form, 0, 0, {}
+        return ERROR, form, 0, 0, refusal_detail(refusal_code(error), "exception")
     status = result.get("status")
     if status == "done":
         units = int(result.get("units") or 0)
@@ -287,8 +351,9 @@ def extract_one(pipeline, stage, subject, *, form, timeout):
             detail = {"ocr_pages_done": done, "ocr_pages_pending": list(result.get("ocr_pages_pending") or [])}
             return (DEFERRED if done >= 1 else TIMEOUT), form, 0, 0, detail
         return outcome, form, 0, 0, {}
-    _hold(pipeline, subject, REFUSED_CODE)
-    return NOT_ACCEPTED, form, 0, 0, {}
+    accept_status, code = accept_status_code(status)
+    _hold(pipeline, subject, REFUSED_CODE + ":" + code)
+    return NOT_ACCEPTED, form, 0, 0, refusal_detail(code, "accept_status", accept_status)
 
 
 def write_private_list(root, run_id, documents):
@@ -395,15 +460,18 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
             for subject, preserved in subjects:
                 form, detail = None, {}
                 remaining = deadline - clock()
-                held = held_outcome(pipeline, subject, ocr_enabled=ocr_enabled) if preserved else None
+                held, held_key = (_holding_alert(pipeline, subject, ocr_enabled=ocr_enabled)
+                                  if preserved else (None, None))
                 if not preserved:
                     outcome = PRESERVE_PENDING
                 elif held is not None:
                     outcome = held  # counted every run, never parsed again
+                    if held == NOT_ACCEPTED:
+                        detail = held_refusal_detail(held_key)
                 elif remaining < MIN_DOCUMENT_SECONDS:
                     outcome = DEFERRED
                 else:
-                    form, outcome = classify_form(pipeline, subject, missing=missing)
+                    form, outcome = classify_form(pipeline, subject, missing=missing, diagnostics=detail)
                     if outcome is None and attempted >= max_documents:
                         outcome = DEFERRED
                     elif outcome is None:
