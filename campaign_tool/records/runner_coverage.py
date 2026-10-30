@@ -1,7 +1,9 @@
 """Current extraction inventory and conservative runner processing coverage.
 
 No new registry, semantic acceptance, model dispatch or independent review.
-Progress uses the existing semantic-coverage API and stage-content artifacts.
+Progress uses existing stage-content checkpoints for verified whole-unit primary
+requests rebuilt with the model's public builder, not observed at transport.
+Interrupted requests record nothing; emission is never semantic acceptance.
 """
 import hashlib
 import json

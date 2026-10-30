@@ -182,6 +182,73 @@ class RunnerCoverageTests(unittest.TestCase):
             self.assertEqual(recorded["summary"]["unemitted_chunks"], 1)
             self.assertEqual(recorded["summary"]["accepted_units"], 0)
 
+    def test_request_refusals_are_pure_and_attempts_bounded(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, subject, rows, extraction, current = self.fixture(d)
+            units, inventory, bound = runner_coverage.unit_view(p, subject, 3)
+            progress = runner_coverage.processing_coverage(p, subject, units, inventory, bound, stage="review")
+            identities = [u["unit_id"] for u in units]
+            original = json.loads(json.dumps(progress))
+            def request(lines, **extra):
+                return json.dumps({"record_text": lines, "truncated": False, **extra})
+            invalid = ["not-json", "{}", request(['{"unit": 0}']),
+                request(['{"unit": 0}\tx', '{"unit": 0}\tx']),
+                request(['{"unit": 1}\tx', '{"unit": 0}\tx']),
+                request(['{"unit": 3}\tx']), request(['{"unit": -1}\tx']),
+                request(['{"unit": true}\tx']), request(['{"unit": 0, "extra": 1}\tx']),
+                request([None]), request([], truncated="yes")]
+            for text in invalid:
+                with self.subTest(text=text), self.assertRaisesRegex(ValueError, "^request_shape$"):
+                    runner_coverage.record_request(progress, text, identities)
+                self.assertEqual(progress, original)
+            lines = [json.dumps({"unit": i}) + "\t" + u["text"] for i, u in enumerate(units)]
+            text = request(lines, synthetic_revision=0)
+            for i in range(sc.MAX_EMISSIONS_PER_CHUNK):
+                text = request(lines, synthetic_revision=i)
+                progress = runner_coverage.record_request(progress, text, identities)
+            self.assertEqual(len(progress["checkpoint"]["attempts"]), sc.MAX_EMISSIONS_PER_CHUNK)
+            replay = runner_coverage.record_request(progress, text, identities)
+            self.assertEqual(replay["checkpoint"], progress["checkpoint"])
+            refused = runner_coverage.record_request(progress, request(lines, synthetic_revision="exhausted"), identities)
+            self.assertEqual(refused["request"]["refused_chunks"],
+                             [{"ordinal": 0, "reason": "emission_attempts_exhausted"}])
+            self.assertEqual(refused["checkpoint"], progress["checkpoint"])
+            claim = request(lines, model_response={"all_units_accepted": True, "accepted_ranges": ["everything"]})
+            claimed = runner_coverage.record_request(original, claim, identities)
+            self.assertEqual(claimed["summary"]["accepted_units"], 0)
+            self.assertEqual(claimed["summary"]["accepted_chars"], 0)
+            self.assertEqual(claimed["summary"]["receipt_coverage"]["covered"], 0)
+            self.assertFalse(claimed["semantic_review_established"])
+
+    def test_request_gaps_and_unverified_views_keep_original_reasons(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, subject, rows, extraction, current = self.fixture(d, 6)
+            Path(rows[3]["derived_path"]).write_text("unreadable")
+            rows[1]["locator"] = json.dumps({"page": 2, "state": "hidden"})
+            units, inventory, bound = runner_coverage.unit_view(p, subject, 5)
+            units[2]["text"] = ""
+            progress = runner_coverage.processing_coverage(p, subject, units, inventory, bound, stage="review")
+            identities = [u["unit_id"] for u in units]
+            request = json.dumps({"record_text": ['{"unit": 0}\tsynthetic text', '{"unit": 1}\tsynthetic tex!'],
+                                  "truncated": True})
+            recorded = runner_coverage.record_request(progress, request, identities)
+            self.assertEqual(recorded["request"]["unverified_units"], 1)
+            self.assertEqual(recorded["summary"]["unemitted_units"], [identities[1], identities[3]])
+            self.assertEqual(recorded["summary"]["emitted_chars"], len("synthetic text"))
+            self.assertEqual(recorded["summary"]["unemitted_chunks"], 1)
+            self.assertEqual(recorded["status"], "emission_partial")
+            self.assertFalse(recorded["summary"]["emission_complete"])
+            self.assertEqual(recorded["summary"]["hidden_units"], 1)
+            gaps = {g["unit_id"]: g for g in recorded["summary"]["gaps"]}
+            for old in progress["summary"]["gaps"]:
+                if old["unit_id"] != identities[0]:
+                    self.assertEqual(gaps[old["unit_id"]], old)
+            self.assertIn("empty_model_text", gaps[identities[2]]["reasons"])
+            self.assertIn("source_unit_blocked", gaps[rows[3]["id"]]["reasons"])
+            self.assertIn("unit_not_selected", gaps[rows[5]["id"]]["reasons"])
+            self.assertEqual(progress["status"], "planned_only")
+            self.assertFalse(progress["model_emission_recorded"])
+
     def test_zero_coverage_is_valid_only_for_denied_review(self):
         receipt = {"coverage": {"denominator": {"kind": "items", "total": 3},
                                 "covered": 0, "scope": "selected"}, "verdict": "challenge",

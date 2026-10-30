@@ -88,7 +88,17 @@ class RunCoverageResumeTests(unittest.TestCase):
             units = self.pipeline._unit_view(subject)[0]
             indexes = [json.loads(s.split("\t", 1)[0])["unit"] for s in json.loads(request)["record_text"]]
             emitted = {r["unit_id"] for a in progress["checkpoint"]["attempts"] for r in a["visible_ranges"]}
-            self.assertEqual(emitted, {units[i]["unit_id"] for i in indexes})
+            views = {u["unit_id"]: u for u in progress["manifest"]["units"]}
+            self.assertEqual(emitted, {units[i]["unit_id"] for i in indexes if views[units[i]["unit_id"]]["view_chars"]})
+            for i in indexes:
+                identity = units[i]["unit_id"]
+                if views[identity]["view_chars"] == 0:
+                    gap = next(g for g in progress["summary"]["gaps"] if g["unit_id"] == identity)
+                    self.assertIn("empty_model_text", gap["reasons"])
+                    self.assertEqual(gap["unseen_ranges"], [])
+                    ranges = [r for a in progress["checkpoint"]["attempts"] for r in a["visible_ranges"] if r["unit_id"] == identity]
+                    self.assertEqual(ranges, [])
+                    self.assertEqual(len(ranges), 0)  # Empty units process zero pages/ranges.
             self.assertEqual(progress["request"]["unverified_units"], 0)
             self.assertEqual(progress["request"]["verified_units"], len(indexes))
             self.assertEqual(progress["status"], "emission_complete")
@@ -169,7 +179,10 @@ class RunCoverageResumeTests(unittest.TestCase):
                          units[answer["statements"][0]["locator"]["unit"]]["locator"])
         self.assertEqual(second["digest"]["conclusions"][0]["sources"][0]["locator"],
                          units[answer["conclusions"][0]["sources"][0]["locator"]["unit"]]["locator"])
-        self.direct("compare")
+        # Compare stores its real content before the existing review gate denies promotion.
+        from campaign_tool.records.ledger.stages import StageError
+        with self.assertRaisesRegex(StageError, "^prerequisite_review$"):
+            self.direct("compare")
         compare = self.pipeline._content(self.subject, "compare")
         self.assertEqual(compare["review_content_sha256"], self.pipeline._states(self.subject)["review"]["receipt_sha256"])
         self.assertGreaterEqual(len(compare["comparisons"]), 1)
@@ -178,6 +191,16 @@ class RunCoverageResumeTests(unittest.TestCase):
             duty = duties[row["rule_id"]]
             self.assertEqual(row["citation"], duty["citation"])
             self.assertEqual(row["evidence"], [{"sha256": self.subject, "locator": loc} for loc in duty["locators"][:10]])
+
+    def test_no_model_is_explicitly_not_sent(self):
+        sent = len(self.primary.requests)
+        self.pipeline.model = None
+        self.direct()
+        progress = self.content()["processing_coverage"]
+        self.assertEqual(progress["request"], {"status": "not_sent"})
+        self.assertEqual(progress["status"], "planned_only")
+        self.assertFalse(progress["model_emission_recorded"])
+        self.assertEqual(len(self.primary.requests), sent)
 
     def test_request_shape_fault_writes_no_review_content(self):
         prior, count = self.content(), self.revisions()
