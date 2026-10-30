@@ -1,0 +1,6 @@
+request_id,agency,sent,receipt_evidence,receipt_date,determination_date,extension_notice_date,status,source_sha256
+SAMPLE-1,Sample City Police Department,2026-01-02,agency acknowledgment message,2026-01-05,,,open,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+SAMPLE-2,Sample County Sheriff,2026-01-02,agency acknowledgment message,2026-01-05,,2026-01-12,open,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+SAMPLE-3,Example Town Records Office,2026-01-03,,,,,open,
+SAMPLE-4,Sample City Police Department,2025-12-01,agency acknowledgment message,2025-12-02,2025-12-10,,determined,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+SAMPLE-5,Example State Office,2025-11-01,agency acknowledgment message,2025-11-03,2025-11-12,,closed,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
