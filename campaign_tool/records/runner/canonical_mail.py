@@ -200,6 +200,26 @@ class CanonicalMailBackend(LegacyIntakeBackend):
         with intake_folder.secure_open(destination) as f:stored=f.read(1024*1024+1)
         if stored!=raw:raise ValueError('verification_receipt_conflict')
         return str(destination)
+    def _accepted_preservation_content(self,subject,content):
+        """Only a completed installed validation can make a storage locator historical.
+
+        Relocation may change the current CAS root, never the accepted artifact.
+        This is not a promotion shortcut: current bytes and acquisition receipts
+        are still reverified by _validator, and new evidence must name current CAS.
+        """
+        digest=hashlib.sha256(content).hexdigest()
+        with self.store.ledger(self.database,readonly=True) as c:
+            row=c.execute("SELECT a.payload FROM stage_state s "
+                "JOIN stage_transitions t ON t.receipt_sha256=s.receipt_sha256 "
+                "AND t.subject_sha256=s.original_sha256 AND t.stage=s.stage "
+                "JOIN stage_content h ON h.subject_sha256=t.subject_sha256 "
+                "AND h.stage=t.stage AND h.revision=t.revision "
+                "JOIN stage_artifacts a ON a.sha256=h.content_sha256 "
+                "JOIN stage_validation_authority v ON v.receipt_sha256=t.receipt_sha256 "
+                "WHERE s.original_sha256=? AND s.stage='preserve' AND s.status='done' "
+                "AND t.status='done' AND v.test_only=0 AND h.content_sha256=?",
+                (subject,digest)).fetchone()
+        return row is not None and bytes(row[0])==content
     def _validator(self,context):
         packet=context['receipt'];subject=packet['subject_sha256']
         if packet['stage']!='preserve':return False
@@ -224,7 +244,12 @@ class CanonicalMailBackend(LegacyIntakeBackend):
             if fields(before)!=fields(after) or fields(after)!=fields(Path(expected).stat(follow_symlinks=False)) or length!=original['bytes'] or h.hexdigest()!=subject:return False
             envelope=context.get('preservation_evidence')
             if context.get('content_kind')=='preservation_evidence':
-                if not isinstance(envelope,dict) or envelope.get('original_sha256')!=subject or envelope.get('byte_length')!=length or envelope.get('storage_ref')!=expected:return False
+                if not isinstance(envelope,dict) or envelope.get('original_sha256')!=subject or envelope.get('byte_length')!=length:return False
+                if envelope.get('storage_ref')!=expected:
+                    # An accepted immutable envelope records the acquisition-time
+                    # location, not necessarily the current (relocated) CAS root.
+                    # Reject invented/stale candidate content or an altered context.
+                    if json.loads(context['content'])!=envelope or not self._accepted_preservation_content(subject,context['content']):return False
                 if envelope.get('resolution_sha256')!=original.get('resolution_sha256'):return False
                 bound=envelope.get('occurrence_ids')
                 if not isinstance(bound,list) or not bound or any(not isinstance(x,str) for x in bound) or len(set(bound))!=len(bound) or not set(bound)<={row['id'] for row in occurrences}:return False
