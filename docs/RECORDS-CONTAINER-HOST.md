@@ -194,6 +194,31 @@ board AND fresh accepted records health --root ... --json statusok/exit0, withou
 --record. Failed health/board/reporter is non-healthy. Reporter terminal+empty+
 removal is required before admitting another writer.
 
+## Selected preserved exports (offline only)
+
+An exports profile replaces `mail_config` with exactly `input_mode: "exports"`,
+`exports` (absolute input mount target), `export_receipts` (1–60 unique relative
+paths in explicit order) and `export_manifest_sha256` (lowercase SHA-256).
+The exact read-only mount, anchor and alias checks apply unchanged. Network must
+be `{ "mode": "none", "container_id": null }`; no profile field approves an origin.
+
+```sh
+python3 -B -m campaign_tool.records.container_host export-manifest \
+  --exports /approved/private/exports --export-receipt receipts/selected.json
+```
+
+The command prints only schema/status/sha256/receipts/members/bytes and exits 0.
+The hash binds receipt bytes plus every declared original and attachment, with
+owner0700 directory walks and regular one-link owner0600 files. Selection is
+bounded to 1 GiB; no directory enumeration or retrieval occurs. Probe and entry
+require a read-only filesystem for every opened input descriptor. Host-readable
+bind inputs additionally pin the stat signature before admission.
+Entry passes `--export-root`, ordered `--export-receipt` options and the manifest
+to the unattended runner, never collection-host flags or mail configuration.
+Body links remain visible gaps, not permission to fetch them. No installed
+adoption, live intake, macOS qualification, download, timer, send or publication
+is authorized; real source contracts and substantive human review remain gates.
+
 ## Tests and remaining acceptance
 
 ```sh
