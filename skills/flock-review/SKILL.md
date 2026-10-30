@@ -77,9 +77,14 @@ never touches kanban and never forces, re-marks or skips a stage.
 1. Write LIST: one agency config path per line (`#` comments ok); a config or slug listed twice is refused. Optional `--roster ROSTER.csv`
    (F10/F11 header): a slug missing from it, not `in_scope` yes or with another applicability is `held`.
 2. `python3 tools/flock_review_batch.py status LIST --roster ROSTER.csv --out DIR` (read-only; writes `DIR/BATCH-STATUS.csv`, outside the repo).
-   States: invalid, held, locked, failed, done, in-flight (input written, not marked), waiting (for a model step), ready.
+   States: invalid, held, locked, failed, done, in-flight (explicit active-card marker), waiting (for a model step), ready.
+   `input_present` reports file presence only, not active work: F4 scaffolding and rules sources/specs may already exist.
 3. `... status LIST --run --golden-config MBCFG --golden-expect FILE` runs each `ready` agency one at a time (`run` exit 3 is normal).
 4. `... plan LIST --golden-config MBCFG --golden-expect FILE [--max 1|2]` prints at most 2 `[RUN]` card bodies (lane, method, files, mark
-   command) for waiting agencies, less the in-flight ones. The operator creates the cards; after each card, `--run` again.
+   command) for waiting agencies, less the in-flight ones. The operator creates the cards and, before dispatch, creates an empty
+   `<out>/.review/in-flight/<stage-id>` file for each active card (create the parent directory if needed). This explicit stage-specific
+   marker reserves a slot even before inputs are written. Remove it after the card finishes, fails or is cancelled; stale markers
+   must be reconciled with actual cards by the operator. Markers for other stages do not reserve a slot. `status` and `plan` never
+   create or remove markers. After each card, `--run` again.
 - **Never:** skip the golden gate (`golden gate: Morro Bay golden must pass first`); put more than 2 model cards in flight (Claude share
   watcher, PLAN R10); verify in the author's family; treat `done` as publishable.

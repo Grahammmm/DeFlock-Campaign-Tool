@@ -82,7 +82,7 @@ def agency(c, roster):  # read-only; -> row dict (HEADER keys) plus 'files' (the
     slug, scope = c["slug"], (roster or {}).get(c["slug"]) or {}
     held = roster is not None and ((scope.get("in_scope") or "").strip() != "yes" or (scope.get("applicability") or "") != c["appl"])
     word = "held" if held else "locked" if (c["out"] / ".review" / "LOCK").exists() else "failed" if bad else "done" if first is None \
-        else ("in-flight" if present else "waiting") if kind == "wait" else "ready"
+        else ("in-flight" if (c["out"] / ".review" / "in-flight" / sid).is_file() else "waiting") if kind == "wait" else "ready"
     row.update(state=word, stages_done=len(words) - len(todo), stages_total=len(words), next=sid, files=files, run_date=c["date"],
                input_present=("yes" if present else "no") if kind == "wait" else "", author_family=made.get("assess", ""),
                verifier_family=made.get("verify", ""), waiting_for=sid if word in ("waiting", "in-flight") else "")

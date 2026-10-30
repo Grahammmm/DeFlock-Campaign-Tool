@@ -1,7 +1,8 @@
 import csv, json, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
-from tests.flock.test_review import FIX, ROOT, SLUG, make_review, tree
+from tests.flock.test_review import FIX, ROOT, SLUG, WAITS, make_review, mark_all, tool, tree
+from tests.flock.test_review_verify import compare_build
 from tests.flock.test_review_golden import SAMPLE, golden_review
 
 TOOL, ROSTER = ROOT / "tools" / "flock_review_batch.py", FIX / "review-roster.csv"
@@ -77,14 +78,64 @@ class FlockReviewBatchTest(unittest.TestCase):
         self.assertIn(mark % self.configs[0].resolve(), out)
         self.assertIn("lane: sonnet-coder", out)
         self.assertIn("caps: 40 turns / 2 h; chunk by document; write REMAINING.md on cap", out)
-        draft = self.outs[0] / "facts" / "drafts" / "a.yaml"  # written, not marked: a card is working
+        draft = self.outs[0] / "facts" / "drafts" / "a.yaml"
         draft.parent.mkdir(parents=True, exist_ok=True)
         draft.write_text("draft\n")
+        self.assertEqual(self.status()[0], 0)
+        self.assertEqual([r["state"] for r in self.rows()[1]], ["waiting", "waiting", "held"])
+        active = self.outs[0] / ".review" / "in-flight" / "fact-drafts"
+        active.parent.mkdir(parents=True, exist_ok=True)
+        active.touch()  # explicit operator record, independent of input presence
         self.assertEqual(self.status()[0], 0)
         self.assertEqual([r["state"] for r in self.rows()[1]], ["in-flight", "waiting", "held"])
         code, out = batch("plan", self.list, "--roster", ROSTER, *self.gate)
         self.assertEqual(titles(out), ["[RUN] %s fact-drafts 2026-10-30" % SLUGS[1]])
         self.assertEqual(batch("plan", self.list, "--max", 3, *self.gate)[0], 2)
+
+    def test_scaffolded_f4_and_existing_rules_inputs_are_waiting(self):
+        config, p = make_review(self.tmp / "f4", stubs={"compare_build": compare_build()})
+        for stage, _, key, rel in WAITS:
+            self.assertEqual(tool("run", config, full=True)[0], 3)
+            if key:
+                path = p[key] / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(stage + " input\n")
+            self.assertEqual(mark_all(config, {stage: "anthropic"}), [0])
+        self.assertEqual(tool("run", config, full=True)[0], 3)
+        spec = json.loads((p["CO"] / "VERIFY-PLAN.json").read_text())
+        (p["CO"] / "VERIFY.csv").write_text("row_id,result,reason,page_cite\n" + "".join(
+            "%s,agree,checked,p.2\n" % i for i in spec["priority_ids"] + spec["sample_ids"]))
+        (p["CO"] / "VERIFY.md").write_text("checked\n")
+        self.assertEqual(mark_all(config, {"verify": "openai"}), [0])
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 3, out)
+        self.assertIn("stage f4-start done rc=0", out)
+        self.assertIn("stage f4 WAITING", out)
+        self.assertTrue((p["RUN"] / "VERIFY.csv").is_file())
+        rules = golden_review(self.tmp / "rules", until="rules-read")
+        golden = golden_review(self.tmp / "golden")
+        listing, report = self.tmp / "list.txt", self.tmp / "batch"
+        # Inspect separately: both fixtures deliberately use the same synthetic slug.
+        for cfg, sid in ((config, "f4"), (rules, "rules-read")):
+            with self.subTest(stage=sid):
+                listing.write_text(str(cfg) + "\n")
+                root = Path(json.loads(cfg.read_text())["review"]["out"])
+                before = tree(root)
+                self.assertEqual(batch("status", listing, "--out", report)[0], 0)
+                with (report / "BATCH-STATUS.csv").open(newline="") as handle:
+                    row = next(csv.DictReader(handle))
+                self.assertEqual((row["next"], row["state"], row["input_present"]), (sid, "waiting", "yes"))
+                args = ("plan", listing, "--golden-config", golden, "--golden-expect", SAMPLE)
+                code, out = batch(*args)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(titles(out), ["[RUN] %s %s 2026-10-30" % (SLUG, sid)])
+                self.assertEqual(tree(root), before)
+                active = root / ".review" / "in-flight" / sid
+                active.parent.mkdir(parents=True, exist_ok=True)
+                active.touch()
+                self.assertEqual(titles(batch(*args)[1]), [])
+                active.unlink()
+                self.assertEqual(len(titles(batch(*args)[1])), 1)
 
     def test_fail_closed(self):
         self.world()
