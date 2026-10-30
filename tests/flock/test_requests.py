@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "flock_requests.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "flock" / "requests-sample.csv"
+QUESTIONS = FIXTURE.with_name("questions-sample.md")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -95,6 +96,58 @@ class RequestsTrackerTests(unittest.TestCase):
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stdout, "")
             self.assertIn("row 7", done.stderr)
+
+    def draft(self, root, text=None):
+        rundir = Path(root) / "agencies" / "sample-city-police-department" / "runs" / "2026-10-31"
+        rundir.mkdir(parents=True, exist_ok=True)
+        (rundir / "QUESTIONS.md").write_text(QUESTIONS.read_text(encoding="utf-8") if text is None else text, encoding="utf-8")
+        done = run("draft", str(rundir), "--requests", str(FIXTURE), "--from", "2026-01-01", "--to", "2026-10-31")
+        return done, rundir / "FOLLOWUP-DRAFT.md"
+
+    def test_draft_asks_existing_records_and_holds_open_prior_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done, out = self.draft(tmp)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.strip(), "items=2 held=2 written=FOLLOWUP-DRAFT.md")
+            text = out.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            self.assertEqual(lines[0], "DRAFT - not sent - G approval required")
+            for want in ("existing records", "related to requests SAMPLE-4", "the period is 2026-01-01 through 2026-10-31",
+                         "native format", "identify records withheld and the basis"):
+                self.assertIn(want, text)
+            self.assertEqual([x[:2] for x in lines if re.match(r"\d+\. ", x)], ["1.", "2."])
+            end = next(n for n, x in enumerate(lines) if x.startswith("END OF REQUEST DRAFT"))
+            self.assertNotIn("?", "\n".join(lines[:end]))
+            self.assertIn("F-002 open SAMPLE-1; F-003 open SAMPLE-1", lines[-1])
+
+    def test_draft_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lines = QUESTIONS.read_text(encoding="utf-8").splitlines()
+            bad, out = self.draft(tmp, "\n".join(lines[:1] + ["- Q F-009 | Policy | prior - | Existing records showing why it was used."]) + "\n")
+            self.assertEqual(bad.returncode, 1)
+            self.assertFalse(out.exists())
+            held, out = self.draft(tmp, "\n".join(lines[:1] + lines[2:4]) + "\n")
+            self.assertEqual(held.returncode, 1)
+            self.assertIn("no items to draft", held.stderr)
+            self.assertFalse(out.exists())
+            self.assertEqual(self.draft(tmp)[0].returncode, 0)
+            before = out.read_bytes()
+            self.assertEqual(self.draft(tmp)[0].returncode, 1)
+            self.assertEqual(out.read_bytes(), before)
+            self.assertEqual([p.name for p in out.parent.iterdir() if p.name.endswith(".tmp")], [])
+
+    def test_draft_is_private_despite_stale_temp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rundir = Path(tmp) / "agencies" / "sample-city-police-department" / "runs" / "2026-10-31"
+            rundir.mkdir(parents=True)
+            stale = rundir / ".FOLLOWUP-DRAFT.md.tmp"
+            stale.write_text("stale", encoding="utf-8")
+            stale.chmod(0o644)
+            done, out = self.draft(tmp)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(stale.read_text(encoding="utf-8"), "stale")
+            self.assertNotEqual(out.stat().st_ino, stale.stat().st_ino)
 
 
 if __name__ == "__main__":
