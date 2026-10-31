@@ -98,8 +98,7 @@ class CheckTestEnvTests(unittest.TestCase):
 
     def test_comment_only_file_is_not_a_failure(self):
         code, lines, _ = self.run_tool(text="# nothing pinned\n\n")
-        self.assertEqual(code, 0)
-        self.assertEqual(len(lines), 1)
+        self.assertEqual((code, len(lines)), (0, 1))
         self.assertIn(": 0 pins, 0 differ", lines[0])
 
     def test_versions_compared_exactly(self):
@@ -110,15 +109,13 @@ class CheckTestEnvTests(unittest.TestCase):
                 self.assertEqual(lines[0], f"pkg mismatch installed={installed} pinned={pinned}")
 
     def test_read_only(self):
-        before = sorted(p.name for p in self.dir.iterdir())
-        self.run_tool(versions={}, path=REPO / "requirements-records-test.txt")
-        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
+        req = self.dir / "req.txt"
+        req.write_text(SPEC_TEXT, encoding="utf-8")
+        before = sorted((p.name, p.read_bytes()) for p in self.dir.iterdir())
+        self.assertEqual(self.run_tool(versions={}, path=req)[0], 1)
+        self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.dir.iterdir()), before)
         tree = ast.parse(Path(env.__file__).read_text(encoding="utf-8"))
         imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
                     for alias in node.names}
         imported |= {str(node.module).split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
         self.assertEqual(imported, {"argparse", "importlib", "pathlib", "re", "sys"})
-
-
-if __name__ == "__main__":
-    unittest.main()
