@@ -2,7 +2,7 @@
 """Flock verify: a different-family verifier's confirm/downgrade/reject per finding -> PUBLIC-OK.csv, QUESTIONS.md.
   start RUNDIR --provider P --model M  |  --check RUNDIR  |  finish RUNDIR [--golden CSV]
 Exit 1 = errors, 2 = usage, 3 = family refusal (equal, missing or unknown). Prints ids, labels and counts only."""
-import argparse, csv, importlib.util, io, json, os, re, sys
+import argparse, contextlib, csv, importlib.util, io, json, os, re, sys, tempfile
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location("_flock_compare", Path(__file__).resolve().parent / "flock_compare.py")
@@ -28,10 +28,14 @@ def banned(text, vigilant_only):  # F3's rules for free text with no quote, so q
     return bool(compare.ALWAYS.search(text) or compare.GATED.search(text) or (vigilant_only and compare.FLOCK.search(text)))
 
 def write(path, text):
-    tmp = path.with_name("." + path.name + ".tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8", newline="") as out:
-        out.write(text)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
+            out.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError): os.unlink(tmp)
+        raise
 
 def rows(path):
     return [r for r in compare.read_csv(path)[1:] if any(c.strip() for c in r)] if path.is_file() else []

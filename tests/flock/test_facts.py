@@ -94,6 +94,38 @@ class FlockFactsTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertFalse(any(s in out.lower() for s in ("testville", "sampleton")))
 
+    def test_write_atomic_ignores_planted_fixed_temp(self):
+        import importlib.util, os
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("_facts_m3", TOOL)
+        facts = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(facts)
+        out = self.dir / "out" / "FACTS.csv"
+        out.parent.mkdir()
+        old_tmp, sentinel = out.with_name("FACTS.csv.tmp"), self.dir / "SENTINEL"
+        sentinel.write_bytes(b"sentinel\n")
+        old_tmp.symlink_to(sentinel)
+        facts.write_atomic(out, [])
+        self.assertEqual(sentinel.read_bytes(), b"sentinel\n")
+        self.assertTrue(old_tmp.is_symlink())
+        self.assertEqual(os.readlink(old_tmp), str(sentinel))
+        self.assertFalse(out.is_symlink())
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(out.read_text(encoding="utf-8"), ",".join(facts.V2) + "\n")
+        old_tmp.unlink()
+        old_tmp.write_bytes(b"stale\n")
+        old_tmp.chmod(0o644)
+        facts.write_atomic(out, [])
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        self.assertNotEqual(out.stat().st_ino, old_tmp.stat().st_ino)
+        self.assertEqual((old_tmp.read_bytes(), old_tmp.stat().st_mode & 0o777), (b"stale\n", 0o644))
+        before, data, ino = sorted(os.listdir(out.parent)), out.read_bytes(), out.stat().st_ino
+        with mock.patch.object(facts.os, "replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                facts.write_atomic(out, [])
+        self.assertEqual((out.read_bytes(), out.stat().st_ino), (data, ino))
+        self.assertEqual(sorted(os.listdir(out.parent)), before)
+
 
 if __name__ == "__main__":
     unittest.main()
