@@ -47,6 +47,23 @@ def synthetic_message(body=None, html=None):
     return msg, msg.as_bytes(policy=SMTP)
 
 
+def private_dirs(root, relative):
+    """Create each fixture directory below root as 0700, whatever the umask.
+
+    Path.mkdir(parents=True, mode=...) applies mode only to the leaf; the
+    intermediate directories follow the ambient umask (0755 under 0022), which
+    the private-component snapshot guard rightly refuses.
+    """
+    current = Path(root)
+    for part in Path(relative).parts:
+        current = current / part
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        os.chmod(current, 0o700)
+
+
 def legacy_export(root, *, body=None, html=None, uid=41, validity=900):
     """Independent legacy-shape fixture: CAS paths and integer walk indexes."""
     msg, raw = synthetic_message(body, html)
@@ -54,6 +71,7 @@ def legacy_export(root, *, body=None, html=None, uid=41, validity=900):
     def blob(data):
         sha = hashlib.sha256(data).hexdigest()
         path = Path("objects") / sha[:2] / sha
+        private_dirs(root, path.parent)
         eml_export._ensure_private(root / path, data)
         return {"path": str(path), "sha256": sha, "bytes": len(data)}
 
@@ -69,6 +87,7 @@ def legacy_export(root, *, body=None, html=None, uid=41, validity=900):
                "internaldate": "2026-01-02T03:04:05Z", "original_eml": blob(raw), "attachments": attached}
     key = hashlib.sha256(json.dumps([receipt[k] for k in ("account_id", "folder", "uidvalidity", "uid")]).encode()).hexdigest()
     path = root / "receipts" / (key + ".json")
+    private_dirs(root, "receipts")
     eml_export._ensure_private(path, (json.dumps(receipt, sort_keys=True) + "\n").encode())
     return path, receipt
 
