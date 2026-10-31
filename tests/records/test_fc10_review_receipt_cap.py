@@ -72,8 +72,12 @@ class ReceiptCapTests(unittest.TestCase):
             authority=self.authority, auth_context=self.contexts["owner"])
 
     def fill(self, kind, count):
-        for index in range(count):
-            self.assertFalse(self.write(kind, index)["reused"])
+        # Setup only: the bulk fill skips the fsync durability barrier (55% of module wall time).
+        # Receipts bind absolute store paths, so a copied template store would be invalid.
+        # Every write a test asserts on runs after this block, with the real fsync.
+        with mock.patch.object(self.b.os, "fsync"):
+            for index in range(count):
+                self.assertFalse(self.write(kind, index)["reused"])
         self.assertEqual(len(list((self.directory / kind).glob("*.json"))), count)
 
     def snapshot(self, kind):
