@@ -3,7 +3,7 @@ import json, shutil, unittest
 from tests.flock import test_publish as base
 
 APPROVED = {"status": "approved", "approved_by": "G", "approved_on": "2026-10-30", "approval_ref": "G-1"}
-SECRET = "private source text"
+PRIVATE_TEXT = "private source text"
 
 
 class PublishDriftTest(base.FlockPublishTest):  # setUp builds store/agencies/<AGENCY>/runs/2026-10-30 (F4 finished)
@@ -95,7 +95,7 @@ class PublishDriftTest(base.FlockPublishTest):  # setUp builds store/agencies/<A
                                               "findings=6 approved=1 errors=2 drift=2\n"))
 
     def test_schema_errors_skip_the_rederive(self):
-        code, out = self.drift(self.edited("N1", text=SECRET + " ask records@sample.org"))
+        code, out = self.drift(self.edited("N1", text=PRIVATE_TEXT + " ask records@sample.org"))
         self.assertEqual((code, out), (1, "finding N1: text refused email\nfindings=4 approved=0 errors=1 drift=0\n"))
         self.assertEqual(self.drift({"findings": []}), (1, "file: schema or header is invalid\nfindings=0 approved=0 errors=1 drift=0\n"))
 
