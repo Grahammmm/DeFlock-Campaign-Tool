@@ -10,7 +10,7 @@ verify = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(verify)
 with open(FIX / "verify-sample.csv", newline="") as _h:
     _table = list(csv.reader(_h))
-SECRET_TEXT = [r[i] for r in _table[1:] for i in (5, 6) if r[i]]  # records_sought and reason values
+LEAK_TEXT = [r[i] for r in _table[1:] for i in (5, 6) if r[i]]  # records_sought and reason values
 
 
 class VerifyCurrentTest(unittest.TestCase):
@@ -28,7 +28,7 @@ class VerifyCurrentTest(unittest.TestCase):
         before = self.snap()
         code, out = base.run("flock_verify.py", "current", self.rd, *extra)
         self.assertEqual(self.snap(), before)
-        for text in SECRET_TEXT:
+        for text in LEAK_TEXT:
             self.assertNotIn(text, out)
         return code, out
 
