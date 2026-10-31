@@ -1,7 +1,7 @@
 ---
 name: flock-facts
 description: Use when importing or checking per-agency Flock public-record facts. Loads an Oct 27 style FACTS.csv into the private store and fails closed on a row without page, sha256 or quote.
-skill_version: 1.1
+skill_version: 1.2
 ---
 
 # Flock facts
@@ -24,6 +24,7 @@ store (outside the repo). No model step: the tool validates, it does not read do
 6. Verify the store: `python3 tools/flock_facts.py --check STORE`; exit 0 only.
 7. Treat a clean check as machine-valid and review-required, not accepted.
 8. Coverage: `python3 tools/flock_facts.py coverage --store STORE --agency SLUG --inventory INVENTORY.csv`
+9. Review state: `python3 tools/flock_facts.py status --store STORE [--agency SLUG] [--list unreviewed|disputed]`; ids, never values.
 
 ## Outputs
 - `STORE/agencies/<slug>/FACTS.csv` (schema v2, one folder per agency slug).
@@ -45,3 +46,4 @@ store (outside the repo). No model step: the tool validates, it does not read do
 ## Changelog
 - 1.0: fact store schema v2, `import` and `--check` CLI.
 - 1.1: `coverage`: cited facts per posted INVENTORY document; withheld counted, never named.
+- 1.2: `status`: rows by kind, review status and UNREADABLE per agency; `--list` prints ids to review.

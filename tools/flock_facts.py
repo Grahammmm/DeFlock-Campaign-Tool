@@ -178,6 +178,39 @@ def coverage(args):
     return 0
 
 
+def status(args):
+    """Review state per agency (RF1220-2): counts by kind and status, and ids to review. Read-only; never a value or quote."""
+    store, slug, fail = Path(args.store), slugify(args.agency or ""), lambda lines: print(*lines, sep="\n", file=sys.stderr) or 1
+    if not store.is_dir():
+        return fail(["store: is not a folder"])
+    links = ["%s: is a symlink; refusing" % r for r in ["agencies"] + ["agencies/" + slug] * bool(slug) if os.path.islink(store / r)]
+    if links:
+        return fail(links)
+    if slug and not (store / "agencies" / slug / "FACTS.csv").is_file():
+        return fail(["agency %s: no FACTS.csv" % slug])
+    agencies = store / "agencies"
+    files = [agencies / slug / "FACTS.csv"] if slug else sorted(agencies.glob("*/FACTS.csv"))
+    links = ["%s: is a symlink; refusing" % p.relative_to(store) for p in sorted(set(
+        ([] if slug else list(agencies.glob("*"))) + files)) if p.is_symlink()]
+    errors = links or ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)]
+    if errors or not files:
+        return fail(errors or ["no FACTS.csv files in store"])
+    listed, total = [], {"rows": 0, "unreviewed": 0, "disputed": 0}
+    for f in files:
+        rows, count = load(f, f.parent.name)[1], {}
+        for _, row in rows:
+            for key in ("rows", row["kind"], row["status"]) + ("unreadable",) * (row["value"].strip() == "UNREADABLE"):
+                count[key] = count.get(key, 0) + 1
+        print(" | ".join([f.parent.name, "rows=%d" % len(rows)] + [" ".join("%s=%d" % (k, count.get(k, 0)) for k in group) for group in (
+            ("record", "policy", "law", "public"), ("unreviewed", "checked", "disputed"), ("unreadable",))]))
+        listed += ["%s | %s | %s | %s | page %s | row %d" % (f.parent.name, r["fact_id"], r["kind"], r["fact_type"], r["page"].strip(), n)
+                   for n, r in rows if r["status"] == args.list]
+        total = {k: v + count.get(k, 0) for k, v in total.items()}
+    print(*listed, sep="\n") if listed else None
+    print("agencies=%d rows=%d unreviewed=%d disputed=%d" % (len(files), total["rows"], total["unreviewed"], total["disputed"]))
+    return 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -188,19 +221,26 @@ def main(argv=None):
 
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV")
-    for name in ("--check", "--store", "--added-by", "--agency", "--inventory"):
+    parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV"
+                        " | status --store DIR [--agency SLUG] [--list unreviewed|disputed]")
+    for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
     parser.add_argument("--date", default=datetime.date.today().isoformat())
     args = parser.parse_args(argv)
-    if args.check and not args.command:
+    if args.command[:1] == ["status"]:
+        if len(args.command) != 1 or args.check or not args.store or args.inventory or args.added_by is not None \
+                or args.list not in (None, "unreviewed", "disputed") or (args.agency is not None and not slugify(args.agency)):
+            parser.error("usage: status --store DIR [--agency SLUG] [--list unreviewed|disputed]")
+        return status(args)
+    if args.check and not args.command and args.list is None:
         errors = check_path(args.check)
         return print("\n".join(errors)) or int(bool(errors))
-    if args.command == ["coverage"] and not args.check and args.store and args.inventory and slugify(args.agency or ""):
+    if args.command == ["coverage"] and not args.check and args.store and args.inventory and slugify(args.agency or "") \
+            and args.list is None:
         return coverage(args)
-    if args.check or args.command[:1] != ["import"] or len(args.command) != 2 or not args.store \
+    if args.check or args.list is not None or args.command[:1] != ["import"] or len(args.command) != 2 or not args.store \
             or not (args.added_by or "").strip() or not valid_date(args.date):
         parser.error("usage: import SRC --store DIR --added-by NAME [--date YYYY-MM-DD] | --check PATH"
                      " | coverage --store DIR --agency NAME --inventory CSV")
