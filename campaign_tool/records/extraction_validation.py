@@ -121,6 +121,27 @@ def _accepted_ocr_pages(receipt, ocr_ids, *, artifacts, scratch_root, vision_ids
     return pages
 
 
+OCR_PAGE_ISSUES = frozenset(("ocr_needed_or_blank_page", "ocr_visual_review_required"))
+
+
+def ocr_issue_admitted(issue, ocr_pages):
+    """True for an issue an OCR-bearing original may carry into acceptance.
+
+    ``ocr_pages`` is the result of ``_accepted_ocr_pages``: every page in it has a bound OCR
+    (or vision) text receipt. ``page_eligibility_unresolved`` only means the X6 probe could not
+    prove a native-text exemption for that page, so it is admitted solely for a page whose
+    full-page OCR text was accepted; the visual-review hold is kept. Any other page, locator
+    shape or code fails closed.
+    """
+    if not isinstance(issue, dict):
+        return False
+    if issue.get("code") in OCR_PAGE_ISSUES:
+        return True
+    locator = issue.get("locator")
+    return (issue.get("code") == "page_eligibility_unresolved" and isinstance(locator, dict) and
+            set(locator) == {"page"} and type(locator["page"]) is int and locator["page"] in ocr_pages)
+
+
 def image_wrapper_binding(receipt, metadata, raw, subject):
     """Re-derive from the canonical parent, not a receipt-selected derivative path."""
     try:
@@ -442,10 +463,9 @@ class _InstalledExtractionValidator:
                 # text). Acceptance records the visual-review hold per page; it never clears it.
                 require(receipt.get("status") == metadata.get("stage") == manifest.get("source_status") == "partial",
                         "ocr_status_binding")
-                allowed = {"ocr_needed_or_blank_page", "ocr_visual_review_required"}
                 require(receipt.get("issues") == manifest.get("issues") and
-                        all(isinstance(i, dict) and i.get("code") in allowed for i in receipt["issues"]) and
-                        all(isinstance(i, dict) and i.get("code") in allowed for i in metadata.get("issues", [])),
+                        all(ocr_issue_admitted(i, ocr_pages) for i in receipt["issues"]) and
+                        all(ocr_issue_admitted(i, ocr_pages) for i in metadata.get("issues", [])),
                         "unresolved_extraction_evidence")
             elif native_workbook:
                 require(not ocr_ids and receipt.get("status") == metadata.get("stage") == manifest.get("source_status") == "partial"
