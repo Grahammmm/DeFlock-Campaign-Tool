@@ -15,8 +15,7 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 ## Steps
 
 1. A Terra legwork card adds the cited CONTACT row; nobody guesses an address.
-2. Before a draft: `python3 tools/flock_email.py check <store>` lists who is ready (`contact | <slug> | ready | domain=<domain>`,
-   else `not ready | <first error>`), then a totals line; it reads only and exits 1 while any agency is not ready.
+2. Before a draft: `python3 tools/flock_email.py check <store>` lists who is ready (`contact | <slug> | ready | domain=<domain>`); reads only.
 3. `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo>`. It prints
    `written=2 to_domain=<domain>`; errors name `row N: <field>` or `contact: no records row` and write nothing.
 4. The operator shows G the draft; only G's explicit reply for that exact draft permits sending, by hand.
