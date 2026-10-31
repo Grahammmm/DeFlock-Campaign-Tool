@@ -39,7 +39,25 @@ def day(value):
         return None
 def words(text): return set(re.findall(r"[a-z0-9]+", CITE.sub(" ", text).lower()))
 def norm(text): return " ".join(str(text).lower().split())
-def load(path): return json.loads(Path(os.path.expanduser(path)).read_text(encoding="utf-8"))
+def _input(label, path):  # -> the JSON object at path, or a Fail naming its flag and kind (never its path or text)
+    try:
+        data = json.loads(Path(os.path.expanduser(path)).read_bytes().decode("utf-8"))
+    except (OSError, ValueError) as exc:  # bytes that are not UTF-8 are unreadable, not "not JSON"
+        return Fail("%s 0: %s" % (label, "missing" if isinstance(exc, FileNotFoundError) else
+                                  "unreadable" if isinstance(exc, (OSError, UnicodeDecodeError)) else "not JSON"))
+    if isinstance(data, list if label == "sources" else dict):  # SOURCES.json (G3) is a list; every other input an object
+        return data
+    return Fail("%s 0: not %s" % (label, "a list" if label == "sources" else "an object"))
+def _inputs(args, labels):  # every input is loaded first and every bad one reported, in flag order
+    got = {label: _input(label, getattr(args, label)) for label in labels}
+    if bad := [str(v) for v in got.values() if isinstance(v, Fail)]:
+        raise Fail("\n".join(bad))
+    return got
+def _stage(label, fn, *a):  # a structurally wrong input names the stage and the class only, never text
+    try:
+        return fn(*a)
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise Fail("%s 0: shape %s" % (label, type(exc).__name__)) from None
 def lint(story, thread, location, base, hidden_ids=(), hidden_titles=()):
     errs, loc_reqs = [], {r["id"] for r in location["requests"]}
     loc_docs = {d["document_id"] for d in location["documents"]}
@@ -168,12 +186,15 @@ def report(errs, n):
 def build(args):
     n, errs, tmp = dict.fromkeys(COUNTS, 0), [], None
     try:
-        out = Path(os.path.expanduser(args.out)).resolve()
+        out = Path(os.path.expanduser(args.out))  # a link as the final component is refused; links above it still resolve
+        if os.path.islink(out) or not out.parent.is_dir():
+            raise Fail("out 0: is a link; refused" if os.path.islink(out) else "out 0: folder missing")
+        out = out.resolve()
         if out == REPO or REPO in out.parents:
             raise Fail("out 0: refused inside the repository")
-        location, thread = load(args.location), load(args.thread)
-        story, errs = assemble(load(args.cards), load(args.sources), location, args.base_sources)
-        more, n = lint(story, thread, location, args.base_sources, args.not_posted, args.not_posted_title)
+        got = _inputs(args, ("cards", "sources", "location", "thread"))
+        story, errs = _stage("cards", assemble, got["cards"], got["sources"], got["location"], args.base_sources)
+        more, n = _stage("lint", lint, story, got["thread"], got["location"], args.base_sources, args.not_posted, args.not_posted_title)
         errs = list(dict.fromkeys(errs + more))
         if not errs and out.exists() and not args.replace:
             errs.append("out 0: exists; pass --replace to supersede it")
@@ -187,7 +208,7 @@ def build(args):
             os.replace(tmp, out)
             tmp = None
     except Fail as exc:
-        errs.append(str(exc))
+        errs += str(exc).splitlines()
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         errs.append("io 0: %s" % type(exc).__name__)
     finally:
@@ -197,8 +218,11 @@ def build(args):
     return report(errs, n)
 def run_lint(args):
     try:
-        errs, n = lint(load(args.story), load(args.thread), load(args.location), args.base_sources, args.not_posted,
-                       args.not_posted_title)
+        got = _inputs(args, ("story", "location", "thread"))
+        errs, n = _stage("lint", lint, got["story"], got["thread"], got["location"], args.base_sources, args.not_posted,
+                         args.not_posted_title)
+    except Fail as exc:
+        errs, n = str(exc).splitlines(), dict.fromkeys(COUNTS, 0)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         errs, n = ["io 0: %s" % type(exc).__name__], dict.fromkeys(COUNTS, 0)
     return report(errs, n)
