@@ -4,7 +4,7 @@
 Rows from not-posted records and rows the verifier disputed or could not source never appear; a final lint refuses to write
 otherwise. Prints counts and `line N: <rule>` / `row <id>: <rule>` errors only, never the offending text. No network.
 Exit 0 written, 1 validation/lint/IO, 2 usage. The draft is private: public use goes through F9, redaction, review and G."""
-import argparse, csv, hashlib, importlib.util, json, os, re, sys, tempfile
+import argparse, contextlib, csv, hashlib, importlib.util, json, os, re, sys, tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -173,8 +173,12 @@ def lint(c, report, sources_text, marks, body_end, entries, facts, inventory, er
     errs += ["line %d: %s (SOURCES.json)" % (i, h) for i, line in enumerate(sources_text.splitlines(), 1) for h in hits(line)]
 def write(path, text):  # fresh exclusive 0600 temp (mkstemp: O_EXCL, random name, never reuses/follows one); caller renames both after
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
-        out.write(text)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
+            out.write(text)
+    except BaseException:  # never leave our own temp behind, then re-raise
+        with contextlib.suppress(OSError): os.unlink(tmp)
+        raise
     return tmp, path
 def build(config, out):
     errs, n = [], Counter({k: 0 for k in COUNTS})
@@ -185,8 +189,19 @@ def build(config, out):
         lint(c, report, sources_text, marks, body_end, entries, facts, inventory, errs)
         if not errs:
             c["out"].mkdir(mode=0o700, parents=True, exist_ok=True)
-            for tmp, path in [write(c["out"] / "REPORT-DRAFT.md", report), write(c["out"] / "SOURCES.json", sources_text)]:
-                os.replace(tmp, path)
+            made, renamed = [], []
+            try:
+                for name, text in (("REPORT-DRAFT.md", report), ("SOURCES.json", sources_text)):
+                    made.append(write(c["out"] / name, text))
+                for tmp, path in made:
+                    os.replace(tmp, path)
+                    renamed.append(tmp)
+            except BaseException as exc:  # unlink only temps we created and did not rename; foreign .tmp files stay
+                for tmp in (tmp for tmp, _ in made if tmp not in renamed):
+                    with contextlib.suppress(OSError): os.unlink(tmp)
+                if len(renamed) == 1 and isinstance(exc, Exception):
+                    raise Fail("io: partial write (REPORT-DRAFT.md replaced, SOURCES.json not); rerun build") from exc
+                raise
     except (Fail, OSError, ValueError, KeyError, TypeError) as exc:
         errs.append(str(exc) if isinstance(exc, Fail) else "io: %s" % type(exc).__name__)
     print("\n".join((errs := list(dict.fromkeys(errs))) + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
