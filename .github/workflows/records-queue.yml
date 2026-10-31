@@ -61,6 +61,7 @@ jobs:
           if not pathlib.Path(stages.__file__).resolve().is_relative_to(root/'campaign_tool'/'records'/'ledger'):
               raise SystemExit('WP1 ledger loaded from an unexpected source')
           print('WP1 source:', 'in-tree' if in_tree else 'pinned overlay', root, flush=True)
+          print('SCRATCH queue RECORDS_WP1_SOURCE_ROOT =', os.environ.get('RECORDS_WP1_SOURCE_ROOT'), flush=True)
           suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_queue_runtime', 'tests.records.test_queue', 'tests.records.test_queue_scope', 'tests.records.test_queue_integration'])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped or not result.wasSuccessful():
@@ -121,6 +122,7 @@ jobs:
           fi
           python -B - <<'PY'
           import unittest
+          import os; print('SCRATCH portal RECORDS_WP1_SOURCE_ROOT =', os.environ.get('RECORDS_WP1_SOURCE_ROOT'), flush=True)
           # Explicit portal scope, like the WP6/WP7/WP9 integration workflows:
           # whole-tree discovery would include opt-in composition suites that
           # skip by design and spawn-based runner tests that cannot run from stdin.

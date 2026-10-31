@@ -88,6 +88,9 @@ def negative(detector, values):
 
 
 class DetectorTests(unittest.TestCase):
+    def test_scratch_cisdf5_red(self):
+        self.fail('CIS-DF-5 scratch: deliberate red detectors test')
+
     def test_purpose_strict_thresholds(self):
         for total, expected in ((4, 2), (20, 0)):
             values = fixture("purpose-quality")
