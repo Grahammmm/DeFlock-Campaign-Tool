@@ -153,6 +153,10 @@ def stage_argv(config, entry):
     """Bridge plan settings to the existing stage CLI without changing dry argv."""
     from .portal.policy import fetch_settings
     argv=list(entry['argv'])
+    # AUD-DF1: a TEST plan's run_stages call always demands the sandbox marker.
+    if (config.get('mode')=='test' and argv.count('campaign_tool.records.run_stages')==1
+            and '--require-sandbox' not in argv):
+        argv.append('--require-sandbox')
     if entry['name']!='portal':
         return argv
     reserved=('--portal-download','--portal-max-items','--portal-total-bytes')

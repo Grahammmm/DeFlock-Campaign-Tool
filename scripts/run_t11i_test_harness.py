@@ -579,7 +579,7 @@ def inject(docker_bin, base, fault, *extra):
     script = f"{base['CONTAINER_ENGINE_DIR']}/scripts/t12_fault_inject.py"
     proc = subprocess.run([docker_bin, "exec", "-u", "coder", CONTAINER, "env",
                            f"PYTHONPATH={base['CONTAINER_ENGINE_DIR']}", base["CONTAINER_PYTHON"], "-B",
-                           script, fault, "--project", base["CONTAINER_PROJECT_DIR"], *extra],
+                           script, fault, "--project", base["CONTAINER_PROJECT_DIR_TEST"], *extra],
                           capture_output=True, text=True, timeout=600)
     for line in reversed(proc.stdout.splitlines()):
         try:
@@ -773,10 +773,10 @@ def main(argv=None):
         "DEFAULT_TARGET": "TEST",
         "SCHEDULED_TARGET": "TEST", "CONTAINER_USER": "coder",
         "CONTAINER_ENGINE_DIR": f"{CONTAINER_WORK}/{engine.name}",
-        "CONTAINER_PROJECT_DIR": container_project,
-        "CONTAINER_APPROVAL_FILE": f"{CONTAINER_WORK}/.flock-portal-intake/approval.json",
+        "CONTAINER_PROJECT_DIR_TEST": container_project,
+        "CONTAINER_APPROVAL_FILE_TEST": f"{CONTAINER_WORK}/.flock-portal-intake/approval.json",
         "CONTAINER_PYTHON": container_python,
-        "ADOPTION_CONFIG": f"{container_project}/.t4-adoption-config-v1.json",
+        "ADOPTION_CONFIG_TEST": f"{container_project}/.t4-adoption-config-v1.json",
     }
     runtime = scratch / "runtime"
     render(engine, runtime, {**base, "RUNTIME_DIR": str(runtime), "RUN_RECORDS_SH": str(runtime / "run-records.sh")})
@@ -822,7 +822,7 @@ def main(argv=None):
     receipt["faults"]["duplicate_receipt"] = summary
     # Fault: portal 404 -- the real fetch state machine with a no-network 404 transport, one
     # synthetic item on an allowlisted host; the real portal stage must report it.
-    injection = inject(args.docker, base, "portal-404", "--approval-file", base["CONTAINER_APPROVAL_FILE"])
+    injection = inject(args.docker, base, "portal-404", "--approval-file", base["CONTAINER_APPROVAL_FILE_TEST"])
     code, report = run_once(runtime, target_dir)
     receipt["faults"]["portal_404"] = {"injection": injection, **summarize(report, code),
                                        "ledger_after": ledger_counts(args.docker, container_project)}

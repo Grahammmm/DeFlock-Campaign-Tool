@@ -4,9 +4,10 @@
 Generates, in ``deploy/records-runtime/targets/``:
 
 - ``test-container.json.in`` (mode ``test``, T11i) and ``live-container.json.in``
-  (mode ``live``, T16). The two plans are identical apart from ``mode``: the
-  same argv table, placeholders and stage timeouts drive a sandbox copy of TEST
-  and the real records project alike.
+  (mode ``live``, T16). The two plans differ in ``mode`` and in three
+  placeholders: TEST uses ``@CONTAINER_PROJECT_DIR_TEST@``,
+  ``@ADOPTION_CONFIG_TEST@`` and ``@CONTAINER_APPROVAL_FILE_TEST@`` (AUD-DF1), so
+  a TEST plan never shares the LIVE project; argv shape and timeouts are equal.
 - ``live-ocr-container.json.in`` and ``live-ocr-vision-container.json.in``
   (mode ``live``, Phase 2 / T6). Identical to ``live-container.json.in`` except
   the extract stage: it gains ``--ocr`` (per-page Tesseract) and, in the vision
@@ -51,6 +52,9 @@ STAGES = (
 )
 
 MODES = {"test", "live"}
+# AUD-DF1: a TEST plan gets its own project, adoption config and approval file.
+TEST_NAMES = {f"@{key}@": f"@{key}_TEST@"
+              for key in ("CONTAINER_PROJECT_DIR", "ADOPTION_CONFIG", "CONTAINER_APPROVAL_FILE")}
 
 # Phase 2 (T6) extract stage of the OCR-enabled LIVE plans, by variant:
 # (timeout, on_fail, extra adapter arguments). --document-timeout is the
@@ -88,6 +92,8 @@ def plan(mode="test", ocr=None):
             timeout, on_fail, extra = OCR_EXTRACT[ocr]
         argv = EXEC + [name, "--project", "@CONTAINER_PROJECT_DIR@", "--timeout", str(timeout - 10),
                        "--run-id", "{run_id}", *extra]
+        if mode == "test":
+            argv = [TEST_NAMES.get(item, item) for item in argv]
         stages.append({"name": name, "argv": argv, "timeout_seconds": timeout, "on_fail": on_fail})
     return {"target_config_version": 1, "target": "@TARGET_NAME@", "mode": mode, "stages": stages}
 

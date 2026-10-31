@@ -876,6 +876,67 @@ class DeadlineTests(unittest.TestCase):
         self.assertIsNone(run_stages.last_json(b"no json"))
 
 
+class SandboxGuardTests(StageTestCase):
+    """AUD-DF1: --require-sandbox refuses a project without a safe .t12-sandbox-v1 marker."""
+
+    def guarded(self, *extra):
+        calls = []
+
+        def handler(args):
+            calls.append(args.project)
+            return run_stages.result("ok", {"input": 1, "output": 1}), 0
+        with mock.patch.dict(run_stages.HANDLERS, {"digest_gates": handler}):
+            code, parsed, raw = self.stage("digest_gates", *extra)
+        self.assertContract(code, parsed, raw)
+        return code, parsed, calls
+
+    def marker(self, mode=0o600):
+        path = self.project / run_stages.SANDBOX_MARKER
+        path.write_bytes(b'{"sandbox_marker_version":1}\n')
+        path.chmod(mode)
+
+    def assertRefused(self, code_name):
+        before = sorted(p.name for p in self.project.iterdir())
+        code, parsed, calls = self.guarded("--require-sandbox")
+        self.assertEqual((code, parsed["status"], parsed["error_code"]), (1, "fail", code_name))
+        self.assertEqual(calls, [], "no handler runs after a refusal")
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), before)
+
+    def test_missing_marker_refused(self):
+        self.assertRefused("SANDBOX_MARKER_MISSING")
+
+    def test_unsafe_markers_refused(self):
+        outside = Path(self.temp.name) / "outside-marker"
+        outside.write_bytes(b"x")
+        outside.chmod(0o600)
+        (self.project / run_stages.SANDBOX_MARKER).symlink_to(outside)
+        self.assertRefused("SANDBOX_MARKER_UNSAFE")
+        (self.project / run_stages.SANDBOX_MARKER).unlink()
+        for mode in (0o644, 0o640, 0o602):
+            with self.subTest(mode=oct(mode)):
+                self.marker(mode)
+                self.assertRefused("SANDBOX_MARKER_UNSAFE")
+        (self.project / run_stages.SANDBOX_MARKER).unlink()
+        (self.project / run_stages.SANDBOX_MARKER).mkdir(mode=0o700)
+        self.assertRefused("SANDBOX_MARKER_UNSAFE")
+
+    def test_marker_of_another_owner_refused(self):
+        self.marker()
+        with mock.patch.object(run_stages.os, "geteuid", return_value=os.geteuid() + 1):
+            self.assertRefused("SANDBOX_MARKER_UNSAFE")
+
+    def test_owner_only_marker_passes_guard(self):
+        self.marker()
+        code, parsed, calls = self.guarded("--require-sandbox")
+        self.assertEqual((code, parsed["status"], parsed["error_code"]), (0, "ok", None))
+        self.assertEqual(calls, [str(self.project)])
+
+    def test_without_flag_no_marker_needed(self):
+        code, parsed, calls = self.guarded()
+        self.assertEqual((code, parsed["status"]), (0, "ok"))
+        self.assertEqual(len(calls), 1)
+
+
 class TemplateTests(unittest.TestCase):
     def _load_generator(self):
         path = REPO / "deploy/records-runtime/targets/make_test_container.py"
@@ -902,10 +963,21 @@ class TemplateTests(unittest.TestCase):
         self._check_template(module, directory, "live-container.json.in", "live")
 
     def test_test_and_live_plans_differ_only_in_mode(self):
+        # AUD-DF1: TEST has its own project/adoption/approval placeholders; nothing else differs.
         directory, module = self._load_generator()
         test_plan = self._check_template(module, directory, "test-container.json.in", "test")
         live_plan = self._check_template(module, directory, "live-container.json.in", "live")
-        self.assertEqual(test_plan["stages"], live_plan["stages"])
+        live_names = {"@CONTAINER_PROJECT_DIR@", "@ADOPTION_CONFIG@", "@CONTAINER_APPROVAL_FILE@"}
+        for entry in test_plan["stages"]:
+            argv = entry["argv"]
+            self.assertFalse(live_names & set(argv), entry["name"])
+            self.assertEqual(argv[argv.index("--project") + 1], "@CONTAINER_PROJECT_DIR_TEST@")
+        by_name = {entry["name"]: entry["argv"] for entry in test_plan["stages"]}
+        self.assertIn("@ADOPTION_CONFIG_TEST@", by_name["adoption"])
+        self.assertIn("@CONTAINER_APPROVAL_FILE_TEST@", by_name["portal"])
+        mapped = json.loads(json.dumps(test_plan["stages"]).replace("_TEST@", "@"))
+        self.assertNotEqual(test_plan["stages"], live_plan["stages"])
+        self.assertEqual(mapped, live_plan["stages"])
 
     def test_committed_ocr_plans_match_generator_and_differ_only_in_extract(self):
         # T6-plan: Phase 2 LIVE plans. Only the extract stage differs from the Phase 1 LIVE plan.

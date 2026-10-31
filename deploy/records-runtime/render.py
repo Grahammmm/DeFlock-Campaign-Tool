@@ -25,7 +25,7 @@ import json
 import os
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
@@ -48,7 +48,9 @@ ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYT
             # requires) it.
             "CONTAINER_OCR_VISION_CONFIG",
             "CONTAINER_ENGINE_DIR", "CONTAINER_PROJECT_DIR", "CONTAINER_APPROVAL_FILE",
-            "CONTAINER_PYTHON", "CONTAINER_SYNC_SCRIPT", "ADOPTION_CONFIG"}
+            "CONTAINER_PYTHON", "CONTAINER_SYNC_SCRIPT", "ADOPTION_CONFIG",
+            # AUD-DF1: the TEST plan's own sandbox project, adoption config and approval file.
+            "CONTAINER_PROJECT_DIR_TEST", "ADOPTION_CONFIG_TEST", "CONTAINER_APPROVAL_FILE_TEST"}
 INTEGERS = {"RUN_UID", "DOCKER_WAIT_ATTEMPTS", "DOCKER_WAIT_DELAY", "DOCKER_WAIT_MAX_DELAY",
             "DOCKER_CMD_TIMEOUT", "DOCKER_WAIT_DEADLINE", "NOTIFY_TIMEOUT", "RUN_BUDGET_SECONDS",
             "MIN_FREE_BYTES"}
@@ -158,6 +160,24 @@ def inside_git_checkout(path):
     return False
 
 
+def plan_projects(config):
+    """Normalised ``--project`` values of a stage plan's enabled stages."""
+    return {PurePosixPath(os.path.normpath(value)) for stage in config["stages"]
+            if stage.get("enabled", True)
+            for flag, value in zip(stage["argv"], stage["argv"][1:]) if flag == "--project"}
+
+
+def check_overlap(plans):
+    """Refuse a TEST plan whose project equals, holds or lies inside a LIVE plan's (AUD-DF1)."""
+    for test_name, test in plans:
+        for live_name, live in plans:
+            if test["mode"] == "test" and live["mode"] == "live" and any(
+                    a == b or a in b.parents or b in a.parents
+                    for a in plan_projects(test) for b in plan_projects(live)):
+                raise RenderError(f"target {test_name}: test plan project overlaps live target "
+                                  f"{live_name}'s project")
+
+
 def render(values, targets, out):
     check_values(values)
     out = Path(out).resolve()
@@ -174,6 +194,7 @@ def render(values, targets, out):
 
     used = set()
     files = []
+    plans = []
     for template, output, mode in TEMPLATES:
         text = (HERE / template).read_text(encoding="utf-8")
         found = set(PLACEHOLDER.findall(text))
@@ -196,6 +217,8 @@ def render(values, targets, out):
         if config["target"] != name:
             raise RenderError(f"target {name}: stage plan names target {config['target']}")
         files.append((f"targets/{name}.json", rendered, 0o600))
+        plans.append((name, config))
+    check_overlap(plans)
     unknown = sorted(set(values) - used)
     if unknown:
         raise RenderError(f"values: unknown placeholder(s) {unknown}")

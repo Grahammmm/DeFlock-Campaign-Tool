@@ -94,6 +94,8 @@ MAX_NOTICE_BODY = 2 * 1024 * 1024
 BACKUP_KEEP = 9
 BACKUP_DIR_NAME = "backups"
 BACKUP_MANIFEST = "manifest.json"
+# AUD-DF1: TEST plans pass --require-sandbox; same marker as scripts/t12_fault_inject.py.
+SANDBOX_MARKER = ".t12-sandbox-v1"
 # (backup file name, source path relative to the processing root)
 BACKUP_SOURCES = (("ledger.sqlite", "ledger.sqlite"),
                   ("intake.sqlite", os.path.join("intake", "intake.sqlite")))
@@ -1028,7 +1030,21 @@ def parser():
                    help="extract: with --ocr, timeout of each pdftoppm and tesseract child (10..600, default 180)")
     p.add_argument("--ocr-vision-timeout", type=int, default=None,
                    help="extract: with --ocr-vision-config, timeout of each vision child (10..600, default 300)")
+    p.add_argument("--require-sandbox", action="store_true",
+                   help="refuse unless PROJECT holds the .t12-sandbox-v1 marker (TEST plans)")
     return p
+
+
+def sandbox_refusal(project):
+    """Error code when PROJECT lacks a safe owner-only sandbox marker, else None."""
+    try:
+        info = os.lstat(os.path.join(project, SANDBOX_MARKER))
+    except OSError:
+        return "SANDBOX_MARKER_MISSING"
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077):
+        return "SANDBOX_MARKER_UNSAFE"
+    return None
 
 
 def config_invalid(args):
@@ -1070,6 +1086,10 @@ def main(argv=None):
         print(json.dumps(result("fail", {"failed": 1}, "PORTAL_ALLOWLIST_MISSING")))
         return 1
     args.project = os.path.abspath(args.project)
+    sandbox_code = sandbox_refusal(args.project) if args.require_sandbox else None
+    if sandbox_code:
+        print(json.dumps(result("fail", {"failed": 1}, sandbox_code), sort_keys=True))
+        return 1
     # Children get the remaining budget minus a small margin; the alarm is the hard stop.
     args.child_timeout = max(1, args.timeout - 5)
 
