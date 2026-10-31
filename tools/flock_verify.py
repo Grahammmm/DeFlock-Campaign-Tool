@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Flock verify: a different-family verifier's confirm/downgrade/reject per finding -> PUBLIC-OK.csv, QUESTIONS.md.
-  start RUNDIR --provider P --model M  |  --check RUNDIR  |  finish RUNDIR [--golden CSV]
+  start RUNDIR --provider P --model M  |  --check RUNDIR  |  finish RUNDIR [--golden CSV]  |  current RUNDIR [--golden CSV]
 Exit 1 = errors, 2 = usage, 3 = family refusal (equal, missing or unknown). Prints ids, labels and counts only.
-start/finish RUNDIR must lie outside the repository."""
+start/finish RUNDIR must lie outside the repository. current writes nothing: on-disk outputs vs a fresh finish."""
 import argparse, contextlib, csv, importlib.util, io, json, os, re, sys, tempfile
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
@@ -93,15 +93,14 @@ def start(run, provider, model):
     write(run / "VERIFY.csv", ",".join(HEADER) + "\n")
     return print("started verify run") or 0
 
-def finish(run, golden):
+def outputs(run, golden):
+    """(errs, PUBLIC-OK.csv text, QUESTIONS.md text, (public_ok, questions, rejected)) that finish would write now."""
     errs, findings, facts, verify = load(run)
     final = [(n, dict(f, rating=verify[f["finding_id"]]["new_rating"])) for n, f in enumerate(findings, 2)
              if not errs and verify[f["finding_id"]]["verdict"] != "reject"]
     errs += compare.golden_errors(golden, final) if golden and not errs else []
-    if not errs and any((run / name).exists() for name in ("PUBLIC-OK.csv", "QUESTIONS.md")):
-        errs.append("finish refused: PUBLIC-OK.csv or QUESTIONS.md already exists")
     if errs:
-        return print("\n".join(errs + ["errors=%d" % len(errs)])) or 1
+        return errs, None, None, None
     package = {r["rule_id"]: r["review"] for r in compare.law.load_package("us-ca")["rules"]}
     out, questions, public, rejected = io.StringIO(), [QLINE1], [PUBLIC], 0
     for f in findings:
@@ -114,17 +113,49 @@ def finish(run, golden):
             prior = sorted({facts[i]["request"].strip() for i in compare.ids(f["fact_ids"]) if i in facts} - {""})
             questions.append("- Q %s | %s | prior %s | %s" % (f["finding_id"], f["topic"], ";".join(prior) or "-", v["records_sought"]))
     csv.writer(out, lineterminator="\n").writerows(public)
-    write(run / "PUBLIC-OK.csv", out.getvalue())
+    return [], out.getvalue(), "\n".join(questions) + "\n", (len(public) - 1, len(questions) - 1, rejected)
+
+def finish(run, golden):
+    errs, public, questions, counts = outputs(run, golden)
+    if not errs and any((run / name).exists() for name in ("PUBLIC-OK.csv", "QUESTIONS.md")):
+        errs.append("finish refused: PUBLIC-OK.csv or QUESTIONS.md already exists")
+    if errs:
+        return print("\n".join(errs + ["errors=%d" % len(errs)])) or 1
+    write(run / "PUBLIC-OK.csv", public)
     try:  # finish refused above if either file existed, so this PUBLIC-OK.csv is ours to remove
-        write(run / "QUESTIONS.md", "\n".join(questions) + "\n")
+        write(run / "QUESTIONS.md", questions)
     except BaseException:
         with contextlib.suppress(OSError): os.unlink(run / "PUBLIC-OK.csv")
         raise
-    return print("public_ok=%d questions=%d rejected=%d" % (len(public) - 1, len(questions) - 1, rejected)) or 0
+    return print("public_ok=%d questions=%d rejected=%d" % counts) or 0
+
+def ids_on_disk(data):  # (data rows, finding ids) of a PUBLIC-OK.csv; unreadable or wrong header counts as no rows
+    try:
+        table = [r for r in csv.reader(io.StringIO(data.decode("utf-8"), newline="")) if any(c.strip() for c in r)]
+    except (UnicodeDecodeError, csv.Error):
+        return 0, set()
+    return (len(table) - 1, {r[0].strip() for r in table[1:]}) if table and table[0] == PUBLIC else (0, set())
+
+def current(run, golden):  # read-only: compares the on-disk outputs with the bytes finish would write now
+    errs, public, questions, _ = outputs(run, golden)
+    if errs:
+        return print("\n".join(errs + ["current refused: errors=%d" % len(errs)])) or 1
+    tally = {"current": 0, "stale": 0, "missing": 0}
+    for name, text in (("PUBLIC-OK.csv", public), ("QUESTIONS.md", questions)):
+        path, want, link = run / name, str(text).encode("utf-8"), (run / name).is_symlink()  # a symlink is never followed
+        data = None if link or not path.is_file() else path.read_bytes()
+        state = "missing" if data is None else "current" if data == want else "stale"
+        tally[state] += 1
+        print("current: %s %s" % (name, "is a symlink (refused)" if link else state))
+        if state == "stale" and name == "PUBLIC-OK.csv":
+            (n, have), (m, need) = ids_on_disk(data), ids_on_disk(want)
+            print("current: PUBLIC-OK.csv rows on_disk=%d expected=%d missing=%d extra=%d" % (n, m, len(need - have), len(have - need)))
+    print("current=%(current)d stale=%(stale)d missing=%(missing)d | outputs vs a fresh finish, not a review verdict" % tally)
+    return 0 if tally["current"] == 2 else 1
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", choices=["start", "finish"])
+    parser.add_argument("command", nargs="?", choices=["start", "finish", "current"])
     parser.add_argument("rundir", nargs="?")
     for name in ("--check", "--golden", "--provider", "--model"):
         parser.add_argument(name)
@@ -132,10 +163,10 @@ def main(argv=None):
     target = args.check if not args.command else args.rundir
     if not target or (args.check and (args.command or args.rundir or args.golden or args.provider or args.model)) or \
             (args.command == "start" and (args.golden or not (args.provider or "").strip() or not (args.model or "").strip())) or \
-            (args.command == "finish" and (args.provider or args.model)):
-        parser.error("usage: start RUNDIR --provider P --model M | --check RUNDIR | finish RUNDIR [--golden CSV]")
+            (args.command in ("finish", "current") and (args.provider or args.model)):
+        parser.error("usage: start RUNDIR --provider P --model M | --check RUNDIR | finish RUNDIR [--golden CSV] | current RUNDIR [--golden CSV]")
     run = Path(target).resolve()
-    if args.command and (run == REPO or REPO in run.parents):
+    if args.command in ("start", "finish") and (run == REPO or REPO in run.parents):  # current is read-only, like --check
         return print("flock-verify: RUNDIR is inside the repository") or 1
     refusal = family(run, args.provider if args.command == "start" else None)
     if refusal:
@@ -145,6 +176,8 @@ def main(argv=None):
             return start(run, args.provider, args.model.strip())
         if args.command == "finish":
             return finish(run, args.golden)
+        if args.command == "current":
+            return current(run, args.golden)
         errs, _, _, verify = load(run)
         return print("\n".join(errs + ["verified=%d errors=%d" % (len(verify), len(errs))])) or (1 if errs else 0)
     except (OSError, UnicodeDecodeError, csv.Error) as exc:  # class name only: paths and contents stay out of the output
