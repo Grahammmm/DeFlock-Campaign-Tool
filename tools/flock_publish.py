@@ -54,11 +54,13 @@ def cites_for(f, law_rows, policy_rows, package, facts):
              else "Source page %s" % facts[i]["page"].strip() for i in compare.ids(f["fact_ids"])}
     return out + [{"kind": "record", "label": label} for label in sorted(pages)]
 def export(run, site_slug):
+    if not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
+        return print("export refused: RUNDIR must be <store>/agencies/<slug>/runs/<date>") or 1
     refusal = verify_tool.family(run)
     if refusal:
         return print(refusal) or 3
     target = run / "PUBLISH.json"
-    if target.exists():
+    if target.is_symlink() or target.exists():  # a dangling link is refused too, never replaced
         return print("export refused: PUBLISH.json already exists") or 1
     errs, findings, facts, verify = verify_tool.load(run)
     package = {r["rule_id"]: r for r in compare.law.load_package("us-ca")["rules"]}
@@ -149,6 +151,9 @@ def main(argv=None):
     run = Path(args.rundir).resolve()
     if run == verify_tool.REPO or verify_tool.REPO in run.parents:
         return print("flock-publish: RUNDIR is inside the repository") or 1
-    return export(run, args.site_slug)
+    try:
+        return export(run, args.site_slug)
+    except (OSError, ValueError) as exc:  # the class only, never a path or record text
+        return print("io: %s" % type(exc).__name__) or 1
 if __name__ == "__main__":
     sys.exit(main())
