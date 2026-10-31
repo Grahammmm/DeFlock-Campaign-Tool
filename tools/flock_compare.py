@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Flock compare: scaffold a run folder; check FINDINGS.csv fail-closed (+ golden). Prints row numbers, fields, ids, counts only."""
-import argparse, csv, importlib.util, json, os, re, sys
+import argparse, contextlib, csv, importlib.util, json, os, re, sys, tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -60,8 +60,13 @@ def scaffold(args):
             "author_model": args.model, "applicability": args.applicability}
     for name, text in (("RUN.json", json.dumps(meta, indent=2) + "\n"), ("FINDINGS.csv", ",".join(HEADER) + "\n"),
                        ("FINDINGS.md", DRAFT + "\n")):
-        with os.fdopen(os.open(run / name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as out:
-            out.write(text)
+        fd, tmp = tempfile.mkstemp(prefix="." + name + ".", suffix=".tmp", dir=run)  # fresh temp; a final-name symlink is replaced
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out: out.write(text)
+            os.replace(tmp, run / name)
+        except BaseException:
+            with contextlib.suppress(OSError): os.unlink(tmp)
+            raise
     print("scaffolded run for %s on %s" % (args.agency, args.date))
     return 0
 

@@ -6,7 +6,7 @@
 Priority = every contradicted / not met row; sample = random.Random(seed).sample of the met / cannot tell rows (file order).
 Exit 0 ok, 1 errors, 2 usage. Prints ids, labels and counts only, never reason, basis, requirement or quote text.
 A verify pass is not acceptance: machine-valid output is review-required."""
-import argparse, ast, collections, csv, hashlib, json, os, random, re, sys
+import argparse, ast, collections, contextlib, csv, hashlib, json, os, random, re, sys, tempfile
 from pathlib import Path
 
 HEADER, RESULTS = ["row_id", "result", "reason", "page_cite"], ("agree", "disagree", "needs-source")
@@ -39,10 +39,13 @@ def plan(args):
     sample = random.Random(args.seed).sample(pool, min(args.size, len(pool)))
     body = {"schema": 1, "seed": args.seed, "sample_size": args.size, "findings_sha256": digest, "pool_size": len(pool),
             "priority_ids": priority, "sample_ids": sample, "checks": CHECKS}
-    tmp = out.with_name(out.name + ".tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(body, indent=1) + "\n")
-    os.replace(tmp, out)
+    fd, tmp = tempfile.mkstemp(prefix="." + out.name + ".", suffix=".tmp", dir=out.parent)  # fresh temp, never a fixed .tmp
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle: handle.write(json.dumps(body, indent=1) + "\n")
+        os.replace(tmp, out)
+    except BaseException:
+        with contextlib.suppress(OSError): os.unlink(tmp)
+        raise
     print("priority=%d pool=%d sample=%d findings_sha256=%s" % (len(priority), len(pool), len(sample), digest))
     return 0
 
