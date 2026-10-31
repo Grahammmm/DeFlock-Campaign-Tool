@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Flock region: draft a county region config from the engine agency seed, check it, and scaffold the private store.
   new --county-fips FIPS --region SLUG --out PATH [--jurisdiction us-ca] [--seed-dir DIR]
-  --check CONFIG [--seed-dir DIR]  |  init CONFIG --store DIR [--seed-dir DIR]
-init writes agencies/<slug>/ (yes|hold) and regions/<region>/WATCHLIST.csv (F7), ROSTER.csv (F10), PLAN.md. No network;
+  --check CONFIG [--seed-dir DIR]  |  init CONFIG --store DIR [--seed-dir DIR] [--dry-run]
+init writes agencies/<slug>/ (yes|hold) and regions/<region>/WATCHLIST.csv (F7), ROSTER.csv (F10), PLAN.md; with --dry-run it
+runs the same checks and prints what it would create, write or drop, writing nothing. No network;
 the seed is read, never edited or verified; FACTS/POLICY/REQUESTS/LAW are never written. Exit 0 ok, 1 errors, 2 usage."""
 import argparse, contextlib, csv, importlib.util, io, json, os, re, sys
 from pathlib import Path
@@ -124,11 +125,13 @@ def cmd_new(args):
     print("agencies=%d county=%s draft=%s" % (len(agencies), county["county_fips"], out))
     return 0
 
+def render_csv(header, rows):  # the exact bytes put() writes for a CSV
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerows([header] + [[r[k] for k in header] for r in rows])
+    return buf.getvalue()
+
 def put(path, header=None, rows=(), body=""):  # atomic 0600 write; an unchanged file is left untouched
-    if header:
-        buf = io.StringIO()
-        csv.writer(buf, lineterminator="\n").writerows([header] + [[r[k] for k in header] for r in rows])
-        body = buf.getvalue()
+    body = render_csv(header, rows) if header else body
     if not (path.is_file() and path.read_bytes() == body.encode("utf-8")):
         monitor.write_atomic(path, body)
 
@@ -158,7 +161,7 @@ def plan(cfg, store, rdir):
             lines.append("HOLD: operator applicability line required before step 7")
     return "\n".join(lines) + "\n"
 
-def cmd_init(args):
+def init_plan(args):  # every init check and computation, no writes -> (store, cfg, rdir, rows, roster, folders, dropped keys)
     store, cfg = outside(args.store, "store"), load_config(args.config)
     errs, rows = check(cfg, args.seed_dir)
     region, mine = cfg.get("region"), {} if errs else {a["slug"]: n for n, a in enumerate(cfg["agencies"], 1)}
@@ -174,23 +177,40 @@ def cmd_init(args):
             errs += ["agency %d: slug already belongs to region %s" % (mine[r["slug"]], other.parent.name)
                      for _, r in monitor.read_csv(other, ROSTER) if r["slug"] in mine]
     if errs: raise Fail("\n".join(errs + ["errors=%d" % len(errs)]))
-    rdir, created = store / "regions" / region, 0
-    for a in cfg["agencies"]:
-        if a["in_scope"] != "no" and not (store / "agencies" / a["slug"]).is_dir():
-            (store / "agencies").mkdir(mode=0o700, parents=True, exist_ok=True)
-            (store / "agencies" / a["slug"]).mkdir(mode=0o700)
-            created += 1
+    rdir = store / "regions" / region
+    folders = [a["slug"] for a in cfg["agencies"] if a["in_scope"] != "no" and not (store / "agencies" / a["slug"]).is_dir()]
     old = {tuple(r[k] for k in KEY): r["last_seen_hash"]
            for _, r in monitor.read_csv(rdir / "WATCHLIST.csv", monitor.WATCH_HEADER, missing_ok=True)}
     for row in rows:
         row["last_seen_hash"] = old.get(tuple(row[k] for k in KEY), "")
-    dropped = len(set(old) - {tuple(row[k] for k in KEY) for row in rows})
+    keep = {tuple(row[k] for k in KEY) for row in rows}
     roster = [dict({k: a[k] for k in ROSTER[:4]}, site_slug=a["site_slug"] or "") for a in cfg["agencies"]]
+    return store, cfg, rdir, rows, roster, folders, [key for key in old if key not in keep]
+
+def dry_run(store, cfg, rdir, rows, roster, folders, dropped):  # reads only: no mkdir, write, chmod or unlink
+    lines = ["would create: agencies/%s/" % slug for slug in folders]
+    for name, body in (("WATCHLIST.csv", render_csv(monitor.WATCH_HEADER, rows)), ("ROSTER.csv", render_csv(ROSTER, roster)),
+                       ("PLAN.md", plan(cfg, store, rdir))):
+        path = rdir / name
+        same = path.is_file() and path.read_bytes() == body.encode("utf-8")
+        lines.append("would write: regions/%s/%s (%s)" % (rdir.name, name, "unchanged" if same else
+                                                          "changed" if os.path.lexists(path) else "new"))
+    lines += ["would drop watch row: %s %s" % key[:2] for key in dropped]  # agency and kind only, never URL, query or hash
+    print("\n".join(lines + ["agencies=%d folders_to_create=%d watch_rows=%d watch_to_drop=%d roster_rows=%d dry_run=1"
+                             % (len(cfg["agencies"]), len(folders), len(rows), len(dropped), len(roster))]))
+    return 0
+
+def cmd_init(args):
+    store, cfg, rdir, rows, roster, folders, dropped = plan_ = init_plan(args)
+    if args.dry_run: return dry_run(*plan_)
+    for slug in folders:
+        (store / "agencies").mkdir(mode=0o700, parents=True, exist_ok=True)
+        (store / "agencies" / slug).mkdir(mode=0o700)
     put(rdir / "WATCHLIST.csv", monitor.WATCH_HEADER, rows)
     put(rdir / "ROSTER.csv", ROSTER, roster)
     put(rdir / "PLAN.md", body=plan(cfg, store, rdir))
     print("agencies=%d folders_created=%d watch_rows=%d watch_dropped=%d roster_rows=%d"
-          % (len(cfg["agencies"]), created, len(rows), dropped, len(roster)))
+          % (len(cfg["agencies"]), len(folders), len(rows), len(dropped), len(roster)))
     return 0
 
 def main(argv=None):
@@ -200,10 +220,13 @@ def main(argv=None):
     for flag in ("--check", "--county-fips", "--region", "--out", "--store", "--seed-dir"):
         p.add_argument(flag)
     p.add_argument("--jurisdiction", default="us-ca")
+    p.add_argument("--dry-run", action="store_true", help="init only: print what init would change; write nothing")
     a = p.parse_args(argv)
     need = {None: (a.check,), "new": (a.county_fips, a.region, a.out), "init": (a.config, a.store)}
     if (a.check is None) == (a.command is None) or not all(need[a.command]) or (a.command != "init" and a.config):
         p.error("use exactly one of: new, --check CONFIG, init CONFIG")
+    if a.dry_run and (a.check or a.command != "init"):
+        p.error("--dry-run is valid only with init")
     try:
         return cmd_check(a) if a.check else cmd_new(a) if a.command == "new" else cmd_init(a)
     except Fail as exc:
