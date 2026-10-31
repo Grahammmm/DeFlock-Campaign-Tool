@@ -84,17 +84,32 @@ def load(path, kind, folder=None):
             ctx = {x["rule_id"]: x for x in law.load_package("us-ca")["rules"]}
         except (ValueError, KeyError, TypeError):
             return [], ["row 1: law package unreadable"]
+    adopted = []  # policy rows with no error of their own and adoption evidence: the governing windows
     for n, cells in enumerate(table[1:], 2):
         if len(cells) != len(header):
             errs += [f"row {n}: columns expected {len(header)}, found {len(cells)}"] if cells else []
             continue
         r = dict(zip(header, (c.strip() for c in cells)))
         rows.append((n, r))
+        before = len(errs)
         errs += [f"row {n}: {f} {why}" for f, why in problems(r, kind, ctx)]
         if r[header[0]] in seen:
             errs.append(f"row {n}: {header[0]} duplicates an earlier row")
         seen.add(r[header[0]])
-    return rows, errs
+        if kind == "policy" and len(errs) == before and r["adoption_evidence"] != "unverified":
+            adopted.append((n, r))
+    return rows, errs + overlaps(adopted)
+
+def overlaps(rows):  # one error per pair of windows of one agency + policy_id sharing a day (inclusive; open = +inf)
+    groups, pairs = {}, []
+    for n, r in rows:
+        key = (slug(r["agency"]), r["policy_id"])
+        groups.setdefault(key, []).append((r["governs_from"], n, r["governs_to"] or "9999-12-31"))
+    for group in groups.values():
+        group.sort()  # by (governs_from, row); ISO dates compare as text
+        for i, (b_from, n, _) in enumerate(group):
+            pairs += [(n, m) for _, m, a_to in group[:i] if b_from <= a_to]  # a.from <= b.from <= b.to holds
+    return [f"row {n}: governs_from overlaps row {m} (same agency and policy_id)" for n, m in sorted(pairs)]
 
 def load_law(path): return load(path, "law")
 def load_policy(path, folder=None): return load(path, "policy", folder)
