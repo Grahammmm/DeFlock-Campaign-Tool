@@ -1,6 +1,7 @@
 """flock_compare --summary: ids and counts of what a clean run cited and left uncited; never text (RF1150-1)."""
 import csv
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import tempfile
@@ -46,6 +47,8 @@ class CompareSummaryTest(unittest.TestCase):
         self.assertEqual(run("flock_compare.py", "scaffold", "--store", str(self.store), "--agency", AGENCY, "--date",
                              "2026-10-30", "--provider", "anthropic", "--model", "claude-opus-5-5",
                              "--applicability", "Sample city police; local ALPR policy applies")[0], 0)
+        meta = json.loads((self.run_dir / "RUN.json").read_text(encoding="utf-8"))  # legacy run: counts, not input freshness
+        (self.run_dir / "RUN.json").write_text(json.dumps({k: v for k, v in meta.items() if k != "inputs"}), encoding="utf-8")
         shutil.copy(FIXTURES / "findings-sample.csv", self.run_dir / "FINDINGS.csv")
         self.findings = self.run_dir / "FINDINGS.csv"
 
