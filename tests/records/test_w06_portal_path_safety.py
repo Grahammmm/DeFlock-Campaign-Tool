@@ -1,5 +1,6 @@
 """W06: offline synthetic report paths stay on walked directory descriptors."""
 import contextlib
+import gc
 import io
 import json
 import os
@@ -33,6 +34,8 @@ class Behavior(unittest.TestCase):
         self.output = self.base / "report.json"
         self.expected = portal.render(portal.reconcile(json.loads(self.obs.read_text())["observations"],
                                                        json.loads(self.que.read_text())["items"]))
+        # Release unrelated cyclic garbage before measuring this test's fd usage.
+        gc.collect()
         self.fd_count = len(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").exists() else None
         self.addCleanup(self.check_fds)
 
