@@ -4,7 +4,7 @@
   --check CONFIG [--seed-dir DIR]  |  init CONFIG --store DIR [--seed-dir DIR]
 init writes agencies/<slug>/ (yes|hold) and regions/<region>/WATCHLIST.csv (F7), ROSTER.csv (F10), PLAN.md. No network;
 the seed is read, never edited or verified; FACTS/POLICY/REQUESTS/LAW are never written. Exit 0 ok, 1 errors, 2 usage."""
-import argparse, csv, importlib.util, io, json, os, re, sys
+import argparse, contextlib, csv, importlib.util, io, json, os, re, sys
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -103,7 +103,7 @@ def cmd_check(args):
 
 def cmd_new(args):
     out = outside(args.out, "out")
-    if out.exists() or out.is_symlink(): raise Fail("out: exists; refusing to overwrite")
+    if out.exists() or out.is_symlink() or Path(args.out).is_symlink(): raise Fail("out: exists; refusing to overwrite")
     seed, county = county_of(args.jurisdiction, args.county_fips, args.seed_dir)
     if county is None: raise Fail("config: county_fips is not a county in a valid %s seed" % args.jurisdiction)
     agencies = [{"slug": facts_tool.slugify(e["name"]), "watch_agency": e["name"], "seed_agency_id": e["agency_id"],
@@ -114,8 +114,13 @@ def cmd_new(args):
     errs, _ = check(cfg, args.seed_dir)
     if errs: raise Fail("\n".join(errs))
     out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with os.fdopen(os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(cfg, indent=2) + "\n")
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # O_EXCL: this call created the file
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(cfg, indent=2) + "\n")
+    except BaseException:  # no half-written draft: remove only the file this call created, then re-raise
+        with contextlib.suppress(OSError): os.unlink(out)
+        raise
     print("agencies=%d county=%s draft=%s" % (len(agencies), county["county_fips"], out))
     return 0
 
@@ -196,6 +201,8 @@ def main(argv=None):
         return cmd_check(a) if a.check else cmd_new(a) if a.command == "new" else cmd_init(a)
     except Fail as exc:
         return print(exc) or 1
+    except OSError as exc:  # the class only, never a path or content
+        return print("io: %s" % type(exc).__name__) or 1
 
 if __name__ == "__main__":
     raise SystemExit(main())
