@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Flock compare: scaffold a run folder; check FINDINGS.csv fail-closed (+ golden). Prints row numbers, fields, ids, counts only."""
+"""Flock compare: scaffold a run folder; check FINDINGS.csv fail-closed (+ golden); --summary RUNDIR counts what a clean run
+cited and left uncited (a report, not a review verdict). Prints row numbers, fields, ids, counts only."""
 import argparse, contextlib, csv, importlib.util, json, os, re, sys, tempfile
 from pathlib import Path
 
@@ -133,11 +134,23 @@ def golden_errors(path, rows):
             errs.append("golden: %s/%s does not cite %s" % (g["topic"], g["claim_class"], g["cited"]))
     return list(dict.fromkeys(errs))
 
+def _inputs(run):  # the store inputs check reads; --summary reuses them, so the two cannot disagree
+    agency, store = run.parents[1], run.parents[3]
+    facts_path = agency / "FACTS.csv"
+    store_errs = facts_tool.check_file(facts_path, agency.name) if facts_path.is_file() else ["FACTS.csv missing"]
+    law_rows, e = law_policy.load_law(store / "LAW.csv")
+    store_errs += ["LAW.csv " + x for x in e]
+    policy_rows, e = law_policy.load_policy(agency / "POLICY.csv", agency.name)
+    store_errs += ["POLICY.csv " + x for x in e]
+    facts = {r["fact_id"]: r for _, r in facts_tool.load(facts_path, agency.name)[1]} if facts_path.is_file() else {}
+    return (store_errs, facts, [r["rule_id"] for _, r in law_rows], [r["policy_row_id"] for _, r in policy_rows],
+            {r["rule_id"]: r["review"] for r in law.load_package("us-ca")["rules"]})
+
 def check(rundir, golden=None):
     run = Path(rundir).resolve()
     if len(run.parents) < 4 or run.parent.name != "runs" or run.parents[2].name != "agencies":
         return ["run: not a <store>/agencies/<slug>/runs/<date> folder"], 0
-    agency, store = run.parents[1], run.parents[3]
+    agency = run.parents[1]
     errs = []
     md = run / "FINDINGS.md"
     if not md.is_file() or md.read_text(encoding="utf-8").splitlines()[:1] != [DRAFT]:
@@ -148,18 +161,10 @@ def check(rundir, golden=None):
             errs.append("RUN.json: agency or author_provider is invalid")
     except (OSError, ValueError):
         errs.append("RUN.json: missing or unreadable")
-    facts_path = agency / "FACTS.csv"
-    store_errs = facts_tool.check_file(facts_path, agency.name) if facts_path.is_file() else ["FACTS.csv missing"]
-    law_rows, e = law_policy.load_law(store / "LAW.csv")
-    store_errs += ["LAW.csv " + x for x in e]
-    policy_rows, e = law_policy.load_policy(agency / "POLICY.csv", agency.name)
-    store_errs += ["POLICY.csv " + x for x in e]
+    store_errs, facts, law_ids, policy_ids, package = _inputs(run)
     errs += ["store: " + x for x in store_errs]
-    facts = {r["fact_id"]: r for _, r in facts_tool.load(facts_path, agency.name)[1]} if facts_path.is_file() else {}
     vendors = [(r["value"] + " " + r["verbatim_quote"]).lower() for r in facts.values() if r["fact_type"] == "vendor"]
-    ctx = {"facts": facts, "seen": set(), "law": {r["rule_id"] for _, r in law_rows},
-           "policy": {r["policy_row_id"] for _, r in policy_rows},
-           "package": {r["rule_id"]: r["review"] for r in law.load_package("us-ca")["rules"]},
+    ctx = {"facts": facts, "seen": set(), "law": set(law_ids), "policy": set(policy_ids), "package": package,
            "vigilant_only": any("vigilant" in v or "motorola" in v for v in vendors) and not any("flock" in v for v in vendors)}
     table = read_csv(run / "FINDINGS.csv") if (run / "FINDINGS.csv").is_file() else []
     if not table or table[0] != HEADER:
@@ -177,6 +182,31 @@ def check(rundir, golden=None):
         return errs + ["golden: missing or not a regular file"], len(rows)
     return errs + (golden_errors(golden, rows) if golden else []), len(rows)
 
+def summary(rundir):  # report, not a gate: ids and counts of what a clean run cited; never claim, quote or fact text
+    errs, count = check(rundir)
+    if errs:
+        print("summary refused: errors=%d (run --check)" % len(errs))
+        return 1
+    _, facts, law_ids, policy_ids, package = _inputs(run := Path(rundir).resolve())
+    rows = [dict(zip(HEADER, map(str.strip, rec))) for rec in read_csv(run / "FINDINGS.csv")[1:] if any(map(str.strip, rec))]
+    topics = {}
+    for r in rows:
+        topics.setdefault((r["topic"], r["claim_class"]), dict.fromkeys(RANK, 0))[r["rating"]] += 1
+    out = ["topic | %s | %s | strong=%d medium=%d weak=%d" % (t, c, n["strong"], n["medium"], n["weak"])
+           for (t, c), n in sorted(topics.items())]
+    rules, cited = set(law_ids), {x for r in rows for x in ids(r["rule_ids"])}
+    out.append("law | rules=%d cited=%d uncited=%d attorney_review_cited=%d" % (len(rules), len(cited & rules), len(rules - cited),
+               sum(package.get(x) == "needs_attorney_review" for x in cited)))
+    out += ["law uncited | " + x for x in sorted(rules - cited)]
+    policy, cited = set(policy_ids), {x.partition("#")[0] for r in rows for x in ids(r["policy_refs"])}  # clean: P-<12hex>#...
+    out.append("policy | rows=%d cited=%d uncited=%d" % (len(policy), len(cited & policy), len(policy - cited)))
+    out += ["policy uncited | " + x for x in sorted(policy - cited)]
+    cited, quoted = {x for r in rows for x in ids(r["fact_ids"])}, {r["quote_fact_id"] for r in rows if r["quote_fact_id"]}
+    out.append("facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d" % (len(facts), len(cited & set(facts)),
+               len(set(facts) - cited), sum(r["value"].strip() == "UNREADABLE" for r in facts.values()), len(quoted)))
+    print("\n".join(out + ["findings=%d | counts of what this run cited, not a review verdict" % count]))
+    return 0
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -190,7 +220,14 @@ def _main(argv=None):
     for name in ("--store", "--agency", "--date", "--model", "--applicability", "--check", "--golden"):
         parser.add_argument(name)
     parser.add_argument("--provider", choices=PROVIDERS)
+    parser.add_argument("--summary")
     args = parser.parse_args(argv)
+    usage = ("usage: scaffold --store DIR --agency SLUG --date YYYY-MM-DD --provider P --model M "
+             "--applicability TEXT | --check RUNDIR [--golden CSV] | --summary RUNDIR")
+    if args.summary is not None:
+        others = (args.command, args.check, args.golden, args.store, args.agency, args.date, args.provider, args.model,
+                  args.applicability)  # any other flag, even empty, is a usage error
+        return parser.error(usage) if any(v is not None for v in others) else summary(args.summary)
     if args.check and not args.command:
         errs, count = check(args.check, args.golden)
         print("\n".join(errs + ["findings=%d errors=%d" % (count, len(errs))]))
@@ -199,8 +236,7 @@ def _main(argv=None):
     if args.command != "scaffold" or args.check or args.golden or not all(fields) \
             or not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", args.agency) or not law_policy.day(args.date) \
             or len(args.applicability) > 200:
-        parser.error("usage: scaffold --store DIR --agency SLUG --date YYYY-MM-DD --provider P --model M "
-                     "--applicability TEXT | --check RUNDIR [--golden CSV]")
+        parser.error(usage)
     return scaffold(args)
 
 if __name__ == "__main__":
