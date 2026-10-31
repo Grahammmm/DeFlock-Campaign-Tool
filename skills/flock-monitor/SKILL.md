@@ -1,7 +1,7 @@
 ---
 name: flock-monitor
 description: Use when checking official agency agenda, minutes or news index pages for new ALPR-related links. Records public, unreviewed MONITOR.csv rows and a daily digest; never fetches PDFs or off-domain pages.
-skill_version: 1.0
+skill_version: 1.1
 ---
 
 # Flock monitor (watch list, index-page scan, daily digest)
@@ -18,6 +18,8 @@ PDFs included, are recorded by URL and never fetched. Monitor items are leads, n
 
 ## Steps
 
+0. Check: `python3 tools/flock_monitor.py check WATCHLIST.csv` (no network, no writes): fix every
+   `row N:` error; the `would fetch` lines are exactly the pages `scan` will request.
 1. Convert the roster (e.g. the L3 legwork list) to the header above, by hand or in a legwork card.
 2. Scan: `python3 tools/flock_monitor.py scan WATCHLIST.csv --store STORE [--date YYYY-MM-DD]`.
    Fix every `row N: <field> <reason>` (exit 1, nothing fetched). `row N: refused <reason>` is data.
@@ -46,3 +48,4 @@ The scheduled timer and the Grok cron job are operator installs after merge; thi
 ## Changelog
 
 - 1.0: WATCHLIST.csv, `scan` and `digest`.
+- 1.1: check (dry run).
