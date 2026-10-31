@@ -5,7 +5,7 @@ skill_version: 1.0
 ---
 # flock-review: one agency config -> facts -> rules -> compare
 
-`tools/flock_review.py` walks a fixed 27-stage table (facts-intake 1-7, rules-intake 8-11, compare and F3 12-20, verify and F4 21-27). It runs the
+`tools/flock_review.py` walks a fixed 28-stage table (facts-intake 1-7, rules-intake 8-11, compare and F3 12-20, verify and F4 21-27, report 28). It runs the
 private agency-review method scripts (outside this repository; they need PyYAML) and the repo tools F1/F3, skips every stage whose
 inputs are unchanged, and stops at each model-authored step (`wait` stage) until that step is marked. It never runs a model, makes
 no network call and never deletes: superseded outputs move to `<out>/.review/superseded/`.
@@ -53,8 +53,10 @@ Never: re-sample after seeing results; edit FINDINGS after the plan; verify in t
 unreviewed rows (disagree / needs-source rows are withheld downstream, and verify is not review or release).
 
 ## Report
-1. After verify-check passes, run `python3 tools/flock_report.py build CONFIG` (default output `<compare.out>/report/`, never inside
-   the repository). It writes `REPORT-DRAFT.md` and `SOURCES.json` only when its final lint passes.
+1. After verify-check passes, `flock_review.py run CONFIG` builds the draft as stage 28 `report` with `tools/flock_report.py build
+   CONFIG` (output `<compare.out>/report/`, never inside the repository; log `.review/logs/report.log`). It writes `REPORT-DRAFT.md`
+   and `SOURCES.json` only when its final lint passes; a lint error fails the stage, which re-runs on the next `run`. The manual
+   `python3 tools/flock_report.py build CONFIG` still works for a re-run after an upstream wording fix.
 2. Shown: priority rows (contradicted / not met) and sample rows the independent check agreed with, each with numbered cites to a
    record page or rule section. Withheld and only counted: not-posted rows and rows the check disputed or could not source.
 3. On `row <id>: <rule>` or `line N: <rule>`, fix the wording in ASSESSMENTS (G1 `assess` re-mark) or add the derived name to
