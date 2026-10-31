@@ -118,8 +118,18 @@ def ingest(args, root):
         db.close()
 
 
-def status(root):
+def status(root, check=False):
     read_config(root)
+    from .store_check import check_store
+    result = check_store(root) if check else None
+    status_counts(root)
+    if result is not None:
+        print(json.dumps({"check": result}, indent=2))
+        if result["problems"]:
+            raise SystemExit(3)
+
+
+def status_counts(root):
     path = root / "private" / "ledger.sqlite"
     if not path.exists():
         print(json.dumps({"stored_objects": 0, "receipt_occurrences": 0,
@@ -300,6 +310,8 @@ def main():
         if name == "build":
             cmd.add_argument("--check", action="store_true",
                              help="Scan the generated public/ tree for private paths and credential patterns")
+        if name == "status":
+            cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -355,7 +367,7 @@ def main():
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         else:
-            {"doctor": doctor, "status": status}[args.command](root)
+            status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         sys.exit(1)
