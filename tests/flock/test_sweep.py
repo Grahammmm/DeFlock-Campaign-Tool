@@ -155,6 +155,41 @@ class FlockSweepTest(unittest.TestCase):
                 self.assertNotIn("unwatched", out)
         self.assertEqual(self.sweep("matrix", "--out", str(self.tmp / "m2"))[1], "matrix rows=0 agencies=0\n")
 
+    def test_unwatched_names_line_stdout_only(self):
+        base_file, out_file, watch = self.tmp / "base.csv", self.tmp / "out.csv", self.tmp / "watch.csv"
+        summary = "agencies=5 finished=0 ready=0 blocked=4 unmapped=1 unwatched=%d\n"
+        code, out = self.sweep("status", "--out", str(base_file))
+        self.assertEqual((code, out), (0, base_file.read_text() + summary % 0))
+        self.assertNotIn("unwatched:", out)
+        watch.write_text("".join(x for x in Path(WATCH).read_text().splitlines(True) if not x.startswith("Second City")))
+        code, out = self.sweep("status", "--out", str(out_file), watch=str(watch))
+        self.assertEqual((code, out_file.read_bytes()), (0, base_file.read_bytes()))
+        self.assertEqual(out, base_file.read_text() + "unwatched: Second City Police\n" + summary % 1)
+
+    def test_unwatched_names_roster_order_scope_and_case(self):
+        base, roster, watch = (FIXTURES / "roster-sample.csv").read_text(), self.tmp / "roster.csv", self.tmp / "watch.csv"
+        row = "%s,%s,%s,%s,\n"
+        yes = lambda name, slug: row % (name, slug, "yes", name + " police; local ALPR policy applies")
+        two = yes("Bravo Police", "bravo-police") + yes("Alpha Police", "alpha-police")
+        watch.write_text(Path(WATCH).read_text() + "morro bay pd,agenda,https://www.morro.example/a,,morro.example,\n")
+        cases = ((two, WATCH, "unwatched: Bravo Police; Alpha Police", 2),
+                 (yes("Morro Bay PD", "morro-bay-pd"), str(watch), "unwatched: Morro Bay PD", 1),
+                 (row % ("Hold Police", "hold-police", "hold", "") + row % ("No Police", "no-police", "no", ""), WATCH, None, 0))
+        for extra, watch_path, named, count in cases:
+            with self.subTest(named=named):
+                roster.write_text(base + extra)
+                code, out = self.sweep("status", roster=str(roster), watch=watch_path)
+                lines = out.splitlines()
+                self.assertEqual((code, lines[-1].startswith("agencies="), lines[-1].split()[-1]), (0, True, "unwatched=%d" % count), out)
+                self.assertEqual([x for x in lines if x.startswith("unwatched:")], [named] if named else [])
+                if named:
+                    self.assertEqual(lines[-2], named)
+        roster.write_text(base + two)
+        plan = self.sweep("plan", "--max", "2")
+        self.assertEqual((self.sweep("plan", "--max", "2", roster=str(roster)), "unwatched" in plan[1]), (plan, False))
+        self.assertEqual(self.sweep("matrix", "--out", str(self.tmp / "m1"), roster=str(roster)),
+                         self.sweep("matrix", "--out", str(self.tmp / "m2")))
+
     def test_matrix(self):
         self.finish()
         out = self.tmp / "matrix"
