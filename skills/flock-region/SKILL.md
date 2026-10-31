@@ -1,7 +1,7 @@
 ---
 name: flock-region
 description: Use when starting Flock work in a new county. Drafts a region config from the engine agency seed, checks it, and scaffolds the private store (agency folders, WATCHLIST, ROSTER, PLAN.md) so one config and one skill run reach flock-sweep status.
-skill_version: 1.0
+skill_version: 1.1
 ---
 
 # Flock region
@@ -26,15 +26,20 @@ seed and never writes FACTS, POLICY, REQUESTS or LAW (F1, F2 and F5a own those).
 5. `python3 tools/flock_region.py init <config> --store <store>`: creates `agencies/<slug>/` for yes and
    hold, and writes `regions/<region>/WATCHLIST.csv`, `ROSTER.csv` and `PLAN.md` (0600, atomic). Rerun
    after each config edit: unchanged input is byte-identical and `last_seen_hash` values are kept.
-6. Work the PLAN.md steps per agency.
+6. Work the PLAN.md steps per agency. Step 5 starts with `flock_monitor.py check` (no
+   network, anyone); `scan` stays operator-run.
 
 ## Golden case
 `tests/fixtures/flock/region-sample.json` on the synthetic seed `tests/fixtures/flock/seed/us-ca.json`:
 `init` prints `agencies=3 folders_created=2 watch_rows=3 watch_dropped=0 roster_rows=3`.
 
 ## Never
-- Add a host to any allowlist, or download from a watch URL (F7 `scan` is operator-run).
+- Add a host to any allowlist, or download from a watch URL (F7 `scan` is operator-run; `check` is the no-network dry run).
 - Mark seed entries verified, or edit the seed.
 - Write FACTS, POLICY, REQUESTS or LAW, or commit a real config, WATCHLIST, ROSTER or PLAN.md.
 - Reuse a slug across regions (`init` refuses it).
 - Start compare runs before the agency's applicability line exists.
+
+## Changelog
+
+- 1.1: PLAN step 5 starts with F7 check (dry run)
