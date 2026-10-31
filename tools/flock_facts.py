@@ -1,4 +1,4 @@
-"""Per-agency fact store (schema v2): import v1 FACTS.csv, and check. Prints row numbers and counts only."""
+"""Per-agency fact store (schema v2): import v1 FACTS.csv, check, and coverage per posted INVENTORY document. Prints counts only."""
 import argparse, contextlib, csv, datetime, hashlib, os, re, sys, tempfile
 from pathlib import Path
 
@@ -144,6 +144,42 @@ def do_import(args):
     return 0
 
 
+def coverage(args):
+    slug = slugify(args.agency)
+    path = Path(args.store) / "agencies" / slug / "FACTS.csv"
+    if not path.is_file():
+        return print("facts: %s has no FACTS.csv" % slug) or 1
+    errors = check_file(path, slug)
+    if errors:
+        return print("facts: %d errors (run --check)" % len(errors)) or 1
+    with open(args.inventory, encoding="utf-8-sig", newline="") as handle:
+        records = list(csv.reader(handle))
+    head = records[0] if records else []
+    lacks = [c for c in ("request", "doc_id", "sha256", "analysis_only") if c not in head]
+    if lacks:
+        return print("inventory: header lacks %s" % ", ".join(lacks)) or 1
+    docs, facts = {}, {}
+    for number, rec in enumerate(records[1:], 2):
+        if rec and len(rec) != len(head):
+            return print("inventory: row %d: columns have the wrong count" % number) or 1
+        if rec:
+            row = dict(zip(head, rec))
+            docs.setdefault(row["sha256"].strip(), []).append(row)
+    for _, row in load(path, slug)[1]:
+        facts.setdefault(row["source_sha256"].strip(), []).append(row)
+    withheld = {sha for sha, rows in docs.items() if any(r["analysis_only"] != "no" for r in rows)}
+    posted = sorted((rows[0]["request"].strip(), rows[0]["doc_id"].strip(), sha) for sha, rows in docs.items() if sha not in withheld)
+    covered = sum(sha in facts for _, _, sha in posted)
+    for request, doc_id, sha in posted:
+        got = facts.get(sha, [])
+        print("coverage | %s | document %s | facts=%d pages=%d unreadable=%d" % (request or "-", doc_id, len(got),
+              len({r["page"].strip() for r in got}), sum(r["value"].strip() == "UNREADABLE" for r in got)))
+    print("documents=%d posted=%d covered=%d uncovered=%d withheld=%d facts_on_withheld=%d orphan_facts=%d"
+          " | fact rows per document, not a review verdict" % (len(docs), len(posted), covered, len(posted) - covered,
+          len(withheld), sum(len(facts.get(s, ())) for s in withheld), sum(len(v) for s, v in facts.items() if s not in docs)))
+    return 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -154,8 +190,8 @@ def main(argv=None):
 
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="*", help="import SRC")
-    for name in ("--check", "--store", "--added-by"):
+    parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV")
+    for name in ("--check", "--store", "--added-by", "--agency", "--inventory"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
@@ -164,9 +200,12 @@ def _main(argv=None):
     if args.check and not args.command:
         errors = check_path(args.check)
         return print("\n".join(errors)) or int(bool(errors))
+    if args.command == ["coverage"] and not args.check and args.store and args.inventory and slugify(args.agency or ""):
+        return coverage(args)
     if args.check or args.command[:1] != ["import"] or len(args.command) != 2 or not args.store \
             or not (args.added_by or "").strip() or not valid_date(args.date):
-        parser.error("usage: import SRC --store DIR --added-by NAME [--date YYYY-MM-DD] | --check PATH")
+        parser.error("usage: import SRC --store DIR --added-by NAME [--date YYYY-MM-DD] | --check PATH"
+                     " | coverage --store DIR --agency NAME --inventory CSV")
     args.src = args.command[1]
     return do_import(args)
 
