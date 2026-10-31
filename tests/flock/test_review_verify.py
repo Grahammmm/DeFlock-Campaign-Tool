@@ -1,13 +1,17 @@
-import json, random, shutil, subprocess, sys, tempfile, unittest
+import csv, json, random, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
+from tests.flock.test_report import LINE1
 from tests.flock.test_review import FIX, ROOT, WAITS, make_review, mark_all, tool, write_stub
 
 VERIFY = ROOT / "tools" / "flock_review_verify.py"
 REASON = "private-reason-text"
 HEAD = "row_id,result,reason,page_cite\n"
+COUNTS = "included=5 verified_agree=5 unchecked=6 withheld_analysis_only=1 withheld_verify=0 sources=3 errors=0"  # report.log
 BAD_LOG = ('if "verify-recount" in a[1]:\n    Path(a[1]).mkdir(parents=True, exist_ok=True)\n'
            '    (Path(a[1]) / "LOG-SUMMARY-by-user.csv").write_text("user,count\\nx,1\\n")\n    sys.exit(0)')
+with open(FIX / "review-findings.csv", newline="") as handle:  # stage 28: one REQUIREMENTS row per finding req_id
+    RULES = "REQS = %r" % "".join("%s,%s,%s,%s,\n" % (r["source"], r["version"], r["section"], r["req_id"]) for r in csv.DictReader(handle))
 
 
 def vtool(*args):
@@ -31,7 +35,7 @@ class FlockReviewVerifyTest(unittest.TestCase):
         self.tmp = Path(tmp.name)
 
     def reach_verify(self, stubs=None):
-        stubs = {"compare_build": compare_build(), **(stubs or {})}
+        stubs = {"compare_build": compare_build(), "rules_build": RULES, **(stubs or {})}
         config, p = make_review(self.tmp, stubs=stubs, review__verify_sample=3, not_posted_analysis_only_ids=["99999999"])
         for stage, _, key, rel in WAITS:
             self.assertEqual(tool("run", config, full=True)[0], 3)
@@ -81,6 +85,8 @@ class FlockReviewVerifyTest(unittest.TestCase):
         config, p, code, out = self.reach_verify()
         self.assertEqual(code, 3, out)
         self.assertIn("stage verify WAITING (not marked)", out)
+        self.assertNotIn("stage report", out)
+        self.assertFalse((p["CO"] / "report").exists())
         spec = self.plan(p)
         pool = ["R001", "R004", "R005", "R007", "R008", "R010", "R011", "R012"]
         self.assertEqual((spec["priority_ids"], spec["pool_size"], spec["seed"]), (["R002", "R003", "R009"], 8, 20261030))
@@ -98,8 +104,77 @@ class FlockReviewVerifyTest(unittest.TestCase):
         code, out = tool("run", config, full=True)
         self.assertEqual(code, 0, out)
         self.assertIn("public_ok=4 questions=2", (p["out"] / ".review/logs/f4-finish.log").read_text())
+        self.assertIn("stage report done rc=0", out)
+        report = [p["CO"] / "report" / name for name in ("REPORT-DRAFT.md", "SOURCES.json")]
+        self.assertEqual([path.stat().st_mode & 0o777 for path in report], [0o600, 0o600])
+        self.assertEqual(report[0].read_text().splitlines()[0], LINE1)
+        self.assertEqual((p["out"] / ".review/logs/report.log").read_text().splitlines()[-1], COUNTS)
         code, out = tool("run", config, full=True)
         self.assertEqual((code, out.count("rc="), out.count("WAITING")), (0, 0, 0), out)
+        self.assertTrue(tool("status", config)[1].endswith("stages=28 done=26 stale=0 waiting=0 pending=0 failed=0 skip=2 next=- locked=no\n"))
+
+    def test_cached_report_invalidates_when_inventory_becomes_analysis_only(self):
+        config, p, code, out = self.reach_verify()
+        self.assertEqual(code, 3, out)
+        self.write_verify(p)
+        self.assertEqual(mark_all(config, {"verify": "openai"}), [0])
+        self.assertEqual(tool("run", config, full=True)[0], 3)
+        shutil.copy(FIX / "verify-sample.csv", p["RUN"] / "VERIFY.csv")
+        self.assertEqual(mark_all(config, {"f4": "openai"}), [0])
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("stage report done rc=0", out)
+        self.assertIn("stage report cached", tool("run", config, full=True)[1])
+        report = p["CO"] / "report" / "REPORT-DRAFT.md"
+        self.assertIn("document 1", report.read_text())
+        state_path = p["out"] / "REVIEW-STATE.json"
+        before = json.loads(state_path.read_text())["stages"]
+
+        write_stub(p["method"], "inventory", 'ONLY = "yes"')
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 3, out)
+        self.assertIn("stage fact-drafts WAITING (upstream changed)", out)
+        self.assertEqual(mark_all(config, {"fact-drafts": "anthropic"}), [0])
+        for _ in range(2):
+            code, out = tool("run", config, full=True)
+            self.assertEqual(code, 1, out)
+            self.assertIn("stage report failed rc=1", out)
+            self.assertIn("cite resolves to an analysis-only record",
+                          (p["out"] / ".review/logs/report.log").read_text())
+            self.assertFalse(report.exists())
+            self.assertFalse((p["CO"] / "report" / "SOURCES.json").exists())
+        after = json.loads(state_path.read_text())["stages"]
+        for stage in ("facts-import", "compare-build", "verify-plan", "verify", "verify-check"):
+            self.assertEqual(before[stage]["outputs"], after[stage]["outputs"], stage)
+        self.assertNotEqual(before["report"]["fp"], after["report"]["fp"])
+        self.assertIn("28 report run failed", tool("status", config)[1])
+
+    def test_report_fail_closed_and_recovers(self):
+        config, p, _, out = self.reach_verify({"inventory": 'ONLY = "yes"'})  # the cited record is analysis-only
+        self.write_verify(p)
+        self.assertEqual(mark_all(config, {"verify": "openai"}), [0])
+        self.assertEqual(tool("run", config, full=True)[0], 3)
+        shutil.copy(FIX / "verify-sample.csv", p["RUN"] / "VERIFY.csv")
+        self.assertEqual(mark_all(config, {"f4": "openai"}), [0])
+        for _ in range(2):  # a failed report stage re-runs, still fails and writes nothing
+            code, out = tool("run", config, full=True)
+            self.assertEqual(code, 1, out)
+            self.assertIn("stage report failed rc=1", out)
+            self.assertFalse((p["CO"] / "report" / "REPORT-DRAFT.md").exists())
+        self.assertIn("cite resolves to an analysis-only record", (p["out"] / ".review/logs/report.log").read_text())
+        lines = tool("status", config)[1].splitlines()
+        self.assertEqual({line.split()[3] for line in lines[:27]}, {"done", "skip"})
+        self.assertEqual((lines[27], lines[28]), ("28 report run failed",
+                                                  "stages=28 done=25 stale=0 waiting=0 pending=0 failed=1 skip=2 next=report locked=no"))
+        write_stub(p["method"], "inventory")  # fixed: the record is posted
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 3, out)
+        self.assertIn("stage fact-drafts WAITING (upstream changed)", out)
+        self.assertEqual(mark_all(config, {"fact-drafts": "anthropic"}), [0])
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("stage report done rc=0", out)
+        self.assertEqual((p["CO"] / "report" / "REPORT-DRAFT.md").read_text().splitlines()[0], LINE1)
 
     def test_fail_closed(self):
         config, p, code, out = self.reach_verify()
