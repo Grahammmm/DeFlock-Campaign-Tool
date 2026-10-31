@@ -22,6 +22,10 @@ env:
     campaign_tool/__init__.py
     campaign_tool/outbox.py
     campaign_tool/review.py
+    campaign_tool/records/__init__.py
+    campaign_tool/records/export_clearance.py
+    campaign_tool/records/public_scan.py
+    campaign_tool/records/release_manifest.py
     tests/__init__.py
     tests/test_review_fixture.py
     tests/fixtures/review-cases.json
