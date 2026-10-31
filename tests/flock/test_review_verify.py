@@ -165,7 +165,7 @@ class FlockReviewVerifyTest(unittest.TestCase):
         self.assertIn("cite resolves to an analysis-only record", (p["out"] / ".review/logs/report.log").read_text())
         lines = tool("status", config)[1].splitlines()
         self.assertEqual({line.split()[3] for line in lines[:27]}, {"done", "skip"})
-        self.assertEqual((lines[27], lines[28]), ("28 report run failed",
+        self.assertEqual((lines[27], lines[28]), ("28 report run failed (rc=1)",
                                                   "stages=28 done=25 stale=0 waiting=0 pending=0 failed=1 skip=2 next=report locked=no"))
         write_stub(p["method"], "inventory")  # fixed: the record is posted
         code, out = tool("run", config, full=True)
