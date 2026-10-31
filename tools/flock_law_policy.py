@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Private LAW.csv + per-agency POLICY.csv: --check, versions and governing (each agency on a date). Prints ids, labels, dates, counts only."""
+"""Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date) and gaps. Prints ids, labels, dates, counts only."""
 import csv
 import hashlib
 import os
 import re
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -168,7 +168,29 @@ def governing(law_rows, policy_rows, on):  # one line per agency (sorted slug), 
     return out + [f"law in effect on {on}: {live} of {len(law_rows)} rows",
                   f"agencies={len(agencies)} " + " ".join(f"{k}={v}" for k, v in n.items()) + " | research view, not a legal conclusion"]
 
-USAGE = "usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD] | governing STORE --on YYYY-MM-DD"
+def gaps(policy_rows, on):  # per (agency, policy_id): days no adopted window governs, a closed last window, nothing adopted
+    groups, out, n = {}, [], {"gaps": 0, "closed": 0, "unestablished": 0}
+    for _, r in policy_rows:
+        groups.setdefault((slug(r["agency"]), r["policy_id"]), []).append(r)
+    for (a, pid), rows in sorted(groups.items()):
+        won = sorted((r for r in rows if r["adoption_evidence"] != "unverified"), key=lambda r: r["governs_from"])
+        for prev, nxt in zip(won, won[1:]):  # a clean load has no overlap, so prev is never open-ended here
+            end, start = day(prev["governs_to"]), day(nxt["governs_from"])
+            if end and start and (start - end).days > 1:
+                out.append(f"{a} | {pid} | gap {end + timedelta(days=1)}..{start - timedelta(days=1)}")
+                n["gaps"] += 1
+        last = day(won[-1]["governs_to"]) if won else None
+        if last and last < day(on):
+            out.append(f"{a} | {pid} | closed {last} (nothing governs on {on})")
+            n["closed"] += 1
+        if not won:
+            out.append(f"{a} | {pid} | not established ({len(rows)} unverified)")
+            n["unestablished"] += 1
+    agencies = len({a for a, _ in groups})
+    return out + [f"agencies={agencies} policies={len(groups)} " + " ".join(f"{k}={v}" for k, v in n.items())]
+
+USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
+         " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD")
 
 def main(argv):
     try:
@@ -184,13 +206,14 @@ def run(argv):
         law_rows, policy_rows, errs = load_all(argv[1])
         print("\n".join(errs + [f"law={len(law_rows)} policy={len(policy_rows)} errors={len(errs)}"]))
         return 1 if errs else 0
-    if argv[:1] == ["governing"]:  # STORE must be a directory; any store error -> stderr, nothing on stdout, exit 1
+    if argv[:1] in (["governing"], ["gaps"]):  # STORE must be a directory; any store error -> stderr, nothing on stdout, exit 1
         if len(argv) != 4 or argv[2] != "--on" or not day(argv[3]) or not Path(argv[1]).is_dir():
             print(USAGE, file=sys.stderr)
             return 2
         law_rows, policy_rows, errs = load_all(argv[1])
-        print("\n".join(errs or governing(law_rows, policy_rows, argv[3])), file=sys.stderr if errs else sys.stdout)
-        return 1 if errs else 0
+        out = errs or (governing(law_rows, policy_rows, argv[3]) if argv[0] == "governing" else gaps(policy_rows, argv[3]))
+        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
+        return 1 if errs else 3 if argv[0] == "gaps" and len(out) > 1 else 0  # gaps: every line but the count is a finding
     on = argv[5] if len(argv) == 6 else None
     if len(argv) not in (4, 6) or argv[0] != "versions" or argv[2] != "--agency" or (on and (argv[4] != "--on" or not day(on))):
         print(USAGE, file=sys.stderr)
