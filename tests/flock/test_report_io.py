@@ -17,20 +17,16 @@ OLD = {"REPORT-DRAFT.md": b"old report\n", "SOURCES.json": b"[]\n"}
 class Boom:  # an fdopen handle whose write raises
     def __init__(self, handle, exc):
         self.handle, self.exc = handle, exc
-
     def __enter__(self):
         return self
-
     def __exit__(self, *exc):
         self.handle.close()
-
     def write(self, text):
         raise self.exc
 
 
 def failing(real, nth, exc, wrap=None):  # real call except the nth one
     calls = []
-
     def fake(*args, **kwargs):
         calls.append(args)
         if len(calls) != nth:
@@ -127,7 +123,3 @@ class FlockReportIoTest(unittest.TestCase):
                     self.run_build(config, patch)
                 self.assertEqual(self.tmps(report), sorted(FOREIGN))
                 self.assertEqual(self.finals(report)["SOURCES.json"], OLD["SOURCES.json"])
-
-
-if __name__ == "__main__":
-    unittest.main()
