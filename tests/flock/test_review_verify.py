@@ -113,6 +113,40 @@ class FlockReviewVerifyTest(unittest.TestCase):
         self.assertEqual((code, out.count("rc="), out.count("WAITING")), (0, 0, 0), out)
         self.assertTrue(tool("status", config)[1].endswith("stages=28 done=26 stale=0 waiting=0 pending=0 failed=0 skip=2 next=- locked=no\n"))
 
+    def test_cached_report_invalidates_when_inventory_becomes_analysis_only(self):
+        config, p, code, out = self.reach_verify()
+        self.assertEqual(code, 3, out)
+        self.write_verify(p)
+        self.assertEqual(mark_all(config, {"verify": "openai"}), [0])
+        self.assertEqual(tool("run", config, full=True)[0], 3)
+        shutil.copy(FIX / "verify-sample.csv", p["RUN"] / "VERIFY.csv")
+        self.assertEqual(mark_all(config, {"f4": "openai"}), [0])
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("stage report done rc=0", out)
+        self.assertIn("stage report cached", tool("run", config, full=True)[1])
+        report = p["CO"] / "report" / "REPORT-DRAFT.md"
+        self.assertIn("document 1", report.read_text())
+        state_path = p["out"] / "REVIEW-STATE.json"
+        before = json.loads(state_path.read_text())["stages"]
+
+        write_stub(p["method"], "inventory", 'ONLY = "yes"')
+        code, out = tool("run", config, full=True)
+        self.assertEqual(code, 3, out)
+        self.assertIn("stage fact-drafts WAITING (upstream changed)", out)
+        self.assertEqual(mark_all(config, {"fact-drafts": "anthropic"}), [0])
+        for _ in range(2):
+            code, out = tool("run", config, full=True)
+            self.assertEqual(code, 1, out)
+            self.assertIn("stage report failed rc=1", out)
+            self.assertIn("cite resolves to an analysis-only record",
+                          (p["out"] / ".review/logs/report.log").read_text())
+        after = json.loads(state_path.read_text())["stages"]
+        for stage in ("facts-import", "compare-build", "verify-plan", "verify", "verify-check"):
+            self.assertEqual(before[stage]["outputs"], after[stage]["outputs"], stage)
+        self.assertNotEqual(before["report"]["fp"], after["report"]["fp"])
+        self.assertIn("28 report run failed", tool("status", config)[1])
+
     def test_report_fail_closed_and_recovers(self):
         config, p, _, out = self.reach_verify({"inventory": 'ONLY = "yes"'})  # the cited record is analysis-only
         self.write_verify(p)

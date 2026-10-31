@@ -25,7 +25,8 @@ STAGES = [  # (id, kind, deps) -- frozen; G2 appends after counts and never renu
     ("counts", "run", ("compare-build",)),
     ("verify-plan", "run", ("compare-build",)), ("verify-recount", "run", ("logs", "joins")), ("verify", "wait", ("verify-plan", "verify-recount")),
     ("verify-check", "run", ("verify",)), ("f4-start", "run", ("f3-check",)), ("f4", "wait", ("f4-start",)), ("f4-finish", "run", ("f4",)),
-    ("report", "run", ("verify-check",))]
+    # Report reads inventory, facts, requirements, findings, the verify plan and marked verification rows directly.
+    ("report", "run", ("inventory", "facts-import", "rules-build", "compare-build", "verify-plan", "verify", "verify-check"))]
 IDS = [s[0] for s in STAGES]
 METHOD = {n + ".py": d + "/scripts/" + n + ".py" for d, names in (
     ("facts-intake", "inventory log_summary roster_summary ocr_log_counts facts_build"), ("rules-intake", "rules_build diff_versions check_rules"),
