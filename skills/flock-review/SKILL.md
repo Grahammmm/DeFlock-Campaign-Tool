@@ -1,7 +1,7 @@
 ---
 name: flock-review
 description: Use when driving one agency through the agency-review method (facts, rules, compare, F3) with tools/flock_review.py. One resumable command; never runs a model.
-skill_version: 1.0
+skill_version: 1.1
 ---
 # flock-review: one agency config -> facts -> rules -> compare
 
@@ -57,11 +57,13 @@ unreviewed rows (disagree / needs-source rows are withheld downstream, and verif
    CONFIG` (output `<compare.out>/report/`, never inside the repository; log `.review/logs/report.log`). It writes `REPORT-DRAFT.md`
    and `SOURCES.json` only when its final lint passes; a lint error fails the stage, which re-runs on the next `run`. The manual
    `python3 tools/flock_report.py build CONFIG` still works for a re-run after an upstream wording fix.
-2. Shown: priority rows (contradicted / not met) and sample rows the independent check agreed with, each with numbered cites to a
+2. Before handing the draft on, `python3 tools/flock_report.py check CONFIG` exits 0 (last line ends `state=current`).
+3. Shown: priority rows (contradicted / not met) and sample rows the independent check agreed with, each with numbered cites to a
    record page or rule section. Withheld and only counted: not-posted rows and rows the check disputed or could not source.
-3. On `row <id>: <rule>` or `line N: <rule>`, fix the wording in ASSESSMENTS (G1 `assess` re-mark) or add the derived name to
+4. On `row <id>: <rule>` or `line N: <rule>`, fix the wording in ASSESSMENTS (G1 `assess` re-mark) or add the derived name to
    `review.report_denylist`, then re-run. Errors never echo the offending text.
-4. REPORT-DRAFT.md is a private research draft, not legal advice. Publication goes through F9, redaction, review and G.
+5. REPORT-DRAFT.md is a private research draft, not legal advice. Publication goes through F9, redaction, review and G.
+   Outputs: `check` writes nothing and names each file that is stale, missing or a link (refused); rerun `build` to refresh.
 - **Never:** hand-edit the report, include unchecked rows as findings, or name, quote or cite a not-posted record.
 
 ## Golden
