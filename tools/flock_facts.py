@@ -115,6 +115,11 @@ def do_import(args):
             row = dict(row, kind=args.kind, effective_from="", effective_to="", added_by=args.added_by,
                        added_at=args.date, status=args.status, fact_id=fact_id(row))
         by_slug.setdefault(slugify(row["agency"]), []).append(row)
+    for rel in ([] if errors else ["agencies"] + ["agencies/" + slug for slug in by_slug]):
+        if os.path.islink(store / rel):
+            errors.append("%s: is a symlink; refusing" % rel)
+        elif os.path.lexists(store / rel) and not (store / rel).is_dir():
+            errors.append("%s: exists and is not a folder" % rel)
     for n, slug in enumerate(by_slug if not errors else (), 1):
         path = store / "agencies" / slug / "FACTS.csv"
         _, found, errs = load(path, slug) if path.exists() else (True, [], [])
@@ -140,6 +145,14 @@ def do_import(args):
 
 
 def main(argv=None):
+    try:
+        return _main(argv)
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        print("io: %s" % type(exc).__name__)
+        return 1
+
+
+def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="*", help="import SRC")
     for name in ("--check", "--store", "--added-by"):

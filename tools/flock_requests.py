@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private CPRA request reminder list (REQUESTS.csv v1): --check and due. Prints only.
+"""Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
 draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
 import csv
 import os
@@ -15,7 +15,8 @@ from campaign_tool import law  # noqa: E402
 
 HEADER = ["request_id", "agency", "sent", "receipt_evidence", "receipt_date", "determination_date",
           "extension_notice_date", "status", "source_sha256"]
-STATUSES = {"open", "determined", "produced", "closed", "withdrawn"}
+ORDER = ("open", "determined", "produced", "closed", "withdrawn")
+STATUSES = set(ORDER)
 DATES = ("sent", "receipt_date", "determination_date", "extension_notice_date")
 
 
@@ -111,6 +112,26 @@ def due(rows):
     return lines
 
 
+def summary(rows):
+    """One status line per agency (slug order, first-seen label), then totals. Counts only: no law package, no deadline."""
+    groups = {}
+    for r in rows:
+        groups.setdefault(slug(r["agency"]), []).append(r)
+    lines, unknown = [], 0
+    for key in sorted(groups):
+        rs = groups[key]
+        opened = [r for r in rs if r["status"] == "open"]
+        unk = sum(not r["receipt_evidence"] for r in opened)
+        unknown += unk
+        counts = " ".join(f"{s}={sum(r['status'] == s for r in rs)}" for s in ORDER)
+        oldest = min((r["sent"] for r in opened), default="-")
+        lines.append(f"request status | {rs[0]['agency']} | {counts} | receipt_unknown={unk} | oldest_open_sent {oldest}")
+    opened = sum(r["status"] == "open" for r in rows)
+    lines.append(f"request status | agencies={len(groups)} requests={len(rows)} open={opened} receipt_unknown={unknown}"
+                 " | not a legal status; the canonical ledger wins")
+    return lines
+
+
 QLINE1 = "Research draft - not legal advice. Records to seek; not allegations."
 QLINE = re.compile(r"- Q (\S+) \| ([^|]+?) \| prior (\S+) \| ([^|]+)")
 ASKS = re.compile(r"\b(explain\w*|why|justif\w*|answer\w*)\b", re.I)
@@ -154,13 +175,20 @@ def draft(rundir, requests, start, end):
     run = Path(rundir).resolve()
     if run == REPO or REPO in run.parents:
         return print("flock-followup: RUNDIR is inside the repository", file=sys.stderr) or 1
+    if not run.is_dir():
+        return print("draft: RUNDIR missing or not a folder", file=sys.stderr) or 1
     rows, errs = load(requests)
     mine = [r for r in rows if slug(r["agency"]) == run.parent.parent.name]
     errs = errs or ([] if mine else ["draft: no requests for agency"])
-    try:
-        text = (run / "QUESTIONS.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        text = ""
+    text, qfile = "", run / "QUESTIONS.md"
+    try:  # O_NOFOLLOW: a link swapped in after a check is still refused
+        with open(os.open(qfile, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        errs = errs or ["draft: QUESTIONS.md missing"]
+    except (OSError, UnicodeDecodeError) as exc:
+        why = "must not be a symlink" if os.path.islink(qfile) else f"unreadable ({type(exc).__name__})"
+        errs = errs or [f"draft: QUESTIONS.md {why}"]
     items, qerrs = parse_questions(text, mine) if not errs else ([], [])
     out, errs = run / "FOLLOWUP-DRAFT.md", errs + qerrs
     inc, held = [i for i in items if not i[4]], [i for i in items if i[4]]
@@ -175,25 +203,33 @@ def draft(rundir, requests, start, end):
     body += [f"{n}. {i[3]}" for n, i in enumerate(inc, 1)] + ["", FORMAT, "", WITHHELD, "", END]
     if held:
         body.append("Held (internal, not part of the request): " + "; ".join(f"{i[0]} {i[4]}" for i in held))
-    fd, tmp = tempfile.mkstemp(dir=run, prefix=".FOLLOWUP-DRAFT.md.", suffix=".tmp")
+    tmp = None
     try:
+        fd, tmp = tempfile.mkstemp(dir=run, prefix=".FOLLOWUP-DRAFT.md.", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("\n".join(body) + "\n")
         os.link(tmp, out)
     except FileExistsError:
         return print("draft: FOLLOWUP-DRAFT.md already exists", file=sys.stderr) or 1
+    except OSError as exc:
+        return print(f"draft: cannot write in RUNDIR ({type(exc).__name__})", file=sys.stderr) or 1
     finally:
-        os.unlink(tmp)
+        if tmp:
+            os.unlink(tmp)
     return print(f"items={len(inc)} held={len(held)} written=FOLLOWUP-DRAFT.md") or 0
 
 
+USAGE = "usage: flock_requests.py --check PATH | due PATH | summary PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD"
+
 def main(argv):
+    if argv in (["--help"], ["-h"]):
+        print(USAGE); return 0  # noqa: E702
     if len(argv) == 8 and argv[0] == "draft" and argv[2::2] == ["--requests", "--from", "--to"]:
         start, end = day(argv[5]), day(argv[7])
         if start and end and start <= end:
             return draft(argv[1], argv[3], argv[5], argv[7])
-    if len(argv) != 2 or argv[0] not in ("--check", "due"):
-        print("usage: flock_requests.py --check PATH | due PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD", file=sys.stderr)
+    if len(argv) != 2 or argv[0] not in ("--check", "due", "summary"):
+        print(USAGE, file=sys.stderr)
         return 2
     rows, errs = load(argv[1])
     if argv[0] == "--check":
@@ -202,6 +238,9 @@ def main(argv):
     if errs:
         print("\n".join(errs), file=sys.stderr)
         return 1
+    if argv[0] == "summary":
+        print("\n".join(summary(rows)))
+        return 0
     try:
         lines = due(rows)
     except ValueError as exc:

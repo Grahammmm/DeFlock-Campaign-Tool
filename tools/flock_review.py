@@ -5,7 +5,7 @@ Runs the private method scripts and F1/F3 tools, skipping stages whose inputs ar
 wrote the input states its provider/model). Never runs a model, never deletes (old outputs move to <out>/.review/superseded), no network.
 status ends a stale/waiting/failed/pending line with (<reason>): the changed fingerprint part or output relpath, the wait reason, rc or need.
 Prints stage ids, statuses, rc and paths only. Exit 0 done, 1 failed/validation/lock/IO, 2 usage, 3 waiting. done is not review or release."""
-import argparse, contextlib, datetime, hashlib, importlib.util, json, os, re, subprocess, sys, tempfile
+import argparse, contextlib, datetime, hashlib, importlib.util, json, os, re, socket, stat, subprocess, sys, tempfile, time
 from pathlib import Path
 
 TOOLS, REPO = Path(__file__).resolve().parent, Path(__file__).resolve().parents[1]
@@ -290,13 +290,30 @@ def load_state(c):
 def save(c, state):  # rewritten only when its content changes
     path, text = c["out"] / "REVIEW-STATE.json", json.dumps(state, indent=1, sort_keys=True) + "\n"
     if not path.exists() or path.read_text(encoding="utf-8") != text: put(path, text.encode())
+def lock_state(c):  # read-only -> ("none"|"held"|"stale", detail); stale only when the same-host writer is provably gone
+    try:
+        if not stat.S_ISREG((st := os.lstat(lock := c["out"] / ".review" / "LOCK")).st_mode): return "held", "not a regular file"  # symlink: never followed
+        words = lock.read_bytes()[:200].decode("utf-8", "replace").split()
+    except FileNotFoundError: return "none", ""
+    except OSError: return "held", "unreadable"
+    if len(words) in (1, 2) and DIGITS.fullmatch(words[0]) and int(words[0]) > 0:  # "<pid> <host>" or legacy "<pid>"
+        if len(words) == 2 and words[1] != socket.gethostname(): return "held", "pid %s on another host" % words[0]
+        try: os.kill(int(words[0]), 0)
+        except ProcessLookupError: return "stale", "pid %d not running" % int(words[0])
+        except (OSError, OverflowError): pass
+        return "held", "pid %d" % int(words[0])
+    return ("stale", "unparseable, older than 600 s") if time.time() - st.st_mtime > 600 else ("held", "unparseable")
 def locked(c, body):
     lock = c["out"] / ".review" / "LOCK"
     lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        with os.fdopen(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as handle: handle.write("%d\n" % os.getpid())
-    except FileExistsError:
-        raise Fail("locked: %s" % lock) from None
+    for retry in (True, False):  # a provably dead same-host LOCK is moved aside (never deleted) and the open retried once
+        with contextlib.suppress(FileExistsError):
+            with os.fdopen(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as handle: handle.write("%d %s\n" % (os.getpid(), socket.gethostname()))
+            break
+        word, why = lock_state(c)
+        dest = base if not os.path.lexists(base := lock.with_name("stale-LOCK-" + now("%Y%m%dT%H%M%SZ"))) else Path("%s-%d" % (base, os.getpid()))
+        if not retry or word != "stale" or os.path.lexists(dest): raise Fail("locked: %s" % lock)
+        os.rename(lock, dest), print("lock: stale (%s), moved aside" % why)
     try: return body()
     finally: os.unlink(lock)  # only the tool's own LOCK
 def run(c, until):
@@ -350,7 +367,7 @@ def status(c):  # read-only: no lock, no writes, no .review creation
         print("%d %s %s %s%s%s" % (i + 1, sid, kind, word, " %s/%s" % (mark["provider"], mark["model"]) if mark else "",
                                    " (%s)" % r if (r := why or why_not_done(c, state, dig, i, word, fp)) else ""))
     print("stages=%d %s next=%s locked=%s" % (len(STAGES), " ".join("%s=%d" % kv for kv in counts.items()), nxt,
-                                             "yes" if (c["out"] / ".review" / "LOCK").exists() else "no"))
+                                             {"held": "yes", "stale": "stale"}.get(lock_state(c)[0], "no")))
     return 0
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

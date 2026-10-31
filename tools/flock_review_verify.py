@@ -9,6 +9,7 @@ A verify pass is not acceptance: machine-valid output is review-required."""
 import argparse, ast, collections, contextlib, csv, hashlib, json, os, random, re, sys, tempfile
 from pathlib import Path
 
+VERDICTS = ("met", "not met", "contradicted", "cannot tell", "n/a")  # = flock_report.VERDICTS; n/a rows are neither priority nor pool
 HEADER, RESULTS = ["row_id", "result", "reason", "page_cite"], ("agree", "disagree", "needs-source")
 CHECKS = ["findings freeze: FINDINGS.csv sha256 must equal the plan's; a changed FINDINGS needs a new plan",
           "sample: reproducible random.Random(seed).sample of met and cannot tell ids; never re-sample after seeing results",
@@ -17,12 +18,21 @@ CHECKS = ["findings freeze: FINDINGS.csv sha256 must equal the plan's; a changed
           "log totals: by-user summary sums are not full-log totals; recount from the source workbook",
           "not-posted ids stay analysis-only and out of VERIFY.csv and VERIFY.md"]
 
+class PlanError(Exception): pass
 def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def table(path):
-    with open(path, newline="", encoding="utf-8") as handle: return list(csv.reader(handle))
+    with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.reader(handle))  # BOM is not header text; sha() hashes raw bytes
 def findings(path):
-    with open(path, newline="", encoding="utf-8") as handle: return list(csv.DictReader(handle))
+    with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.DictReader(handle))
 def cell(row, name): return (row.get(name) or "").strip()
+def load_plan(path):
+    try: spec = json.loads(Path(path).read_text(encoding="utf-8"))  # a missing or unreadable file (OSError) stays an io: error
+    except ValueError: spec = None  # not JSON, or not UTF-8
+    ids = lambda v: isinstance(v, list) and all(isinstance(i, str) for i in v)  # noqa: E731
+    if not (isinstance(spec, dict) and spec.get("schema") == 1 and ids(spec.get("priority_ids")) and ids(spec.get("sample_ids"))
+            and isinstance(spec.get("findings_sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", spec["findings_sha256"])):
+        raise PlanError("plan: PLAN.json is not a verify plan")
+    return spec
 
 def plan(args):
     rows, digest, out = findings(args.findings), sha(args.findings), Path(args.out)
@@ -34,6 +44,15 @@ def plan(args):
         if prior.get("seed") != args.seed or prior.get("sample_size") != args.size:
             return print("plan: %s exists with different parameters" % out.name) or 1
         return print("plan: %s reused (frozen)" % out.name) or 0
+    recs, errs, seen = table(args.findings), [], set()  # every row is judged before anything is written; header is row 1
+    for n, rec in enumerate(recs[1:], 2):
+        if not rec: continue  # a blank line, skipped by DictReader as well
+        r = dict(zip(recs[0], rec))
+        if cell(r, "verdict").lower() not in VERDICTS: errs.append("row %d: verdict is unknown" % n)
+        if not cell(r, "finding_id"): errs.append("row %d: finding_id is empty" % n)
+        elif cell(r, "finding_id") in seen: errs.append("row %d: finding_id is duplicated" % n)
+        seen.add(cell(r, "finding_id"))
+    if errs: return print("\n".join(errs + ["plan: errors=%d" % len(errs)])) or 1
     ids = lambda *verdicts: [cell(r, "finding_id") for r in rows if cell(r, "verdict").lower() in verdicts]  # noqa: E731
     priority, pool = ids("contradicted", "not met"), ids("met", "cannot tell")
     sample = random.Random(args.seed).sample(pool, min(args.size, len(pool)))
@@ -50,7 +69,7 @@ def plan(args):
     return 0
 
 def check(args):
-    spec = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+    spec = load_plan(args.plan)
     want, errs, seen, tally, extra, rows = spec["priority_ids"] + spec["sample_ids"], [], set(), collections.Counter(), 0, 0
     if sha(args.findings) != spec["findings_sha256"]:
         errs.append("plan: findings changed since plan")
@@ -111,8 +130,11 @@ def main(argv=None):
     p.add_argument("--not-posted", nargs="*", default=[]); p.add_argument("--md")
     p = sub.add_parser("counts"); p.add_argument("findings"); p.add_argument("report")
     args = parser.parse_args(argv)
+    if args.command == "plan" and args.size < 0: parser.error("plan: --size must be 0 or more")
     try:
         return {"plan": plan, "check": check, "counts": counts}[args.command](args)
+    except PlanError as exc:
+        return print(exc) or 1
     except (OSError, ValueError, KeyError, TypeError, csv.Error) as exc:
         return print("io: %s" % type(exc).__name__) or 1
 
