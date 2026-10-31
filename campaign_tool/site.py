@@ -12,7 +12,7 @@ import json
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -104,10 +104,14 @@ def js_json(value):
 
 
 class Site:
-    def __init__(self, root, cfg, model):
+    def __init__(self, root, cfg, model, today=None):
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
+        # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
+        cutoff = (today or date.today()).isoformat()
+        self.upcoming = [m for m in model["meetings"] if m["starts_at"][:10] >= cutoff]
+        self.past = [m for m in model["meetings"] if m["starts_at"][:10] < cutoff][::-1]
         self.site = model["site"]
         self.name = e(cfg["name"])
         self.county = e(cfg["county"])
@@ -267,10 +271,11 @@ class Site:
                  '<a href="/agencies.html">Full agency list</a>.</p></div>'
                  + ('' if self.map else '<div class="city-panel-static">' + self.picker() + '</div>')
                  + self.card_panel() + '</section>\n')
-        upcoming = [m for m in self.model["meetings"]][:3]
+        empty = ('<p>No upcoming meetings are listed. <a href="/meetings.html#past-meetings">Past meetings and their comment kits</a>.</p>'
+                 if self.past else '<p>No meetings are listed yet.</p>')
         meetings = ('    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">Meetings</p><h2>Show up informed.</h2></div>'
                     '<p><a href="/meetings.html">All meetings and comment kits</a></p></div><div class="meeting-list">'
-                    + ("".join(self.meeting_item(m) for m in upcoming) or '<p>No meetings are listed yet.</p>') + '</div></section>\n')
+                    + ("".join(self.meeting_item(m) for m in self.upcoming[:3]) or empty) + '</div></section>\n')
         main = (self.map_section() + cards
                 + '    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">Evidence before conclusions</p>'
                   f'<h2>{e(self.site["tagline"])}</h2></div></div>{mission}</section>\n'
@@ -369,9 +374,12 @@ class Site:
     def meetings_html(self):
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Meetings</p>'
                 '<h2>Official channels for informed questions.</h2></div><p>Comment kits summarize reviewed findings; they are not legal advice and do not ask anyone to flood a meeting.</p></div>'
-                '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.model["meetings"]) or '<p>No meetings are listed yet.</p>')
+                '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or '<p>No upcoming meetings are listed.</p>')
                 + '</div></section>\n')
-        return self.page("meetings", "Meetings", "Upcoming public meetings and comment kits", "/meetings.html", main)
+        if self.past:
+            main += ('    <section class="section" id="past-meetings"><h2>Past meetings</h2><div class="meeting-list">'
+                     + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
+        return self.page("meetings", "Meetings", "Public meetings and comment kits", "/meetings.html", main)
 
     def about_html(self):
         contact = (f'<p>Contact: <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
@@ -557,8 +565,11 @@ def _asset_plan(model):
     return plan
 
 
-def build_site(root):
+def build_site(root, today=None):
     """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
+
+    ``today`` (a ``datetime.date``, default the build date) splits meetings into
+    upcoming (on or after it) and past.
 
     Falls back to the neutral starter when ``content/`` does not exist.
     Raises ``ContentError``/``ValueError`` and writes nothing when content is
@@ -573,7 +584,7 @@ def build_site(root):
     model = load_content(root)
     if model is None:
         return build_starter(cfg, public)
-    site = Site(root, cfg, model)
+    site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
