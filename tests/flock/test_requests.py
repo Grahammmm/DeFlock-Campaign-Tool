@@ -149,6 +149,34 @@ class RequestsTrackerTests(unittest.TestCase):
             self.assertEqual(stale.read_text(encoding="utf-8"), "stale")
             self.assertNotEqual(out.stat().st_ino, stale.stat().st_ino)
 
+    def call(self, repo, *argv):  # in process, with the module's REPO patched to a temp "repository" root
+        import contextlib, importlib.util, io
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("_requests_rf5", TOOL)
+        requests, err, out = importlib.util.module_from_spec(spec), io.StringIO(), io.StringIO()
+        spec.loader.exec_module(requests)
+        with mock.patch.object(requests, "REPO", Path(repo)), contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            return requests.main(list(argv)), err.getvalue(), out.getvalue()
+
+    def test_draft_rundir_inside_repository_refused_before_writing(self):
+        import os
+        refused, dates = (1, "flock-followup: RUNDIR is inside the repository\n", ""), ("--from", "2026-01-01", "--to", "2026-10-31")
+        with tempfile.TemporaryDirectory() as parent, tempfile.TemporaryDirectory() as other:
+            tmp = str(Path(parent) / "repo-copy")
+            self.assertEqual(self.draft(tmp)[0].returncode, 0)  # creates the run dir; then clear the draft for the checks
+            rundir, link = Path(tmp) / "agencies" / "sample-city-police-department" / "runs" / "2026-10-31", Path(other) / "link"
+            (rundir / "FOLLOWUP-DRAFT.md").unlink(); link.symlink_to(rundir)
+            self.addCleanup(os.chdir, os.getcwd()); os.chdir(rundir)
+            for repo, rd, req in ((tmp, str(rundir), FIXTURE), (rundir, str(rundir), FIXTURE), (tmp, str(link), FIXTURE),
+                                  (tmp, ".", FIXTURE), (tmp, str(rundir), Path(tmp) / "missing.csv")):  # refusal precedes reads
+                self.assertEqual(self.call(repo, "draft", rd, "--requests", str(req), *dates), refused, (repo, rd))
+            self.assertEqual(sorted(p.name for p in rundir.iterdir()), ["QUESTIONS.md"])
+            os.chdir(ROOT)  # look-alike sibling: REPO "repo" does not contain "repo-copy", so the draft is written
+            self.assertEqual(self.call(Path(parent) / "repo", "draft", str(rundir), "--requests", str(FIXTURE), *dates),
+                             (0, "", "items=2 held=2 written=FOLLOWUP-DRAFT.md\n"))
+            done = run("draft", str(ROOT / "no-such-run"), "--requests", str(FIXTURE), *dates)
+            self.assertEqual((done.returncode, done.stderr, done.stdout), refused)
+
 
 if __name__ == "__main__":
     unittest.main()
