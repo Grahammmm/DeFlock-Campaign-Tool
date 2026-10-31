@@ -78,6 +78,35 @@ class FlockReviewGoldenTest(unittest.TestCase):
         self.assertEqual(golden(config, "--write", self.tmp / "counts.json")[0], 0)
         self.assertEqual(tree(self.tmp / "out"), before)
 
+    def test_write_ignores_stale_fixed_temp(self):
+        config, keys = golden_review(self.tmp), "golden written keys=%d\n" % len(json.loads(SAMPLE.read_text()))
+        stale_dir, link_dir = self.tmp / "stale", self.tmp / "link"
+        stale_dir.mkdir(), link_dir.mkdir()
+        stale = stale_dir / "counts.json.tmp"  # 1. a regular 0644 leftover at the old fixed temp name
+        stale.write_text("leftover\n")
+        stale.chmod(0o644)
+        inode = stale.stat().st_ino
+        target = stale_dir / "counts.json"
+        self.assertEqual(golden(config, "--write", target), (0, keys))
+        self.assertEqual((target.read_text(), target.stat().st_mode & 0o777, target.is_symlink()), (SAMPLE.read_text(), 0o600, False))
+        self.assertEqual((stale.read_text(), stale.stat().st_mode & 0o777, stale.stat().st_ino), ("leftover\n", 0o644, inode))
+        self.assertEqual(sorted(p.name for p in stale_dir.iterdir()), ["counts.json", "counts.json.tmp"])
+        sentinel = self.tmp / "sentinel.txt"  # 2. a planted symlink at the old fixed temp name
+        sentinel.write_text("sentinel\n")
+        (link_dir / "counts.json.tmp").symlink_to(sentinel)
+        self.assertEqual(golden(config, "--write", link_dir / "counts.json"), (0, keys))
+        self.assertEqual((sentinel.read_text(), (link_dir / "counts.json.tmp").readlink()), ("sentinel\n", sentinel))
+        self.assertEqual((link_dir / "counts.json").read_text(), SAMPLE.read_text())
+        before, inode = sorted(p.name for p in stale_dir.iterdir()), target.stat().st_ino  # 3. target exists: refused, no temp left
+        self.assertEqual(golden(config, "--write", target), (1, "golden: --write file already exists\n"))
+        self.assertEqual((target.read_text(), target.stat().st_ino), (SAMPLE.read_text(), inode))
+        self.assertEqual(sorted(p.name for p in stale_dir.iterdir()), before)
+        inside = ROOT / "tests" / "fixtures" / "flock"  # 4. inside the repo: refused before any temp is created
+        before = sorted(p.name for p in inside.iterdir())
+        self.assertEqual(golden(config, "--write", inside / "zz-golden-refused.json"),
+                         (1, "golden: --write path is inside the repository\n"))
+        self.assertEqual(sorted(p.name for p in inside.iterdir()), before)
+
 
 if __name__ == "__main__":
     unittest.main()
