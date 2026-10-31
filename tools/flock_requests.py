@@ -187,13 +187,17 @@ def draft(rundir, requests, start, end):
     return print(f"items={len(inc)} held={len(held)} written=FOLLOWUP-DRAFT.md") or 0
 
 
+USAGE = "usage: flock_requests.py --check PATH | due PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD"
+
 def main(argv):
+    if argv in (["--help"], ["-h"]):
+        print(USAGE); return 0  # noqa: E702
     if len(argv) == 8 and argv[0] == "draft" and argv[2::2] == ["--requests", "--from", "--to"]:
         start, end = day(argv[5]), day(argv[7])
         if start and end and start <= end:
             return draft(argv[1], argv[3], argv[5], argv[7])
     if len(argv) != 2 or argv[0] not in ("--check", "due"):
-        print("usage: flock_requests.py --check PATH | due PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     rows, errs = load(argv[1])
     if argv[0] == "--check":

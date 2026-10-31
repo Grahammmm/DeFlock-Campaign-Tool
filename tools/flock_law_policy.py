@@ -126,14 +126,18 @@ def versions(rows, agency, on):
                    f" | adoption {'verified' if adopted else 'unverified'} | governs {span}")
     return out
 
+USAGE = "usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
+
 def main(argv):
+    if argv in (["--help"], ["-h"]):
+        print(USAGE); return 0  # noqa: E702
     if len(argv) == 2 and argv[0] == "--check":
         law_rows, policy_rows, errs = load_all(argv[1])
         print("\n".join(errs + [f"law={len(law_rows)} policy={len(policy_rows)} errors={len(errs)}"]))
         return 1 if errs else 0
     on = argv[5] if len(argv) == 6 else None
     if len(argv) not in (4, 6) or argv[0] != "versions" or argv[2] != "--agency" or (on and (argv[4] != "--on" or not day(on))):
-        print("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     _, policy_rows, errs = load_all(argv[1])
     if errs:
