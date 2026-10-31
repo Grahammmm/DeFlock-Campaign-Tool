@@ -72,8 +72,40 @@ class RealRegistriesTest(unittest.TestCase):
             for path, _digest, transform in loader(REPO):
                 pinned.setdefault(path, set()).add(transform is not None)
         self.assertIn("campaign_tool/records/run_stages.py", pinned)
-        self.assertIn("campaign_tool/records/mail_adoption.py", pinned)
+        self.assertIn(f"{guard.T4B_FROZEN}/campaign_tool/records/mail_adoption.py.txt", pinned)
+        # T4B pins are historical: the live files may move on without a re-pin.
+        self.assertNotIn("campaign_tool/records/mail_adoption.py", pinned)
+        self.assertNotIn("campaign_tool/records/cli.py", pinned)
         self.assertEqual(pinned["tests/fixtures/comprehension/rules.json"], {False, True})
+
+
+class T4BHistoricalPinsTest(unittest.TestCase):
+    def test_live_drift_passes_frozen_copy_drift_fails(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "tools").mkdir()
+        digest = sha(b"frozen\n")
+        (root / "tools/t4b_test_apply_check.py").write_text(f"PINS = {{'a.py': '{digest}'}}\n", encoding="utf-8")
+        copy_rel = f"{guard.T4B_FROZEN}/a.py.txt"
+        copy = root / copy_rel
+        copy.parent.mkdir(parents=True)
+        copy.write_bytes(b"frozen\n")
+        (root / "a.py").write_bytes(b"moved on\n")
+        name = next(n for n in guard.REGISTRIES if n.startswith("T4B checker historical pins"))
+        patcher = mock.patch.dict(guard.REGISTRIES, {name: guard.REGISTRIES[name]}, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertEqual(guard.violations(root, None), [])
+        self.assertEqual(guard.violations(root, {"a.py"}), [])
+        copy.write_bytes(b"tampered\n")
+        expected = [(name, copy_rel, "content differs from its pin")]
+        self.assertEqual(guard.violations(root, None), expected)
+        self.assertEqual(guard.violations(root, {copy_rel}), expected)
+        # Holder changed (PINS edited without its copy) -> every T4B pin is checked.
+        self.assertEqual(guard.violations(root, {"tools/t4b_test_apply_check.py"}), expected)
+        copy.unlink()
+        self.assertEqual(guard.violations(root, None), [(name, copy_rel, "pinned file missing")])
 
 
 if __name__ == "__main__":
