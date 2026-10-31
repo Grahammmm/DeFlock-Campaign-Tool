@@ -29,9 +29,7 @@ def fake(versions):
 
 class CheckTestEnvTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
     def run_tool(self, versions=PINS, text=None, path=None):
         argv = []
