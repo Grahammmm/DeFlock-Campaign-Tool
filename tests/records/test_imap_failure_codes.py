@@ -29,6 +29,9 @@ REVIEWED_MIME_FAILURE_CODES = (
 
 
 class FailureCodeTests(unittest.TestCase):
+    def test_scratch_cis_df_6_forced_failure(self):
+        self.fail('scratch: CIS-DF-6 edge path 3, never merged')
+
     def test_reviewed_mime_rejection_codes_are_preserved(self):
         # Literal producer contract, never derived from the consumer allowlist.
         self.assertEqual(len(REVIEWED_MIME_FAILURE_CODES), 11)
