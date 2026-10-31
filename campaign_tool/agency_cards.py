@@ -10,42 +10,64 @@ KEYS = {"schema_version", "county_profile", "source_page", "default_fragment",
         "source_aliases", "source_link_label"}
 PROFILE_FIELDS = {"name", "vendor", "status", "summary", "cameraCount", "facts", "open", "flags"}
 SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")
+NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 
 def text(value):
     return isinstance(value, str) and len(value) <= 20000 and "<" not in value and ">" not in value
 
 
+def keyset(value, keys, prefix=""):  # an odd key name is shown by its length only
+    named = lambda key: prefix + key if isinstance(key, str) and NAME.fullmatch(key) else f"{prefix}{len(str(key))} chars"
+    return ["missing field: " + prefix + key for key in keys - set(value)] + [
+        "unknown field: " + named(key) for key in value if key not in keys]
+
+
+def problems(config):
+    """Every agency-card input problem, sorted; each names its field (dotted), never its value."""
+    if not isinstance(config, dict):
+        return ["config: must be an object"]
+    found, slug = keyset(config, KEYS), lambda v: isinstance(v, str) and SLUG.fullmatch(v)
+    if "schema_version" in config and (type(config["schema_version"]) is not int or config["schema_version"] != 1):
+        found.append("schema_version: unsupported schema version")
+    profile = config.get("county_profile", {})
+    if not isinstance(profile, dict):
+        found.append("county_profile: must be an object")
+        profile = {}
+    elif "county_profile" in config:
+        found += keyset(profile, PROFILE_FIELDS, "county_profile.")
+    for key in sorted(PROFILE_FIELDS & set(profile)):
+        value = profile[key]
+        if key not in ("facts", "flags"):
+            found += [] if text(value) else [f"county_profile.{key}: not plain text"]
+        elif not isinstance(value, list) or len(value) > 100:
+            found.append(f"county_profile.{key}: must be a list of at most 100 items")
+        else:
+            found += [f"county_profile.{key}: item {i} not plain text" for i, item in enumerate(value) if not text(item)]
+    if "source_page" in config and not (isinstance(config["source_page"], str) and
+                                        re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*\.html", config["source_page"])):
+        found.append("source_page: not a local .html file name")
+    if "default_fragment" in config and not slug(config["default_fragment"]):
+        found.append("default_fragment: invalid slug")
+    aliases = config.get("source_aliases", {})
+    if not isinstance(aliases, dict) or len(aliases) > 100:
+        found.append("source_aliases: must be an object of at most 100 pairs")
+    elif bad := sum(1 for key, value in aliases.items() if not slug(key) or not slug(value)):
+        found.append(f"source_aliases: invalid slug pair (count {bad})")
+    if "source_link_label" in config and (not text(config["source_link_label"]) or not config["source_link_label"].strip()):
+        found.append("source_link_label: blank or not plain text")
+    return sorted(found)
+
+
 def render(config):
-    if not isinstance(config, dict) or set(config) != KEYS:
-        raise ValueError("Invalid agency-card fields")
-    if type(config["schema_version"]) is not int or config["schema_version"] != 1:
-        raise ValueError("Unsupported agency-card schema")
+    found = problems(config)
+    if found:
+        raise ValueError("; ".join(found))
     profile = config["county_profile"]
-    if not isinstance(profile, dict) or set(profile) != PROFILE_FIELDS:
-        raise ValueError("Invalid county profile")
-    for key, value in profile.items():
-        if key in ("facts", "flags"):
-            if not isinstance(value, list) or len(value) > 100 or any(not text(item) for item in value):
-                raise ValueError("Invalid plain-text profile list")
-        elif not text(value):
-            raise ValueError("Invalid plain-text profile field")
     page = config["source_page"]
-    if not isinstance(page, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*\.html", page):
-        raise ValueError("Source page must be a local HTML filename")
     fragment = config["default_fragment"]
-    if not isinstance(fragment, str) or not SLUG.fullmatch(fragment):
-        raise ValueError("Invalid default source fragment")
     aliases = config["source_aliases"]
-    if not isinstance(aliases, dict) or len(aliases) > 100 or any(
-        not isinstance(key, str) or not SLUG.fullmatch(key) or
-        not isinstance(value, str) or not SLUG.fullmatch(value)
-        for key, value in aliases.items()
-    ):
-        raise ValueError("Invalid source aliases")
     label = config["source_link_label"]
-    if not text(label) or not label.strip():
-        raise ValueError("Invalid source-link label")
     quote = lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     route = "".join("slug===" + quote(key) + "?" + quote(value) + ":" for key, value in aliases.items())
     route += "slug||" + quote(fragment)

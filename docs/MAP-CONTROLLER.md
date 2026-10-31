@@ -22,6 +22,7 @@ initial display count and explicit uncertainty label. Runtime validation rejects
 unknown fields, unsafe identifiers/URLs, traversal and invalid counts. This
 renderer is build-time code generation: the profile hook is trusted reviewed
 source, never record text, user input or an AI draft.
+`map_controller.problems(config)` lists every problem at once (sorted, naming each field, never its value); `render` raises them joined by `; `.
 
 Geography and missing operator tags are research leads, not evidence of agency
 ownership. A group's label must say ownership is unconfirmed. The pilot retains
