@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from campaign_tool.records.intake import imap_intake as imap
+from campaign_tool.records.run import Pipeline
 from tests.records import test_imap_intake as imap_fixtures
 from tests.records.test_imap_intake import FakeIMAP
 from tests.records.test_run_slice import synthetic_email
@@ -344,7 +345,10 @@ class GlobalBudgetTests(unittest.TestCase):
     def test_default_old_config_limits_two_large_folders_to_200(self):
         # Original setup config has no max_messages_per_run.
         server = TrackingIMAP({"INBOX": self.folder(*range(1, 202)), "Agencies": self.folder(301, 302)})
-        report = self.run_with(server)["mailbox"]
+        # The budget is decided in intake; downstream stages are covered by the small sibling cases.
+        with patch.object(Pipeline, "advance_all", return_value=[]) as advance_all:
+            report = self.run_with(server)["mailbox"]
+        advance_all.assert_called_once()
         self.assertEqual(len(server.fetches), 200)
         self.assertEqual(report["max_messages_per_run"], 200)
         self.assertEqual(report["attempted"], 200)
