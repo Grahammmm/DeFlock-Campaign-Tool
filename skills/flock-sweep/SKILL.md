@@ -1,7 +1,7 @@
 ---
 name: flock-sweep
 description: Use when tracking every watch-list agency through flock-facts, flock-compare and flock-verify. Shows each agency's stage, blocker and exact next command, plans the next run cards, and builds the cross-agency topic x agency rating matrix from finished runs.
-skill_version: 1.0
+skill_version: 1.1
 ---
 
 # Flock sweep
@@ -20,7 +20,8 @@ calls kanban or hermes and never writes into the store. Each model run stays its
 ## Steps
 1. Convert L3 to the F7 header, then write or refresh the ROSTER (the operator confirms `in_scope`).
 2. `python3 tools/flock_sweep.py status --watchlist W --roster R --store S [--out FILE]`: one row per
-   agency with `stage` and the exact `next` command, then `agencies=N finished=F ready=R blocked=B unmapped=U`.
+   agency with `stage` and the exact `next` command, then `agencies=N finished=F ready=R blocked=B unmapped=U unwatched=W`
+   (unwatched = in-scope roster agencies with no watch row; add one with flock-monitor if it should be monitored).
 3. `python3 tools/flock_sweep.py plan ... --max 2`: paste the printed `CARDS` block into card bodies. The
    operator creates compare cards (opus-coder-bopus) and verify cards (codex-reviewer), each within
    40 turns / 2 h, chunked by document, with `REMAINING.md` on cap.
@@ -43,3 +44,4 @@ roster row names is `store-only` (data, not an error).
 
 ## Changes
 - A ROSTER agency without a watch-list row is accepted and assessed from the store; all other roster checks stay.
+- 1.1: the `status` summary ends with `unwatched=W` (in-scope roster agencies with no watch-list row, exact name match).

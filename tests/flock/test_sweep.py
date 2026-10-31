@@ -53,7 +53,7 @@ class FlockSweepTest(unittest.TestCase):
         self.assertEqual(sorted((str(p), p.stat().st_mtime_ns) for p in self.store.rglob("*")), before)
         lines = out.splitlines()
         rows = {r["slug"] or r["watch_agency"]: r for r in csv.DictReader(lines[:-1])}
-        self.assertEqual(lines[-1], "agencies=5 finished=%d ready=%d blocked=%d unmapped=1" % (finished, ready, 4 - finished - ready))
+        self.assertEqual(lines[-1], "agencies=5 finished=%d ready=%d blocked=%d unmapped=1 unwatched=0" % (finished, ready, 4 - finished - ready))
         expected = {AGENCY: stage, "second-city-police": "no-facts", "campus-police": "scope-hold",
                     "parks": "out-of-scope", "Unlisted Agency": "unmapped"}
         self.assertEqual({k: r["stage"] for k, r in rows.items()}, expected)
@@ -112,8 +112,8 @@ class FlockSweepTest(unittest.TestCase):
         lines = out.splitlines()
         rows = {r["slug"]: r for r in csv.DictReader(lines[:-1])}
         self.assertEqual((rows["harbor-police"]["watch_agency"], rows["harbor-police"]["stage"]), ("Harbor Police", "no-facts"))
-        self.assertEqual((base_out.splitlines()[-1].split()[0], lines[-1].split()[0], lines[-1].split()[-1]),
-                         ("agencies=5", "agencies=6", "unmapped=1"))
+        self.assertEqual((base_out.splitlines()[-1].split()[0], lines[-1].split()[0], lines[-1].split()[-2:]),
+                         ("agencies=5", "agencies=6", ["unmapped=1", "unwatched=1"]))
         code, out = sweep(base + new, "plan", "--max", "2")
         self.assertEqual((code, "harbor-police" in out), (0, False), out)
         bad = ((",x,no,,\n", "roster row 7: watch_agency is empty or duplicated"),
@@ -127,6 +127,33 @@ class FlockSweepTest(unittest.TestCase):
                 self.assertIn(expected, out)
                 self.assertNotIn("slug,watch_agency", out)
                 self.assertFalse(out_file.exists())
+
+    def test_unwatched_count_exact_case_sensitive_name_match(self):
+        base, roster = (FIXTURES / "roster-sample.csv").read_text(), self.tmp / "roster.csv"
+        harbor = "Harbor Police,harbor-police,%s,%s,\n"
+        yes = harbor % ("yes", "Harbor police; local ALPR policy applies")
+        lower = "second city police,second-city-lower,yes,Second city police; local ALPR policy applies,\n"
+        base_file = self.tmp / "base.csv"
+        code, out = self.sweep("status", "--out", str(base_file))
+        self.assertEqual((code, out.splitlines()[-1].split()[-2:]), (0, ["unmapped=1", "unwatched=0"]), out)
+        self.assertEqual(base_file.read_text(), "\n".join(out.splitlines()[:-1]) + "\n")
+        self.assertNotIn("unwatched", base_file.read_text())
+        cases = ((harbor % ("hold", ""), "agencies=6", 0), (harbor % ("no", ""), "agencies=6", 0),
+                 (yes, "agencies=6", 1), (lower, "agencies=6", 1), (yes + lower, "agencies=7", 2))
+        for extra, agencies, unwatched in cases:
+            with self.subTest(extra=extra):
+                roster.write_text(base + extra)
+                before = sorted((str(p), p.stat().st_mtime_ns) for p in self.store.rglob("*"))
+                code, out = self.sweep("status", roster=str(roster))
+                self.assertEqual(sorted((str(p), p.stat().st_mtime_ns) for p in self.store.rglob("*")), before)
+                last = out.splitlines()[-1].split()
+                self.assertEqual((code, last[0], last[-2:]), (0, agencies, ["unmapped=1", "unwatched=%d" % unwatched]), out)
+        roster.write_text(base + yes + lower)
+        for command in (("plan", "--max", "2"), ("matrix", "--out", str(self.tmp / "m"))):
+            with self.subTest(command=command[0]):
+                code, out = self.sweep(*command, roster=str(roster))
+                self.assertNotIn("unwatched", out)
+        self.assertEqual(self.sweep("matrix", "--out", str(self.tmp / "m2"))[1], "matrix rows=0 agencies=0\n")
 
     def test_matrix(self):
         self.finish()
