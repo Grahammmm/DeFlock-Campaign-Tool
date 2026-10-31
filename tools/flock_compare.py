@@ -39,14 +39,22 @@ def read_csv(path):
 def has_findings(path):
     return path.is_file() and any(any(c.strip() for c in rec) for rec in read_csv(path)[1:])
 
+def folder_problem(path, label):  # never follow a symlinked runs/run folder; a non-folder is refused, not traced
+    if path.is_symlink():
+        return label + " folder is a symlink"
+    return label + " folder is not a folder" if os.path.lexists(path) and not path.is_dir() else None
+
 def scaffold(args):
     store = Path(args.store).resolve()
     agency = store / "agencies" / args.agency
     run = agency / "runs" / args.date
+    folder = folder_problem(agency / "runs", "runs") or folder_problem(run, "run")
     if store == REPO or REPO in store.parents:
         reason = "store inside repository"
     elif not (agency / "FACTS.csv").is_file():
         reason = "agency FACTS.csv missing"
+    elif folder:
+        reason = folder
     elif has_findings(run / "FINDINGS.csv"):
         reason = "run folder already has findings"
     else:
@@ -165,9 +173,18 @@ def check(rundir, golden=None):
             continue
         rows.append((n, dict(zip(HEADER, (c.strip() for c in rec)))))
         errs += check_row(n, rows[-1][1], ctx)
+    if golden and not Path(golden).is_file():
+        return errs + ["golden: missing or not a regular file"], len(rows)
     return errs + (golden_errors(golden, rows) if golden else []), len(rows)
 
 def main(argv=None):
+    try:
+        return _main(argv)
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        print("io: %s" % type(exc).__name__)  # class name only: never a path or file content
+        return 1
+
+def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", choices=["scaffold"])
     for name in ("--store", "--agency", "--date", "--model", "--applicability", "--check", "--golden"):

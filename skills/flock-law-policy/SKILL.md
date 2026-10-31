@@ -1,7 +1,7 @@
 ---
 name: flock-law-policy
 description: Use when recording California law rules or per-agency ALPR policy versions for the Flock work. Checks LAW.csv and POLICY.csv fail-closed and lists which policy version governs on a date.
-skill_version: 1.1
+skill_version: 1.2
 ---
 
 # Flock law and policy
@@ -25,10 +25,12 @@ A clean check is machine-valid and review-required, not legal acceptance.
    of one agency + `policy_id` whose governing windows share a day (ends inclusive) are refused.
 5. List versions: `python3 tools/flock_law_policy.py versions STORE --agency SLUG [--on YYYY-MM-DD]`.
    Exit 3 with `no adopted version established for DATE` means the date is not covered.
+   Every agency on one date: `python3 tools/flock_law_policy.py governing STORE --on YYYY-MM-DD` (STORE a directory).
 6. Fix each reported `row N: <field> <reason>` at the source; the tool never repairs a row.
 
 ## Outputs
 - Counts `law=L policy=P errors=K`, row numbers, ids, labels and dates. Never duty or evidence text.
+- `governing`: a line per agency (version governing, `none on DATE` or `none established`), LAW rows in effect, then counts; a research view, not a legal conclusion.
 
 ## Never
 - Use a memo hash as `text_sha256` or `doc_sha256`; hash the fetched official text or document bytes.
@@ -45,3 +47,4 @@ A clean check is machine-valid and review-required, not legal acceptance.
 ## Changelog
 - 1.0: LAW.csv and POLICY.csv schema, `--check` and `versions`.
 - 1.1: `--check` refuses overlapping governing windows for one agency + `policy_id`.
+- 1.2: `governing STORE --on DATE` lists each agency's governing version and LAW rows in effect.

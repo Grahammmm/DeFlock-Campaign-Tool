@@ -117,9 +117,9 @@ class FlockCompareTest(unittest.TestCase):
         self.assertEqual(((run_dir / "FINDINGS.md.tmp").read_bytes(), stat.S_IMODE(after.st_mode), after.st_ino), (b"stale\n", 0o644, before.st_ino))
         self.assertNotEqual(os.lstat(run_dir / "FINDINGS.md").st_ino, before.st_ino)
         listing, kept = sorted(os.listdir(run_dir)), {n: ((run_dir / n).read_bytes(), os.lstat(run_dir / n).st_ino) for n in ("RUN.json", "FINDINGS.csv")}
-        with patch.object(compare.os, "replace", side_effect=OSError("replace failed")), self.assertRaises(OSError), \
-                contextlib.redirect_stdout(io.StringIO()):
-            compare.main(argv)
+        with patch.object(compare.os, "replace", side_effect=OSError("replace failed")), \
+                contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual((compare.main(argv), printed.getvalue()), (1, "io: OSError\n"))
         self.assertEqual({n: ((run_dir / n).read_bytes(), os.lstat(run_dir / n).st_ino) for n in kept}, kept)
         self.assertEqual(sorted(os.listdir(run_dir)), listing)
         with contextlib.redirect_stdout(io.StringIO()):
