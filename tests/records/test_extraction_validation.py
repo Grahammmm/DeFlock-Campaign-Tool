@@ -9,6 +9,7 @@ from unittest.mock import patch
 from campaign_tool.records import extraction_validation as validation
 from campaign_tool.records import extraction_ledger as enrollment
 from campaign_tool.records import extraction_routes as routes
+from tests.records import ocr_fixtures
 from tests.records import test_extraction_ledger as fixture_module
 
 
@@ -437,4 +438,197 @@ class ExtractionValidationTests(unittest.TestCase):
         content, _, coverage = self.validator.evidence(current["import_id"])
         self.assertEqual(coverage["covered"], 2)
         self.assertEqual(json.loads(content)["unit_count"], 2)
+
+
+UNRESOLVED_CAUSES = ("annotations", "unsupported_group", "unsupported_xobject")
+
+
+def unresolved_pdf(cause):
+    """Two synthetic pages: native text, then a text-free page the X6 probe cannot measure.
+
+    Page 2 carries exactly one construct that makes ``pdf_eligibility.probe`` fail closed:
+    an annotation, a transparency group with a non-device blending space, or an image
+    XObject with a soft mask (the three causes seen on real refused pages).
+    """
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import (ArrayObject, DecodedStreamObject, DictionaryObject, FloatObject,
+                               NameObject, NumberObject)
+    import io
+    writer = PdfWriter()
+    writer.append(PdfReader(io.BytesIO(ocr_fixtures.mixed_pdf())))
+    page = writer.pages[1]
+    if cause == "annotations":
+        note = DictionaryObject({NameObject("/Type"): NameObject("/Annot"), NameObject("/Subtype"): NameObject("/Square"),
+                                 NameObject("/Rect"): ArrayObject([NumberObject(v) for v in (4, 4, 40, 40)])})
+        page[NameObject("/Annots")] = ArrayObject([writer._add_object(note)])
+    elif cause == "unsupported_group":
+        white = DictionaryObject({NameObject("/WhitePoint"): ArrayObject([FloatObject(0.9505), FloatObject(1), FloatObject(1.089)])})
+        page[NameObject("/Group")] = DictionaryObject({NameObject("/S"): NameObject("/Transparency"),
+                                                       NameObject("/CS"): ArrayObject([NameObject("/CalRGB"), white])})
+    else:
+        def image(extra):
+            stream = DecodedStreamObject(); stream.set_data(b"\x00")
+            stream.update({NameObject("/Type"): NameObject("/XObject"), NameObject("/Subtype"): NameObject("/Image"),
+                           NameObject("/Width"): NumberObject(1), NameObject("/Height"): NumberObject(1),
+                           NameObject("/ColorSpace"): NameObject("/DeviceGray"), NameObject("/BitsPerComponent"): NumberObject(8),
+                           **extra})
+            return writer._add_object(stream)
+        page[NameObject("/Resources")] = DictionaryObject({NameObject("/XObject"): DictionaryObject(
+            {NameObject("/Im1"): image({NameObject("/SMask"): image({})})})})
+        content = DecodedStreamObject(); content.set_data(b"q 72 0 0 72 0 0 cm /Im1 Do Q")
+        page[NameObject("/Contents")] = writer._add_object(content)
+    stream = io.BytesIO(); writer.write(stream)
+    return stream.getvalue()
+
+
+class UnresolvedEligibilityOcrPageTests(unittest.TestCase):
+    """A page the X6 probe left ``unresolved`` but whose bound OCR text was accepted.
+
+    Live shape: the parser records ``page_eligibility_unresolved`` for the page while a legacy
+    ``local-ocr-3`` receipt (written before X6 receipts carried eligibility evidence) holds its
+    Tesseract text. Synthetic fixtures only; acceptance stays functional and review-required.
+    """
+    setUpClass = classmethod(fixture_module.ExtractionLedgerTests.setUpClass.__func__)
+    write = fixture_module.ExtractionLedgerTests.write
+    install = ExtractionValidationTests.install
+    expected_id = ExtractionValidationTests.expected_id
+
+    def setUp(self):
+        fixture_module.ExtractionLedgerTests.setUp(self)
+        self.addCleanup(self.temp.cleanup)
+        self.stages = importlib.import_module("campaign_tool.records.ledger.stages")
+        self.addCleanup(patch.stopall)
+        patch.dict(self.stages._INSTALLED_VALIDATORS, {}, clear=True).start()
+        patch.dict(self.stages._INSTALLED_PROFILES, {}, clear=True).start()
+
+    def seed_legacy_receipt(self, raw, subject, ocr_root, page):
+        """Publish a text receipt for ``page`` and strip its eligibility key (legacy shape)."""
+        from campaign_tool.records import pdf_eligibility
+        from campaign_tool.records.extract import ocr as page_ocr
+        intake = self.root / "legacy-intake"
+        self.write(intake / "blobs" / subject, raw)
+        real = pdf_eligibility.probe
+
+        def pre_x6_writer(*args):
+            # Stand-in for the writer that OCRed every requested page; the key is removed below.
+            return dict(real(*args), decision="ocr_required", reason="painted_raster_image")
+        with patch.object(pdf_eligibility, "probe", pre_x6_writer):
+            receipts = page_ocr.extract_image_only_pages(intake, subject, ocr_root, tool_signature="stub-v1",
+                tools=ocr_fixtures.TOOLS, attempt_id="initial", pages=(page,),
+                runner=ocr_fixtures.FakeOCRRunner(confidence="90"))
+        self.assertEqual([r["status"] for r in receipts], ["ocr_text_unreviewed"])
+        directory = Path(ocr_root) / subject / ("page-%06d" % page) / receipts[0]["receipt_id"]
+        receipt = json.loads((directory / "receipt.json").read_bytes())
+        del receipt["eligibility"]
+        receipt_bytes = page_ocr._json(receipt)
+        manifest = {"schema_version": page_ocr.VERSION, "receipt_sha256": page_ocr._hash(receipt_bytes),
+                    "artifact_sha256": receipt["artifact_sha256"]}
+        for name, data in (("receipt.json", receipt_bytes), ("manifest.json", page_ocr._json(manifest))):
+            path = directory / name
+            mode = path.stat().st_mode & 0o777
+            path.chmod(0o600); path.write_bytes(data); path.chmod(mode)
+        self.assertEqual(set(receipt), page_ocr.RECEIPT_KEYS)
+
+    def bundle(self, cause, *, seed=True):
+        from campaign_tool.records import pdf_eligibility
+        from pypdf import PdfReader
+        import io
+        raw = unresolved_pdf(cause)
+        subject = enrollment.sha(raw)
+        reader = PdfReader(io.BytesIO(raw))
+        evidence = pdf_eligibility.probe(reader.pages[1], subject, 2, reader.pages[1].extract_text() or "")
+        self.assertEqual((evidence["decision"], evidence["unavailable"][-1]), ("unresolved", cause))
+        self.assertEqual(pdf_eligibility.probe(reader.pages[0], subject, 1, reader.pages[0].extract_text())["decision"],
+                         "native_sufficient")
+        self.source = self.root / "original.pdf"; self.write(self.source, raw); self.source.chmod(0o400)
+        self.subject = subject
+        with self.store.ledger(self.database) as con:
+            con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)", (subject, len(raw), None, None, "original",
+                        "unresolved", str(self.source), "receipt_validation_pending", None, "{}"))
+            con.execute("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)",
+                        ("pdf-source", subject, "local", "synthetic", None, None, "fixture", "{}"))
+            for stage in self.store.STAGES:
+                con.execute("INSERT INTO stage_state VALUES(?,?,?,?,?,?,?,?)",
+                            (subject, stage, "pending", None, "fixture", "2030-01-01T00:00:00+00:00", "intake", None))
+            con.commit()
+        ocr_root = self.root / "page-ocr"; ocr_root.mkdir(mode=0o700)
+        if seed:
+            self.seed_legacy_receipt(raw, subject, ocr_root, 2)
+        out = self.root / "pdf-derived"; out.mkdir(mode=0o700)
+        self.ocr_runner = ocr_fixtures.FakeOCRRunner(confidence="90")
+        result = routes.extract(self.source, subject, out, "pdf", timeout=30, ocr_output_root=str(ocr_root),
+                                ocr_tools=ocr_fixtures.TOOLS, tool_signature="stub-v1", ocr_runner=self.ocr_runner)
+        self.assertIn({"code": "page_eligibility_unresolved", "locator": {"page": 2}, "detail": ""}, result["issues"])
+        return Path(result["run_path"]) / "extraction.json", result
+
+    def enrolled(self, receipt):
+        return self.adapter.enroll(original_path=self.source, receipt_path=receipt,
+                                   receipt_sha256=enrollment.sha(receipt.read_bytes()))
+
+    def test_unresolved_page_with_accepted_ocr_text_is_admitted_with_hold(self):
+        for index, cause in enumerate(UNRESOLVED_CAUSES):
+            with self.subTest(cause=cause):
+                if index:
+                    self.setUp()
+                receipt, result = self.bundle(cause)
+                self.assertEqual(self.ocr_runner.calls, [], "the bound legacy receipt is reused, not re-OCRed")
+                self.assertEqual([(e["page"], e["status"]) for e in result["ocr_receipts"]], [(2, "ocr_text_unreviewed")])
+                enrolled = self.enrolled(receipt)
+                self.assertIn("ocr_visual_review_required", enrolled["gaps"])
+                self.install()
+                raw, _, coverage = self.validator.evidence(enrolled["import_id"])
+                envelope = json.loads(raw)
+                self.assertEqual(envelope["ocr"]["pages"], [2])
+                self.assertTrue(envelope["ocr"]["visual_review_pending"])
+                self.assertEqual(coverage, {"denominator": {"kind": "pages", "total": 2}, "covered": 2, "scope": "full_text"})
+                with self.store.ledger(self.database, readonly=True) as con:
+                    holds = con.execute("SELECT page_no,needs_visual_review,status,reason FROM page_state "
+                                        "WHERE original_sha256=? ORDER BY page_no", (self.subject,)).fetchall()
+                    stages = dict(con.execute("SELECT stage,status FROM stage_state WHERE original_sha256=?",
+                                              (self.subject,)))
+                self.assertEqual([tuple(h) for h in holds],
+                                 [(1, 1, "ok", None), (2, 1, "partial", "ocr_visual_review_required")])
+                self.assertEqual(set(stages.values()), {"pending"})
+
+    def test_unresolved_page_without_ocr_text_still_refuses(self):
+        # A fresh OCR root: the X6 per-page writer blocks the unresolved page, so no text exists
+        # and the original is refused before any import exists (unchanged by the issue gate).
+        for index, cause in enumerate(UNRESOLVED_CAUSES):
+            with self.subTest(cause=cause):
+                if index:
+                    self.setUp()
+                receipt, result = self.bundle(cause, seed=False)
+                self.assertEqual(self.ocr_runner.calls, [], "an unresolved page is never rasterised")
+                self.assertEqual([(e["page"], e["status"]) for e in result["ocr_receipts"]], [(2, "blocked")])
+                with self.assertRaisesRegex(enrollment.ExtractionBindingError, "^ocr_receipt_unverified$"):
+                    self.enrolled(receipt)
+                with self.store.ledger(self.database, readonly=True) as con:
+                    self.assertEqual(con.execute("SELECT count(*) FROM units WHERE original_sha256=?",
+                                                 (self.subject,)).fetchone()[0], 0)
+
+    def test_issue_gate_admits_unresolved_only_on_accepted_ocr_pages(self):
+        pages = {2: {}}
+        admitted = [{"code": "ocr_needed_or_blank_page", "locator": {"page": 2}},
+                    {"code": "ocr_visual_review_required", "owner": "visual-review"},
+                    {"code": "page_eligibility_unresolved", "locator": {"page": 2}, "detail": ""}]
+        refused = [{"code": "page_eligibility_unresolved", "locator": {"page": 1}},
+                   {"code": "page_eligibility_unresolved", "locator": {"page": 3}},
+                   {"code": "page_eligibility_unresolved"},
+                   {"code": "page_eligibility_unresolved", "locator": None},
+                   {"code": "page_eligibility_unresolved", "locator": [2]},
+                   {"code": "page_eligibility_unresolved", "locator": {"page": "2"}},
+                   {"code": "page_eligibility_unresolved", "locator": {"page": 2.0}},
+                   {"code": "page_eligibility_unresolved", "locator": {"page": True}},
+                   {"code": "page_eligibility_unresolved", "locator": {"page": 2, "line": 1}},
+                   {"code": "page_error", "locator": {"page": 2}},
+                   {"code": "ocr_runtime_unconfigured"}, "page_eligibility_unresolved", None]
+        for issue in admitted:
+            with self.subTest(admitted=issue):
+                self.assertTrue(validation.ocr_issue_admitted(issue, pages))
+        for issue in refused:
+            with self.subTest(refused=issue):
+                self.assertFalse(validation.ocr_issue_admitted(issue, pages))
+        self.assertFalse(validation.ocr_issue_admitted(admitted[2], {}))
+        self.assertTrue(validation.ocr_issue_admitted({"code": "page_eligibility_unresolved", "locator": {"page": 1}},
+                                                      {1: {}}))
 
