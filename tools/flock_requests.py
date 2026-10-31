@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private CPRA request reminder list (REQUESTS.csv v1): --check and due. Prints only.
+"""Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
 draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
 import csv
 import os
@@ -15,7 +15,8 @@ from campaign_tool import law  # noqa: E402
 
 HEADER = ["request_id", "agency", "sent", "receipt_evidence", "receipt_date", "determination_date",
           "extension_notice_date", "status", "source_sha256"]
-STATUSES = {"open", "determined", "produced", "closed", "withdrawn"}
+ORDER = ("open", "determined", "produced", "closed", "withdrawn")
+STATUSES = set(ORDER)
 DATES = ("sent", "receipt_date", "determination_date", "extension_notice_date")
 
 
@@ -111,6 +112,26 @@ def due(rows):
     return lines
 
 
+def summary(rows):
+    """One status line per agency (slug order, first-seen label), then totals. Counts only: no law package, no deadline."""
+    groups = {}
+    for r in rows:
+        groups.setdefault(slug(r["agency"]), []).append(r)
+    lines, unknown = [], 0
+    for key in sorted(groups):
+        rs = groups[key]
+        opened = [r for r in rs if r["status"] == "open"]
+        unk = sum(not r["receipt_evidence"] for r in opened)
+        unknown += unk
+        counts = " ".join(f"{s}={sum(r['status'] == s for r in rs)}" for s in ORDER)
+        oldest = min((r["sent"] for r in opened), default="-")
+        lines.append(f"request status | {rs[0]['agency']} | {counts} | receipt_unknown={unk} | oldest_open_sent {oldest}")
+    opened = sum(r["status"] == "open" for r in rows)
+    lines.append(f"request status | agencies={len(groups)} requests={len(rows)} open={opened} receipt_unknown={unknown}"
+                 " | not a legal status; the canonical ledger wins")
+    return lines
+
+
 QLINE1 = "Research draft - not legal advice. Records to seek; not allegations."
 QLINE = re.compile(r"- Q (\S+) \| ([^|]+?) \| prior (\S+) \| ([^|]+)")
 ASKS = re.compile(r"\b(explain\w*|why|justif\w*|answer\w*)\b", re.I)
@@ -187,7 +208,7 @@ def draft(rundir, requests, start, end):
     return print(f"items={len(inc)} held={len(held)} written=FOLLOWUP-DRAFT.md") or 0
 
 
-USAGE = "usage: flock_requests.py --check PATH | due PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD"
+USAGE = "usage: flock_requests.py --check PATH | due PATH | summary PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD"
 
 def main(argv):
     if argv in (["--help"], ["-h"]):
@@ -196,7 +217,7 @@ def main(argv):
         start, end = day(argv[5]), day(argv[7])
         if start and end and start <= end:
             return draft(argv[1], argv[3], argv[5], argv[7])
-    if len(argv) != 2 or argv[0] not in ("--check", "due"):
+    if len(argv) != 2 or argv[0] not in ("--check", "due", "summary"):
         print(USAGE, file=sys.stderr)
         return 2
     rows, errs = load(argv[1])
@@ -206,6 +227,9 @@ def main(argv):
     if errs:
         print("\n".join(errs), file=sys.stderr)
         return 1
+    if argv[0] == "summary":
+        print("\n".join(summary(rows)))
+        return 0
     try:
         lines = due(rows)
     except ValueError as exc:
