@@ -138,7 +138,6 @@ def slowest(seconds, limit=10):
 
 
 def run_timed(suite, shard, stream=None):
-    """Run the shard, then print one timing line on success and on failure."""
     start = time.perf_counter()
     result = unittest.TextTestRunner(stream=stream, verbosity=2, resultclass=TimedResult).run(suite)
     print(json.dumps({'shard': shard, 'total_seconds': round(time.perf_counter() - start, 1),

@@ -25,10 +25,8 @@ def run(tests, fake=None):
 class TimingSummaryTest(unittest.TestCase):
     def test_ten_slowest_descending_with_name_tiebreak(self):
         clock = [0.0]
-        def advance(seconds):
-            return lambda self: clock.__setitem__(0, clock[0] + seconds)
-        durations = [5, 1, 12, 3, 7, 7, 2, 9, 11, 4, 6, 8]
-        tests = [synthetic(f'synthetic.m{i:02d}', advance(d)) for i, d in enumerate(durations)]
+        advance = lambda seconds: lambda self: clock.__setitem__(0, clock[0] + seconds)  # noqa: E731
+        tests = [synthetic(f'synthetic.m{i:02d}', advance(d)) for i, d in enumerate([5, 1, 12, 3, 7, 7, 2, 9, 11, 4, 6, 8])]
         code, lines = run(tests, types.SimpleNamespace(perf_counter=lambda: clock[0]))
         self.assertEqual((code, len(lines)), (0, 1))
         self.assertEqual(json.loads(lines[0]), {'shard': 3, 'total_seconds': 75.0, 'slowest': [
@@ -52,16 +50,14 @@ class TimingSummaryTest(unittest.TestCase):
     def test_skip_is_timed_and_passes(self):
         code, lines = run([synthetic('synthetic.skip', lambda self: self.skipTest('n/a'))])
         [[module, seconds]] = json.loads(lines[0])['slowest']
-        self.assertEqual((code, module), (0, 'synthetic.skip'))
-        self.assertLess(seconds, 1.0)
+        self.assertEqual((code, module, seconds < 1.0), (0, 'synthetic.skip', True))
 
     def test_list_prints_only_the_selection_line(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(ci_affected.main(['--list', '--tier', 'full']), 0)
-        lines = out.getvalue().splitlines()
-        self.assertEqual(len(lines), 1)
-        self.assertEqual(sorted(json.loads(lines[0])), ['selected_modules', 'shard', 'tier'])
+        self.assertEqual([sorted(json.loads(line)) for line in out.getvalue().splitlines()],
+                         [['selected_modules', 'shard', 'tier']])
 
     def test_partition_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
