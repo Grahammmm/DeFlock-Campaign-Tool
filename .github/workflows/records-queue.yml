@@ -1,4 +1,4 @@
-name: Records queue integration
+name: Records owned integration (queue, detectors, runner, portal)
 on:
   schedule:
     - cron: '17 7 * * *'
@@ -13,6 +13,7 @@ permissions:
 jobs:
   integration:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -33,20 +34,18 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r requirements-records-test.txt
-      - name: Select in-tree or pinned WP1 ledger
+      - name: 'queue: Required synthetic integration against in-tree or pinned ledger'
         shell: bash
+        env:
+          TMPDIR: /var/tmp
         run: |
           # Explicit file-based detection: an in-tree ledger is used from this checkout.
           if [[ -f campaign_tool/records/ledger/store.py ]]; then
             printf '%s\n' 'WP1 in tree; using this checkout.'
-            printf 'RECORDS_WP1_SOURCE_ROOT=%s\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            export RECORDS_WP1_SOURCE_ROOT="$GITHUB_WORKSPACE"
           else
-            printf 'RECORDS_WP1_SOURCE_ROOT=%s\n' "$GITHUB_WORKSPACE/.wp1-dependency" >> "$GITHUB_ENV"
+            export RECORDS_WP1_SOURCE_ROOT="$GITHUB_WORKSPACE/.wp1-dependency"
           fi
-      - name: Required synthetic integration against in-tree or pinned ledger
-        env:
-          TMPDIR: /var/tmp
-        run: |
           python -B - <<'PY'
           import os, pathlib, unittest
           import campaign_tool.records, tests.records
@@ -67,3 +66,73 @@ jobs:
           if result.skipped or not result.wasSuccessful():
               raise SystemExit(1)
           PY
+      - name: 'detectors: Required synthetic integration against in-tree or pinned ledger'
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          # Explicit file-based detection: an in-tree ledger is used from this checkout.
+          if [[ -f campaign_tool/records/ledger/store.py ]]; then
+            printf '%s\n' 'WP1 in tree; using this checkout.'
+            export RECORDS_WP1_SOURCE_ROOT="$GITHUB_WORKSPACE"
+          else
+            export RECORDS_WP1_SOURCE_ROOT="$GITHUB_WORKSPACE/.wp1-dependency"
+          fi
+          python -B - <<'PY'
+          import os, pathlib, unittest
+          import campaign_tool.records, tests.records
+          engine = pathlib.Path.cwd().resolve()
+          root = pathlib.Path(os.environ['RECORDS_WP1_SOURCE_ROOT']).resolve(strict=True)
+          in_tree = (engine/'campaign_tool/records/ledger/store.py').is_file()
+          if in_tree != (root == engine):
+              raise SystemExit('WP1 source mismatch: in-tree ledger requires the engine root')
+          if not in_tree:
+              campaign_tool.records.__path__.append(str(root/'campaign_tool'/'records'))
+              tests.records.__path__.append(str(root/'tests'/'records'))
+          from campaign_tool.records.ledger import stages
+          if not pathlib.Path(stages.__file__).resolve().is_relative_to(root/'campaign_tool'/'records'/'ledger'):
+              raise SystemExit('WP1 ledger loaded from an unexpected source')
+          print('WP1 source:', 'in-tree' if in_tree else 'pinned overlay', root, flush=True)
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['tests.records.test_detectors', 'tests.records.test_detector_persistence'])
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped or not result.wasSuccessful():
+              raise SystemExit(1)
+          PY
+      - name: 'runner: Required synthetic integration against in-tree or pinned ledger'
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          # Explicit file-based detection: an in-tree ledger is used from this checkout.
+          if [[ -f campaign_tool/records/ledger/store.py ]]; then
+            printf '%s\n' 'WP1 in tree; WP1_OVERLAY left unset.'
+          else
+            export WP1_OVERLAY="$GITHUB_WORKSPACE/.wp1-dependency"
+          fi
+          python -B tests/records/run_runner_composition.py
+      - name: 'portal: Synthetic portal and actual ledger contract'
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          # Explicit file-based detection: an in-tree ledger is used from this checkout.
+          if [[ -f campaign_tool/records/ledger/store.py ]]; then
+            printf '%s\n' 'WP1 in tree; RECORDS_WP1_SOURCE_ROOT left unset.'
+          else
+            export RECORDS_WP1_SOURCE_ROOT="$GITHUB_WORKSPACE/.wp1-dependency"
+          fi
+          python -B - <<'PY'
+          import unittest
+          # Explicit portal scope, like the WP6/WP7/WP9 integration workflows:
+          # whole-tree discovery would include opt-in composition suites that
+          # skip by design and spawn-based runner tests that cannot run from stdin.
+          suite = unittest.defaultTestLoader.loadTestsFromNames([
+              'tests.test_records_portal', 'tests.test_records_portal_https',
+              'tests.test_records_portal_repairs', 'tests.test_records_portal_runner_contract',
+              'tests.test_records_portal_wp1', 'tests.records.test_portal_intake',
+              'tests.test_records_portal_fetch_plan', 'tests.test_records_portal_clock_contract',
+              'tests.records.test_portal_legacy_approval'])
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped or not result.wasSuccessful():
+              raise SystemExit(1)
+          PY
+        env:
+          TMPDIR: /var/tmp
