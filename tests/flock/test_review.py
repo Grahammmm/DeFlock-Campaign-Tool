@@ -1,4 +1,4 @@
-import json, shutil, subprocess, sys, tempfile, unittest
+import importlib.util, json, os, shutil, stat, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -288,6 +288,31 @@ class FlockReviewTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("locked: ", out)
         self.assertEqual((p["out"] / "REVIEW-STATE.json").read_bytes(), state)
+
+    def test_put_writes_through_fresh_temp(self):  # BL-DF-1: a planted or stale <name>.tmp is never followed, reused or left
+        spec = importlib.util.spec_from_file_location("_bl_df_1_review", TOOL)
+        spec.loader.exec_module(review := importlib.util.module_from_spec(spec))
+        folder, sentinel = self.tmp / "o", self.tmp / "sentinel"
+        folder.mkdir()
+        sentinel.write_bytes(b"keep\n")
+        (folder / "a.txt.tmp").symlink_to(sentinel)
+        review.put(folder / "a.txt", b"one\n")
+        self.assertEqual((sentinel.read_bytes(), os.readlink(folder / "a.txt.tmp")), (b"keep\n", str(sentinel)))
+        st = os.lstat(folder / "a.txt")
+        self.assertEqual((stat.S_ISREG(st.st_mode), stat.S_IMODE(st.st_mode), (folder / "a.txt").read_bytes()), (True, 0o600, b"one\n"))
+        (folder / "b.txt.tmp").write_bytes(b"stale\n")
+        (folder / "b.txt.tmp").chmod(0o644)
+        before = os.lstat(folder / "b.txt.tmp")
+        review.put(folder / "b.txt", b"two\n")
+        after, out = os.lstat(folder / "b.txt.tmp"), os.lstat(folder / "b.txt")
+        self.assertEqual(((folder / "b.txt.tmp").read_bytes(), stat.S_IMODE(after.st_mode), after.st_ino), (b"stale\n", 0o644, before.st_ino))
+        self.assertEqual((stat.S_IMODE(out.st_mode), (folder / "b.txt").read_bytes()), (0o600, b"two\n"))
+        self.assertNotEqual(out.st_ino, before.st_ino)
+        listing, ino = sorted(os.listdir(folder)), os.lstat(folder / "a.txt").st_ino
+        with patch.object(review.os, "replace", side_effect=OSError("replace failed")), self.assertRaises(OSError):
+            review.put(folder / "a.txt", b"three\n")
+        self.assertEqual(((folder / "a.txt").read_bytes(), os.lstat(folder / "a.txt").st_ino), (b"one\n", ino))
+        self.assertEqual(sorted(os.listdir(folder)), listing)
 
 
 if __name__ == "__main__":

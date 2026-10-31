@@ -36,14 +36,21 @@ FAKE_IMAGE = "sha256:" + "0" * 64
 STUB_TEMPLATE = RUNTIME / "targets" / "stub.json.in"
 SYNTHETIC_FIXTURE = ROOT / "examples" / "run-report" / "stub-stages.synthetic.json"
 STAGES = run_report.STAGE_ORDER
+
+
+def as_live(stages):
+    """A rendered TEST plan's stages with its synthetic sandbox values mapped back to LIVE's."""
+    return json.loads(json.dumps(stages).replace("/srv/flock-test", "/srv/flock-live"))
+
+
 # Phase 1 container plans, pinned at origin/main 4750f69: T6-plan (Phase 2 OCR
 # plans) must not change them. Update only with an intentional, reviewed edit.
 PHASE1_TEMPLATE_SHA256 = {
     # pragma comments: SHA-256 of public committed templates, not credentials.
     "live-container.json.in":
         "ed928535b1b110fdd63ece9d47cecf770a097935c7c4e20a18a78fff40c73071",  # pragma: allowlist secret
-    "test-container.json.in":
-        "f4f042de70fd1fce1cdf36b1ca62c0cbc40f4f7369fabfc1ff25e77b60b7fc52",  # pragma: allowlist secret
+    "test-container.json.in":  # re-pinned on purpose by AUD-DF1 (own _TEST placeholders)
+        "bdee382e7ebd4c400dd4731f7f19b43c17096c75c2ce3a4381a757bb01c53aa8",  # pragma: allowlist secret
 }
 
 FAKE_DOCKER = r"""#!/bin/sh
@@ -870,19 +877,9 @@ class RendererTests(unittest.TestCase):
                 self.assertIsNone(re.search(r"@[A-Z_]+@", path.read_text()), path.name)
 
     def test_render_test_and_live_container_targets(self):
-        container_values = {
-            **{k: v for k, v in self.values.items() if k != "STUB_FIXTURE"},
-            "CONTAINER_USER": "0",
-            "CONTAINER_ENGINE_DIR": "/opt/flock-engine",
-            "CONTAINER_PYTHON": "/opt/campaign-tool/venv/bin/python",
-            "CONTAINER_PROJECT_DIR": "/srv/flock-live",
-            "CONTAINER_APPROVAL_FILE": "/srv/flock-live/approval.json",
-            "ADOPTION_CONFIG": "/srv/flock-live/adoption.json",
-            "SCHEDULED_TARGET": "LIVE",
-        }
         targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
                    ("LIVE", str(RUNTIME / "targets" / "live-container.json.in"))]
-        written = self.do_render(values=container_values, targets=targets)
+        written = self.do_render(values=self.ocr_container_values(), targets=targets)
         self.assertIn("targets/TEST.json", written)
         self.assertIn("targets/LIVE.json", written)
         out = self.tmp / "out"
@@ -890,10 +887,75 @@ class RendererTests(unittest.TestCase):
         live = json.loads((out / "targets" / "LIVE.json").read_text())
         self.assertEqual((test["target"], test["mode"]), ("TEST", "test"))
         self.assertEqual((live["target"], live["mode"]), ("LIVE", "live"))
-        self.assertEqual(test["stages"], live["stages"])
+        # AUD-DF1: the plans differ only in the TEST sandbox values; the projects never match.
+        self.assertEqual({str(p) for p in self.render.plan_projects(test)}, {"/srv/flock-test"})
+        self.assertEqual({str(p) for p in self.render.plan_projects(live)}, {"/srv/flock-live"})
+        self.assertNotEqual(test["stages"], live["stages"])
+        self.assertEqual(as_live(test["stages"]), live["stages"])
         for name in ("TEST", "LIVE"):
             self.assertIsNone(re.search(r"@[A-Z_]+@",
                                         (out / "targets" / f"{name}.json").read_text()), name)
+
+    def test_render_refuses_test_project_overlapping_live(self):
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(RUNTIME / "targets" / "live-container.json.in"))]
+        cases = {"equal": ("/srv/flock-live", "/srv/flock-live"),
+                 "test-inside-live": ("/srv/flock-live/sandbox", "/srv/flock-live"),
+                 "live-inside-test": ("/srv/flock-test", "/srv/flock-test/live"),
+                 "dot-segment": ("/srv/flock-live/./sandbox", "/srv/flock-live"),
+                 "dotdot-wording": ("/srv/flock-test/../flock-live", "/srv/flock-live"),
+                 "root": ("/", "/srv/flock-live")}
+        for label, (test_dir, live_dir) in cases.items():
+            with self.subTest(label):
+                out = self.tmp / label
+                values = self.ocr_container_values(CONTAINER_PROJECT_DIR_TEST=test_dir,
+                                                   CONTAINER_PROJECT_DIR=live_dir)
+                with self.assertRaises(self.render.RenderError) as caught:
+                    self.do_render(values, targets, out)
+                message = str(caught.exception)
+                self.assertIn("target TEST", message)
+                self.assertIn("live target LIVE", message)
+                self.assertNotIn("/srv", message)
+                self.assertNotIn("flock", message)
+                self.assertFalse(out.exists() and any(out.iterdir()))
+        # Component-wise: a sibling sharing a name prefix is not an overlap.
+        values = self.ocr_container_values(CONTAINER_PROJECT_DIR_TEST="/srv/flock-live2")
+        self.do_render(values, targets, self.tmp / "sibling")
+
+    def test_render_old_values_without_test_keys_fail_closed(self):
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(RUNTIME / "targets" / "live-container.json.in"))]
+        values = {k: v for k, v in self.ocr_container_values().items() if not k.endswith("_TEST")}
+        with self.assertRaisesRegex(self.render.RenderError, r"target TEST: no value for \[") as caught:
+            self.do_render(values, targets, self.tmp / "old")
+        for key in ("CONTAINER_PROJECT_DIR_TEST", "ADOPTION_CONFIG_TEST", "CONTAINER_APPROVAL_FILE_TEST"):
+            self.assertIn(key, str(caught.exception))
+        self.assertFalse((self.tmp / "old").exists())
+
+    def test_stage_argv_requires_sandbox_only_for_test_plans(self):
+        from campaign_tool.records import run_orchestrator  # noqa: PLC0415
+        targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                   ("LIVE", str(RUNTIME / "targets" / "live-container.json.in")),
+                   ("OCR", str(RUNTIME / "targets" / "live-ocr-vision-container.json.in")),
+                   ("MAIL", str(RUNTIME / "targets" / "live-mail-container.json.in"))]
+        values = self.ocr_container_values(CONTAINER_OCR_VISION_CONFIG="/srv/vision.json",
+                                           CONTAINER_SYNC_SCRIPT="/srv/mail/sync.py")
+        self.do_render(values, targets)
+        plans = {name: json.loads((self.tmp / "out" / "targets" / f"{name}.json").read_text())
+                 for name, _ in targets}
+        self.do_render(out=self.tmp / "stub")  # stub.json.in: mode test, stub backend argv
+        stub = json.loads((self.tmp / "stub" / "targets" / "TEST.json").read_text())
+        for name, plan in (*plans.items(), ("STUB", stub)):
+            for entry in plan["stages"]:
+                with self.subTest(name, stage=entry["name"]):
+                    argv = run_orchestrator.stage_argv(plan, entry)
+                    expected = entry["argv"] + (["--require-sandbox"] if name == "TEST" else [])
+                    self.assertEqual(argv, expected)
+                    self.assertEqual(argv.count("--require-sandbox"), int(name == "TEST"))
+        entry = dict(plans["TEST"]["stages"][0])
+        entry["argv"] = [*entry["argv"], "--require-sandbox"]
+        self.assertEqual(run_orchestrator.stage_argv(plans["TEST"], entry), entry["argv"])
+        run_orchestrator.validate_target_config(plans["TEST"])
 
     def test_live_mail_render_requires_safe_script_and_leaves_test_offline(self):
         template = RUNTIME / "targets" / "live-mail-container.json.in"
@@ -915,7 +977,7 @@ class RendererTests(unittest.TestCase):
         self.assertNotIn("--sync-script", test["stages"][0]["argv"])
         self.assertEqual(live["stages"][0]["argv"][-2:],
                          ["--sync-script", "/srv/mail/sync.py"])
-        self.assertEqual(test["stages"][1:], live["stages"][1:])
+        self.assertEqual(as_live(test["stages"][1:]), live["stages"][1:])
         self.assertEqual(live["stages"][0]["on_fail"], "stop")
 
     # ---- Phase 2 (T6-plan) OCR-enabled LIVE stage plans ----
@@ -928,6 +990,9 @@ class RendererTests(unittest.TestCase):
                 "CONTAINER_PROJECT_DIR": "/srv/flock-live",
                 "CONTAINER_APPROVAL_FILE": "/srv/flock-live/approval.json",
                 "ADOPTION_CONFIG": "/srv/flock-live/adoption.json",
+                "CONTAINER_PROJECT_DIR_TEST": "/srv/flock-test",
+                "CONTAINER_APPROVAL_FILE_TEST": "/srv/flock-test/approval.json",
+                "ADOPTION_CONFIG_TEST": "/srv/flock-test/adoption.json",
                 "SCHEDULED_TARGET": "LIVE", **extra}
 
     def render_ocr_plan(self, template, values, out=None):

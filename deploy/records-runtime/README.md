@@ -65,6 +65,13 @@ container plans with both targets:
 `CONTAINER_PROJECT_DIR` is the live project directory and `ADOPTION_CONFIG`
 the live owner-only adoption config (both placeholders already exist; no
 values files, host paths, image digests or chat IDs belong in this repo).
+The TEST plan has its own placeholders (AUD-DF1): `CONTAINER_PROJECT_DIR_TEST`
+(a sandbox project holding an owner-only `.t12-sandbox-v1` marker),
+`ADOPTION_CONFIG_TEST` and `CONTAINER_APPROVAL_FILE_TEST`. The renderer refuses
+a TEST project that equals, contains or lies inside a LIVE project, and every
+TEST stage runs with `--require-sandbox`, so it refuses a project without the
+marker. Adding the three values is part of the attended install; an old
+VALUES.json without them fails closed at render (`no value for [...]`).
 Set `DEFAULT_TARGET=TEST` and `SCHEDULED_TARGET=LIVE` at cutover (T17).
 
 T17 mailbox-refresh cutover uses the opt-in
