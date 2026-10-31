@@ -1,0 +1,4 @@
+{"documents": [{"document_id": "10000001", "upload_verification": {"verified_at": "2026-10-01", "public_get_sha_ok": true}}],
+ "messages": [{"id": "m1", "requests": ["R-1"], "subject": "Records request R-1", "summary": "We asked for the camera files.", "body": "Please send the camera contract.", "documents": []},
+  {"id": "m2", "requests": ["R-1"], "subject": "Re: Records request R-1", "summary": "The City sent one file.", "body": "Attached is the contract.", "documents": [{"document_id": "10000001"}]},
+  {"id": "m3", "requests": ["outreach"], "subject": "Campaign note", "summary": "A campaign note.", "body": "Thanks for coming.", "documents": []}]}
