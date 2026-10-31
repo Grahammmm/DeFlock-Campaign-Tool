@@ -145,8 +145,13 @@ def _inputs(run):  # the store inputs check reads; --summary reuses them, so the
     policy_rows, e = law_policy.load_policy(agency / "POLICY.csv", agency.name)
     store_errs += ["POLICY.csv " + x for x in e]
     facts = {r["fact_id"]: r for _, r in facts_tool.load(facts_path, agency.name)[1]} if facts_path.is_file() else {}
-    return (store_errs, facts, [r["rule_id"] for _, r in law_rows], [r["policy_row_id"] for _, r in policy_rows],
+    return (store_errs, facts, [r["rule_id"] for _, r in law_rows], {r["policy_row_id"]: r for _, r in policy_rows},
             {r["rule_id"]: r["review"] for r in law.load_package("us-ca")["rules"]})
+
+def governs(row, on):  # law_policy.versions()' rule; --check makes the dates valid YYYY-MM-DD, so strings compare as days
+    if row["adoption_evidence"] == "unverified":
+        return "not established"
+    return "yes" if row["governs_from"] <= on and (not row["governs_to"] or on <= row["governs_to"]) else "no"
 
 def _input_hashes(store, agency):  # sha256 hex of each input the run is written against; None when the file is absent
     hashes = {}
@@ -211,7 +216,11 @@ def summary(rundir):  # report, not a gate: ids and counts of what a clean run c
     if errs:
         print("summary refused: errors=%d (run --check)" % len(errs))
         return 1
-    _, facts, law_ids, policy_ids, package = _inputs(run := Path(rundir).resolve())
+    _, facts, law_ids, policies, package = _inputs(run := Path(rundir).resolve())
+    on = json.loads((run / "RUN.json").read_text(encoding="utf-8")).get("date")  # check() parsed it already
+    if not isinstance(on, str) or not law_policy.day(on):
+        print("summary refused: RUN.json date")
+        return 1
     rows = [dict(zip(HEADER, map(str.strip, rec))) for rec in read_csv(run / "FINDINGS.csv")[1:] if any(map(str.strip, rec))]
     topics = {}
     for r in rows:
@@ -222,12 +231,19 @@ def summary(rundir):  # report, not a gate: ids and counts of what a clean run c
     out.append("law | rules=%d cited=%d uncited=%d attorney_review_cited=%d" % (len(rules), len(cited & rules), len(rules - cited),
                sum(package.get(x) == "needs_attorney_review" for x in cited)))
     out += ["law uncited | " + x for x in sorted(rules - cited)]
-    policy, cited = set(policy_ids), {x.partition("#")[0] for r in rows for x in ids(r["policy_refs"])}  # clean: P-<12hex>#...
+    policy, cited = set(policies), {x.partition("#")[0] for r in rows for x in ids(r["policy_refs"])}  # clean: P-<12hex>#...
     out.append("policy | rows=%d cited=%d uncited=%d" % (len(policy), len(cited & policy), len(policy - cited)))
     out += ["policy uncited | " + x for x in sorted(policy - cited)]
     cited, quoted = {x for r in rows for x in ids(r["fact_ids"])}, {r["quote_fact_id"] for r in rows if r["quote_fact_id"]}
     out.append("facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d" % (len(facts), len(cited & set(facts)),
                len(set(facts) - cited), sum(r["value"].strip() == "UNREADABLE" for r in facts.values()), len(quoted)))
+    state = {p: governs(r, on) for p, r in policies.items()}  # ids, fixed labels and the date only; never adoption text
+    out += ["policy governs | %s | %s on %s" % (p, state[p], on)
+            for p in sorted(state, key=lambda p: (policies[p]["footer_version_date"], p))]
+    off = [(r["finding_id"], ref.partition("#")[0]) for r in rows for ref in ids(r["policy_refs"])
+           if state[ref.partition("#")[0]] != "yes"]  # one per cited clause; lines one per (finding, row)
+    out += ["policy off-date | %s | %s" % pair for pair in dict.fromkeys(off)]
+    out.append("policy | off_date_citations=%d findings_affected=%d" % (len(off), len({f for f, _ in off})))
     print("\n".join(out + ["findings=%d | counts of what this run cited, not a review verdict" % count]))
     return 0
 
