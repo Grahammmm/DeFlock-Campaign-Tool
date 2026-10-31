@@ -18,14 +18,14 @@ python3 -B tools/ci_affected.py --self-test
 | records.yml / offline | All modules not assigned below; full discovery is not repeated in intake, release or shell workflows |
 | records-wp5.yml | catalog_stage, catalog_stage_drift, ledger_catalog, pipeline_composition; existing 66+4 launcher and source-origin guards |
 | records-recovery.yml | recovery, publication_review_bridge; existing exact-61 zero-skip composition launcher |
-| records-runner.yml | mail_delta, runner, export_proof, runner_wp1_overlay, runner_reliability |
+| records-queue.yml runner step | mail_delta, runner, export_proof, runner_wp1_overlay, runner_reliability |
 | records-extraction.yml | extraction_routes, extraction_ledger, extraction_validation, ocr_closed_cas, workbook_policy, extraction_inherited_budget, reconciliation_crash_composition |
-| records-detectors.yml | detectors, detector_persistence |
-| records-queue.yml | queue_runtime, queue, queue_scope, queue_integration |
+| records-queue.yml detectors step | detectors, detector_persistence |
+| records-queue.yml queue step | queue_runtime, queue, queue_scope, queue_integration |
 | records-imap.yml | imap_intake, imap_config_sources, imap_failure_codes |
 | records-native-msg.yml | mail_wire_intake, native_completion, rfc822_consumer; native dependency contract remains required |
 | records-controller-kernel-faults.yml | controller_kernel_faults; actual flock/subprocess environment retained |
-| records-portal.yml | nine portal modules listed in SOURCE_OWNERS, including seven top-level test_records_portal modules |
+| records-queue.yml portal step | nine portal modules listed in SOURCE_OWNERS, including seven top-level test_records_portal modules |
 | records-run.yml | sixteen runtime/publish/context/OCR modules listed in OWNERS; separate actual retirement_boundary launcher is not discovery |
 | runner.yml | tests.runner.*, test_outbox, test_outbox_gateway, test_redact; fake-workspace smoke is a separate CLI contract |
 | campaign-install.yml | test_campaign_install_resources, test_campaign_wheel_harness, test_cli, test_discovery, test_kit, test_law; public-resource parity and example build reproducibility |
