@@ -5,7 +5,7 @@ Counts (facts by kind, requirements, findings by kind x verdict, analysis-only r
 stage output files, never from logs. Needs every stage through counts done or skip. Never runs a stage or a model; no network.
 --write refuses a path inside the repository or an existing file. Prints keys and counts only.
 Exit 0 match/written, 1 mismatch/not done/IO, 2 usage."""
-import argparse, csv, importlib.util, json, os, re, sys
+import argparse, csv, importlib.util, json, os, re, sys, tempfile
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -71,11 +71,10 @@ def write(actual, target):
     path = Path(os.path.abspath(os.path.expanduser(target)))
     if fr.under(path.resolve(), fr.REPO):
         raise fr.Fail("golden: --write path is inside the repository")
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as out:
-        out.write(json.dumps(actual, indent=1, sort_keys=True) + "\n")
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)  # fresh 0600; stale FILE.tmp ignored
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(actual, indent=1, sort_keys=True) + "\n")
         os.link(tmp, path)  # atomic and never overwrites
     except FileExistsError:
         raise fr.Fail("golden: --write file already exists") from None
