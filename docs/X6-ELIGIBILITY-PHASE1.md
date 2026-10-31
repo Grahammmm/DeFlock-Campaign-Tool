@@ -1,3 +1,5 @@
+> Historical milestone text (last changed 2026-10-22). Current status: [STATUS.md](STATUS.md).
+
 X6 eligibility v1 — phase 1 only (S1–S8)
 
 Status: implementation candidate; independent review required. NOT deployable,
