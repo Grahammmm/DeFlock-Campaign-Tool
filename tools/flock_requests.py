@@ -90,25 +90,41 @@ def load(path):
     return rows, errs
 
 
-def due(rows):
+def days(n):
+    return f"{n} day" + ("" if n == 1 else "s")
+
+
+def due(rows, as_of=None):
+    """as_of (a date) adds a provisional distance cell per line and upcoming_7d/passed totals; reminder arithmetic only."""
     pkg = law.load_package("us-ca")
     lw = pkg["records_law"]
-    items, unknown = [], 0
+    items, unknown, upcoming, passed = [], 0, 0, 0
+    cell = f" | as of {as_of}: "
     for r in (r for r in rows if r["status"] == "open"):
         head = f"provisional reminder | {r['request_id']} | {r['agency']} | "
         if not r["receipt_evidence"]:
             unknown += 1
-            items.append((1, "", r["request_id"], head + "receipt unknown | no date computed"))
+            line = head + "receipt unknown | no date computed"
+            if as_of:
+                k = (as_of - day(r["sent"])).days
+                line += cell + (f"sent {days(k)} ago" if k >= 0 else "sent after the as-of date")
+            items.append((1, "", r["request_id"], line))
             continue
         ext = bool(r["extension_notice_date"])
-        when = law.deadline(pkg, r["receipt_date"], extension=ext).isoformat()
+        when = law.deadline(pkg, r["receipt_date"], extension=ext)
         basis = f"receipt {r['receipt_date']} + {lw['determination_days']} {lw['day_type']} days"
         if ext:
             basis += f" + {lw['determination_extension_days']} extension notice"
-        items.append((0, when, r["request_id"],
-                      f"{head}determination {when} | {basis} | Gov. Code 7922.535 | not a legal due date"))
+        line = f"{head}determination {when.isoformat()} | {basis} | Gov. Code 7922.535 | not a legal due date"
+        if as_of:
+            n = (when - as_of).days
+            upcoming, passed = upcoming + (0 <= n <= 7), passed + (n < 0)
+            line += cell + (f"in {days(n)}" if n > 0 else "reminder date today" if n == 0
+                            else f"reminder date passed {days(-n)} ago")
+        items.append((0, when.isoformat(), r["request_id"], line))
     lines = [i[3] for i in sorted(items, key=lambda i: i[:3])]
-    lines.append(f"provisional reminder | open={len(items)} receipt_unknown={unknown} | " + law.HOLIDAY_NOTE)
+    extra = f" upcoming_7d={upcoming} passed={passed} as_of={as_of}" if as_of else ""
+    lines.append(f"provisional reminder | open={len(items)} receipt_unknown={unknown}{extra} | " + law.HOLIDAY_NOTE)
     return lines
 
 
@@ -219,7 +235,8 @@ def draft(rundir, requests, start, end):
     return print(f"items={len(inc)} held={len(held)} written=FOLLOWUP-DRAFT.md") or 0
 
 
-USAGE = "usage: flock_requests.py --check PATH | due PATH | summary PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD"
+USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] | summary PATH | "
+         "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD")
 
 def main(argv):
     if argv in (["--help"], ["-h"]):
@@ -228,6 +245,11 @@ def main(argv):
         start, end = day(argv[5]), day(argv[7])
         if start and end and start <= end:
             return draft(argv[1], argv[3], argv[5], argv[7])
+    as_of = None
+    if len(argv) == 4 and argv[0] == "due" and argv[2] == "--as-of":
+        as_of, argv = day(argv[3]), argv[:2]
+        if as_of is None:
+            return print("due: --as-of must be YYYY-MM-DD", file=sys.stderr) or 2
     if len(argv) != 2 or argv[0] not in ("--check", "due", "summary"):
         print(USAGE, file=sys.stderr)
         return 2
@@ -242,7 +264,7 @@ def main(argv):
         print("\n".join(summary(rows)))
         return 0
     try:
-        lines = due(rows)
+        lines = due(rows, as_of)
     except ValueError as exc:
         print(f"due: {exc}", file=sys.stderr)
         return 1
