@@ -175,13 +175,20 @@ def draft(rundir, requests, start, end):
     run = Path(rundir).resolve()
     if run == REPO or REPO in run.parents:
         return print("flock-followup: RUNDIR is inside the repository", file=sys.stderr) or 1
+    if not run.is_dir():
+        return print("draft: RUNDIR missing or not a folder", file=sys.stderr) or 1
     rows, errs = load(requests)
     mine = [r for r in rows if slug(r["agency"]) == run.parent.parent.name]
     errs = errs or ([] if mine else ["draft: no requests for agency"])
-    try:
-        text = (run / "QUESTIONS.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        text = ""
+    text, qfile = "", run / "QUESTIONS.md"
+    try:  # O_NOFOLLOW: a link swapped in after a check is still refused
+        with open(os.open(qfile, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        errs = errs or ["draft: QUESTIONS.md missing"]
+    except (OSError, UnicodeDecodeError) as exc:
+        why = "must not be a symlink" if os.path.islink(qfile) else f"unreadable ({type(exc).__name__})"
+        errs = errs or [f"draft: QUESTIONS.md {why}"]
     items, qerrs = parse_questions(text, mine) if not errs else ([], [])
     out, errs = run / "FOLLOWUP-DRAFT.md", errs + qerrs
     inc, held = [i for i in items if not i[4]], [i for i in items if i[4]]
@@ -196,15 +203,19 @@ def draft(rundir, requests, start, end):
     body += [f"{n}. {i[3]}" for n, i in enumerate(inc, 1)] + ["", FORMAT, "", WITHHELD, "", END]
     if held:
         body.append("Held (internal, not part of the request): " + "; ".join(f"{i[0]} {i[4]}" for i in held))
-    fd, tmp = tempfile.mkstemp(dir=run, prefix=".FOLLOWUP-DRAFT.md.", suffix=".tmp")
+    tmp = None
     try:
+        fd, tmp = tempfile.mkstemp(dir=run, prefix=".FOLLOWUP-DRAFT.md.", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("\n".join(body) + "\n")
         os.link(tmp, out)
     except FileExistsError:
         return print("draft: FOLLOWUP-DRAFT.md already exists", file=sys.stderr) or 1
+    except OSError as exc:
+        return print(f"draft: cannot write in RUNDIR ({type(exc).__name__})", file=sys.stderr) or 1
     finally:
-        os.unlink(tmp)
+        if tmp:
+            os.unlink(tmp)
     return print(f"items={len(inc)} held={len(held)} written=FOLLOWUP-DRAFT.md") or 0
 
 
