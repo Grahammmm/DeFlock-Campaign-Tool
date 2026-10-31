@@ -1,7 +1,7 @@
 ---
 name: flock-compare
 description: Use when comparing one agency's Flock/ALPR facts with California law and its policy. Scaffolds a private run folder, then fails closed on findings without a rating, cited fact, rule or policy clause, or with banned wording.
-skill_version: 1.0
+skill_version: 1.1
 ---
 
 # Flock compare
@@ -23,11 +23,13 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
    It writes `agencies/<slug>/runs/<date>/` with RUN.json, a header-only FINDINGS.csv and FINDINGS.md.
 2. Model run per `skills/flock-compare/PROMPT.md`, writing only inside the run folder.
 3. Check: `python3 tools/flock_compare.py --check RUNDIR`; exit 0 only (`findings=F errors=K`).
-4. Morro Bay: add `--golden tests/fixtures/flock/morrobay-golden.csv`. A mismatch becomes a
+4. Summary: `python3 tools/flock_compare.py --summary RUNDIR`
+5. Morro Bay: add `--golden tests/fixtures/flock/morrobay-golden.csv`. A mismatch becomes a
    PROMPT.md fix and a rerun, never a hand edit of the findings.
 
 ## Outputs
 - Row numbers, field names, ids and counts. Never claim, quote or fact text.
+- `--summary` (clean runs only, else refused) gives rating counts per topic and cited/uncited LAW rules, POLICY rows and facts; a report, not a review verdict.
 
 ## Never
 - OCR, extract, download or edit facts; an unreadable page goes back to the coordinator.
@@ -45,3 +47,4 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
 
 ## Changelog
 - 1.0: run scaffold, findings checker, banned wording and golden check.
+- 1.1: `--summary` read-only cited/uncited counts.
