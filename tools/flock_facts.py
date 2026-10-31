@@ -1,5 +1,5 @@
 """Per-agency fact store (schema v2): import v1 FACTS.csv, and check. Prints row numbers and counts only."""
-import argparse, csv, datetime, hashlib, os, re, sys
+import argparse, contextlib, csv, datetime, hashlib, os, re, sys, tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -93,12 +93,14 @@ def check_path(target):
 def write_atomic(path, rows):
     for sub in reversed(path.parents[:3]):
         sub.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8", newline="") as out:
-        writer = csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
-        writer.writerow(V2)
-        writer.writerows([[r[k] for k in V2] for r in rows])
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
+            csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerows([V2] + [[r[k] for k in V2] for r in rows])
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError): os.unlink(tmp)
+        raise
 
 
 def do_import(args):

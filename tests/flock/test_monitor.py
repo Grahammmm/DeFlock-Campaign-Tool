@@ -127,5 +127,33 @@ class MonitorTests(unittest.TestCase):
                 monitor.fetch("http://www.city.example/agendas", "city.example")
             build.assert_not_called()
 
+    def test_write_atomic_ignores_planted_fixed_temp(self):
+        import os
+        out = self.store / "OUT.csv"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        old_tmp, sentinel = out.with_name("OUT.csv.tmp"), self.watchlist.parent / "SENTINEL"
+        sentinel.write_bytes(b"sentinel\n")
+        old_tmp.symlink_to(sentinel)
+        monitor.write_atomic(out, header=["a", "b"], rows=[{"a": "1", "b": "2"}])
+        self.assertEqual(sentinel.read_bytes(), b"sentinel\n")
+        self.assertTrue(old_tmp.is_symlink())
+        self.assertEqual(os.readlink(old_tmp), str(sentinel))
+        self.assertFalse(out.is_symlink())
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(out.read_bytes(), b"a,b\n1,2\n")
+        old_tmp.unlink()
+        old_tmp.write_bytes(b"stale\n")
+        old_tmp.chmod(0o644)
+        monitor.write_atomic(out, "c\n")
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        self.assertNotEqual(out.stat().st_ino, old_tmp.stat().st_ino)
+        self.assertEqual((old_tmp.read_bytes(), old_tmp.stat().st_mode & 0o777), (b"stale\n", 0o644))
+        before, data, ino = sorted(os.listdir(out.parent)), out.read_bytes(), out.stat().st_ino
+        with mock.patch.object(monitor.os, "replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                monitor.write_atomic(out, "d\n")
+        self.assertEqual((out.read_bytes(), out.stat().st_ino), (data, ino))
+        self.assertEqual(sorted(os.listdir(out.parent)), before)
+
 if __name__ == "__main__":
     unittest.main()

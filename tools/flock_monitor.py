@@ -1,6 +1,6 @@
 """Flock monitor: scan official agency index pages listed in WATCHLIST.csv into a private MONITOR.csv, and write a daily
 digest. Index pages only: links (PDFs included) are recorded by URL and never fetched."""
-import argparse, csv, datetime, hashlib, html.parser, os, re, sys, urllib.error, urllib.request
+import argparse, contextlib, csv, datetime, hashlib, html.parser, os, re, sys, tempfile, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlsplit
 
@@ -107,12 +107,15 @@ def row_errors(row):
 
 def write_atomic(path, text="", header=None, rows=()):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8", newline="") as out:
-        out.write(text)
-        if header:
-            csv.writer(out, lineterminator="\n").writerows([header] + [[r[k] for k in header] for r in rows])
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
+            out.write(text)
+            if header: csv.writer(out, lineterminator="\n").writerows([header] + [[r[k] for k in header] for r in rows])
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError): os.unlink(tmp)
+        raise
 
 def private_store(store):
     store = Path(store).resolve()
