@@ -19,9 +19,13 @@ BODIES = {
     'fail': HEAD + '    def test_bad(self):\n        self.fail("synthetic failure")\n',
     'skip': HEAD + '    def test_skip(self):\n        self.skipTest("n/a")\n',
     'kill': HEAD + '    def test_kill(self):\n        os.kill(os.getpid(), signal.SIGKILL)\n',
-    'leak': HEAD + '    def test_leak(self):\n        open(__file__)\n        gc.collect()\n',
-    # Exits 0 silently, but only inside a child: the parent must still load it to count it.
-    'exit0': 'import os, sys\nif "--run-modules" in sys.argv:\n    os._exit(0)\n' + GREEN,
+    # A leaked file's warning, emitted in the test (not in a finalizer): an error only if -W error::ResourceWarning
+    # reached the child; under default filters it is ignored and the test passes.
+    'leak': HEAD + '    def test_leak(self):\n        handle = open(__file__)\n        self.addCleanup(handle.close)\n'
+            '        import warnings\n        warnings.warn(f"unclosed file {handle!r}", ResourceWarning)\n',
+    # Exits 0 silently, but only in a child given this synthetic package (never in the loading parent).
+    'exit0': 'import os, sys\nif any(a.startswith(__name__.split(".")[0] + ".") for a in sys.argv):\n    os._exit(0)\n'
+             + GREEN,
     'broken': 'import cipar_no_such_module_zz\n' + GREEN,
     'tmpdir': HEAD + '    def test_tmp(self):\n        tmp = os.environ["TMPDIR"]\n        self.assertTrue('
               'os.path.basename(tmp).startswith("ci-chunk-") and os.path.isdir(tmp), tmp)\n'

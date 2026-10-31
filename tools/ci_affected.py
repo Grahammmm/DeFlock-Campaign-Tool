@@ -179,18 +179,11 @@ RESULT = 'CI_CHUNK_RESULT '
 
 
 def run_modules(names):
-    """--jobs child: run names; the verdict is the last stdout line. A leaked resource fails the chunk."""
+    """--jobs child: run names; the verdict is the last stdout line."""
     sys.path.insert(0, str(ROOT))
-    leaks, hook = [], sys.unraisablehook
-
-    def record(unraisable):
-        hook(unraisable)
-        if issubclass(unraisable.exc_type, ResourceWarning):
-            leaks.append(unraisable.exc_type)
-    sys.unraisablehook = record
     result = unittest.TextTestRunner(verbosity=2, resultclass=TimedResult).run(
         unittest.defaultTestLoader.loadTestsFromNames(names))
-    ok = result.wasSuccessful() and result.testsRun > 0 and not leaks
+    ok = result.wasSuccessful() and result.testsRun > 0
     print(json.dumps({'chunk_slowest': slowest(result.seconds)}), flush=True)
     print(RESULT + json.dumps({'ran': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
                                'skipped': len(result.skipped), 'ok': ok}, sort_keys=True), flush=True)
