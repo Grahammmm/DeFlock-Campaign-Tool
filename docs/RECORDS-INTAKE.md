@@ -74,7 +74,8 @@ python3 -B -m unittest discover -v
 
 Tests need the existing pinned pypdf/openpyxl parser environment. CI installs
 `requirements-records-test.txt` in disposable GitHub runners only, never on the
-campaign host. CI also uses [detect-secrets v1.5.0](https://github.com/Yelp/detect-secrets/blob/v1.5.0/README.md)
+campaign host. Locally, `python3 tools/check_test_env.py` lists the pins this
+Python differs from (read-only). CI also uses [detect-secrets v1.5.0](https://github.com/Yelp/detect-secrets/blob/v1.5.0/README.md)
 with credential network verification disabled, and fails on reported candidates.
 Secret scanning is heuristic; manual path/content review remains required.
 
