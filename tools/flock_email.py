@@ -7,7 +7,8 @@ HEAD = "DRAFT - not sent - G approval required"
 COLS = "agency,role,email,source_url,source_sha256,checked_at,added_by".split(",")
 CHECKS = {"role": r"records", "email": r"[^@\s,;<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "source_url": r"https://\S+",
           "source_sha256": r"[0-9a-f]{64}", "checked_at": r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "added_by": r".*\S.*"}
-USAGE = "usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.md; draft only, never sends)"
+USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.md; draft only, never sends)\n"
+         "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)")
 
 def slug(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -28,6 +29,8 @@ def contact(path, folder):
 
 def draft(rundir, drafts):
     run, out_dir = Path(rundir).resolve(), Path(drafts).resolve()
+    if not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
+        return print("draft: RUNDIR must be <store>/agencies/<slug>/runs/<date>", file=sys.stderr) or 1
     if REPO in (run, *run.parents): return print("draft: RUNDIR is inside the repository", file=sys.stderr) or 1
     name = run.parent.parent.name
     try: lines = (run / "FOLLOWUP-DRAFT.md").read_text(encoding="utf-8").splitlines()
@@ -61,8 +64,26 @@ def draft(rundir, drafts):
         return print(f"draft: {why}", file=sys.stderr) or 1
     return print(f"written=2 to_domain={to.rsplit('@', 1)[1]}") or 0
 
+def check(store):
+    """One readiness line per agency folder, then totals. Never prints an address local part; reads only."""
+    root = Path(store).resolve()
+    if REPO in (root, *root.parents): return print("check: STORE is inside the repository", file=sys.stderr) or 2
+    base = root / "agencies"
+    if base.is_symlink() or not base.is_dir(): return print("check: no agencies folder", file=sys.stderr) or 2
+    try: folders = sorted(p for p in base.iterdir() if p.is_symlink() or p.is_dir())
+    except OSError: return print("check: agencies folder unreadable", file=sys.stderr) or 2
+    lines, ready = [], 0
+    for folder in folders:  # a symlinked agency folder is refused, never followed
+        to, errs = (None, ["link refused"]) if folder.is_symlink() else contact(folder / "CONTACT.csv", folder.name)
+        ready += not errs
+        lines.append(f"contact | {folder.name} | " + (f"ready | domain={to.rsplit('@', 1)[1]}" if not errs else f"not ready | {errs[0]}"))
+    print("\n".join(lines + [f"contact | agencies={len(folders)} ready={ready} not_ready={len(folders) - ready}"
+                             " | draft only; G approval required before any send"]))
+    return 0 if ready == len(folders) else 1
+
 def main(argv):
     if argv in (["--help"], ["-h"]): return print(USAGE) or 0
+    if len(argv) == 2 and argv[0] == "check": return check(argv[1])
     if len(argv) == 4 and argv[0] == "draft" and argv[2] == "--drafts": return draft(argv[1], argv[3])
     return print(USAGE, file=sys.stderr) or 2
 if __name__ == "__main__": sys.exit(main(sys.argv[1:]))
