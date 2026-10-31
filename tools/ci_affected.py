@@ -178,32 +178,49 @@ SERIAL = frozenset()
 RESULT = 'CI_CHUNK_RESULT '
 
 
-def run_modules(names):
-    """--jobs child: run names; the verdict is the last stdout line."""
+NAMED = 5  # failing test ids carried in a record and named in its ::error:: line
+
+
+def run_modules(names, record_path):
+    """--jobs child: run names; the verdict goes to record_path (O_EXCL), never only to the shared log.
+
+    Interpreter shutdown can still write to the log after this returns (unraisable warnings, atexit hooks, a
+    block-buffered flush); the record file is written once here and nothing else opens it.
+    """
     sys.path.insert(0, str(ROOT))
     result = unittest.TextTestRunner(verbosity=2, resultclass=TimedResult).run(
         unittest.defaultTestLoader.loadTestsFromNames(names))
     ok = result.wasSuccessful() and result.testsRun > 0
+    bad = [test.id() for test, _ in result.failures + result.errors] + [t.id() for t in result.unexpectedSuccesses]
+    line = RESULT + json.dumps({'ran': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
+                                'skipped': len(result.skipped), 'ok': ok, 'failed': bad[:NAMED]}, sort_keys=True)
     print(json.dumps({'chunk_slowest': slowest(result.seconds)}), flush=True)
-    print(RESULT + json.dumps({'ran': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
-                               'skipped': len(result.skipped), 'ok': ok}, sort_keys=True), flush=True)
+    print(line, flush=True)  # for the reader; the parent decides from the record file only
+    fd = os.open(record_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as record:
+        record.write(line + '\n')
     return 0 if ok else 1
 
 
-def chunk_verdict(returncode, output):
-    """(ran, problem); problem is None only for exit 0 and an ok CI_CHUNK_RESULT last line."""
+def chunk_verdict(returncode, record, log=''):
+    """(ran, problem); problem is None only for exit 0 and a record that is one ok CI_CHUNK_RESULT line."""
     if returncode < 0:
         return 0, f'killed by signal {-returncode}'
-    lines = output.strip().splitlines()
+    lines = record.splitlines()
     try:
-        result = json.loads(lines[-1][len(RESULT):]) if lines[-1].startswith(RESULT) else None
-        ran, ok = result['ran'], result['ok']
-        if type(ran) is not int or ran < 0 or type(ok) is not bool:
+        if len(lines) != 1 or not lines[0].startswith(RESULT):
             raise ValueError
-    except (IndexError, ValueError, KeyError, TypeError):
-        return 0, f'exit {returncode}, last line is not a valid {RESULT.strip()}'
+        result = json.loads(lines[0][len(RESULT):])
+        ran, ok, failed = result['ran'], result['ok'], result['failed']
+        if (type(ran) is not int or ran < 0 or type(ok) is not bool or type(failed) is not list
+                or not all(type(name) is str for name in failed)):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        tail = (log.strip().splitlines() or [''])[-1][-200:]
+        return 0, f'exit {returncode}, no valid {RESULT.strip()} record (log ends: {tail!r})'
     if returncode or not ok:
-        return ran, f'exit {returncode}, ok {str(ok).lower()}'
+        named = f'; failed: {", ".join(failed)}' if failed else ''
+        return ran, f'exit {returncode}, ok {str(ok).lower()}{named}'
     return ran, None
 
 
@@ -231,17 +248,24 @@ def run_parallel(names, files, jobs, weights, expected, shard):
             out = stack.enter_context(tempfile.TemporaryFile())
             tmp = tempfile.mkdtemp(prefix=f'ci-chunk-{k}-', dir=parent)
             stack.callback(shutil.rmtree, tmp, True)
-            children.append((out, subprocess.Popen(
+            # The verdict channel: a fresh file outside the chunk's TMPDIR that the merged log never reaches.
+            record = Path(tempfile.mkdtemp(prefix=f'ci-record-{k}-', dir=parent)) / 'record'
+            stack.callback(shutil.rmtree, record.parent, True)
+            children.append((out, record, subprocess.Popen(
                 [sys.executable, '-B', '-W', 'error::ResourceWarning', str(Path(__file__).resolve()),
-                 '--run-modules', *chunk], cwd=ROOT, env={**os.environ, 'TMPDIR': tmp},
+                 '--record', str(record), '--run-modules', *chunk], cwd=ROOT, env={**os.environ, 'TMPDIR': tmp},
                 stdout=out, stderr=subprocess.STDOUT)))
         verdicts = []
-        for k, (chunk, (out, child)) in enumerate(zip(chunks, children)):
+        for k, (chunk, (out, record, child)) in enumerate(zip(chunks, children)):
             child.wait()
             out.seek(0)
             text = out.read().decode('utf-8', 'replace')
             print(f'::group::chunk {k} ({len(chunk)} modules)\n{text.rstrip()}\n::endgroup::', flush=True)
-            verdicts.append(chunk_verdict(child.returncode, text))
+            try:
+                written = record.read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError):
+                written = ''
+            verdicts.append(chunk_verdict(child.returncode, written, text))
     if serial:
         result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromNames(serial))
         verdicts.append((result.testsRun, None if result.wasSuccessful() else 'SERIAL modules failed'))
@@ -306,11 +330,14 @@ def main(argv=None):
     parser.add_argument('--self-test', action='store_true')
     parser.add_argument('--jobs', type=int, default=1, help='child processes per shard; 0 = os.cpu_count()')
     parser.add_argument('--run-modules', nargs='+', help=argparse.SUPPRESS)
+    parser.add_argument('--record', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
     if args.run_modules:
-        return run_modules(args.run_modules)
+        if not args.record:
+            parser.error('--run-modules needs --record')
+        return run_modules(args.run_modules, args.record)
     if args.jobs < 0:
         parser.error('jobs must be >= 0')
     if not 0 <= args.shard < args.shards:

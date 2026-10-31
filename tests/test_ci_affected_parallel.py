@@ -26,6 +26,16 @@ BODIES = {
     # Exits 0 silently, but only in a child given this synthetic package (never in the loading parent).
     'exit0': 'import os, sys\nif any(a.startswith(__name__.split(".")[0] + ".") for a in sys.argv):\n    os._exit(0)\n'
              + GREEN,
+    # Prints a forged ok verdict into the shared log, then exits 0 without running: the log is never the verdict.
+    'forge': 'import os, sys\nif any(a.startswith(__name__.split(".")[0] + ".") for a in sys.argv):\n'
+             '    print(\'CI_CHUNK_RESULT {"errors": 0, "failed": [], "failures": 0, "ok": true, "ran": 4, "skipped": 0}\','
+             ' flush=True)\n    os._exit(0)\n' + GREEN,
+    # Child only: writes to the log after the runner returned (atexit stderr, a buffered stdout flush at exit and an
+    # unclosed file's unraisable ResourceWarning at shutdown), so the log's last line is not the verdict.
+    'late': 'import atexit, sys\nif any(a.startswith(__name__.split(".")[0] + ".") for a in sys.argv):\n'
+            '    LEAKED = open(__file__)\n'
+            '    atexit.register(lambda: (sys.stdout.write("late stdout, no newline"), sys.stderr.write("late stderr\\n")))\n'
+            + GREEN,
     'broken': 'import cipar_no_such_module_zz\n' + GREEN,
     'tmpdir': HEAD + '    def test_tmp(self):\n        tmp = os.environ["TMPDIR"]\n        self.assertTrue('
               'os.path.basename(tmp).startswith("ci-chunk-") and os.path.isdir(tmp), tmp)\n'
@@ -72,21 +82,34 @@ class ParallelShardTest(unittest.TestCase):
         self.assertNotIn('::error::', text)
 
     def test_child_exiting_zero_without_running_is_red(self):
-        code, text, summary = self.shard(['green', 'exit0'], 2)
-        self.assertEqual((code, summary['expected'], summary['ran']), (1, 4, 2))
-        self.assertRegex(text, r'::error::chunk \d: exit 0, last line is not a valid CI_CHUNK_RESULT')
-        self.assertIn('::error::ran 2 tests, expected 4', text)
+        for kind in ('exit0', 'forge'):
+            with self.subTest(kind):
+                code, text, summary = self.shard(['green', kind], 2)
+                self.assertEqual((code, summary['expected'], summary['ran']), (1, 4, 2))
+                self.assertRegex(text, r'::error::chunk \d: exit 0, no valid CI_CHUNK_RESULT record \(log ends: ')
+                self.assertIn('::error::ran 2 tests, expected 4', text)
+
+    def test_log_writes_after_the_runner_returns_keep_the_verdict(self):
+        os.environ.pop('PYTHONUNBUFFERED', None)  # setUp's patch.dict restores it
+        code, text, summary = self.shard(['green', 'late'], 2)
+        self.assertEqual((code, summary['expected'], summary['ran']), (0, 4, 4), text)
+        self.assertNotIn('::error::', text)
+        [k] = self.chunk_of(text, 'late stderr')
+        body = re.search(rf'::group::chunk {k} \(\d+ modules\)\n(.*?)\n::endgroup::', text, re.S).group(1)
+        self.assertLess(body.index('CI_CHUNK_RESULT '), body.index('late stderr'))
+        self.assertFalse(body.splitlines()[-1].startswith('CI_CHUNK_RESULT '), body[-300:])
 
     def test_one_failing_chunk_is_red_and_named(self):
         code, text, _ = self.shard(['green', 'fail', 'green'], 3)
         [k] = self.chunk_of(text, 'synthetic failure')
         self.assertEqual(code, 1)
         self.assertEqual(re.findall(r'::error::chunk (\d+)', text), [str(k)])
-        self.assertIn(f'::error::chunk {k}: exit 1, ok false', text)
+        self.assertIn(f'::error::chunk {k}: exit 1, ok false; failed: {self.package}.test_1_fail.Case.test_bad\n', text)
 
     def test_import_error_kill_and_leak_are_red(self):
-        for kind, rule in (('broken', 'exit 1, ok false'), ('kill', 'killed by signal 9'),
-                           ('leak', 'exit 1, ok false')):
+        for kind, rule in (('broken', 'exit 1, ok false; failed: unittest.loader._FailedTest.'),
+                           ('kill', 'killed by signal 9'),
+                           ('leak', 'exit 1, ok false; failed: ' + self.package + '.test_1_leak.Case.test_leak')):
             with self.subTest(kind):
                 code, text, _ = self.shard(['green', kind], 2)
                 self.assertEqual(code, 1)
@@ -97,7 +120,8 @@ class ParallelShardTest(unittest.TestCase):
     def test_skips_count_and_stay_green(self):
         code, text, summary = self.shard(['green', 'skip'], 2)
         self.assertEqual((code, summary['expected'], summary['ran']), (0, 3, 3))
-        self.assertRegex(text, r'CI_CHUNK_RESULT \{"errors": 0, "failures": 0, "ok": true, "ran": 1, "skipped": 1\}')
+        self.assertRegex(text, r'CI_CHUNK_RESULT \{"errors": 0, "failed": \[\], "failures": 0, "ok": true, "ran": 1, '
+                               r'"skipped": 1\}')
 
     def test_jobs_one_and_single_module_stay_in_process(self):
         for kinds, jobs in ((['green'] * 3, 1), (['green'], 8)):
@@ -137,20 +161,27 @@ class ParallelShardTest(unittest.TestCase):
 
 
 class AggregatorTest(unittest.TestCase):
-    def verdict(self, returncode, last, before='noise\n'):
-        return ci_affected.chunk_verdict(returncode, before + last + '\n')
+    def verdict(self, returncode, record, log='noise\nlast log line\n'):
+        return ci_affected.chunk_verdict(returncode, record, log)
 
     def test_rules(self):
-        ok = 'CI_CHUNK_RESULT {"errors": 0, "failures": 0, "ok": true, "ran": 3, "skipped": 0}'
-        self.assertEqual(self.verdict(0, ok), (3, None))
+        ok = 'CI_CHUNK_RESULT {"errors": 0, "failed": [], "failures": 0, "ok": true, "ran": 3, "skipped": 0}'
+        self.assertEqual(self.verdict(0, ok + '\n'), (3, None))
         self.assertEqual(self.verdict(1, ok), (3, 'exit 1, ok true'))
         self.assertEqual(self.verdict(0, ok.replace('true', 'false')), (3, 'exit 0, ok false'))
+        named = ok.replace('true', 'false').replace('[]', '["m.C.test_x", "m.C.test_y"]')
+        self.assertEqual(self.verdict(1, named), (3, 'exit 1, ok false; failed: m.C.test_x, m.C.test_y'))
         self.assertEqual(self.verdict(-9, ok), (0, 'killed by signal 9'))
-        for bad in (ok + '\ntrailing', ok.replace('3', '"3"'), ok.replace('3', 'true'), ok.replace('3', '-1'),
-                    ok.replace('"ok": true, ', ''), 'CI_CHUNK_RESULT {', 'CI_CHUNK_RESULT [1]', ''):
+        for bad in (ok + '\ntrailing', 'noise\n' + ok, ok.replace('3', '"3"'), ok.replace('3', 'true'),
+                    ok.replace('3', '-1'), ok.replace('"ok": true, ', ''), ok.replace('"failed": [], ', ''),
+                    ok.replace('[]', '"m.C.test_x"'), ok.replace('[]', '[1]'),
+                    'CI_CHUNK_RESULT {', 'CI_CHUNK_RESULT [1]', ''):
             with self.subTest(bad=bad):
-                self.assertEqual(self.verdict(0, bad, before='')[1],
-                                 'exit 0, last line is not a valid CI_CHUNK_RESULT')
+                self.assertEqual(self.verdict(0, bad)[1],
+                                 "exit 0, no valid CI_CHUNK_RESULT record (log ends: 'last log line')")
+        # A valid-looking verdict in the log alone is never accepted.
+        self.assertEqual(self.verdict(0, '', log=ok + '\n')[1],
+                         f'exit 0, no valid CI_CHUNK_RESULT record (log ends: {ok!r})')
 
     def test_fewer_ran_than_expected_is_red(self):
         out = io.StringIO()
