@@ -32,6 +32,14 @@ path suffix (the fixture is synthetic, `example.invalid` hosts). Responses are b
 body and item text. Events without a parseable date are skipped. Keyword hits are leads, not
 findings: verify the posted agenda before publishing a meeting.
 
+Before writing, the CLI compares the new list with the previous `kit/meetings.json` and prints
+`previous` (`none`, `unreadable`, `other_client` or `compared`) with change counts. When a
+previous file exists, the new file gains `changes`: `added`, `removed`, `rescheduled`
+(`id`, `from`, `to`), `agenda_changed` (item text or agenda link) and `past`, ids sorted. A
+meeting that dropped out of the list is `past` when it was dated before `--since` (default
+today) and `removed` otherwise. A missing, symlinked, unparseable or other-client previous file
+is named and never blocks the write; a failed fetch leaves the old file untouched.
+
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or feed `kit/meetings.json` into `content/meetings.json` for the
 offline site build ([SITE-CONTENT.md](SITE-CONTENT.md)).

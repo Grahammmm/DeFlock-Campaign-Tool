@@ -172,7 +172,41 @@ def _plain(value):
     return cleaned
 
 
-def write_meetings(root, meetings, client_name):
+def compare_meetings(previous_doc, meetings, client, since):
+    """What changed between the previous ``kit/meetings.json`` document and ``meetings``.
+
+    ``past`` holds previous meetings dated before ``since`` (out of the window, not removed).
+    """
+    if previous_doc is None:
+        return {"previous": "none"}
+    old = previous_doc.get("meetings") if isinstance(previous_doc, dict) else None
+    if (not isinstance(previous_doc, dict) or previous_doc.get("schema_version") != 1
+            or not isinstance(old, list)
+            or not all(isinstance(m, dict) and isinstance(m.get("id"), str)
+                       and isinstance(m.get("starts_at"), str) for m in old)):
+        return {"previous": "unreadable"}
+    if previous_doc.get("client") != client:
+        return {"previous": "other_client", "previous_client": str(previous_doc.get("client"))[:64]}
+    before = {m["id"]: m for m in old}
+    after = {m["id"]: m for m in meetings}
+    cutoff = since.isoformat()
+    gone = sorted(set(before) - set(after))
+    both = sorted(set(before) & set(after))
+    generated = previous_doc.get("generated")
+    return {
+        "previous": "compared",
+        "previous_generated": generated if isinstance(generated, str) else None,
+        "added": sorted(set(after) - set(before)),
+        "removed": [i for i in gone if before[i]["starts_at"][:10] >= cutoff],
+        "rescheduled": [{"id": i, "from": before[i]["starts_at"], "to": after[i]["starts_at"]}
+                        for i in both if before[i]["starts_at"] != after[i]["starts_at"]],
+        "agenda_changed": [i for i in both if any(before[i].get(k) != after[i].get(k)
+                                                  for k in ("agenda_item", "agenda_url"))],
+        "past": [i for i in gone if before[i]["starts_at"][:10] < cutoff],
+    }
+
+
+def write_meetings(root, meetings, client_name, changes=None):
     kit = root / "kit"
     _kit_folder(kit, mode=0o700)
     target = kit / "meetings.json"
@@ -181,6 +215,8 @@ def write_meetings(root, meetings, client_name):
                 "keywords": KEYWORDS.pattern, "meetings": meetings,
                 "note": "Agenda matches are keyword hits, not confirmation that ALPR will be discussed. "
                         "Verify the posted agenda before publishing a meeting."}
+    if changes is not None:
+        document["changes"] = changes
     _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return target
 
