@@ -256,25 +256,21 @@ def export_doc(export, sha, docs):
 
 
 def quote_outcome(export, row, docs):
-    if row["kind"] != "record":
-        return "skipped-kind"
-    if row["value"].strip() == "UNREADABLE":
-        return "unreadable-fact"
+    if row["kind"] != "record" or row["value"].strip() == "UNREADABLE":
+        return "skipped-kind" if row["kind"] != "record" else "unreadable-fact"
     where, hashes = export_doc(export, row["source_sha256"].strip(), docs)
     if hashes is None:
         return where
-    page = int(row["page"])
-    data = plain_bytes(where / ("page-%04d.txt" % page))
+    data = plain_bytes(where / ("page-%04d.txt" % int(row["page"])))
     if data is None:
         return "no-page"
-    if hashlib.sha256(data).hexdigest() != hashes.get(page):
+    if hashlib.sha256(data).hexdigest() != hashes.get(int(row["page"])):
         return "page-hash-mismatch"
     return "found" if fold(row["verbatim_quote"]) in fold(data.decode("utf-8")) else "not-found"
 
 
 def quote_check(args, parser):
-    """NB-DF-02: is each record fact's verbatim_quote on its cited page of an extraction-owner page-text export
-    (`<sha256>/<signature>/page-NNNN.txt` + result.json)? Read-only; prints fact ids, outcomes and counts, never text or paths."""
+    """NB-DF-02: record facts' verbatim_quote on the cited page of a page-text export. Ids/counts only, never text or paths."""
     text = Path(args.text).resolve()
     if any(text == p or p in text.parents for p in (REPO, Path(args.store).resolve())):
         parser.error("quote-check: --text must be outside the repository and the store")
