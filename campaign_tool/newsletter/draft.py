@@ -13,13 +13,17 @@ HTML is rendered from a Markdown subset through ``markdown_lite`` so raw HTML
 never reaches the draft; the only additions are a wrapper and the provider's
 unsubscribe placeholder. The text version is the same Markdown source.
 """
+import contextlib
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
 from ..agency_cards import text as plain_text
+from ..kit import _kit_folder
 from ..markdown_lite import render
 
 UNSUBSCRIBE_PLACEHOLDER = "{{ unsubscribe }}"
@@ -196,11 +200,29 @@ def load_manifest(path):
 def write_draft(root, draft):
     """Write kit/newsletter-draft.html, .txt and .json under ``root``; returns the paths."""
     kit = Path(root) / "kit"
-    kit.mkdir(mode=0o700, exist_ok=True)
-    paths = []
-    for name, content in (("newsletter-draft.html", draft["html"]), ("newsletter-draft.txt", draft["text"]),
-                          ("newsletter-draft.json", json.dumps(draft, indent=2, ensure_ascii=False) + "\n")):
-        target = kit / name
-        target.write_text(content, encoding="utf-8")
-        paths.append(target)
-    return paths
+    _kit_folder(kit, mode=0o700)
+    files = (("newsletter-draft.html", draft["html"]), ("newsletter-draft.txt", draft["text"]),
+             ("newsletter-draft.json", json.dumps(draft, indent=2, ensure_ascii=False) + "\n"))
+    temps, replaced = [], []
+    try:
+        for name, content in files:
+            fd, temp = tempfile.mkstemp(dir=kit, prefix="." + name + ".", suffix=".tmp")
+            temps.append(temp)
+            try:
+                handle = os.fdopen(fd, "w", encoding="utf-8")
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                handle.write(content)
+        for (name, _), temp in zip(files, temps):
+            os.replace(temp, kit / name)
+            replaced.append(name)
+    except BaseException as exc:
+        for temp in temps[len(replaced):]:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp)
+        if replaced and isinstance(exc, OSError):
+            raise OSError("partial newsletter draft: " + ", ".join(replaced)) from exc
+        raise
+    return [kit / name for name, _ in files]

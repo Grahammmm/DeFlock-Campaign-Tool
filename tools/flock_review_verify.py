@@ -9,6 +9,7 @@ A verify pass is not acceptance: machine-valid output is review-required."""
 import argparse, ast, collections, contextlib, csv, hashlib, json, os, random, re, sys, tempfile
 from pathlib import Path
 
+VERDICTS = ("met", "not met", "contradicted", "cannot tell", "n/a")  # = flock_report.VERDICTS; n/a rows are neither priority nor pool
 HEADER, RESULTS = ["row_id", "result", "reason", "page_cite"], ("agree", "disagree", "needs-source")
 CHECKS = ["findings freeze: FINDINGS.csv sha256 must equal the plan's; a changed FINDINGS needs a new plan",
           "sample: reproducible random.Random(seed).sample of met and cannot tell ids; never re-sample after seeing results",
@@ -34,6 +35,15 @@ def plan(args):
         if prior.get("seed") != args.seed or prior.get("sample_size") != args.size:
             return print("plan: %s exists with different parameters" % out.name) or 1
         return print("plan: %s reused (frozen)" % out.name) or 0
+    recs, errs, seen = table(args.findings), [], set()  # every row is judged before anything is written; header is row 1
+    for n, rec in enumerate(recs[1:], 2):
+        if not rec: continue  # a blank line, skipped by DictReader as well
+        r = dict(zip(recs[0], rec))
+        if cell(r, "verdict").lower() not in VERDICTS: errs.append("row %d: verdict is unknown" % n)
+        if not cell(r, "finding_id"): errs.append("row %d: finding_id is empty" % n)
+        elif cell(r, "finding_id") in seen: errs.append("row %d: finding_id is duplicated" % n)
+        seen.add(cell(r, "finding_id"))
+    if errs: return print("\n".join(errs + ["plan: errors=%d" % len(errs)])) or 1
     ids = lambda *verdicts: [cell(r, "finding_id") for r in rows if cell(r, "verdict").lower() in verdicts]  # noqa: E731
     priority, pool = ids("contradicted", "not met"), ids("met", "cannot tell")
     sample = random.Random(args.seed).sample(pool, min(args.size, len(pool)))
@@ -111,6 +121,7 @@ def main(argv=None):
     p.add_argument("--not-posted", nargs="*", default=[]); p.add_argument("--md")
     p = sub.add_parser("counts"); p.add_argument("findings"); p.add_argument("report")
     args = parser.parse_args(argv)
+    if args.command == "plan" and args.size < 0: parser.error("plan: --size must be 0 or more")
     try:
         return {"plan": plan, "check": check, "counts": counts}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, csv.Error) as exc:
