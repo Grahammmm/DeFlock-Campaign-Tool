@@ -21,7 +21,7 @@ calls kanban or hermes and never writes into the store. Each model run stays its
 1. Convert L3 to the F7 header, then write or refresh the ROSTER (the operator confirms `in_scope`).
 2. `python3 tools/flock_sweep.py status --watchlist W --roster R --store S [--out FILE]`: one row per
    agency with `stage` and the exact `next` command, then `agencies=N finished=F ready=R blocked=B unmapped=U unwatched=W`
-   (unwatched = in-scope roster agencies with no watch row; add one with flock-monitor if it should be monitored).
+   (unwatched = in-scope roster agencies with no watch row; add one with flock-monitor if it should be monitored). When W > 0, the line before it names those agencies.
 3. `python3 tools/flock_sweep.py plan ... --max 2`: paste the printed `CARDS` block into card bodies. The
    operator creates compare cards (opus-coder-bopus) and verify cards (codex-reviewer), each within
    40 turns / 2 h, chunked by document, with `REMAINING.md` on cap.

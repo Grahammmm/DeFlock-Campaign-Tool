@@ -3,7 +3,7 @@
   status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out FILE|DIR] [--max N] [--date YYYY-MM-DD]
 Reads the store only; never runs a model, kanban or hermes. Prints slugs, stages, counts and commands, never claim,
 quote or fact text. Summary: blocked = agencies - finished - ready - unmapped; unwatched = in_scope=yes roster rows
-with no watch-list row. Exit 0 ok, 1 errors, 2 usage."""
+with no watch-list row, named (roster order) on the line before it. Exit 0 ok, 1 errors, 2 usage."""
 import argparse, csv, datetime, importlib.util, io, json, re, shlex, sys
 from pathlib import Path
 
@@ -177,9 +177,10 @@ def main(argv=None):
         if out:
             verify.write(out, text)
         fin, ready, unmapped = (sum(r["stage"] in s for r in rows) for s in (("finished",), READY, ("unmapped",)))
-        unwatched = sum(1 for r in roster if r["in_scope"] == "yes" and r["watch_agency"] not in agencies)
-        print(text + "agencies=%d finished=%d ready=%d blocked=%d unmapped=%d unwatched=%d" % (
-            len(rows), fin, ready, len(rows) - fin - ready - unmapped, unmapped, unwatched))
+        names = [r["watch_agency"] for r in roster if r["in_scope"] == "yes" and r["watch_agency"] not in agencies]
+        named = "unwatched: %s\n" % "; ".join(names) if names else ""  # stdout only, never --out
+        print(text + named + "agencies=%d finished=%d ready=%d blocked=%d unmapped=%d unwatched=%d" % (
+            len(rows), fin, ready, len(rows) - fin - ready - unmapped, unmapped, len(names)))
         return 0
     except Fail as exc:
         return print(exc) or 1
