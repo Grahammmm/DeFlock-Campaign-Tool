@@ -115,7 +115,11 @@ def finish(run, golden):
             questions.append("- Q %s | %s | prior %s | %s" % (f["finding_id"], f["topic"], ";".join(prior) or "-", v["records_sought"]))
     csv.writer(out, lineterminator="\n").writerows(public)
     write(run / "PUBLIC-OK.csv", out.getvalue())
-    write(run / "QUESTIONS.md", "\n".join(questions) + "\n")
+    try:  # finish refused above if either file existed, so this PUBLIC-OK.csv is ours to remove
+        write(run / "QUESTIONS.md", "\n".join(questions) + "\n")
+    except BaseException:
+        with contextlib.suppress(OSError): os.unlink(run / "PUBLIC-OK.csv")
+        raise
     return print("public_ok=%d questions=%d rejected=%d" % (len(public) - 1, len(questions) - 1, rejected)) or 0
 
 def main(argv=None):
@@ -136,12 +140,15 @@ def main(argv=None):
     refusal = family(run, args.provider if args.command == "start" else None)
     if refusal:
         return print(refusal) or 3
-    if args.command == "start":
-        return start(run, args.provider, args.model.strip())
-    if args.command == "finish":
-        return finish(run, args.golden)
-    errs, _, _, verify = load(run)
-    return print("\n".join(errs + ["verified=%d errors=%d" % (len(verify), len(errs))])) or (1 if errs else 0)
+    try:
+        if args.command == "start":
+            return start(run, args.provider, args.model.strip())
+        if args.command == "finish":
+            return finish(run, args.golden)
+        errs, _, _, verify = load(run)
+        return print("\n".join(errs + ["verified=%d errors=%d" % (len(verify), len(errs))])) or (1 if errs else 0)
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:  # class name only: paths and contents stay out of the output
+        return print("io: %s" % type(exc).__name__) or 1
 
 if __name__ == "__main__":
     sys.exit(main())
