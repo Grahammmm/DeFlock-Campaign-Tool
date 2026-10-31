@@ -162,6 +162,13 @@ def cmd_init(args):
     store, cfg = outside(args.store, "store"), load_config(args.config)
     errs, rows = check(cfg, args.seed_dir)
     region, mine = cfg.get("region"), {} if errs else {a["slug"]: n for n, a in enumerate(cfg["agencies"], 1)}
+    bad = []  # init never writes through a symlink or a non-folder inside the store; checked before anything is made
+    for rel in [] if errs else ["agencies", "regions", "regions/" + region] + [
+            "agencies/" + a["slug"] for a in cfg["agencies"] if a["in_scope"] != "no"]:
+        path = store / rel
+        if rel.rpartition("/")[0] not in bad and (path.is_symlink() or os.path.lexists(path) and not path.is_dir()):
+            bad.append(rel)
+            errs.append("%s: %s" % (rel, "is a symlink; refusing" if path.is_symlink() else "exists and is not a folder"))
     for other in [] if errs else sorted((store / "regions").glob("*/ROSTER.csv")):
         if other.parent.name != region:
             errs += ["agency %d: slug already belongs to region %s" % (mine[r["slug"]], other.parent.name)
