@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """PR pin guard: a PR that changes a hash-pinned file must update its pin.
 
-Some repo tests freeze the exact sha256 of source files (the comprehension
-contract import closure, the T4B checker contract). If a PR edits such a
+Some repo tests freeze the exact sha256 of source files: the comprehension
+contract import closure, and the T4B checker's historical pins (verified
+against their frozen copies; the live files may move on).
+The comprehension contract is the single current pin set. If a PR edits such a
 file without re-pinning it, the failure only shows up inside the long
 offline suite, under the same check name as any other failure there. When
 main is already red on that check, the new failure is masked, the PR
@@ -32,6 +34,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 COMPREHENSION = "tests/fixtures/comprehension"
+T4B_FROZEN = "tests/fixtures/t4b_s5/pinned-source"
 TOKEN = re.compile(rb"(?<![a-f0-9])(?:[a-f0-9]{64}|[a-f0-9]{40})(?![a-f0-9])")
 
 
@@ -58,7 +61,8 @@ def _t4b_pins(repo):
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == "PINS" for t in node.targets):
-            return [(path, digest, None) for path, digest in ast.literal_eval(node.value).items()]
+            return [(f"{T4B_FROZEN}/{path}.txt", digest, None)
+                    for path, digest in ast.literal_eval(node.value).items()]
     raise ValueError("PINS not found in tools/t4b_test_apply_check.py")
 
 
@@ -69,7 +73,7 @@ REGISTRIES = {
         (f"{COMPREHENSION}/source-pins.json", f"{COMPREHENSION}/hash-anchors.py"),
         _comprehension_pins,
     ),
-    "T4B checker (PINS in tools/t4b_test_apply_check.py)": (
+    f"T4B checker historical pins (PINS in tools/t4b_test_apply_check.py vs {T4B_FROZEN}/)": (
         ("tools/t4b_test_apply_check.py",),
         _t4b_pins,
     ),

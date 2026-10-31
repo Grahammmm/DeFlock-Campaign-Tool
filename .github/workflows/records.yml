@@ -69,6 +69,9 @@ jobs:
         run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full
       - name: Public-tree credential and private-path scan
         run: python -B tools/check_public_tree.py
+      - name: Every pin matches (main, nightly, dispatch)
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && matrix.python == '3.12'
+        run: python3 -B tools/check_pin_guard.py --all
       - name: Affected-selector unit checks (synthetic graph only)
         run: python -B tools/ci_affected.py --self-test
   pin-guard:
