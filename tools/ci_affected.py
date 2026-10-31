@@ -106,7 +106,7 @@ def graph_for(files):
 
 
 WEIGHTS = ROOT / 'tools' / 'ci_shard_weights.json'
-BYTES_PER_SECOND = 3700  # Fit on run 41208260076: 5,847,951 bytes / 1,587 s over its 359 modules.
+BYTES_PER_SECOND = 4300  # Fit on run 41216922578 attempt 4: 5,857,704 bytes / 1,375 s over its 361 modules.
 
 
 def load_weights(path=WEIGHTS):
