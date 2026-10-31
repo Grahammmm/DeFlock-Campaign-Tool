@@ -28,6 +28,7 @@ def contact(path, folder):
 
 def draft(rundir, drafts):
     run, out_dir = Path(rundir).resolve(), Path(drafts).resolve()
+    if REPO in (run, *run.parents): return print("draft: RUNDIR is inside the repository", file=sys.stderr) or 1
     name = run.parent.parent.name
     try: lines = (run / "FOLLOWUP-DRAFT.md").read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError): lines = []
@@ -37,7 +38,7 @@ def draft(rundir, drafts):
     to, errs = contact(run.parents[3] / "agencies" / name / "CONTACT.csv", name)
     outs = [run / "EMAIL-DRAFT.md", out_dir / f"{name}-{run.name}-EMAIL-DRAFT.md"]
     errs = errs or (["draft: --drafts is inside the repository"] if REPO in (out_dir, *out_dir.parents) else [])
-    errs = errs or (["draft: EMAIL-DRAFT already exists"] if any(p.exists() for p in outs) else [])
+    errs = errs or (["draft: EMAIL-DRAFT already exists"] if any(os.path.lexists(p) for p in outs) else [])
     if errs: return print("\n".join(errs), file=sys.stderr) or 1
     body = "\n".join(lines[3:ends[0]]).strip("\n")
     ids = re.search(r"related to requests ([^\n]*?)\.(?:\s|$)", body)
@@ -45,12 +46,19 @@ def draft(rundir, drafts):
                       f"Related prior requests: {ids.group(1) if ids else 'none on file'}.", "---", "G APPROVED: ____",
                       "Sent by: ____ (operator, by hand, after G's reply)"]) + "\n"
     out_dir.mkdir(mode=0o700, exist_ok=True)
-    for path in outs:
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh: fh.write(text)
-            os.link(tmp, path)
-        finally: os.unlink(tmp)
+    linked = []  # only paths this call created; the rollback never touches anything else
+    try:
+        for path in outs:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh: fh.write(text)
+                os.link(tmp, path)
+                linked.append(path)
+            finally: os.unlink(tmp)
+    except OSError as exc:
+        for path in linked: os.unlink(path)
+        why = "EMAIL-DRAFT already exists" if isinstance(exc, FileExistsError) else f"io {type(exc).__name__}"
+        return print(f"draft: {why}", file=sys.stderr) or 1
     return print(f"written=2 to_domain={to.rsplit('@', 1)[1]}") or 0
 
 def main(argv):
