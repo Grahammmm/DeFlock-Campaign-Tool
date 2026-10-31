@@ -95,6 +95,39 @@ class FlockSweepTest(unittest.TestCase):
         self.assertNotIn(AGENCY, out)
         self.assertEqual(self.sweep("status", store=ROOT / "tests"), (1, "store inside repository\n"))
 
+    def test_watchless_roster_row(self):
+        base = (FIXTURES / "roster-sample.csv").read_text()
+        new = "Harbor Police,harbor-police,yes,Harbor police; local ALPR policy applies,\n"
+        roster = self.tmp / "roster.csv"
+        def sweep(text, *args):
+            roster.write_text(text)
+            return self.sweep(*args, roster=str(roster))
+        def listing():
+            return sorted((str(p), p.stat().st_mtime_ns) for p in self.store.rglob("*"))
+
+        base_code, base_out = self.sweep("status")
+        before = listing()
+        code, out = sweep(base + new, "status")
+        self.assertEqual((base_code, code, listing()), (0, 0, before), out)
+        lines = out.splitlines()
+        rows = {r["slug"]: r for r in csv.DictReader(lines[:-1])}
+        self.assertEqual((rows["harbor-police"]["watch_agency"], rows["harbor-police"]["stage"]), ("Harbor Police", "no-facts"))
+        self.assertEqual((base_out.splitlines()[-1].split()[0], lines[-1].split()[0], lines[-1].split()[-1]),
+                         ("agencies=5", "agencies=6", "unmapped=1"))
+        code, out = sweep(base + new, "plan", "--max", "2")
+        self.assertEqual((code, "harbor-police" in out), (0, False), out)
+        bad = ((",x,no,,\n", "roster row 7: watch_agency is empty or duplicated"),
+               (new, "roster row 7: watch_agency is empty or duplicated"),
+               ("Other Police,Harbor_Police,no,,\n", "roster row 7: slug is not a store slug"))
+        for row, expected in bad:
+            with self.subTest(expected=expected):
+                out_file = self.tmp / "out.csv"
+                code, out = sweep(base + new + row, "status", "--out", str(out_file))
+                self.assertEqual(code, 1)
+                self.assertIn(expected, out)
+                self.assertNotIn("slug,watch_agency", out)
+                self.assertFalse(out_file.exists())
+
     def test_matrix(self):
         self.finish()
         out = self.tmp / "matrix"

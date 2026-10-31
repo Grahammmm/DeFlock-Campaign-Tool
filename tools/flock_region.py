@@ -144,7 +144,7 @@ def plan(cfg, store, rdir):
                   % (t, folder / "POLICY.csv"),
                   "4. REQUESTS rows: %sflock_requests.py due %s" % (t, folder / "REQUESTS.csv"),
                   "5. operator only (fetches official index pages): %sflock_monitor.py scan %s --store %s" % (t, w, store),
-                  "6. %sflock_sweep.py status %s (every ROSTER agency needs a watch row)" % (t, lists),
+                  "6. %sflock_sweep.py status %s" % (t, lists),
                   "7. [RUN] compare/verify cards per %sflock_sweep.py plan %s" % (t, lists),
                   "8. F9 export, then a site location card data/locations/%s.json" % site if site
                   else "8. F9 export (no site_slug, so no site location card)"]

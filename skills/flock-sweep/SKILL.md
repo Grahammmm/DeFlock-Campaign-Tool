@@ -12,8 +12,8 @@ calls kanban or hermes and never writes into the store. Each model run stays its
 ## Inputs
 - `--watchlist`: the F7 header `agency,kind,url,query,official_domain,last_seen_hash`. The L3 provisional
   header is refused; convert L3 to the F7 header first (legwork step).
-- `--roster`: `watch_agency,slug,in_scope,applicability,site_slug`. `watch_agency` is a unique watch-list
-  agency, `slug` is the store folder (F1 `slugify()` of the FACTS agency), `in_scope` is yes, no or hold,
+- `--roster`: `watch_agency,slug,in_scope,applicability,site_slug`. `watch_agency` is a unique agency name; it need not have a
+  watch-list row (that agency is simply not monitored by F7). `slug` is the store folder (F1 `slugify()` of the FACTS agency), `in_scope` is yes, no or hold,
   and `applicability` (max 200 chars, required for yes) becomes flock-compare's `--applicability`.
 - `--store`: the private fact store, outside the repository.
 
@@ -40,3 +40,6 @@ roster row names is `store-only` (data, not an error).
 - Verify in the author's family. The family comes from RUN.json and VERIFY.json, never a profile name.
 - Treat `finished` or the matrix as publishable. Publication goes through F9, redaction and G.
 - Bypass a 403 or bot wall, add an allowlist host or download anything.
+
+## Changes
+- A ROSTER agency without a watch-list row is accepted and assessed from the store; all other roster checks stay.
