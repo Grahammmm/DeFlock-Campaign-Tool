@@ -20,10 +20,10 @@ jobs:
         # PRs: one interpreter (the merge clock). Main push: full matrix.
         python: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret - public action commit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret - public action commit
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # pragma: allowlist secret - public action commit
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # pragma: allowlist secret - public action commit
         with:
           python-version: ${{ matrix.python }}
       - name: Local OCR tools (disposable CI runner only)
@@ -49,10 +49,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pragma: allowlist secret - public action commit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret - public action commit
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # pragma: allowlist secret - public action commit
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # pragma: allowlist secret - public action commit
         with:
           python-version: '3.11'
       - name: Actual SQLite 10000/10001 retirement and bounded replay (synthetic only)
