@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +116,36 @@ def partition(names, files, count):
     return [sorted(bucket) for bucket in bins]
 
 
+class TimedResult(unittest.TextTestResult):
+    """Per-module wall time; a loader _FailedTest counts under its own module."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.seconds, self._start = {}, time.perf_counter()
+
+    def startTest(self, test):
+        self._start = time.perf_counter()
+        super().startTest(test)
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        module = type(test).__module__
+        self.seconds[module] = self.seconds.get(module, 0.0) + time.perf_counter() - self._start
+
+
+def slowest(seconds, limit=10):
+    ranked = sorted(seconds.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    return [[module, round(value, 1)] for module, value in ranked]
+
+
+def run_timed(suite, shard, stream=None):
+    """Run the shard, then print one timing line on success and on failure."""
+    start = time.perf_counter()
+    result = unittest.TextTestRunner(stream=stream, verbosity=2, resultclass=TimedResult).run(suite)
+    print(json.dumps({'shard': shard, 'total_seconds': round(time.perf_counter() - start, 1),
+                      'slowest': slowest(result.seconds)}, sort_keys=True), flush=True)
+    return 0 if result.wasSuccessful() else 1
+
+
 def self_test():
     """Exercise selector logic with synthetic modules, not repository tests."""
     import tempfile
@@ -199,8 +230,7 @@ def main(argv=None):
     suite = unittest.defaultTestLoader.loadTestsFromNames(names)
     if not suite.countTestCases():
         raise RuntimeError('empty test suite; refusing silent success')
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-    return 0 if result.wasSuccessful() else 1
+    return run_timed(suite, args.shard)
 
 
 if __name__ == '__main__':
