@@ -105,14 +105,38 @@ def graph_for(files):
     return graph, dynamic
 
 
-def partition(names, files, count):
-    """Largest-source-first packing; deterministic, disjoint, nonempty shards."""
+WEIGHTS = ROOT / 'tools' / 'ci_shard_weights.json'
+BYTES_PER_SECOND = 4300  # Fit on run 41216922578 attempt 4: 5,857,704 bytes / 1,375 s over its 361 modules.
+
+
+def load_weights(path=WEIGHTS):
+    """Measured seconds per module, or None (size packing) on any defect; never raises."""
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        if not isinstance(data, dict) or data.get('version') != 1:
+            raise ValueError('not version 1')
+        seconds = data.get('seconds')
+        if not isinstance(seconds, dict) or not all(type(v) is int and v >= 1 for v in seconds.values()):
+            raise ValueError('seconds must map modules to ints >= 1')
+        return seconds
+    except (OSError, ValueError) as error:
+        print(f'::warning::shard weights unavailable ({error}); packing by size', flush=True)
+        return None
+
+
+def partition(names, files, count, weights=None):
+    """Measured-time-first packing (unmeasured: size estimate); deterministic, disjoint, nonempty shards."""
+    def cost(name):
+        if weights is not None and name in weights:
+            return weights[name]
+        size = files[name].stat().st_size
+        return size if weights is None else max(1, size // BYTES_PER_SECOND)
     bins = [[] for _ in range(count)]
-    weights = [0] * count
-    for name in sorted(names, key=lambda n: (-files[n].stat().st_size, n)):
-        index = min(range(count), key=lambda i: (weights[i], i))
+    loads = [0] * count
+    for name in sorted(names, key=lambda n: (-cost(n), n)):
+        index = min(range(count), key=lambda i: (loads[i], i))
         bins[index].append(name)
-        weights[index] += files[name].stat().st_size
+        loads[index] += cost(name)
     return [sorted(bucket) for bucket in bins]
 
 
@@ -218,7 +242,7 @@ def main(argv=None):
     selected.add(smoke)
     if len(selected) < args.shards:
         selected = available | {smoke}
-    buckets = partition(selected, files, args.shards)
+    buckets = partition(selected, files, args.shards, load_weights())
     names = buckets[args.shard]
     if not names:
         raise RuntimeError('empty shard; refusing silent success')
