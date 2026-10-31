@@ -2,7 +2,7 @@
 """Flock publish: a verified run's confirmed strong findings -> PUBLISH.json for human review (every entry pending).
 Exit 1 = errors/empty, 2 = usage, 3 = family refusal. Only a human approves (skills/flock-publish).
 export RUNDIR must lie outside the repository."""
-import argparse, importlib.util, json, re, sys
+import argparse, collections, contextlib, importlib.util, io, json, re, sys
 from pathlib import Path
 from urllib.parse import urlsplit
 _spec = importlib.util.spec_from_file_location("_flock_verify", Path(__file__).resolve().parent / "flock_verify.py")
@@ -159,23 +159,56 @@ def check(path, run=None):
     last = "findings=%d approved=%d errors=%d" % (len(doc["findings"]), approved, len(errs + moved))
     print("\n".join(notes + errs + moved + [last + (" drift=%d" % len(moved) if run else "")]))
     return 1 if errs or moved else 0
+def stage(run):  # RF1130-3 -> (stage, counts); check's per-entry lines are captured, never printed
+    if not (run / "PUBLISH.json").exists():
+        return "no-export", None
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            check(run / "PUBLISH.json", run)
+    except Exception:  # noqa: BLE001 - fail closed: a run that cannot be re-derived is drifted, counts unknown
+        return "drifted", None
+    n = {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", buf.getvalue().splitlines()[-1])}
+    counts = (n["findings"], n["findings"] - n["approved"], n["approved"], n["errors"])
+    return ("invalid" if n["errors"] > n["drift"] else "drifted" if n["drift"] else "pending" if not n["approved"]
+            else "approved" if n["approved"] == n["findings"] else "partly-approved"), counts
+def status(store):  # RF1130-3: one publication-stage line per verified run (agencies/*/runs/*), read-only
+    if (store / "agencies").is_symlink() or not (store / "agencies").is_dir():
+        return print("status: no agencies folder", file=sys.stderr) or 2
+    name, rows = lambda p: p.name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", p.name) else "?", []  # noqa: E731
+    for agency in sorted(store.joinpath("agencies").iterdir()):
+        runs = agency / "runs"
+        if agency.is_symlink() or runs.is_symlink():  # links are never followed
+            rows.append((name(agency), "-", "link-refused", None))
+            continue
+        for run in sorted(runs.iterdir()) if runs.is_dir() else []:
+            if run.is_symlink() or (run / "PUBLISH.json").is_symlink():
+                rows.append((name(agency), name(run), "link-refused", None))
+            elif run.is_dir() and (run / "VERIFY.json").exists():  # earlier stages belong to flock_sweep
+                rows.append((name(agency), name(run)) + stage(run))
+    tally, line = collections.Counter(row[2] for row in rows), "publish | %s | %s | %s | findings=%s pending=%s approved=%s errors=%s"
+    print("".join(line % (row[:3] + (row[3] or ("-",) * 4)) + "\n" for row in rows), end="")
+    print("publish | runs=%d %s | review-required; G decides any site use" % (len(rows), " ".join("%s=%d" % (
+        k.replace("-", "_"), tally[k]) for k in ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"))))
+    return 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", choices=["export"])
+    parser.add_argument("command", nargs="?", choices=["export", "status"])
     parser.add_argument("rundir", nargs="?")
     parser.add_argument("--site-slug"); parser.add_argument("--check"); parser.add_argument("--run")
     args = parser.parse_args(argv)
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
+    listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
     if checking and args.run is None:
         return check(args.check)
-    if not checking and (args.command != "export" or not args.rundir or args.check or args.run is not None or
-                         not SLUG.fullmatch(args.site_slug or "")):
-        parser.error("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR]")
+    if not (checking or listing) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
+                                      not SLUG.fullmatch(args.site_slug or "")):
+        parser.error("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE")
     run = Path(args.run if checking else args.rundir).resolve()
     if run == verify_tool.REPO or verify_tool.REPO in run.parents:
-        return print("flock-publish: RUNDIR is inside the repository") or 1
+        return print("flock-publish: %s is inside the repository" % ("STORE" if listing else "RUNDIR")) or 1
     try:
-        return check(args.check, run) if checking else export(run, args.site_slug)
+        return status(run) if listing else check(args.check, run) if checking else export(run, args.site_slug)
     except (OSError, ValueError) as exc:  # the class only, never a path or record text
         return print("io: %s" % type(exc).__name__) or 1
 if __name__ == "__main__":
