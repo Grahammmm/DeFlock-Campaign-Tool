@@ -24,10 +24,7 @@ def review_blockers(finding, receipts):
     """Caller must separately authenticate receipt issuers and validate artifacts."""
     if not isinstance(finding, dict):
         return ["invalid_finding"]
-    blockers = []
-    if not isinstance(receipts, list):
-        blockers.append("invalid_receipts")
-        receipts = []
+    receipts, blockers = (receipts, []) if isinstance(receipts, list) else ([], ["invalid_receipts"])
     if not all(isinstance(r, dict) for r in receipts):
         blockers.append("invalid_receipt")
         receipts = [r for r in receipts if isinstance(r, dict)]
@@ -51,18 +48,17 @@ def review_blockers(finding, receipts):
         for field in ("event_date", "rule_version", "duty", "exceptions"):
             if not finding.get(field):
                 blockers.append("missing_" + field)
+    digest = object()  # equals no receipt hash when the finding cannot be hashed
     try:
         digest = content_hash(finding)
     except (ValueError, TypeError):
         blockers.append("unhashable_finding")
-        digest = None
-    author = _who(finding.get("author"))
-    valid = [r for r in receipts if digest and r.get("content_sha256") == digest
-             and r.get("decision") == "approve" and _who(r.get("reviewer"))
-             and _who(r.get("reviewer")) != author
-             and isinstance(r.get("role"), str) and r.get("rationale") and r.get("reviewed_at")]
-    if any(digest and r.get("content_sha256") == digest
-           and r.get("decision") in ("reject", "changes_requested") for r in receipts):
+    valid = [r for r in receipts if r.get("content_sha256") == digest
+             and r.get("decision") == "approve" and isinstance(r.get("role"), str)
+             and _who(r.get("reviewer")) not in (None, _who(finding.get("author")))
+             and r.get("rationale") and r.get("reviewed_at")]
+    if any(r.get("content_sha256") == digest and r.get("decision") in ("reject", "changes_requested")
+           for r in receipts):
         blockers.append("unresolved_challenge")
     roles = {r.get("role") for r in valid}
     blockers.extend("missing_" + role + "_review" for role in sorted(ROLES - roles))
