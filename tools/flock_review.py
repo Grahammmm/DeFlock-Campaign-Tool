@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flock review: one agency through the agency-review method as a fixed 27-stage resumable pipeline.
+"""Flock review: one agency through the agency-review method as a fixed 28-stage resumable pipeline.
   --check CONFIG [--seed-dir DIR] | run CONFIG [--until STAGE] [--seed-dir DIR] | status CONFIG | mark CONFIG STAGE --provider P --model M
 Runs the private method scripts and F1/F3 tools, skipping stages whose inputs are unchanged; a wait stage closes only by mark (the card that
 wrote the input states its provider/model). Never runs a model, never deletes (old outputs move to <out>/.review/superseded), no network.
@@ -24,7 +24,9 @@ STAGES = [  # (id, kind, deps) -- frozen; G2 appends after counts and never renu
     ("f3-scaffold", "run", ("facts-import", "rules-build", "f3-findings")), ("f3-write", "run", ("f3-scaffold",)), ("f3-check", "run", ("f3-write",)),
     ("counts", "run", ("compare-build",)),
     ("verify-plan", "run", ("compare-build",)), ("verify-recount", "run", ("logs", "joins")), ("verify", "wait", ("verify-plan", "verify-recount")),
-    ("verify-check", "run", ("verify",)), ("f4-start", "run", ("f3-check",)), ("f4", "wait", ("f4-start",)), ("f4-finish", "run", ("f4",))]
+    ("verify-check", "run", ("verify",)), ("f4-start", "run", ("f3-check",)), ("f4", "wait", ("f4-start",)), ("f4-finish", "run", ("f4",)),
+    # Report reads inventory, facts, requirements, findings, the verify plan and marked verification rows directly.
+    ("report", "run", ("inventory", "facts-import", "rules-build", "compare-build", "verify-plan", "verify", "verify-check"))]
 IDS = [s[0] for s in STAGES]
 METHOD = {n + ".py": d + "/scripts/" + n + ".py" for d, names in (
     ("facts-intake", "inventory log_summary roster_summary ocr_log_counts facts_build"), ("rules-intake", "rules_build diff_versions check_rules"),
@@ -156,7 +158,7 @@ def plan(c, sid, state):  # -> (steps, stdout capture); a step is ("run", argv) 
             "joins": ([m("training_vs_search.py", c["xlsx"], c["lbu"])], CO / ("TRAINING-VS-SEARCH-%s.txt" % c["tj"])),
             "compare-build": ([m("compare_build.py", cfg)], None), "compare-selftest": ([m("check_compare.py", cfg, CO / "selftest")], None),
             "f3-write": ([m("f3_from_yaml.py", c["f3f"], c["RUN"])], None), "f3-check": ([t("flock_compare.py", "--check", c["RUN"], *golden)], None),
-            "counts": ([m("summarize.py", CO / "FINDINGS.csv")], CO / "COUNTS.txt")}[sid]
+            "counts": ([m("summarize.py", CO / "FINDINGS.csv")], CO / "COUNTS.txt"), "report": ([("aside", CO / "report"), t("flock_report.py", "build", cfg)], None)}[sid]
 def listing(path):  # (relpath, size, mtime_ns) of one external input root
     files = [] if path is None or not path.exists() else [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())
     return [str(path), [[str(p.relative_to(path)), p.stat().st_size, p.stat().st_mtime_ns] for p in files] if path and path.exists() else "missing"]

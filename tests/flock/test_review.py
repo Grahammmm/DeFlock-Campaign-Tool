@@ -14,6 +14,7 @@ WAITS = (("fact-drafts", "anthropic", "FO", "drafts/a.yaml"), ("rules-read", "an
 STUB = '''import csv, hashlib, json, sys
 from pathlib import Path
 OVERRIDE, FIX = @OVR@, Path(@FIX@)
+ONLY, REQS = "no", ""  # report-stage stub data: an override may set the INVENTORY analysis_only value and REQUIREMENTS rows
 me, a = Path(sys.argv[0]).stem, sys.argv[1:]
 with open(Path(sys.argv[0]).parents[2] / "CALLS.log", "a") as log:
     log.write(me + "\\n")
@@ -25,7 +26,7 @@ def put(path, text):
 def copy(name, path):
     put(path, (FIX / name).read_text())
 if me == "inventory":
-    put(Path(a[1]) / "INVENTORY.csv", "doc\\n")
+    put(Path(a[1]) / "INVENTORY.csv", "request,doc_id,title,sha256,analysis_only\\nREQ-101,1,doc.pdf," + "b" * 64 + "," + ONLY + "\\n")
 elif me == "log_summary":
     put(Path(a[1]) / "LOG-SUMMARY-by-user.csv", "user,count\\n")
 elif me == "roster_summary":
@@ -34,8 +35,8 @@ elif me == "facts_build":
     copy("compare-facts.csv", Path(a[1]) / "FACTS-v1-record.csv")
 elif me == "rules_build":
     out = Path(cfg["rules_intake"]["out"])
-    put(out / "REQUIREMENTS.csv", "rule," + hashlib.sha256(Path(a[a.index("--f2-tool") + 1]).read_bytes()).hexdigest() + "\\n")
-    put(out / "VERSION-DIFF.csv", "diff\\n")
+    put(out / "REQUIREMENTS.csv", "source,version,section,req_id,page\\n" + REQS)
+    put(out / "VERSION-DIFF.csv", "diff," + hashlib.sha256(Path(a[a.index("--f2-tool") + 1]).read_bytes()).hexdigest() + "\\n")
     copy("law-sample.csv", out / "F2" / "LAW.csv")
     copy("policy-sample.csv", out / "F2" / "agencies" / cfg["review"]["slug"] / "POLICY.csv")
 elif me == "compare_build":
@@ -132,7 +133,7 @@ class FlockReviewTest(unittest.TestCase):
     def test_happy_path_and_resume(self):
         config, p = make_review(self.tmp)
         code, out = tool("--check", config)
-        self.assertEqual((code, out), (0, "stages=27 skip=2 errors=0\n"))
+        self.assertEqual((code, out), (0, "stages=28 skip=2 errors=0\n"))
         code, out = self.drive(config, p)
         self.assertEqual(code, 0, out)
         stages = json.loads((p["out"] / "REVIEW-STATE.json").read_text())["stages"]
@@ -148,7 +149,7 @@ class FlockReviewTest(unittest.TestCase):
         code, out = tool("status", config)
         self.assertEqual(code, 0)
         self.assertIn("16 f3-findings wait done openai/gpt-5.5\n", out)
-        self.assertTrue(out.endswith("stages=27 done=18 stale=0 waiting=0 pending=7 failed=0 skip=2 next=verify-plan locked=no\n"))
+        self.assertTrue(out.endswith("stages=28 done=18 stale=0 waiting=0 pending=8 failed=0 skip=2 next=verify-plan locked=no\n"))
         self.assertEqual(tree(p["out"]), listing)
         code, out = tool("run", config, full=True)
         self.assertEqual(code, 3, out)

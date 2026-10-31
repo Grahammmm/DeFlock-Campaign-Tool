@@ -1,13 +1,13 @@
 finding_id,kind,req_id,source,version,section,obligation,topic,requirement,verdict,basis,fact_ids,record_ids,pages,other_refs,related_req_ids,analysis_only,next_step
-R001,requirement,S-1,Sample law,v1,1(a),duty,access,Sample requirement one.,met,Sample basis one.,F-0001,1,2,,,no,
-R002,requirement,S-2,Sample law,v1,1(b),duty,access,Sample requirement two.,contradicted,Sample basis two.,F-0002,1,3,,,no,Request the sample record.
-R003,requirement,S-3,Sample law,v1,1(c),duty,sharing,Sample requirement three.,not met,Sample basis three.,F-0003,1,4,,,no,Request the sample record.
+R001,requirement,S-1,Sample law,v1,1(a),duty,access,Sample requirement one.,met,Sample basis one.,F-daaccd54da05,1,2,,,no,
+R002,requirement,S-2,Sample law,v1,1(b),duty,access,Sample requirement two.,contradicted,Sample basis two.,F-090c3d39b556,1,3,,,no,Request the sample record.
+R003,requirement,S-3,Sample law,v1,1(c),duty,sharing,Sample requirement three.,not met,Sample basis three.,F-76dbe8a9b4ac,1,4,,,no,Request the sample record.
 R004,requirement,S-4,Sample law,v1,1(d),duty,sharing,Sample requirement four.,cannot tell,Sample basis four.,,,,,,no,
-R005,requirement,S-5,Sample law,v1,2(a),duty,audit,Sample requirement five.,met,Sample basis five.,F-0005,1,5,,,no,
+R005,requirement,S-5,Sample law,v1,2(a),duty,audit,Sample requirement five.,met,Sample basis five.,F-e1b1072c95c3,1,5,,,no,
 R006,requirement,S-6,Sample law,v1,2(b),definition,audit,Sample requirement six.,n/a,Sample basis six.,,,,,,no,
-R007,claim,C-1,Sample claim,v1,-,claim,retention,Sample claim seven.,met,Sample basis seven.,F-0007,1,6,,,no,
+R007,claim,C-1,Sample claim,v1,-,claim,retention,Sample claim seven.,met,Sample basis seven.,F-53baa6f20643,1,6,,,no,
 R008,claim,C-2,Sample claim,v1,-,claim,retention,Sample claim eight.,cannot tell,Sample basis eight.,,,,,,yes,
-R009,claim,C-3,Sample claim,v1,-,claim,training,Sample claim nine.,contradicted,Sample basis nine.,F-0009,1,7,,,no,Request the sample record.
-R010,claim,C-4,Sample claim,v1,-,claim,training,Sample claim ten.,met,Sample basis ten.,F-0010,1,8,,,no,
+R009,claim,C-3,Sample claim,v1,-,claim,training,Sample claim nine.,contradicted,Sample basis nine.,F-a71d059d7a51,1,7,,,no,Request the sample record.
+R010,claim,C-4,Sample claim,v1,-,claim,training,Sample claim ten.,met,Sample basis ten.,F-daaccd54da05,1,8,,,no,
 R011,requirement,S-7,Sample law,v1,3(a),duty,retention,Sample requirement eleven.,cannot tell,Sample basis eleven.,,,,,,no,
-R012,requirement,S-8,Sample law,v1,3(b),duty,retention,Sample requirement twelve.,met,Sample basis twelve.,F-0012,1,9,,,no,
+R012,requirement,S-8,Sample law,v1,3(b),duty,retention,Sample requirement twelve.,met,Sample basis twelve.,F-090c3d39b556,1,9,,,no,
