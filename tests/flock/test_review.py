@@ -314,6 +314,110 @@ class FlockReviewTest(unittest.TestCase):
         self.assertEqual(((folder / "a.txt").read_bytes(), os.lstat(folder / "a.txt").st_ino), (b"one\n", ino))
         self.assertEqual(sorted(os.listdir(folder)), listing)
 
+    def status(self, config):  # RF0905-3 helpers and tests below: status names why a stage is not done
+        code, out = tool("status", config)
+        self.assertEqual(code, 0, out)
+        return out
+
+    def test_status_reason_fingerprint_stable_and_legacy_state(self):
+        config, p = make_review(self.tmp)
+        self.assertEqual(self.drive(config, p)[0], 0)
+        for line in self.status(config).splitlines()[:-1]:
+            self.assertTrue(line.split()[3] not in ("done", "skip") or "(" not in line, line)
+        spec = importlib.util.spec_from_file_location("_rf0905_3_review", TOOL)
+        spec.loader.exec_module(review := importlib.util.module_from_spec(spec))
+        c, dig, seen = review.context(config), {}, 0
+        state = review.load_state(c)
+        for i, (sid, kind, _) in enumerate(review.STAGES):
+            word, _, fp = review.evaluate(c, state, dig, i)
+            if kind == "run" and word == "done":
+                body, rec, seen = review.fingerprint_parts(c, i, dig, state), state["stages"][sid], seen + 1
+                self.assertEqual((rec["fp"], fp, rec["parts"]), (review.digest(body), review.digest(body), {k: review.digest(v) for k, v in body.items()}))
+        self.assertEqual(seen, 14)
+        state_path = p["out"] / "REVIEW-STATE.json"
+        for rec in state["stages"].values():
+            rec.pop("parts", None)
+        state_path.write_text(json.dumps(state, indent=1, sort_keys=True) + "\n")
+        legacy = state_path.read_bytes()
+        code, out = tool("run", config)
+        self.assertEqual((code, out.count(" cached\n"), out.count("rc="), state_path.read_bytes()), (0, 14, 0, legacy), out)
+        facts = p["FO"] / "store" / "agencies" / SLUG / "FACTS.csv"
+        facts.write_bytes(facts.read_bytes() + b"\n")
+        listing = tree(p["out"])
+        self.assertIn("\n7 facts-import run stale (inputs or outputs changed)\n", self.status(config))
+        self.assertEqual(tree(p["out"]), listing)
+        code, out = tool("run", config)
+        self.assertEqual((code, [line.split()[1] for line in out.splitlines() if "rc=" in line]), (0, ["facts-import"]), out)
+        self.assertIn("parts", json.loads(state_path.read_text())["stages"]["facts-import"])
+
+    def test_status_reason_scripts_changed(self):  # the F2-only edit path
+        engine = self.tmp / "engine"
+        shutil.copytree(ROOT / "tools", engine / "tools")
+        (engine / "campaign_tool").symlink_to(ROOT / "campaign_tool", target_is_directory=True)
+        golden = engine / "tests/fixtures/flock/morrobay-golden.csv"
+        golden.parent.mkdir(parents=True)
+        shutil.copyfile(FIX / golden.name, golden)
+        with patch(__name__ + ".TOOL", engine / "tools/flock_review.py"):
+            config, p = make_review(self.tmp)
+            self.assertEqual(self.drive(config, p)[0], 0)
+            f2 = engine / "tools/flock_law_policy.py"
+            f2.write_bytes(f2.read_bytes() + b"\n# F2-only revision\n")
+            out = self.status(config)
+        self.assertIn("\n9 rules-build run stale (scripts changed)\n10 rules-diff run pending (needs rules-build)\n", out)
+        self.assertIn("\n11 rules-selftest run pending (needs rules-build)\n", out)
+
+    def test_status_reason_command_upstream_inputs_config(self):
+        config, p = make_review(self.tmp)
+        self.assertEqual(self.drive(config, p)[0], 0)
+        (p["FO"] / "drafts" / "x-computed.yaml").write_text("computed\n")  # not a marked draft, but a facts-build argument
+        self.assertIn("\n5 fact-drafts wait done anthropic/claude-opus-5-5\n6 facts-build run stale (command changed)\n"
+                      "7 facts-import run pending (needs facts-build)\n", self.status(config))
+        write_stub(p["method"], "log_summary", '(Path(a[1]) / "LOG-SUMMARY-by-user.csv").write_text("user,count\\nnew,1\\n"); sys.exit(0)')
+        self.assertEqual(tool("run", config, "--until", "logs")[0], 0)
+        self.assertIn("\n6 facts-build run stale (upstream changed, command changed)\n", self.status(config))
+        self.assertEqual(tool("run", config)[0], 0)
+        cfg = json.loads(config.read_text())
+        cfg["compare"]["f3"]["applicability"] = "Sample city police; edited"
+        config.write_text(json.dumps(cfg))
+        out = self.status(config)
+        self.assertEqual([line.split()[3] for line in out.splitlines()[:11]], ["done"] * 3 + ["skip"] + ["done"] * 7, out)
+        self.assertIn("\n13 assess wait waiting anthropic/claude-opus-5-5 (upstream changed)\n14 compare-build run pending (needs assess)\n", out)
+        self.assertEqual(mark_all(config, {"assess": "anthropic"}), [0])
+        out = self.status(config)
+        self.assertIn("\n14 compare-build run stale (config changed)\n15 compare-selftest run pending (needs compare-build)\n", out)
+        self.assertIn("\n16 f3-findings wait waiting openai/gpt-5.5 (upstream changed)\n", out)
+        (p["out"] / "inputs" / "records" / "1__doc.pdf").write_text("y\n")
+        self.assertTrue(self.status(config).startswith("1 inventory run stale (inputs changed)\n2 logs run pending (needs inventory)\n"))
+
+    def test_status_reason_output_changed_missing_and_more(self):
+        config, p = make_review(self.tmp)
+        self.assertEqual(self.drive(config, p)[0], 0)
+        rel = "store/agencies/%s/FACTS.csv" % SLUG
+        facts = p["FO"] / rel
+        original = facts.read_bytes()
+        facts.write_bytes(original.replace(b"Vigilant", b"Vigilent"))
+        listing = tree(p["out"])
+        self.assertIn("\n7 facts-import run stale (output changed: %s)\n" % rel, self.status(config))
+        self.assertEqual(tree(p["out"]), listing)
+        facts.unlink()
+        self.assertIn("\n7 facts-import run stale (output missing: %s)\n" % rel, self.status(config))
+        for name in ("VERSION-DIFF.csv", "REQUIREMENTS.csv"):  # two rules-build outputs
+            (p["RO"] / name).write_bytes(b"edited\n")
+        self.assertIn("\n9 rules-build run stale (output changed: REQUIREMENTS.csv +1)\n", self.status(config))
+
+    def test_status_reason_wait_and_failed(self):
+        config, p = make_review(self.tmp, stubs={"check_compare": "sys.exit(1)"})
+        self.assertIn("stage fact-drafts WAITING (not marked)", tool("run", config)[1])
+        self.assertIn("\n5 fact-drafts wait waiting (not marked)\n6 facts-build run pending (needs fact-drafts)\n", self.status(config))
+        self.drive(config, p, stop="assess")
+        self.assertIn("stage compare-selftest failed rc=1", tool("run", config)[1])
+        out = self.status(config)
+        self.assertIn("\n15 compare-selftest run failed (rc=1)\n16 f3-findings wait waiting (not marked)\n", out)
+        self.assertIn("\n20 counts run pending (never run)\n", out)
+        (p["CO"] / "ASSESSMENTS.yaml").write_text("edited\n")
+        self.assertIn("stage assess WAITING (changed since mark)", tool("run", config)[1])
+        self.assertIn("\n13 assess wait waiting anthropic/claude-opus-5-5 (changed since mark)\n", self.status(config))
+
 
 if __name__ == "__main__":
     unittest.main()
