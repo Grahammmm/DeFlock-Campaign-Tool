@@ -40,6 +40,8 @@ The job inputs carry a manifest assembled from D1 by `newsletterManifest(repo)`:
 
 Only published or corrected findings since the last send and upcoming meetings appear. No
 subscriber, correspondence, original or credential data is in the manifest.
+`build_draft` applies that window itself (findings with `published_at >= since`, meetings with
+`starts_at >= now`, soonest first) and reports what it left out in `excluded`.
 
 The runner turns it into a draft with `campaign_tool.newsletter.build_draft(manifest)`, which
 returns `{"subject", "html", "text", "counts"}`. The body is rendered from a Markdown subset
