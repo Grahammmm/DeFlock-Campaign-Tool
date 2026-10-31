@@ -1,5 +1,5 @@
 """Per-agency fact store (schema v2): import v1 FACTS.csv, check, and coverage per posted INVENTORY document. Prints counts only."""
-import argparse, contextlib, csv, datetime, hashlib, os, re, sys, tempfile
+import argparse, contextlib, csv, datetime, hashlib, json, os, re, sys, tempfile, unicodedata
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -178,21 +178,29 @@ def coverage(args):
     return 0
 
 
-def status(args):
-    """Review state per agency (RF1220-2): counts by kind and status, and ids to review. Read-only; never a value or quote."""
-    store, slug, fail = Path(args.store), slugify(args.agency or ""), lambda lines: print(*lines, sep="\n", file=sys.stderr) or 1
+def fail(lines):
+    return print(*lines, sep="\n", file=sys.stderr) or 1
+
+
+def store_files(store, slug):
+    """(FACTS.csv files of every agency or one slug, refusal lines); an agency symlink is refused, never followed."""
     if not store.is_dir():
-        return fail(["store: is not a folder"])
+        return [], ["store: is not a folder"]
     links = ["%s: is a symlink; refusing" % r for r in ["agencies"] + ["agencies/" + slug] * bool(slug) if os.path.islink(store / r)]
     if links:
-        return fail(links)
+        return [], links
     if slug and not (store / "agencies" / slug / "FACTS.csv").is_file():
-        return fail(["agency %s: no FACTS.csv" % slug])
+        return [], ["agency %s: no FACTS.csv" % slug]
     agencies = store / "agencies"
     files = [agencies / slug / "FACTS.csv"] if slug else sorted(agencies.glob("*/FACTS.csv"))
-    links = ["%s: is a symlink; refusing" % p.relative_to(store) for p in sorted(set(
+    return files, ["%s: is a symlink; refusing" % p.relative_to(store) for p in sorted(set(
         ([] if slug else list(agencies.glob("*"))) + files)) if p.is_symlink()]
-    errors = links or ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)]
+
+
+def status(args):
+    """Review state per agency (RF1220-2): counts by kind and status, and ids to review. Read-only; never a value or quote."""
+    files, errors = store_files(Path(args.store), slugify(args.agency or ""))
+    errors = errors or ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)]
     if errors or not files:
         return fail(errors or ["no FACTS.csv files in store"])
     listed, total = [], {"rows": 0, "unreviewed": 0, "disputed": 0}
@@ -211,6 +219,90 @@ def status(args):
     return 0
 
 
+OUTCOMES = ("found", "not-found", "no-document", "ambiguous-export", "no-page", "page-hash-mismatch", "unreadable-fact",
+            "skipped-kind", "bad-row")
+FOLD = str.maketrans("\u2018\u2019\u201a\u201b\u2032\u201c\u201d\u201e\u201f\u2033\u2010\u2011\u2012\u2013\u2014\u2015\u2212",
+                     "'''''\"\"\"\"\"-------")
+
+
+def fold(text):
+    """Match form (NB-DF-02): NFKC, casefold, curly quotes and dashes folded, every whitespace run one space, stripped."""
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().translate(FOLD).split())
+
+
+def plain_bytes(path):
+    """Bytes of a regular file; None when it is absent, a symlink or not a regular file (a link is never followed)."""
+    return None if path.is_symlink() or not path.is_file() else path.read_bytes()
+
+
+def export_doc(export, sha, docs):
+    """(signature folder, {page: text sha256}) of one exported document, or (outcome, None); cached per sha256."""
+    if sha not in docs:
+        base = export / sha
+        subs = [] if base.is_symlink() or not base.is_dir() else sorted(
+            p for p in base.iterdir() if not p.name.startswith(".") and (p.is_dir() or p.is_symlink()))
+        if len(subs) != 1 or subs[0].is_symlink():
+            docs[sha] = ("ambiguous-export" if len(subs) > 1 else "no-document", None)
+            return docs[sha]
+        try:
+            rec = json.loads(plain_bytes(subs[0] / "result.json") or b"null")
+        except ValueError:
+            rec = None
+        ok = isinstance(rec, dict) and rec.get("schema") == "ocr-stage-v1" and rec.get("source_sha256") == sha \
+            and isinstance(rec.get("pages"), list)
+        docs[sha] = (subs[0], {r["page"]: r.get("text_sha256") for r in rec["pages"] if isinstance(r, dict)
+                               and type(r.get("page")) is int} if ok else {})
+    return docs[sha]
+
+
+def quote_outcome(export, row, docs):
+    if row["kind"] != "record":
+        return "skipped-kind"
+    if row["value"].strip() == "UNREADABLE":
+        return "unreadable-fact"
+    where, hashes = export_doc(export, row["source_sha256"].strip(), docs)
+    if hashes is None:
+        return where
+    page = int(row["page"])
+    data = plain_bytes(where / ("page-%04d.txt" % page))
+    if data is None:
+        return "no-page"
+    if hashlib.sha256(data).hexdigest() != hashes.get(page):
+        return "page-hash-mismatch"
+    return "found" if fold(row["verbatim_quote"]) in fold(data.decode("utf-8")) else "not-found"
+
+
+def quote_check(args, parser):
+    """NB-DF-02: is each record fact's verbatim_quote on its cited page of an extraction-owner page-text export
+    (`<sha256>/<signature>/page-NNNN.txt` + result.json)? Read-only; prints fact ids, outcomes and counts, never text or paths."""
+    text = Path(args.text).resolve()
+    if any(text == p or p in text.parents for p in (REPO, Path(args.store).resolve())):
+        parser.error("quote-check: --text must be outside the repository and the store")
+    if not text.is_dir():
+        return fail(["text: is not a folder"])
+    files, errors = store_files(Path(args.store), slugify(args.agency or ""))
+    if errors or not files:
+        return fail(errors or ["no FACTS.csv files in store"])
+    docs, table, listed, seen = {}, [], [], set()
+    for n, f in enumerate(files, 1):
+        v2, rows, errs = load(f, f.parent.name)
+        if not v2:
+            return fail(["file %d: %s" % (n, errs[0])])
+        got = [(num, "bad-row" if validate(r, True, f.parent.name) else quote_outcome(text, r, docs), r) for num, r in rows]
+        got += [(int(m[1]), "bad-row", None) for m in (re.match(r"row (\d+): columns", e) for e in errs) if m]
+        count = {k: 0 for k in OUTCOMES}
+        for num, outcome, r in sorted(got, key=lambda g: g[0]):
+            count[outcome] += 1
+            if outcome != "found":
+                ident = r["fact_id"] if r and re.fullmatch(r"F-[0-9a-f]{12}", r["fact_id"]) else "row %d" % num
+                page = r["page"].strip() if r and re.fullmatch(r"[1-9][0-9]*", r["page"].strip()) else "-"
+                listed.append("%s | %s | %s | page %s" % (f.parent.name, ident, outcome, page))
+        seen |= {k for k in OUTCOMES if count[k]}
+        table.append("quote-check | %s | facts=%d " % (f.parent.name, len(got)) + " ".join("%s=%d" % (k, count[k]) for k in OUTCOMES))
+    print(*table + listed, sep="\n")
+    return 3 if seen & {"not-found", "page-hash-mismatch"} else 1 if "bad-row" in seen else 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -222,13 +314,21 @@ def main(argv=None):
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV"
-                        " | status --store DIR [--agency SLUG] [--list unreviewed|disputed]")
-    for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list"):
+                        " | status --store DIR [--agency SLUG] [--list unreviewed|disputed]"
+                        " | quote-check --store DIR --text EXPORT [--agency SLUG]")
+    for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
     parser.add_argument("--date", default=datetime.date.today().isoformat())
     args = parser.parse_args(argv)
+    if args.command[:1] == ["quote-check"]:
+        if len(args.command) != 1 or args.check or not args.store or not args.text or args.inventory or args.list is not None \
+                or args.added_by is not None or (args.agency is not None and not slugify(args.agency)):
+            parser.error("usage: quote-check --store DIR --text EXPORT [--agency SLUG]")
+        return quote_check(args, parser)
+    if args.text is not None:
+        parser.error("--text belongs to quote-check only")
     if args.command[:1] == ["status"]:
         if len(args.command) != 1 or args.check or not args.store or args.inventory or args.added_by is not None \
                 or args.list not in (None, "unreviewed", "disputed") or (args.agency is not None and not slugify(args.agency)):
