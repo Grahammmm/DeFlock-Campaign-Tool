@@ -1,6 +1,6 @@
 """Flock monitor: scan official agency index pages listed in WATCHLIST.csv into a private MONITOR.csv, and write a daily
 digest. Index pages only: links (PDFs included) are recorded by URL and never fetched."""
-import argparse, contextlib, csv, datetime, hashlib, html.parser, os, re, sys, tempfile, urllib.error, urllib.request
+import argparse, contextlib, csv, datetime, fcntl, hashlib, html.parser, os, re, sys, tempfile, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlsplit
 
@@ -137,7 +137,17 @@ def check(watchlist):  # dry run: the pages scan would fetch; no network, no sto
 
 def scan(watchlist, store, date, fetch=fetch):
     rows = validated(watchlist)  # before any fetch
-    store, counts, out, new, changed = private_store(store), dict.fromkeys(COUNTS, 0), [], [], False
+    (store := private_store(store)).mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = os.open(store / ".monitor.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)  # a symlink raises OSError
+    try:  # one scan per store at a time; the kernel drops the flock when the fd closes or the scan dies
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise Fail("store busy: another scan is running") from None
+        return scan_locked(watchlist, rows, store, date, fetch)
+    finally:
+        os.close(lock)  # the lock file itself is never deleted
+
+def scan_locked(watchlist, rows, store, date, fetch):  # call only while holding <store>/.monitor.lock
+    counts, out, new, changed = dict.fromkeys(COUNTS, 0), [], [], False
     monitor = [r for _, r in read_csv(store / "MONITOR.csv", MONITOR_HEADER, missing_ok=True)]
     known = {r["item_id"] for r in monitor}
     for n, row in rows:
