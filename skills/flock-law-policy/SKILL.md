@@ -25,8 +25,8 @@ A clean check is machine-valid and review-required, not legal acceptance.
    of one agency + `policy_id` whose governing windows share a day (ends inclusive) are refused.
 5. List versions: `python3 tools/flock_law_policy.py versions STORE --agency SLUG [--on YYYY-MM-DD]`.
    Exit 3 with `no adopted version established for DATE` means the date is not covered.
-6. Every agency on one date: `python3 tools/flock_law_policy.py governing STORE --on YYYY-MM-DD` (STORE a directory).
-7. Fix each reported `row N: <field> <reason>` at the source; the tool never repairs a row.
+   Every agency on one date: `python3 tools/flock_law_policy.py governing STORE --on YYYY-MM-DD` (STORE a directory).
+6. Fix each reported `row N: <field> <reason>` at the source; the tool never repairs a row.
 
 ## Outputs
 - Counts `law=L policy=P errors=K`, row numbers, ids, labels and dates. Never duty or evidence text.
