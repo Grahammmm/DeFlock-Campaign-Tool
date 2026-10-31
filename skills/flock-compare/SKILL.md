@@ -1,7 +1,7 @@
 ---
 name: flock-compare
 description: Use when comparing one agency's Flock/ALPR facts with California law and its policy. Scaffolds a private run folder, then fails closed on findings without a rating, cited fact, rule or policy clause, or with banned wording.
-skill_version: 1.1
+skill_version: 1.2
 ---
 
 # Flock compare
@@ -30,6 +30,8 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
 ## Outputs
 - Row numbers, field names, ids and counts. Never claim, quote or fact text.
 - `--summary` (clean runs only, else refused) gives rating counts per topic and cited/uncited LAW rules, POLICY rows and facts; a report, not a review verdict.
+- RUN.json records the input hashes; if FACTS, LAW, POLICY or the law package change, `--check`
+  fails until the comparison is redone in a new run folder.
 
 ## Never
 - OCR, extract, download or edit facts; an unreadable page goes back to the coordinator.
@@ -48,3 +50,4 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
 ## Changelog
 - 1.0: run scaffold, findings checker, banned wording and golden check.
 - 1.1: `--summary` read-only cited/uncited counts.
+- 1.2: RUN.json `inputs` hashes; `--check` names an input changed since scaffold.

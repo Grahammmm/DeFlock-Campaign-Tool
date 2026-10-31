@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flock compare: scaffold a run folder; check FINDINGS.csv fail-closed (+ golden); --summary RUNDIR counts what a clean run
 cited and left uncited (a report, not a review verdict). Prints row numbers, fields, ids, counts only."""
-import argparse, contextlib, csv, importlib.util, json, os, re, sys, tempfile
+import argparse, contextlib, csv, hashlib, importlib.util, json, os, re, sys, tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -18,6 +18,8 @@ ALWAYS = re.compile(r"no records exist|no audit records", re.I)
 GATED = re.compile(r"\bviolat\w*|\billegal\w*|\badmi(t|ts|tted|ssion)\b", re.I)
 FLOCK = re.compile(r"\bflock\b", re.I)
 POLICY_REF = re.compile(r"(P-[0-9a-f]{12})#(.*)")
+INPUTS = ("FACTS.csv", "LAW.csv", "POLICY.csv", "law-package")  # RUN.json "inputs" keys, in report order
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 def _tool(name):
     spec = importlib.util.spec_from_file_location("_flock_" + name, REPO / "tools" / (name + ".py"))
@@ -66,7 +68,7 @@ def scaffold(args):
     (agency / "runs").mkdir(mode=0o700, exist_ok=True)
     run.mkdir(mode=0o700, exist_ok=True)
     meta = {"schema": 1, "agency": args.agency, "date": args.date, "author_provider": args.provider,
-            "author_model": args.model, "applicability": args.applicability}
+            "author_model": args.model, "applicability": args.applicability, "inputs": _input_hashes(store, agency)}
     for name, text in (("RUN.json", json.dumps(meta, indent=2) + "\n"), ("FINDINGS.csv", ",".join(HEADER) + "\n"),
                        ("FINDINGS.md", DRAFT + "\n")):
         fd, tmp = tempfile.mkstemp(prefix="." + name + ".", suffix=".tmp", dir=run)  # fresh temp; a final-name symlink is replaced
@@ -146,6 +148,25 @@ def _inputs(run):  # the store inputs check reads; --summary reuses them, so the
     return (store_errs, facts, [r["rule_id"] for _, r in law_rows], [r["policy_row_id"] for _, r in policy_rows],
             {r["rule_id"]: r["review"] for r in law.load_package("us-ca")["rules"]})
 
+def _input_hashes(store, agency):  # sha256 hex of each input the run is written against; None when the file is absent
+    hashes = {}
+    for name, path in zip(INPUTS, (agency / "FACTS.csv", store / "LAW.csv", agency / "POLICY.csv", law.package_path("us-ca"))):
+        hashes[name] = None
+        if path.is_file():
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1 << 20), b""):  # 1 MiB chunks
+                    digest.update(chunk)
+            hashes[name] = digest.hexdigest()
+    return hashes
+
+def input_errors(recorded, store, agency):  # names only: never a hash, path or content
+    if not isinstance(recorded, dict) or set(recorded) != set(INPUTS) \
+            or not all(v is None or isinstance(v, str) and SHA256.fullmatch(v) for v in recorded.values()):
+        return ["RUN.json: inputs is invalid"]
+    now = _input_hashes(store, agency)
+    return ["inputs: %s changed since scaffold (compare again in a new run folder)" % n for n in INPUTS if recorded[n] != now[n]]
+
 def check(rundir, golden=None):
     run = Path(rundir).resolve()
     if len(run.parents) < 4 or run.parent.name != "runs" or run.parents[2].name != "agencies":
@@ -161,6 +182,9 @@ def check(rundir, golden=None):
             errs.append("RUN.json: agency or author_provider is invalid")
     except (OSError, ValueError):
         errs.append("RUN.json: missing or unreadable")
+        meta = {}
+    if "inputs" in meta:  # runs scaffolded before inputs were recorded check as before
+        errs += input_errors(meta["inputs"], run.parents[3], agency)
     store_errs, facts, law_ids, policy_ids, package = _inputs(run)
     errs += ["store: " + x for x in store_errs]
     vendors = [(r["value"] + " " + r["verbatim_quote"]).lower() for r in facts.values() if r["fact_type"] == "vendor"]
