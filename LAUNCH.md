@@ -1,7 +1,7 @@
 # Launch guide
 
 How to run the DeFlock Campaign Tool today, what each path delivers, and what has to be true
-before the project calls itself launched. Status as of 2026-09-30: everything below runs
+before the project calls itself launched. Status as of 2026-09-30 (historical; current status: docs/STATUS.md): everything below runs
 offline with synthetic data and passing tests; no Worker, runner or campaign built from this
 engine has been deployed to a real account yet. The SLO pilot still runs its own private code.
 

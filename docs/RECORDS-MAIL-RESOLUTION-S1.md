@@ -1,3 +1,5 @@
+> Historical milestone text (last changed 2026-10-22). Current status: [STATUS.md](STATUS.md).
+
 # T4B slice 1 hardening and integration boundary
 
 This is a fixture-only library slice, not permission to apply any policy or run

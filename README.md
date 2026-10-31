@@ -54,9 +54,13 @@ An offline test suite (synthetic fixtures only, no network) runs in GitHub Actio
 
 ## Cloudflare Workers (tested offline, not deployed)
 
+Frozen (G 2026-10-31): see [docs/STATUS.md](docs/STATUS.md).
+
 `workers/` contains the setup wizard, the Access-protected organizer workspace and the public-site Worker described in [docs/WORKERS.md](docs/WORKERS.md): resumable setup with an encrypted one-hour session, a provisioning plan with per-resource receipts and a rollback list (`DRY_RUN=1` records calls without performing them), Access JWT validation, the runner API from [docs/CONTRACTS.md](docs/CONTRACTS.md), approval cards, cron run receipts, inbound-mail preservation, the review and publication workflow ([docs/PUBLICATION.md](docs/PUBLICATION.md)), Brevo newsletter drafts and sends behind approval cards ([docs/NEWSLETTER.md](docs/NEWSLETTER.md)), manual meetings with comment kits ([docs/MEETINGS.md](docs/MEETINGS.md)) and the D1 export and backup job ([docs/BACKUP.md](docs/BACKUP.md)). Run `cd workers && npm ci && npm run check`. No campaign has been deployed with it; `send_request`, `send_followup`, `post_social` and `pay_fee` executors refuse with stable codes until an outbox or a person completes them.
 
 ## Runner, digest and outbox (tested offline, not deployed)
+
+Frozen (G 2026-10-31): see [docs/STATUS.md](docs/STATUS.md).
 
 `runner/` is the container that pulls jobs from the workspace Worker and runs the engine: `classify_mail` (rule-based classification of preserved MIME, attachments stored by hash with receipts), `extract` (the sandboxed intake worker reused unchanged), `digest` (`campaign_tool/digest`: deterministic redaction with stable placeholders, versioned detectors with exact locators, an optional model over redacted text only, `strict_local` refusing non-local model hosts; every conclusion without a model is `needs_attorney_review`), `draft_followup` (proposes a `send_followup` card, never sends) and `build_site` (builds, leak-checks, stages to the public bucket and proposes `deploy_site`). `campaign_tool/outbox.py` is the only code that sends records requests (newsletters go to Brevo through the `send_newsletter` approval card): a journal with idempotent keys, approval and identity requirements, per-agency daily and fee caps, MuckRock 402 → blocked, and ambiguous failures that block resends until reconciled. See [docs/RUNNER.md](docs/RUNNER.md), [docs/OUTBOX.md](docs/OUTBOX.md), `runner/Dockerfile`, `runner/compose.example.yml` and `runner/cloudflare-container.md`. Smoke test: `python3 -B -m runner --once --fake` (exit 3 = idle). No runner has been attached to a deployed workspace and no live send has been made.
 
@@ -101,7 +105,8 @@ folders the server lacks, raise keyed alerts visible in `records status`.
 
 ## Planned, not yet implemented
 
-Wiring the engine outbox (`campaign_tool/outbox.py`) into the Worker's `send_request`/`send_followup` executors (today they fail `sender_not_configured` until a `MailSender` is bound); runner handlers for `newsletter_draft` and `backup` (enqueued, answered `blocked`); social posting; OCR for image-only pages; independently reviewed state-law packages (California is drafted, not reviewed); Brevo webhooks and list counts; automatic Legistar polling from the Worker (the CLI import exists); backup encryption, scheduling and hosted restore; monitored scheduling and cost controls; any production deployment of the Workers or the runner.
+The current list of planned work, and of what is live, offline-only or frozen,
+is in [docs/STATUS.md](docs/STATUS.md).
 
 See [LAUNCH.md](LAUNCH.md) for the end-to-end picture and the launch gates, plus [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [data handling](docs/DATA-HANDLING.md), and [Cloudflare launch checklist](docs/CLOUDFLARE.md).
 
@@ -130,8 +135,8 @@ configuration and every original remain outside this public repository.
 ## Records pipeline M0a
 
 The reusable records gates and synthetic regression suite are now in the engine.
-See [records pipeline implementation status](docs/RECORDS-PIPELINE.md) for commands,
-import provenance, limitations, and the ordered M0b-M5 work. Run the suite with
+See [records pipeline implementation status](docs/STATUS.md); the historical [M0a notes](docs/RECORDS-PIPELINE.md) keep commands,
+import provenance, limitations, and the original M0b-M5 plan. Run the suite with
 `python3 -B -m unittest discover -v`. This tested offline slice does not mean the
 complete campaign platform, automatic intake, or a live deployment is ready.
 
