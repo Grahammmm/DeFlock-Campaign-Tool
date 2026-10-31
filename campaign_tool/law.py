@@ -11,7 +11,8 @@ A package with ``status: draft`` can be previewed, but nothing derived from
 it is a reviewed legal conclusion. ``deadline`` models calendar days or
 business days (Saturday and Sunday skipped only). Results are provisional
 reminders, not legal due dates: public holidays, actual receipt and lawful
-extension prerequisites are not established by this arithmetic.
+extension prerequisites are not established by this arithmetic. The CLI's
+``deadline`` reminders are provisional too; see ``HOLIDAY_NOTE``.
 """
 import argparse
 import json
@@ -379,27 +380,53 @@ def summary(package):
         },
         "rule_count": len(package["rules"]),
         "review_counts": counts,
-        "rules": [{"rule_id": r["rule_id"], "citation": r["citation"],
-                   "effective_from": r["effective_from"], "effective_to": r["effective_to"],
-                   "review": r["review"]} for r in package["rules"]],
+        "rules": [_rule_view(r) for r in package["rules"]],
         "request_scopes": [s["scope_id"] for s in package["request_scopes"]],
         "note": HOLIDAY_NOTE,
     }
+
+
+def _rule_view(rule):
+    return {"rule_id": rule["rule_id"], "citation": rule["citation"],
+            "effective_from": rule["effective_from"], "effective_to": rule["effective_to"],
+            "review": rule["review"]}
+
+
+def _command_output(args, package):
+    head = {"jurisdiction": package["jurisdiction"], "status": package["status"]}
+    if args.command == "rules":
+        rules = [r for r in rules_in_force(package, parse_date(args.on, "--on"))
+                 if args.review is None or r["review"] == args.review]
+        return {**head, "on": args.on, "rule_count": len(rules),
+                "rules": [_rule_view(r) for r in rules], "note": HOLIDAY_NOTE}
+    law = package["records_law"]
+    days = law["determination_days"] + (law["determination_extension_days"] if args.extension else 0)
+    reminder = deadline(package, parse_date(args.sent, "--sent"), args.extension)
+    return {**head, "sent": args.sent, "extension": args.extension, "day_type": law["day_type"],
+            "days": days, "reminder": reminder.isoformat(), "note": HOLIDAY_NOTE}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="campaign_tool.law", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     show = commands.add_parser("show", help="Print a summary of a jurisdiction package")
-    show.add_argument("jurisdiction")
-    show.add_argument("--base", help="Alternate jurisdictions directory")
+    rules = commands.add_parser("rules", help="Print the rules in force on a date")
+    rules.add_argument("--on", required=True, help="Event date, YYYY-MM-DD")
+    rules.add_argument("--review", choices=("verified", "likely", "needs_attorney_review"))
+    remind = commands.add_parser("deadline", help="Print the provisional reminder date")
+    remind.add_argument("--sent", required=True, help="Send date, YYYY-MM-DD")
+    remind.add_argument("--extension", action="store_true", help="Add the extension days")
+    for sub in (show, rules, remind):
+        sub.add_argument("jurisdiction")
+        sub.add_argument("--base", help="Alternate jurisdictions directory")
     args = parser.parse_args(argv)
     try:
         package = load_package(args.jurisdiction, args.base)
+        output = summary(package) if args.command == "show" else _command_output(args, package)
     except (OSError, ValueError) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         return 1
-    print(json.dumps(summary(package), indent=2, ensure_ascii=False))
+    print(json.dumps(output, indent=2, ensure_ascii=False))
     return 0
 
 
