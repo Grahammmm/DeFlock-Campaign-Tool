@@ -26,8 +26,7 @@ seed and never writes FACTS, POLICY, REQUESTS or LAW (F1, F2 and F5a own those).
 5. `python3 tools/flock_region.py init <config> --store <store>`: creates `agencies/<slug>/` for yes and
    hold, and writes `regions/<region>/WATCHLIST.csv`, `ROSTER.csv` and `PLAN.md` (0600, atomic). Rerun
    after each config edit: unchanged input is byte-identical and `last_seen_hash` values are kept.
-6. Work the PLAN.md steps per agency. flock-sweep `status` refuses a ROSTER agency without a watch row,
-   so give every agency at least one row (a social query is enough) before step 6.
+6. Work the PLAN.md steps per agency.
 
 ## Golden case
 `tests/fixtures/flock/region-sample.json` on the synthetic seed `tests/fixtures/flock/seed/us-ca.json`:

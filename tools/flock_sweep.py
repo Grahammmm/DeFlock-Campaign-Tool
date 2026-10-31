@@ -43,7 +43,6 @@ def load_inputs(args):
         r = {k: v.strip() for k, v in r.items()}
         dup = r["watch_agency"] in {x["watch_agency"] for x in roster}
         checks = (("watch_agency", r["watch_agency"] and not dup, "is empty or duplicated"),
-                  ("watch_agency", not r["watch_agency"] or r["watch_agency"] in agencies, "is not a watch-list agency"),
                   ("slug", re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", r["slug"]), "is not a store slug"),
                   ("in_scope", r["in_scope"] in ("yes", "no", "hold"), "is not yes, no or hold"),
                   ("applicability", len(r["applicability"]) <= 200, "is over 200 chars"),
