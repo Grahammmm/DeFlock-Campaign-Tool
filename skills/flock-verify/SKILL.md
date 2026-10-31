@@ -17,8 +17,7 @@ outputs. A clean check is machine-valid and review-required, not semantic or leg
 3. `python3 tools/flock_verify.py --check RUNDIR`; fix each `row N: <field> <reason>` until exit 0.
 4. `python3 tools/flock_verify.py finish RUNDIR --golden tests/fixtures/flock/morrobay-golden.csv`
    (Morro Bay). It writes PUBLIC-OK.csv and QUESTIONS.md once (0600) and prints counts only.
-5. Is it still current? `python3 tools/flock_verify.py current RUNDIR` (read-only; exit 0 only when both files match a fresh
-   finish). Stale or missing means: move both files aside and run finish again.
+5. Is it still current? `python3 tools/flock_verify.py current RUNDIR` (read-only). If stale or missing: move both files aside and run finish again.
 
 ## Never
 - Verify a run authored by your own family, or take the family from a profile name.

@@ -2,7 +2,7 @@
 """Flock verify: a different-family verifier's confirm/downgrade/reject per finding -> PUBLIC-OK.csv, QUESTIONS.md.
   start RUNDIR --provider P --model M  |  --check RUNDIR  |  finish RUNDIR [--golden CSV]  |  current RUNDIR [--golden CSV]
 Exit 1 = errors, 2 = usage, 3 = family refusal (equal, missing or unknown). Prints ids, labels and counts only.
-start/finish RUNDIR must lie outside the repository. current writes nothing: on-disk outputs vs a fresh finish."""
+start/finish RUNDIR must lie outside the repository."""
 import argparse, contextlib, csv, importlib.util, io, json, os, re, sys, tempfile
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
@@ -116,9 +116,8 @@ def outputs(run, golden):  # (errs, PUBLIC-OK.csv text, QUESTIONS.md text, count
 
 def finish(run, golden):
     errs, public, questions, counts = outputs(run, golden)
-    if not errs and any((run / name).exists() for name in ("PUBLIC-OK.csv", "QUESTIONS.md")):
-        errs.append("finish refused: PUBLIC-OK.csv or QUESTIONS.md already exists")
-    if errs:
+    if errs or any((run / name).exists() for name in ("PUBLIC-OK.csv", "QUESTIONS.md")):
+        errs = errs or ["finish refused: PUBLIC-OK.csv or QUESTIONS.md already exists"]
         return print("\n".join(errs + ["errors=%d" % len(errs)])) or 1
     write(run / "PUBLIC-OK.csv", public)
     try:  # finish refused above if either file existed, so this PUBLIC-OK.csv is ours to remove
@@ -128,29 +127,19 @@ def finish(run, golden):
         raise
     return print("public_ok=%d questions=%d rejected=%d" % counts) or 0
 
-def ids_on_disk(data):  # (data rows, finding ids) of a PUBLIC-OK.csv; unreadable or wrong header counts as no rows
-    try:
-        table = [r for r in csv.reader(io.StringIO(data.decode("utf-8"), newline="")) if any(c.strip() for c in r)]
-    except (UnicodeDecodeError, csv.Error):
-        table = []
-    return (len(table) - 1, {r[0].strip() for r in table[1:]}) if table[:1] == [PUBLIC] else (0, set())
-
-def current(run, golden):  # read-only: compares the on-disk outputs with the bytes finish would write now
+def current(run, golden):  # read-only: on-disk outputs vs a fresh finish; a symlink is never followed and counts as missing
     errs, public, questions, _ = outputs(run, golden)
     if errs:
         return print("\n".join(errs + ["current refused: errors=%d" % len(errs)])) or 1
-    tally = {"current": 0, "stale": 0, "missing": 0}
-    for name, text in (("PUBLIC-OK.csv", public), ("QUESTIONS.md", questions)):
-        path, want, link = run / name, str(text).encode("utf-8"), (run / name).is_symlink()  # a symlink is never followed
-        data = None if link or not path.is_file() else path.read_bytes()
-        state = "missing" if data is None else "current" if data == want else "stale"
-        tally[state] += 1
-        print("current: %s %s" % (name, "is a symlink (refused)" if link else state))
-        if state == "stale" and name == "PUBLIC-OK.csv":
-            (n, have), (m, need) = ids_on_disk(data), ids_on_disk(want)
-            print("current: PUBLIC-OK.csv rows on_disk=%d expected=%d missing=%d extra=%d" % (n, m, len(need - have), len(have - need)))
-    print("current=%(current)d stale=%(stale)d missing=%(missing)d | outputs vs a fresh finish, not a review verdict" % tally)
-    return 0 if tally["current"] == 2 else 1
+    states, rows = [], lambda b: [r for r in csv.reader(io.StringIO(b.decode("utf-8", "replace"), newline="")) if any(c.strip() for c in r)]
+    for name, want in (("PUBLIC-OK.csv", public), ("QUESTIONS.md", questions)):
+        data = None if (run / name).is_symlink() or not (run / name).is_file() else (run / name).read_bytes()
+        states.append("missing" if data is None else "current" if data == want.encode("utf-8") else "stale")
+        print("current: %s %s" % (name, "is a symlink (refused)" if (run / name).is_symlink() else states[-1]))
+        if states[-1] == "stale" and name == "PUBLIC-OK.csv":  # undecodable or wrong header: no rows on disk
+            have, need = ([r[0].strip() for r in t[1:]] if t[:1] == [PUBLIC] else [] for t in (rows(data) if data.decode("utf-8", "replace").encode("utf-8") == data else [], rows(want.encode("utf-8"))))
+            print("current: PUBLIC-OK.csv rows on_disk=%d expected=%d missing=%d extra=%d" % (len(have), len(need), len(set(need) - set(have)), len(set(have) - set(need))))
+    return print("current=%d stale=%d missing=%d | outputs vs a fresh finish, not a review verdict" % tuple(map(states.count, ("current", "stale", "missing")))) or int(states != ["current"] * 2)
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
