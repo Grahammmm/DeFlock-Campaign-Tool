@@ -11,6 +11,7 @@ Content-Security-Policy that names only the hosts the content model declared.
 import json
 import re
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -527,18 +528,22 @@ def _write(path, text, written):
     written.append(path)
 
 
-def _copy(source, target, written, limit):
+def _check_copy(source, limit):
     if source.is_symlink():
         raise ContentError(f"{source}: symlinks are not copied")
     if source.stat().st_size > limit:
         raise ContentError(f"{source.name}: exceeds the {limit // (1024 * 1024)} MiB copy limit")
+
+
+def _copy(source, target, written, limit):
+    _check_copy(source, limit)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
     written.append(target)
 
 
-def copy_public_assets(model, public, written):
-    assets_dir = model["assets_dir"]
+def _asset_plan(model):
+    assets_dir, plan = model["assets_dir"], []
     for source in model["public_assets"]:
         relative = source.relative_to(assets_dir)
         if source.suffix.lower() not in ASSET_EXTENSIONS:
@@ -548,7 +553,8 @@ def copy_public_assets(model, public, written):
             raise ContentError(f"public-assets/{relative}: use plain file and folder names")
         if relative.parts[0] in GENERATED_TOP_LEVEL:
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
-        _copy(source, public / relative, written, ASSET_MAX_BYTES)
+        plan.append((source, relative))
+    return plan
 
 
 def build_site(root):
@@ -584,18 +590,34 @@ def build_site(root):
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
         "app.js": site.app_js(),
     })
-    if public.exists():
-        shutil.rmtree(public)
-    public.mkdir()
-    written = []
-    for name, text in files.items():
-        _write(public / name, text, written)
+    plan = []
     if model["map"]:
-        _copy(model["map"]["cameras_path"], public / "data" / "cameras.geojson", written, 8 * 1024 * 1024)
-        _copy(model["map"]["boundary_path"], public / model["map"]["controller"]["city_boundaries_url"], written, 8 * 1024 * 1024)
-        if model["map"]["county_boundary_path"]:
-            _copy(model["map"]["county_boundary_path"], public / "data" / "county.geojson", written, 8 * 1024 * 1024)
-        for name, path in model["vendor"].items():
-            _copy(path, public / "vendor" / name, written, VENDOR_MAX_BYTES)
-    copy_public_assets(model, public, written)
-    return written
+        found = model["map"]
+        plan = [(found[key], relative, 8 * 1024 * 1024) for key, relative in (
+            ("cameras_path", "data/cameras.geojson"), ("boundary_path", found["controller"]["city_boundaries_url"]),
+            ("county_boundary_path", "data/county.geojson")) if found[key]]
+        plan += [(path, f"vendor/{name}", VENDOR_MAX_BYTES) for name, path in model["vendor"].items()]
+    plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
+    for source, _, limit in plan:  # every copy is checked before the filesystem changes
+        _check_copy(source, limit)
+    staging = Path(tempfile.mkdtemp(dir=root, prefix=".public.new-"))  # swapped in only when complete
+    new, written = staging / "public", []
+    try:
+        new.mkdir()
+        for name, text in files.items():
+            _write(new / name, text, written)
+        for source, relative, limit in plan:
+            _copy(source, new / relative, written, limit)
+        if public.exists():
+            old = public.rename(root / f".public.old-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}")
+            try:
+                new.rename(public)
+            except BaseException:
+                old.rename(public)
+                raise
+            shutil.rmtree(old)
+        else:
+            new.rename(public)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return [public / path.relative_to(new) for path in written]
