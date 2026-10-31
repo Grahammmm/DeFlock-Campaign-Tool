@@ -136,9 +136,19 @@ def plan(mapped, cap):  # mapped = roster rows in roster order
 
 def matrix(store, mapped, out):
     done = list(dict.fromkeys(r["slug"] for r in mapped if r["stage"] == "finished"))
-    dates, cells = {r["slug"]: r["run_date"] for r in mapped}, {}
+    dates, cells, loaded, refused = {r["slug"]: r["run_date"] for r in mapped}, {}, {}, []
+    for slug in done:  # check every finished run before mkdir or any write; counts only, never ids, quotes or paths
+        errs, findings, _, ver = verify.load(store / "agencies" / slug / "runs" / dates[slug])
+        missing = [f for f in findings if f["finding_id"] not in ver]
+        bad = [v for v in ver.values() if v["verdict"] != "reject" and v.get("new_rating") not in ORDER]
+        if errs or missing or bad:
+            refused.append("matrix: %s verification unusable (errors=%d unverified=%d bad_rating=%d)"
+                           % (slug, len(errs), len(missing), len(bad)))
+        loaded[slug] = findings, ver
+    if refused:
+        raise Fail("\n".join(refused))
     for slug in done:
-        _, findings, _, ver = verify.load(store / "agencies" / slug / "runs" / dates[slug])
+        findings, ver = loaded[slug]
         for f in findings:
             v, cur = ver[f["finding_id"]], cells.setdefault((f["topic"], f["claim_class"]), {})
             final = "rejected" if v["verdict"] == "reject" else v["new_rating"]

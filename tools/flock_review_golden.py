@@ -14,9 +14,16 @@ fr = spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or
 NAME, MISSING = re.compile(r"[A-Za-z0-9 _.-]{1,40}"), object()
 
 
-def rows(path):
+def unreadable(label, read, *args):  # a stage file that is not UTF-8 CSV: named by a fixed label, never a path or content
+    try:
+        return read(*args)
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise fr.Fail("golden: %s unreadable (%s)" % (label, type(exc).__name__)) from None
+
+
+def rows(path, label):
     with open(path, encoding="utf-8-sig", newline="") as handle:
-        return list(csv.DictReader(handle))
+        return unreadable(label, lambda: list(csv.DictReader(handle)))
 
 
 def tally(items):
@@ -31,16 +38,17 @@ def counts(c):
     for i in range(fr.IDS.index("counts") + 1):  # read-only: the same cache test `run` applies
         if fr.evaluate(c, state, dig, i)[0] not in ("done", "skip"):
             raise fr.Fail("golden: %s not done" % fr.IDS[i])
-    facts, found = rows(c["facts"]), rows(c["CO"] / "FINDINGS.csv")
+    facts, found = rows(c["facts"], "facts"), rows(c["CO"] / "FINDINGS.csv", "findings")
     golden = fr.REPO / c["golden"] if c["golden"] else None
     kinds = {}
     for row in found:
         kinds.setdefault(row.get("kind", ""), []).append(row.get("verdict", ""))
     return {"schema": 1, "slug": c["slug"], "facts": len(facts), "facts_by_kind": tally(r.get("kind", "") for r in facts),
-            "requirements": len(rows(c["RO"] / "REQUIREMENTS.csv")), "findings": len(found),
+            "requirements": len(rows(c["RO"] / "REQUIREMENTS.csv", "requirements")), "findings": len(found),
             "findings_by_kind": {k: tally(v) for k, v in sorted(kinds.items())},
             "analysis_only": sum(r.get("analysis_only", "").strip().lower() == "yes" for r in found),
-            "f3_findings": len(rows(c["RUN"] / "FINDINGS.csv")), "f3_errors": len(fr.compare_tool.check(c["RUN"], golden)[0])}
+            "f3_findings": len(rows(c["RUN"] / "FINDINGS.csv", "f3-findings")),
+            "f3_errors": len(unreadable("f3-check", fr.compare_tool.check, c["RUN"], golden)[0])}
 
 
 def safe(value):  # counts, slugs and key names only: anything else is never echoed
@@ -71,6 +79,8 @@ def write(actual, target):
     path = Path(os.path.abspath(os.path.expanduser(target)))
     if fr.under(path.resolve(), fr.REPO):
         raise fr.Fail("golden: --write path is inside the repository")
+    if not path.parent.is_dir():
+        raise fr.Fail("golden: --write folder does not exist")
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)  # fresh 0600; stale FILE.tmp ignored
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as out:

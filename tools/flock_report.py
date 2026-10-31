@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Flock report: one agency's FINDINGS.csv + its independent VERIFY.csv -> REPORT-DRAFT.md + SOURCES.json (numbered cites).
   build CONFIG [--out DIR]    (G1 config; default DIR is <compare.out>/report, refused inside the repository)
+  check CONFIG [--out DIR]    (read-only: are REPORT-DRAFT.md + SOURCES.json byte-equal to a fresh build? last line state=)
 Rows from not-posted records and rows the verifier disputed or could not source never appear; a final lint refuses to write
 otherwise. Prints counts and `line N: <rule>` / `row <id>: <rule>` errors only, never the offending text. No network.
-Exit 0 written, 1 validation/lint/IO, 2 usage. The draft is private: public use goes through F9, redaction, review and G."""
-import argparse, csv, hashlib, importlib.util, json, os, re, sys, tempfile
+Exit 0 written (check: current), 1 validation/lint/IO (check: stale/missing/invalid), 2 usage. The draft is private: public use
+goes through F9, redaction, review and G."""
+import argparse, contextlib, csv, errno, hashlib, importlib.util, json, os, re, stat, sys, tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -173,28 +175,73 @@ def lint(c, report, sources_text, marks, body_end, entries, facts, inventory, er
     errs += ["line %d: %s (SOURCES.json)" % (i, h) for i, line in enumerate(sources_text.splitlines(), 1) for h in hits(line)]
 def write(path, text):  # fresh exclusive 0600 temp (mkstemp: O_EXCL, random name, never reuses/follows one); caller renames both after
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
-        out.write(text)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
+            out.write(text)
+    except BaseException:  # never leave our own temp behind, then re-raise
+        with contextlib.suppress(OSError): os.unlink(tmp)
+        raise
     return tmp, path
-def build(config, out):
-    errs, n = [], Counter({k: 0 for k in COUNTS})
+def fault(exc): return str(exc) if isinstance(exc, Fail) else "io: %s" % type(exc).__name__
+def summary(errs, n): return "\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)])
+def prepare(config, out):  # build and check share it: -> (c, report, sources_text, n, errs); writes nothing
+    c, report, sources_text, errs, n = None, None, None, [], Counter({k: 0 for k in COUNTS})
     try:
         c = context(config, out)
         findings, plan, verify, facts, inventory, reqs, errs = load(c)
         report, sources_text, marks, body_end, entries, n = render(c, findings, plan, verify, facts, inventory, reqs, errs)
         lint(c, report, sources_text, marks, body_end, entries, facts, inventory, errs)
+    except (Fail, OSError, ValueError, KeyError, TypeError) as exc:
+        errs.append(fault(exc))
+    return c, report, sources_text, n, errs
+def on_disk(path):  # -> bytes, or why not; read-only, O_NOFOLLOW never follows a link, O_NONBLOCK never waits on a fifo
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as handle:
+            return handle.read() if stat.S_ISREG(os.fstat(handle.fileno()).st_mode) else "is not a regular file (refused)"
+    except OSError as exc:
+        return {errno.ENOENT: "missing (run build)", errno.ELOOP: "is a link (refused)"}.get(exc.errno, "unreadable (%s)"
+                                                                                               % type(exc).__name__)
+def check(config, out):  # never writes, never prints draft text: names files, counts and the build errors only
+    c, report, sources_text, n, errs = prepare(config, out)
+    state = "invalid"
+    if not errs:
+        names = (("REPORT-DRAFT.md", report), ("SOURCES.json", sources_text))
+        got = {name: on_disk(c["out"] / name) for name, _ in names}
+        missing = [k for k, v in got.items() if isinstance(v, str) and v.startswith("missing")]
+        hard = [k for k, v in got.items() if isinstance(v, str) and k not in missing]  # link / not a file / unreadable first
+        errs += ["check: %s %s" % (k, got[k]) for k in hard or missing]
+        errs += [] if hard or missing else ["check: %s differs from a fresh build (rerun build)" % k for k, text in names
+                                            if got[k] != text.encode("utf-8")]
+        state = "invalid" if hard else "missing" if missing else "stale" if errs else "current"
+    print(summary(errs := list(dict.fromkeys(errs)), n) + " state=" + state)
+    return 1 if errs else 0
+def build(config, out):
+    c, report, sources_text, n, errs = prepare(config, out)
+    try:
         if not errs:
             c["out"].mkdir(mode=0o700, parents=True, exist_ok=True)
-            for tmp, path in [write(c["out"] / "REPORT-DRAFT.md", report), write(c["out"] / "SOURCES.json", sources_text)]:
-                os.replace(tmp, path)
+            made, renamed = [], []
+            try:
+                for name, text in (("REPORT-DRAFT.md", report), ("SOURCES.json", sources_text)):
+                    made.append(write(c["out"] / name, text))
+                for tmp, path in made:
+                    os.replace(tmp, path)
+                    renamed.append(tmp)
+            except BaseException as exc:  # unlink only temps we created and did not rename; foreign .tmp files stay
+                for tmp in (tmp for tmp, _ in made if tmp not in renamed):
+                    with contextlib.suppress(OSError): os.unlink(tmp)
+                if len(renamed) == 1 and isinstance(exc, Exception):
+                    raise Fail("io: partial write (REPORT-DRAFT.md replaced, SOURCES.json not); rerun build") from exc
+                raise
     except (Fail, OSError, ValueError, KeyError, TypeError) as exc:
-        errs.append(str(exc) if isinstance(exc, Fail) else "io: %s" % type(exc).__name__)
-    print("\n".join((errs := list(dict.fromkeys(errs))) + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
+        errs.append(fault(exc))
+    print(summary(errs := list(dict.fromkeys(errs)), n))
     return 1 if errs else 0
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["build"]), parser.add_argument("config"), parser.add_argument("--out")
+    parser.add_argument("command", choices=["build", "check"]), parser.add_argument("config"), parser.add_argument("--out")
     args = parser.parse_args(argv)
-    return build(args.config, args.out)
+    return (check if args.command == "check" else build)(args.config, args.out)
 if __name__ == "__main__":
     sys.exit(main())

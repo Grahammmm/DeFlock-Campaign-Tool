@@ -3,10 +3,14 @@
 
 import argparse
 import ast
+import contextlib
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -105,14 +109,38 @@ def graph_for(files):
     return graph, dynamic
 
 
-def partition(names, files, count):
-    """Largest-source-first packing; deterministic, disjoint, nonempty shards."""
+WEIGHTS = ROOT / 'tools' / 'ci_shard_weights.json'
+BYTES_PER_SECOND = 4300  # Fit on run 41216922578 attempt 4: 5,857,704 bytes / 1,375 s over its 361 modules.
+
+
+def load_weights(path=WEIGHTS):
+    """Measured seconds per module, or None (size packing) on any defect; never raises."""
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        if not isinstance(data, dict) or data.get('version') != 1:
+            raise ValueError('not version 1')
+        seconds = data.get('seconds')
+        if not isinstance(seconds, dict) or not all(type(v) is int and v >= 1 for v in seconds.values()):
+            raise ValueError('seconds must map modules to ints >= 1')
+        return seconds
+    except (OSError, ValueError) as error:
+        print(f'::warning::shard weights unavailable ({error}); packing by size', flush=True)
+        return None
+
+
+def partition(names, files, count, weights=None):
+    """Measured-time-first packing (unmeasured: size estimate); deterministic, disjoint, nonempty shards."""
+    def cost(name):
+        if weights is not None and name in weights:
+            return weights[name]
+        size = files[name].stat().st_size
+        return size if weights is None else max(1, size // BYTES_PER_SECOND)
     bins = [[] for _ in range(count)]
-    weights = [0] * count
-    for name in sorted(names, key=lambda n: (-files[n].stat().st_size, n)):
-        index = min(range(count), key=lambda i: (weights[i], i))
+    loads = [0] * count
+    for name in sorted(names, key=lambda n: (-cost(n), n)):
+        index = min(range(count), key=lambda i: (loads[i], i))
         bins[index].append(name)
-        weights[index] += files[name].stat().st_size
+        loads[index] += cost(name)
     return [sorted(bucket) for bucket in bins]
 
 
@@ -143,6 +171,120 @@ def run_timed(suite, shard, stream=None):
     print(json.dumps({'shard': shard, 'total_seconds': round(time.perf_counter() - start, 1),
                       'slowest': slowest(result.seconds)}, sort_keys=True), flush=True)
     return 0 if result.wasSuccessful() else 1
+
+
+# In-process after the children (<= 5 modules); add one only with its parallel-only failing CI run as evidence.
+SERIAL = frozenset()
+RESULT = 'CI_CHUNK_RESULT '
+
+
+NAMED = 5  # failing test ids carried in a record and named in its ::error:: line
+
+
+def run_modules(names, record_path):
+    """--jobs child: run names; the verdict goes to record_path (O_EXCL), never only to the shared log.
+
+    Interpreter shutdown can still write to the log after this returns (unraisable warnings, atexit hooks, a
+    block-buffered flush); the record file is written once here and nothing else opens it.
+    """
+    sys.path.insert(0, str(ROOT))
+    result = unittest.TextTestRunner(verbosity=2, resultclass=TimedResult).run(
+        unittest.defaultTestLoader.loadTestsFromNames(names))
+    ok = result.wasSuccessful() and result.testsRun > 0
+    bad = [test.id() for test, _ in result.failures + result.errors] + [t.id() for t in result.unexpectedSuccesses]
+    line = RESULT + json.dumps({'ran': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
+                                'skipped': len(result.skipped), 'ok': ok, 'failed': bad[:NAMED]}, sort_keys=True)
+    print(json.dumps({'chunk_slowest': slowest(result.seconds)}), flush=True)
+    print(line, flush=True)  # for the reader; the parent decides from the record file only
+    fd = os.open(record_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as record:
+        record.write(line + '\n')
+    return 0 if ok else 1
+
+
+def chunk_verdict(returncode, record, log=''):
+    """(ran, problem); problem is None only for exit 0 and a record that is one ok CI_CHUNK_RESULT line."""
+    if returncode < 0:
+        return 0, f'killed by signal {-returncode}'
+    lines = record.splitlines()
+    try:
+        if len(lines) != 1 or not lines[0].startswith(RESULT):
+            raise ValueError
+        result = json.loads(lines[0][len(RESULT):])
+        ran, ok, failed = result['ran'], result['ok'], result['failed']
+        if (type(ran) is not int or ran < 0 or type(ok) is not bool or type(failed) is not list
+                or not all(type(name) is str for name in failed)):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        tail = (log.strip().splitlines() or [''])[-1][-200:]
+        return 0, f'exit {returncode}, no valid {RESULT.strip()} record (log ends: {tail!r})'
+    if returncode or not ok:
+        named = f'; failed: {", ".join(failed)}' if failed else ''
+        return ran, f'exit {returncode}, ok {str(ok).lower()}{named}'
+    return ran, None
+
+
+def aggregate(verdicts, expected):
+    """0 only if every chunk passed and sum(ran) == expected; prints each failed rule."""
+    problems = [f'chunk {k}: {problem}' for k, (_, problem) in enumerate(verdicts) if problem]
+    ran = sum(r for r, _ in verdicts)
+    if ran != expected:
+        problems.append(f'ran {ran} tests, expected {expected}')
+    for problem in problems:
+        print(f'::error::{problem}', flush=True)
+    return (1 if problems else 0), ran
+
+
+def run_parallel(names, files, jobs, weights, expected, shard):
+    serial = sorted(SERIAL & set(names))
+    rest = [name for name in names if name not in SERIAL]
+    chunks = partition(rest, files, min(jobs, len(rest)), weights) if rest else []
+    # Host fixtures refuse a world-writable ancestor and move a shared /tmp or /var/tmp TMPDIR to home; so do chunks.
+    inherited = os.environ.get('TMPDIR') or '/tmp'
+    parent = str(Path.home()) if inherited in ('/tmp', '/var/tmp') else inherited
+    with contextlib.ExitStack() as stack:
+        children = []
+        for k, chunk in enumerate(chunks):
+            out = stack.enter_context(tempfile.TemporaryFile())
+            tmp = tempfile.mkdtemp(prefix=f'ci-chunk-{k}-', dir=parent)
+            stack.callback(shutil.rmtree, tmp, True)
+            # The verdict channel: a fresh file outside the chunk's TMPDIR that the merged log never reaches.
+            record = Path(tempfile.mkdtemp(prefix=f'ci-record-{k}-', dir=parent)) / 'record'
+            stack.callback(shutil.rmtree, record.parent, True)
+            children.append((out, record, subprocess.Popen(
+                [sys.executable, '-B', '-W', 'error::ResourceWarning', str(Path(__file__).resolve()),
+                 '--record', str(record), '--run-modules', *chunk], cwd=ROOT, env={**os.environ, 'TMPDIR': tmp},
+                stdout=out, stderr=subprocess.STDOUT)))
+        verdicts = []
+        for k, (chunk, (out, record, child)) in enumerate(zip(chunks, children)):
+            child.wait()
+            out.seek(0)
+            text = out.read().decode('utf-8', 'replace')
+            print(f'::group::chunk {k} ({len(chunk)} modules)\n{text.rstrip()}\n::endgroup::', flush=True)
+            try:
+                written = record.read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError):
+                written = ''
+            verdicts.append(chunk_verdict(child.returncode, written, text))
+    if serial:
+        result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromNames(serial))
+        verdicts.append((result.testsRun, None if result.wasSuccessful() else 'SERIAL modules failed'))
+    code, ran = aggregate(verdicts, expected)
+    print(json.dumps({'shard': shard, 'jobs': jobs, 'cpu_count': os.cpu_count(), 'expected': expected,
+                      'ran': ran, 'chunks': len(chunks)}), flush=True)
+    return code
+
+
+def run_shard(names, files, jobs, weights, shard):
+    sys.path.insert(0, str(ROOT))
+    suite = unittest.defaultTestLoader.loadTestsFromNames(names)
+    expected = suite.countTestCases()
+    if not expected:
+        raise RuntimeError('empty test suite; refusing silent success')
+    jobs = jobs or os.cpu_count() or 1
+    if jobs == 1 or len(names) < 2:
+        return run_timed(suite, shard)
+    return run_parallel(names, files, jobs, weights, expected, shard)
 
 
 def self_test():
@@ -186,9 +328,18 @@ def main(argv=None):
     parser.add_argument('--list', action='store_true')
     parser.add_argument('--inventory', action='store_true')
     parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--jobs', type=int, default=1, help='child processes per shard; 0 = os.cpu_count()')
+    parser.add_argument('--run-modules', nargs='+', help=argparse.SUPPRESS)
+    parser.add_argument('--record', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.run_modules:
+        if not args.record:
+            parser.error('--run-modules needs --record')
+        return run_modules(args.run_modules, args.record)
+    if args.jobs < 0:
+        parser.error('jobs must be >= 0')
     if not 0 <= args.shard < args.shards:
         parser.error('shard must be in [0, shards)')
     files, modules = inventory()
@@ -218,18 +369,15 @@ def main(argv=None):
     selected.add(smoke)
     if len(selected) < args.shards:
         selected = available | {smoke}
-    buckets = partition(selected, files, args.shards)
+    weights = load_weights()
+    buckets = partition(selected, files, args.shards, weights)
     names = buckets[args.shard]
     if not names:
         raise RuntimeError('empty shard; refusing silent success')
     print(json.dumps({'tier': args.tier, 'shard': args.shard, 'selected_modules': names}), flush=True)
     if args.list:
         return 0
-    sys.path.insert(0, str(ROOT))
-    suite = unittest.defaultTestLoader.loadTestsFromNames(names)
-    if not suite.countTestCases():
-        raise RuntimeError('empty test suite; refusing silent success')
-    return run_timed(suite, args.shard)
+    return run_shard(names, files, args.jobs, weights, args.shard)
 
 
 if __name__ == '__main__':

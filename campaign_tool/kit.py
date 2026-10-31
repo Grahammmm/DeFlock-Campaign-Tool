@@ -17,7 +17,9 @@ ALPR. Drafts are built from the jurisdiction law package when one exists and
 from templates/records-request.md with a banner when it does not.
 """
 import json
+import os
 import re
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -42,9 +44,27 @@ def _read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _kit_folder(path, mode=0o777):
+    if os.path.islink(path):
+        raise ValueError(f"{path.name}/ must not be a symlink")
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"{path.name}/ is not a folder")
+    path.mkdir(mode=mode, exist_ok=True)
+
+
+def _write_text(path, text):
+    fd, temp = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        os.unlink(temp)
+        raise
+
+
 def _write_json(path, document):
-    Path(path).write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n",
-                          encoding="utf-8")
+    _write_text(path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
 
 def _jurisdiction(cfg):
@@ -209,7 +229,7 @@ plate readers. Every agency entry is a suggestion from the shared seed
 Sending, fee payment and publication require an organizer approval outside
 this tool. See docs/AGENCY-DISCOVERY.md.
 """
-    (kit_dir / "README.md").write_text(text, encoding="utf-8")
+    _write_text(kit_dir / "README.md", text)
 
 
 def build_kit(root, online=False, include=None, seed=None, law_base=None):
@@ -232,8 +252,8 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
 
     kit_dir = root / "kit"
     requests_dir = kit_dir / "requests"
-    kit_dir.mkdir(exist_ok=True)
-    requests_dir.mkdir(exist_ok=True)
+    _kit_folder(kit_dir)
+    _kit_folder(requests_dir)
 
     agencies_path = kit_dir / "agencies.json"
     suggested_path = kit_dir / "agencies.suggested.json"
@@ -259,10 +279,12 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
         text = (render_combined_request(package, entry) if package
                 else render_template_request(entry))
         path = requests_dir / (entry["agency_id"] + ".md")
-        path.write_text(text, encoding="utf-8")
+        _write_text(path, text)
         written.add(path.name)
     for stale in requests_dir.glob("*.md"):
-        if stale.name not in written:
+        if stale.name not in written and stale.is_symlink():
+            print(f"kept linked file requests/{stale.name}")
+        elif stale.name not in written and stale.is_file():
             stale.unlink()
 
     governing = [a for a in agencies if a.get("kind") in GOVERNING]
