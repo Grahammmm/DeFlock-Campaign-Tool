@@ -14,12 +14,12 @@ TOOLS, REPO = Path(__file__).resolve().parent, Path(__file__).resolve().parents[
 def _tool(name):  # F3 is loaded by file path for the wording regexes, never copied
     spec = importlib.util.spec_from_file_location("_page_" + name, TOOLS / (name + ".py"))
     return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
-compare = _tool("flock_compare")
+compare, privacy = _tool("flock_compare"), _tool("flock_privacy")
 KEYS = ("title eyebrow headline dek firstRequest asOf programStart programNote programEvents keyDates overview admissions findings "
         "retention retentionCaption milestones extraSources").split()
 META = "title eyebrow headline dek firstRequest asOf programStart programNote overview retentionCaption".split()
 CITED = ("admissions", "findings", "retention", "milestones")
-EMAIL, PHONE = re.compile(r"\S+@\S+\.\w+"), re.compile(r"\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}")
+EMAIL, PHONE, PLATE = privacy.EMAIL, privacy.PHONE, privacy.PLATE
 URL, ACCESS = re.compile(r"https?://[^\s\"'<>]+", re.I), re.compile(r"[?&](token|key|sig|signature|auth|access|code)=", re.I)
 CUT = re.compile(r"^\d[\d,]*\s+(cut|dropped|removed|fewer|more|less|added|lost|gained|down|up)\b", re.I)
 OUTREACH, INVDOC = re.compile(r"\boutreach\b", re.I), re.compile(r"inventory documents? (\d+)", re.I)
@@ -78,8 +78,8 @@ def lint(story, thread, location, base, hidden_ids=(), hidden_titles=()):
     texts = list(walk(story))
     for area, i, s in texts:
         bad = [("R1", "outreach in story", OUTREACH.search(s)), ("R9", "email-like string", EMAIL.search(s)),
-               ("R9", "phone-like string", PHONE.search(s)), ("R9", "access-link parameter",
-                                                              any(ACCESS.search(u) for u in URL.findall(s))),
+               ("R9", "phone-like string", PHONE.search(s)), ("R9", "plate-like string", PLATE.search(s)),
+               ("R9", "access-link parameter", any(ACCESS.search(u) for u in URL.findall(s))),
                ("tone", "always-banned wording", compare.ALWAYS.search(s)), ("tone", "quote-gated wording", compare.GATED.search(s))]
         errs += ["%s %d: %s %s" % (area, i, rule, why) for rule, why, hit in bad if hit]
         errs += ["%s %d: R8 inventory document not posted" % (area, i) for doc in INVDOC.findall(s)

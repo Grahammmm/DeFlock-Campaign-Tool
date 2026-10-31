@@ -14,7 +14,7 @@ TOOLS, REPO = Path(__file__).resolve().parent, Path(__file__).resolve().parents[
 def _tool(name):  # F1/F3 are loaded by file path, never copied
     spec = importlib.util.spec_from_file_location("_report_" + name, TOOLS / (name + ".py"))
     return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
-facts_tool, compare = _tool("flock_facts"), _tool("flock_compare")
+facts_tool, compare, privacy = _tool("flock_facts"), _tool("flock_compare"), _tool("flock_privacy")
 HEADER = ("finding_id kind req_id source version section obligation topic requirement verdict basis fact_ids record_ids pages "
           "other_refs related_req_ids analysis_only next_step").split()
 VHEADER = ["row_id", "result", "reason", "page_cite"]
@@ -28,7 +28,7 @@ KEY = ("Verdict key. Met: the cited text or records show the requirement is sati
        "Contradicted: a cited record or statement shows the opposite. Cannot tell: the produced records neither show nor rule it "
        "out. A missing record does not prove something did not happen. N/a: a definition, a remedy, permissive or discretionary "
        "text, or a comparator row.")
-EMAIL, PHONE, GROUP = re.compile(r"\S+@\S+\.\w+"), re.compile(r"\(?\d{3}\)?[ .-]\d{3}-\d{4}"), re.compile(r"\[([^\[\]]*)\]")
+EMAIL, PHONE, PLATE, GROUP = privacy.EMAIL, privacy.PHONE, privacy.PLATE, re.compile(r"\[([^\[\]]*)\]")
 COUNTS = ("included", "verified_agree", "unchecked", "withheld_analysis_only", "withheld_verify", "sources")
 class Fail(Exception): pass
 def P(value): return Path(os.path.expanduser(value)).resolve() if isinstance(value, str) and value.strip() else None
@@ -161,7 +161,8 @@ def lint(c, report, sources_text, marks, body_end, entries, facts, inventory, er
     def hits(line):
         found = ["denylisted string"] * any(d in line.lower() for d in deny)
         found += [name for name, rx in (("always-banned wording", compare.ALWAYS), ("quote-gated wording", compare.GATED),
-                                        ("email-like string", EMAIL), ("phone-like string", PHONE)) if rx.search(line)]
+                                        ("email-like string", EMAIL), ("phone-like string", PHONE),
+                                        ("plate-like string", PLATE)) if rx.search(line)]
         return found + ["vendor-gated wording"] * bool(vigilant and compare.FLOCK.search(line))
     cited, listed = {}, {e["n"] for e in entries}
     for i, line in enumerate(report.splitlines()):
