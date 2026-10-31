@@ -30,7 +30,10 @@ Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, no
 ```sh
 python3 -m campaign_tool ingest --directory ../my-campaign --file examples/synthetic-county/policy.txt --source-id demo-production-001
 python3 -m campaign_tool status --directory ../my-campaign
+python3 -m campaign_tool status --directory ../my-campaign --check
 ```
+
+`status --check` re-hashes every file in `private/objects` against the ledger and names missing, altered, orphaned, leftover `.intake-*` or unexpected entries by hash or file name only. It never writes, moves or deletes; exit 3 means problems were found, 0 a clean store.
 
 Original bytes are preserved under their SHA-256 hash. Separate receipt identities record where an identical document was received. Repeating the same source ID and bytes does not duplicate a receipt. A hash establishes byte identity, not authenticity or truth.
 
