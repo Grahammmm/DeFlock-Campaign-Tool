@@ -118,8 +118,18 @@ def ingest(args, root):
         db.close()
 
 
-def status(root):
+def status(root, check=False):
     read_config(root)
+    from .store_check import check_store
+    result = check_store(root) if check else None
+    status_counts(root)
+    if result is not None:
+        print(json.dumps({"check": result}, indent=2))
+        if result["problems"]:
+            raise SystemExit(3)
+
+
+def status_counts(root):
     path = root / "private" / "ledger.sqlite"
     if not path.exists():
         print(json.dumps({"stored_objects": 0, "receipt_occurrences": 0,
@@ -275,6 +285,12 @@ def _read_previous(path):
         return "unreadable"
 
 
+def meeting_stage_cmd(args, root):
+    from .meeting_stage import stage
+    print(json.dumps(stage(root, args.id, agency_id=args.agency_id, location=args.location, replace=args.replace),
+                     indent=2))
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -294,6 +310,8 @@ def main():
         if name == "build":
             cmd.add_argument("--check", action="store_true",
                              help="Scan the generated public/ tree for private paths and credential patterns")
+        if name == "status":
+            cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -316,6 +334,12 @@ def main():
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
+    stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
+    stage_p.add_argument("--directory", required=True)
+    stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
+    stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
+    stage_p.add_argument("--location")
+    stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
     args = parser.parse_args()
     if args.command == "verify":
         try:
@@ -340,8 +364,10 @@ def main():
             restore_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meetings-stage":
+            meeting_stage_cmd(args, root)
         else:
-            {"doctor": doctor, "status": status}[args.command](root)
+            status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         sys.exit(1)

@@ -16,6 +16,7 @@ Nothing is sent, no custodian is contacted, and no agency is asserted to use
 ALPR. Drafts are built from the jurisdiction law package when one exists and
 from templates/records-request.md with a banner when it does not.
 """
+import hashlib
 import json
 import os
 import re
@@ -65,6 +66,18 @@ def _write_text(path, text):
 
 def _write_json(path, document):
     _write_text(path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+
+
+def _load_record(path):
+    try:
+        document = _read_json(path) if os.path.lexists(path) else {"schema_version": 1, "drafts": {}}
+    except (ValueError, OSError):
+        document = None
+    drafts = document.get("drafts") if isinstance(document, dict) and document.get("schema_version") == 1 else None
+    if isinstance(drafts, dict) and all(isinstance(v, str) for v in drafts.values()):
+        return drafts
+    print("kit/drafts-written.json unreadable; treating differing drafts as edited")
+    return {}
 
 
 def _jurisdiction(cfg):
@@ -220,7 +233,8 @@ plate readers. Every agency entry is a suggestion from the shared seed
   agencies the seed missed. Re-running `kit` keeps this file and writes the
   fresh suggestions to `agencies.suggested.json`.
 - `requests/` holds one draft per selected law-enforcement agency. Fill the
-  date range, fee cap and requester block before anyone sends it.
+  date range, fee cap and requester block before anyone sends it. Re-running
+  `kit` keeps drafts you edited and puts the fresh draft in `requests.suggested/`.
 - `governing-bodies.json` lists boards, councils and district attorneys for
   meeting and oversight follow-up; they receive no records request draft.
 - `law.json` summarizes the jurisdiction law package (status: {package_status}).
@@ -252,8 +266,10 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
 
     kit_dir = root / "kit"
     requests_dir = kit_dir / "requests"
+    suggested_dir = kit_dir / "requests.suggested"
     _kit_folder(kit_dir)
     _kit_folder(requests_dir)
+    _kit_folder(suggested_dir)
 
     agencies_path = kit_dir / "agencies.json"
     suggested_path = kit_dir / "agencies.suggested.json"
@@ -274,18 +290,55 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
 
     selected = [a for a in agencies if a.get("selected") is True]
     targets = [a for a in selected if a.get("kind") in LAW_ENFORCEMENT]
-    written = set()
+    record_path = kit_dir / "drafts-written.json"
+    record, new_record, lines, edited = _load_record(record_path), {}, {}, set()
+    by_name = {a["agency_id"] + ".md": a for a in agencies if a.get("kind") in LAW_ENFORCEMENT}
+
+    def render(entry, quiet=False):
+        try:
+            return render_combined_request(package, entry) if package else render_template_request(entry)
+        except ValueError:
+            if not quiet:
+                raise
+
+    def is_edited(path, fresh=None):
+        data = path.read_bytes()
+        unchanged = fresh is not None and data == fresh.encode("utf-8")
+        return not unchanged and (hashlib.sha256(data).hexdigest() != record[path.name]
+                                  if path.name in record else fresh is not None)
+
+    def keep(name, line):
+        edited.add(name)
+        new_record.update({name: record[name]} if name in record else {})
+        lines[name] = line
     for entry in targets:
-        text = (render_combined_request(package, entry) if package
-                else render_template_request(entry))
+        text = render(entry)
         path = requests_dir / (entry["agency_id"] + ".md")
+        if not path.is_symlink() and path.is_file() and is_edited(path, text):
+            _write_text(suggested_dir / path.name, text)
+            keep(path.name, f"kept edited draft requests/{path.name}; fresh draft in requests.suggested/{path.name}")
+            continue
         _write_text(path, text)
-        written.add(path.name)
+        new_record[path.name] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     for stale in requests_dir.glob("*.md"):
-        if stale.name not in written and stale.is_symlink():
-            print(f"kept linked file requests/{stale.name}")
-        elif stale.name not in written and stale.is_file():
+        name = stale.name
+        if name in new_record or name in edited or not (stale.is_symlink() or stale.is_file()):
+            continue
+        fresh = render(by_name[name], quiet=True) if name in by_name and name not in record else None
+        if stale.is_symlink():
+            lines[name] = f"kept linked file requests/{name}"
+        elif (name in record or fresh is not None) and not is_edited(stale, fresh):
             stale.unlink()
+        elif name in record:
+            keep(name, f"kept edited draft requests/{name} (agency not selected)")
+        else:
+            lines[name] = f"kept requests/{name} (not written by kit)"
+    for old in suggested_dir.glob("*.md"):
+        if old.name not in edited and old.is_file() and not old.is_symlink():
+            old.unlink()
+    for name in sorted(lines):
+        print(lines[name])
+    _write_json(record_path, {"schema_version": 1, "drafts": dict(sorted(new_record.items()))})
 
     governing = [a for a in agencies if a.get("kind") in GOVERNING]
     _write_json(kit_dir / "governing-bodies.json", governing)
@@ -317,6 +370,7 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
         "agencies_selected": len(selected),
         "agencies_by_kind": dict(sorted(counts.items())),
         "requests_drafted": len(targets),
+        "drafts_kept_edited": len(edited),
         "governing_bodies": len(governing),
         "agencies_preserved": agencies_preserved,
         "suggestion_diff_count": diff_count,
