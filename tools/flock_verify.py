@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Flock verify: a different-family verifier's confirm/downgrade/reject per finding -> PUBLIC-OK.csv, QUESTIONS.md.
   start RUNDIR --provider P --model M  |  --check RUNDIR  |  finish RUNDIR [--golden CSV]
-Exit 1 = errors, 2 = usage, 3 = family refusal (equal, missing or unknown). Prints ids, labels and counts only."""
+Exit 1 = errors, 2 = usage, 3 = family refusal (equal, missing or unknown). Prints ids, labels and counts only.
+start/finish RUNDIR must lie outside the repository."""
 import argparse, contextlib, csv, importlib.util, io, json, os, re, sys, tempfile
 from pathlib import Path
+REPO = Path(__file__).resolve().parents[1]
 
 _spec = importlib.util.spec_from_file_location("_flock_compare", Path(__file__).resolve().parent / "flock_compare.py")
 compare = importlib.util.module_from_spec(_spec)
@@ -129,6 +131,8 @@ def main(argv=None):
             (args.command == "finish" and (args.provider or args.model)):
         parser.error("usage: start RUNDIR --provider P --model M | --check RUNDIR | finish RUNDIR [--golden CSV]")
     run = Path(target).resolve()
+    if args.command and (run == REPO or REPO in run.parents):
+        return print("flock-verify: RUNDIR is inside the repository") or 1
     refusal = family(run, args.provider if args.command == "start" else None)
     if refusal:
         return print(refusal) or 3

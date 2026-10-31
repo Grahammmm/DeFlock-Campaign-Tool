@@ -96,5 +96,30 @@ class FlockPublishTest(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("PUBLIC-OK.csv %s: not a confirmed strong finding" % fid, out)
                 self.assertFalse(self.out.exists())
+    def call(self, repo, *argv):  # in process, with verify_tool.REPO (the REPO flock_publish uses) patched to a temp root
+        import contextlib, importlib.util, io
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("_publish_rf5", TOOLS / "flock_publish.py")
+        publish, out = importlib.util.module_from_spec(spec), io.StringIO()
+        spec.loader.exec_module(publish)
+        with mock.patch.object(publish.verify_tool, "REPO", Path(repo)), contextlib.redirect_stdout(out):
+            return publish.main(list(argv)), out.getvalue()
+    def test_rundir_inside_repository_refused_before_writing(self):
+        import os
+        refused, snap = (1, "flock-publish: RUNDIR is inside the repository\n"), lambda d: {p.name: p.read_bytes() for p in d.iterdir()}
+        link, empty = self.tmp / "link", self.store / "empty"  # empty: no RUN.json, so 1 must beat family refusal 3
+        link.symlink_to(self.run_dir); empty.mkdir()
+        before = snap(self.run_dir)
+        self.addCleanup(os.chdir, os.getcwd()); os.chdir(self.run_dir)
+        for repo, rd in ((self.store, self.rd), (self.run_dir, self.rd), (self.store, str(link)), (self.store, "."), (self.store, str(empty))):
+            self.assertEqual(self.call(repo, "export", rd, "--site-slug", "sample"), refused, (repo, rd))
+        self.assertEqual((snap(self.run_dir), snap(empty)), (before, {}))
+        self.assertEqual(run("flock_publish.py", "export", str(ROOT / "no-such-run"), "--site-slug", "sample"), refused)
+    def test_lookalike_sibling_proceeds_and_check_is_not_guarded(self):
+        repo = self.store.with_name("repo"); repo.mkdir()
+        copy = self.store.rename(self.store.with_name("repo-copy"))
+        rd = copy / self.run_dir.relative_to(self.store)
+        self.assertEqual(self.call(repo, "export", str(rd), "--site-slug", "sample"), (0, "exported=4 refused=0\n"))
+        self.assertEqual(self.call(copy, "--check", str(rd / "PUBLISH.json")), (0, "findings=4 approved=0 errors=0\n"))
 if __name__ == "__main__":
     unittest.main()
