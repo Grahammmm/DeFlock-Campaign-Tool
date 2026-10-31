@@ -1,11 +1,17 @@
+import contextlib
 import csv
+import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "tools"
@@ -84,6 +90,40 @@ class FlockCompareTest(unittest.TestCase):
         code, out = self.check("--golden", golden)
         self.assertEqual(code, 1)
         self.assertIn("row 5: rating above golden", out)
+
+    def test_scaffold_writes_through_fresh_temp(self):  # BL-DF-1: no planted/stale .tmp or final-name symlink is followed or reused
+        spec = importlib.util.spec_from_file_location("_bl_df_1_compare", TOOLS / "flock_compare.py")
+        spec.loader.exec_module(compare := importlib.util.module_from_spec(spec))
+        sentinel, run_dir = Path(self.store).parent / "sentinel", self.store / "agencies" / AGENCY / "runs" / "2026-10-31"
+        sentinel.write_bytes(b"keep\n")
+        run_dir.mkdir(mode=0o700)
+        (run_dir / "RUN.json").symlink_to(sentinel)
+        (run_dir / "FINDINGS.csv.tmp").symlink_to(sentinel)
+        (run_dir / "FINDINGS.md.tmp").write_bytes(b"stale\n")
+        (run_dir / "FINDINGS.md.tmp").chmod(0o644)
+        before = os.lstat(run_dir / "FINDINGS.md.tmp")
+        argv = ["scaffold", "--store", str(self.store), "--agency", AGENCY, "--date", "2026-10-31", "--provider", "anthropic",
+                "--model", "claude-opus-5-5", "--applicability", "Sample city police; local ALPR policy applies"]
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(compare.main(argv), 0)
+        self.assertEqual(printed.getvalue(), "scaffolded run for %s on 2026-10-31\n" % AGENCY)
+        self.assertEqual((sentinel.read_bytes(), os.readlink(run_dir / "FINDINGS.csv.tmp")), (b"keep\n", str(sentinel)))
+        for name in ("RUN.json", "FINDINGS.csv", "FINDINGS.md"):
+            st = os.lstat(run_dir / name)
+            self.assertEqual((name, stat.S_ISREG(st.st_mode), stat.S_IMODE(st.st_mode)), (name, True, 0o600))
+        self.assertEqual(json.loads((run_dir / "RUN.json").read_text())["date"], "2026-10-31")
+        self.assertEqual((run_dir / "FINDINGS.csv").read_text(), ",".join(compare.HEADER) + "\n")
+        after = os.lstat(run_dir / "FINDINGS.md.tmp")
+        self.assertEqual(((run_dir / "FINDINGS.md.tmp").read_bytes(), stat.S_IMODE(after.st_mode), after.st_ino), (b"stale\n", 0o644, before.st_ino))
+        self.assertNotEqual(os.lstat(run_dir / "FINDINGS.md").st_ino, before.st_ino)
+        listing, kept = sorted(os.listdir(run_dir)), {n: ((run_dir / n).read_bytes(), os.lstat(run_dir / n).st_ino) for n in ("RUN.json", "FINDINGS.csv")}
+        with patch.object(compare.os, "replace", side_effect=OSError("replace failed")), self.assertRaises(OSError), \
+                contextlib.redirect_stdout(io.StringIO()):
+            compare.main(argv)
+        self.assertEqual({n: ((run_dir / n).read_bytes(), os.lstat(run_dir / n).st_ino) for n in kept}, kept)
+        self.assertEqual(sorted(os.listdir(run_dir)), listing)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(compare.main(argv), 0)  # header-only run: re-scaffold still allowed
 
 
 if __name__ == "__main__":

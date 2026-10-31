@@ -1,5 +1,6 @@
-import csv, json, random, shutil, subprocess, sys, tempfile, unittest
+import argparse, contextlib, csv, importlib.util, io, json, os, random, shutil, stat, subprocess, sys, tempfile, unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.flock.test_report import LINE1
 from tests.flock.test_review import FIX, ROOT, WAITS, make_review, mark_all, tool, write_stub
@@ -237,6 +238,38 @@ class FlockReviewVerifyTest(unittest.TestCase):
         seen += [vtool("check", p["CO"] / "VERIFY-PLAN.json", p["CO"] / "FINDINGS.csv", p["CO"] / "VERIFY.csv")[1], tool("run", config, full=True)[1]]
         self.assertFalse([text for text in seen if REASON in text])
         self.assertNotIn(REASON, (p["CO"] / "VERIFY-CHECK.txt").read_text())
+
+    def test_plan_writes_through_fresh_temp(self):  # BL-DF-1: a planted or stale <name>.tmp is never followed, reused or left
+        spec = importlib.util.spec_from_file_location("_bl_df_1_verify", VERIFY)
+        spec.loader.exec_module(verify := importlib.util.module_from_spec(spec))
+        folder, sentinel, rows = self.tmp / "o", self.tmp / "sentinel", self.tmp / "FINDINGS.csv"
+        folder.mkdir()
+        shutil.copy(FIX / "review-findings.csv", rows)
+        sentinel.write_bytes(b"keep\n")
+        (folder / "A.json.tmp").symlink_to(sentinel)
+        plan = lambda name: verify.plan(argparse.Namespace(findings=rows, seed=7, size=2, out=folder / name))  # noqa: E731
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(plan("A.json"), 0)
+        self.assertRegex(printed.getvalue(), r"\Apriority=\d+ pool=\d+ sample=2 findings_sha256=[0-9a-f]{64}\n\Z")
+        self.assertEqual((sentinel.read_bytes(), os.readlink(folder / "A.json.tmp")), (b"keep\n", str(sentinel)))
+        st = os.lstat(folder / "A.json")
+        self.assertEqual((stat.S_ISREG(st.st_mode), stat.S_IMODE(st.st_mode)), (True, 0o600))
+        self.assertEqual(json.loads((folder / "A.json").read_text(encoding="utf-8"))["sample_size"], 2)
+        (folder / "B.json.tmp").write_bytes(b"stale\n")
+        (folder / "B.json.tmp").chmod(0o644)
+        before = os.lstat(folder / "B.json.tmp")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(plan("B.json"), 0)
+        after, out = os.lstat(folder / "B.json.tmp"), os.lstat(folder / "B.json")
+        self.assertEqual(((folder / "B.json.tmp").read_bytes(), stat.S_IMODE(after.st_mode), after.st_ino), (b"stale\n", 0o644, before.st_ino))
+        self.assertEqual((stat.S_IMODE(out.st_mode), out.st_ino != before.st_ino), (0o600, True))
+        self.assertEqual((folder / "B.json").read_bytes(), (folder / "A.json").read_bytes())
+        listing, kept = sorted(os.listdir(folder)), ((folder / "A.json").read_bytes(), os.lstat(folder / "A.json").st_ino)
+        with patch.object(verify.os, "replace", side_effect=OSError("replace failed")), self.assertRaises(OSError), \
+                contextlib.redirect_stdout(io.StringIO()):
+            plan("C.json")
+        self.assertEqual(((folder / "A.json").read_bytes(), os.lstat(folder / "A.json").st_ino), kept)
+        self.assertEqual(sorted(os.listdir(folder)), listing)
 
 
 if __name__ == "__main__":

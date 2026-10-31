@@ -4,7 +4,7 @@
 Runs the private method scripts and F1/F3 tools, skipping stages whose inputs are unchanged; a wait stage closes only by mark (the card that
 wrote the input states its provider/model). Never runs a model, never deletes (old outputs move to <out>/.review/superseded), no network.
 Prints stage ids, statuses, rc and paths only. Exit 0 done, 1 failed/validation/lock/IO, 2 usage, 3 waiting. done is not review or release."""
-import argparse, datetime, hashlib, importlib.util, json, os, re, subprocess, sys
+import argparse, contextlib, datetime, hashlib, importlib.util, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 
 TOOLS, REPO = Path(__file__).resolve().parent, Path(__file__).resolve().parents[1]
@@ -47,9 +47,13 @@ def block(i): return FI if i < 7 else RI if i < 11 else CP
 def root(c, i): return c["FO"] if i < 7 else c["RO"] if i < 11 else c["CO"]
 def put(path, data):  # atomic 0600 write
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with os.fdopen(os.open(path.with_name(path.name + ".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as out:
-        out.write(data)
-    os.replace(path.with_name(path.name + ".tmp"), path)
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)  # fresh temp, never a fixed .tmp
+    try:
+        with os.fdopen(fd, "wb") as out: out.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError): os.unlink(tmp)
+        raise
 def families(cfg):  # non-comparison policy sources by family (first-seen order), ids by footer_version_date
     found, sources = {}, cfg[RI].get("sources")
     for src in sources if isinstance(sources, list) else ():
