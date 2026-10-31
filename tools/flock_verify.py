@@ -93,8 +93,7 @@ def start(run, provider, model):
     write(run / "VERIFY.csv", ",".join(HEADER) + "\n")
     return print("started verify run") or 0
 
-def outputs(run, golden):
-    """(errs, PUBLIC-OK.csv text, QUESTIONS.md text, (public_ok, questions, rejected)) that finish would write now."""
+def outputs(run, golden):  # (errs, PUBLIC-OK.csv text, QUESTIONS.md text, counts) that finish would write now
     errs, findings, facts, verify = load(run)
     final = [(n, dict(f, rating=verify[f["finding_id"]]["new_rating"])) for n, f in enumerate(findings, 2)
              if not errs and verify[f["finding_id"]]["verdict"] != "reject"]
@@ -133,8 +132,8 @@ def ids_on_disk(data):  # (data rows, finding ids) of a PUBLIC-OK.csv; unreadabl
     try:
         table = [r for r in csv.reader(io.StringIO(data.decode("utf-8"), newline="")) if any(c.strip() for c in r)]
     except (UnicodeDecodeError, csv.Error):
-        return 0, set()
-    return (len(table) - 1, {r[0].strip() for r in table[1:]}) if table and table[0] == PUBLIC else (0, set())
+        table = []
+    return (len(table) - 1, {r[0].strip() for r in table[1:]}) if table[:1] == [PUBLIC] else (0, set())
 
 def current(run, golden):  # read-only: compares the on-disk outputs with the bytes finish would write now
     errs, public, questions, _ = outputs(run, golden)
