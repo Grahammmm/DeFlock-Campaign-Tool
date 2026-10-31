@@ -18,7 +18,8 @@ jobs:
     # Only the merge clock; full-tier source tests run below on 3.11–3.13.
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Shards 2/3 run up to ~10 min; 20 leaves headroom (AUD-DF3, 2026-10-31).
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
