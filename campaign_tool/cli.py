@@ -275,6 +275,12 @@ def _read_previous(path):
         return "unreadable"
 
 
+def meeting_stage_cmd(args, root):
+    from .meeting_stage import stage
+    print(json.dumps(stage(root, args.id, agency_id=args.agency_id, location=args.location, replace=args.replace),
+                     indent=2))
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -316,6 +322,12 @@ def main():
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
+    stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
+    stage_p.add_argument("--directory", required=True)
+    stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
+    stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
+    stage_p.add_argument("--location")
+    stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
     args = parser.parse_args()
     if args.command == "verify":
         try:
@@ -340,6 +352,8 @@ def main():
             restore_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meetings-stage":
+            meeting_stage_cmd(args, root)
         else:
             {"doctor": doctor, "status": status}[args.command](root)
     except (OSError, ValueError, sqlite3.Error) as exc:
