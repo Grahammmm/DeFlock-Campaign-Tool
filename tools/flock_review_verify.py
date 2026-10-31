@@ -18,12 +18,21 @@ CHECKS = ["findings freeze: FINDINGS.csv sha256 must equal the plan's; a changed
           "log totals: by-user summary sums are not full-log totals; recount from the source workbook",
           "not-posted ids stay analysis-only and out of VERIFY.csv and VERIFY.md"]
 
+class PlanError(Exception): pass
 def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-def table(path):
-    with open(path, newline="", encoding="utf-8") as handle: return list(csv.reader(handle))
+def table(path):  # utf-8-sig: a spreadsheet's BOM is not part of the first header name; sha() still hashes the raw bytes
+    with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.reader(handle))
 def findings(path):
-    with open(path, newline="", encoding="utf-8") as handle: return list(csv.DictReader(handle))
+    with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.DictReader(handle))
 def cell(row, name): return (row.get(name) or "").strip()
+def load_plan(path):
+    try: spec = json.loads(Path(path).read_text(encoding="utf-8"))  # a missing or unreadable file (OSError) stays an io: error
+    except ValueError: spec = None  # not JSON, or not UTF-8
+    ids = lambda v: isinstance(v, list) and all(isinstance(i, str) for i in v)  # noqa: E731
+    if not (isinstance(spec, dict) and spec.get("schema") == 1 and ids(spec.get("priority_ids")) and ids(spec.get("sample_ids"))
+            and isinstance(spec.get("findings_sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", spec["findings_sha256"])):
+        raise PlanError("plan: PLAN.json is not a verify plan")
+    return spec
 
 def plan(args):
     rows, digest, out = findings(args.findings), sha(args.findings), Path(args.out)
@@ -60,7 +69,7 @@ def plan(args):
     return 0
 
 def check(args):
-    spec = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+    spec = load_plan(args.plan)
     want, errs, seen, tally, extra, rows = spec["priority_ids"] + spec["sample_ids"], [], set(), collections.Counter(), 0, 0
     if sha(args.findings) != spec["findings_sha256"]:
         errs.append("plan: findings changed since plan")
@@ -124,6 +133,8 @@ def main(argv=None):
     if args.command == "plan" and args.size < 0: parser.error("plan: --size must be 0 or more")
     try:
         return {"plan": plan, "check": check, "counts": counts}[args.command](args)
+    except PlanError as exc:
+        return print(exc) or 1
     except (OSError, ValueError, KeyError, TypeError, csv.Error) as exc:
         return print("io: %s" % type(exc).__name__) or 1
 
