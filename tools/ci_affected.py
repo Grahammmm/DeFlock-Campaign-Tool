@@ -106,9 +106,7 @@ def graph_for(files):
 
 
 WEIGHTS = ROOT / 'tools' / 'ci_shard_weights.json'
-# Fitted on run 41208260076: 5,847,951 tracked source bytes of the 359 weighted
-# modules / 1,587 measured seconds = 3,685 bytes per second, rounded.
-BYTES_PER_SECOND = 3700
+BYTES_PER_SECOND = 3700  # Fit on run 41208260076: 5,847,951 bytes / 1,587 s over its 359 modules.
 
 
 def load_weights(path=WEIGHTS):
@@ -118,11 +116,8 @@ def load_weights(path=WEIGHTS):
         if not isinstance(data, dict) or data.get('version') != 1:
             raise ValueError('not version 1')
         seconds = data.get('seconds')
-        if not isinstance(seconds, dict):
-            raise ValueError('seconds is not an object')
-        for name, value in seconds.items():
-            if type(value) is not int or value < 1:
-                raise ValueError(f'bad value for {name}')
+        if not isinstance(seconds, dict) or not all(type(v) is int and v >= 1 for v in seconds.values()):
+            raise ValueError('seconds must map modules to ints >= 1')
         return seconds
     except (OSError, ValueError) as error:
         print(f'::warning::shard weights unavailable ({error}); packing by size', flush=True)
@@ -130,19 +125,18 @@ def load_weights(path=WEIGHTS):
 
 
 def partition(names, files, count, weights=None):
-    """Measured-time-first packing (size when unmeasured); deterministic, disjoint, nonempty shards."""
-    def weight(name):
-        if weights is None:
-            return files[name].stat().st_size
-        if name in weights:
+    """Measured-time-first packing (unmeasured: size estimate); deterministic, disjoint, nonempty shards."""
+    def cost(name):
+        if weights is not None and name in weights:
             return weights[name]
-        return max(1, files[name].stat().st_size // BYTES_PER_SECOND)
+        size = files[name].stat().st_size
+        return size if weights is None else max(1, size // BYTES_PER_SECOND)
     bins = [[] for _ in range(count)]
     loads = [0] * count
-    for name, cost in sorted(((n, weight(n)) for n in names), key=lambda item: (-item[1], item[0])):
+    for name in sorted(names, key=lambda n: (-cost(n), n)):
         index = min(range(count), key=lambda i: (loads[i], i))
         bins[index].append(name)
-        loads[index] += cost
+        loads[index] += cost(name)
     return [sorted(bucket) for bucket in bins]
 
 

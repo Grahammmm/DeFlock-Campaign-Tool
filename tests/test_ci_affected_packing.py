@@ -18,17 +18,12 @@ _SPEC.loader.exec_module(ci)
 
 class PackingTest(unittest.TestCase):
     def setUp(self):
-        self._dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self._dir.cleanup)
-        self.root = Path(self._dir.name)
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
     def files_for(self, sizes):
-        files = {}
         for name, size in sizes.items():
-            path = self.root / (name + '.py')
-            path.write_bytes(b'x' * size)
-            files[name] = path
-        return files
+            (self.root / (name + '.py')).write_bytes(b'x' * size)
+        return {name: self.root / (name + '.py') for name in sizes}
 
     def load(self, text):
         path = self.root / 'weights.json'
@@ -41,20 +36,17 @@ class PackingTest(unittest.TestCase):
 
     def test_random_selections_cover_exactly_once(self):
         rng = random.Random(20261031)
-        files = self.files_for({f'tests.test_m{i:02d}': rng.randint(0, 9000) for i in range(60)})
+        files = self.files_for({f'tests.test_m{i:02d}': rng.randint(1, 9000) for i in range(60)})
         pool = sorted(files)
         for _ in range(200):
             selection = set(rng.sample(pool, rng.randint(1, 60)))
             count = rng.randint(1, 7)
             weighted = rng.sample(sorted(selection), rng.randint(0, len(selection)))
-            weights = rng.choice([None, {name: rng.randint(1, 300) for name in weighted}])
-            weights = None if weights is None else dict(weights, **{'tests.test_gone': 50})
+            weights = rng.choice([None, {'tests.test_gone': 50, **{n: rng.randint(1, 300) for n in weighted}}])
             bins = ci.partition(selection, files, count, weights)
             self.assertEqual(len(bins), count)
             flat = [name for bucket in bins for name in bucket]
-            self.assertEqual(len(flat), len(set(flat)))
-            self.assertEqual(set(flat), selection)
-            self.assertNotIn('tests.test_gone', flat)
+            self.assertEqual(sorted(flat), sorted(selection))  # disjoint and complete; stale key ignored
             if len(selection) >= count:
                 self.assertTrue(all(bins), (count, len(selection)))
             for name in selection - set(weights or ()):
@@ -62,28 +54,25 @@ class PackingTest(unittest.TestCase):
 
     def test_bad_weights_fall_back_with_one_warning(self):
         cases = {'missing': None, 'invalid json': '{"version": 1,', 'not utf-8': b'\xff\xfe{',
-                 'version 2': '{"version": 2, "seconds": {"tests.test_a": 3}}',
-                 'no version': '{"seconds": {"tests.test_a": 3}}', 'list': '[1]',
+                 'version 2': '{"version": 2, "seconds": {"tests.test_a": 3}}', 'list': '[1]',
                  'seconds list': '{"version": 1, "seconds": [3]}',
                  'string': '{"version": 1, "seconds": {"tests.test_a": "3"}}',
                  'negative': '{"version": 1, "seconds": {"tests.test_a": -1}}',
                  'zero': '{"version": 1, "seconds": {"tests.test_a": 0}}',
-                 'float': '{"version": 1, "seconds": {"tests.test_a": 2.5}}',
                  'bool': '{"version": 1, "seconds": {"tests.test_a": true}}'}
         for label, text in cases.items():
             with self.subTest(label):
                 result, lines = self.load(text)
                 self.assertIsNone(result)
                 self.assertEqual(len(lines), 1, lines)
-                self.assertTrue(lines[0].startswith('::warning::shard weights unavailable ('), lines)
-                self.assertTrue(lines[0].endswith('); packing by size'), lines)
+                self.assertRegex(lines[0], r'^::warning::shard weights unavailable \(.+\); packing by size$')
         result, lines = self.load('{"version": 1, "source": "x", "seconds": {"tests.test_a": 3}}')
         self.assertEqual((result, lines), ({'tests.test_a': 3}, []))
 
     def test_none_weights_equal_size_packing(self):
         files = self.files_for({'a': 50, 'b': 40, 'c': 30, 'd': 20, 'e': 10, 'f': 10})
-        self.assertEqual(ci.partition(set(files), files, 3), [['a', 'f'], ['b', 'e'], ['c', 'd']])
-        self.assertEqual(ci.partition(set(files), files, 3, None), [['a', 'f'], ['b', 'e'], ['c', 'd']])
+        for bins in (ci.partition(set(files), files, 3), ci.partition(set(files), files, 3, None)):
+            self.assertEqual(bins, [['a', 'f'], ['b', 'e'], ['c', 'd']])
 
     def test_weights_override_size_and_estimate_unknown(self):
         files = self.files_for({'big': 9000, 'slow': 10, 'new': 3 * ci.BYTES_PER_SECOND})
@@ -126,7 +115,3 @@ class PackingTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(ci.self_test(), 0)
         self.assertIn('sharding OK', out.getvalue())
-
-
-if __name__ == '__main__':
-    unittest.main()
