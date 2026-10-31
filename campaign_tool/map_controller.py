@@ -11,42 +11,55 @@ KEYS = {"schema_version", "group_slug", "candidate_property",
         "initial_point_count", "candidate_count_suffix"}
 SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")
 MAX_BYTES = 2 * 1024 * 1024
+NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
+
+
+def _https(value):
+    return isinstance(value, str) and re.fullmatch(r"https://[A-Za-z0-9./:?&=%_+#~-]+", value)
+
+
+def _origin(value):  # host present, no user or password
+    return not _https(value) or (lambda p: p.hostname and not p.username and not p.password)(urlsplit(value))
+
+
+CHECKS = (  # (field, accepts value, reason); reasons never include the value
+    ("schema_version", lambda v: type(v) is int and v == 1, "unsupported schema version"),
+    ("group_slug", lambda v: isinstance(v, str) and SLUG.fullmatch(v), "invalid slug"),
+    ("candidate_property", lambda v: isinstance(v, str) and re.fullmatch(r"[a-z][a-zA-Z0-9]{0,63}", v), "invalid identifier"),
+    ("bounding_box_fallbacks", lambda v: isinstance(v, list) and len(v) <= 128 and all(
+        isinstance(s, str) and SLUG.fullmatch(s) for s in v) and len(set(v)) == len(v), "invalid or duplicate slugs"),
+    ("initial_point_count", lambda v: type(v) is int and 0 <= v <= 10000000, "out of range"),
+    ("source_map_url", _https, "not a public https URL"),
+    ("source_map_url", _origin, "credentials or no host in URL"),
+    ("city_boundaries_url", lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,160}", v) and ".." not in v.split("/"), "not a local public asset path"),
+    ("candidate_count_suffix", lambda v: isinstance(v, str) and 1 <= len(v) <= 200, "must be 1-200 characters"),
+)
+
+
+def problems(config, profile_renderer="", point_context_renderer=""):
+    """Every build-input problem, sorted; each names its field, never its value."""
+    if not isinstance(config, dict):
+        return ["config: must be an object"]
+    found = ["missing field: " + key for key in KEYS - set(config)]
+    found += ["unknown field: " + (key if isinstance(key, str) and NAME.fullmatch(key) else f"{len(str(key))} chars")
+              for key in config if key not in KEYS]
+    found += [key + ": " + reason for key, ok, reason in CHECKS if key in config and not ok(config[key])]
+    for name, value in (("profile_renderer", profile_renderer), ("point_context_renderer", point_context_renderer)):
+        if not isinstance(value, str) or len(value.encode("utf-8")) > MAX_BYTES:
+            found.append(name + ": invalid trusted renderer")
+    return sorted(found)
 
 
 def render(config, profile_renderer, point_context_renderer=""):
-    if not isinstance(config, dict) or set(config) != KEYS:
-        raise ValueError("Invalid map configuration fields")
-    if type(config["schema_version"]) is not int or config["schema_version"] != 1:
-        raise ValueError("Unsupported map schema version")
-    if not isinstance(config["group_slug"], str) or not SLUG.fullmatch(config["group_slug"]):
-        raise ValueError("Invalid group slug")
+    found = problems(config, profile_renderer, point_context_renderer)
+    if found:
+        raise ValueError("; ".join(found))
     prop = config["candidate_property"]
-    if not isinstance(prop, str) or not re.fullmatch(r"[a-z][a-zA-Z0-9]{0,63}", prop):
-        raise ValueError("Invalid candidate property")
     fallbacks = config["bounding_box_fallbacks"]
-    if not isinstance(fallbacks, list) or len(fallbacks) > 128 or any(
-        not isinstance(slug, str) or not SLUG.fullmatch(slug) for slug in fallbacks
-    ) or len(set(fallbacks)) != len(fallbacks):
-        raise ValueError("Invalid bounding-box fallbacks")
     count = config["initial_point_count"]
-    if type(count) is not int or not 0 <= count <= 10000000:
-        raise ValueError("Invalid initial point count")
     source = config["source_map_url"]
-    if not isinstance(source, str) or not re.fullmatch(r"https://[A-Za-z0-9./:?&=%_+#~-]+", source):
-        raise ValueError("Invalid public source-map URL")
-    parsed = urlsplit(source)
-    if not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError("Invalid public source-map origin")
     boundary = config["city_boundaries_url"]
-    if not isinstance(boundary, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,160}", boundary) or ".." in boundary.split("/"):
-        raise ValueError("Boundary must be a local public asset path")
     suffix = config["candidate_count_suffix"]
-    if not isinstance(suffix, str) or not 1 <= len(suffix) <= 200:
-        raise ValueError("Invalid candidate count label")
-    if not isinstance(profile_renderer, str) or len(profile_renderer.encode("utf-8")) > MAX_BYTES:
-        raise ValueError("Invalid trusted profile renderer")
-    if not isinstance(point_context_renderer, str) or len(point_context_renderer.encode("utf-8")) > MAX_BYTES:
-        raise ValueError("Invalid trusted point context renderer")
     tokens = {
         "GROUP_SLUG": json.dumps(config["group_slug"]),
         "CANDIDATE_PROPERTY": prop,

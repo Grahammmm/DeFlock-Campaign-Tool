@@ -17,6 +17,7 @@ The county profile uses the existing name/vendor/status/summary/cameraCount/fact
 open/flags fields. Source destinations must be local HTML filenames and safe
 fragment slugs. Explicit alias mappings handle a group's differently named source
 section without hard-coding a jurisdiction in the engine.
+`agency_cards.problems(config)` lists every problem at once (sorted, dotted field names such as `county_profile.vendor`, never a value); `render` raises them joined by `; `.
 
 New county text rejects angle-bracket markup. The selected-agency CITIES object
 remains **trusted, reviewed campaign source**, not an arbitrary JSON upload or
