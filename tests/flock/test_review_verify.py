@@ -141,6 +141,8 @@ class FlockReviewVerifyTest(unittest.TestCase):
             self.assertIn("stage report failed rc=1", out)
             self.assertIn("cite resolves to an analysis-only record",
                           (p["out"] / ".review/logs/report.log").read_text())
+            self.assertFalse(report.exists())
+            self.assertFalse((p["CO"] / "report" / "SOURCES.json").exists())
         after = json.loads(state_path.read_text())["stages"]
         for stage in ("facts-import", "compare-build", "verify-plan", "verify", "verify-check"):
             self.assertEqual(before[stage]["outputs"], after[stage]["outputs"], stage)

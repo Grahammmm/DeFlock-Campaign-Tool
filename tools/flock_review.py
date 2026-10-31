@@ -158,7 +158,7 @@ def plan(c, sid, state):  # -> (steps, stdout capture); a step is ("run", argv) 
             "joins": ([m("training_vs_search.py", c["xlsx"], c["lbu"])], CO / ("TRAINING-VS-SEARCH-%s.txt" % c["tj"])),
             "compare-build": ([m("compare_build.py", cfg)], None), "compare-selftest": ([m("check_compare.py", cfg, CO / "selftest")], None),
             "f3-write": ([m("f3_from_yaml.py", c["f3f"], c["RUN"])], None), "f3-check": ([t("flock_compare.py", "--check", c["RUN"], *golden)], None),
-            "counts": ([m("summarize.py", CO / "FINDINGS.csv")], CO / "COUNTS.txt"), "report": ([t("flock_report.py", "build", cfg)], None)}[sid]
+            "counts": ([m("summarize.py", CO / "FINDINGS.csv")], CO / "COUNTS.txt"), "report": ([("aside", CO / "report"), t("flock_report.py", "build", cfg)], None)}[sid]
 def listing(path):  # (relpath, size, mtime_ns) of one external input root
     files = [] if path is None or not path.exists() else [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())
     return [str(path), [[str(p.relative_to(path)), p.stat().st_size, p.stat().st_mtime_ns] for p in files] if path and path.exists() else "missing"]
