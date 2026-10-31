@@ -1,3 +1,5 @@
+> Historical milestone text (last changed 2026-09-30). Current status: [STATUS.md](STATUS.md).
+
 # Records pipeline: M0a, reusable review gates and executable tests
 
 This PR is the first of two M0 pieces. It does not implement the full pipeline,

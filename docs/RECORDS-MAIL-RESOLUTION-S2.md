@@ -1,3 +1,5 @@
+> Historical milestone text (last changed 2026-10-22). Current status: [STATUS.md](STATUS.md).
+
 # S2 canonical mail-resolution transaction (fixture-only)
 
 This backend slice implements design section 6 in

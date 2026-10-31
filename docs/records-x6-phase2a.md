@@ -1,3 +1,5 @@
+> Historical milestone text (last changed 2026-10-23). Current status: [STATUS.md](STATUS.md).
+
 # X6 phase 2a — S9–S12 only, review required
 
 This candidate extends the shared geometry probe from phase 1. It is NOT a
