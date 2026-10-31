@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Private CPRA request reminder list (REQUESTS.csv v1): --check and due. Prints only."""
+"""Private CPRA request reminder list (REQUESTS.csv v1): --check and due. Prints only.
+draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
 import csv
 import os
 import re
@@ -8,7 +9,8 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
 from campaign_tool import law  # noqa: E402
 
 HEADER = ["request_id", "agency", "sent", "receipt_evidence", "receipt_date", "determination_date",
@@ -149,7 +151,9 @@ def parse_questions(text, mine):
 
 
 def draft(rundir, requests, start, end):
-    run = Path(rundir)
+    run = Path(rundir).resolve()
+    if run == REPO or REPO in run.parents:
+        return print("flock-followup: RUNDIR is inside the repository", file=sys.stderr) or 1
     rows, errs = load(requests)
     mine = [r for r in rows if slug(r["agency"]) == run.parent.parent.name]
     errs = errs or ([] if mine else ["draft: no requests for agency"])

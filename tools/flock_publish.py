@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Flock publish: a verified run's confirmed strong findings -> PUBLISH.json for human review (every entry pending).
-Exit 1 = errors/empty, 2 = usage, 3 = family refusal. Only a human approves (skills/flock-publish)."""
+Exit 1 = errors/empty, 2 = usage, 3 = family refusal. Only a human approves (skills/flock-publish).
+export RUNDIR must lie outside the repository."""
 import argparse, importlib.util, json, re, sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -145,6 +146,9 @@ def main(argv=None):
         return check(args.check)
     if args.command != "export" or not args.rundir or args.check or not SLUG.fullmatch(args.site_slug or ""):
         parser.error("usage: export RUNDIR --site-slug S | --check FILE")
-    return export(Path(args.rundir).resolve(), args.site_slug)
+    run = Path(args.rundir).resolve()
+    if run == verify_tool.REPO or verify_tool.REPO in run.parents:
+        return print("flock-publish: RUNDIR is inside the repository") or 1
+    return export(run, args.site_slug)
 if __name__ == "__main__":
     sys.exit(main())
