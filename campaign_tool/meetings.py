@@ -19,6 +19,7 @@ import urllib.request
 from datetime import date, datetime, timezone
 
 from .agency_cards import text as plain_text
+from .kit import _kit_folder, _write_text
 
 API_BASE = "https://webapi.legistar.com/v1"
 KEYWORDS = re.compile(r"license[ -]?plate|\bALPRs?\b|\bFlock\b|surveillance", re.IGNORECASE)
@@ -173,14 +174,14 @@ def _plain(value):
 
 def write_meetings(root, meetings, client_name):
     kit = root / "kit"
-    kit.mkdir(mode=0o700, exist_ok=True)
+    _kit_folder(kit, mode=0o700)
     target = kit / "meetings.json"
     document = {"schema_version": 1, "source": "legistar", "client": client_name,
                 "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "keywords": KEYWORDS.pattern, "meetings": meetings,
                 "note": "Agenda matches are keyword hits, not confirmation that ALPR will be discussed. "
                         "Verify the posted agenda before publishing a meeting."}
-    target.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return target
 
 
