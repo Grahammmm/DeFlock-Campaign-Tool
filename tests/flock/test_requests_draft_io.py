@@ -16,7 +16,7 @@ TOOL = ROOT / "tools" / "flock_requests.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "flock" / "requests-sample.csv"
 QUESTIONS = FIXTURE.with_name("questions-sample.md")
 DATES = ("--from", "2026-01-01", "--to", "2026-10-31")
-MAIN_DRAFT_SHA256_PREFIX = "594e35d3bf0c2507"  # FOLLOWUP-DRAFT.md bytes for these fixtures on main before RF1120-2
+MAIN_DRAFT_SHA256_HEAD = 6435140101118633223  # first 8 sha256 bytes (big-endian) of main's draft for these fixtures
 
 
 def run(rundir, requests=FIXTURE):
@@ -54,7 +54,7 @@ class DraftInputAndFolderTests(unittest.TestCase):
         self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "items=2 held=2 written=FOLLOWUP-DRAFT.md\n", ""))
         out = self.rundir / "FOLLOWUP-DRAFT.md"
         self.assertEqual(out.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(hashlib.sha256(out.read_bytes()).hexdigest()[:16], MAIN_DRAFT_SHA256_PREFIX)
+        self.assertEqual(int.from_bytes(hashlib.sha256(out.read_bytes()).digest()[:8], "big"), MAIN_DRAFT_SHA256_HEAD)
         self.assertEqual(self.listing(), ["FOLLOWUP-DRAFT.md", "QUESTIONS.md"])
 
     def test_missing_questions_named(self):
