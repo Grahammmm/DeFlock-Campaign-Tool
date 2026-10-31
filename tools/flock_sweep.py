@@ -2,7 +2,8 @@
 """Flock sweep: each watch-list agency's F1->F3->F4 stage, blocker and next command; CARDS plan; rating matrix.
   status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out FILE|DIR] [--max N] [--date YYYY-MM-DD]
 Reads the store only; never runs a model, kanban or hermes. Prints slugs, stages, counts and commands, never claim,
-quote or fact text. Summary: blocked = agencies - finished - ready - unmapped. Exit 0 ok, 1 errors, 2 usage."""
+quote or fact text. Summary: blocked = agencies - finished - ready - unmapped; unwatched = in_scope=yes roster rows
+with no watch-list row. Exit 0 ok, 1 errors, 2 usage."""
 import argparse, csv, datetime, importlib.util, io, json, re, shlex, sys
 from pathlib import Path
 
@@ -176,8 +177,9 @@ def main(argv=None):
         if out:
             verify.write(out, text)
         fin, ready, unmapped = (sum(r["stage"] in s for r in rows) for s in (("finished",), READY, ("unmapped",)))
-        print(text + "agencies=%d finished=%d ready=%d blocked=%d unmapped=%d" % (
-            len(rows), fin, ready, len(rows) - fin - ready - unmapped, unmapped))
+        unwatched = sum(1 for r in roster if r["in_scope"] == "yes" and r["watch_agency"] not in agencies)
+        print(text + "agencies=%d finished=%d ready=%d blocked=%d unmapped=%d unwatched=%d" % (
+            len(rows), fin, ready, len(rows) - fin - ready - unmapped, unmapped, unwatched))
         return 0
     except Fail as exc:
         return print(exc) or 1
