@@ -122,6 +122,12 @@ def private_store(store):
     if store == REPO or REPO in store.parents: raise Fail("store inside repository")
     return store
 
+def _real(path, what):  # a linked or wrong-kind watch list, MONITOR.csv or digest folder is refused, never followed
+    folder = what == "digest folder"
+    if os.path.islink(path): raise Fail(what + " is a symlink")
+    if os.path.lexists(path) and not (os.path.isdir if folder else os.path.isfile)(path):
+        raise Fail("%s is not a %s" % (what, "folder" if folder else "file"))
+
 def validated(watchlist):  # rows of a valid watch list, else Fail with every row error
     rows = read_csv(watchlist, WATCH_HEADER)
     errors = ["row %d: %s" % (n, e) for n, row in rows for e in row_errors(row)]
@@ -137,7 +143,9 @@ def check(watchlist):  # dry run: the pages scan would fetch; no network, no sto
 
 def scan(watchlist, store, date, fetch=fetch):
     rows = validated(watchlist)  # before any fetch
-    (store := private_store(store)).mkdir(mode=0o700, parents=True, exist_ok=True)
+    _real(watchlist, "watchlist")
+    _real((store := private_store(store)) / "MONITOR.csv", "MONITOR.csv")
+    store.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = os.open(store / ".monitor.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)  # a symlink raises OSError
     try:  # one scan per store at a time; the kernel drops the flock when the fd closes or the scan dies
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -190,6 +198,7 @@ def digest(store, date):
     items = [" ".join(("- %s %s: %s %s" % (r["agency"], r["watch_kind"], r["title"], r["url"])).split()) for r in rows]
     lines = ["Flock monitor %s: %s" % (date, "%d new items (public, unreviewed)" % len(rows) if rows else "no new items")]
     lines += items if len(items) <= 39 else items[:38] + ["- … and %d more in MONITOR.csv" % (len(items) - 38)]
+    _real(path.parent, "digest folder")
     write_atomic(path, "\n".join(lines) + "\n")
     return path
 
@@ -207,7 +216,7 @@ def main(argv=None):
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else digest(args.store, args.date.isoformat()))
-    except (Fail, OSError, UnicodeDecodeError) as err:
+    except (Fail, OSError, UnicodeDecodeError, csv.Error) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % type(err).__name__)
         return 1
     return 0
