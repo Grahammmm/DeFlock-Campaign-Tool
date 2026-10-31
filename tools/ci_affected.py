@@ -3,10 +3,14 @@
 
 import argparse
 import ast
+import contextlib
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -169,6 +173,103 @@ def run_timed(suite, shard, stream=None):
     return 0 if result.wasSuccessful() else 1
 
 
+# In-process after the children (<= 5 modules); add one only with its parallel-only failing CI run as evidence.
+SERIAL = frozenset()
+RESULT = 'CI_CHUNK_RESULT '
+
+
+def run_modules(names):
+    """--jobs child: run names; the verdict is the last stdout line. A leaked resource fails the chunk."""
+    sys.path.insert(0, str(ROOT))
+    leaks, hook = [], sys.unraisablehook
+
+    def record(unraisable):
+        hook(unraisable)
+        if issubclass(unraisable.exc_type, ResourceWarning):
+            leaks.append(unraisable.exc_type)
+    sys.unraisablehook = record
+    result = unittest.TextTestRunner(verbosity=2, resultclass=TimedResult).run(
+        unittest.defaultTestLoader.loadTestsFromNames(names))
+    ok = result.wasSuccessful() and result.testsRun > 0 and not leaks
+    print(json.dumps({'chunk_slowest': slowest(result.seconds)}), flush=True)
+    print(RESULT + json.dumps({'ran': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
+                               'skipped': len(result.skipped), 'ok': ok}, sort_keys=True), flush=True)
+    return 0 if ok else 1
+
+
+def chunk_verdict(returncode, output):
+    """(ran, problem); problem is None only for exit 0 and an ok CI_CHUNK_RESULT last line."""
+    if returncode < 0:
+        return 0, f'killed by signal {-returncode}'
+    lines = output.strip().splitlines()
+    try:
+        result = json.loads(lines[-1][len(RESULT):]) if lines[-1].startswith(RESULT) else None
+        ran, ok = result['ran'], result['ok']
+        if type(ran) is not int or ran < 0 or type(ok) is not bool:
+            raise ValueError
+    except (IndexError, ValueError, KeyError, TypeError):
+        return 0, f'exit {returncode}, last line is not a valid {RESULT.strip()}'
+    if returncode or not ok:
+        return ran, f'exit {returncode}, ok {str(ok).lower()}'
+    return ran, None
+
+
+def aggregate(verdicts, expected):
+    """0 only if every chunk passed and sum(ran) == expected; prints each failed rule."""
+    problems = [f'chunk {k}: {problem}' for k, (_, problem) in enumerate(verdicts) if problem]
+    ran = sum(r for r, _ in verdicts)
+    if ran != expected:
+        problems.append(f'ran {ran} tests, expected {expected}')
+    for problem in problems:
+        print(f'::error::{problem}', flush=True)
+    return (1 if problems else 0), ran
+
+
+def run_parallel(names, files, jobs, weights, expected, shard):
+    serial = sorted(SERIAL & set(names))
+    rest = [name for name in names if name not in SERIAL]
+    chunks = partition(rest, files, min(jobs, len(rest)), weights) if rest else []
+    # Host fixtures refuse a world-writable ancestor and move a shared /tmp or /var/tmp TMPDIR to home; so do chunks.
+    inherited = os.environ.get('TMPDIR') or '/tmp'
+    parent = str(Path.home()) if inherited in ('/tmp', '/var/tmp') else inherited
+    with contextlib.ExitStack() as stack:
+        children = []
+        for k, chunk in enumerate(chunks):
+            out = stack.enter_context(tempfile.TemporaryFile())
+            tmp = tempfile.mkdtemp(prefix=f'ci-chunk-{k}-', dir=parent)
+            stack.callback(shutil.rmtree, tmp, True)
+            children.append((out, subprocess.Popen(
+                [sys.executable, '-B', '-W', 'error::ResourceWarning', str(Path(__file__).resolve()),
+                 '--run-modules', *chunk], cwd=ROOT, env={**os.environ, 'TMPDIR': tmp},
+                stdout=out, stderr=subprocess.STDOUT)))
+        verdicts = []
+        for k, (chunk, (out, child)) in enumerate(zip(chunks, children)):
+            child.wait()
+            out.seek(0)
+            text = out.read().decode('utf-8', 'replace')
+            print(f'::group::chunk {k} ({len(chunk)} modules)\n{text.rstrip()}\n::endgroup::', flush=True)
+            verdicts.append(chunk_verdict(child.returncode, text))
+    if serial:
+        result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromNames(serial))
+        verdicts.append((result.testsRun, None if result.wasSuccessful() else 'SERIAL modules failed'))
+    code, ran = aggregate(verdicts, expected)
+    print(json.dumps({'shard': shard, 'jobs': jobs, 'cpu_count': os.cpu_count(), 'expected': expected,
+                      'ran': ran, 'chunks': len(chunks)}), flush=True)
+    return code
+
+
+def run_shard(names, files, jobs, weights, shard):
+    sys.path.insert(0, str(ROOT))
+    suite = unittest.defaultTestLoader.loadTestsFromNames(names)
+    expected = suite.countTestCases()
+    if not expected:
+        raise RuntimeError('empty test suite; refusing silent success')
+    jobs = jobs or os.cpu_count() or 1
+    if jobs == 1 or len(names) < 2:
+        return run_timed(suite, shard)
+    return run_parallel(names, files, jobs, weights, expected, shard)
+
+
 def self_test():
     """Exercise selector logic with synthetic modules, not repository tests."""
     import tempfile
@@ -210,9 +311,15 @@ def main(argv=None):
     parser.add_argument('--list', action='store_true')
     parser.add_argument('--inventory', action='store_true')
     parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--jobs', type=int, default=1, help='child processes per shard; 0 = os.cpu_count()')
+    parser.add_argument('--run-modules', nargs='+', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.run_modules:
+        return run_modules(args.run_modules)
+    if args.jobs < 0:
+        parser.error('jobs must be >= 0')
     if not 0 <= args.shard < args.shards:
         parser.error('shard must be in [0, shards)')
     files, modules = inventory()
@@ -242,18 +349,15 @@ def main(argv=None):
     selected.add(smoke)
     if len(selected) < args.shards:
         selected = available | {smoke}
-    buckets = partition(selected, files, args.shards, load_weights())
+    weights = load_weights()
+    buckets = partition(selected, files, args.shards, weights)
     names = buckets[args.shard]
     if not names:
         raise RuntimeError('empty shard; refusing silent success')
     print(json.dumps({'tier': args.tier, 'shard': args.shard, 'selected_modules': names}), flush=True)
     if args.list:
         return 0
-    sys.path.insert(0, str(ROOT))
-    suite = unittest.defaultTestLoader.loadTestsFromNames(names)
-    if not suite.countTestCases():
-        raise RuntimeError('empty test suite; refusing silent success')
-    return run_timed(suite, args.shard)
+    return run_shard(names, files, args.jobs, weights, args.shard)
 
 
 if __name__ == '__main__':
