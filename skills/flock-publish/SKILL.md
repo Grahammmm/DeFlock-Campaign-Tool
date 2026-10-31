@@ -1,7 +1,7 @@
 ---
 name: flock-publish
 description: Use when a flock-verify run's confirmed strong findings should go to the site. Exports PUBLISH.json (every entry pending) for redaction review and G's approval; never publishes.
-skill_version: 1.1
+skill_version: 1.2
 ---
 
 # Flock publish
@@ -21,6 +21,7 @@ review-required, not a legal conclusion.
 6. Copy it to the site as `data/locations/<site-slug>-findings.json` in a site PR.
 7. Merge the site PR (staging deploy only).
 8. Production dispatch is G-only (`production.yml`).
+9. Any time: `python3 tools/flock_publish.py status STORE` lists every verified run's publication stage (counts only, read-only).
 
 ## Never
 - Set `approved` from a model, or edit an exported `text` instead of re-running the run.
