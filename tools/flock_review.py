@@ -3,6 +3,7 @@
   --check CONFIG [--seed-dir DIR] | run CONFIG [--until STAGE] [--seed-dir DIR] | status CONFIG | mark CONFIG STAGE --provider P --model M
 Runs the private method scripts and F1/F3 tools, skipping stages whose inputs are unchanged; a wait stage closes only by mark (the card that
 wrote the input states its provider/model). Never runs a model, never deletes (old outputs move to <out>/.review/superseded), no network.
+status ends a stale/waiting/failed/pending line with (<reason>): the changed fingerprint part or output relpath, the wait reason, rc or need.
 Prints stage ids, statuses, rc and paths only. Exit 0 done, 1 failed/validation/lock/IO, 2 usage, 3 waiting. done is not review or release."""
 import argparse, contextlib, datetime, hashlib, importlib.util, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
@@ -173,7 +174,7 @@ def external(c, sid):
         paths = [e.get("path") if isinstance(e, dict) else e for e in items] + [fi.get("portal_manifest"), fi.get("source_manifest")]
         return [listing(P(p)) for p in paths if S(p)]
     return fhash(c["xlsx"]) if sid in ("joins", "verify-recount") and c["tj"] is not None else fhash(REPO / c["golden"]) if sid == "f3-check" and c["golden"] else None
-def fingerprint(c, i, dig, state):  # stage, argv, script hashes, config blocks, external inputs and the dep OUTPUT digests
+def fingerprint_parts(c, i, dig, state):  # stage, argv, script hashes, config blocks, external inputs and the dep OUTPUT digests
     sid, kind, deps = STAGES[i]
     body = {"stage": sid, "deps": [dig[d] for d in deps], "external": external(c, sid),
             "config": digest([c["cfg"]["review"], c["cfg"].get("not_posted_analysis_only_ids"), c["cfg"][block(i)]])}
@@ -182,7 +183,10 @@ def fingerprint(c, i, dig, state):  # stage, argv, script hashes, config blocks,
         body.update(capture=str(capture), steps=[s[1] if s[0] == "run" else [s[0]] + [str(x) for x in s[1:]] for s in steps],
                     scripts=[fhash(s[1][2]) for s in steps if s[0] == "run"])
         if sid == "rules-build": body["scripts"].append(fhash(TOOLS / "flock_law_policy.py"))
-    return digest(body)
+    return body
+def fingerprint(c, i, dig, state): return digest(fingerprint_parts(c, i, dig, state))
+def later_outputs(c, state, i):  # a file a later stage rewrote or a later mark covers is verified there
+    return {root(c, j) / rel for j in range(i + 1, len(STAGES)) for rel in (state["stages"].get(IDS[j]) or {}).get("outputs", {})}
 def wait_files(c, sid):  # the model-authored inputs a mark covers (set config paths only)
     if sid == "fact-drafts": return [p for p in sorted(c["FO"].glob("drafts/*.yaml")) if not p.name.endswith("-computed.yaml")]
     if sid == "verify": return [c["CO"] / "VERIFY.csv", c["CO"] / "VERIFY.md"]
@@ -202,12 +206,23 @@ def evaluate(c, state, dig, i):  # -> (state, reason, fp); dig gains the stage's
         why = "not marked" if not mark else "changed since mark" if {str(p): fhash(p) for p in wait_files(c, sid)} != mark["files"] \
             else "upstream changed" if mark["fp"] != fp else None
         return ("waiting", why, fp) if why else dig.update({sid: digest(mark["files"])}) or ("done", None, fp)
-    later = {root(c, j) / rel for j in range(i + 1, len(STAGES))
-             for rel in (state["stages"].get(IDS[j]) or {}).get("outputs", {})}  # a file a later stage rewrote or a later mark covers is verified there
+    later = later_outputs(c, state, i)
     if rec.get("status") == "done" and rec.get("fp") == fp \
             and all(root(c, i) / rel in later or fhash(root(c, i) / rel) == h for rel, h in rec.get("outputs", {}).items()):
         return dig.update({sid: digest(rec["outputs"])}) or ("done", None, fp)
     return ("failed" if rec.get("status") == "failed" else "stale" if rec else "pending"), None, fp
+PARTS = (("deps", "upstream changed"), ("external", "inputs changed"), ("config", "config changed"), ("steps", "command changed"), ("capture", "command changed"), ("scripts", "scripts changed"))
+def why_not_done(c, state, dig, i, word, fp):  # read-only status reason for a failed/pending/stale stage (wait stages keep evaluate's why)
+    rec = state["stages"].get(IDS[i]) or {}
+    if word == "failed": return "rc=%s" % rec.get("rc")
+    if word == "pending": return next(("needs " + d for d in STAGES[i][2] if d not in dig), "never run")
+    if word != "stale" or not isinstance(rec.get("parts"), dict): return "inputs or outputs changed" if word == "stale" else None
+    cur = {k: digest(v) for k, v in fingerprint_parts(c, i, dig, state).items()}
+    moved = list(dict.fromkeys(text for k, text in PARTS if rec["parts"].get(k) != cur.get(k)))
+    base, later = root(c, i), later_outputs(c, state, i)
+    bad = sorted(rel for rel, h in rec.get("outputs", {}).items() if base / rel not in later and fhash(base / rel) != h)
+    if moved or not bad: return ", ".join(moved) or "inputs or outputs changed"
+    return "output %s: %s%s" % ("missing" if fhash(base / bad[0]) == "missing" else "changed", bad[0], " +%d" % (len(bad) - 1) if len(bad) > 1 else "")
 def snap(base, out):  # before/after listing of a step root; .review and the state file are excluded
     found = {}
     for dirpath, dirnames, files in os.walk(base):
@@ -296,12 +311,13 @@ def run(c, until):
             print("stage %s WAITING (%s)" % (sid, why or "upstream not done"))
             halt["waiting"] = sid
         else:
+            parts = {k: digest(v) for k, v in fingerprint_parts(c, i, dig, state).items()}  # the fp inputs, for status reasons
             rc, outputs, log = execute(c, i, state)
             if rc == 3 and sid == "f4-start":  # F4's own family refusal: nothing is recorded
                 print("stage f4-start WAITING (family refused)")
                 halt["waiting"] = sid
                 break
-            state["stages"][sid] = {"status": "failed" if rc else "done", "fp": fp, "outputs": outputs, "rc": rc, "at": now()}
+            state["stages"][sid] = {"status": "failed" if rc else "done", "fp": fp, "outputs": outputs, "rc": rc, "at": now(), "parts": parts}
             save(c, state)
             print("stage %s %s rc=%d log=%s" % (sid, "failed" if rc else "done", rc, log))
             halt["failed"], dig[sid], n["done"] = sid if rc else "-", digest(outputs), n["done"] + (not rc)
@@ -329,9 +345,10 @@ def status(c):  # read-only: no lock, no writes, no .review creation
     state, dig, nxt = load_state(c), {}, "-"
     counts = dict.fromkeys(("done", "stale", "waiting", "pending", "failed", "skip"), 0)
     for i, (sid, kind, _) in enumerate(STAGES):
-        word, mark = evaluate(c, state, dig, i)[0], (state["stages"].get(sid) or {}).get("mark")
+        (word, why, fp), mark = evaluate(c, state, dig, i), (state["stages"].get(sid) or {}).get("mark")
         counts[word], nxt = counts[word] + 1, sid if nxt == "-" and word not in ("done", "skip") else nxt
-        print("%d %s %s %s%s" % (i + 1, sid, kind, word, " %s/%s" % (mark["provider"], mark["model"]) if mark else ""))
+        print("%d %s %s %s%s%s" % (i + 1, sid, kind, word, " %s/%s" % (mark["provider"], mark["model"]) if mark else "",
+                                   " (%s)" % r if (r := why or why_not_done(c, state, dig, i, word, fp)) else ""))
     print("stages=%d %s next=%s locked=%s" % (len(STAGES), " ".join("%s=%d" % kv for kv in counts.items()), nxt,
                                              "yes" if (c["out"] / ".review" / "LOCK").exists() else "no"))
     return 0
