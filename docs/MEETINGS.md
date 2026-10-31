@@ -41,8 +41,11 @@ today) and `removed` otherwise. A missing, symlinked, unparseable or other-clien
 is named and never blocks the write; a failed fetch leaves the old file untouched.
 
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
-on the Meetings screen, or feed `kit/meetings.json` into `content/meetings.json` for the
-offline site build ([SITE-CONTENT.md](SITE-CONTENT.md)).
+on the Meetings screen, or stage one verified entry for the offline site build
+([SITE-CONTENT.md](SITE-CONTENT.md)) with
+`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--location TEXT] [--replace]`,
+which writes `content/meetings/<id>.json` with a comment kit that cites published findings only;
+nothing is fetched, and `--replace` regenerates an existing file.
 
 ## Workspace Meetings screen
 
