@@ -116,5 +116,43 @@ class FlockRegionTest(unittest.TestCase):
         self.assertEqual(oct(os.stat(self.region / "ROSTER.csv").st_mode & 0o777), "0o600")
 
 
+    def test_plan_step5_starts_with_check_dry_run(self):
+        self.assertEqual(run("init", str(SAMPLE), "--store", str(self.store))[0], 0)
+        plan_path, watch_path, roster_path = (self.region / n for n in ("PLAN.md", "WATCHLIST.csv", "ROSTER.csv"))
+        w, t = str(watch_path), "python3 tools/"
+        step5 = ("5. anyone, no network: %sflock_monitor.py check %s; then operator only (fetches official index pages): "
+                 "%sflock_monitor.py scan %s --store %s" % (t, w, t, w, self.store))
+        sections = plan_path.read_text(encoding="utf-8").split("\n## ")[1:]
+        self.assertEqual(len(sections), 3)
+        for section in sections:
+            lines = section.splitlines()
+            if "in_scope: no" in section:
+                self.assertEqual(lines[2:], ["out of scope"])
+                continue
+            self.assertEqual([x for x in lines if x.startswith("5. ")], [step5], section)
+            self.assertEqual([x[:3] for x in lines if x[:1].isdigit()], ["1. ", "2. ", "3. ", "4. ", "5. ", "6. ", "7. ", "8. "])
+            self.assertFalse([x for x in lines if "operator only" in x and not x.startswith("5. ")])
+            if "in_scope: hold" in section:
+                self.assertEqual(lines[-1], "HOLD: operator applicability line required before step 7")
+
+        before_files, before_stat = self.files(), watch_path.stat()
+        done = subprocess.run([sys.executable, "-B", str(ROOT / "tools" / "flock_monitor.py"), "check", w],
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.splitlines()[-1], "rows=3 fetch=2 social=1 errors=0")
+        self.assertEqual(self.files(), before_files)
+        after = watch_path.stat()
+        self.assertEqual((after.st_mtime_ns, after.st_ino), (before_stat.st_mtime_ns, before_stat.st_ino))
+
+        old = ("5. operator only (fetches official index pages): %sflock_monitor.py scan %s --store %s"
+               % (t, w, self.store))
+        plan_path.write_text(plan_path.read_text(encoding="utf-8").replace(step5, old), encoding="utf-8")
+        csv_before = {p: (p.read_bytes(), p.stat().st_ino) for p in (watch_path, roster_path)}
+        code, out = run("init", str(SAMPLE), "--store", str(self.store))
+        self.assertEqual((code, out), (0, "agencies=3 folders_created=0 watch_rows=3 watch_dropped=0 roster_rows=3\n"))
+        self.assertEqual(plan_path.read_text(encoding="utf-8").count(step5), 2)
+        self.assertEqual({p: (p.read_bytes(), p.stat().st_ino) for p in csv_before}, csv_before)
+
+
 if __name__ == "__main__":
     unittest.main()

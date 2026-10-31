@@ -143,7 +143,8 @@ def plan(cfg, store, rdir):
                   "3. R1 policy URL (research-grok), then L1-style POLICY rows: %sflock_law_policy.py --check %s"
                   % (t, folder / "POLICY.csv"),
                   "4. REQUESTS rows: %sflock_requests.py due %s" % (t, folder / "REQUESTS.csv"),
-                  "5. operator only (fetches official index pages): %sflock_monitor.py scan %s --store %s" % (t, w, store),
+                  "5. anyone, no network: %sflock_monitor.py check %s; then operator only (fetches official index pages): "
+                  "%sflock_monitor.py scan %s --store %s" % (t, w, t, w, store),
                   "6. %sflock_sweep.py status %s" % (t, lists),
                   "7. [RUN] compare/verify cards per %sflock_sweep.py plan %s" % (t, lists),
                   "8. F9 export, then a site location card data/locations/%s.json" % site if site
