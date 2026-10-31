@@ -94,6 +94,9 @@ def check(c, seed_dir=None):  # -> ["config: <field> <reason>", ...]
              ("CONFIG", not under(c["path"], REPO), "is inside the repository")]
     rules += [(f, under(c[k], c["out"]), "is not under review.out") for f, k in (("facts_intake.fact_store", "FO"), ("rules_intake.out", "RO"),
                                                                                   ("compare.out", "CO"))]
+    # step roots must be apart (each stage snapshots its whole root); facts_intake.fact_store names FO, its parent folder
+    roots = (("facts_intake.fact_store", "FO"), ("rules_intake.out", "RO"), ("compare.out", "CO"))
+    rules += [(b, not (under(c[x], c[y]) or under(c[y], c[x])), "overlaps " + a) for i, (a, x) in enumerate(roots) for b, y in roots[i + 1:]]
     rules += [(f, have == want, "is not the expected path under its step output") for f, have, want in (
         ("compare.facts", c["facts"], FO / "store" / "agencies" / slug / "FACTS.csv"), ("compare.facts_meta", P(cp.get("facts_meta")), FO / "FACTS-META.csv"),
         ("compare.requirements", P(cp.get("requirements")), RO / "REQUIREMENTS.csv"),
