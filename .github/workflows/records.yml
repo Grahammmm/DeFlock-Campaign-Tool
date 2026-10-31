@@ -36,7 +36,7 @@ jobs:
       - name: Changed-area source tests (disjoint shards)
         env:
           TMPDIR: /var/tmp
-        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5
+        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5 --jobs 0
   offline:
     # Preserve the required check name, and fail closed on any failed shard.
     needs: affected
@@ -66,7 +66,7 @@ jobs:
         if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         env:
           TMPDIR: /var/tmp
-        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full
+        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --jobs 0
       - name: Public-tree credential and private-path scan
         run: python -B tools/check_public_tree.py
       - name: Every pin matches (main, nightly, dispatch)

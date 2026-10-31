@@ -126,7 +126,9 @@ def load_all(path):  # -> (law_rows, policy_rows, errors) for LAW.csv, POLICY.cs
         return ([], rows, errs) if is_policy else (rows, [], errs)
     law_rows, errs = load_law(p / "LAW.csv") if (p / "LAW.csv").is_file() else ([], [])
     linked = os.path.islink(p / "agencies")  # never follow or resolve a link: its name is not the agency it points at
-    policy_rows, files = [], [] if linked else sorted(p.glob("agencies/*/POLICY.csv"))
+    # lexists, not glob("agencies/*/POLICY.csv"): Python 3.11's glob drops a dangling POLICY.csv link unreported.
+    policy_rows, files = [], [] if linked else sorted(
+        d / "POLICY.csv" for d in p.glob("agencies/*") if d.is_dir() and os.path.lexists(d / "POLICY.csv"))
     errs += ["store: agencies is a link"] if linked else []
     if not files and not law_rows and not errs:
         errs.append("store: no LAW.csv or agencies/*/POLICY.csv found")
