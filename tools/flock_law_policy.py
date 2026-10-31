@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private LAW.csv + per-agency POLICY.csv: --check and versions. Prints ids, labels, dates, counts only."""
+"""Private LAW.csv + per-agency POLICY.csv: --check, versions and governing (each agency on a date). Prints ids, labels, dates, counts only."""
 import csv
 import hashlib
 import os
@@ -139,18 +139,34 @@ def load_all(path):  # -> (law_rows, policy_rows, errors) for LAW.csv, POLICY.cs
         errs += [f"{f.parent.name}: {x}" for x in e]
     return law_rows, policy_rows, errs
 
+def governs_on(rows, agency, on):  # the agency's rows in versions() order; with on, only adopted rows governing that day
+    return [r for r in sorted((r for _, r in rows if slug(r["agency"]) == agency), key=lambda r: (r["footer_version_date"], r["policy_row_id"]))
+            if not on or (r["adoption_evidence"] != "unverified" and r["governs_from"] <= on and (not r["governs_to"] or on <= r["governs_to"]))]
+
 def versions(rows, agency, on):
     out = []
-    for r in sorted((r for _, r in rows if slug(r["agency"]) == agency), key=lambda r: (r["footer_version_date"], r["policy_row_id"])):
+    for r in governs_on(rows, agency, on):
         adopted = r["adoption_evidence"] != "unverified"
-        if on and not (adopted and r["governs_from"] <= on and (not r["governs_to"] or on <= r["governs_to"])):
-            continue
         span = f"{r['governs_from']}..{r['governs_to'] or 'open'}" if adopted else "not established"
         out.append(f"{r['policy_row_id']} | {r['policy_id']} | {r['version_label']} | footer {r['footer_version_date']}"
                    f" | adoption {'verified' if adopted else 'unverified'} | governs {span}")
     return out
 
-USAGE = "usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
+def governing(law_rows, policy_rows, on):  # one line per agency (sorted slug), LAW rows in effect, counts; ids and dates only
+    out, n, agencies = [], {"governing": 0, "other_dates": 0, "unverified_only": 0}, sorted({slug(r["agency"]) for _, r in policy_rows})
+    for a in agencies:
+        hits, mine = governs_on(policy_rows, a, on), governs_on(policy_rows, a, None)
+        out += [f"governing | {a} | {r['policy_id']} | {r['version_label']} | governs {r['governs_from']}..{r['governs_to'] or 'open'}"
+                f" | policy_row {r['policy_row_id']}" for r in hits]
+        kind = "governing" if hits else "unverified_only" if all(r["adoption_evidence"] == "unverified" for r in mine) else "other_dates"
+        out += [] if hits else [f"governing | {a} | " + (f"none on {on} (adopted versions exist for other dates)" if kind == "other_dates"
+                                                       else f"none established (adoption unverified for all {len(mine)} rows)")]
+        n[kind] += 1
+    live = sum(r["effective_from"] <= on and (not r["effective_to"] or on <= r["effective_to"]) for _, r in law_rows)
+    return out + [f"law in effect on {on}: {live} of {len(law_rows)} rows",
+                  f"agencies={len(agencies)} " + " ".join(f"{k}={v}" for k, v in n.items()) + " | research view, not a legal conclusion"]
+
+USAGE = "usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD] | governing STORE --on YYYY-MM-DD"
 
 def main(argv):
     try:
@@ -165,6 +181,13 @@ def run(argv):
     if len(argv) == 2 and argv[0] == "--check":
         law_rows, policy_rows, errs = load_all(argv[1])
         print("\n".join(errs + [f"law={len(law_rows)} policy={len(policy_rows)} errors={len(errs)}"]))
+        return 1 if errs else 0
+    if argv[:1] == ["governing"]:  # STORE must be a directory; any store error -> stderr, nothing on stdout, exit 1
+        if len(argv) != 4 or argv[2] != "--on" or not day(argv[3]) or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        law_rows, policy_rows, errs = load_all(argv[1])
+        print("\n".join(errs or governing(law_rows, policy_rows, argv[3])), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 0
     on = argv[5] if len(argv) == 6 else None
     if len(argv) not in (4, 6) or argv[0] != "versions" or argv[2] != "--agency" or (on and (argv[4] != "--on" or not day(on))):
