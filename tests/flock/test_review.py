@@ -418,6 +418,60 @@ class FlockReviewTest(unittest.TestCase):
         self.assertIn("stage assess WAITING (changed since mark)", tool("run", config)[1])
         self.assertIn("\n13 assess wait waiting anthropic/claude-opus-5-5 (changed since mark)\n", self.status(config))
 
+    def move(self, config, out, *moves):  # RF0905-4: move step roots (and every path under them) by path-prefix rewrite
+        text = config.read_text()
+        for old, new in moves:
+            new = new if new.startswith("~") else str(out / new)
+            text = text.replace('"%s/' % (out / old), '"%s/' % new).replace('"%s"' % (out / old), '"%s"' % new)
+        config.write_text(text)
+        return config
+
+    def check_out(self, config, env=None):
+        done = subprocess.run([sys.executable, "-B", str(TOOL), "--check", str(config)], capture_output=True, text=True, check=False, env=env)
+        return done.returncode, done.stdout
+
+    def test_check_refuses_overlapping_step_roots(self):
+        ok, one = (0, "stages=28 skip=2 errors=0\n"), "config: %s overlaps %s\nstages=28 skip=2 errors=1\n"
+        cr, rf = one % ("compare.out", "rules_intake.out"), one % ("rules_intake.out", "facts_intake.fact_store")
+        cases = [("disjoint", (), ok), ("sibling prefix", (("compare", "rules2"),), ok), ("equal", (("compare", "rules"),), (1, cr)),
+                 ("nested", (("compare", "rules/cmp"),), (1, cr)), ("reverse nested", (("rules", "compare/rules"),), (1, cr)),
+                 ("facts root", (("rules", "facts/rules"),), (1, rf)),
+                 ("all equal", (("rules", "facts"), ("compare", "facts")),
+                  (1, "config: rules_intake.out overlaps facts_intake.fact_store\nconfig: compare.out overlaps facts_intake.fact_store\n"
+                      "config: compare.out overlaps rules_intake.out\nstages=28 skip=2 errors=3\n"))]
+        for n, (name, moves, want) in enumerate(cases):
+            with self.subTest(name):
+                config, p = make_review(self.tmp / str(n))
+                self.assertEqual(self.check_out(self.move(config, p["out"], *moves)), want)
+
+    def test_check_overlap_uses_real_paths(self):
+        config, p = make_review(self.tmp / "home")
+        self.move(config, p["out"], ("compare", "~/rules/cmp"))
+        self.assertEqual(self.check_out(config, env=dict(os.environ, HOME=str(p["out"]))),
+                         (1, "config: compare.out overlaps rules_intake.out\nstages=28 skip=2 errors=1\n"))
+        config, p = make_review(self.tmp / "link")
+        (p["RO"] / "sub").mkdir(parents=True)
+        (p["out"] / "cmp").symlink_to(p["RO"] / "sub")
+        self.move(config, p["out"], ("compare", "cmp"))
+        self.assertEqual(self.check_out(config), (1, "config: compare.out overlaps rules_intake.out\nstages=28 skip=2 errors=1\n"))
+
+    def test_overlap_refused_before_work_and_in_batch(self):
+        made = [make_review(self.tmp / s, slug=s) for s in (SLUG, "second-city-police", "campus-police")]
+        (self.tmp / "list.txt").write_text("\n".join(str(m[0]) for m in made) + "\n")
+        states = []
+        for n in range(2):
+            if n:
+                config, p = made[0][0], made[0][1]
+                self.move(config, p["out"], ("rules", "compare/rules"))
+                code, out = tool("run", config)
+                self.assertEqual((code, out.splitlines()[0]), (1, "config: compare.out overlaps rules_intake.out"), out)
+                self.assertEqual((calls(p), (p["out"] / ".review").exists(), (p["out"] / "REVIEW-STATE.json").exists()), ([], False, False))
+            batch = [sys.executable, "-B", str(ROOT / "tools" / "flock_review_batch.py"), "status", str(self.tmp / "list.txt"),
+                     "--roster", str(FIX / "review-roster.csv"), "--out", str(self.tmp / ("batch%d" % n))]
+            subprocess.run(batch, capture_output=True, text=True, check=False)
+            states.append([row.split(",")[2] for row in (self.tmp / ("batch%d" % n) / "BATCH-STATUS.csv").read_text().splitlines()[1:]])
+        self.assertEqual((states[0][0] != "invalid", states[1]), (True, ["invalid"] + states[0][1:]))
+
 
 if __name__ == "__main__":
     unittest.main()

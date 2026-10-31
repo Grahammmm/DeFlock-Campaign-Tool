@@ -97,7 +97,9 @@ a picker-only bootstrap without a map), `data/*.geojson` and `vendor/*` when
 present. `public/` is regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
 over the output and fails on any hit. The command prints a manifest of every
-written file with its size.
+written file with its size. Meetings on or after the build date (the typed
+`starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
+three); `meetings.html` then lists `#past-meetings`, most recent first.
 
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted

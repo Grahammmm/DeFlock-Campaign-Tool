@@ -242,7 +242,7 @@ def verify_cmd(args):
 
 def meetings_cmd(args, root):
     from datetime import date
-    from .meetings import LegistarClient, default_opener, fixture_opener, relevant_events, write_meetings
+    from .meetings import LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, write_meetings
     read_config(root)
     if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
@@ -253,9 +253,26 @@ def meetings_cmd(args, root):
     client = LegistarClient(args.client, opener=opener)
     since = date.fromisoformat(args.since) if args.since else None
     meetings = relevant_events(client, since=since)
-    target = write_meetings(root, meetings, args.client)
-    print(json.dumps({"client": args.client, "matched_meetings": len(meetings), "written": str(target),
-                      "note": "keyword hits only; verify the posted agenda before publishing"}, indent=2))
+    previous = _read_previous(root / "kit" / "meetings.json")
+    changes = ({"previous": previous} if previous == "unreadable"
+               else compare_meetings(previous, meetings, args.client, since or date.today()))
+    target = write_meetings(root, meetings, args.client, None if previous is None else changes)
+    report = {"client": args.client, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"]}
+    if "added" in changes:
+        report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
+    print(json.dumps(dict(report, note="keyword hits only; verify the posted agenda before publishing"), indent=2))
+
+
+def _read_previous(path):
+    """Previous kit/meetings.json: None if absent; "unreadable" for a symlink, > 4 MiB, non-UTF-8 or non-JSON."""
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
+            data = handle.read(4 * 1024 * 1024 + 1)
+        return (json.loads(data.decode("utf-8")) or "unreadable") if len(data) <= 4 * 1024 * 1024 else "unreadable"
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError):
+        return "unreadable"
 
 
 def main():
