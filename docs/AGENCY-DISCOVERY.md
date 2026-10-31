@@ -57,6 +57,8 @@ city names implied by `City of X` / `Town of X` jurisdiction names:
   `Sacramento`) raises `ValueError` listing the candidates; set
   `location_query` in `campaign.json` (or `init --location`) to the exact form.
 - Abbreviations (`SLO`) are not resolved; the error says how to fix it.
+- No match ends `Did you mean: <up to 3 seed labels>?` when a seed name is close
+  (closest first); a suggestion is never selected automatically.
 
 `kit` uses `campaign.json`'s `location_query` when present, otherwise
 `<county> County`. The resolved location is written back to `campaign.json` as
@@ -78,6 +80,7 @@ timeout, urllib, no key) and reads county and incorporated-place GEOIDs. The
 agencies still come from the seed; if the geocoder names a city that the seed
 does not list yet, `kit` stops and says so. Nothing else in the kit path uses
 the network, and tests never do.
+If the geocoder also fails, the error keeps the offline message, hint included, and the online reason.
 
 ## What the kit writes
 
