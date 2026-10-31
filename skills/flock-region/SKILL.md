@@ -1,7 +1,7 @@
 ---
 name: flock-region
 description: Use when starting Flock work in a new county. Drafts a region config from the engine agency seed, checks it, and scaffolds the private store (agency folders, WATCHLIST, ROSTER, PLAN.md) so one config and one skill run reach flock-sweep status.
-skill_version: 1.1
+skill_version: 1.2
 ---
 
 # Flock region
@@ -26,6 +26,7 @@ seed and never writes FACTS, POLICY, REQUESTS or LAW (F1, F2 and F5a own those).
 5. `python3 tools/flock_region.py init <config> --store <store>`: creates `agencies/<slug>/` for yes and
    hold, and writes `regions/<region>/WATCHLIST.csv`, `ROSTER.csv` and `PLAN.md` (0600, atomic). Rerun
    after each config edit: unchanged input is byte-identical and `last_seen_hash` values are kept.
+   After a config edit, run `init … --dry-run` first; check `would drop watch row` lines before the real init.
 6. Work the PLAN.md steps per agency. Step 5 starts with `flock_monitor.py check` (no
    network, anyone); `scan` stays operator-run.
 
@@ -43,3 +44,4 @@ seed and never writes FACTS, POLICY, REQUESTS or LAW (F1, F2 and F5a own those).
 ## Changelog
 
 - 1.1: PLAN step 5 starts with F7 check (dry run)
+- 1.2: step 5 runs `init --dry-run` first after a config edit
