@@ -1,7 +1,7 @@
 ---
 name: flock-page
 description: Use when turning one agency's checked Flock report into records-page story data. Builds <slug>-story.json from a model-written CARDS.json plus SOURCES.json and lints it fail-closed against the site rules (records emails only, one fact per card, number chains, cite everything, not-posted files invisible).
-skill_version: 1.0
+skill_version: 1.0.1
 ---
 
 # Flock page
@@ -41,6 +41,8 @@ skill). A clean lint is machine-valid and review-required, not editorial or lega
   a record not in the location documents reads `Request R, City records held by DeFlock SLO, not
   posted here.` with no id and no title. A rule keeps its SOURCES label.
 - It lints its own result first and writes nothing on any error.
+- A failed build leaves no temp file: the fresh `.tmp` is removed on any write, link or replace error (a
+  `.superseded-*` copy already made is kept).
 
 ## Lint rules
 - R1: thread messages only on location requests or `outreach` (outreach is dropped); no outreach in the story.

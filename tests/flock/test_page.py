@@ -1,5 +1,6 @@
-import json, stat, subprocess, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, stat, subprocess, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIX = ROOT / "tools" / "flock_page.py", ROOT / "tests" / "fixtures" / "flock" / "page"
@@ -59,6 +60,37 @@ class FlockPageTest(unittest.TestCase):
         self.assertEqual(len(old), 1)
         self.assertIn('"changed"', old[0].read_text(encoding="utf-8"))
         self.assertEqual(json.loads(self.out.read_text(encoding="utf-8"))["dek"], "One records request and the City files we have posted.")
+
+    def test_failed_build_leaves_no_temp_file(self):
+        spec = importlib.util.spec_from_file_location("flock_page_m1", TOOL)
+        page = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(page)
+        def main(folder, *extra):
+            args = ["build", "--cards", FIX / "cards.json", "--sources", FIX / "sources.json", "--location", FIX / "location.json",
+                    "--thread", FIX / "thread.json", "--base-sources", 8, "--out", folder / "sample-story.json", *extra]
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                return page.main([str(a) for a in args]), buf.getvalue()
+        def fails(name, folder, *extra):
+            with mock.patch.object(page.os, name, side_effect=OSError):
+                code, out = main(folder, *extra)
+            self.assertEqual(code, 1, out)
+            self.assertIn("io 0: OSError", out)
+            self.assertTrue(out.rstrip().endswith(" errors=1"), out)
+        folder = self.tmp / "m1"
+        folder.mkdir()
+        fails("replace", folder)  # first build: nothing is left behind
+        self.assertEqual(list(folder.iterdir()), [])
+        self.assertEqual(main(folder)[0], 0)
+        story = folder / "sample-story.json"
+        before = (story.read_bytes(), story.stat().st_ino, stat.S_IMODE(story.stat().st_mode))
+        fails("replace", folder, "--replace")  # superseded copy is kept by design
+        self.assertEqual((story.read_bytes(), story.stat().st_ino, stat.S_IMODE(story.stat().st_mode)), before)
+        self.assertEqual([p.name.split(".superseded-")[0] for p in folder.iterdir() if p != story], ["sample-story.json"])
+        for extra in folder.glob("*.superseded-*"):
+            extra.unlink()
+        fails("link", folder, "--replace")  # no copy was made, so nothing remains
+        self.assertEqual(list(folder.iterdir()), [story])
+        self.assertEqual(story.read_bytes(), before[0])
 
     def mutations(self):  # -> (expected "<area> <index>: <rule>", story, thread, extra args)
         def story(edit):

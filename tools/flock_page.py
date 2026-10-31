@@ -7,7 +7,7 @@ numbering cites after the page's N base sources; it lints its own result first a
 thread and location against site rules 1, 2, 3, 4, 7, 8, 9 and the draft tone; it prints `<area> <index>: <rule> <reason>` errors
 and counts (sources = numbered extraSources), never card text. No network. Exit 0 ok, 1 validation/lint/IO, 2 usage. Output is
 private (0600); site adoption and publication are a separate operator + G card."""
-import argparse, importlib.util, json, os, re, sys, tempfile
+import argparse, contextlib, importlib.util, json, os, re, sys, tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 TOOLS, REPO = Path(__file__).resolve().parent, Path(__file__).resolve().parents[1]
@@ -166,7 +166,7 @@ def report(errs, n):
     print("\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
     return 1 if errs else 0
 def build(args):
-    n, errs = dict.fromkeys(COUNTS, 0), []
+    n, errs, tmp = dict.fromkeys(COUNTS, 0), [], None
     try:
         out = Path(os.path.expanduser(args.out)).resolve()
         if out == REPO or REPO in out.parents:
@@ -185,10 +185,15 @@ def build(args):
                 old = out.with_name(out.name + ".superseded-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
                 os.link(out, old)  # keep the old file aside; never deleted
             os.replace(tmp, out)
+            tmp = None
     except Fail as exc:
         errs.append(str(exc))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         errs.append("io 0: %s" % type(exc).__name__)
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)  # a failed build leaves no temp file
     return report(errs, n)
 def run_lint(args):
     try:
