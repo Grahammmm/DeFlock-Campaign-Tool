@@ -371,6 +371,8 @@ class NativeExtractionTests(ExtractStageCase):
         work.mkdir(mode=0o700)
         fixture = work / "stub.json"
         fixture.write_text(json.dumps({"stub_fixture_version": 1, "stages": {}}), encoding="utf-8")
+        # AUD-DF1: a mode-test plan's run_stages call gets --require-sandbox; mark the synthetic project.
+        os.close(os.open(self.project / run_stages.SANDBOX_MARKER, os.O_CREAT | os.O_WRONLY, 0o600))
         stages = []
         for name in run_orchestrator.WORK_STAGES:
             if name == "extract":
