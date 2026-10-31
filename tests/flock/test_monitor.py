@@ -6,7 +6,10 @@ import io
 import shutil
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures" / "flock"
@@ -93,6 +96,36 @@ class MonitorTests(unittest.TestCase):
         monitor.scan(self.watchlist, self.store, DATE, fetch=fake)
         self.assertEqual(fake.calls, ["https://www.city.example/agendas", "https://www.city.example/news"])
         self.assertIn("https://www.city.example/files/packet.pdf", [r["url"] for r in rows(self.store / "MONITOR.csv")])
+
+    def test_check_is_a_zero_network_dry_run_and_fails_closed(self):
+        with mock.patch.object(urllib.request, "build_opener", side_effect=AssertionError), \
+                mock.patch.object(monitor, "fetch", side_effect=AssertionError):
+            before, stat = self.watchlist.read_bytes(), self.watchlist.stat().st_mtime_ns
+            code, out = self.run_main("check", str(self.watchlist))
+            self.assertEqual((code, out), (0, ["row 2: would fetch https://www.city.example/agendas",
+                                               "row 3: would fetch https://www.city.example/news",
+                                               "row 4: social, not fetched", "rows=3 fetch=2 social=1 errors=0"]))
+            self.assertEqual((self.watchlist.read_bytes(), self.watchlist.stat().st_mtime_ns), (before, stat))
+            self.assertEqual([p.name for p in self.watchlist.parent.iterdir()], ["WATCHLIST.csv"])  # no store, MONITOR.csv or .tmp
+            text = before.decode("utf-8")
+            for label, content, expect in (("pdf", text.replace("agendas", "agendas/a.pdf"), "row 2: url is a pdf"),
+                                           ("header", text.replace("agency,", "agent,", 1), "row 1: header is not the accepted header")):
+                with self.subTest(label):
+                    self.watchlist.write_text(content, encoding="utf-8")
+                    self.assertEqual(self.run_main("check", str(self.watchlist)), (1, [expect]))
+            code, out = self.run_main("check", str(self.watchlist.with_name("missing.csv")))
+            self.assertEqual((code, out), (1, ["io error: FileNotFoundError"]))
+
+    def test_fetch_error_mapping(self):
+        with mock.patch.object(urllib.request, "build_opener") as build:
+            for error, text in ((ValueError("bad"), "malformed url"), (urllib.error.URLError("down"), "network URLError")):
+                build.return_value.open.side_effect = error
+                with self.subTest(text), self.assertRaisesRegex(monitor.Refused, "^%s$" % text):
+                    monitor.fetch("https://www.city.example/agendas", "city.example")
+            build.reset_mock()
+            with self.assertRaises(monitor.Refused):
+                monitor.fetch("http://www.city.example/agendas", "city.example")
+            build.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

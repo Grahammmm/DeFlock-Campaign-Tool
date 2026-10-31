@@ -119,11 +119,21 @@ def private_store(store):
     if store == REPO or REPO in store.parents: raise Fail("store inside repository")
     return store
 
-def scan(watchlist, store, date, fetch=fetch):
+def validated(watchlist):  # rows of a valid watch list, else Fail with every row error
     rows = read_csv(watchlist, WATCH_HEADER)
     errors = ["row %d: %s" % (n, e) for n, row in rows for e in row_errors(row)]
     if errors:
-        raise Fail("\n".join(errors))  # before any fetch
+        raise Fail("\n".join(errors))
+    return rows
+
+def check(watchlist):  # dry run: the pages scan would fetch; no network, no store, no write
+    rows = validated(watchlist)
+    lines = ["row %d: %s" % (n, "social, not fetched" if r["kind"] == "social" else "would fetch " + r["url"]) for n, r in rows]
+    social = sum(r["kind"] == "social" for _, r in rows)
+    return lines + ["rows=%d fetch=%d social=%d errors=0" % (len(rows), len(rows) - social, social)]
+
+def scan(watchlist, store, date, fetch=fetch):
+    rows = validated(watchlist)  # before any fetch
     store, counts, out, new, changed = private_store(store), dict.fromkeys(COUNTS, 0), [], [], False
     monitor = [r for _, r in read_csv(store / "MONITOR.csv", MONITOR_HEADER, missing_ok=True)]
     known = {r["item_id"] for r in monitor}
@@ -175,12 +185,14 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     scan_p = sub.add_parser("scan", help="fetch each non-social WATCHLIST index page once and record new links")
     scan_p.add_argument("watchlist")
+    sub.add_parser("check", help="validate WATCHLIST and print the pages scan would fetch (no network, no writes)").add_argument("watchlist")
     for p, required in ((scan_p, False), (sub.add_parser("digest", help="write <store>/digest/<date>.md"), True)):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
     args = parser.parse_args(argv)
     try:
-        print("\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
+        print("\n".join(check(args.watchlist)) if args.command == "check"
+              else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else digest(args.store, args.date.isoformat()))
     except (Fail, OSError, UnicodeDecodeError) as err:
         print(err if isinstance(err, Fail) else "io error: %s" % type(err).__name__)
