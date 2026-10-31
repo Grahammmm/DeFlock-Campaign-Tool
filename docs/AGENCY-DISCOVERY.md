@@ -87,7 +87,7 @@ Under `<campaign>/kit/`:
 | --- | --- |
 | `agencies.json` | Organizer-owned list, `selected: true` by default. Never overwritten once it exists. |
 | `agencies.suggested.json` | Fresh suggestions on re-runs; `summary.json` reports the id diff count. |
-| `requests/<agency_id>.md` | One combined draft per selected sheriff/police/CHP agency covering every request scope in the law package. Stale drafts for deselected agencies are removed. |
+| `requests/<agency_id>.md` | One combined draft per selected sheriff/police/CHP agency covering every request scope in the law package. `kit/drafts-written.json` records the SHA-256 of each draft kit wrote; on a re-run a draft you edited is kept and named, and the fresh draft goes to `requests.suggested/<agency_id>.md`. Unedited drafts for deselected agencies are removed; files kit never wrote are kept. |
 | `governing-bodies.json` | Boards of supervisors, city councils and district attorneys (no request draft). |
 | `law.json` | Law-package summary, or `{"status": "missing"}` when none exists; drafts then come from `templates/records-request.md` with a banner. |
 | `summary.json` | Counts, location, package status, next steps, `sent: false`. |
