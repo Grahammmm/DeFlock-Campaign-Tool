@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Flock review batch: where every agency config in a list stands in the G1 pipeline, and what it waits for.
-  status LIST [--run] [--roster ROSTER.csv] [--golden-config CFG --golden-expect FILE] [--out DIR] | plan LIST [--max N] (N <= 2) [same options]
+  status LIST [--run] [--roster ROSTER.csv] [--golden-config CFG --golden-expect FILE] [--out DIR] | plan LIST [--max N] (N <= 2) [same options but --out]
 status is read-only and writes only <out>/BATCH-STATUS.csv. --run (needs the golden pair) advances every `ready` agency one flock_review
 `run` at a time (exit 3 = reached a wait stage; exit 1 = failed, the batch goes on). plan prints at most N `[RUN]` card bodies for
 agencies waiting on a model step. The Morro Bay golden must pass before --run or plan. Never runs a model, never touches kanban; no network.
@@ -28,9 +28,24 @@ def read_roster(path):
             reader = csv.DictReader(handle)
             if reader.fieldnames != ROSTER:
                 raise fr.Fail("roster: header must be " + ",".join(ROSTER))
-            return {(r.get("slug") or "").strip(): r for r in reader}
+            roster, rows = {}, {}
+            for n, r in enumerate(reader, 2):  # the header is row 1
+                slug = (r.get("slug") or "").strip()
+                if not slug or slug in rows:
+                    raise fr.Fail("roster row %d: " % n + ("slug already used on row %d" % rows[slug] if slug else "slug is empty"))
+                roster[slug], rows[slug] = r, n
+            return roster
     except (OSError, ValueError, csv.Error):
         raise fr.Fail("roster: ROSTER cannot be read") from None
+
+
+def out_dir(raw):  # checked before anything runs: an existing real folder, or a new one in a real folder; never a symlink
+    out = Path(os.path.abspath(os.path.expanduser(raw)))
+    if fr.under(out.resolve(), fr.REPO):
+        raise fr.Fail("out: --out is inside the repository")
+    if out.is_symlink() or not (out.is_dir() or (not os.path.lexists(out) and out.parent.is_dir() and not out.parent.is_symlink())):
+        raise fr.Fail("out: --out must be a real folder")
+    return out
 
 
 def read_list(path):  # -> [context, ...] in file order; an unreadable config stays in the list (it will be `invalid`)
@@ -159,10 +174,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if (args.run and args.command != "status") or not 1 <= args.max <= 2:
         parser.error("usage: status LIST [--run] | plan LIST [--max 1|2]")
+    if args.out and args.command == "plan":
+        parser.error("plan prints cards only; --out is for status")
     try:
-        out = Path(os.path.abspath(os.path.expanduser(args.out))) if args.out else None
-        if out and fr.under(out.resolve(), fr.REPO):
-            raise fr.Fail("out: --out is inside the repository")
+        out = out_dir(args.out) if args.out else None
         roster, entries = read_roster(args.roster) if args.roster else None, read_list(args.list)
         if args.run or args.command == "plan":
             gate(args)
