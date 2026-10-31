@@ -159,12 +159,10 @@ def coverage(args):
     if lacks:
         return print("inventory: header lacks %s" % ", ".join(lacks)) or 1
     docs, facts = {}, {}
-    for number, rec in enumerate(records[1:], 2):
-        if rec and len(rec) != len(head):
+    for number, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
+        if len(rec) != len(head):
             return print("inventory: row %d: columns have the wrong count" % number) or 1
-        if rec:
-            row = dict(zip(head, rec))
-            docs.setdefault(row["sha256"].strip(), []).append(row)
+        docs.setdefault((row := dict(zip(head, rec)))["sha256"].strip(), []).append(row)
     for _, row in load(path, slug)[1]:
         facts.setdefault(row["source_sha256"].strip(), []).append(row)
     withheld = {sha for sha, rows in docs.items() if any(r["analysis_only"] != "no" for r in rows)}
