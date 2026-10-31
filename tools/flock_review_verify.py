@@ -20,8 +20,8 @@ CHECKS = ["findings freeze: FINDINGS.csv sha256 must equal the plan's; a changed
 
 class PlanError(Exception): pass
 def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-def table(path):  # utf-8-sig: a spreadsheet's BOM is not part of the first header name; sha() still hashes the raw bytes
-    with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.reader(handle))
+def table(path):
+    with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.reader(handle))  # BOM is not header text; sha() hashes raw bytes
 def findings(path):
     with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.DictReader(handle))
 def cell(row, name): return (row.get(name) or "").strip()
