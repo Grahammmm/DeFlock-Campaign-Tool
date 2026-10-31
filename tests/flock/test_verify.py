@@ -126,6 +126,36 @@ class FlockVerifyTest(unittest.TestCase):
         self.assertEqual((out.read_bytes(), out.stat().st_ino), (data, ino))
         self.assertEqual(sorted(os.listdir(out.parent)), before)
 
+    def call(self, repo, *argv):  # in process, with the module's REPO patched to a temp "repository" root
+        import contextlib, importlib.util, io
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("_verify_rf5", TOOLS / "flock_verify.py")
+        verify, out = importlib.util.module_from_spec(spec), io.StringIO()
+        spec.loader.exec_module(verify)
+        with mock.patch.object(verify, "REPO", Path(repo)), contextlib.redirect_stdout(out):
+            return verify.main(list(argv)), out.getvalue()
+
+    def test_rundir_inside_repository_refused_before_writing(self):
+        import os
+        refused, snap = (1, "flock-verify: RUNDIR is inside the repository\n"), lambda d: {p.name: p.read_bytes() for p in d.iterdir()}
+        other = tempfile.TemporaryDirectory(); self.addCleanup(other.cleanup)
+        link, empty = Path(other.name) / "link", self.store / "empty"  # empty: no RUN.json, so 1 must beat family refusal 3
+        link.symlink_to(self.run_dir); empty.mkdir()
+        before = snap(self.run_dir)
+        self.addCleanup(os.chdir, os.getcwd()); os.chdir(self.run_dir)
+        for repo, rd in ((self.store, self.rd), (self.run_dir, self.rd), (self.store, str(link)), (self.store, "."), (self.store, str(empty))):
+            for argv in (("start", rd, "--provider", "openai", "--model", "gpt-5-codex"), ("finish", rd, "--golden", GOLDEN)):
+                self.assertEqual(self.call(repo, *argv), refused, (repo, argv))
+        self.assertEqual((snap(self.run_dir), snap(empty)), (before, {}))
+        self.assertEqual(run("flock_verify.py", "start", str(ROOT / "no-such-run"), "--provider", "openai", "--model", "m"), refused)
+
+    def test_lookalike_sibling_proceeds_and_check_is_not_guarded(self):
+        repo = self.store.with_name("repo"); repo.mkdir()
+        rd = str(self.store.rename(self.store.with_name("repo-copy")) / self.run_dir.relative_to(self.store))
+        self.assertEqual(self.call(repo, "start", rd, "--provider", "openai", "--model", "gpt-5-codex"), (0, "started verify run\n"))
+        shutil.copy(FIXTURES / "verify-sample.csv", Path(rd) / "VERIFY.csv")
+        self.assertEqual(self.call(Path(rd).parents[3], "--check", rd), (0, "verified=7 errors=0\n"))
+
 
 if __name__ == "__main__":
     unittest.main()
