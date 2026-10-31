@@ -77,8 +77,7 @@ class SkillCommandsTest(unittest.TestCase):
         tools = self.skill().parents[2]
         for name in ("flock_a.py", "flock_b.py", "flock_c.py"):
             (tools / name).touch()
-        commands = [("S", 1, "flock_a.py", None), ("S", 2, "flock_c.py", "run")]
-        self.assertEqual(coverage(commands, tools, {"flock_c.py": "why"}),
+        self.assertEqual(coverage([("S", 1, "flock_a.py", None), ("S", 2, "flock_c.py", "run")], tools, {"flock_c.py": "why"}),
                          ["flock_b.py: not quoted by any flock skill and not in NOT_IN_SKILLS",
                           "flock_c.py: in NOT_IN_SKILLS but quoted by a flock skill"])
 
