@@ -5,7 +5,7 @@ status is read-only and writes only <out>/BATCH-STATUS.csv. --run (needs the gol
 `run` at a time (exit 3 = reached a wait stage; exit 1 = failed, the batch goes on). plan prints at most N `[RUN]` card bodies for
 agencies waiting on a model step. The Morro Bay golden must pass before --run or plan. Never runs a model, never touches kanban; no network.
 Prints slugs, stage ids, states, counts and paths only. Exit 0 ok, 1 validation / gate / IO, 2 usage. done is not review or release."""
-import argparse, contextlib, csv, importlib.util, io, os, subprocess, sys
+import argparse, contextlib, csv, importlib.util, io, os, re, subprocess, sys
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -20,6 +20,8 @@ FACTS, RULES, COMPARE, VERIFY = ("sonnet-coder", "skills/agency-review/facts-int
     ("opus-coder-bopus", "skills/agency-review/compare steps 1-3, 6"), ("codex-reviewer", "G2 ## Verify + skills/flock-verify/PROMPT.md")
 LANES = {"fact-drafts": FACTS, "rules-read": RULES, "assess": COMPARE, "f3-findings": COMPARE, "verify": VERIFY, "f4": VERIFY}
 OTHER = {"anthropic": "openai", "openai": "anthropic"}
+# flock_review's own failure lines (ids, codes, exception names, paths); no control characters, so no free text or escapes pass
+REASON = re.compile(r"stage [a-z0-9][a-z0-9-]* failed rc=-?\d+ log=[^\x00-\x1f\x7f-\x9f]+|io: [A-Za-z_]\w*|locked: [^\x00-\x1f\x7f-\x9f]+", re.ASCII)
 
 
 def read_roster(path):
@@ -142,9 +144,12 @@ def advance(entries, roster):  # one flock_review run at a time, in list order; 
             done = subprocess.run([sys.executable, "-B", str(TOOLS / "flock_review.py"), "run", str(c["path"])], stdin=subprocess.DEVNULL,
                                   capture_output=True, check=False)
             rows[i] = agency(c, roster)
-            if done.returncode not in (0, 3):
-                rows[i]["state"] = "failed"
+            failed = done.returncode not in (0, 3)
+            rows[i]["state"] = "failed" if failed else rows[i]["state"]
             print("run %s rc=%d state=%s" % (c["slug"], done.returncode, rows[i]["state"]))
+            if failed:  # the child's own failure line from stdout only (never stderr or free text), else a fixed form
+                why = [x for x in (done.stdout or b"").decode("utf-8", "replace").splitlines() if REASON.fullmatch(x)]
+                print("run %s reason: %s" % (c["slug"], why[-1][:300] if why else "unknown (see flock_review status %s)" % c["path"]))
     return rows
 
 
