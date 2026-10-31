@@ -12,7 +12,7 @@ file or document that is its evidence.
 | Part | What it does | Evidence |
 | --- | --- | --- |
 | Records engine run | One records run per timer slot (07:00, 13:00 and 20:30 America/Los_Angeles): overlap lock, image pin check, the stage orchestrator, then a non-fatal notify. Its machine-valid run report is review-required, not semantic acceptance of the run. | `deploy/records-runtime/README.md`, `campaign_tool/records/run_orchestrator.py`, `schemas/records-run-report-v1.json` |
-| Records stages | Intake, extract (native text; the Phase 2 plans add local OCR for pages without a text layer, held for visual review), catalog, detect, review with an independent challenge pass, compare and privacy, in one ledger. Nothing is published or sent by a run. | [RECORDS-RUNTIME.md](RECORDS-RUNTIME.md), [RECORDS-OCR.md](RECORDS-OCR.md), `campaign_tool/records/extract/ocr.py` |
+| Records stages | Sync, delta, adoption, portal, extract, digest_gates and outputs, then non-fatal notify, which sends a metadata-only Telegram message. Phase 2 OCR targets are optional, not the default live extract; OCR live wiring (T6) is not done. | `deploy/records-runtime/README.md`, [RECORDS-OCR-STAGE.md](RECORDS-OCR-STAGE.md) |
 
 Which engine build is installed is recorded by the Flock coordinator, not in this repository.
 
@@ -29,6 +29,8 @@ mail or publishes anything.
 | Flock monitor, sweep, region | Index-page monitoring (links recorded, never fetched), watch-list sweep status and plans, county region scaffolds. | `tools/flock_monitor.py`, `tools/flock_sweep.py`, `tools/flock_region.py`, `skills/flock-monitor/`, `skills/flock-sweep/`, `skills/flock-region/` |
 | Flock review, report, page | The staged review run, its report draft and a page draft. | `tools/flock_review.py`, `tools/flock_report.py`, `tools/flock_page.py`, `skills/flock-review/`, `skills/flock-page/` |
 | Flock publish exporter | Writes `PUBLISH.json` with every entry pending human review; publication needs G. | `tools/flock_publish.py`, `skills/flock-publish/` |
+| Offline records pipeline | `records run` preserves intake and advances extract, catalog, detect, review with an independent challenge, compare and privacy in one ledger. This command does not publish or send; approval and publication are separate commands. | `campaign_tool/records/run.py` |
+| Local OCR helper | Bounded local OCR for preserved PDF pages; extracted text remains unreviewed and requires visual review. This shipped helper does not establish live OCR wiring. | `campaign_tool/records/extract/ocr.py`, [RECORDS-OCR.md](RECORDS-OCR.md) |
 | Offline starter CLI | Agency discovery, request kit, static site build, newsletter drafts, Legistar import, backup/verify/restore. | `README.md`, [LAUNCH.md](../LAUNCH.md) |
 
 ## Offline-only, frozen (G 2026-10-31)
