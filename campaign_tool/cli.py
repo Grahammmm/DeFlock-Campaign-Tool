@@ -255,6 +255,14 @@ def verify_cmd(args):
     print(json.dumps(report, indent=2))
 
 
+def backup_diff_cmd(args, root):
+    from .backup import diff
+    report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256)
+    print(json.dumps(report, indent=2))
+    if not report["current"]:
+        sys.exit(3)
+
+
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
@@ -338,6 +346,10 @@ def main():
     verify_p = commands.add_parser("verify", help="Re-hash every member of a backup against its manifest")
     verify_p.add_argument("--file", required=True)
     verify_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`, kept apart from the archive")
+    diff_p = commands.add_parser("backup-diff", help="List files added/removed/changed since a backup (read-only; exit 3 on drift)")
+    diff_p.add_argument("--file", required=True)
+    diff_p.add_argument("--directory", required=True)
+    diff_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
@@ -374,6 +386,8 @@ def main():
             backup_cmd(args, root)
         elif args.command == "restore":
             restore_cmd(args, root)
+        elif args.command == "backup-diff":
+            backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":

@@ -323,6 +323,43 @@ def export(root, out_path):
     return manifest
 
 
+DIFF_NAME_CAP = 200
+
+
+def diff(archive, root, expected_manifest_sha256=None):
+    """Names added/removed/changed in ``root`` since the backup; re-verifies first, writes nothing in ``root``."""
+    report = verify(archive, expected_manifest_sha256=expected_manifest_sha256)
+    with tarfile.open(archive, mode="r:") as tar:
+        manifest = _read_manifest(tar)
+    if manifest["manifest_sha256"] != report["manifest_sha256"]:
+        raise BackupError("manifest_digest_mismatch: archive changed during diff")
+    root = Path(root).resolve()
+    if not (root / "campaign.json").is_file():
+        raise BackupError("campaign.json not found; is this a campaign directory?")
+    if (root / "private").is_symlink():
+        raise BackupError("unsafe_private_directory: private must not be a symlink")
+    with tempfile.TemporaryDirectory(prefix="deflock-diff-") as tmp:
+        members = dict(_members(root))
+        ledger = root / "private" / "ledger.sqlite"
+        if ledger.exists() or ledger.is_symlink():
+            if not ledger.is_file() or ledger.is_symlink():
+                raise BackupError("invalid_ledger: expected a regular non-symlink file")
+            # Same rule as export: hash a consistent temp snapshot, never the live file.
+            members["private/ledger.sqlite"] = _snapshot_ledger(ledger, tmp)
+        live = {name: {"sha256": _sha256(path), "bytes": path.stat().st_size} for name, path in members.items()}
+    old = manifest["files"]
+    lists = {"added": sorted(set(live) - set(old)), "removed": sorted(set(old) - set(live)),
+             "changed": sorted(n for n in set(old) & set(live)
+                               if (old[n]["sha256"], old[n]["bytes"]) != (live[n]["sha256"], live[n]["bytes"]))}
+    result = {"archive_created_at": manifest.get("created_at"), "current": not any(lists.values())}
+    result.update({key: names[:DIFF_NAME_CAP] for key, names in lists.items()})
+    result["unchanged"] = len(set(old) & set(live)) - len(lists["changed"])
+    more = {key: len(names) - DIFF_NAME_CAP for key, names in lists.items() if len(names) > DIFF_NAME_CAP}
+    if more:
+        result["more"] = more
+    return result
+
+
 def _safe_name(name):
     if not isinstance(name, str) or not name or name.startswith("/") or "\\" in name or "\x00" in name:
         return False

@@ -79,6 +79,15 @@ Python API: `backup.export(root, out_path) -> manifest` (with `manifest_sha256`)
 `backup.restore(path, root) -> report`, `backup.export_hosted(client, out_path) -> manifest`
 where `client.get(path) -> bytes` is bound to the runner token.
 
+`python3 -m campaign_tool backup-diff --file backup.tar --directory D [--expect-manifest-sha256 <digest>]`
+answers "is my backup current?". It re-verifies the archive first (a damaged or rewritten
+archive stops with `Stopped: ...`, exit 1, and no diff), then compares the manifest with the
+files a new `backup` of D would include and prints JSON: `current`, sorted `added`, `removed`
+and `changed` names (each capped at 200, the rest counted under `more`) and `unchanged`.
+Names only, no hashes or content. Exit 0 when current, 3 on drift. The ledger is hashed from
+a temporary snapshot, as in `backup`; nothing is written in D or the archive.
+Python API: `backup.diff(archive, root, expected_manifest_sha256=None) -> report`.
+
 ## Hosted campaigns
 
 - `GET /api/export.json` (Access-protected) streams every D1 table for the campaign, table
