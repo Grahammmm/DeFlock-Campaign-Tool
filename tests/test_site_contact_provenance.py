@@ -120,7 +120,7 @@ class ContactProvenanceTests(unittest.TestCase):
     def test_bad_source_url_is_refused_naming_the_field(self):
         self.build()
         for url in ("http://records.example.org/contact", "javascript:alert(1)", 'https://records.example.org/"<b>x',
-                    "https://user:pw@records.example.org/", "", None, 7, " https://records.example.org/"):
+                    "https://user:pw@records.example.org/", "", None, 7, " https://records.example.org/"):  # pragma: allowlist secret -- synthetic rejected URL
             with self.subTest(url=url):
                 self.assert_refused(agency("police", verified=True, verification={**GOOD, "source_url": url}),
                                     ".verification.source_url")
