@@ -50,6 +50,15 @@ EXTRA_CSS = """
 .signup-form{max-width:480px}.signup-row{display:flex;gap:.5rem}.signup-row input{flex:1;padding:.75rem;font:inherit;border:1px solid var(--line)}.signup-row button{font:inherit;font-weight:700;background:var(--coral);color:#fff;border:0;padding:.75rem 1.1rem;cursor:pointer}
 .city-panel-static{position:relative}.city-panel-static .city-picker{position:static;margin-bottom:1.5rem;box-shadow:none;padding:0}
 .site-footer p{margin:0}.site-footer a{color:inherit}
+@media print{
+/* Print: chrome removed, black on white, external link addresses after the text */
+.skip-link,.site-nav,.banner-signup-link,.hero,.city-picker,.map-key,.map-credit,.signup-form,.signup-embed,iframe,dialog{display:none!important}
+body,.topbar,.campaign-banner,.site-footer,.finding-list li,.notice,.source-table code{background:#fff!important;color:#000!important;box-shadow:none!important}
+.section{padding:0 0 1rem;max-width:none}a{color:#000}
+a[href^="http"]::after{content:" (" attr(href) ")";font-size:.85em;overflow-wrap:anywhere}
+.finding-body h3,.source-table li,.meeting-list article,.agency-document-group{break-inside:avoid}h2,h3{break-after:avoid}
+details::details-content{content-visibility:visible;display:block}details>summary{list-style:none}
+}
 """
 
 
@@ -328,6 +337,8 @@ class Site:
                 links.append(f'<a href="{e(agency["flock_transparency_url"])}" rel="noopener noreferrer">Flock transparency portal</a>')
             if sources:
                 links.append(f'<a href="/sources.html#{e(self.fragment_for_agency[agency["agency_id"]])}">{len(sources)} source record(s)</a>')
+            if findings:
+                links.append(f'<a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">Findings feed</a>')
             body = (f'<p class="eyebrow">{e(KIND_LABELS[agency["kind"]])}</p><h3>{e(agency["name"])}</h3>'
                     f'<p>{e(agency["jurisdiction_name"])}</p><p><span class="status-pill">{e(agency["profile"]["status"])}</span></p>'
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
@@ -544,17 +555,33 @@ class Site:
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
     def feed_xml(self):
+        return self._atom(self.cfg["name"] + " findings", "/feed.xml", "/", "", self.model["findings"])
+
+    def agency_feeds(self):
+        """``{"findings/agency/<slug>.xml": atom}`` for each agency with a published finding, model order."""
+        feeds = {}
+        for agency in self.model["agencies"]:
+            findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
+            if findings:
+                slug = agency["slug"]
+                feeds[f"findings/agency/{slug}.xml"] = self._atom(
+                    f'{self.cfg["name"]} findings: {agency["name"]}', f"/findings/agency/{slug}.xml",
+                    f"/agencies.html#{slug}", f":agency:{slug}", findings)
+        return feeds
+
+    def _atom(self, title, self_path, alternate_path, urn_suffix, findings):
         ns = "http://www.w3.org/2005/Atom"
         ET.register_namespace("", ns)
         feed = ET.Element(f"{{{ns}}}feed")
-        ET.SubElement(feed, f"{{{ns}}}title").text = self.cfg["name"] + " findings"
-        ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + "/feed.xml") if self.base else "urn:deflock-campaign:" + re.sub(r"[^a-z0-9]+", "-", self.cfg["name"].lower())
-        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/feed.xml", rel="self")
-        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/")
-        latest = max((f["updated_at"] or f["published_at"] for f in self.model["findings"]), default=None)
+        ET.SubElement(feed, f"{{{ns}}}title").text = title
+        campaign_urn = "urn:deflock-campaign:" + re.sub(r"[^a-z0-9]+", "-", self.cfg["name"].lower())
+        ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + self_path) if self.base else campaign_urn + urn_suffix
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + self_path, rel="self")
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + alternate_path)
+        latest = max((f["updated_at"] or f["published_at"] for f in findings), default=None)
         ET.SubElement(feed, f"{{{ns}}}updated").text = latest or datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
         ET.SubElement(ET.SubElement(feed, f"{{{ns}}}author"), f"{{{ns}}}name").text = self.cfg["name"]
-        for finding in self.model["findings"]:
+        for finding in findings:
             entry = ET.SubElement(feed, f"{{{ns}}}entry")
             ET.SubElement(entry, f"{{{ns}}}title").text = finding["title"]
             ET.SubElement(entry, f"{{{ns}}}id").text = "urn:deflock-finding:" + finding["id"]
@@ -645,6 +672,7 @@ def build_site(root, today=None):
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
         "app.js": site.app_js(),
     })
+    files.update(site.agency_feeds())
     plan = []
     if model["map"]:
         found = model["map"]

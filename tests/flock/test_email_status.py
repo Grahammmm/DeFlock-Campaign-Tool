@@ -1,11 +1,13 @@
 """flock_email status STORE: each agency run's email stage, read back from the drafts; sent without approval fails (RF1140-9)."""
-import os, shutil, subprocess, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
+
+from tests.flock.approval_field import trusted, write_field
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIXTURES = ROOT / "tools" / "flock_email.py", ROOT / "tests" / "fixtures" / "flock"
 SLUG, OTHER = "sample-city-police-department", "second-town"
-APPROVE, SENT = "G APPROVED: ____", "Sent by: ____ (operator, by hand, after G's reply)"
+SENT = "Sent by: ____ (operator, by hand, after G's reply)"
 TAIL = " | records only what the files say"
 LEAKS = ("@", "city.example", "Subject", "CPRA request", "Alex", "ref X", "To:")
 
@@ -14,9 +16,20 @@ def run(*argv):
     return subprocess.run([sys.executable, "-B", str(TOOL), *map(str, argv)], capture_output=True, text=True)
 
 
-def totals(runs=0, followup=0, drafted=0, approved=0, sent=0, malformed=0, inconsistent=0):
+def totals(runs=0, followup=0, drafted=0, approved=0, sent=0, malformed=0, inconsistent=0, ua=0, us=0, checked=False):
+    note = "; signatures not checked here (flock_approve.py status STORE checks them)" * bool((ua or us) and not checked)
     return (f"email | runs={runs} followup={followup} drafted={drafted} approved={approved} sent={sent} "
-            f"malformed={malformed} inconsistent={inconsistent}{TAIL}")
+            f"malformed={malformed} inconsistent={inconsistent} unverified_approval={ua} unverified_sent={us}{TAIL}{note}")
+
+
+def approved_status(store):
+    """flock_approve.py status STORE in-process with the test approver trusted: signatures checked."""
+    spec = importlib.util.spec_from_file_location("_status_flock_approve", ROOT / "tools" / "flock_approve.py")
+    tool = spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), trusted():
+        code = tool.main(["status", str(store)])
+    return subprocess.CompletedProcess([], code, out.getvalue(), err.getvalue())
 
 
 def snapshot(base):
@@ -30,8 +43,9 @@ class StatusTests(unittest.TestCase):
         self.store = self.tmp / "store"
         (self.store / "agencies").mkdir(parents=True)
 
-    def make(self, date, slug=SLUG, email=True, approve=APPROVE, sent=SENT, store=None):
-        """A run folder with the sample follow-up and, when email is set, an EMAIL-DRAFT.md written by `draft` itself."""
+    def make(self, date, slug=SLUG, email=True, approve=False, sent=SENT, store=None, prose=""):
+        """A run folder with the sample follow-up and, when email is set, an EMAIL-DRAFT.md written by `draft` itself.
+        approve writes the EMAIL-APPROVAL.json state field; prose adds a sentence that must grant nothing."""
         agency = (store or self.store) / "agencies" / slug
         rundir = agency / "runs" / date
         rundir.mkdir(parents=True)
@@ -45,7 +59,9 @@ class StatusTests(unittest.TestCase):
             done = run("draft", rundir, "--drafts", self.tmp / f"drafts-{(store or self.store).name}")
             self.assertEqual(done.returncode, 0, done.stderr)
             path = rundir / "EMAIL-DRAFT.md"
-            path.write_text(path.read_text(encoding="utf-8").replace(APPROVE, approve).replace(SENT, sent), encoding="utf-8")
+            path.write_text(path.read_text(encoding="utf-8").replace(SENT, prose + sent), encoding="utf-8")
+            if approve:
+                write_field(rundir)
         return rundir
 
     def status(self, store=None):
@@ -57,15 +73,20 @@ class StatusTests(unittest.TestCase):
     def test_golden_ladder_one_line_per_run_and_writes_nothing(self):
         self.make("2026-10-01", email=False)
         self.make("2026-10-02")
-        self.make("2026-10-03", OTHER, approve="G APPROVED: 2026-10-31 ref X")
-        self.make("2026-10-04", OTHER, approve="G APPROVED: 2026-10-31 ref X", sent="Sent by: Alex 2026-10-31")
+        self.make("2026-10-03", OTHER, approve=True)
+        self.make("2026-10-04", OTHER, approve=True, sent="Sent by: Alex 2026-10-31")
         before = snapshot(self.tmp)
         done = self.status()
         self.assertEqual((done.returncode, done.stderr), (0, ""))
-        self.assertEqual(done.stdout.splitlines(), [
-            f"email | {SLUG} | 2026-10-01 | follow-up drafted", f"email | {SLUG} | 2026-10-02 | email drafted",
+        ladder = [f"email | {SLUG} | 2026-10-01 | follow-up drafted", f"email | {SLUG} | 2026-10-02 | email drafted"]
+        self.assertEqual(done.stdout.splitlines(), ladder + [  # flock_email cannot check a signature: never accepted
+            f"email | {OTHER} | 2026-10-03 | approval unverified", f"email | {OTHER} | 2026-10-04 | sent unverified",
+            totals(4, 1, 1, ua=1, us=1)])
+        done = approved_status(self.store)
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        self.assertEqual(done.stdout.splitlines(), ladder + [
             f"email | {OTHER} | 2026-10-03 | approval recorded", f"email | {OTHER} | 2026-10-04 | sent recorded",
-            totals(4, 1, 1, 1, 1)])
+            totals(4, 1, 1, 1, 1, checked=True)])
         self.assertEqual(snapshot(self.tmp), before)
 
     def test_sent_without_approval_is_inconsistent_exit_1(self):
@@ -76,27 +97,43 @@ class StatusTests(unittest.TestCase):
                                                     totals(1, inconsistent=1)])
 
     def test_filled_detection_edges(self):
-        cases = {"2026-10-01": ("G APPROVED:    ", SENT, "email drafted"),
-                 "2026-10-02": (APPROVE, "Sent by:   ", "email drafted"),
-                 "2026-10-03": ("G APPROVED: ok", "Sent by: ____ later", "approval recorded"),
-                 "2026-10-04": ("G APPROVED: ok", "Sent by: Alex 2026-10-31", "sent recorded"),
-                 "2026-10-05": ("G APPROVED:  ", "Sent by: Alex 2026-10-31", "inconsistent: sent without approval")}
-        for date, (approve, sent, _) in cases.items():
-            self.make(date, approve=approve, sent=sent)
-        done = self.status()
+        ok = "G APPROVED: G 2026-10-31 ok\n"  # a sentence; it must never count as approval
+        cases = {"2026-10-01": (False, SENT, "", "email drafted"),
+                 "2026-10-02": (False, "Sent by:   ", "", "email drafted"),
+                 "2026-10-03": (True, "Sent by: ____ later", "", "approval recorded"),
+                 "2026-10-04": (True, "Sent by: Alex 2026-10-31", "", "sent recorded"),
+                 "2026-10-05": (False, "Sent by: Alex 2026-10-31", "", "inconsistent: sent without approval"),
+                 "2026-10-06": (False, SENT, ok, "email drafted"),
+                 "2026-10-07": (False, "Sent by: Alex 2026-10-31", ok, "inconsistent: sent without approval")}
+        for date, (approve, sent, prose, _) in cases.items():
+            self.make(date, approve=approve, sent=sent, prose=prose)
+        done = approved_status(self.store)
         self.assertEqual(done.returncode, 1)
-        self.assertEqual(done.stdout.splitlines(), [f"email | {SLUG} | {d} | {want}" for d, (_, _, want) in cases.items()]
-                         + [totals(5, drafted=2, approved=1, sent=1, inconsistent=1)])
+        self.assertEqual(done.stdout.splitlines(), [f"email | {SLUG} | {d} | {c[-1]}" for d, c in cases.items()]
+                         + [totals(7, drafted=3, approved=1, sent=1, inconsistent=2, checked=True)])
 
     def test_malformed_drafts_each_exit_1(self):
-        cases = {"no-head": lambda t: t.split("\n", 1)[1], "two-approvals": lambda t: t + "G APPROVED: ok\n",
-                 "no-sent": lambda t: t.replace(SENT, ""), "wording": lambda t: t.replace(APPROVE, "g approved: yes"),
+        cases = {"no-head": lambda t: t.split("\n", 1)[1], "no-sent": lambda t: t.replace(SENT, ""),
                  "sent-twice": lambda t: t + "Sent by: Alex\n"}
         for name, edit in cases.items():
             with self.subTest(case=name):
                 store = self.tmp / name
                 path = self.make("2026-10-02", store=store) / "EMAIL-DRAFT.md"
                 path.write_text(edit(path.read_text(encoding="utf-8")), encoding="utf-8")
+                done = self.status(store)
+                self.assertEqual((done.returncode, done.stdout.splitlines()),
+                                 (1, [f"email | {SLUG} | 2026-10-02 | malformed", totals(1, malformed=1)]))
+        def field(path, **change):
+            rec = json.loads(path.with_name("EMAIL-APPROVAL.json").read_text(encoding="utf-8"))
+            path.with_name("EMAIL-APPROVAL.json").write_text(json.dumps({**rec, **change}), encoding="utf-8")
+        spoil = {"edited-after-approval": lambda p: p.write_text(p.read_text(encoding="utf-8").replace("CPRA", "CPRA (edit)"), encoding="utf-8"),
+                 "field-not-json": lambda p: p.with_name("EMAIL-APPROVAL.json").write_text("{", encoding="utf-8"),
+                 "state-is-prose": lambda p: field(p, state="G approved this"),
+                 "other-run": lambda p: field(p, subject=f"{SLUG}/2026-10-01")}
+        for name, edit in spoil.items():
+            with self.subTest(case=name):
+                store = self.tmp / name
+                edit(self.make("2026-10-02", store=store, approve=True) / "EMAIL-DRAFT.md")
                 done = self.status(store)
                 self.assertEqual((done.returncode, done.stdout.splitlines()),
                                  (1, [f"email | {SLUG} | 2026-10-02 | malformed", totals(1, malformed=1)]))
