@@ -1,9 +1,8 @@
 """``python3 -m campaign_tool.newsletter --directory D [--manifest FILE | --from-content [--since YYYY-MM-DD]]``.
 
-Builds kit/newsletter-draft.{html,txt,json}. ``--from-content`` builds the
-manifest from the campaign's own content/ (published findings, upcoming
-meetings). Without either the draft uses the campaign name and an empty
-findings list, which is useful to check the template. Nothing is sent.
+Builds kit/newsletter-draft.{html,txt,json}. Without either flag the draft
+uses the campaign name and an empty findings list, which is useful to check
+the template. Nothing is sent.
 """
 import argparse
 import json
@@ -17,13 +16,9 @@ from .draft import DraftError, build_draft, load_manifest, write_draft
 from .from_content import manifest_from_content
 
 
-def _day(value):
-    try:
-        parsed = date.fromisoformat(value)
-    except ValueError:
-        parsed = None
-    if parsed is None or parsed.isoformat() != value:
-        raise argparse.ArgumentTypeError(f"expected YYYY-MM-DD, got {value!r}")
+def _day(value):  # YYYY-MM-DD only; argparse turns the ValueError into exit 2
+    if date.fromisoformat(value).isoformat() != value:
+        raise ValueError(value)
     return value
 
 
@@ -37,19 +32,18 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.since and not args.from_content:
         parser.error("--since needs --from-content")
+    origin = "manifest" if args.manifest else "content" if args.from_content else "template"
     root = Path(args.directory).expanduser().resolve()
     try:
         cfg = read_config(root)
         if args.manifest:
-            manifest, origin = load_manifest(args.manifest), "manifest"
+            manifest = load_manifest(args.manifest)
         elif args.from_content:
-            since = args.since + "T00:00:00+00:00" if args.since else None
-            manifest, origin = manifest_from_content(root, cfg, since), "content"
+            manifest = manifest_from_content(root, cfg, args.since and args.since + "T00:00:00+00:00")
         else:
             manifest = {"schema_version": 1, "campaign": {"name": cfg["name"], "base_url": None,
                                                           "county_name": cfg["county"]},
                         "since": None, "findings": [], "meetings": []}
-            origin = "template"
         draft = build_draft(manifest)
         paths = write_draft(root, draft)
     except (OSError, ValueError, DraftError, ContentError, KeyError) as exc:

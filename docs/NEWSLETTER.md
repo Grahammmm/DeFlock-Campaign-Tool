@@ -52,12 +52,11 @@ content, non-https links or over-long fields (`DraftError`).
 
 Offline: `python3 -m campaign_tool.newsletter --directory D [--manifest FILE | --from-content
 [--since YYYY-MM-DD]]` writes `kit/newsletter-draft.html`, `.txt` and `.json`. `--from-content`
-builds the same manifest from the campaign's own `content/`: published findings (linked as
-`/findings/<slug>.html`, flagged corrected when they carry corrections) and meetings that are
-not `cancelled`; `--since` is a UTC day (midnight) and needs `--from-content`. The usual window
-still applies, so a finding corrected after `--since` but published before it is left out.
-Without either flag it renders the empty template from `campaign.json`. The printed JSON names
-the `source` (`content`, `manifest` or `template`). Nothing is sent.
+builds the manifest from `content/`: published findings (`/findings/<slug>.html`, corrected
+when they carry corrections) and meetings not `cancelled`; `--since` (UTC midnight) needs it.
+The window above still applies: a finding corrected after `--since` but published before it is
+left out. Without either flag it renders the empty template from `campaign.json`. The JSON
+names its `source` (`content`, `manifest` or `template`). Nothing is sent.
 
 ## Approve & send
 
