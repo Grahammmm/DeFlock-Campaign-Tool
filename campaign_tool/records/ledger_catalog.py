@@ -20,6 +20,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+from contextlib import closing
 
 MAX_ORIGINALS = 10000
 MAX_ROWS = 100000
@@ -323,14 +324,14 @@ def _capture(database, private_scratch):
     with tempfile.TemporaryDirectory(prefix=".catalog-read-", dir=root) as temporary:
         target = Path(temporary) / "ledger.sqlite"
         # A SQLite backup captures WAL state consistently without writing source.
-        with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5) as source:
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5)) as source, source:
             source.execute("PRAGMA query_only=ON")
             size = source.execute("PRAGMA page_count").fetchone()[0] * source.execute("PRAGMA page_size").fetchone()[0]
             _require(size <= MAX_DATABASE_BYTES, "database_capture_size_limit")
             deadline = time.monotonic() + CAPTURE_SECONDS
             def progress(status, remaining, total):
                 _require(time.monotonic() <= deadline, "database_capture_timeout")
-            with sqlite3.connect(target) as dest:
+            with closing(sqlite3.connect(target)) as dest, dest:
                 source.backup(dest, pages=256, sleep=0.01, progress=progress)
         target.chmod(0o600)
         yield target
@@ -341,7 +342,7 @@ def build(database, private_scratch, *, overlays=None, since=None, run_id=None):
     with _capture(database, private_scratch) as captured:
         # WP1 may install/check its own authority tables on this disposable copy.
         counts = query_counts(captured)
-        with sqlite3.connect(captured) as con:
+        with closing(sqlite3.connect(captured)) as con, con:
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA query_only=ON")
             return project(con, counts, overlays=overlays, since=since, run_id=run_id)

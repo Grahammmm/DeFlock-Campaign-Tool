@@ -12,6 +12,7 @@ from unittest import mock
 
 from campaign_tool.records import queue_runtime as runtime
 from campaign_tool.records import queue
+from contextlib import closing
 
 AVAILABLE = importlib.util.find_spec("campaign_tool.records.ledger") is not None
 
@@ -62,7 +63,7 @@ class QueueRuntimeTests(unittest.TestCase):
         self.run_id = "synthetic-runtime-run"
         self.config = hashlib.sha256(b"synthetic-runtime-config").hexdigest()
         stamp = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.database) as c:
+        with closing(sqlite3.connect(self.database)) as c, c:
             c.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)",
                       (self.run_id, "stage-runner", stamp, None, "synthetic-engine", None,
                        self.config, None, "running", "{}"))
@@ -97,7 +98,7 @@ class QueueRuntimeTests(unittest.TestCase):
         self.runner.set_content(subject, "preserve", self.raw[subject], author_id=self.runner.owner, tier="A")
 
     def claim_count(self):
-        with sqlite3.connect(self.database) as c:
+        with closing(sqlite3.connect(self.database)) as c, c:
             return c.execute("SELECT count(*) FROM stage_claims").fetchone()[0]
 
     def reopen(self, instance):
@@ -233,7 +234,7 @@ class QueueRuntimeTests(unittest.TestCase):
         result = self.open(other).advance()
         self.assertEqual(result["attempts"], [])
         self.assertEqual(self.claim_count(), 1)
-        with sqlite3.connect(self.database) as c:
+        with closing(sqlite3.connect(self.database)) as c, c:
             self.assertEqual(c.execute("SELECT owner FROM work_leases").fetchone()[0], self.runner.owner)
         self.assertTrue(claim["claim_id"])
 
@@ -277,7 +278,7 @@ class QueueRuntimeTests(unittest.TestCase):
     def test_finished_wp1_run_fails_closed(self):
         self.prepare()
         instance = self.open()
-        with sqlite3.connect(self.database) as c:
+        with closing(sqlite3.connect(self.database)) as c, c:
             c.execute("UPDATE runs SET status='complete',ended_at=? WHERE run_id=?",
                       (datetime.now(timezone.utc).isoformat(), self.run_id))
         with self.assertRaisesRegex(self.stages.StageError, "live_runner_run_required"):

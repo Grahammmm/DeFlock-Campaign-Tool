@@ -12,6 +12,7 @@ from unittest.mock import patch
 from campaign_tool.records import run_stages
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.outcomes import comparison as c
+from contextlib import closing
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).parent / "fixtures/outcome_comparison/fact-sheets.json"
@@ -241,7 +242,7 @@ class OutputsStage(unittest.TestCase):
         project = Path(tempfile.mkdtemp(prefix="synthetic-", dir=root))
         processing = project / "processing-v1"
         processing.mkdir()
-        with sqlite3.connect(processing / "ledger.sqlite") as db:
+        with closing(sqlite3.connect(processing / "ledger.sqlite")) as db, db:
             db.executescript(v001.SQL)
             db.executemany("INSERT INTO agencies(id,name,jurisdiction) VALUES(?,?,?)", [
                 ("synthetic-harbor-pd", "Invented Harbor Police", "us-ca"),
@@ -250,7 +251,7 @@ class OutputsStage(unittest.TestCase):
                        ("synthetic-ledger-request", "synthetic-ledger-only", "acknowledged", "2026-04-06", "2026-04-16", "2026-04-10"))
         portal = project / "portal-queue-v1"
         portal.mkdir()
-        with sqlite3.connect(portal / "portal.sqlite") as db:
+        with closing(sqlite3.connect(portal / "portal.sqlite")) as db, db:
             db.execute("CREATE TABLE portal_items(id TEXT)")
         if supplied:
             (project / c.INPUT_NAME).write_bytes(FIXTURE.read_bytes())

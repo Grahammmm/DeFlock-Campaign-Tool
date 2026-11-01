@@ -10,6 +10,7 @@ from unittest.mock import patch
 from campaign_tool.records.runner import core,migration
 from campaign_tool.records.runner.contracts import Folder,StageReceipt
 from tests.records import test_runner as fixtures
+from contextlib import closing
 
 
 class FairnessTests(unittest.TestCase):
@@ -236,7 +237,7 @@ class LifecycleTests(unittest.TestCase):
         f.invoke(backend=backend)
         row=f.query("SELECT attempts FROM runner_lifecycle WHERE run_id='"+old+"'")[0]
         self.assertEqual(row,(1,))
-        with sqlite3.connect(f.root/'runner.sqlite') as con:
+        with closing(sqlite3.connect(f.root/'runner.sqlite')) as con, con:
             with self.assertRaises(sqlite3.IntegrityError):
                 con.execute("UPDATE runner_lifecycle SET outcome='failed' WHERE run_id=?",(old,))
         f.time+=2;f.invoke(backend=backend)

@@ -16,6 +16,7 @@ import traceback
 import unittest
 from unittest import mock
 from urllib.parse import unquote
+from contextlib import closing
 
 
 FIXTURE_ROOT = None  # The evidence launcher may supply its retained run child.
@@ -111,7 +112,7 @@ class LocatorLexemeTests(unittest.TestCase):
                                functools.partial(factory, dir=self.root)):
             fixture.setUp()
         self.addCleanup(fixture.tearDown)
-        with sqlite3.connect(fixture.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(fixture.snapshot / "intake.sqlite")) as con, con:
             con.execute("UPDATE units SET locator=?,text=?", (locator, TEXT))
         fixture.refresh_manifest()
         result = self.store.import_legacy(fixture.snapshot, self.database)

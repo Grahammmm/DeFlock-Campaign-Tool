@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 import urllib.request
+from contextlib import closing
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = None  # Launcher-owned retained root; ordinary unittest owns cleanup.
@@ -143,7 +144,7 @@ class AliasGraphTests(unittest.TestCase):
         source = root / "source"
         source.mkdir(mode=0o700)
         database = root / "candidate" / "ledger.sqlite"
-        with sqlite3.connect(source / "intake.sqlite") as con:
+        with closing(sqlite3.connect(source / "intake.sqlite")) as con, con:
             con.executescript(LEGACY_SQL)
             for sha, form in ((self.mail_sha, "eml"), (self.part_sha, "txt")):
                 con.execute("INSERT INTO docs VALUES(?,?,?,?,?,?,?,?)",

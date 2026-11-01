@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from campaign_tool.digest.model import ModelConfig, ModelError
 from campaign_tool.records import challenge, stage_adapters
+from contextlib import closing
 
 
 def draft(locator=None, model_id="synthetic-primary"):
@@ -274,7 +275,7 @@ class ChallengeBoundaryTests(unittest.TestCase):
                 locators=['{"page": 1}'], challenges=[("factual", record)])
             self.assertEqual(result["status"], "blocked")
             self.assertTrue(result["disputed"])
-            with sqlite3.connect(fixture.database) as connection:
+            with closing(sqlite3.connect(fixture.database)) as connection, connection:
                 status, reason = connection.execute(
                     "SELECT status, reason FROM stage_state WHERE stage='review' AND original_sha256=?",
                     (fixture.subject,)).fetchone()

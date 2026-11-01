@@ -1,4 +1,5 @@
 """Host-contract tests only; synthetic providers are not installed authority."""
+from contextlib import closing
 import copy
 from dataclasses import replace
 import unittest
@@ -21,7 +22,7 @@ class SyntheticProvider:
 
 def fixture(detector="purpose-quality", zero=False):
     args, joins = context(detector, zero=zero)
-    with ledger(joins, args["source_bindings"]) as con:
+    with closing(ledger(joins, args["source_bindings"])) as con:
         bound = canonical_joins(con, args["source_bindings"])
     bindings = args["source_bindings"]
     originals = [{"original_sha256": identity} for identity in sorted({s["original_sha256"] for s in bindings})]

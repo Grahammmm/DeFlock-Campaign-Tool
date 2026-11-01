@@ -34,6 +34,7 @@ from campaign_tool.records import run as records_run
 from campaign_tool.records.ledger import store
 from campaign_tool.records.portal.policy import PortalError, parse_approval
 from tests.test_records_portal import NOW, policy_data
+from contextlib import closing
 
 REPO = Path(__file__).resolve().parents[1]
 SCHEMA = run_orchestrator.load_stage_result_schema()
@@ -322,7 +323,7 @@ class AdoptionBackupTests(StageTestCase):
             target = self.run_dir() / entry["name"]
             self.assertEqual(target.stat().st_size, entry["bytes"])
             self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), entry["sha256"])
-            with sqlite3.connect("file:%s?mode=ro" % target, uri=True) as db:
+            with closing(sqlite3.connect("file:%s?mode=ro" % target, uri=True)) as db, db:
                 self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
     def test_skip_when_nothing_pending(self):
@@ -608,7 +609,7 @@ class PortalStageTests(StageTestCase):
         # Rerun: the same link is not enrolled twice.
         with mock.patch("campaign_tool.records.portal.policy.load_approval", synthetic_approval):
             code, parsed, raw = self.stage("portal", "--approval-file", "/approval.json")
-        with sqlite3.connect(f"file:{self.portal / 'portal.sqlite'}?mode=ro&immutable=1", uri=True) as db:
+        with closing(sqlite3.connect(f"file:{self.portal / 'portal.sqlite'}?mode=ro&immutable=1", uri=True)) as db, db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM portal_items").fetchone()[0], 1)
 
     def test_notice_path_escape_is_unresolved(self):
@@ -782,7 +783,7 @@ class CountStageTests(StageTestCase):
 
     def test_outputs_snapshot_counts_only(self):
         synthetic_ledger(self.ledger, extract={"pending": 1}, mail_messages=39)
-        with sqlite3.connect(self.portal / "portal.sqlite") as pdb:
+        with closing(sqlite3.connect(self.portal / "portal.sqlite")) as pdb, pdb:
             pdb.execute("CREATE TABLE portal_items(id TEXT)")
             pdb.execute("INSERT INTO portal_items VALUES('a')")
         code, parsed, raw = self.stage("outputs")

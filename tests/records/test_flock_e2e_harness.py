@@ -38,8 +38,10 @@ class HarnessTests(unittest.TestCase):
         self.base = Path(self.tmp.name)
         os.chmod(self.base, 0o700)
 
-    def harness(self):
-        return Harness(self.base)
+    def harness(self, scenario=None):
+        harness = Harness(self.base, scenario=scenario)
+        self.addCleanup(harness.ledger.close)
+        return harness
 
     def report_of(self, outcome):
         assert outcome.report is not None, "run must produce a report"
@@ -160,7 +162,7 @@ class HarnessTests(unittest.TestCase):
     # Phase 1: documents needing OCR are queued, never dropped
     # ------------------------------------------------------------------ #
     def test_awaiting_ocr_document_is_queued_and_counted_not_dropped(self):
-        harness = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        harness = self.harness(scenario={"needs_ocr_documents": ["doc-1"]})
         outcome = harness.run()
         self.assertEqual(outcome.exit_code, EXIT_COMPLETED)  # deferral is not a failure
         report = self.report_of(outcome)
@@ -184,13 +186,13 @@ class HarnessTests(unittest.TestCase):
     # ------------------------------------------------------------------ #
     def test_reopen_replay_deferred_document_stays_visible(self):
         scenario = {"needs_ocr_documents": ["doc-1"]}
-        h1 = Harness(self.base, scenario=scenario)
+        h1 = self.harness(scenario=scenario)
         r1 = self.report_of(h1.run())
         self.assertEqual(self.stage(r1, "extract")["counts"]["skipped"], 1)
         self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
         h1.ledger.close()  # simulate close/reopen of the ledger
 
-        h2 = Harness(self.base, scenario=scenario)
+        h2 = self.harness(scenario=scenario)
         r2 = self.report_of(h2.run())
         extract = self.stage(r2, "extract")
         # doc-1 is re-selected (visible), still deferred, never dropped.
@@ -202,13 +204,13 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(h2.ledger.document_state_counts().get("awaiting_ocr"), 1)
 
     def test_deferred_document_recovers_when_backend_healthy(self):
-        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        h1 = self.harness(scenario={"needs_ocr_documents": ["doc-1"]})
         r1 = self.report_of(h1.run())
         self.assertEqual(self.stage(r1, "extract")["counts"]["skipped"], 1)
         h1.ledger.close()
 
         # OCR becomes available: reopen with the default healthy backend.
-        h2 = Harness(self.base)
+        h2 = self.harness()
         r2 = self.report_of(h2.run())
         extract = self.stage(r2, "extract")
         # doc-1 is recovered and processed exactly once.
@@ -222,13 +224,13 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(h2.ledger.count("documents"), 3)
 
     def test_corrupt_document_persists_across_reopen(self):
-        h1 = Harness(self.base)
+        h1 = self.harness()
         r1 = self.report_of(h1.run([corrupt_pdf()]))
         self.assertEqual(self.stage(r1, "extract")["counts"]["failed"], 1)
         self.assertEqual(h1.ledger.document_state("doc-2"), "failed")
         h1.ledger.close()
 
-        h2 = Harness(self.base)
+        h2 = self.harness()
         r2 = self.report_of(h2.run([corrupt_pdf()]))
         extract = self.stage(r2, "extract")
         # doc-2 is re-selected (visible) and still corrupt; never dropped.
@@ -239,12 +241,12 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(h2.ledger.document_state_counts().get("failed"), 1)
 
     def test_corrupt_document_recovers_when_backend_healthy(self):
-        h1 = Harness(self.base)
+        h1 = self.harness()
         r1 = self.report_of(h1.run([corrupt_pdf()]))
         self.assertEqual(self.stage(r1, "extract")["counts"]["failed"], 1)
         h1.ledger.close()
 
-        h2 = Harness(self.base)  # healthy backend
+        h2 = self.harness()  # healthy backend
         r2 = self.report_of(h2.run())
         extract = self.stage(r2, "extract")
         # doc-2 is recovered and processed exactly once.
@@ -257,7 +259,7 @@ class HarnessTests(unittest.TestCase):
 
     # -- unresolved work is selected from the durable ledger, not the sync batch
     def test_deferred_document_visible_across_reopen_with_empty_batch(self):
-        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        h1 = self.harness(scenario={"needs_ocr_documents": ["doc-1"]})
         r1 = self.report_of(h1.run())
         self.assertEqual(self.stage(r1, "extract")["counts"]["skipped"], 1)
         self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
@@ -265,7 +267,7 @@ class HarnessTests(unittest.TestCase):
 
         # Reopen with an EMPTY sync batch, OCR still unavailable: the deferred
         # document must be re-selected from the durable ledger, not dropped.
-        h2 = Harness(self.base, scenario={
+        h2 = self.harness(scenario={
             "documents": [], "receipts": [], "portal_links": [],
             "needs_ocr_documents": ["doc-1"],
         })
@@ -278,14 +280,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(h2.ledger.document_state_counts().get("done"), 2)
 
     def test_deferred_document_visible_across_reopen_with_disjoint_batch(self):
-        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        h1 = self.harness(scenario={"needs_ocr_documents": ["doc-1"]})
         self.report_of(h1.run())
         self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
         h1.ledger.close()
 
         # Reopen with a DISJOINT batch (a new document, OCR still unavailable):
         # doc-1 must be re-selected alongside the new document.
-        h2 = Harness(self.base, scenario={
+        h2 = self.harness(scenario={
             "documents": ["doc-9"], "receipts": [], "portal_links": [],
             "needs_ocr_documents": ["doc-1"],
         })
@@ -299,14 +301,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(h2.ledger.document_state_counts().get("done"), 3)  # doc-2, doc-3, doc-9
 
     def test_deferred_document_recovers_after_empty_batch_and_no_double_count(self):
-        h1 = Harness(self.base, scenario={"needs_ocr_documents": ["doc-1"]})
+        h1 = self.harness(scenario={"needs_ocr_documents": ["doc-1"]})
         self.report_of(h1.run())
         self.assertEqual(h1.ledger.document_state("doc-1"), "awaiting_ocr")
         h1.ledger.close()
 
         # OCR becomes available; the next sync batch is empty, but the deferred
         # document is recovered from the durable ledger and processed exactly once.
-        h2 = Harness(self.base, scenario={"documents": [], "receipts": [], "portal_links": []})
+        h2 = self.harness(scenario={"documents": [], "receipts": [], "portal_links": []})
         r2 = self.report_of(h2.run())
         extract = self.stage(r2, "extract")
         self.assertEqual(extract["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 0})
@@ -323,14 +325,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(h2.ledger.count("documents"), 3)
 
     def test_corrupt_document_visible_across_reopen_with_empty_batch(self):
-        h1 = Harness(self.base)
+        h1 = self.harness()
         r1 = self.report_of(h1.run([corrupt_pdf()]))
         self.assertEqual(self.stage(r1, "extract")["counts"]["failed"], 1)
         self.assertEqual(h1.ledger.document_state("doc-2"), "failed")
         h1.ledger.close()
 
         # Reopen with an EMPTY batch; the corrupt document must remain visible.
-        h2 = Harness(self.base, scenario={"documents": [], "receipts": [], "portal_links": []})
+        h2 = self.harness(scenario={"documents": [], "receipts": [], "portal_links": []})
         r2 = self.report_of(h2.run([corrupt_pdf()]))
         extract = self.stage(r2, "extract")
         self.assertEqual(extract["counts"], {"input": 1, "output": 0, "failed": 1, "skipped": 0})
@@ -340,14 +342,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(h2.ledger.document_state_counts().get("failed"), 1)
 
     def test_corrupt_document_recovers_after_disjoint_batch_and_no_double_count(self):
-        h1 = Harness(self.base)
+        h1 = self.harness()
         self.report_of(h1.run([corrupt_pdf()]))
         self.assertEqual(h1.ledger.document_state("doc-2"), "failed")
         h1.ledger.close()
 
         # Reopen with a DISJOINT healthy batch: the corrupt document is recovered
         # from the ledger and processed exactly once alongside the new document.
-        h2 = Harness(self.base, scenario={"documents": ["doc-9"], "receipts": [], "portal_links": []})
+        h2 = self.harness(scenario={"documents": ["doc-9"], "receipts": [], "portal_links": []})
         r2 = self.report_of(h2.run())
         extract = self.stage(r2, "extract")
         self.assertEqual(extract["counts"], {"input": 2, "output": 2, "failed": 0, "skipped": 0})

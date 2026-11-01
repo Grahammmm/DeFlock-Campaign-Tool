@@ -30,6 +30,7 @@ from tests.records.test_mail_resolution_policy import approved, value
 from tests.records.test_original_reconciliation import fictional_policy
 from types import SimpleNamespace
 import os
+from contextlib import closing
 
 
 def export(root, uid, duplicate=False):
@@ -79,7 +80,7 @@ class World:
         declared = []
         if eml: declared.append((self.eml, self.receipt["original_eml"]["bytes"], "eml"))
         if attachment: declared.append((self.attachment, self.receipt["attachments"][0]["bytes"], "pdf"))
-        with sqlite3.connect(self.helper.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.helper.snapshot / "intake.sqlite")) as con, con:
             for sha, size, form in declared:
                 con.execute("INSERT INTO docs VALUES(?,?,?,?,?,?,?,?)", (sha, size, form, "complete",
                             first_seen, "full", "synthetic", "{}"))

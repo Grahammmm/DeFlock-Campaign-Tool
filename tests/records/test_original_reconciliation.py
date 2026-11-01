@@ -19,6 +19,7 @@ from campaign_tool.records.ledger.occurrence_projection import project_occurrenc
 from campaign_tool.records.run import Pipeline, root_lock
 from campaign_tool.records.runner.canonical_reconciliation import CanonicalOriginalReconciler
 from tests.records import test_ledger_occurrences as projection_fixtures
+from contextlib import closing
 
 
 def fictional_policy(subject, size, *, marker=b"fictional approval"):
@@ -268,12 +269,12 @@ class OriginalReconciliationTests(unittest.TestCase):
             self.pipeline._form(self.sha, self.pipeline._original(self.sha))
 
     def test_effective_original_supports_plain_sqlite_without_mutating_row_factory(self):
-        with sqlite3.connect(self.database) as con:
+        with closing(sqlite3.connect(self.database)) as con, con:
             self.assertIsNone(con.row_factory)
             self.assertEqual(store.effective_original(con, self.sha)["role"], "unresolved")
             self.assertIsNone(con.row_factory)
         result = self.enroll()
-        with sqlite3.connect(self.database) as con:
+        with closing(sqlite3.connect(self.database)) as con, con:
             resolved = store.effective_original(con, self.sha)
             self.assertEqual(resolved["resolution_sha256"], result["resolution_sha256"])
             self.assertEqual(resolved["role"], "original")

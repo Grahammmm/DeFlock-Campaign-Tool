@@ -5,6 +5,7 @@ import unittest
 
 from campaign_tool.records.ledger import store
 from tests.records import test_ledger as fixtures
+from contextlib import closing
 
 
 class ImportColumnCollisionTests(unittest.TestCase):
@@ -13,7 +14,7 @@ class ImportColumnCollisionTests(unittest.TestCase):
     refresh_manifest = fixtures.LedgerTests.refresh_manifest
 
     def replace_meta(self, declaration, rows):
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("DROP TABLE meta")
             con.execute("CREATE TABLE meta(" + declaration + ")")
             for values in rows:
@@ -92,7 +93,7 @@ class ImportColumnCollisionTests(unittest.TestCase):
 
     def test_generated_source_column_is_preserved(self):
         # table_info omits generated columns; SELECT * still includes this one.
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("DROP TABLE meta")
             con.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT, "
                         "_source_rowid_ TEXT GENERATED ALWAYS AS (key || ':' || value) VIRTUAL)")
@@ -102,7 +103,7 @@ class ImportColumnCollisionTests(unittest.TestCase):
         self.assert_payloads([{"key": "a", "value": "source", "_source_rowid_": "a:source"}])
 
     def test_original_declaration_collision_preserves_payload_without_promotion(self):
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("ALTER TABLE docs ADD COLUMN _source_rowid_ TEXT")
             con.execute("UPDATE docs SET _source_rowid_='source-declaration'")
             source_row = con.execute("SELECT * FROM docs").fetchone()

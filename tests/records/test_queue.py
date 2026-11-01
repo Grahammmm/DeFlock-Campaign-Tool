@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from campaign_tool.records import queue as q
+from contextlib import closing
 
 NOW = "2026-01-01T12:00:00+00:00"
 PAST = "2026-01-01T11:00:00+00:00"
@@ -146,7 +147,7 @@ class QueueTests(unittest.TestCase):
         originals, rows = fixture(1, "compare")
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "synthetic.sqlite"
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute("CREATE TABLE originals(sha256 TEXT,scope TEXT)")
                 connection.execute("CREATE TABLE stage_state(original_sha256 TEXT,stage TEXT,status TEXT,receipt_sha256 TEXT,owner TEXT,reason TEXT)")
                 connection.execute("CREATE TABLE work_leases(item_key TEXT,expires_at TEXT,attempts INTEGER)")

@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import campaign_tool.records
+from contextlib import closing
 for root in json.loads(os.environ.get("RECORDS_TEST_DEPENDENCIES", "[]")):
     campaign_tool.records.__path__.append(str(Path(root) / "campaign_tool" / "records"))
 from campaign_tool.records import ledger_catalog as module
@@ -71,7 +72,7 @@ class CanonicalCatalogTests(unittest.TestCase):
         self.root.chmod(0o700)
         self.db = self.root / "ledger.sqlite"
         store.initialize(self.db)
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)", ("synthetic", "test", "2026-01-01T00:00:00+00:00", None, "synthetic", None, None, None, "running", "{}"))
             for index, sha in enumerate((H1, H2)):
                 con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)", (sha, 12, "text/plain", "2026-01-02T00:00:00+00:00", "record", "in_scope", None, "captured", "text", "{}"))
@@ -89,7 +90,7 @@ class CanonicalCatalogTests(unittest.TestCase):
 
     def join(self, identifier, agency="north", status="typed", evidence=None, request=None):
         ev = evidence if evidence is not None else json.dumps({"source_sha256": H1, "locator": "page:1"})
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO joins VALUES(?,?,?,?,?,?,?,?)", (identifier, H1, "agency:" + agency, request or "request:" + agency, "agreement_party", ev, status, None))
 
     def test_every_original_unknown_card(self):
@@ -120,7 +121,7 @@ class CanonicalCatalogTests(unittest.TestCase):
         # Originals are immutable, so each excluded scope label gets its own original.
         excluded = {label: hashlib.sha256(("synthetic " + label).encode()).hexdigest()
                     for label in sorted(module.EXCLUDED_SCOPES)}
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             for index, (label, sha) in enumerate(excluded.items()):
                 con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)", (sha, 12, "text/plain", "2026-01-02T00:00:00+00:00", "record", label, None, "captured", "text", "{}"))
                 for stage in module.STAGES:
@@ -142,11 +143,11 @@ class CanonicalCatalogTests(unittest.TestCase):
                 self.assertEqual(cards[sha]["agency_ids"], [])
                 self.assertNotEqual(cards[sha]["agency_status"], "typed")
                 ev = json.dumps({"source_sha256": sha, "locator": "page:1"})
-                with sqlite3.connect(self.db) as con:
+                with closing(sqlite3.connect(self.db)) as con, con:
                     con.execute("INSERT INTO joins VALUES(?,?,?,?,?,?,?,?)", ("typed-" + label, sha, "agency:north", "request:north", "agreement_party", ev, "typed", None))
                 with self.assertRaisesRegex(module.CatalogError, "source_scope_excluded"):
                     self.build()
-                with sqlite3.connect(self.db) as con:
+                with closing(sqlite3.connect(self.db)) as con, con:
                     con.execute("DELETE FROM joins WHERE id=?", ("typed-" + label,))
 
     def test_request_agency_mismatch_rejected(self):
@@ -163,7 +164,7 @@ class CanonicalCatalogTests(unittest.TestCase):
         before = self.db.read_bytes()
         self.build()
         self.assertEqual(self.db.read_bytes(), before)
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             self.assertEqual(con.execute("SELECT count(*) FROM stage_state WHERE status='pending'").fetchone()[0], 14)
             self.assertIsNone(con.execute("SELECT name FROM sqlite_master WHERE name='stage_validation_authority'").fetchone())
 
@@ -245,7 +246,7 @@ class CanonicalCatalogTests(unittest.TestCase):
         self.assertEqual(card["status"], "pending")
 
     def test_prior_review_preserves_declared_label(self):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO digests VALUES(?,?,?,?,?,?,?,?,?)", ("digest-1", H1, "synthetic-author", "partial", "{}", "not-exported", H2, None, "unverified"))
         card = next(c for c in self.build()["cards"] if c["sha256"] == H1)
         self.assertEqual(card["prior_review"][0]["coverage_declared"], "partial")
@@ -263,7 +264,7 @@ class CanonicalCatalogTests(unittest.TestCase):
                 self.build()
 
     def test_blocked_owner_and_open_request_render(self):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE stage_state SET status='blocked',owner='synthetic-owner',reason='No parser' WHERE original_sha256=? AND stage='extract'", (H1,))
         result = self.build()
         board = module.render_board(result).decode()
@@ -272,7 +273,7 @@ class CanonicalCatalogTests(unittest.TestCase):
         self.assertEqual(result["counts"]["stages"]["extract"]["blocked"], 1)
 
     def test_duplicate_deliveries_one_card(self):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)", ("occ-duplicate", H1, "local", "synthetic second delivery", None, None, "test", "{}"))
         result = self.build()
         self.assertEqual(len(result["cards"]), 2)
@@ -307,7 +308,7 @@ class CanonicalCatalogTests(unittest.TestCase):
     def test_count_mismatch_rejected(self):
         result = self.build()
         broken = dict(result["counts"], originals=3)
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.row_factory = sqlite3.Row
             with self.assertRaisesRegex(module.CatalogError, "count_denominator_mismatch"):
                 module.project(con, broken)
