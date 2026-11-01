@@ -37,6 +37,8 @@ def _object_present(objects, sha):
         info = os.lstat(objects / sha)
     except (FileNotFoundError, NotADirectoryError):
         return False
+    except OSError as exc:
+        raise ValueError("private/objects unreadable: " + type(exc).__name__) from None
     return stat.S_ISREG(info.st_mode)
 
 

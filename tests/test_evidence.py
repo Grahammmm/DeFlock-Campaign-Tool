@@ -190,6 +190,17 @@ class EvidenceTests(unittest.TestCase):
         self.ledger.write_bytes(b"synthetic garbage, not a database" * 40)
         self.assertTrue(self.cli("evidence", "--check", code=1).stderr.startswith("Stopped: ledger unreadable"))
 
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs an unprivileged POSIX user")
+    def test_unsearchable_objects_dir_stops_without_path_or_full_hash(self):
+        self.clean()
+        self.objects.chmod(0o600)
+        self.addCleanup(self.objects.chmod, 0o700)
+        result = self.cli("evidence", "--check", code=1)
+        output = result.stdout + result.stderr
+        self.assertTrue(result.stderr.startswith("Stopped: private/objects unreadable"))
+        self.assertIsNone(HEX64.search(output))
+        self.assertNotIn(str(self.objects), output)
+
 
 if __name__ == "__main__":
     unittest.main()
