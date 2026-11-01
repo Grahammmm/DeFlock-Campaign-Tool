@@ -1,7 +1,7 @@
 ---
 name: flock-publish
 description: Use when a flock-verify run's confirmed strong findings should go to the site. Exports PUBLISH.json (every entry pending) for redaction review and G's approval; never publishes.
-skill_version: 1.2
+skill_version: 1.3
 ---
 
 # Flock publish
@@ -18,7 +18,9 @@ review-required, not a legal conclusion.
 4. The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id).
 5. `python3 tools/flock_publish.py --check FILE --run <run folder>` until exit 0, before G sees approvals: any entry whose
    text, cites, topic or class drifted from the verified run is refused (`review` is the only field a human edits).
-6. Copy it to the site as `data/locations/<site-slug>-findings.json` in a site PR.
+6. `python3 tools/flock_publish.py stage RUNDIR --copy COPY.json --out DIR` (DIR outside the repo, absent or empty) turns
+   approved entries plus the human-written copy into private `content/findings/*.json` (`state: "staged"`, schema-checked)
+   and `STAGE-MANIFEST.json`; never builds or deploys. The operator copies them into the site PR and sets `state`/`published_at` there.
 7. Merge the site PR (staging deploy only).
 8. Production dispatch is G-only (`production.yml`).
 9. Any time: `python3 tools/flock_publish.py status STORE` lists every verified run's publication stage (counts only, read-only).
