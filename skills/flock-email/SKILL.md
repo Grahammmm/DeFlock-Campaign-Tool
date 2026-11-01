@@ -16,6 +16,7 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 
 1. A Terra legwork card adds the cited CONTACT row; nobody guesses an address.
 2. Before a draft: `python3 tools/flock_email.py check <store> --max-age-days 90` lists who is ready (`contact | <slug> | ready | domain=<domain>`) or `stale`; reads only.
+   A domain warning (`warn: domain differs from source host <host>`, counted in `mismatch=N`) needs a human look at the source page before drafting.
 3. `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo> --max-age-days 90`. It prints
    `written=2 to_domain=<domain>`; errors name `row N: <field>` or `contact: no records row` and write nothing.
    When draft says stale (or `in the future`), re-check the contact page and update `checked_at`; use `--max-age-days 90` unless the organizer sets another number.
