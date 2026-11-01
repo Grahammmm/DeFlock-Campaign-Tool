@@ -23,6 +23,8 @@ seed and never writes FACTS, POLICY, REQUESTS or LAW (F1, F2 and F5a own those).
 3. The operator sets `in_scope` (yes, no, hold), `applicability` (max 200 chars, required for yes) and
    `site_slug`. Keep existing legwork slugs.
 4. `python3 tools/flock_region.py --check <config>`: fix every `agency N: <field> <reason>` line.
+   Then `python3 tools/flock_region.py coverage <config>` (read-only; exit 3 while any is left): add or consciously
+   mark (`in_scope: no` or `hold`) every `unlisted` seed sheriff/police agency.
 5. `python3 tools/flock_region.py init <config> --store <store>`: creates `agencies/<slug>/` for yes and
    hold, and writes `regions/<region>/WATCHLIST.csv`, `ROSTER.csv` and `PLAN.md` (0600, atomic). Rerun
    after each config edit: unchanged input is byte-identical and `last_seen_hash` values are kept.
