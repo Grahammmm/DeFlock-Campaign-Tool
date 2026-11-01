@@ -79,6 +79,10 @@ to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
 
+Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
+(a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
+when `site.json.base_url` is set. There is no share image by design and nothing is fetched.
+
 ### Agencies, cards and the picker
 
 Agencies come from `content/agencies.json` or the kit. Each gets a slug (the
