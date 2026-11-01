@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Wrap FOLLOWUP-DRAFT.md into a private EMAIL-DRAFT.md. Draft only: it writes files and cannot send. `status STORE` reads each run's email stage back."""
-import csv, os, re, sys, tempfile
+import csv, importlib.util, os, re, sys, tempfile
 from datetime import date
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location("_flock_privacy", Path(__file__).resolve().parent / "flock_privacy.py")
+privacy = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(privacy)
+PLACEHOLDER = re.compile(r"\{\{|\}\}|____|TODO|XXX|TBD|\[insert|<insert", re.I)
 HEAD = "DRAFT - not sent - G approval required"
 COLS = "agency,role,email,source_url,source_sha256,checked_at,added_by".split(",")
 CHECKS = {"role": r"records", "email": r"[^@\s,;<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "source_url": r"https://\S+",
@@ -11,7 +15,8 @@ CHECKS = {"role": r"records", "email": r"[^@\s,;<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,
 USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.md; draft only, never sends)\n"
          "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)\n"
          "       check and draft also take [--max-age-days N [--today YYYY-MM-DD]]  (a contact checked more than N days ago is stale)\n"
-         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval)")
+         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval)\n"
+         "       flock_email.py lint RUNDIR --drafts DIR  (run after any edit and before asking G to approve; reads only, exit 1 on findings)")
 STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval")
 LABELS = "runs followup drafted approved sent malformed inconsistent".split()
 
@@ -47,11 +52,16 @@ def contact(path, folder, max_age=None, today=None):
                 "contact: checked_at is in the future" if age < 0 else f"contact: checked_at {found[0]['checked_at']} is {age} days old (max {max_age})"]
     return (found or [{"email": None}])[0]["email"], errs
 
-def draft(rundir, drafts, max_age=None, today=None):
-    run, out_dir = Path(rundir).resolve(), Path(drafts).resolve()
+def place(rundir, verb):
+    """(resolved run folder, refusal or None): <store>/agencies/<slug>/runs/<date>, outside the repository."""
+    run = Path(rundir).resolve()
     if not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
-        return print("draft: RUNDIR must be <store>/agencies/<slug>/runs/<date>", file=sys.stderr) or 1
-    if REPO in (run, *run.parents): return print("draft: RUNDIR is inside the repository", file=sys.stderr) or 1
+        return run, f"{verb}: RUNDIR must be <store>/agencies/<slug>/runs/<date>"
+    return run, f"{verb}: RUNDIR is inside the repository" if REPO in (run, *run.parents) else None
+
+def draft(rundir, drafts, max_age=None, today=None):
+    (run, err), out_dir = place(rundir, "draft"), Path(drafts).resolve()
+    if err: return print(err, file=sys.stderr) or 1
     name = run.parent.parent.name
     try: lines = (run / "FOLLOWUP-DRAFT.md").read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError): lines = []
@@ -105,17 +115,56 @@ def check(store, show=None, max_age=None, today=None):
                              " | draft only; G approval required before any send"]))
     return 0 if ready == len(folders) else 1
 
+def fields(lines):
+    """The G APPROVED and Sent by values, or None when the DRAFT header is gone or either line is missing or repeated."""
+    ok = [[ln.split(":", 1)[1].strip() for ln in lines if ln.startswith(k)] for k in ("G APPROVED:", "Sent by:")]
+    return None if lines[:1] != [HEAD] or [len(v) for v in ok] != [1, 1] else [v[0] for v in ok]
+
 def stage(run):
     """The email stage of one run folder, or None without a draft file. Never returns a filled value."""
     email, follow = run / "EMAIL-DRAFT.md", run / "FOLLOWUP-DRAFT.md"
     if run.is_symlink() or email.is_symlink() or follow.is_symlink(): return "refused: link"  # never read
     if not email.exists(): return "follow-up drafted" if follow.exists() else None
-    try: lines = email.read_text(encoding="utf-8").splitlines()
+    try: ok = fields(email.read_text(encoding="utf-8").splitlines())
     except (OSError, UnicodeDecodeError): return "malformed"
-    ok = [[ln.split(":", 1)[1].strip() for ln in lines if ln.startswith(k)] for k in ("G APPROVED:", "Sent by:")]
-    if lines[:1] != [HEAD] or [len(v) for v in ok] != [1, 1]: return "malformed"
-    yes, sent = ok[0][0] not in ("", "____"), bool(ok[1][0]) and not ok[1][0].startswith("____")
+    if not ok: return "malformed"
+    yes, sent = ok[0] not in ("", "____"), bool(ok[1]) and not ok[1].startswith("____")
     return ("sent recorded" if yes else STAGES[5]) if sent else "approval recorded" if yes else "email drafted"
+
+def rules(data, now, errs):
+    """Rule names one draft copy breaks; never its text. now/errs: the current CONTACT.csv address and errors."""
+    try: lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError: lines = []
+    to, subj = (lines[n][len(k):] if len(lines) > n and lines[n].startswith(k) else None for n, k in ((1, "To: "), (2, "Subject: ")))
+    cut = [i for i, ln in enumerate(lines) if ln == "---"]
+    body = "\n".join(lines[cut[0] + 1:cut[1]]) if len(cut) > 1 else ""
+    out = ["malformed"] if None in (to, subj) or len(cut) < 2 or not fields(lines) else []
+    out += [f"to: CONTACT.csv {errs[0]}"] if errs else [] if to == now else ["to: not the current records address"]
+    out += ["placeholder"] if PLACEHOLDER.search(body) else []
+    out += ["length"] if len(subj or "") > 150 or len(body) > 8000 else []
+    for addr in {a for a in (to, now) if a and re.fullmatch(CHECKS["email"], a)}:  # the agency's own whole address may appear
+        body = re.sub(r"(?<![\w.%+-])" + re.escape(addr) + r"(?![\w-]|\.\w)", " ", body, flags=re.I)
+    return out + [f"private: {c}" for c in privacy.categories(body)]
+
+def lint(rundir, drafts):
+    """Rule lines for one run's draft pair, then a summary. Reads only; prints no address, subject or body text."""
+    run, err = place(rundir, "lint")
+    name = run.parent.parent.name
+    paths = [run / "EMAIL-DRAFT.md", Path(drafts).resolve() / f"{name}-{run.name}-EMAIL-DRAFT.md"]
+    err = err or ("lint: link refused" if any(p.is_symlink() for p in paths) else None)  # never read
+    raw = [None, None] if err else [(p.read_bytes() if p.is_file() else None) if os.access(p, os.R_OK) else None for p in paths]
+    err = err or (None if raw[0] is not None else "lint: EMAIL-DRAFT.md missing")
+    if err: return print(err, file=sys.stderr) or 1
+    found = [] if raw[1] is not None else ["twin missing"]
+    if raw[1] not in (None, raw[0]):
+        a, b = raw[0].split(b"\n") + [None], raw[1].split(b"\n") + [None]
+        found.append(f"copies differ (first differing line {next(i for i, (x, y) in enumerate(zip(a, b), 1) if x != y)})")
+    now, errs = contact(run.parents[1] / "CONTACT.csv", name)
+    for data in dict.fromkeys(r for r in raw if r is not None):  # both copies; each rule named once
+        found += [r for r in rules(data, now, errs) if r not in found]
+    print("\n".join([f"lint | {name} | {run.name} | {r}" for r in found] +
+                    [f"lint | rules={len(found)} | {stage(run)} | draft only; G approval required before any send"]))
+    return 1 if found else 0
 
 def status(folders):
     """One stage line per agency run holding a draft, then totals. Prints no address, subject or filled value."""
@@ -138,6 +187,7 @@ def main(argv):
     opt = ages(argv[2:] if argv[:1] == ["check"] else argv[4:] if argv[:1] == ["draft"] and argv[2:3] == ["--drafts"] else [])
     if opt and len(argv) >= 2 and argv[0] == "check": return check(argv[1], None, *opt)
     if len(argv) == 2 and argv[0] == "status": return check(argv[1], status)
+    if len(argv) == 4 and argv[0] == "lint" and argv[2] == "--drafts": return lint(argv[1], argv[3])
     if opt and len(argv) >= 4 and argv[0] == "draft" and argv[2] == "--drafts": return draft(argv[1], argv[3], *opt)
     return print(USAGE, file=sys.stderr) or 2
 if __name__ == "__main__": sys.exit(main(sys.argv[1:]))
