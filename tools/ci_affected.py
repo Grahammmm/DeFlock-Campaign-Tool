@@ -174,7 +174,8 @@ def run_timed(suite, shard, stream=None):
 
 
 # In-process after the children (<= 5 modules); add one only with its parallel-only failing CI run as evidence.
-SERIAL = frozenset()
+# fa21 compares a whole-tree listing; another chunk's child wrote campaign_tool/__pycache__/law.*.pyc (run 41255540962).
+SERIAL = frozenset({'tests.test_fa21_report_finite'})
 RESULT = 'CI_CHUNK_RESULT '
 
 
