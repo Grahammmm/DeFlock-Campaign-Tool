@@ -8,6 +8,7 @@ from unittest import mock
 
 from campaign_tool.records.ledger import store, unit_projection as projection
 from tests.records import test_ledger as ledger_fixtures
+from contextlib import closing
 
 
 class UnitProjectionTests(unittest.TestCase):
@@ -18,7 +19,7 @@ class UnitProjectionTests(unittest.TestCase):
         self.database = self.fixture.output
 
     def legacy(self, sql, parameters=()):
-        with sqlite3.connect(self.fixture.snapshot / "intake.sqlite") as connection:
+        with closing(sqlite3.connect(self.fixture.snapshot / "intake.sqlite")) as connection, connection:
             connection.execute(sql, parameters)
         self.fixture.refresh_manifest()
 
@@ -30,7 +31,7 @@ class UnitProjectionTests(unittest.TestCase):
             return [dict(row) for row in connection.execute("SELECT * FROM " + table)]
 
     def add_units(self, count):
-        with sqlite3.connect(self.fixture.snapshot / "intake.sqlite") as connection:
+        with closing(sqlite3.connect(self.fixture.snapshot / "intake.sqlite")) as connection, connection:
             sample = connection.execute("SELECT * FROM units").fetchone()
             connection.executemany(
                 "INSERT INTO units VALUES(?,?,?,?,?,?)",

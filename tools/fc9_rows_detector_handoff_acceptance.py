@@ -20,6 +20,7 @@ import traceback
 import unittest
 from unittest.mock import patch
 import uuid
+from contextlib import closing
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -83,7 +84,7 @@ def child(mode, row):
                 self.assertEqual(sys.path, before_path)
                 self.assertIs(sys.addaudithook, before_audit)
                 self.assertTrue(tempfile.gettempdir() == before_temp)
-                with sqlite3.connect(':memory:') as con:
+                with closing(sqlite3.connect(':memory:')) as con, con:
                     self.assertEqual(con.execute('SELECT 7').fetchone(), (7,))
         runner = unittest.TextTestRunner(stream=stream, verbosity=2)
         if mode == 'discovery':

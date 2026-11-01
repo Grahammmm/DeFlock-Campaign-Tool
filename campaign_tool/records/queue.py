@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+from contextlib import closing
 
 STAGES = ("preserve", "extract", "catalog", "detect", "review", "compare", "privacy")
 PREREQUISITES = {
@@ -168,7 +169,7 @@ def from_ledger(database, *, now, facts=None, config_version=VERSION, limit=20):
     """Read one consistent canonical snapshot, capped without partial success."""
     from .ledger import store
     uri = Path(database).absolute().as_uri() + "?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+    with closing(sqlite3.connect(uri, uri=True, timeout=5)) as connection, connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")

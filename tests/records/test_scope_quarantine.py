@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import zipfile
 from email.message import EmailMessage
+from contextlib import closing
 
 REPO = Path(__file__).resolve().parents[2]
 INTAKE_SCRIPT = REPO / 'campaign_tool/records/intake/folder.py'
@@ -60,7 +61,7 @@ class ScopeQuarantineTests(unittest.TestCase):
         return json.loads(result.stdout.splitlines()[-1])
 
     def rows(self, sql, args=()):
-        with sqlite3.connect(self.out / 'intake.sqlite') as db:
+        with closing(sqlite3.connect(self.out / 'intake.sqlite')) as db, db:
             return db.execute(sql, args).fetchall()
 
     def snapshot(self, raw):

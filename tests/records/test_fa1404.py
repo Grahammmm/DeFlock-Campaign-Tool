@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from tests.records import test_ledger_catalog as fixtures
+from contextlib import closing
 store, catalog_links, H1, H2 = fixtures.store, fixtures.catalog_links, fixtures.H1, fixtures.H2
 from campaign_tool.records import ledger_catalog as catalog
 from campaign_tool.records import ledger_catalog_acceptance as acceptance
@@ -67,7 +68,7 @@ class FA1404NoReplaceTests(unittest.TestCase):
 
     # -- synthetic acceptance fixture through the real APIs -------------------
     def prepare(self):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET status='completed',ended_at='2026-01-03T00:00:00+00:00',"
                         "config_sha256=? WHERE run_id='synthetic'", (H2,))
         result = catalog.build(self.db, self.root, run_id="synthetic")
@@ -96,7 +97,7 @@ class FA1404NoReplaceTests(unittest.TestCase):
         return old["snapshot_id"], new["snapshot_id"]
 
     def history(self):
-        with sqlite3.connect(self.history_db.as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(self.history_db.as_uri() + "?mode=ro", uri=True)) as con, con:
             accepted = [tuple(bytes(v) if isinstance(v, (bytes, memoryview)) else v for v in row)
                         for row in con.execute("SELECT * FROM snapshot_acceptances ORDER BY snapshot_id")]
             events = list(con.execute("SELECT sequence, previous_snapshot_id, snapshot_id "
@@ -106,7 +107,7 @@ class FA1404NoReplaceTests(unittest.TestCase):
         return {"acceptances": accepted, "events": events, "pointer": pointer}
 
     def triggers(self):
-        with sqlite3.connect(self.history_db.as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(self.history_db.as_uri() + "?mode=ro", uri=True)) as con, con:
             rows = dict(con.execute("SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'"))
         con.close()
         return rows
@@ -316,7 +317,7 @@ class FA1404NoReplaceTests(unittest.TestCase):
             self.assertIs(receipt["document_review_approval"], False)
             self.assertIs(receipt["publication_ready"], False)
             self.assertIs(receipt["catalog_snapshot_accepted"], True)
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             self.assertEqual(con.execute("SELECT count(*) FROM stage_state WHERE status='pending'").fetchone()[0], 14)
         con.close()
 

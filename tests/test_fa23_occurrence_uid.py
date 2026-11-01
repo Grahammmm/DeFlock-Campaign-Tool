@@ -18,6 +18,7 @@ from campaign_tool.records.ledger import occurrence_projection
 from campaign_tool.records.ledger.occurrence_projection import project_occurrences
 from campaign_tool.records.ledger.store import ledger
 from tests.records import test_ledger_occurrences as occurrence_fixtures
+from contextlib import closing
 
 UID_MAX = 2 ** 32 - 1
 FIELDS = ("uid", "uidvalidity")
@@ -274,7 +275,7 @@ class MailUidProjectionIntegrationTests(unittest.TestCase):
             self.assertFalse(double.called)
         self.assertEqual(result["stage_promotions"], 0)
         self.assertEqual(result["verified_agency_request_joins"], 0)
-        with sqlite3.connect(self.helper.database) as con:
+        with closing(sqlite3.connect(self.helper.database)) as con, con:
             listed = [r[2] for r in con.execute("PRAGMA database_list") if r[2]]
         self.assertTrue(listed)
         self.assertTrue(all(Path(p).resolve().is_relative_to(root) for p in listed))

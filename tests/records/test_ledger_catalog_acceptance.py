@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 from tests.records import test_ledger_catalog as fixtures
+from contextlib import closing
 store, catalog_links, H1, H2 = fixtures.store, fixtures.catalog_links, fixtures.H1, fixtures.H2
 from campaign_tool.records import ledger_catalog as catalog
 from campaign_tool.records import ledger_catalog_acceptance as acceptance
@@ -21,7 +22,7 @@ class SnapshotAcceptanceTests(unittest.TestCase):
     join = fixtures.CanonicalCatalogTests.join
 
     def finalized(self):
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("UPDATE runs SET status='completed',ended_at='2026-01-03T00:00:00+00:00',config_sha256=? WHERE run_id='synthetic'", (H2,))
 
     def prepare(self, **kw):
@@ -45,7 +46,7 @@ class SnapshotAcceptanceTests(unittest.TestCase):
         self.assertEqual(receipt["receipt"]["stage_promotions"], 0)
         self.assertEqual(acceptance.read_accepted(self.output)["receipt_sha256"], receipt["receipt_sha256"])
         self.assertEqual((self.output / "accepted-snapshots.sqlite").stat().st_mode & 0o777, 0o600)
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             self.assertEqual(con.execute("SELECT count(*) FROM stage_state WHERE status='pending'").fetchone()[0], 14)
 
     def test_replay_same_receipt_one_event(self):
@@ -53,7 +54,7 @@ class SnapshotAcceptanceTests(unittest.TestCase):
         first, second = self.accept(result, args), self.accept(result, args)
         self.assertTrue(second["reused"])
         self.assertEqual(first["receipt"], second["receipt"])
-        with sqlite3.connect(self.output / "accepted-snapshots.sqlite") as con:
+        with closing(sqlite3.connect(self.output / "accepted-snapshots.sqlite")) as con, con:
             self.assertEqual(con.execute("SELECT count(*) FROM snapshot_events").fetchone()[0], 1)
 
     def test_commit_then_response_failure_replay_recovers(self):
@@ -63,7 +64,7 @@ class SnapshotAcceptanceTests(unittest.TestCase):
                 self.accept(result, args)
         replay = self.accept(result, args)
         self.assertTrue(replay["reused"])
-        with sqlite3.connect(self.output / "accepted-snapshots.sqlite") as con:
+        with closing(sqlite3.connect(self.output / "accepted-snapshots.sqlite")) as con, con:
             self.assertEqual(con.execute("SELECT count(*) FROM snapshot_events").fetchone()[0], 1)
 
     def test_directory_sync_failure_replay_resyncs(self):

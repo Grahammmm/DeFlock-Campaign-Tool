@@ -7,6 +7,7 @@ import unittest
 from campaign_tool.records.ledger.occurrence_projection import decode_source, mime_path, project_occurrences
 from campaign_tool.records.ledger.store import counts, import_legacy, ledger
 from tests.records import test_ledger
+from contextlib import closing
 
 
 class OccurrenceProjectionTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class OccurrenceProjectionTests(unittest.TestCase):
         self.sha = self.fixture.sha
         self.fs_receipt = {"mtime_ns": 1, "ctime_ns": 1, "device": 1, "inode": 2,
                            "observed_at": "2000-01-01T00:00:00+00:00", "received_at": None}
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("UPDATE occurrences SET locator=?,receipt=?",
                         (json.dumps(None), json.dumps(self.fs_receipt)))
 
@@ -29,14 +30,14 @@ class OccurrenceProjectionTests(unittest.TestCase):
 
     def add_doc(self, label, form="txt"):
         sha = hashlib.sha256(label.encode()).hexdigest()
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("INSERT INTO docs(sha,bytes,format,stage,first_seen,review_status,version,digest) "
                         "VALUES(?,?,?,?,?,?,?,?)",
                         (sha, len(label), form, "complete", "2000-01-01T00:00:00Z", "full", "synthetic", "{}"))
         return sha
 
     def add_occurrence(self, oid, sha, *, receipt=None, parent=None, locator=None):
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("INSERT INTO occurrences(oid,sha,path,root,parent,locator,class,receipt,first_seen,last_seen) "
                         "VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (oid, sha, oid + ".txt", "synthetic-root", parent, json.dumps(locator), "hint-only",
@@ -95,7 +96,7 @@ class OccurrenceProjectionTests(unittest.TestCase):
     def test_new_capture_reuses_identity_and_retains_both_source_payloads(self):
         first_import = self.capture()
         first = project_occurrences(self.database, first_import)
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("UPDATE occurrences SET last_seen='2000-01-02T00:00:00Z'")
         second_import = self.capture()
         second = project_occurrences(self.database, second_import)
@@ -177,7 +178,7 @@ class OccurrenceProjectionTests(unittest.TestCase):
         self.assertEqual(counts(self.database)["originals"], 1)
 
     def test_scope_excluded_source_is_retained_without_canonical_occurrence(self):
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("INSERT INTO scope_exclusions(path,sha,reason) VALUES(?,?,?)",
                         ("synthetic.txt", self.sha, "synthetic scope exclusion"))
         result = project_occurrences(self.database, self.capture())

@@ -2,6 +2,7 @@
 import json
 import unittest
 from tests.records import test_catalog as fixtures
+from contextlib import closing
 
 
 class AgencyPlaceholderRegression(unittest.TestCase):
@@ -50,7 +51,7 @@ class AgencyStatusCases(unittest.TestCase):
 
     def test_excluded_identity_is_not_an_agency_assignment_gap(self):
         import sqlite3
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute('UPDATE docs SET stage=? WHERE sha=?', ('out_of_scope', self.hashes[0]))
         result = self.run_import()
         catalog = json.loads((self.output / result['snapshot_id'] / 'catalog.json').read_text())
