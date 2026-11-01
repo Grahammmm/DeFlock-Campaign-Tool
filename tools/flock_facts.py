@@ -285,6 +285,40 @@ def status(args):
     return 0
 
 
+def unreadable(args):
+    """DF1537-15: private CSV of distinct (agency, source_sha256, page) with UNREADABLE fact rows, for the extraction owner.
+    New file only (0600, temp + link), outside the repository and STORE/agencies; stdout has counts, never a hash or page."""
+    out, store = Path(args.out), Path(args.store)
+    where, agencies = out.parent.resolve() / out.name, store.resolve() / "agencies"
+    refuse = ["--out: is inside the repository"] * (where == REPO or REPO in where.parents) + [
+        "--out: is inside the store's agencies folder"] * (where == agencies or agencies in where.parents)
+    refuse = refuse or ["--out: exists or is a link; not overwritten"] * os.path.lexists(out) or [
+        "--out: parent folder is missing"] * (not out.parent.is_dir())
+    files, errors = ([], refuse) if refuse else store_files(store, slugify(args.agency or ""))
+    bad = 0 if errors else sum(len(check_file(f, f.parent.name)) for f in files)
+    if errors or bad or not files:
+        return fail(errors or ["facts: %d errors (run --check)" % bad] * bool(bad) or ["no FACTS.csv files in store"])
+    pages = {}
+    for f in files:
+        for _, r in load(f, f.parent.name)[1]:
+            if r["value"].strip() == "UNREADABLE":
+                key = (f.parent.name, r["source_sha256"].strip(), int(r["page"].strip()))
+                pages[key] = pages.get(key, 0) + 1
+    text = io.StringIO()
+    csv.writer(text, lineterminator="\n").writerows([["agency", "source_sha256", "page", "fact_rows"]]
+                                                    + [[*key, n] for key, n in sorted(pages.items())])
+    fd, tmp = tempfile.mkstemp(prefix=".unreadable.", suffix=".tmp", dir=out.parent)  # mode 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text.getvalue())
+        os.link(tmp, out)  # fails rather than overwrite a file that appeared meanwhile
+    finally:
+        with contextlib.suppress(OSError): os.unlink(tmp)
+    print("unreadable | agencies=%d pages=%d documents=%d rows=%d written=%s | hand-off for the extraction owner;"
+          " not a review verdict" % (len(files), len(pages), len({k[:2] for k in pages}), sum(pages.values()), out.name))
+    return 0
+
+
 OUTCOMES = ("found", "not-found", "no-document", "ambiguous-export", "no-page", "page-hash-mismatch", "unreadable-fact",
             "skipped-kind", "bad-row")
 FOLD = str.maketrans("\u2018\u2019\u201a\u201b\u2032\u201c\u201d\u201e\u201f\u2033\u2010\u2011\u2012\u2013\u2014\u2015\u2212",
@@ -477,14 +511,16 @@ def _main(argv=None):
                         " | quote-check --store DIR --text EXPORT [--agency SLUG]"
                         " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]"
                         " | review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME"
-                        " [--date YYYY-MM-DD] [--note TEXT]")
+                        " [--date YYYY-MM-DD] [--note TEXT] | unreadable --store DIR --out FILE.csv [--agency SLUG]")
     for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text", "--findings", "--date",
-                 "--ids", "--reviewer", "--note"):
+                 "--ids", "--reviewer", "--note", "--out"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
     parser.add_argument("--set", choices=["checked", "disputed"])
     args = parser.parse_args(argv)
+    if args.out is not None and args.command[:1] != ["unreadable"]:
+        parser.error("--out belongs to unreadable only")
     if args.command[:1] == ["review"]:
         if len(args.command) != 1 or args.check or not args.store or not slugify(args.agency or "") or not args.ids \
                 or not args.set or args.reviewer is None or args.inventory or args.list is not None \
@@ -509,6 +545,11 @@ def _main(argv=None):
         return stale(args)
     if args.findings is not None:
         parser.error("--findings belongs to stale only")
+    if args.command[:1] == ["unreadable"]:
+        if len(args.command) != 1 or args.check or not args.store or not args.out or args.inventory or args.list is not None \
+                or args.added_by is not None or args.date is not None or (args.agency is not None and not slugify(args.agency)):
+            parser.error("usage: unreadable --store DIR --out FILE.csv [--agency SLUG]")
+        return unreadable(args)
     args.date = datetime.date.today().isoformat() if args.date is None else args.date
     if args.command[:1] == ["status"]:
         if len(args.command) != 1 or args.check or not args.store or args.inventory or args.added_by is not None \
