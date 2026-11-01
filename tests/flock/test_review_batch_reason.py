@@ -10,7 +10,7 @@ batch = load("_rf1105_8_batch", ROOT / "tools" / "flock_review_batch.py")
 FAIL = b"stage compare-build failed rc=2 log=/tmp/x/compare.log\n"
 # Captured from the same call on main 862f362 with the same canned child ({rc} = 0 or 3; the stub agency never really moves).
 MAIN = ("golden ok keys=10\nrun %s rc={rc} state=ready\n%s ready 2/28 next=inventory\n"
-        "agencies=1 done=0 waiting=0 in_flight=0 failed=0 invalid=0 held=0 locked=0\n") % (SLUG, SLUG)
+        "agencies=1 done=0 waiting=0 in_flight=0 failed=0 invalid=0 held=0 locked=0 ready=1\n") % (SLUG, SLUG)
 
 
 class ReviewBatchReasonTest(unittest.TestCase):
