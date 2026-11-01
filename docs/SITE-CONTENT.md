@@ -88,6 +88,16 @@ entries. Police and city_council agencies appear in the picker; when a map is
 configured only those with bounds in `map/cities.json` do, because the
 controller fits the map to `CITIES[slug].bounds`.
 
+An agency with `verified: true` must carry `verification` (written by
+`kit-verify-agency`): `{"source_url": "https://…", "checked_on": "YYYY-MM-DD",
+"fields": [...]}`. `source_url` must be an https URL, `checked_on` a real date
+not after the build date, and `fields` (optional) names only `records_email`,
+`records_url` or `portal`; unknown keys are refused. `verified: true` without it
+stops the build naming `<file>[n].verification`. A verified agency shows
+"Contact checked <date> on the official source" on `agencies.html`; the URL is a
+link only and is never fetched. With `verified` not true the object is still
+validated but not shown, and the "Contact details unverified" hint stays.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without

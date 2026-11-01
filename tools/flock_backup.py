@@ -158,6 +158,26 @@ def restore(path, into):
     if bad: raise Fail("restored files do not match: " + "; ".join(bad))
     return manifest["counts"]
 
+def diff(path, store, expected_manifest_sha256=None):
+    """Names added, removed or changed in STORE since the archive at PATH (re-verified first). Writes nothing."""
+    store = Path(store).resolve()
+    if not store.is_dir(): raise Fail("store is not a folder")
+    if _inside(store, REPO): raise Fail("store inside repository")
+    manifest, _, problems = verify(path, expected_manifest_sha256)
+    if problems: raise Fail("archive refused: " + "; ".join(problems))
+    (found, skipped), old, live = collect(store), manifest["files"], {}
+    for name, file in found:
+        with open(file, "rb") as handle: live[name] = (_hash(handle), os.fstat(handle.fileno()).st_size)
+    both = set(live) & set(old)
+    lists = {"added": sorted(set(live) - set(old)), "removed": sorted(set(old) - set(live)),
+             "changed": sorted(n for n in both if live[n] != (old[n]["sha256"], old[n]["bytes"]))}
+    report = {"archive_created_at": manifest.get("created_at"), "current": not any(lists.values()),
+              "unchanged": len(both) - len(lists["changed"]), "store_skipped": skipped}
+    report.update({key: [_shown(n) for n in names[:200]] for key, names in lists.items()})
+    if any(len(names) > 200 for names in lists.values()):
+        report["more"] = {key: max(len(names) - 200, 0) for key, names in lists.items()}
+    return report
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -167,6 +187,8 @@ def main(argv=None):
     p.add_argument("file"); p.add_argument("--manifest-sha256", metavar="HEX")
     p = sub.add_parser("restore", help="verify, then extract into an empty or absent --into folder (0700/0600)")
     p.add_argument("file"); p.add_argument("--into", required=True)
+    p = sub.add_parser("diff", help="verify FILE, then name --store files added, removed or changed since it (exit 3)")
+    p.add_argument("file"); p.add_argument("--store", required=True); p.add_argument("--manifest-sha256", metavar="HEX")
     args = parser.parse_args(argv)
     try:
         if args.command == "create":
@@ -178,6 +200,10 @@ def main(argv=None):
                 print("\n".join(problems), file=sys.stderr)
                 return 1
             print("verified files=%d bytes=%d" % (manifest["counts"]["files"], manifest["counts"]["bytes"]))
+        elif args.command == "diff":
+            report = diff(args.file, args.store, args.manifest_sha256)
+            print(json.dumps(report, indent=2, sort_keys=True))
+            if not report["current"]: return 3
         else:
             counts = restore(args.file, args.into)
             print("restored files=%d bytes=%d" % (counts["files"], counts["bytes"]))

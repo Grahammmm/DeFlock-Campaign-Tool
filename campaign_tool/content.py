@@ -388,8 +388,30 @@ def load_sources(document):
 
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
-               "flock_transparency_slug", "muckrock_agency_id", "notes"}
+               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
+VERIFIED_FIELDS = ("records_email", "records_url", "portal")
+
+
+def _verification(entry, item):
+    """Where and when an organizer checked the contact; required when ``verified`` is true, never fetched."""
+    value = entry.get("verification")
+    label = f"{item}.verification"
+    if value is None:
+        if entry.get("verified") is True:
+            raise ContentError(f"{label}: verified:true needs source_url and checked_on")
+        return None
+    _require_keys(value, {"source_url", "checked_on", "fields"}, {"source_url", "checked_on"}, label)
+    source_url = _https(value["source_url"], f"{label}.source_url")
+    checked_on = _timestamp(value["checked_on"], f"{label}.checked_on", date_only=True)
+    checked = datetime.strptime(checked_on, "%Y-%m-%d").date()
+    if checked.isoformat() != checked_on or checked > date.today():
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    fields = value.get("fields", [])
+    if (not isinstance(fields, list) or any(name not in VERIFIED_FIELDS for name in fields)
+            or len(set(fields)) != len(fields)):
+        raise ContentError(f"{label}.fields: list names from {list(VERIFIED_FIELDS)} only, each once")
+    return {"source_url": source_url, "checked_on": checked_on, "fields": list(fields)}
 
 
 def _flock_url(entry, item):
@@ -445,6 +467,7 @@ def load_agencies(document, label):
             "portal": {"vendor": portal["vendor"],
                        "url": _https(portal.get("url"), f"{item}.portal.url", allow_none=True)},
             "verified": entry.get("verified") is True,
+            "verification": _verification(entry, item),
             "flock_transparency_url": _flock_url(entry, item),
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
