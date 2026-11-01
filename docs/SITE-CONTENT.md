@@ -15,6 +15,8 @@ a legal review or an HTML sanitizer.
 
 ## Content directory
 
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
 | Path | Required | Purpose |
 | --- | --- | --- |
 | `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice` |

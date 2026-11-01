@@ -522,6 +522,10 @@ def main():
     sources_add.add_argument("--public-url", default=None, help="Recorded only; never fetched or uploaded")
     sources_add.add_argument("--pages", type=int, default=None)
     sources_add.add_argument("--note", default="")
+    commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+        dest="content_command", required=True).add_parser(
+        "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
+    ).add_argument("--directory", required=True)
     args = parser.parse_args()
     if args.command in ("verify", "backup-drill"):
         try:
@@ -566,6 +570,10 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content":
+            from .content_init import init_content
+            print(json.dumps(init_content(root), indent=2))
+            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
