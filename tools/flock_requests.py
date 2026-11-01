@@ -4,12 +4,14 @@ draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository.""
 import csv
 import importlib.util
 import io
+import json
 import os
 import re
 import sys
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -423,14 +425,95 @@ def sent_runs(store, rows):
     return errs, f" sent_runs={sent} matched={matched}"
 
 
+def read_report(path):
+    """(correspondence report, None) or (None, reason). The records owner's export is only read; reasons never echo it."""
+    p, cap = Path(path), 64 << 20
+    why = ("must not be a symlink" if p.is_symlink()
+           else "is inside the repository" if (real := p.resolve()) == REPO or REPO in real.parents
+           else "must be a regular file of at most 64 MiB" if not p.is_file() or p.stat().st_size > cap else None)
+    if why:
+        return None, why
+    try:  # O_NOFOLLOW/O_NONBLOCK: a link or FIFO swapped in after the checks is refused and cannot hang the read
+        with open(os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+            data = json.loads(fh.read(cap + 1).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        return None, f"unreadable or not JSON ({type(exc).__name__})"
+    if not isinstance(data, dict) or data.get("schema") != "correspondence-report-v1":
+        return None, "schema is not correspondence-report-v1"
+    ok = all(isinstance(data.get(k), list) and all(isinstance(x, dict) for x in data[k]) for k in ("agencies", "requests"))
+    return (data, None) if ok else (None, "agencies and requests must be lists of objects")
+
+
+def report_day(v):
+    """'' when empty, a date (an aware timestamp's America/Los_Angeles day), or None when unresolved (naive or junk)."""
+    try:  # non-text, or an aware timestamp overflowing at the calendar edge, is unresolved too
+        t = datetime.fromisoformat(v) if isinstance(v, str) and v and not day(v) else None
+        return "" if v in (None, "") else day(v) or (t.astimezone(ZoneInfo("America/Los_Angeles")).date() if t and t.tzinfo else None)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def reconcile(rows, data):
+    """(lines, exit code): each REQUESTS row against the request with that external_ref in the report agency of its slug.
+    Prints REQUESTS ids, slugs and dates only, never report ids, refs or text; an ambiguous agency's rows are unmatched."""
+    ids, groups, lines, n = {}, {}, [], dict.fromkeys(("matched", "disagreements", "unmatched", "report_only", "unresolved"), 0)
+    for a in (a for a in data["agencies"] if isinstance(a.get("name"), str) and isinstance(a.get("id"), (str, int))):
+        ids.setdefault(slug(a["name"]), set()).add(a["id"])
+    for r in rows:
+        groups.setdefault(slug(r["agency"]), []).append(r)
+    for key in sorted(groups):
+        mine, theirs, refs = sorted(groups[key], key=lambda r: r["request_id"]), ids.get(key, set()), {}
+        if len(theirs) > 1:
+            lines.append(f"reconcile | {key} | report agency ambiguous for {key}")
+            n["unmatched"] += len(mine)
+            continue
+        for q in (q for q in data["requests"] if isinstance(q.get("agency_id"), (str, int)) and q["agency_id"] in theirs):
+            refs.setdefault(q["external_ref"].strip() if isinstance(q.get("external_ref"), str) else None, []).append(q)
+        for r in mine:
+            got, pre = refs.get(r["request_id"], []), f"reconcile | {key} | {r['request_id']} | "
+            if len(got) != 1:
+                lines.append(pre + ("report request ambiguous" if got else "not in report"))
+                n["unmatched"] += 1
+                continue
+            n["matched"] += 1
+            for label, mine_v, field in (("sent", r["sent"], "submitted_at"),
+                                         ("determination", r["determination_date"], "determination_at")):
+                other = report_day(got[0].get(field))
+                if other is None or str(other) != mine_v:
+                    n["unresolved" if other is None else "disagreements"] += 1
+                    lines.append(pre + f"{label} {mine_v or '-'} vs " + ("submitted " if label == "sent" else "")
+                                 + ("unresolved" if other is None else str(other) or "-"))
+            st = got[0].get("status")
+            if st not in ORDER:
+                shown = st if isinstance(st, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,39}", st) else "other"
+                lines.append(pre + f"status not comparable ({shown})")
+            elif st != r["status"]:
+                lines.append(pre + f"status {r['status']} vs {st}")
+                n["disagreements"] += 1
+        extra = sum(len(qs) for ref, qs in refs.items() if ref not in {r["request_id"] for r in mine})
+        n["report_only"] += extra
+        lines += [f"reconcile | {key} | report-only requests={extra}"] if extra else []
+    as_of, snap = data.get("as_of"), str(data.get("snapshot_sha256"))
+    as_of = as_of if isinstance(as_of, str) and report_day(as_of) else "unresolved"
+    lines.append(" ".join(f"{k}={v}" for k, v in [("rows", len(rows))] + list(n.items())) + f" | report as_of {as_of}"
+                 + f" snapshot {snap[:12] if re.fullmatch(r'[0-9a-f]{64}', snap) else '-'}")
+    return lines, 3 if n["disagreements"] + n["unmatched"] + n["report_only"] else 0
+
+
 USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] | summary PATH | "
          "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
          "summary PATH [--inventory CSV] adds document counts; record STORE --agency SLUG --request ID "
-         "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]")
+         "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]; "
+         "reconcile STORE --report REPORT.json")
 
 def main(argv):
     if argv in (["--help"], ["-h"]):
         print(USAGE); return 0  # noqa: E702
+    if len(argv) == 4 and argv[0] == "reconcile" and argv[2] == "--report":
+        data, why = read_report(argv[3])
+        rows, errs = load(argv[1]) if not why else ([], [f"report: {why}"])
+        lines, code = (errs, 1) if errs else reconcile(rows, data)
+        return print("\n".join(lines), file=sys.stderr if errs else sys.stdout) or code
     if argv[:1] == ["record"]:
         keys, o = argv[2::2], dict(zip(argv[2::2], argv[3::2]))
         today = day(o.pop("--today", date.today().isoformat()))
