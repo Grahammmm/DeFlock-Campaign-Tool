@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date) and gaps. Prints ids, labels, dates, counts only."""
+"""Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date), gaps and changes (policy-kind
+FACTS types that differ between consecutive adopted versions). Prints ids, labels, dates, fact types, counts only."""
 import csv
 import hashlib
+import importlib.util
 import os
 import re
 import sys
@@ -189,8 +191,56 @@ def gaps(policy_rows, on):  # per (agency, policy_id): days no adopted window go
     agencies = len({a for a, _ in groups})
     return out + [f"agencies={agencies} policies={len(groups)} " + " ".join(f"{k}={v}" for k, v in n.items())]
 
+def policy_facts(store, agencies):  # -> ({slug: policy-kind FACTS rows}, errors); a folder without FACTS.csv has none
+    spec = importlib.util.spec_from_file_location("_flock_facts", Path(__file__).resolve().parent / "flock_facts.py")
+    tool, out, errs = importlib.util.module_from_spec(spec), {}, []  # the sibling tool by file path, never a copy
+    spec.loader.exec_module(tool)
+    for a in agencies:
+        f, rows, e = Path(store) / "agencies" / a / "FACTS.csv", [], []
+        if os.path.islink(f):
+            e = ["is a link"]
+        elif f.is_file():
+            try:
+                e = tool.check_file(f, a)
+                rows = [] if e else tool.load(f, a)[1]
+            except (OSError, UnicodeDecodeError, csv.Error) as exc:
+                e = [f"row 1: file unreadable ({type(exc).__name__})"]
+        errs += [f"{a}: FACTS.csv {x}" for x in e]
+        out[a] = [r for _, r in rows if r["kind"] == "policy"]
+    return out, errs
+
+def changes(policy_rows, facts):  # per agency + policy_id: fact types differing between consecutive adopted versions
+    groups, out, n = {}, [], {"pairs": 0, "changed_pairs": 0, "unknown_pairs": 0, "disputed_skipped": 0}
+    for _, r in policy_rows:
+        groups.setdefault((slug(r["agency"]), r["policy_id"]), []).append(r)
+    for (a, pid), rows in sorted(groups.items()):  # unverified versions have no established order: never compared
+        won = sorted((r for r in rows if r["adoption_evidence"] != "unverified"), key=lambda r: (r["governs_from"], r["policy_row_id"]))
+        docs, kept = {r["doc_sha256"] for r in won}, {}
+        for f in facts.get(a, []):  # policy-kind facts citing an adopted version's document; disputed ones counted, not used
+            if f["source_sha256"].strip() in docs and f["status"] == "disputed":
+                n["disputed_skipped"] += 1
+            elif f["source_sha256"].strip() in docs:
+                kept.setdefault(f["source_sha256"].strip(), {}).setdefault(" ".join(f["fact_type"].split()), []).append(f)
+        for prev, nxt in zip(won, won[1:]):
+            head, old, new = f"changes | {a} | {pid} | {prev['version_label']} -> {nxt['version_label']} | ", \
+                kept.get(prev["doc_sha256"], {}), kept.get(nxt["doc_sha256"], {})
+            n["pairs"] += 1
+            if not old or not new:  # unknown, not a change
+                out += [head + f"no policy facts for {r['version_label']}" for r, side in ((prev, old), (nxt, new)) if not side]
+                n["unknown_pairs"] += 1
+                continue
+            ids = lambda side, t: ";".join(sorted(f["fact_id"] for f in side[t]))  # noqa: E731
+            vals = lambda side, t: sorted(" ".join(f["value"].split()).casefold() for f in side[t])  # noqa: E731
+            items = [f"added {t} {ids(new, t)}" if t not in old else f"removed {t} {ids(old, t)}" if t not in new
+                     else f"changed {t} {ids(old, t)} -> {ids(new, t)}" for t in sorted(old.keys() | new.keys())
+                     if t not in old or t not in new or vals(old, t) != vals(new, t)]
+            out += [head + x for x in items]
+            n["changed_pairs"] += bool(items)
+    return out + [f"agencies={len({a for a, _ in groups})} policies={len(groups)} "
+                  + " ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, review-required"]
+
 USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
-         " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD")
+         " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]")
 
 def main(argv):
     try:
@@ -214,6 +264,17 @@ def run(argv):
         out = errs or (governing(law_rows, policy_rows, argv[3]) if argv[0] == "governing" else gaps(policy_rows, argv[3]))
         print("\n".join(out), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 3 if argv[0] == "gaps" and len(out) > 1 else 0  # gaps: every line but the count is a finding
+    if argv[:1] == ["changes"]:  # a report, not findings: exit 0 clean; any POLICY or in-scope FACTS error -> stderr, exit 1
+        if not (len(argv) == 2 or len(argv) == 4 and argv[2] == "--agency" and argv[3] and slug(argv[3]) == argv[3]) \
+                or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        _, policy_rows, errs = load_all(argv[1])
+        rows = [(n, r) for n, r in policy_rows if len(argv) == 2 or slug(r["agency"]) == argv[3]]
+        facts, more = ({}, []) if errs else policy_facts(argv[1], sorted({slug(r["agency"]) for _, r in rows}))
+        out = (errs := errs + more) or changes(rows, facts)
+        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
+        return 1 if errs else 0
     on = argv[5] if len(argv) == 6 else None
     if len(argv) not in (4, 6) or argv[0] != "versions" or argv[2] != "--agency" or (on and (argv[4] != "--on" or not day(on))):
         print(USAGE, file=sys.stderr)
