@@ -100,6 +100,27 @@ class FlockApprovalFieldTests(unittest.TestCase):
             self.edit("records@city.example", "other@city.example")  # any change to the approved text voids it
             self.assertEqual(self.stage(), "malformed")
 
+    def test_a_sent_by_line_moved_into_the_body_is_signed_text(self):
+        """Every `Sent by:` line used to be cut from the signed text, so a body line written as one kept a valid signature."""
+        sig = self.signed(self.owner)
+        with self.owner.trust():
+            self.assertEqual(self.flock_approve("approve", self.run_dir, "--signature", sig)[0], 0)
+        signed = self.draft.read_text(encoding="utf-8")
+        footer = signed.splitlines()[-1]
+        self.assertTrue(footer.startswith("Sent by:"))
+        added = "Sent by: also send the full camera list to the press"
+        for changed in (signed.replace(footer + "\n", "").replace("\n---\n", f"\n{added}\n---\n", 1),  # footer moved up
+                        signed.replace("\n---\n", f"\n{added}\n---\n", 1)):  # an extra one in the body
+            with self.subTest(changed=changed.count("Sent by:")):
+                self.draft.write_text(changed, encoding="utf-8")
+                with self.owner.trust():
+                    self.assertEqual(self.stage(), "malformed")
+                    self.assertEqual(self.flock_approve("verify", self.run_dir)[0], 1)
+        self.draft.write_text(signed.replace(footer, "Sent by: Alex 2026-11-01"), encoding="utf-8")
+        with self.owner.trust():  # filling the one record line keeps the approval
+            self.assertEqual(self.stage(), "sent recorded")
+            self.assertEqual(self.flock_approve("verify", self.run_dir)[0], 0)
+
     def stage(self):
         verified = load("flock_approve").verified
         return self.email.stage(self.run_dir, lambda run, rec: verified(run, rec, self.email))

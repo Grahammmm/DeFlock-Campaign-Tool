@@ -141,9 +141,14 @@ def marks(lines):
     return [ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("Sent by:")]
 
 def approved_text(run):
-    """(subject, text G approves) for a run: EMAIL-DRAFT.md without its `Sent by:` record line. Links are refused."""
-    with open(os.open(run / "EMAIL-DRAFT.md", os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh: text = fh.read()
-    return f"{run.parent.parent.name}/{run.name}", "\n".join(ln for ln in text.splitlines() if not ln.startswith("Sent by:")) + "\n"
+    """(subject, text G approves) for a run: EMAIL-DRAFT.md exactly as stored, minus only its LAST line, which must be the
+    one `Sent by:` record line. A `Sent by:` line anywhere else stays in the signed text. Links are refused; ValueError
+    when the draft does not end with that record line."""
+    with open(os.open(run / "EMAIL-DRAFT.md", os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8", newline="") as fh: text = fh.read()
+    head, _, last = text.removesuffix("\n").rpartition("\n")
+    if not last.startswith("Sent by:") or len(last.splitlines()) != 1:
+        raise ValueError("EMAIL-DRAFT.md must end with its one Sent by: record line")
+    return f"{run.parent.parent.name}/{run.name}", head + "\n"
 
 def approval_field(run):
     """The approval record when well-formed and bound to the current draft text; False when absent; None when bad."""

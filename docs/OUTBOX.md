@@ -132,8 +132,10 @@ require an identity, CLI round trip.
 
 ## Explicit approval after a definite failure
 
-The trusted hosted signer can call `Outbox.approve_retry(key, approved_by, approved_at)`
-for an unchanged draft after a definite failure. Approval must be strictly later
+The hosted gateway calls `Outbox.approve_retry(key, evidence, approved_at)` with its attested
+frame; on an organizer's machine `approve-retry KEY --signature FILE` does the same with an owner
+signature over `payload KEY`, which prints the next approval round for a definitely failed row
+(docs/APPROVALS.md). Either way it is for an unchanged draft after a definite failure. Approval must be strictly later
 than the failure; merely replaying or refreshing the old envelope is refused.
 The row must be failed without a sending/sent timestamp or provider receipt.
 Approval history and failure/resolver evidence are appended to the private
@@ -141,4 +143,4 @@ Approval history and failure/resolver evidence are appended to the private
 not send, lift agency/fee caps or reconcile uncertainty. An independently verified
 not-delivered reconciliation needs a subsequent fresh approval. Do not alter the
 canonical key or request scope to escape an unresolved effect. The CLI's ordinary
-`approve` remains proposed-only; this API requires an authenticated trusted caller.
+`approve` remains proposed-only; no approval, first or retry, accepts a typed name.

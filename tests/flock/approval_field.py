@@ -32,8 +32,8 @@ def trusted():
 
 def write_field(run, signer=None, forged=False):
     run = Path(run)
-    text = (run / "EMAIL-DRAFT.md").read_text(encoding="utf-8")
-    body = "\n".join(ln for ln in text.splitlines() if not ln.startswith("Sent by:")) + "\n"
+    text = (run / "EMAIL-DRAFT.md").read_bytes().decode("utf-8")
+    body = text.removesuffix("\n").rpartition("\n")[0] + "\n"  # all but the last (Sent by:) line, byte for byte
     subject = f"{run.parent.parent.name}/{run.name}"
     sig = FAKE_SIG if forged else (signer or owner()).sign(approval.payload("flock-email", subject, body))
     rec = {"v": 1, "state": "approved", "scope": "flock-email", "subject": subject,

@@ -59,7 +59,9 @@ python3 tools/flock_approve.py verify RUNDIR                               # ope
 python3 tools/flock_approve.py status STORE                                # every run's stage, signatures checked
 ```
 
-Any edit to the draft after approval, other than its `Sent by:` record line, voids the approval:
+The signed text is the draft byte for byte, minus only its last line, which must be the one
+`Sent by:` record line. Any other edit to the draft after approval, including a `Sent by:` line
+anywhere else, voids the approval:
 `status` then reports `malformed`. A field whose signature does not verify (hand-written, fake,
 an untrusted key, or no trust file installed) is never `approval recorded`. It shows as
 `approval unverified` / `sent unverified`. `flock_approve.py status` exits 1 on it,
