@@ -13,12 +13,13 @@ CHANNELS = ("email", "portal", "mail")
 MAX_BYTES = 1 << 20
 EARLIEST = date(2000, 1, 1)
 SHA256 = re.compile(r"[0-9a-f]{64}")
+STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00")  # UTC, as record_sent writes recorded_at
 NOTE = "Provisional reminders only; the period runs from the agency's receipt. " + law.HOLIDAY_NOTE
 
 
-def _day(value):
+def _day(value, pattern=kit.DATE, parse=date.fromisoformat):
     try:
-        return date.fromisoformat(value) if isinstance(value, str) and kit.DATE.fullmatch(value) else None
+        return parse(value) if isinstance(value, str) and pattern.fullmatch(value) else None
     except ValueError:
         return None
 
@@ -27,7 +28,7 @@ def _entry_ok(agency_id, entry):
     return (kit.AGENCY_ID.match(agency_id) and isinstance(entry, dict) and _day(entry.get("sent_on"))
             and entry.get("channel") in CHANNELS and entry.get("draft") == f"requests/{agency_id}.md"
             and isinstance(entry.get("draft_sha256"), str) and SHA256.fullmatch(entry["draft_sha256"])
-            and isinstance(entry.get("recorded_at"), str) and isinstance(entry.get("steps"), list))
+            and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list))
 
 
 def read_sent(root):

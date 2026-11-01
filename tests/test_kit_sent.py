@@ -180,15 +180,26 @@ class KitSentTests(unittest.TestCase):
             "other draft": json.dumps({"schema_version": 1, "requests": {self.agency: {**entry, "draft": "../x.md"}}}),
             "steps missing": json.dumps({"schema_version": 1, "requests": {
                 self.agency: {k: v for k, v in entry.items() if k != "steps"}}}),
+            "recorded_at missing": json.dumps({"schema_version": 1, "requests": {
+                self.agency: {k: v for k, v in entry.items() if k != "recorded_at"}}}),
             "oversize": good + " " * (1 << 20),
         }
+        for stamp in ("not-a-timestamp", "2026-02-30T00:00:00+00:00", "2026-03-02T00:00:00-08:00",
+                      "2026-03-02T00:00:00Z", "2026-03-02", "2026-03-02T00:00:00.5+00:00", 20260302):
+            cases[f"recorded_at {stamp!r}"] = json.dumps(
+                {"schema_version": 1, "requests": {self.agency: {**entry, "recorded_at": stamp}}})
         for label, text in cases.items():
             with self.subTest(label=label):
                 self.sent.write_text(text)
                 before = self.sent.read_bytes()
                 self.assert_refused(run("kit-status", "--directory", self.root), "kit/sent.json unreadable")
                 self.assert_refused(self.send(), "kit/sent.json unreadable")
+                self.assert_refused(self.send(self.agency, "2026-03-05", "portal", "--replace"),
+                                    "kit/sent.json unreadable")
+                self.assert_refused(self.send(self.other), "kit/sent.json unreadable")
                 self.assertEqual(self.sent.read_bytes(), before)
+        self.sent.write_text(json.dumps({"schema_version": 1, "requests": {self.agency: entry}}))
+        self.assertEqual(self.kit_status()["requests"][0]["agency_id"], self.agency)
         self.sent.unlink()
         target = self.kit / "real-sent.json"
         target.write_text(good)
