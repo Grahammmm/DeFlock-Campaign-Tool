@@ -83,6 +83,14 @@ the binding statute cited alongside so a reader can see which is which.
 
 1. The reviewer opens a pull request that changes only `status`, `reviewed_by`,
    `reviewed_at`, and any `review` labels or text they corrected.
+   The maintainer checks that structure with
+   `python3 tools/check_law_review.py OLD.json NEW.json` (OLD from `git show
+   main:jurisdictions/us-ca/package.json`). It exits 0 only when NEW changes just
+   those fields (per rule, matched by `rule_id`: `review`, `duty`, `exceptions`,
+   `remedy`), is schema-valid, and, if `reviewed`, has distinct non-blank
+   reviewers and a date not after today; 3 lists every other changed JSON path or
+   error. It is a structural check only and never replaces the human legal review
+   or the maintainer's reviewer-independence check. Run it on both package copies.
 2. For each rule the reviewer lists in the PR description: the URL opened, the
    amendment date shown, and whether the rule text was accepted, edited, or
    downgraded.
