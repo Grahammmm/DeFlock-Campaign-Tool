@@ -1,9 +1,5 @@
-"""Record records requests an organizer sent by hand; list provisional due dates.
-
-``kit/sent.json`` holds one entry per agency: the send date, the channel, the
-draft that was sent and its SHA-256. Nothing is sent from this module; the due
-dates come from ``law.deadline`` and are provisional reminders only.
-"""
+"""Record requests an organizer sent by hand in kit/sent.json (date, channel, draft SHA-256); list
+provisional due dates from ``law.deadline``. Nothing is sent from this module."""
 import hashlib
 import json
 import os
@@ -104,9 +100,8 @@ def status(root, today=None, law_base=None):
     root = Path(root)
     requests = read_sent(root)
     path = root / "kit" / "agencies.json"
-    names = {}
-    if requests and path.is_file() and not path.is_symlink():
-        names = {entry["agency_id"]: entry["name"] for entry in kit._load_existing(path)}
+    names = {entry["agency_id"]: entry["name"] for entry in kit._load_existing(path)} \
+        if requests and path.is_file() and not path.is_symlink() else {}
     try:
         package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
         package_status = package["status"]
