@@ -76,7 +76,8 @@ class CompareSummaryTest(unittest.TestCase):
         counts = {}
         for r in rows:
             counts.setdefault((r["topic"], r["claim_class"]), []).append(r["rating"])
-        out = ["topic | %s | %s | strong=%d medium=%d weak=%d" % (t, c, v.count("strong"), v.count("medium"), v.count("weak"))
+        out = ["topic | %s | %s | strong=%d medium=%d weak=%d unreviewed_cited=0" % (  # DF1537-02: fixture facts are checked
+            t, c, v.count("strong"), v.count("medium"), v.count("weak"))
                for (t, c), v in sorted(counts.items())]
         cited = set().union(*(split(r["rule_ids"]) for r in rows))
         review = sum(PACKAGE[x]["review"] == "needs_attorney_review" for x in cited)
@@ -86,9 +87,9 @@ class CompareSummaryTest(unittest.TestCase):
         out += ["policy | rows=%d cited=%d uncited=%d" % (len(policy), len(refs), len(policy - refs))]
         out += ["policy uncited | " + x for x in sorted(policy - refs)]
         ids, used = {f["fact_id"] for f in facts}, set().union(*(split(r["fact_ids"]) for r in rows))
-        out += ["facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d" % (
+        out += ["facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d unreviewed_cited_facts=0 checked_cited=%d" % (
             len(ids), len(used), len(ids - used), sum(f["value"] == "UNREADABLE" for f in facts),
-            len({r["quote_fact_id"] for r in rows} - {""}))]
+            len({r["quote_fact_id"] for r in rows} - {""}), len(used))]
         on, pol = "2026-10-30", sorted(records(self.agency / "POLICY.csv"),
                                        key=lambda p: (p["footer_version_date"], p["policy_row_id"]))
         state = {p["policy_row_id"]: "not established" if p["adoption_evidence"] == "unverified" else  # RF1200-2 lines
@@ -106,12 +107,12 @@ class CompareSummaryTest(unittest.TestCase):
     def test_golden_counts(self):
         code, out = self.summary()
         self.assertEqual((code, out), (0, self.expected()))
-        for line in ("topic | audits | record-gap | strong=1 medium=0 weak=0",
-                     "topic | na-search-purposes | duty-concern | strong=0 medium=1 weak=0",
+        for line in ("topic | audits | record-gap | strong=1 medium=0 weak=0 unreviewed_cited=0",
+                     "topic | na-search-purposes | duty-concern | strong=0 medium=1 weak=0 unreviewed_cited=0",
                      "law | rules=3 cited=2 uncited=1 attorney_review_cited=0",
                      "law uncited | ca-oag-2023-dle-06-out-of-state-sharing-guidance",
                      "policy | rows=2 cited=1 uncited=1", "policy uncited | P-2745cbbfbcad",
-                     "facts | rows=6 cited=5 uncited=1 unreadable=0 quoted=1"):
+                     "facts | rows=6 cited=5 uncited=1 unreadable=0 quoted=1 unreviewed_cited_facts=0 checked_cited=5"):
             self.assertIn(line + "\n", out)
         self.assertTrue(out.endswith("findings=7 | counts of what this run cited, not a review verdict\n"), out)
         self.assertEqual(out.count("topic | "), 7)
@@ -138,7 +139,7 @@ class CompareSummaryTest(unittest.TestCase):
         code, out = self.summary()
         self.assertEqual((code, out), (0, self.expected()))
         self.assertIn("law | rules=4 cited=3 uncited=1 attorney_review_cited=1\n", out)
-        self.assertIn("topic | definitions | record-gap | strong=0 medium=1 weak=1\n", out)
+        self.assertIn("topic | definitions | record-gap | strong=0 medium=1 weak=1 unreviewed_cited=0\n", out)
         self.finding("D3", "strong", NAR)  # --check rejects strong on a needs_attorney_review rule
         self.assertEqual(self.summary(), (1, REFUSED % 1))
 
@@ -151,7 +152,7 @@ class CompareSummaryTest(unittest.TestCase):
                      "Twelve outside agencies have query access.", "F-76dbe8a9b4ac")  # same fact cited and quoted again
         code, out = self.summary()
         self.assertEqual((code, out), (0, self.expected()))
-        self.assertIn("facts | rows=7 cited=5 uncited=2 unreadable=1 quoted=1\n", out)
+        self.assertIn("facts | rows=7 cited=5 uncited=2 unreadable=1 quoted=1 unreviewed_cited_facts=0 checked_cited=5\n", out)
         self.assertNotIn("F-", out)  # no fact id is printed
 
     def test_dirty_run_and_wrong_folder_refused(self):
