@@ -19,8 +19,9 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 3. `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo>`. It prints
    `written=2 to_domain=<domain>`; errors name `row N: <field>` or `contact: no records row` and write nothing.
 4. The operator shows G the draft; only G's explicit reply for that exact draft permits sending, by hand.
-5. After sending by hand, fill `Sent by:`; `python3 tools/flock_email.py status STORE` must exit 0
+5. After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_email.py status STORE` must exit 0
    (one `email | <slug> | <date> | <stage>` line per run; reads only, prints no address or filled value).
+   `python3 tools/flock_requests.py --check STORE` then needs a REQUESTS row of that agency with `sent` equal to that date.
 
 ## Never
 
