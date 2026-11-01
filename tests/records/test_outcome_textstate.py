@@ -31,7 +31,7 @@ EXPECTED = {
     "EXTRACTED": ("text_reviewed", "Text extracted and passed the extraction checks."),
     "NEW_FUTURE_CODE": ("unknown_state", "State not recognised"),
 }
-SECRET = "Secret Synthetic Document Text"
+PRIVATE_CANARY_TEXT = "Secret Synthetic Document Text"
 
 
 def h(n):
@@ -124,16 +124,16 @@ class TextStateTests(unittest.TestCase):
     def test_outputs_carry_state_not_private_locators_and_keep_modes(self):
         absolute = str(self.project / "processing-v1" / "blobs" / "Secret.pdf")
         listed = self.listing("r1", [self.doc("a" * 64, "EXTRACT_NOT_ACCEPTED", path=absolute, storage_path=absolute,
-                                              refusal_code="unlisted", note=SECRET),
+                                              refusal_code="unlisted", note=PRIVATE_CANARY_TEXT),
                                      self.doc("b" * 64, "AWAITING_OCR", path=absolute)])
-        (self.processing / "awaiting-ocr.jsonl").write_text(json.dumps({"path": absolute, "text": SECRET}) + "\n")
+        (self.processing / "awaiting-ocr.jsonl").write_text(json.dumps({"path": absolute, "text": PRIVATE_CANARY_TEXT}) + "\n")
         code, line = self.stage("r1")
         self.assertEqual((code, line["status"], line["error_code"]), (0, "ok", None))
         report, text = self.read("r1")
         directory = self.project / "run-outputs" / "r1"
         for raw in ((directory / "text-state.json").read_text(), text):
             for leak in ("path", "storage_path", "form", "written_at", "pdf", "unlisted", absolute,
-                         str(self.project), SECRET, "awaiting-ocr"):
+                         str(self.project), PRIVATE_CANARY_TEXT, "awaiting-ocr"):
                 self.assertNotIn(leak, raw)
         self.assertEqual({k for r in report["records"] for k in r}, {"sha256", "state", "words"})
         self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
