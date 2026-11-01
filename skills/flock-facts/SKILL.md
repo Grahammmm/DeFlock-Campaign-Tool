@@ -27,6 +27,7 @@ store (outside the repo). No model step: the tool validates, it does not read do
 9. Review state: `python3 tools/flock_facts.py status --store STORE [--agency SLUG] [--list unreviewed|disputed]`; ids, never values.
 10. Quotes on their page: `python3 tools/flock_facts.py quote-check --store STORE --text EXPORT [--agency SLUG]` (EXPORT: the extraction owner's page-text copy outside repo and store); ids and outcomes, never text; exit 3 on not-found or page-hash-mismatch.
 11. Back up the store locally: `python3 tools/flock_backup.py create STORE --out FILE.tar`, then `verify` (docs/BACKUP.md "Flock store").
+12. Whole-store check, read-only: `python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N]`; exit 0 only (docs/FLOCK-FACTS.md "Store check").
 
 ## Outputs
 - `STORE/agencies/<slug>/FACTS.csv` (schema v2, one folder per agency slug).

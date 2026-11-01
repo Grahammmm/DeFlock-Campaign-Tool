@@ -24,3 +24,11 @@ The v1 import header is the first seven columns. Any other header is an error. F
 - **Privacy:** the store and real FACTS.csv are never committed. The CLI prints row numbers, field
   names and counts only, and refuses a store inside the repository checkout.
 - A clean `--check` is machine validity, not review or acceptance.
+
+## Store check
+
+`python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N] [--today YYYY-MM-DD]` runs the facts,
+law/policy, requests, contact, watch list and publish checkers in-process, then `slugs` (a ROSTER slug or WATCHLIST agency
+with no agency folder is an error; a folder in no ROSTER is a note; linked folders are named, never followed) and `backup`
+(the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
+`flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. It writes nothing.
