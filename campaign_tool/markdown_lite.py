@@ -3,14 +3,18 @@
 Supported: paragraphs, ``## `` headings (rendered as ``<h3>``), ``**bold**``,
 ``[text](https://...)`` links and unordered ``- `` lists. Everything else is
 plain text. All input is HTML-escaped first, so raw HTML never reaches the
-page; links whose target is not an absolute ``https://`` URL are rendered as
-their text alone. This is a build-time formatter for reviewed campaign copy,
-not a sanitizer for untrusted documents.
+page; links whose target is not an absolute ``https://`` URL, or whose host is
+not a public DNS name (2-10 labels of 1-63 letters/digits/inner hyphens, an
+alphabetic last label, at most 253 chars, no IP literal or single label, port
+1-65535 without a leading zero), are rendered as their text alone. This is a
+build-time formatter for reviewed campaign copy, not a sanitizer for
+untrusted documents.
 
 ``lint(source)`` lists, read-only, every construct ``render`` would degrade
-(dropped links, other heading levels, numbered lists, unclosed ``**``, raw
-HTML, single ``*x*``/``_x_`` emphasis) as sorted ``(line_no, code, detail)``
-tuples; it never echoes link text or targets and never changes ``render``.
+(``link-dropped`` non-https links, ``link-host`` https links with a bad host,
+other heading levels, numbered lists, unclosed ``**``, raw HTML, single
+``*x*``/``_x_`` emphasis) as sorted ``(line_no, code, detail)`` tuples; it
+never echoes link text or targets and never changes ``render``.
 ``python3 -m campaign_tool.markdown_lite --lint FILE...`` prints
 ``FILE:LINE: CODE: detail`` lines and ``files=N findings=M`` (exit 0 clean,
 1 findings, 2 usage error or an unreadable, non-UTF-8, oversize or missing file).
@@ -23,15 +27,35 @@ MAX_BYTES = 200 * 1024
 _LINK = re.compile(r"\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)")
 _BOLD = re.compile(r"\*\*([^*\n]{1,500})\*\*")
 _HTTPS = re.compile(r"https://[A-Za-z0-9][A-Za-z0-9.-]*(?::\d{1,5})?(?:/[A-Za-z0-9._~:/?#@!$&*+,;=%-]*)?")
+_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_TLD = re.compile(r"[A-Za-z]{2,63}")
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
+
+
+def _host_ok(netloc):
+    """True only for a public DNS host name with an optional port 1-65535."""
+    host, colon, port = netloc.partition(":")
+    if colon and not (_PORT.fullmatch(port) and int(port) <= 65535):
+        return False
+    labels = host.split(".")
+    return (len(host) <= 253 and 2 <= len(labels) <= 10 and bool(_TLD.fullmatch(labels[-1]))
+            and all(_LABEL.fullmatch(label) for label in labels))
+
+
+def _target_code(raw):
+    """None if render links the unescaped target, else the lint code naming why not."""
+    if raw.startswith("https://") and not _host_ok(re.split(r"[/?#]", raw[len("https://"):], maxsplit=1)[0]):
+        return "link-host"
+    return None if _HTTPS.fullmatch(raw) else "link-dropped"
 
 
 def _link(match):
     text, target = match.group(1), match.group(2)
     # The target was HTML-escaped with the rest of the line; validate the
     # unescaped form against a strict https-only pattern (no quotes, brackets
-    # or parentheses), then re-escape it for the attribute.
+    # or parentheses) and a public DNS host, then re-escape it for the attribute.
     raw = unescape(target)
-    if not _HTTPS.fullmatch(raw):
+    if _target_code(raw):
         return text
     return '<a href="' + escape(raw, quote=True) + '" rel="noopener noreferrer">' + text + "</a>"
 
@@ -85,6 +109,7 @@ _HTML = re.compile(r"<[A-Za-z/!]")
 _EMPHASIS = re.compile(r"(?<![*\w])[*_][^*_\s][^*_\n]*[*_](?![*\w])")
 _DETAILS = {
     "link-dropped": "link target is not absolute https",
+    "link-host": "link host is not a public DNS name",
     "heading-level": 'only "## " headings render',
     "numbered-list": "numbered lists render as plain text",
     "bold-unclosed": "unclosed **",
@@ -104,7 +129,7 @@ def _line_codes(line):
     if line.startswith("- ") or line.startswith("* "):
         body = line[2:].strip()
     marked = _BOLD.sub(lambda m: "<strong>" + m.group(1) + "</strong>", escape(body, quote=True))
-    codes += ["link-dropped" for m in _LINK.finditer(marked) if not _HTTPS.fullmatch(unescape(m.group(2)))]
+    codes += [code for m in _LINK.finditer(marked) if (code := _target_code(unescape(m.group(2))))]
     unbolded = _BOLD.sub(lambda m: m.group(1), body)
     if "**" in unbolded:
         codes.append("bold-unclosed")
