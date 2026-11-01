@@ -2,7 +2,8 @@
 
 How much of the live records is readable, as five numbers an organizer can read
 without seeing any document. The procedure uses only `tools/records_extract_summary.py`,
-`tools/flock_facts.py`, `tools/portal_reconcile.py` and standard shell. It adds no tool,
+`tools/flock_facts.py`, `tools/portal_reconcile.py`, standard shell and the Python
+standard-library CSV reader. It adds no tool,
 no timer and no stage, and it prints no hash, path, file form or other private locator.
 
 ## Who runs it
@@ -54,8 +55,12 @@ would silently drop out of step 3.
 export LC_ALL=C
 T=$(mktemp -d)
 if [ -d "$ROOT/blobs" ]; then
-  find "$STORE/agencies" -mindepth 2 -maxdepth 2 -name FACTS.csv -type f -exec cat {} + \
-    | grep -oE '[0-9a-f]{64}' | sort > "$T/cited"
+  find "$STORE/agencies" -mindepth 2 -maxdepth 2 -name FACTS.csv -type f -exec python3 -B -c '
+import csv, sys
+for name in sys.argv[1:]:
+    with open(name, encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            print(row["source_sha256"].strip())' {} + | sort > "$T/cited"
   ls "$ROOT/blobs" | sort -u > "$T/have"
   sort -u "$T/cited" | comm -23 - "$T/have" > "$T/missing"
   echo "facts_citing_missing=$(join "$T/cited" "$T/missing" | wc -l | tr -d ' ')"
@@ -67,9 +72,12 @@ rm -r "$T"
 ```
 
 Blobs are content-addressed files named by their sha256 directly under `blobs/`;
-`ls` skips the hidden `.pending-*` files of an unfinished write. `source_sha256` is
-the only 64-hex value in a `FACTS.csv` row (`fact_id` is `F-` plus 12 hex), so each
-cited line is one fact. The hashes stay in the scratch folder and are never printed.
+`ls` skips the hidden `.pending-*` files of an unfinished write. The inline Python is
+the standard-library CSV reader, the same parser `flock_facts.py` uses, and it reads
+only the `source_sha256` column: a hash written inside `value` or `verbatim_quote`
+(quoted, with commas or line breaks) is not a citation. Step 2 has already checked the
+header and every `source_sha256`, so each cited line is one fact. The hashes stay in
+the scratch folder and are never printed.
 If the output is `blobs: not measured`, line (5) is `not measured: no blobs folder`.
 
 **Context line (optional). Counts only.** `tools/portal_reconcile.py --observations

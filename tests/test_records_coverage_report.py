@@ -27,9 +27,9 @@ LABELS = ["(1) live originals with extracted text:", "(2) PRESERVE_PENDING:", "(
           "(5) stored facts citing a sha256 absent from live blobs/:"]
 
 
-def fact(sha, page):
-    row = dict(agency="Synthetic City", request="R-1", fact_type="camera_count", value="4", source_sha256=sha,
-               page=str(page), verbatim_quote="four cameras", kind="record", effective_from="", effective_to="",
+def fact(sha, page, value="4", quote="four cameras"):
+    row = dict(agency="Synthetic City", request="R-1", fact_type="camera_count", value=value, source_sha256=sha,
+               page=str(page), verbatim_quote=quote, kind="record", effective_from="", effective_to="",
                added_by="tester", added_at="2026-11-01", status="unreviewed")
     return dict(row, fact_id=facts.fact_id(row))
 
@@ -114,6 +114,14 @@ class RecordsCoverageReportTest(unittest.TestCase):
             (self.root / "blobs" / SHA[key]).unlink()
         (self.root / "blobs" / ".pending-0").write_bytes(b"x")  # an unfinished write is not a blob
         self.assertEqual(self.report()[4], "4 facts (3 distinct sha256)")
+
+    def test_only_source_sha256_is_a_citation(self):
+        # a 64-hex string in a value or quote (an absent hash, a held hash, quoted with commas and a line break)
+        # is not a citation: the counts stay those of source_sha256 alone
+        other = hashlib.sha256(b"not-a-citation").hexdigest()
+        self.write_facts([fact(SHA["A"], 1, value="hash " + other, quote='says "%s", then\n%s' % (other, SHA["C"])),
+                          fact(SHA["B"], 1, quote=other + "," + other), fact(SHA["C"], 1), fact(SHA["C"], 2)])
+        self.assertEqual(self.report()[4], "2 facts (1 distinct sha256)")
 
     def test_header_only_facts_gives_zero(self):
         self.write_facts([])
