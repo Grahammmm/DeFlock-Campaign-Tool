@@ -24,6 +24,10 @@ renderer is build-time code generation: the profile hook is trusted reviewed
 source, never record text, user input or an AI draft.
 `map_controller.problems(config)` lists every problem at once (sorted, naming each field, never its value); `render` raises them joined by `; `.
 
+**Check a config.** `python3 -m campaign_tool.map_controller --check map.json` reads the config only (≤ 2 MB UTF-8
+JSON object; `NaN`/`Infinity` refused), builds nothing and prints each problem, `renderers: not checked`, then
+`problems=N`. Exit 0 none, 1 problems, 2 unreadable file or usage (one stderr line, no value echoed).
+
 Geography and missing operator tags are research leads, not evidence of agency
 ownership. A group's label must say ownership is unconfirmed. The pilot retains
 its original classification behavior; changing evidence or classification is
