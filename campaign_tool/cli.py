@@ -179,6 +179,11 @@ def doctor(root):
         report["law_package_error"] = law["law_package_error"]
     from .kit import kit_status
     report.update(kit_status(root))
+    from .meeting_stage import stale_kits
+    stale = report["stale_comment_kits"] = stale_kits(root)
+    if stale:
+        report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
+                                      + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
     print(json.dumps(report, indent=2))
 
 

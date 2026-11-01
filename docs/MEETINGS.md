@@ -111,6 +111,10 @@ campaign_name, base_url)` produces the same structure for the offline kit:
 With no published findings the kit says so and cites the records request instead. Kits
 never include subscriber data, correspondence or unpublished analysis.
 
+A cited finding with corrections shows `(corrected <latest date>)` after its bullet and, in Sources,
+a link to `<finding link>#corrections`; the summary is always the current text. `doctor` lists staged kits
+that predate a finding's latest correction as `stale_comment_kits`; re-stage them with `meetings-stage --id <id> --replace`.
+
 ## Not done
 
 No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is

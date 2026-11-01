@@ -279,6 +279,10 @@ def _clean(text):
 def comment_kit_md(meeting, findings, campaign_name, base_url=None):
     """Markdown comment kit; ``findings`` are published finding dicts with title, summary,
     classification, confidence, path and sources[{title, locator, sha256}]."""
+    def fixed(finding):  # latest correction date; "" when the finding was never corrected
+        dates = [str(c.get("date") or "") for c in finding.get("corrections") or [] if isinstance(c, dict)]
+        return _clean(max(dates, default=""))
+
     lines = []
     when = str(meeting.get("starts_at", ""))[:10]
     lines.append(f"## Public comment: {_clean(meeting.get('body'))}, {when}")
@@ -295,7 +299,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
         for finding in findings[:3]:
             lines.append(f"- {_clean(finding.get('summary'))} "
                          f"({_clean(finding.get('classification')).replace('_', ' ')}, "
-                         f"{_clean(finding.get('confidence')).replace('_', ' ')})")
+                         f"{_clean(finding.get('confidence')).replace('_', ' ')})"
+                         + (f" (corrected {fixed(finding)})" if fixed(finding) else ""))
     else:
         lines.append("We have requested the policy, the vendor agreement and the sharing records and will "
                      "publish what we receive with source hashes.")
@@ -332,7 +337,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
     for finding in findings:
         path = str(finding.get("path") or "")
         link = (base_url.rstrip("/") + path) if base_url else path
-        lines.append(f"- **{_clean(finding.get('title') or finding.get('summary'))}** {link}")
+        note = f" (corrected {fixed(finding)}; corrections: {_clean(link)}#corrections)" if fixed(finding) else ""
+        lines.append(f"- **{_clean(finding.get('title') or finding.get('summary'))}** {link}{note}")
         for source in finding.get("sources") or []:
             if isinstance(source, dict):
                 lines.append(f"- {_clean(source.get('title') or 'Source record')}, "
