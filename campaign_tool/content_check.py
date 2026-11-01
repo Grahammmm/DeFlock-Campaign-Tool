@@ -7,9 +7,10 @@ from pathlib import Path
 
 from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
-                      load_finding, load_map, load_meeting, load_site, load_sources)
+                      load_finding, load_map, load_meeting, load_site, load_sources, plain_text)
 
 LIMIT = 200
+CAMERAS_MISSING = "map/cameras.geojson is missing; run tools/fetch_osm_alprs.py or supply reviewed data"
 
 
 def _attempt(problems, label, call):
@@ -35,6 +36,7 @@ def _cities(path, _name):  # load_map's map/cities.json expressions
         _require_keys(entry, {"bounds", "name"}, {"bounds"}, f"map/cities.json[{slug}]")
         _bounds(entry["bounds"], f"map/cities.json[{slug}].bounds")
         _text(entry, "name", f"map/cities.json[{slug}]", required=False, default=None)
+    return set(raw)
 
 
 def _boundaries(path, name):  # load_map's city-boundary-file expressions
@@ -43,23 +45,53 @@ def _boundaries(path, name):  # load_map's city-boundary-file expressions
         raise ContentError(f"map/{name}: expected a GeoJSON FeatureCollection")
 
 
+def _attribution(document, map_dir):  # load_map's attribution expressions
+    attribution, path = document.get("attribution"), map_dir / "attribution.txt"
+    if attribution is None and path.is_file():
+        attribution = path.read_text(encoding="utf-8").strip()
+    if attribution is not None and (not plain_text(attribution) or len(attribution) > 500):
+        raise ContentError("map attribution must be plain text under 500 characters")
+
+
+def _config_tail(document, cities):  # load_map's map-config.json checks that run after its sibling files
+    for slug in document["bounding_box_fallbacks"] if cities is not None else []:  # cities None: its file is named
+        if slug not in cities:
+            raise ContentError(f"map/map-config.json.bounding_box_fallbacks: {slug!r} has no bounds in "
+                               "map/cities.json")
+    _bounds(document["county_bounds"], "map/map-config.json.county_bounds")
+    _text(document, "group_label", "map/map-config.json", default="Unincorporated area (ownership unconfirmed)")
+
+
 def _map(problems, content_dir):
     """load_map stops at its first bad file; once it has refused (so parity holds), name the other files' too."""
     before, map_dir = len(problems), content_dir / "map"
     config = _attempt(problems, "map/map-config.json", lambda: load_map(content_dir))
     if len(problems) == before:
         return config
+    config_named = problems[-1].startswith("map/map-config.json")  # else load_map passed the config's head
     checks = {"cameras.geojson": lambda p, n: _validate_cameras(_read_json(p, MAX_GEOJSON_BYTES), "map/" + n),
               "cities.json": _cities}
+    missing = {"cameras.geojson": CAMERAS_MISSING}
+    document = None
     try:
-        url = _read_json(map_dir / "map-config.json")["city_boundaries_url"]
+        document = _read_json(map_dir / "map-config.json")
+        url = document["city_boundaries_url"]
         if LOCAL_ASSET.fullmatch(url):
             checks.setdefault(Path(url).name, _boundaries)
+            missing.setdefault(Path(url).name, f"map/{Path(url).name}: city boundary file is missing")
     except (ValueError, KeyError, TypeError):
         pass  # map-config.json's own refusal is already listed
+    cities = set()  # an absent cities.json means no city bounds, as in load_map
     for name, check in checks.items():
         if (map_dir / name).is_file():
-            _attempt(problems, "map/" + name, lambda: check(map_dir / name, name))
+            result = _attempt(problems, "map/" + name, lambda: check(map_dir / name, name))
+            if name == "cities.json":
+                cities = result
+        elif name in missing:
+            problems.append(missing[name])
+    if not config_named:
+        _attempt(problems, "map/attribution.txt", lambda: _attribution(document, map_dir))
+        _attempt(problems, "map/map-config.json", lambda: _config_tail(document, cities))
     return config
 
 

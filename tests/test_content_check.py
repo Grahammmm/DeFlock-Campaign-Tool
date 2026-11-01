@@ -160,6 +160,31 @@ class ContentCheckTests(unittest.TestCase):
         self.assertTrue(problems[2].startswith("map/map-config.json: not valid UTF-8 JSON"), problems)
         self.assertEqual(len(problems), 3, problems)
 
+    def test_missing_map_files_and_config_named_beside_broken_siblings(self):
+        config, camera_text = self.read("content/map/map-config.json"), self.read("content/map/cameras.geojson")
+        boundary, cameras = self.root / "content/map/city-boundaries.geojson", self.root / "content/map/cameras.geojson"
+        cameras.unlink()
+        missing_cameras = self.load_error()  # the build's own single-defect texts
+        boundary.rename(boundary.with_suffix(".bak"))
+        self.assertEqual(self.load_error(), "map/city-boundaries.geojson: city boundary file is missing")
+        self.assertEqual(content_problems(self.root), sorted([missing_cameras, self.load_error()]))
+        boundary.with_suffix(".bak").rename(boundary)
+        self.write("content/map/map-config.json", {**config, "group_slug": "Bad_Name"})
+        problems = content_problems(self.root)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertEqual(problems[0], missing_cameras)
+        self.assertTrue(problems[1].startswith("map/map-config.json: group_slug: "), problems)
+        self.write("content/map/cameras.geojson", camera_text)
+        self.write("content/map/map-config.json", {**config, "county_bounds": [[1, 1], [0, 0]]})
+        bad_bounds = self.load_error()
+        self.assertEqual(bad_bounds, "map/map-config.json.county_bounds: bounds out of range or inverted")
+        self.write("content/map/cameras.geojson", {})
+        self.assertEqual(content_problems(self.root), ["map/cameras.geojson: expected a GeoJSON FeatureCollection",
+                                                       bad_bounds])
+        result = self.cli()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[0], "content/: 2 problem(s)")
+
     def test_parity_with_load_content_for_single_defects(self):
         def bad_json():
             self.write(FINDING, "{")
