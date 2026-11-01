@@ -1,0 +1,47 @@
+{
+  "_note": "Synthetic Legistar Web API responses for NB-DF-12 (cancelled events). No real body, event or vendor data.",
+  "/v1/examplecity/events": [
+    {"EventId": 2001, "EventBodyName": "Example City Council", "EventDate": "2026-11-02T00:00:00", "EventTime": "6:00 PM",
+     "EventAgendaStatusName": "Cancelled", "EventComment": null,
+     "EventInSiteURL": "https://examplecity.legistar.example.invalid/MeetingDetail.aspx?ID=2001"},
+    {"EventId": 2002, "EventBodyName": "Example City Council", "EventDate": "2026-11-03T00:00:00", "EventTime": "6:00 PM",
+     "EventAgendaStatusName": "canceled", "EventComment": ""},
+    {"EventId": 2003, "EventBodyName": "Example Public Safety Committee", "EventDate": "2026-11-04T00:00:00", "EventTime": "5:00 PM",
+     "EventAgendaStatusName": " CANCELLED ", "EventComment": null},
+    {"EventId": 2004, "EventBodyName": "Example City Council", "EventDate": "2026-11-05T00:00:00", "EventTime": "6:00 PM",
+     "EventAgendaStatusName": "Final", "EventComment": "Regular meeting",
+     "EventInSiteURL": "https://examplecity.legistar.example.invalid/MeetingDetail.aspx?ID=2004"},
+    {"EventId": 2005, "EventBodyName": "Example City Council", "EventDate": "2026-11-06T00:00:00", "EventTime": "6:00 PM",
+     "EventAgendaStatusName": 7, "EventComment": ["Meeting cancelled"]},
+    {"EventId": 2006, "EventBodyName": "Example Planning Commission", "EventDate": "2026-11-09T00:00:00", "EventTime": "7:00 PM",
+     "EventAgendaStatusName": "Final", "EventComment": "Meeting cancelled"},
+    {"EventId": 2007, "EventBodyName": "Example Planning Commission", "EventDate": "2026-11-10T00:00:00", "EventTime": "7:00 PM",
+     "EventAgendaStatusName": "Draft", "EventComment": "Cancellation policy discussed"},
+    {"EventId": 2008, "EventBodyName": "Example Planning Commission", "EventDate": "2026-11-11T00:00:00", "EventTime": "7:00 PM",
+     "EventAgendaStatusName": "Cancelled", "EventComment": null}
+  ],
+  "/v1/examplecity/events/2001/eventitems": [
+    {"EventItemId": 1, "EventItemTitle": "Item 7: Renewal of the automated license plate reader agreement"}
+  ],
+  "/v1/examplecity/events/2002/eventitems": [
+    {"EventItemId": 2, "EventItemTitle": "Item 3: ALPR annual report"}
+  ],
+  "/v1/examplecity/events/2003/eventitems": [
+    {"EventItemId": 3, "EventItemTitle": "Item 2: Surveillance technology use policy"}
+  ],
+  "/v1/examplecity/events/2004/eventitems": [
+    {"EventItemId": 4, "EventItemTitle": "Item 9: Flock Safety camera locations report"}
+  ],
+  "/v1/examplecity/events/2005/eventitems": [
+    {"EventItemId": 5, "EventItemTitle": "Item 4: License plate reader data sharing"}
+  ],
+  "/v1/examplecity/events/2006/eventitems": [
+    {"EventItemId": 6, "EventItemTitle": "Item 1: ALPR camera siting"}
+  ],
+  "/v1/examplecity/events/2007/eventitems": [
+    {"EventItemId": 7, "EventItemTitle": "Item 5: ALPR retention schedule"}
+  ],
+  "/v1/examplecity/events/2008/eventitems": [
+    {"EventItemId": 8, "EventItemTitle": "Item 6: Zoning variance 26-12"}
+  ]
+}

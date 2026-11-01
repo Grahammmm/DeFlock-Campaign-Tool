@@ -267,7 +267,8 @@ def meetings_cmd(args, root):
     changes = ({"previous": previous} if previous == "unreadable"
                else compare_meetings(previous, meetings, args.client, since or date.today()))
     target = write_meetings(root, meetings, args.client, None if previous is None else changes)
-    report = {"client": args.client, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"]}
+    report = {"client": args.client, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
+              "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
     print(json.dumps(dict(report, note="keyword hits only; verify the posted agenda before publishing"), indent=2))
