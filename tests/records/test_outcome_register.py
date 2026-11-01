@@ -20,6 +20,7 @@ from unittest import mock
 from campaign_tool.records import run_stages
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.outcomes import register
+from contextlib import closing
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).parent / "fixtures" / "outcome_register" / "tracker.csv"
@@ -258,7 +259,7 @@ class RegisterIntegrationTests(unittest.TestCase):
         self.processing = self.project / "processing-v1"
         self.processing.mkdir()
         self.ledger = self.processing / "ledger.sqlite"
-        with sqlite3.connect(self.ledger) as con:
+        with closing(sqlite3.connect(self.ledger)) as con, con:
             con.executescript(v001.SQL)
             con.execute("INSERT INTO agencies(id,name) VALUES('a1','Fable Bay Police')")
             con.execute("INSERT INTO requests(id,agency_id,external_ref,submitted_at,status) VALUES('r1','a1','FB-01','2030-01-01','open')")
@@ -266,7 +267,7 @@ class RegisterIntegrationTests(unittest.TestCase):
         self.tracker.write_bytes(FIXTURE.read_bytes())
         portal = self.project / "portal-queue-v1"
         portal.mkdir()
-        with sqlite3.connect(portal / "portal.sqlite") as con:
+        with closing(sqlite3.connect(portal / "portal.sqlite")) as con, con:
             con.execute("CREATE TABLE portal_items(id TEXT)")
 
     def test_actual_outputs_stage_writes_both_files_and_preserves_counts(self):
@@ -363,7 +364,7 @@ class RegisterIntegrationTests(unittest.TestCase):
         missing, gaps = register.read_tracker(self.project / "absent.csv")
         self.assertEqual((missing, gaps), ([], ["tracker_missing"]))
         other = self.project / "legacy.sqlite"
-        with sqlite3.connect(other) as con:
+        with closing(sqlite3.connect(other)) as con, con:
             con.execute("CREATE TABLE mail_messages(id TEXT)")
         metadata, gaps = register.read_ledger(other)
         self.assertIn("ledger_table_missing:requests", gaps)

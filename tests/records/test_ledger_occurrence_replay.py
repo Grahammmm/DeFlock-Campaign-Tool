@@ -4,6 +4,7 @@ import sqlite3
 import unittest
 from campaign_tool.records.ledger.occurrence_projection import project_occurrences
 from tests.records import test_ledger_occurrences as occurrence_fixtures
+from contextlib import closing
 
 class OccurrenceReplayBindingTests(unittest.TestCase):
     def fixture(self):
@@ -21,7 +22,7 @@ class OccurrenceReplayBindingTests(unittest.TestCase):
                              ("original_sha256", "other"), ("evidence", "{}")):
             with self.subTest(field=field):
                 helper, import_id, other_sha = self.fixture()
-                with sqlite3.connect(helper.database) as con:
+                with closing(sqlite3.connect(helper.database)) as con, con:
                     oid = con.execute("SELECT id FROM occurrences").fetchone()[0]
                     if value == "self": value = oid
                     if value == "other": value = other_sha
@@ -31,7 +32,7 @@ class OccurrenceReplayBindingTests(unittest.TestCase):
 
     def test_replaced_canonical_row_fails_closed(self):
         helper, import_id, _ = self.fixture()
-        with sqlite3.connect(helper.database) as con:
+        with closing(sqlite3.connect(helper.database)) as con, con:
             con.row_factory = sqlite3.Row
             values = dict(con.execute("SELECT * FROM occurrences").fetchone())
             values["source_ref"] = json.dumps({"scheme": "fictional incorrect replacement"})

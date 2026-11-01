@@ -8,6 +8,7 @@ from campaign_tool.records.ledger import store, stages, original_resolution as r
 from campaign_tool.records.ledger.migrations import original_resolution_v001 as migration
 from tests.records import test_original_reconciliation as fixtures
 from tests.records.test_mail_resolution_policy import approved, value
+from contextlib import closing
 
 
 class OriginalResolutionMailTests(unittest.TestCase):
@@ -67,7 +68,7 @@ class OriginalResolutionMailTests(unittest.TestCase):
         self.assertEqual(self.fixture.rows("SELECT * FROM occurrences"), occurrences)
         self.assertEqual(self.fixture.rows("SELECT DISTINCT status FROM stage_state"), [("pending",)])
         self.assertEqual(self.enroll(), (first, True))
-        with sqlite3.connect(self.database) as con:
+        with closing(sqlite3.connect(self.database)) as con, con:
             self.assertEqual(self.read(con)["resolution_sha256"], first)
             self.assertIsNone(con.row_factory)
 

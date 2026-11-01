@@ -14,6 +14,7 @@ from campaign_tool.records import extraction_routes as routes, run_stages
 from campaign_tool.records.extraction_ledger import ExtractionLedgerAdapter, canonical, sha
 from campaign_tool.records.ledger import store
 from campaign_tool.records.outcomes import factsheets as fs
+from contextlib import closing
 
 FIXTURE = Path(__file__).parent / "fixtures" / "outcome_factsheets" / "produced.json"
 
@@ -43,7 +44,7 @@ class FactSheetsTests(unittest.TestCase):
         self.docs = [self.document(d["pages"], d["agency"]) for d in self.fixture["documents"]]
         portal = self.project / "portal-queue-v1"
         portal.mkdir(mode=0o700)
-        with sqlite3.connect(portal / "portal.sqlite") as con:
+        with closing(sqlite3.connect(portal / "portal.sqlite")) as con, con:
             con.execute("CREATE TABLE portal_items(id TEXT)")
 
     def private(self, path, raw):

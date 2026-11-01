@@ -9,6 +9,7 @@ from unittest.mock import patch
 from campaign_tool.records import publish
 from campaign_tool.records.ledger import store
 from campaign_tool.records.run import Root, RunError, root_lock
+from contextlib import closing
 
 
 class PublicationFixture(unittest.TestCase):
@@ -325,7 +326,7 @@ class AuthorityRegressionTests(PublicationFixture):
         attempts = []
         def interleave(con, root, proposal):
             result = check(con, root, proposal)
-            with sqlite3.connect(root.ledger, timeout=0) as other:
+            with closing(sqlite3.connect(root.ledger, timeout=0)) as other, other:
                 with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
                     other.execute("UPDATE proposals SET owner_approval='none',approved_content_sha256=NULL")
             attempts.append(True)

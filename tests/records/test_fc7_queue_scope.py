@@ -18,6 +18,7 @@ from campaign_tool.records import queue
 from campaign_tool.records.ledger import store
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.ledger.stages import StageRunner
+from contextlib import closing
 
 NOW = "2026-01-01T12:00:00+00:00"
 FUTURE = "2026-01-01T13:00:00+00:00"
@@ -56,7 +57,7 @@ def excluded_entries(*labels):
 
 def canonical_database(path, originals):
     """Tiny database built from the unchanged canonical v001 migration."""
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(v001.SQL)
         connection.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)",
                            ("fc7-run", "synthetic", NOW, None, "synthetic", None, None, None,
@@ -243,7 +244,7 @@ class FC7QueueScopeTests(unittest.TestCase):
                    original("minimal-out", LEGACY_SCOPE, keys=("scope",))]
         with tempfile.TemporaryDirectory(prefix="fc7-queue-scope-") as temp:
             database = Path(temp) / "minimal.sqlite"
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute("CREATE TABLE originals(sha256 TEXT,scope TEXT)")
                 connection.execute("CREATE TABLE stage_state(original_sha256 TEXT,stage TEXT,status TEXT,"
                                    "receipt_sha256 TEXT,owner TEXT,reason TEXT)")

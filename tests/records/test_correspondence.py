@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from campaign_tool.records import correspondence
 from campaign_tool.records.ledger.store import canonical, initialize, ledger
+from contextlib import closing
 
 
 AS_OF = "2026-10-13T12:00:00Z"
@@ -111,7 +112,7 @@ class CorrespondenceTests(unittest.TestCase):
     def database_state(self):
         # Compare canonical data and main DB bytes. SQLite's read-only connection
         # may maintain WAL shared-memory sidecars; they are not an audit artifact.
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             logical = "\n".join(con.iterdump())
         return hashlib.sha256(self.path.read_bytes()).hexdigest(), logical
 
@@ -132,7 +133,7 @@ class CorrespondenceTests(unittest.TestCase):
             correspondence.report(missing, as_of=AS_OF)
         self.assertFalse(missing.exists())
         unknown = self.base / "unknown.sqlite"
-        with sqlite3.connect(unknown) as con:
+        with closing(sqlite3.connect(unknown)) as con, con:
             con.execute("CREATE TABLE unrelated(value TEXT)")
             con.execute("INSERT INTO unrelated VALUES('synthetic')")
         unknown.chmod(0o600)

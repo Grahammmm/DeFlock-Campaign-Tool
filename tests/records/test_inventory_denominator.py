@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from campaign_tool.records.intake import folder
+from contextlib import closing
 
 
 class InventoryDenominatorTests(unittest.TestCase):
@@ -97,7 +98,7 @@ class InventoryDenominatorTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.scan()
         # Publication of the conservative snapshot is committed before traversal.
-        with sqlite3.connect(self.out / 'intake.sqlite') as reopened:
+        with closing(sqlite3.connect(self.out / 'intake.sqlite')) as reopened, reopened:
             reopened.row_factory = sqlite3.Row
             self.assertEqual(set(folder.active(reopened)[0]), self.initial)
         self.assert_gap('inventory_interrupted_or_running')

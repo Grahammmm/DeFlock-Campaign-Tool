@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import closing
 
 
 def sha(data):
@@ -208,7 +209,7 @@ class ReceiptLineBytesTests(unittest.TestCase):
                 self.assertEqual(len({items[position][key] for _, items in captures}), len(captures))
 
     def test_database_guard_allows_only_private_memory_or_owned_files(self):
-        with sqlite3.connect(':memory:') as con:
+        with closing(sqlite3.connect(':memory:')) as con, con:
             self.assertEqual(con.execute('SELECT 1').fetchone(), (1,))
         outside = self.root.parent / (self.root.name + '-outside.sqlite')
         for value, uri in ((outside, False),
