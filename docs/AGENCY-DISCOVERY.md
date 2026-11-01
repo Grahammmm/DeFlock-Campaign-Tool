@@ -136,3 +136,15 @@ Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must
 `verified: true` and `verification` (`source_url`, `checked_on`, `fields`); a later call replaces `verification`
 and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
 fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.
+
+## Recording a hand-sent request
+
+After you send a draft yourself, record it (nothing is sent by the tool):
+
+    python3 -m campaign_tool kit-sent --directory ../my-campaign --agency ca-example-police --date 2026-10-01 --channel email
+
+`--channel` is `email`, `portal` or `mail`; the date must be a real day between 2000-01-01 and today. `kit/sent.json`
+keeps the date, channel and SHA-256 of `requests/<agency_id>.md`. A second record is refused; `--replace` corrects
+one with no steps. `kit-status --directory D` lists each request with `determination_due` and `with_extension` from
+the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
+the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
