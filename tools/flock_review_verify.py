@@ -3,7 +3,10 @@
   plan FINDINGS.csv --seed N --size K --out PLAN.json
   check PLAN.json FINDINGS.csv VERIFY.csv [--not-posted ID ...] [--md VERIFY.md]
   counts FINDINGS.csv BUILD-REPORT.txt
+  agreement PLAN.json FINDINGS.csv VERIFY.csv --max-disagree PCT [--not-posted ID ...] [--md VERIFY.md]
 Priority = every contradicted / not met row; sample = random.Random(seed).sample of the met / cannot tell rows (file order).
+agreement (after a clean check) counts results per group and verdict; escalate=priority if a priority row is not agree,
+sample if over PCT percent of the sample is not agree; sample_rate = sample_rows / pool in percent. Exit 3 on any escalation.
 Exit 0 ok, 1 errors, 2 usage. Prints ids, labels and counts only, never reason, basis, requirement or quote text.
 A verify pass is not acceptance: machine-valid output is review-required."""
 import argparse, ast, collections, contextlib, csv, hashlib, json, os, random, re, sys, tempfile
@@ -68,9 +71,9 @@ def plan(args):
     print("priority=%d pool=%d sample=%d findings_sha256=%s" % (len(priority), len(pool), len(sample), digest))
     return 0
 
-def check(args):
+def _check(args):  # -> (errs, {row_id: result} of the valid rows, check's count line); prints nothing
     spec = load_plan(args.plan)
-    want, errs, seen, tally, extra, rows = spec["priority_ids"] + spec["sample_ids"], [], set(), collections.Counter(), 0, 0
+    want, errs, seen, tally, extra, rows, results = spec["priority_ids"] + spec["sample_ids"], [], set(), collections.Counter(), 0, 0, {}
     if sha(args.findings) != spec["findings_sha256"]:
         errs.append("plan: findings changed since plan")
     verify = table(args.verify)
@@ -89,7 +92,7 @@ def check(args):
         elif rid not in want: errs, extra = errs + ["row %d: row_id is extra (not in the plan)" % n], extra + 1
         seen.add(rid)
         if result not in RESULTS: errs.append("row %d: result is invalid" % n)
-        else: tally[result] += 1
+        else: tally[result] += 1; results.setdefault(rid, result)
         errs += ["row %d: %s is empty" % (n, name) for name, value in (("reason", reason), ("page_cite", cite)) if not value]
     missing = [i for i in want if i not in seen]
     errs += ["plan: missing %s" % i for i in missing]
@@ -98,9 +101,33 @@ def check(args):
         try: text = Path(path).read_text(encoding="utf-8")
         except OSError: errs.append("%s: file is missing" % label); continue
         if any(i and i in text for i in args.not_posted): errs.append("not-posted: %s contains a configured not-posted id" % label)
-    print("\n".join(errs + ["planned=%d rows=%d agree=%d disagree=%d needs_source=%d missing=%d extra=%d errors=%d" % (
-        len(want), rows, tally["agree"], tally["disagree"], tally["needs-source"], len(missing), extra, len(errs))]))
+    return errs, results, "planned=%d rows=%d agree=%d disagree=%d needs_source=%d missing=%d extra=%d errors=%d" % (
+        len(want), rows, tally["agree"], tally["disagree"], tally["needs-source"], len(missing), extra, len(errs))
+
+def check(args):
+    errs, _, line = _check(args)
+    print("\n".join(errs + [line]))
     return 1 if errs else 0
+
+def agreement(args):  # results per plan group and finding verdict; escalate= says which rule fired. Writes nothing.
+    try: errs, results, _ = _check(args)
+    except PlanError as exc: errs, results = [str(exc)], {}
+    if errs: return print("\n".join(errs + ["agreement: check failed; run check first"])) or 1
+    spec, verdict = load_plan(args.plan), {cell(r, "finding_id"): cell(r, "verdict").lower() for r in findings(args.findings)}
+    pri, smp, pool = spec["priority_ids"], spec["sample_ids"], spec.get("pool_size")
+    if type(pool) is not int or pool < len(smp): return print("agreement: plan pool_size is invalid") or 1
+    tally = lambda ids: collections.Counter(results[i] for i in ids)  # noqa: E731
+    line = lambda label, c: "agreement | %s | agree=%d disagree=%d needs_source=%d" % (label, c["agree"], c["disagree"], c["needs-source"])  # noqa: E731
+    out = [line("group priority", tally(pri)), line("group sample", tally(smp))]
+    out += [line("verdict " + v, tally([i for i in results if verdict.get(i) == v])) for v in VERDICTS[:4]]
+    bad, s = [i for i in pri if results[i] != "agree"], tally(smp)
+    over = bool(smp) and 100 * (s["disagree"] + s["needs-source"]) > args.max_disagree * len(smp)
+    escalate = {(False, False): "none", (True, False): "priority", (False, True): "sample", (True, True): "both"}[(bool(bad), over)]
+    rate = "%g" % round(100.0 * len(smp) / pool, 1) if pool else "0"
+    print("\n".join(out + ["agreement | disagree_ids=%s" % (",".join(bad) or "-"),
+                           "agreement | priority_rows=%d sample_rows=%d pool=%d sample_rate=%s escalate=%s | a verify pass is not acceptance"
+                           % (len(pri), len(smp), pool, rate, escalate)]))
+    return 0 if escalate == "none" else 3
 
 def counts(args):
     rows, text, errs = findings(args.findings), Path(args.report).read_text(encoding="utf-8"), []
@@ -126,13 +153,16 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("plan"); p.add_argument("findings"); p.add_argument("--seed", type=int, required=True)
     p.add_argument("--size", type=int, required=True); p.add_argument("--out", required=True)
-    p = sub.add_parser("check"); [p.add_argument(n) for n in ("plan", "findings", "verify")]
-    p.add_argument("--not-posted", nargs="*", default=[]); p.add_argument("--md")
+    for name in ("check", "agreement"):
+        p = sub.add_parser(name); [p.add_argument(n) for n in ("plan", "findings", "verify")]
+        p.add_argument("--not-posted", nargs="*", default=[]); p.add_argument("--md")
+    p.add_argument("--max-disagree", type=int, required=True)  # agreement only; no default: the organizer sets the bar
     p = sub.add_parser("counts"); p.add_argument("findings"); p.add_argument("report")
     args = parser.parse_args(argv)
     if args.command == "plan" and args.size < 0: parser.error("plan: --size must be 0 or more")
+    if args.command == "agreement" and not 0 <= args.max_disagree <= 100: parser.error("agreement: --max-disagree must be 0 to 100")
     try:
-        return {"plan": plan, "check": check, "counts": counts}[args.command](args)
+        return {"plan": plan, "check": check, "agreement": agreement, "counts": counts}[args.command](args)
     except PlanError as exc:
         return print(exc) or 1
     except (OSError, ValueError, KeyError, TypeError, csv.Error) as exc:
