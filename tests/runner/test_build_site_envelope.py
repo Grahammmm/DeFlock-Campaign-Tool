@@ -90,3 +90,20 @@ class BuildEnvelopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuildEnvelopeLegalClaimTests(unittest.TestCase):
+    def test_versioned_build_reports_flags_in_outputs_for_the_producer_owned_deploy_card(self):
+        from tests.runner.test_build_site import manifest_from_example
+        example = manifest_from_example()
+        finding = copy.deepcopy(example["content"]["findings/cedar-policy-posted.json"])
+        finding["body_md"] += "\n\nThe department is non-compliant with the access-record rule."
+        body = envelope()["manifest"]
+        body.update(findings=[finding])
+        inputs = seal({k: v for k, v in body.items() if k not in ("site_version", "manifest_sha256")})
+        with tempdir() as tmp:
+            ws = FakeWorkspace()
+            result = build_site.run(context(tmp, job("build_site", inputs), ws))
+            self.assertEqual(result.status, "done", result.error)
+            self.assertEqual(result.outputs["review_flags"], ["review-required: findings/cedar-policy-posted: legal-claim wording (non-compliant)"])
+            self.assertEqual(ws.proposals, {})

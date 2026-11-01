@@ -10,7 +10,7 @@ import re
 # (exit code, build, export and send are unchanged), so a false positive costs a human glance and cannot halt a run. It does
 # not judge whether a violation happened, only whether OUR wording says one did. Callers report rule names, never the text.
 #
-# Where the boundary is. The text is split into sentences and quoted spans ("..." and curly quotes) are blanked first, so a
+# Where the boundary is. The text is split into sentences (then clauses, see below) and quoted spans ("..." and curly quotes) are blanked first, so a
 # quoted statute or quoted record never flags. A sentence is then tested against ASSERTION shapes: a named party + a violation
 # verb/predicate (`X violated`, `X is in violation of`, `X broke the law`, `X failed to comply with`, `X is non-compliant`,
 # `X acted unlawfully`, `it was illegal`). Hedged speculation about the party (`may have violated`, `appears to have broken`)
@@ -21,12 +21,25 @@ import re
 # Known gaps (alert-only, so accepted): an assertion with no verb of the shapes above (`SB 34 breach by X`) is missed, and an
 # attributed claim (`the complaint alleges X violated`) passes although a reader may take it as ours.
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+# Clauses: a sentence is cut at commas, semicolons, colons and joining words, so a neutral clause ("declined to say whether it kept
+# logs") cannot hide an assertion in the next one (", and it broke the law"), and the other way round.
+SEGMENT_SPLIT = re.compile(r"[,;:]\s+")
+JOINER_SPLIT = re.compile(r"\s+(?:and|but|yet|while|although|though|however)\s+", re.I)
 QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’')
+# Cues that make only what FOLLOWS them in the clause neutral (a condition, a question, an attribution). Text before the cue still
+# counts: "X violated SB 34 even if it was accidental" flags, "whether X violated SB 34" passes.
+SCOPED = re.compile(r"\b(?:whether|if|unless|alleg\w*|according to|claims? that|claimed that|asserts? that|argues? that)\b", re.I)
+# An attribution ("According to counsel, ...", "The complaint alleges ...; ...") also covers later comma segments of its sentence,
+# but not a clause opened by a joining word ("..., and it broke the law"): that is a new statement.
+ATTRIBUTION = re.compile(r"\b(?:alleg\w*|according to|claims? that|claimed that|asserts? that|argues? that)\b", re.I)
+# Cues that make the whole clause neutral: the clause is itself a denial, a disclaimer or statute text.
 NEUTRAL = re.compile(
-    r"\b(?:whether|if|unless|alleg\w*|according to|claims? that|claimed that|asserts? that|argues? that|"
-    r"(?:did|does|do|has|have|had|is|are|was|were|will|would|can|could)(?: not|n['’]t)(?: \w+){0,3}? "
+    r"\b(?:(?:did|does|do|has|have|had|is|are|was|were|will|would|can|could)(?: not|n['’]t)(?: \w+){0,3}? "
     r"(?:violat\w*|determin\w*|assert\w*|claim\w*|alleg\w*|conclud\w*|find|found)|not (?:a |an )?(?:claim|determination|finding)|"
     r"no (?:violation|determination|finding)s?|not been determined|without determin\w*|this (?:section|chapter|title|article|act|part|subdivision))\b|\?\s*$", re.I)
+# A negation within three words before the matched wording negates that match ("did not break the law", "is not non-compliant",
+# "did not act unlawfully"). "not only" is emphasis, not negation.
+NEGATED = re.compile(r"\b(?:not(?! only)|never|nor|n['’]t|no)\W+(?:\w+\W+){0,3}$", re.I)
 _BE = r"(?:is|are|was|were|has been|have been|remains?|stays?)"
 RULES = (
     ("violation-verb", re.compile(r"\b(?:violated|violates|contravened|contravenes|infringed (?:on |upon )?(?:the |a )?(?:law|statute|act|code|right)s?)\b", re.I)),
@@ -43,14 +56,32 @@ RULES = (
 )
 
 
+def _asserts(clause, inherited=False):
+    """-> rule names asserted by one clause (a match counts unless negated before it or inside a scoped cue's reach)."""
+    if inherited or NEUTRAL.search(clause):
+        return set()
+    cue = SCOPED.search(clause)
+    limit = cue.start() if cue else len(clause)
+    return {name for name, rx in RULES for m in rx.finditer(clause)
+            if m.start() < limit and not NEGATED.search(clause[:m.start()])}
+
+
+def _sentence_claims(sentence):
+    found, attributed = set(), False
+    for segment in SEGMENT_SPLIT.split(sentence):
+        for n, clause in enumerate(JOINER_SPLIT.split(segment)):
+            found |= _asserts(clause, inherited=attributed and n == 0)
+        attributed = attributed or bool(ATTRIBUTION.search(segment))
+    return found
+
+
 def legal_claims(text):
     """-> sorted rule names of the legal-violation ASSERTIONS in text ([] when none). Never raises; a guard fault is itself a
     flag ("guard-error") so a human looks, and the caller still carries on. Alert-only: no caller may treat a flag as a failure."""
     try:
         found = set()
         for sentence in SENTENCE_SPLIT.split(QUOTED.sub(" ", text if isinstance(text, str) else "")):
-            if sentence.strip() and not NEUTRAL.search(sentence):
-                found.update(name for name, rx in RULES if rx.search(sentence))
+            found |= _sentence_claims(sentence)
         return sorted(found)
     except Exception:  # noqa: BLE001 - alert-only: a broken guard must never stop the run, it asks for a human instead
         return ["guard-error"]
@@ -64,3 +95,16 @@ def legal_notes(items):
                 for where, text in items if (rules := legal_claims(text))]
     except Exception:  # noqa: BLE001
         return ["review-required: legal-claim wording (guard-error)"]
+
+
+def site_notes(root):
+    """root: a campaign directory -> review-required notes for its finding content (the text the site build publishes).
+    Used by the CLI build and the runner build_site job, so both carry the same flags to their human approval gate."""
+    try:
+        from .content import load_content
+        model = load_content(root)
+        walk = lambda v: [t for x in v.values() for t in walk(x)] if isinstance(v, dict) else \
+            [t for x in v for t in walk(x)] if isinstance(v, (list, tuple)) else [v] if isinstance(v, str) else []
+        return legal_notes((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f))
+    except Exception:  # noqa: BLE001 - alert-only: a scan that cannot run is itself a flag, never a failure
+        return ["review-required: legal-claim wording (site content could not be scanned; read the findings before publishing)"]

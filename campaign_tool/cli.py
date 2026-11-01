@@ -450,15 +450,8 @@ def check_public_tree(public):
 
 
 def _site_claim_notes(root):
-    from .content import load_content
-    from .legal_claims import legal_notes as notes
-    try:
-        model = load_content(root)
-        walk = lambda v: [t for x in v.values() for t in walk(x)] if isinstance(v, dict) else \
-            [t for x in v for t in walk(x)] if isinstance(v, (list, tuple)) else [v] if isinstance(v, str) else []
-        return notes((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f))
-    except Exception:  # noqa: BLE001 - alert-only
-        return ["review-required: legal-claim wording (site content could not be scanned; read the findings before publishing)"]
+    from .legal_claims import site_notes
+    return site_notes(root)
 
 
 def build(root, check=False):

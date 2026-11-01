@@ -16,7 +16,11 @@
     "It appears the city has violated its own policy and the law.",
     "Records show the agency is not in compliance with Government Code 7922.",
     "The practice is a clear violation of the statute.",
-    "Findings: Agency X acted unlawfully."
+    "Findings: Agency X acted unlawfully.",
+    "The agency violated SB 34, even if the disclosure was accidental.",
+    "The agency violated SB 34 even if the disclosure was accidental.",
+    "The agency declined to say whether it kept logs, and it broke the law.",
+    "The agency did not respond to our request and broke the law."
   ],
   "pass": [
     "SB 34 requires agencies to publish a usage and privacy policy.",
@@ -41,6 +45,11 @@
     "Retention is stated as 30 days in the policy; the statute sets a one-year limit on retained images.",
     "Penalties under the Act apply to any person who breaches its terms.",
     "Did the agency violate SB 34?",
-    "Next step: ask the agency to confirm which partners received data."
+    "Next step: ask the agency to confirm which partners received data.",
+    "The agency did not break the law.",
+    "The agency did not act unlawfully.",
+    "The agency is not non-compliant with SB 34.",
+    "The agency declined to say whether it kept logs, and has not answered since.",
+    "According to the county counsel, the program was in violation of the old policy, and the agency disputes this."
   ]
 }

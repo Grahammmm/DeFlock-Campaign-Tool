@@ -244,7 +244,19 @@ app.post("/findings/:id/withdraw", async (c) => {
 });
 
 // Approvals -------------------------------------------------------------------------
-app.get("/approvals", async (c) => render(c, "Approvals", V.approvals(await c.var.repo.actions(), c.req.query("notice") ?? null)));
+app.get("/approvals", async (c) => {
+  const actions = await c.var.repo.actions();
+  // DF-4 advisory legal-claim wording flags. A deploy_site card created before the build ran (proposeRebuild) cannot carry them, so
+  // they are read from its build_site job outputs and shown on the card. Display only: they never change approval or execution.
+  const buildFlags: Record<string, string[]> = {};
+  for (const a of actions) {
+    if (a.kind !== "deploy_site" || a.state !== "proposed") continue;
+    const buildJobId = (JSON.parse(a.proposal_json) as { build_job_id?: unknown }).build_job_id;
+    const job = typeof buildJobId === "string" ? await c.var.repo.job(buildJobId) : null;
+    if (job?.outputs_json) buildFlags[a.action_id] = V.reviewFlagsOf((JSON.parse(job.outputs_json) as { review_flags?: unknown }).review_flags);
+  }
+  return render(c, "Approvals", V.approvals(actions, c.req.query("notice") ?? null, buildFlags));
+});
 
 app.post("/approvals/:id/approve", async (c) => {
   const row = await approveAction(c.var.repo, c.req.param("id"), c.var.identity);
@@ -350,7 +362,7 @@ app.post("/subscribers/drafts/:job_id/propose", async (c) => {
   const { row, inserted } = await c.var.repo.propose(
     "send_newsletter",
     job.job_id,
-    { subject: draft.subject, html: draft.html, text: typeof draft.text === "string" ? draft.text : "", list_id: brevo?.list_id ?? null, draft_job_id: job.job_id },
+    { subject: draft.subject, html: draft.html, text: typeof draft.text === "string" ? draft.text : "", list_id: brevo?.list_id ?? null, draft_job_id: job.job_id, review_flags: V.reviewFlagsOf(draft.review_flags) },
     await sha256Hex("send_newsletter:" + job.job_id + ":" + (await sha256Hex(draft.html))),
     c.var.identity.email,
   );

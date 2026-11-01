@@ -154,3 +154,20 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplicitExampleTest(unittest.TestCase):
+    """'Agency X violated SB 34.' through each surface kind. The Flock report/page/publish lints already REFUSE that exact word
+    (compare.GATED, fail-closed, older than this guard and deliberately left alone); every other surface only NOTES it."""
+    EXAMPLE = "Agency X violated SB 34."
+
+    def test_guard_flags_it(self):
+        self.assertEqual(privacy.legal_claims(self.EXAMPLE), ["violation-verb"])
+
+    def test_older_flock_word_ban_still_refuses_it_and_is_unchanged(self):
+        compare = load("flock_compare")
+        self.assertTrue(compare.GATED.search(self.EXAMPLE))
+
+    def test_newsletter_and_site_surfaces_only_note_it(self):
+        from campaign_tool.newsletter.draft import legal_claim_notes
+        self.assertEqual(legal_claim_notes([("subject", self.EXAMPLE)]), ["review-required: subject: legal-claim wording (violation-verb)"])
