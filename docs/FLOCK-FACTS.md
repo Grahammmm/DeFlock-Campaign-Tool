@@ -10,6 +10,8 @@ One CSV per agency in a private store outside the repo; `tools/flock_facts.py` i
 | `verbatim_quote` | non-empty, unless `value` is `UNREADABLE` |
 | `fact_id` | derived, see below |
 | `kind` | `record`, `policy`, `law` or `public` |
+| `kind` `policy` (`--check STORE`) | source must be the POLICY version it quotes: a `doc_sha256` in that agency's POLICY.csv |
+| `kind` `law` (`--check STORE`) | source must be the LAW row it quotes: a `text_sha256` in `STORE/LAW.csv`; `--check FILE` skips both links |
 | `effective_from`, `effective_to` | empty or YYYY-MM-DD, from <= to |
 | `added_by`, `added_at` | importer name; YYYY-MM-DD |
 | `status` | `unreviewed`, `checked` or `disputed` |
