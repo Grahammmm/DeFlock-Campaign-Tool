@@ -17,10 +17,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .agency_cards import text as plain_text
 from .kit import _kit_folder, _write_text
 
+DEFAULT_ZONE = "America/Los_Angeles"
 API_BASE = "https://webapi.legistar.com/v1"
 KEYWORDS = re.compile(r"license[ -]?plate|\bALPRs?\b|\bFlock\b|surveillance", re.IGNORECASE)
 CLIENT = re.compile(r"[a-z0-9-]{2,64}")
@@ -96,7 +98,15 @@ class LegistarClient:
         return self._get(f"events/{event_id}/eventitems")
 
 
-def _starts_at(event):
+def resolve_zone(name):
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return None
+
+
+def _starts_at(event, zone):
+    """(local time with the zone's offset for that date, time_known); None without a date."""
     day = str(event.get("EventDate") or "")[:10]
     try:
         date.fromisoformat(day)
@@ -107,7 +117,18 @@ def _starts_at(event):
         parsed = datetime.strptime(time.upper(), "%I:%M %p").time() if time else None
     except ValueError:
         parsed = None
-    return f"{day}T{parsed.strftime('%H:%M:%S') if parsed else '00:00:00'}"
+    local = datetime.fromisoformat(f"{day}T{parsed.strftime('%H:%M:%S') if parsed else '00:00:00'}")
+    return local.replace(tzinfo=zone).isoformat(timespec="seconds"), parsed is not None
+
+
+def _moved(old, new):
+    """Start changed? An old value without an offset is wall time in the new value's zone."""
+    try:
+        before, after = (datetime.fromisoformat(v.replace("Z", "+00:00")) for v in (old, new))
+    except ValueError:
+        return old != new
+    naive = before.tzinfo is None or after.tzinfo is None
+    return before.replace(tzinfo=None) != after.replace(tzinfo=None) if naive else before != after
 
 
 def _item_text(item):
@@ -143,7 +164,7 @@ def event_status(event):
     return "cancelled" if isinstance(comment, str) and CANCELLED_COMMENT.search(comment) else "scheduled"
 
 
-def relevant_events(client, since=None, max_events=MAX_EVENTS):
+def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None):
     """Upcoming events with at least one ALPR-related agenda item, as meeting dicts."""
     meetings = []
     for event in client.events(since=since, top=max_events)[:max_events]:
@@ -152,8 +173,8 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS):
         hits = match_items(client.event_items(event["EventId"]))
         if not hits:
             continue
-        starts_at = _starts_at(event)
-        if not starts_at:
+        starts = _starts_at(event, zone or ZoneInfo(DEFAULT_ZONE))
+        if not starts:
             continue
         body = " ".join(str(event.get("EventBodyName") or "Unknown body").split())
         agenda_url = event.get("EventInSiteURL") or event.get("EventAgendaFile")
@@ -163,7 +184,8 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS):
         meetings.append({
             "id": f"legistar-{client.client}-{event['EventId']}",
             "body": _plain(body),
-            "starts_at": starts_at,
+            "starts_at": starts[0],
+            "time_known": starts[1],
             "agenda_url": agenda_url,
             "agenda_item": _plain(item_text),
             "relevance": "alpr_item",
@@ -212,8 +234,8 @@ def compare_meetings(previous_doc, meetings, client, since):
         "previous_generated": generated if isinstance(generated, str) else None,
         "added": sorted(set(after) - set(before)),
         "removed": [i for i in gone if before[i]["starts_at"][:10] >= cutoff],
-        "rescheduled": [{"id": i, "from": before[i]["starts_at"], "to": after[i]["starts_at"]}
-                        for i in both if before[i]["starts_at"] != after[i]["starts_at"]],
+        "rescheduled": [{"id": i, "from": before[i]["starts_at"], "to": after[i]["starts_at"]} for i in both
+                        if _moved(before[i]["starts_at"], after[i]["starts_at"])],
         "agenda_changed": [i for i in both if i not in now_cancelled and any(before[i].get(k) != after[i].get(k)
                                                                          for k in ("agenda_item", "agenda_url"))],
         "past": [i for i in gone if before[i]["starts_at"][:10] < cutoff],
@@ -221,12 +243,13 @@ def compare_meetings(previous_doc, meetings, client, since):
     }
 
 
-def write_meetings(root, meetings, client_name, changes=None):
+def write_meetings(root, meetings, client_name, changes=None, zone=None):
     kit = root / "kit"
     _kit_folder(kit, mode=0o700)
     target = kit / "meetings.json"
     document = {"schema_version": 1, "source": "legistar", "client": client_name,
                 "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "time_zone": getattr(zone, "key", None) or DEFAULT_ZONE,
                 "keywords": KEYWORDS.pattern, "meetings": meetings,
                 "note": "Agenda matches are keyword hits, not confirmation that ALPR will be discussed. "
                         "Verify the posted agenda before publishing a meeting."}

@@ -128,7 +128,7 @@ class MeetingsChangesCliTests(unittest.TestCase):
         self.assertEqual(changes["added"], [ID3])
         self.assertEqual(changes["removed"], ["legistar-examplecity-1099"])
         self.assertEqual(changes["past"], ["legistar-examplecity-1098"])
-        self.assertEqual(changes["rescheduled"], [{"id": ID1, "from": "2026-10-07T18:00:00", "to": "2026-10-14T18:00:00"}])
+        self.assertEqual(changes["rescheduled"], [{"id": ID1, "from": "2026-10-07T18:00:00", "to": "2026-10-14T18:00:00-07:00"}])
         self.assertEqual(changes["agenda_changed"], [ID1])
         self.assertEqual([m["id"] for m in document["meetings"]], [ID1, ID3])
 

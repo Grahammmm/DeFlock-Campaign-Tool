@@ -123,14 +123,14 @@ class MeetingStageTests(unittest.TestCase):
         self.assertEqual(init.returncode, 0, init.stderr)
         (fresh / "kit").mkdir(exist_ok=True)
         (fresh / "kit" / "meetings.json").write_text(json.dumps(
-            {"schema_version": 1, "meetings": [{"id": MID, "body": "B", "starts_at": "2026-10-14T18:00:00"}]}))
+            {"schema_version": 1, "meetings": [{"id": MID, "body": "B", "starts_at": "2026-10-14T18:00:00-07:00"}]}))
         self.assert_stopped(self.stage_cli(root=fresh), "content/ is required")
         self.assertFalse((fresh / "content").exists())
 
     def test_existing_target_needs_replace_and_symlink_target_always_refused(self):
         self.kit_from_fixture()
         self.meetings.mkdir(exist_ok=True)
-        self.target.write_text('{"body": "Old", "starts_at": "2026-10-01T18:00:00"}\n', encoding="utf-8")
+        self.target.write_text('{"body": "Old", "starts_at": "2026-10-01T18:00:00-07:00"}\n', encoding="utf-8")
         old = self.target.read_bytes()
         self.assert_stopped(self.stage_cli(), "exists; pass --replace")
         self.assertEqual(self.target.read_bytes(), old)
@@ -140,7 +140,7 @@ class MeetingStageTests(unittest.TestCase):
         self.assertNotEqual(self.target.read_bytes(), old)
         self.target.unlink()
         outside = self.tmp / "outside.json"
-        outside.write_text('{"body": "Linked", "starts_at": "2026-10-01T18:00:00"}\n', encoding="utf-8")
+        outside.write_text('{"body": "Linked", "starts_at": "2026-10-01T18:00:00-07:00"}\n', encoding="utf-8")
         linked = outside.read_bytes()
         os.symlink(outside, self.target)
         self.assert_stopped(self.stage_cli("--replace"), f"{MID}.json", "symlink")
@@ -150,7 +150,7 @@ class MeetingStageTests(unittest.TestCase):
     def test_duplicate_id_in_other_file_refused(self):
         self.kit_from_fixture()
         other = self.meetings / "other.json"
-        other.write_text(json.dumps({"id": MID, "body": "B", "starts_at": "2026-10-14T18:00:00"}), encoding="utf-8")
+        other.write_text(json.dumps({"id": MID, "body": "B", "starts_at": "2026-10-14T18:00:00-07:00"}), encoding="utf-8")
         self.assert_stopped(self.stage_cli("--replace"), f"id {MID} is already used by meetings/other.json")
         self.assertFalse(self.target.exists())
 
@@ -166,18 +166,18 @@ class MeetingStageTests(unittest.TestCase):
     def test_ids_invalid_for_content_refused_before_write(self):
         before = snapshot(self.meetings)
         for bad in ("legistar-" + "x" * 61, "legistar-Examplecity-1001"):
-            self.write_kit([{"id": bad, "body": "B", "starts_at": "2026-10-14T18:00:00"}])
+            self.write_kit([{"id": bad, "body": "B", "starts_at": "2026-10-14T18:00:00-07:00"}])
             with self.assertRaises(ContentError) as caught:
                 stage(self.root, bad)
             self.assertIn(".id", str(caught.exception))
             self.assertEqual(snapshot(self.meetings), before)
-        self.write_kit([{"id": MID, "body": "B", "starts_at": "2026-10-14T18:00:00"}])
+        self.write_kit([{"id": MID, "body": "B", "starts_at": "2026-10-14T18:00:00-07:00"}])
         with self.assertRaises(ContentError):
             stage(self.root, MID, agency_id="Not An Agency")
         self.assertEqual(snapshot(self.meetings), before)
 
     def test_angle_brackets_stripped_and_accepted(self):
-        self.write_kit([{"id": MID, "body": "<b>Council</b>", "starts_at": "2026-10-14T18:00:00",
+        self.write_kit([{"id": MID, "body": "<b>Council</b>", "starts_at": "2026-10-14T18:00:00-07:00",
                          "agenda_item": "Item <script>7</script>: ALPR", "agenda_url": "https://example.invalid/a"}])
         report = stage(self.root, MID)
         self.assertEqual(report["findings_cited"], 1)
