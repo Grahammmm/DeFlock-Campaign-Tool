@@ -29,6 +29,7 @@ store (outside the repo). No model step: the tool validates, it does not read do
 11. Stale facts: `python3 tools/flock_facts.py stale --store STORE --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]`; expired, superseded, disputed or not-yet fact ids and the findings citing them; exit 3 when a finding cites one.
 12. Back up the store locally: `python3 tools/flock_backup.py create STORE --out FILE.tar`, then `verify` (docs/BACKUP.md "Flock store").
 13. Review: a second person reviews; use review, not hand edits: `python3 tools/flock_facts.py review --store STORE --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME [--date YYYY-MM-DD] [--note TEXT]`; refused when NAME is the fact's `added_by`; each change goes to FACT-REVIEWS.csv; ids/counts only.
+14. Whole-store check, read-only: `python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N]`; exit 0 only (docs/FLOCK-FACTS.md "Store check").
 
 ## Outputs
 - `STORE/agencies/<slug>/FACTS.csv` (schema v2, one folder per agency slug).

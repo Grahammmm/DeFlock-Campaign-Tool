@@ -195,21 +195,28 @@ def status(store):  # RF1130-3: one publication-stage line per verified run (age
     return 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", choices=["export", "status"])
+    parser.add_argument("command", nargs="?", choices=["export", "status", "stage"])
     parser.add_argument("rundir", nargs="?")
     parser.add_argument("--site-slug"); parser.add_argument("--check"); parser.add_argument("--run")
+    parser.add_argument("--copy"); parser.add_argument("--out")  # stage only (NB-DF-17, tools/flock_publish_stage.py)
     args = parser.parse_args(argv)
+    usage = "usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE | stage RUNDIR --copy FILE --out DIR"
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
     listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
+    staging = args.command == "stage" and args.rundir and args.copy and args.out and (args.check, args.run, args.site_slug) == (None,) * 3
+    if (args.copy is not None or args.out is not None) and not staging: parser.error(usage)  # noqa: E701
     if checking and args.run is None:
         return check(args.check)
-    if not (checking or listing) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
-                                      not SLUG.fullmatch(args.site_slug or "")):
-        parser.error("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE")
+    if not (checking or listing or staging) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
+                                                 not SLUG.fullmatch(args.site_slug or "")):
+        parser.error(usage)
     run = Path(args.run if checking else args.rundir).resolve()
     if run == verify_tool.REPO or verify_tool.REPO in run.parents:
         return print("flock-publish: %s is inside the repository" % ("STORE" if listing else "RUNDIR")) or 1
     try:
+        if staging:  # loaded only for this verb; --out/--copy are refused inside the same repository root
+            spec = importlib.util.spec_from_file_location("_flock_publish_stage", Path(__file__).resolve().with_name("flock_publish_stage.py"))
+            return spec.loader.exec_module(stager := importlib.util.module_from_spec(spec)) or stager.stage(run, args.copy, args.out, verify_tool.REPO)
         return status(run) if listing else check(args.check, run) if checking else export(run, args.site_slug)
     except (OSError, ValueError) as exc:  # the class only, never a path or record text
         return print("io: %s" % type(exc).__name__) or 1
