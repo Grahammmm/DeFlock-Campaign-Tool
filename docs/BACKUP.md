@@ -114,13 +114,17 @@ first with `kind: "flock-store"`, members 0600 uid/gid 0); local files only, no 
 python3 tools/flock_backup.py create STORE --out FILE.tar
 python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
+python3 tools/flock_backup.py diff FILE.tar --store STORE [--manifest-sha256 HEX]
 ```
 
 `create` refuses a store inside the repo and an `--out` that exists or lies in the store or repo; it
 writes a temp file, verifies it, then links it into place, leaving nothing on failure. Record the
 printed `manifest_sha256` elsewhere. `verify` and `restore` name each bad member (codes as above, plus
 `duplicate_member`) and exit 1; `restore` verifies first, never overwrites, extracts 0700/0600 and
-re-hashes on disk. Output is counts only; file names appear only in errors.
+re-hashes on disk. Their output is counts only; file names appear only in errors. `diff` verifies the archive
+first (a bad one stops, exit 1, no diff), then prints JSON naming store files `added`, `removed` or
+`changed` (sha256 or size) since it, each capped at 200 (rest under `more`), plus `unchanged` and
+`store_skipped`; names only, nothing written. Exit 0 when `current`, 3 on drift (a new backup is due).
 
 ## Limits and cautions
 

@@ -13,6 +13,11 @@ The loader (`campaign_tool/content.py`) refuses malformed or unpublishable input
 and the build writes nothing in that case; it is not a publication approval,
 a legal review or an HTML sanitizer.
 
+**Check before build.** `python3 -m campaign_tool content-check --directory D`
+lists every problem in `content/` at once (`content/: N problem(s)`, one line per
+file problem, capped at 200) with exactly the rules `build` enforces. It is
+read-only and exits 0 when clean or without `content/`, 3 when anything is listed.
+
 ## Content directory
 
 | Path | Required | Purpose |
@@ -87,6 +92,16 @@ for the card renderer is assembled from `campaign.json` (county name) and
 entries. Police and city_council agencies appear in the picker; when a map is
 configured only those with bounds in `map/cities.json` do, because the
 controller fits the map to `CITIES[slug].bounds`.
+
+An agency with `verified: true` must carry `verification` (written by
+`kit-verify-agency`): `{"source_url": "https://…", "checked_on": "YYYY-MM-DD",
+"fields": [...]}`. `source_url` must be an https URL, `checked_on` a real date
+not after the build date, and `fields` (optional) names only `records_email`,
+`records_url` or `portal`; unknown keys are refused. `verified: true` without it
+stops the build naming `<file>[n].verification`. A verified agency shows
+"Contact checked <date> on the official source" on `agencies.html`; the URL is a
+link only and is never fetched. With `verified` not true the object is still
+validated but not shown, and the "Contact details unverified" hint stays.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
