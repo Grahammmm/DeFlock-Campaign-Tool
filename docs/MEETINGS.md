@@ -85,6 +85,12 @@ anything is written. The kit adds `## How to take part` after the asks: one line
 `Source: <url> (checked <date>)`. Without the flag the document has no `participation` and the section
 says only `Check the posted agenda for how and when to comment; participation details were not verified.`
 
+`speaker_minutes` (optional, a whole number 1–10, covered by the same `source_url` and `verified_at`) is
+the per-speaker limit from the body's own rules. When it is set, the kit adds `## Spoken comment (<m>
+minute(s), about <130 × m> words)` after the two-minute text: the same greeting and closing with as many
+whole finding bullets as fit at 130 words a minute (later bullets are dropped, never cut), then `Word count:
+<n> of <budget>.` The tool never assumes a limit: `null` or no key means no spoken section.
+
 ## Workspace Meetings screen
 
 `POST /meetings` adds a meeting manually: `body_name`, `starts_at` (ISO-8601), optional

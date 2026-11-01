@@ -290,6 +290,7 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
         lines.append(f"Agenda item: {_clean(meeting['agenda_item'])}")
     lines.append("")
     lines.append("## Two-minute comment")
+    start = len(lines)
     lines.append(f"Good evening. My name is [name] and I live in [city]. I am speaking with "
                  f"{_clean(campaign_name)} about automated license plate readers.")
     if findings:
@@ -307,6 +308,18 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
     lines.append("We are not asking you to take our word for it. Every claim links to the record it came "
                  "from. Please read them before this item moves forward.")
     lines.append("")
+    minutes = (meeting.get("participation") or {}).get("speaker_minutes")
+    if minutes:  # organizer-verified limit only: 130 words a minute, whole bullets dropped from the end
+        said, budget = lines[start:-1], 130 * minutes  # greeting, bullets, closing as in the two-minute text
+
+        def count(part):
+            return len(" ".join(part).split())
+        while count(said) > budget and said[-2].startswith("- "):
+            del said[-2]
+        lines.append(f"## Spoken comment ({minutes} minute{'' if minutes == 1 else 's'}, about {budget} words)")
+        lines.extend(["The speaker limit is too short for this kit; use the first sentence and one ask."]
+                     if count(said) > budget else said + [f"Word count: {count(said)} of {budget}."])
+        lines.append("")
     lines.append("## Three asks")
     lines.append("- " + ASKS.get(meeting.get("relevance") or "", DEFAULT_ASK))
     lines.append("- Require an annual public audit of searches, retention and outside-agency sharing, "

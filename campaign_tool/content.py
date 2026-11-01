@@ -282,7 +282,8 @@ def load_finding(document, label):
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
                 "status", "participation"}
 MEETING_STATUSES = ("scheduled", "cancelled")
-PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "source_url", "verified_by", "verified_at"}
+PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "source_url", "verified_by", "verified_at",
+                      "speaker_minutes"}
 
 
 def load_participation(value, starts_at, label, today=None):
@@ -305,6 +306,9 @@ def load_participation(value, starts_at, label, today=None):
             if due.tzinfo is None or due >= starts:
                 raise ContentError(f"{where}.deadline: needs a UTC offset and must be before starts_at")
         written = {"how": _text(written, "how", where), "deadline": written["deadline"]}
+    minutes = value.get("speaker_minutes")  # per-speaker limit from the same source; never assumed
+    if minutes is not None and (type(minutes) is not int or not 1 <= minutes <= 10):
+        raise ContentError(f"{label}.speaker_minutes: must be a whole number of minutes from 1 to 10, or null")
     for key, part in (("remote", remote), ("written_comment", written)):
         if part and len(part["how"]) > 200:
             raise ContentError(f"{label}.{key}.how: at most 200 characters")
@@ -314,7 +318,8 @@ def load_participation(value, starts_at, label, today=None):
         raise ContentError(f"{label}.verified_at: must not be in the future or more than 30 days before the meeting")
     return {"in_person": in_person, "remote": remote, "written_comment": written,
             "source_url": _https(value["source_url"], f"{label}.source_url"),
-            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at}
+            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at,
+            **({"speaker_minutes": minutes} if minutes is not None else {})}
 
 
 def load_meeting(document, label, today=None):
