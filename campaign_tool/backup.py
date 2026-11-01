@@ -28,6 +28,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -358,6 +359,76 @@ def diff(archive, root, expected_manifest_sha256=None):
     if more:
         result["more"] = more
     return result
+
+
+DRILL_STEPS = ("verify", "restore", "store_check", "doctor")
+
+
+_ABS_PATH = re.compile(
+    r"(?<![\w>.<])/[^\s'\"<>:;,)]+"          # POSIX absolute
+    r"|(?<![\w])[A-Za-z]:[\\/][^\s'\"<>;,)]+"  # Windows drive
+    r"|\\\\[^\s'\"<>;,)]+")                 # Windows UNC
+
+
+def _drill_detail(exc, tmp, archive=None):
+    """Failure text for a receipt: no absolute paths, no temp path, no member digests, bounded."""
+    text = f"{type(exc).__name__}: {exc}".replace(tmp, "<copy>")
+    if archive is not None:
+        archive = Path(archive)
+        for shown in {str(archive), str(archive.absolute()), str(archive.resolve())}:
+            text = text.replace(shown, archive.name)
+    text = _ABS_PATH.sub("<path>", text)
+    return re.sub(r"[0-9a-fA-F]{64}", "<sha256>", text)[:300]
+
+
+def drill(archive, expected_manifest_sha256=None, *, doctor=None, store_check=None, tmp_parent=None):
+    """Restore ``archive`` into a fresh temp dir, check the copy, remove it; returns a receipt.
+
+    Only the archive is read: the source campaign directory is never opened.
+    """
+    if store_check is None:
+        from .store_check import check_store as store_check
+    if doctor is None:
+        from .cli import doctor_report as doctor
+    archive = Path(archive)
+    if not archive.is_file():
+        raise BackupError(f"{archive.name}: archive not found")
+    steps = []
+    receipt = {"schema": "deflock-backup-drill-v1", "archive_name": archive.name, "manifest_sha256": None,
+               "created_at": None, "drilled_at": _now(), "engine_version": None, "files": None,
+               "passed": False, "steps": steps}
+    with tempfile.TemporaryDirectory(prefix="deflock-drill-", dir=tmp_parent) as tmp:
+        copy = Path(tmp) / "campaign"
+
+        def run_verify():
+            report = verify(archive, expected_manifest_sha256=expected_manifest_sha256)
+            receipt.update({key: report[key] for key in ("manifest_sha256", "created_at", "engine_version", "files")})
+            return f"{report['verified']} of {report['files']} files re-hashed"
+
+        def run_store_check():
+            count = len(store_check(copy)["problems"])
+            return count == 0, f"{count} problem" + ("" if count == 1 else "s")
+
+        def run_doctor():
+            report = doctor(copy)
+            return report.get("config_readable") is True, {
+                "law_package_status": report.get("law_package_status"),
+                "agencies_selected": report.get("agencies_selected")}
+
+        actions = {"verify": lambda: (True, run_verify()),
+                   "restore": lambda: (True, f"{restore(archive, copy)['files']} files restored to a temp copy"),
+                   "store_check": run_store_check, "doctor": run_doctor}
+        for name in DRILL_STEPS:
+            if steps and steps[-1]["ok"] is not True:
+                steps.append({"step": name, "ok": None, "detail": "not run"})
+                continue
+            try:
+                ok, detail = actions[name]()
+            except Exception as exc:  # a drill records every failure instead of stopping
+                ok, detail = False, _drill_detail(exc, tmp, archive)
+            steps.append({"step": name, "ok": ok, "detail": detail})
+    receipt["passed"] = all(step["ok"] is True for step in steps)
+    return receipt
 
 
 def _safe_name(name):
