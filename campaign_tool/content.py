@@ -279,7 +279,9 @@ def load_finding(document, label):
 
 # --- meetings --------------------------------------------------------------
 
-MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id"}
+MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
+                "status"}
+MEETING_STATUSES = ("scheduled", "cancelled")
 
 
 def load_meeting(document, label):
@@ -287,6 +289,9 @@ def load_meeting(document, label):
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
         raise ContentError(f"{label}.agency_id: invalid agency identifier")
+    status = document.get("status", "scheduled")
+    if not isinstance(status, str) or status not in MEETING_STATUSES:
+        raise ContentError(f"{label}.status: must be scheduled or cancelled")
     return {
         "id": _slug(document["id"], f"{label}.id") if "id" in document else None,
         "body": _text(document, "body", label, allow_empty=False),
@@ -296,6 +301,7 @@ def load_meeting(document, label):
         "comment_kit_md": _text(document, "comment_kit_md", label, default=""),
         "location": _text(document, "location", label, default=""),
         "agency_id": agency_id,
+        "status": status,
     }
 
 

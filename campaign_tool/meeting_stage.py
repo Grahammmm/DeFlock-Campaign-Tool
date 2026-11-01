@@ -49,6 +49,8 @@ def _find(meetings, meeting_id):
 def stage(root, meeting_id, agency_id=None, location=None, replace=False):
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
+    if meeting.get("status") == "cancelled":
+        raise MeetingStageError(f"meeting {meeting_id} is cancelled; no comment kit")
     model = load_content(root)
     if model is None:
         raise MeetingStageError("content/ is required (the site reads content/meetings/); create content/site.json first")
