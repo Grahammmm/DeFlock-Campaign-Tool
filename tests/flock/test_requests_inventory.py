@@ -11,8 +11,8 @@ FIXTURE = ROOT / "tests" / "fixtures" / "flock" / "requests-sample.csv"
 HEADER = FIXTURE.read_text(encoding="utf-8").splitlines()[0]
 INV_HEADER = "source_id,request,doc_id,title,ext,sha256,analysis_only"
 TAIL = " | not a legal status; the canonical ledger wins"
-SECRET_TITLE = "Zanzibar-Withheld-Memo-7731"
-SECRET_DOC = "88771234"
+PLANTED_TITLE = "Zanzibar-Withheld-Memo-7731"
+PLANTED_DOC = "88771234"
 SHA = {k: k * 64 for k in "abcdef"}
 # main's `summary` output on the fixture (golden): --inventory absent must stay byte-identical
 GOLDEN = (
@@ -115,10 +115,10 @@ class RequestsInventoryTests(unittest.TestCase):
 
     def test_titles_doc_ids_shas_and_source_ids_never_printed(self):
         path = self.requests(req("R-1", "Alpha Police"))
-        out = "\n".join(self.ok(path, self.inv(doc("R-1", SECRET_DOC, SHA["e"], "yes", SECRET_TITLE),
-                                               doc("R-1", "5", SHA["f"], "no", SECRET_TITLE + "-posted"),
-                                               doc("R-404", SECRET_DOC + "9", SHA["a"], "yes", SECRET_TITLE + "-unknown"))))
-        for planted in (SECRET_TITLE, SECRET_DOC, "synthetic#", "Synthetic doc", *SHA.values(), "eeeeeeee", "aaaaaaaa"):
+        out = "\n".join(self.ok(path, self.inv(doc("R-1", PLANTED_DOC, SHA["e"], "yes", PLANTED_TITLE),
+                                               doc("R-1", "5", SHA["f"], "no", PLANTED_TITLE + "-posted"),
+                                               doc("R-404", PLANTED_DOC + "9", SHA["a"], "yes", PLANTED_TITLE + "-unknown"))))
+        for planted in (PLANTED_TITLE, PLANTED_DOC, "synthetic#", "Synthetic doc", *SHA.values(), "eeeeeeee", "aaaaaaaa"):
             self.assertNotIn(planted, out)
         self.assertIn("request docs | inventory row 4 | request R-404 | unknown request", out)
 
