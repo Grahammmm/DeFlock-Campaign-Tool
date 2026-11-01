@@ -194,6 +194,12 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
+def social_cmd(root):
+    from .social import build_social
+    print(json.dumps(build_social(root), indent=2, ensure_ascii=False))
+    print("Drafts written to kit/social. Nothing was posted.")
+
+
 def check_public_tree(public):
     """Run the repository leak scan over public/; returns (path, line, label) hits."""
     from .records.public_scan import violations
@@ -337,6 +343,8 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
+    commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
+                        ).add_argument("--directory", required=True)
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -385,6 +393,8 @@ def main():
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
+        elif args.command == "social":
+            social_cmd(root)
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":
