@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from campaign_tool import cli
 from campaign_tool.kit import build_kit
+from contextlib import closing
 
 
 def require(condition, reason):
@@ -49,7 +50,7 @@ def rehearse():
                     and doctor["production_ready"] is False
                     and doctor["safe_to_send_automatically"] is False
                     and doctor["jurisdiction_verified"] is False, "readiness_hold_lost")
-            with sqlite3.connect(root / "private" / "ledger.sqlite") as db:
+            with closing(sqlite3.connect(root / "private" / "ledger.sqlite")) as db, db:
                 objects = db.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
                 receipts = db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0]
             require((objects, receipts) == (1, 2), "preservation_replay_mismatch")

@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from campaign_tool.records import queue
+from contextlib import closing
 
 class ScopeTests(unittest.TestCase):
     def fixture(self):
@@ -26,7 +27,7 @@ class ScopeTests(unittest.TestCase):
         outside,inside,originals,rows=self.fixture()
         with tempfile.TemporaryDirectory() as tmp:
             db=Path(tmp)/"fixture.sqlite"
-            with sqlite3.connect(db) as c:
+            with closing(sqlite3.connect(db)) as c, c:
                 c.execute("CREATE TABLE originals(sha256 TEXT,scope TEXT)")
                 c.execute("CREATE TABLE stage_state(original_sha256 TEXT,stage TEXT,status TEXT,receipt_sha256 TEXT)")
                 c.execute("CREATE TABLE work_leases(item_key TEXT)")

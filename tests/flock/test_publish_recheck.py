@@ -80,6 +80,11 @@ class PublishRecheckTest(base.FlockPublishTest):  # setUp: verified run (F4 fini
         self.edit_facts(O1_FACT, remove=True)
         self.assertEqual(self.recheck(), (3, "recheck | O1 | needs-review | missing=1\n" + FINAL % (2, 1)))
 
+    def test_path1_disputed_quote_fact_moves_its_entry(self):  # DFMAINRED-5: compare's quote_fact_id error is the dispute's too
+        self.dispute(O1_FACT)
+        self.assertEqual(self.recheck(), (3, "recheck | O1 | needs-review | disputed=1\n" + FINAL % (2, 1)))
+        self.assertEqual(self.statuses()["N1"], APPROVED)
+
     def test_path3_expired_the_day_before_moves_on_the_day_kept(self):
         self.edit_facts(O1_FACT, effective_to="2026-10-30")
         before = self.out.read_bytes()

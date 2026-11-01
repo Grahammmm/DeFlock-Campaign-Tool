@@ -1,5 +1,6 @@
 """Offline representative slice. Synthetic promotion double is NOT WP1 acceptance."""
 import hashlib
+from contextlib import closing
 import json
 import multiprocessing
 from pathlib import Path
@@ -61,7 +62,7 @@ class RunnerTests(unittest.TestCase):
                         backend or self.backend,{'catalog':self.hook} if hooks is None else hooks,
                         runtime_provider=lambda:self.runtime,clock=lambda:self.time)
     def query(self,sql):
-        with sqlite3.connect(self.root/'runner.sqlite') as c:return c.execute(sql).fetchall()
+        with closing(sqlite3.connect(self.root/'runner.sqlite')) as c,c:return c.execute(sql).fetchall()
     def test_representative_receipt_preservation_to_catalog_hook(self):
         r=self.invoke();self.assertEqual(r['messages_preserved'],1);self.assertEqual(r['stage_promotions'],2)
         self.assertEqual(len(self.hook_calls),2);self.assertFalse(r['pipeline_complete']);self.assertFalse(r['canonical_integration_verified'])
@@ -219,7 +220,7 @@ class RunnerTests(unittest.TestCase):
     def test_failed_run_with_abandoned_lease_recovers(self):
         self.backend.after_commit_crash=True
         with self.assertRaises(KeyboardInterrupt):self.invoke()
-        with sqlite3.connect(self.root/'runner.sqlite') as c:c.execute("UPDATE runner_runs SET status='failed'")
+        with closing(sqlite3.connect(self.root/'runner.sqlite')) as c,c:c.execute("UPDATE runner_runs SET status='failed'")
         self.invoke();self.assertEqual(self.query("SELECT count(*) FROM runner_work WHERE state='running'"),[(0,)])
         self.assertEqual(self.query("SELECT count(*) FROM runner_work WHERE state='done'"),[(2,)])
     def test_profile_stage_change_keeps_old_pending_visible(self):

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from campaign_tool.records.recovery import backup as b,publication as p
+from contextlib import closing
 
 
 class RecoveryFixtures(unittest.TestCase):
@@ -25,7 +26,7 @@ class RecoveryFixtures(unittest.TestCase):
             file=self.source/name;file.write_bytes(raw)
             self.entries.append(dict(category=category,name=name,source=file))
         self.database=self.source/'ledger.sqlite'
-        with sqlite3.connect(self.database) as c:
+        with closing(sqlite3.connect(self.database)) as c, c:
             c.execute('CREATE TABLE originals(sha256 TEXT, status TEXT)')
             c.execute('INSERT INTO originals VALUES(?,?)',(hashlib.sha256(b'synthetic agency record').hexdigest(),'pending'))
         self.entries.append(dict(category='ledger',name='ledger.sqlite',source=self.database))
@@ -42,7 +43,7 @@ class BackupTests(RecoveryFixtures):
         self.assertEqual(result['files'],4)
         self.assertEqual(receipt['hash_reconciliation'],'exact')
         self.assertEqual((self.root/'restored/originals/original.txt').read_bytes(),b'synthetic agency record')
-        with sqlite3.connect(self.root/'restored/ledger/ledger.sqlite') as c:
+        with closing(sqlite3.connect(self.root/'restored/ledger/ledger.sqlite')) as c, c:
             self.assertEqual(c.execute('SELECT status FROM originals').fetchone()[0],'pending')
         self.assertEqual(receipt['sends'],0);self.assertEqual(receipt['deployments'],0)
         self.assertEqual(receipt['scope'],'explicit_selected_files')
@@ -53,7 +54,7 @@ class BackupTests(RecoveryFixtures):
             live.execute('PRAGMA journal_mode=WAL')
             live.execute('INSERT INTO originals VALUES(?,?)',('synthetic-wal-row','pending'));live.commit()
             result=self.backup();self.restore(result)
-            with sqlite3.connect(self.root/'restored/ledger/ledger.sqlite') as c:
+            with closing(sqlite3.connect(self.root/'restored/ledger/ledger.sqlite')) as c, c:
                 self.assertEqual(c.execute('SELECT count(*) FROM originals').fetchone()[0],2)
         finally:live.close()
 
@@ -296,7 +297,7 @@ class PublicationTests(RecoveryFixtures):
         receipt=self.source/'review.json';receipt.write_bytes(self.review)
         self.entries[-1]['source']=self.box.database
         result=self.backup();restored=self.restore(result)
-        with sqlite3.connect(self.root/'restored/ledger/ledger.sqlite') as c:
+        with closing(sqlite3.connect(self.root/'restored/ledger/ledger.sqlite')) as c, c:
             self.assertEqual(c.execute('SELECT state,test_only FROM publication_jobs').fetchone(),('rolled_back',1))
         self.assertEqual(restored['deployments'],0)
         self.assertEqual((self.root/'restored/receipts/review.json').read_bytes(),self.review)

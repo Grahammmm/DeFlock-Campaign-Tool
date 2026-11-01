@@ -13,6 +13,7 @@ import sqlite3
 import stat
 
 from . import ledger_catalog as catalog
+from contextlib import closing
 
 SQL = """
 CREATE TABLE IF NOT EXISTS snapshot_meta(version INTEGER PRIMARY KEY CHECK(version=1));
@@ -230,7 +231,7 @@ def read_accepted(private_output):
         if not path.exists():
             return None
         catalog._safe_path(path)
-        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as con, con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT a.* FROM snapshot_acceptances a JOIN accepted_pointer p ON a.snapshot_id=p.snapshot_id WHERE p.singleton=1").fetchone()
             if row is None:

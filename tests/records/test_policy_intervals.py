@@ -1,4 +1,5 @@
 """Synthetic opt-in calendar adapter contracts; no policy authority asserted."""
+from contextlib import closing
 import copy
 import unittest
 
@@ -95,7 +96,7 @@ class PolicyIntervalsTests(unittest.TestCase):
         self.assertNotEqual(digest(converted), digest(self.prepare(env2, args)))
         converted["calendar_policy_provenance"]["original_envelope"]["rules"]["entries"].clear()
         self.assertEqual([env, args], before)
-        with ledger(joins, args["source_bindings"]) as con:
+        with closing(ledger(joins, args["source_bindings"])) as con:
             args["joins"] = canonical_joins(con, args["source_bindings"])
             result = evaluate_with_calendar_policy(envelope=env, **args)
         entry = result["structured"]["retention-over-policy"]

@@ -4,6 +4,7 @@ import io
 import unittest
 from PIL import Image
 from campaign_tool.records import extraction_routes as routes
+from contextlib import closing
 
 
 def image_bytes(form='PNG', changed=False, frames=False):
@@ -83,7 +84,7 @@ class ImageStageTests(unittest.TestCase):
                                             'page_timeout': 180})
         self.assertEqual(result['outcomes'][native_extract.EXTRACTED], 4, result)
         self.assertEqual(result['awaiting_ocr_images'], 0)
-        with sqlite3.connect(self.root / 'ledger.sqlite') as con:
+        with closing(sqlite3.connect(self.root / 'ledger.sqlite')) as con, con:
             for subject in subjects:
                 self.assertEqual(con.execute('SELECT page_no,needs_visual_review FROM page_state '
                     'WHERE original_sha256=?', (subject,)).fetchall(), [(1, 1)])

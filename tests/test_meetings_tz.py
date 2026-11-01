@@ -116,7 +116,10 @@ class CliZoneTests(Campaign):
                 with mock.patch("campaign_tool.meetings.default_opener", never), \
                         mock.patch("campaign_tool.meetings.fixture_opener", never):
                     code, out, err = self.main(*source, "--tz", zone)
-                self.assertEqual((code, out, err), (2, "", f"meetings: unknown time zone {zone}\n"))
+                self.assertEqual((code, out), (2, ""))
+                # Own message only: stderr may also carry unrelated interpreter noise
+                # (e.g. a ResourceWarning from another test's object collected here).
+                self.assertIn(f"meetings: unknown time zone {zone}\n", err)
         never.assert_not_called()
         self.assertEqual(self.kit.read_text(), "previous kit\n")
 
