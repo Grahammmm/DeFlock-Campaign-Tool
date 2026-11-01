@@ -2,6 +2,7 @@
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 ASSET = Path(__file__).parent / "assets" / "agency-cards.js.tmpl"
@@ -13,8 +14,13 @@ SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")
 NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 
+def visible(char):  # refuse controls (except newline/tab), invisible format/bidi chars and line/paragraph separators
+    return char in "\n\t" or (unicodedata.category(char) not in ("Cc", "Cf") and char not in "\u2028\u2029")
+
+
 def text(value):
-    return isinstance(value, str) and len(value) <= 20000 and "<" not in value and ">" not in value
+    return (isinstance(value, str) and len(value) <= 20000 and "<" not in value and ">" not in value
+            and all(map(visible, value)))
 
 
 def keyset(value, keys, prefix=""):  # an odd key name is shown by its length only

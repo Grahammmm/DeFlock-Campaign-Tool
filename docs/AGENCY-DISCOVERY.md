@@ -36,6 +36,12 @@ than guess. `records_url`, `records_email`, `portal.url`, `place_fips`,
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
 
+`flock_transparency_slug` is the last path part of the agency's own Flock
+transparency page (`https://transparency.flocksafety.com/<slug>`), checked by
+the organizer: lowercase letters, digits and single hyphens, at most 80
+characters, or the build stops naming the field. The site links it only on
+`verified: true` agencies and never fetches it.
+
 ### Filling `place_fips` (network, organizer-run)
 
 `python3 tools/refresh_agency_seed_online.py` downloads the Census Gazetteer
@@ -118,3 +124,15 @@ The kit is a starting point, not a mailing list. Before any request leaves:
    is attached; deadlines in `law.json` are illustrative and skip holidays.
 6. **Approval.** Sending, fee payment and publication happen only after an
    organizer approval outside this tool, with the send receipt recorded.
+
+## Recording a checked contact
+
+After reading the contact on the agency's own official page, record it with that source and the date:
+
+    python3 -m campaign_tool kit-verify-agency --directory ../my-campaign --agency-id ca-example-police \
+      --source-url https://police.example/records --checked-on 2026-10-01 --records-email records@police.example
+
+Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must be `https://`). The entry gets
+`verified: true` and `verification` (`source_url`, `checked_on`, `fields`); a later call replaces `verification`
+and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
+fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.

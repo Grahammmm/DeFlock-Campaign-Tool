@@ -384,6 +384,17 @@ def load_sources(document):
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
                "flock_transparency_slug", "muckrock_agency_id", "notes"}
+FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
+
+
+def _flock_url(entry, item):
+    """Transparency-portal link for an organizer-verified slug; built from the slug only, never fetched."""
+    slug = entry.get("flock_transparency_slug")
+    if slug is None:
+        return None
+    if not isinstance(slug, str) or len(slug) > 80 or not FLOCK_SLUG.fullmatch(slug):
+        raise ContentError(f"{item}.flock_transparency_slug: lowercase letters, digits and single hyphens only")
+    return f"https://transparency.flocksafety.com/{slug}" if entry.get("verified") is True else None
 
 
 def _agency_slug(agency):
@@ -429,6 +440,7 @@ def load_agencies(document, label):
             "portal": {"vendor": portal["vendor"],
                        "url": _https(portal.get("url"), f"{item}.portal.url", allow_none=True)},
             "verified": entry.get("verified") is True,
+            "flock_transparency_url": _flock_url(entry, item),
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),
