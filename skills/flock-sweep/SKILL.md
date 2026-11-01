@@ -32,6 +32,8 @@ calls kanban or hermes and never writes into the store. Each model run stays its
    research diff, not a legal conclusion.
 6. Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
    `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).
+7. `python3 tools/flock_sweep.py funnel ... --out DIR [--inventory SLUG=CSV ...]`: FUNNEL.csv (0600) and one counts line per roster
+   agency, requested -> posted -> facts -> facts_cited -> findings -> verified -> public_ok, `stalls_at` = first 0 (`-` = unknown).
 
 ## Stages (first match wins)
 unmapped, out-of-scope, scope-hold, no-facts, facts-unreadable, no-policy, no-law, store-errors,
