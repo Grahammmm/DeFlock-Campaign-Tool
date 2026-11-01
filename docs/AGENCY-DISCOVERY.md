@@ -36,6 +36,12 @@ than guess. `records_url`, `records_email`, `portal.url`, `place_fips`,
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
 
+`flock_transparency_slug` is the last path part of the agency's own Flock
+transparency page (`https://transparency.flocksafety.com/<slug>`), checked by
+the organizer: lowercase letters, digits and single hyphens, at most 80
+characters, or the build stops naming the field. The site links it only on
+`verified: true` agencies and never fetches it.
+
 ### Filling `place_fips` (network, organizer-run)
 
 `python3 tools/refresh_agency_seed_online.py` downloads the Census Gazetteer
