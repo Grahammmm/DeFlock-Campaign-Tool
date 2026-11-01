@@ -108,13 +108,18 @@ class MonitorLockTests(unittest.TestCase):
         self.assertEqual(self.scan_main(fake), (1, ["row 3: url host is outside official_domain"]))
         self.assertEqual((fake.call_count, self.store.exists()), (0, False))
 
-    def test_check_and_digest_take_no_lock(self):
+    def test_check_takes_no_lock_digest_needs_it(self):  # NB-DF-07: digest writes LEADS.csv, so it takes the lock
         monitor.scan(self.watchlist, self.store, DATE, fetch=fake_fetch())
-        self.flock(unlock=False)
+        fd = self.flock(unlock=False)
         self.assertEqual(self.run_main("check", str(self.watchlist))[0], 0)
+        self.assertEqual(self.run_main("digest", "--store", str(self.store), "--date", DATE),
+                         (1, ["store busy: another monitor command is running"]))
+        self.assertFalse((self.store / "digest").exists())
+        fcntl.flock(fd, fcntl.LOCK_UN)
         code, out = self.run_main("digest", "--store", str(self.store), "--date", DATE)
         self.assertEqual((code, Path(out[0]).read_text(encoding="utf-8").splitlines()[0]),
                          (0, "Flock monitor 2026-10-30: 3 new items (public, unreviewed), 0 relevant"))
+        self.flock()  # released after the digest
 
 if __name__ == "__main__":
     unittest.main()
