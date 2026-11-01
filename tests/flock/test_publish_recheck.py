@@ -80,7 +80,7 @@ class PublishRecheckTest(base.FlockPublishTest):  # setUp: verified run (F4 fini
         self.edit_facts(O1_FACT, remove=True)
         self.assertEqual(self.recheck(), (3, "recheck | O1 | needs-review | missing=1\n" + FINAL % (2, 1)))
 
-    def test_disputed_quote_fact_is_moved(self):  # DFMAINRED-4: O2 quotes it, so --check also has DF1537-02's quote_fact_id error
+    def test_path1_disputed_quote_fact_moves_its_entry(self):  # DFMAINRED-4/5: O2 quotes it, so compare's quote_fact_id error is the dispute's too
         self.dispute(O1_FACT)
         self.assertEqual(self.recheck(), (3, "recheck | O1 | needs-review | disputed=1\n" + FINAL % (2, 1)))
         self.assertEqual(self.statuses()["N1"], APPROVED)

@@ -57,7 +57,7 @@ def cites_for(f, law_rows, policy_rows, package, facts):
     lost = [{"kind": "record", "label": None}] * sum(i not in facts for i in compare.ids(f["fact_ids"]))  # recheck only
     return out + [{"kind": "record", "label": label} for label in sorted(pages)] + lost
 FACT_EDIT = "findings: inputs: FACTS.csv changed since scaffold (compare again in a new run folder)"
-def fact_edit(run, errs, findings, facts):  # DF1537-10 recheck: drop only the errors a FACTS.csv edit or removed cited fact causes
+def fact_edit(run, errs, findings, facts):  # DF1537-10 recheck: drop only the errors a FACTS.csv edit, removed or disputed cited fact causes
     def numbered(path, header):  # row number -> row, numbered exactly as compare.check and verify_tool.load number them
         table = compare.read_csv(path) if path.is_file() else []
         return {n: dict(zip(header, (c.strip() for c in rec))) for n, rec in enumerate(table[1:], 2) if len(rec) == len(header)}
@@ -70,10 +70,9 @@ def fact_edit(run, errs, findings, facts):  # DF1537-10 recheck: drop only the e
         v = None if m[1] else checks.get(int(m[2]))
         f = rows.get(int(m[2])) if m[1] else by_id.get(v["finding_id"]) if v else None
         gone = {i for i in compare.ids(f["fact_ids"]) if i not in facts} if f else set()
-        # DFMAINRED-4: DF1537-02's disputed-cite errors are a FACTS.csv status edit too; recheck moves those entries itself.
-        # A disputed quote_fact_id outside fact_ids is not moved by recheck, so that error still refuses (fail closed).
+        # DFMAINRED-4: a disputed quote_fact_id outside fact_ids is not moved by recheck, so that error still refuses (fail closed).
         disputed = {i for i in compare.ids(f["fact_ids"]) if facts.get(i, {}).get("status") == "disputed"} if f else set()
-        if m[1]:
+        if m[1]:  # DFMAINRED-5: compare's DF1537-02 disputed-fact errors are a FACTS.csv review's; recheck moves them as `disputed`
             return bool(gone) and (m[3] == "fact_ids cites a fact not in FACTS.csv" or
                                    m[3] == "quote is not in the verbatim_quote of quote_fact_id" and f["quote_fact_id"] in gone) or \
                 bool(disputed) and (m[3] == "fact_ids cites a disputed fact (review it again or drop it)" or
