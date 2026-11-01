@@ -292,8 +292,8 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, agency_id=args.agency_id, location=args.location, replace=args.replace),
-                     indent=2))
+    print(json.dumps(stage(root, args.id, agency_id=args.agency_id, location=args.location, replace=args.replace,
+                           participation=args.participation), indent=2))
 
 
 def main():
@@ -346,6 +346,7 @@ def main():
     stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
     stage_p.add_argument("--location")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     args = parser.parse_args()
     if args.command == "verify":
         try:

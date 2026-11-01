@@ -14,7 +14,7 @@ belong in ``content/``.
 """
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -280,11 +280,46 @@ def load_finding(document, label):
 # --- meetings --------------------------------------------------------------
 
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status"}
+                "status", "participation"}
 MEETING_STATUSES = ("scheduled", "cancelled")
+PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "source_url", "verified_by", "verified_at"}
 
 
-def load_meeting(document, label):
+def _how(document, label):
+    how = _text(document, "how", label)
+    if len(how) > 200:
+        raise ContentError(f"{label}.how: at most 200 characters")
+    return how
+
+
+def load_participation(document, starts_at, label, today=None):
+    """Organizer-verified participation facts; ``None`` fields mean "not stated by the source"."""
+    _require_keys(document, PARTICIPATION_KEYS, {"source_url", "verified_by", "verified_at"}, label)
+    if document.get("in_person") not in (True, False, None):
+        raise ContentError(f"{label}.in_person: must be true, false or null")
+    remote, written = document.get("remote"), document.get("written_comment")
+    if remote is not None:
+        _require_keys(remote, {"available", "how"}, {"available", "how"}, f"{label}.remote")
+        if not isinstance(remote["available"], bool):
+            raise ContentError(f"{label}.remote.available: must be true or false")
+        remote = {"available": remote["available"], "how": _how(remote, f"{label}.remote")}
+    if written is not None:
+        _require_keys(written, {"how", "deadline"}, {"how", "deadline"}, f"{label}.written_comment")
+        key = f"{label}.written_comment.deadline"
+        deadline = datetime.fromisoformat(_timestamp(written["deadline"], key).replace("Z", "+00:00"))
+        if deadline.tzinfo is None or deadline >= datetime.fromisoformat(starts_at.replace("Z", "+00:00")):
+            raise ContentError(f"{key}: needs a UTC offset and must be before starts_at")
+        written = {"how": _how(written, f"{label}.written_comment"), "deadline": written["deadline"]}
+    verified_at = _timestamp(document["verified_at"], f"{label}.verified_at", date_only=True)
+    checked, meeting_day = date.fromisoformat(verified_at), datetime.fromisoformat(starts_at.replace("Z", "+00:00")).date()
+    if checked > (today or date.today()) or checked < meeting_day - timedelta(days=30):
+        raise ContentError(f"{label}.verified_at: must not be in the future or more than 30 days before the meeting")
+    return {"in_person": document.get("in_person"), "remote": remote, "written_comment": written,
+            "source_url": _https(document["source_url"], f"{label}.source_url"),
+            "verified_by": _text(document, "verified_by", label, allow_empty=False), "verified_at": verified_at}
+
+
+def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
@@ -305,6 +340,8 @@ def load_meeting(document, label):
         "location": _text(document, "location", label, default=""),
         "agency_id": agency_id,
         "status": status,
+        "participation": (None if document.get("participation") is None else
+                          load_participation(document["participation"], starts_at, f"{label}.participation", today)),
     }
 
 

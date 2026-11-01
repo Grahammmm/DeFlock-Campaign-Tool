@@ -47,7 +47,21 @@ def _find(meetings, meeting_id):
     raise MeetingStageError(f"no meeting {meeting_id} in kit/meetings.json; known: {', '.join(known) or 'none'}")
 
 
-def stage(root, meeting_id, agency_id=None, location=None, replace=False):
+def _read_participation(path):
+    if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > 64 * 1024:
+        raise MeetingStageError(f"--participation {path}: must be a regular file (not a symlink) of at most 64 KB")
+    try:
+        with open(path, "rb") as handle:
+            document = json.loads(handle.read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MeetingStageError(f"--participation {path}: not UTF-8 JSON ({exc.__class__.__name__})") from None
+    for part in (document.get(k) for k in ("remote", "written_comment")) if isinstance(document, dict) else ():
+        if isinstance(part, dict) and isinstance(part.get("how"), str):
+            part["how"] = _clean(part["how"])  # the kit's angle-bracket cleaning, also in content
+    return document
+
+
+def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None):
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
     if meeting.get("status") == "cancelled":
@@ -69,7 +83,7 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
         "body": entry["body"],
         "starts_at": meeting.get("starts_at"),
         "agenda_item": entry["agenda_item"],
-        "comment_kit_md": comment_kit_md(entry, cited, cfg["name"], base_url=model["site"].get("base_url")),
+        "comment_kit_md": "",  # drafted below, once participation is validated
     }
     if isinstance(meeting.get("agenda_url"), str):
         document["agenda_url"] = meeting["agenda_url"]
@@ -77,7 +91,12 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
         document["agency_id"] = agency_id
     if location is not None:
         document["location"] = location
-    load_meeting(document, f"meetings/{meeting_id}.json")
+    if participation is not None:  # organizer-verified facts only; checked by load_meeting before any write
+        document["participation"] = _read_participation(participation)
+    checked = load_meeting(document, f"meetings/{meeting_id}.json", today)
+    document["comment_kit_md"] = comment_kit_md({**entry, "participation": checked["participation"]}, cited, cfg["name"],
+                                                base_url=model["site"].get("base_url"))
+    load_meeting(document, f"meetings/{meeting_id}.json", today)
 
     folder = root / "content" / "meetings"
     _kit_folder(folder, mode=0o755)

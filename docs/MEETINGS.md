@@ -83,12 +83,35 @@ campaign_name, base_url)` produces the same structure for the offline kit:
 - a two-minute comment with `[name]` and `[city]` placeholders and up to three findings
   (summary, classification, confidence),
 - three asks, the first chosen by `relevance`,
+- `## How to take part` (offline kit only, below),
 - a source list linking each finding and its records by locator and hash prefix,
 - the standing note that findings describe records as of the event date and are not legal
   advice.
 
 With no published findings the kit says so and cites the records request instead. Kits
 never include subscriber data, correspondence or unpublished analysis.
+
+### Participation (organizer-verified; the kit never guesses)
+
+`meetings-stage --participation FILE` adds `participation` to `content/meetings/<id>.json`. FILE is
+JSON (at most 64 KB, not a symlink), checked before anything is written:
+
+```json
+{"in_person": true, "remote": {"available": true, "how": "Zoom link on the posted agenda"},
+ "written_comment": {"how": "Email the clerk at clerk@example.invalid", "deadline": "2026-10-14T12:00:00-07:00"},
+ "source_url": "https://examplecity.example.invalid/agenda/1001", "verified_by": "Organizer A",
+ "verified_at": "2026-10-10"}
+```
+
+`source_url`, `verified_by` and `verified_at` are required; other keys are refused. `in_person`, `remote`
+and `written_comment` may be absent or `null` ("not stated by the source"; the kit prints nothing
+for it). `how` is plain text of at
+most 200 characters (angle brackets stripped). `deadline` needs a UTC offset and must be before
+`starts_at`; `source_url` must be https; `verified_by` must not be empty; `verified_at` (YYYY-MM-DD)
+must not be in the future or more than 30 days before the meeting. The kit lists each stated fact
+and `Source: <source_url> (checked <verified_at>)`. Without `--participation` it says only: "Check
+the posted agenda for how and when to comment; participation details were not verified." There is
+never a default deadline, and nothing is fetched to fill these fields.
 
 ## Not done
 
