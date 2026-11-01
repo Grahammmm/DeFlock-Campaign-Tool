@@ -522,6 +522,15 @@ def main():
     sources_add.add_argument("--public-url", default=None, help="Recorded only; never fetched or uploaded")
     sources_add.add_argument("--pages", type=int, default=None)
     sources_add.add_argument("--note", default="")
+    finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
+                                       ).add_subparsers(dest="finding_command", required=True)
+    review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
+    for flag in ("--directory", "--role", "--decision", "--reviewer", "--rationale"):
+        review_p.add_argument(flag, required=True)
+    finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
+                            ).add_argument("--directory", required=True)
+    for sub in finding_cmds.choices.values():
+        sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     args = parser.parse_args()
     if args.command in ("verify", "backup-drill"):
         try:
@@ -557,6 +566,12 @@ def main():
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
                                         received_at=args.received_at, fragment=args.fragment,
                                         public_url=args.public_url, pages=args.pages, note=args.note)))
+        elif args.command == "finding":
+            from . import findings
+            read_config(root)
+            draft = findings.load_draft(args.draft)
+            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
+                             if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
