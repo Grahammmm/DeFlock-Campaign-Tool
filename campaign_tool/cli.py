@@ -161,12 +161,13 @@ def _open_root(path):
     """Open --dir without following a symlink, even when written as link/ or link/. (O_NOFOLLOW only
     covers the final component, so the last real name is opened relative to its parent descriptor)."""
     text = os.fspath(path)
-    if ".." in text.split("/"):
-        raise OSError("parent references are not allowed")
-    norm = os.path.normpath(text)  # drops trailing slashes and "." components
-    parent, name = os.path.split(norm)
-    if not name:
-        return os.open(norm, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    # Drop empty and "." components only; ".." is kept so valid parent-relative paths (../production-001)
+    # still work. Symlinks in the parent chain are ordinary path resolution; only the final name is guarded.
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts:
+        return os.open("/" if text.startswith("/") else ".", os.O_RDONLY | os.O_DIRECTORY)
+    name = parts[-1]
+    parent = ("/" if text.startswith("/") else "") + "/".join(parts[:-1])
     parent_fd = os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY)
     try:
         return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)

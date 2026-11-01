@@ -238,6 +238,31 @@ class IngestDirTests(unittest.TestCase):
             cli._ingest_dir(Namespace(dir=str(self.folder) + suffix, source_id="synthetic-real"), self.root)
         self.assertTrue(self.stored(b"Synthetic real folder\n"))
 
+    def test_parent_relative_sibling_folder_works_and_symlink_via_parent_ref_is_refused(self):
+        from argparse import Namespace
+        from campaign_tool import cli
+        work = self.base / "work"
+        work.mkdir()
+        sibling = self.base / "production-sibling"
+        sibling.mkdir()
+        (sibling / "ok.txt").write_bytes(b"Synthetic sibling bytes\n")
+        outside = self.base / "outside-up"
+        outside.mkdir()
+        (outside / "secret.txt").write_bytes(b"Synthetic up secret\n")
+        (self.base / "uplink").symlink_to(outside, target_is_directory=True)
+        cwd = os.getcwd()
+        os.chdir(work)
+        try:
+            for spelling in ("../production-sibling", "../production-sibling/", "../production-sibling/."):
+                cli._ingest_dir(Namespace(dir=spelling, source_id="synthetic-up"), self.root)
+            for spelling in ("../uplink", "../uplink/", "../uplink/."):
+                with self.assertRaises(ValueError, msg=spelling):
+                    cli._ingest_dir(Namespace(dir=spelling, source_id="synthetic-up"), self.root)
+        finally:
+            os.chdir(cwd)
+        self.assertTrue(self.stored(b"Synthetic sibling bytes\n"))
+        self.assertFalse(self.stored(b"Synthetic up secret\n"))
+
     def test_file_output_is_unchanged(self):
         data = b"Synthetic policy only.\n"
         source = self.write("policy.txt", data)
