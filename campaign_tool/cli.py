@@ -347,6 +347,9 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
+    evidence_p.add_argument("--directory", required=True)
+    evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
     args = parser.parse_args()
     if args.command == "verify":
         try:
@@ -373,6 +376,9 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "evidence":
+            from .evidence import run_cli
+            run_cli(root, check=args.check)
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
