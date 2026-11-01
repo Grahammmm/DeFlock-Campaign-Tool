@@ -48,7 +48,7 @@ class NewsletterDraftTests(unittest.TestCase):
 
     def test_draft_shape_and_content(self):
         draft = build_draft(MANIFEST, now=NOW)
-        self.assertEqual(sorted(draft), ["consent_footer", "counts", "html", "subject", "text"])
+        self.assertEqual(sorted(draft), ["consent_footer", "counts", "excluded", "html", "subject", "text"])
         self.assertEqual(draft["consent_footer"], "template")
         self.assertIn("[TEMPLATE CONSENT FOOTER", draft["text"])
         self.assertIn("[TEMPLATE CONSENT FOOTER", draft["html"])

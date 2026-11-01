@@ -19,6 +19,7 @@ language, four reviewed HTML fragments (head, header, main, footer), and font
 family/font-face CSS. See `schemas/site-shell.schema.json`. Runtime validation
 rejects unknown keys, invalid language tags and non-string slots. The renderer is
 deterministic and performs a single substitution pass.
+`shell.problems(payload)` lists every input problem at once (sorted, dotted field names such as `html.main`, never a value); `render` raises them joined by `; `.
 
 **Raw fragments are trusted source code, not user data.** This function is not an
 HTML sanitizer or a publication approval. Do not supply emails, originals,

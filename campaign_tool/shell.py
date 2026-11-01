@@ -13,11 +13,45 @@ MAX_INPUT = 2 * 1024 * 1024
 HTML_KEYS = {"head", "header", "main", "footer"}
 STYLE_KEYS = {"font_family", "font_faces"}
 TOKEN = re.compile(r"\{\{([A-Z_]+)\}\}")
+NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
+
+
+def keyset(value, keys, prefix=""):  # an odd key name is shown by its length only
+    named = lambda key: prefix + key if isinstance(key, str) and NAME.fullmatch(key) else f"{prefix}{len(str(key))} chars"
+    return ["missing field: " + prefix + key for key in keys - set(value)] + [
+        "unknown field: " + named(key) for key in value if key not in keys]
 
 
 def exact(value, keys, label):
     if not isinstance(value, dict) or set(value) != keys:
         raise ValueError("Invalid " + label + " fields")
+
+
+def problems(payload):
+    """Every shell-input problem, sorted; each names its field (dotted), never its value."""
+    if not isinstance(payload, dict):
+        return ["payload: must be an object"]
+    found = keyset(payload, {"schema_version", "language", "html", "styles"})
+    if "schema_version" in payload and (type(payload["schema_version"]) is not int or payload["schema_version"] != 1):
+        found.append("schema_version: unsupported")
+    language = payload.get("language", "en")
+    if not isinstance(language, str) or not re.fullmatch(r"[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*", language):
+        found.append("language: invalid tag")
+    size = 0
+    for name, keys in (("html", HTML_KEYS), ("styles", STYLE_KEYS)):
+        part = payload.get(name, {})
+        if not isinstance(part, dict):
+            found.append(name + ": must be an object")
+            continue
+        found += keyset(part, keys, name + ".") if name in payload else []
+        for key in sorted(keys & set(part)):
+            if isinstance(part[key], str):
+                size += len(part[key].encode("utf-8"))
+            else:
+                found.append(f"{name}.{key}: must be a string")
+    if size > MAX_INPUT:
+        found.append("input: too large")
+    return sorted(found)
 
 
 def substitute(template, fields):
@@ -28,19 +62,10 @@ def substitute(template, fields):
 
 
 def render(payload):
-    exact(payload, {"schema_version", "language", "html", "styles"}, "shell")
-    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
-        raise ValueError("Unsupported shell schema version")
+    found = problems(payload)
+    if found:
+        raise ValueError("; ".join(found))
     language = payload["language"]
-    if not isinstance(language, str) or not re.fullmatch(r"[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*", language):
-        raise ValueError("Invalid language tag")
-    exact(payload["html"], HTML_KEYS, "HTML")
-    exact(payload["styles"], STYLE_KEYS, "style")
-    values = list(payload["html"].values()) + list(payload["styles"].values())
-    if any(not isinstance(value, str) for value in values):
-        raise ValueError("Shell slots must be strings")
-    if sum(len(value.encode("utf-8")) for value in values) > MAX_INPUT:
-        raise ValueError("Shell input too large")
     html_fields = {key.upper(): value for key, value in payload["html"].items()}
     html_fields["LANGUAGE"] = language
     return {
