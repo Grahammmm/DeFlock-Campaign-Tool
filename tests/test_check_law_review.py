@@ -36,7 +36,7 @@ class CheckLawReviewTest(unittest.TestCase):
 
     def write(self, name, document):
         path = self.dir / name
-        path.write_text(json.dumps(document), encoding="utf-8")
+        path.write_bytes(document if isinstance(document, bytes) else json.dumps(document).encode())
         return path
 
     def invoke(self, old_path, new_path):
@@ -60,6 +60,7 @@ class CheckLawReviewTest(unittest.TestCase):
         self.assertNotIn("Traceback", done.stderr)
         self.assertEqual(len(done.stderr.strip().splitlines()), 1, done.stderr)
         self.assertTrue(done.stderr.startswith("check_law_review: error: "))
+        return done
 
     # 1. A plain draft -> reviewed change with two review labels.
     def test_review_labels_and_status_are_allowed(self):
@@ -197,21 +198,19 @@ class CheckLawReviewTest(unittest.TestCase):
         good = self.write("good.json", self.old)
         self.refused(good, self.dir / "missing.json")
         self.refused(self.dir / "missing.json", good)
-        bad = self.dir / "bad.json"
-        bad.write_text("{not json", encoding="utf-8")
-        self.refused(good, bad)
+        self.refused(good, self.write("bad.json", b"{not json"))
         self.refused(good, self.write("list.json", [self.old]))
-        latin = self.dir / "latin.json"
-        latin.write_bytes(b'{"a": "\xff"}')
-        self.refused(good, latin)
+        self.refused(good, self.write("latin.json", b'{"a": "\xff"}'))
         link = self.dir / "link.json"
         os.symlink(good, link)
         self.refused(good, link)
         self.refused(link, good)
         self.refused(good, self.dir)
-        big = self.dir / "big.json"
-        big.write_bytes(b'{"pad": "' + b"x" * (3 * 1024 * 1024) + b'"}')
-        self.refused(good, big)
+        self.refused(good, self.write("big.json", b'{"pad": "' + b"x" * (3 * 1024 * 1024) + b'"}'))
+        for depth in (40, 2000):  # 40 parses but is too deep; 2000 overflows the JSON decoder
+            deep = self.write(f"deep{depth}.json", b'{"a": ' + b"[" * depth + b"]" * depth + b"}")
+            for args in ((good, deep), (deep, good)):
+                self.assertIn("nested deeper than 32 levels", self.refused(*args).stderr)
 
     def test_usage_error_exits_2(self):
         self.assertEqual(subprocess.run([sys.executable, "-B", str(TOOL), str(PACKAGE)],

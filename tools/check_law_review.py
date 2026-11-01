@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from campaign_tool import law  # noqa: E402
 
-MAX_BYTES = 2 * 1024 * 1024
+MAX_BYTES, MAX_DEPTH = 2 * 1024 * 1024, 32
 TOP_ALLOWED = ("status", "reviewed_by", "reviewed_at")
 RULE_ALLOWED = ("review", "duty", "exceptions", "remedy")
 NOTE = "structural check only; it does not review the law or confirm reviewer independence"
@@ -36,11 +36,23 @@ def read_file(path):
         raise InputError(f"{path}: larger than {MAX_BYTES} bytes")
     try:
         document = json.loads(data.decode("utf-8"))
+        if _depth(document) > MAX_DEPTH:
+            raise RecursionError
+    except RecursionError:  # the decoder's own stack limit, or deeper than MAX_DEPTH
+        raise InputError(f"{path}: nested deeper than {MAX_DEPTH} levels") from None
     except (UnicodeDecodeError, ValueError):
         raise InputError(f"{path}: not valid UTF-8 JSON") from None
     if not isinstance(document, dict):
         raise InputError(f"{path}: top level is not a JSON object")
     return document
+
+
+def _depth(value):  # walked one level at a time, so deep input cannot exhaust the stack
+    depth, layer = 0, [value]
+    while layer:
+        depth, layer = depth + 1, [item for v in layer if isinstance(v, (dict, list))
+                                   for item in (v.values() if isinstance(v, dict) else v)]
+    return depth
 
 
 def _diff(old, new, where, out):
@@ -72,8 +84,7 @@ def compare(old, new, jurisdiction=None, today=None):
             if type(left) is not type(right) or left != right:
                 allowed.append(where)
             continue
-        old_rules = _rules_by_id(left) if key == "rules" else None
-        new_rules = _rules_by_id(right) if key == "rules" else None
+        old_rules, new_rules = (_rules_by_id(left), _rules_by_id(right)) if key == "rules" else (None, None)
         if old_rules is None or new_rules is None:
             _diff(left, right, where, disallowed)
             continue
