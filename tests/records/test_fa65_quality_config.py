@@ -291,7 +291,7 @@ class ControlOutputRegression(unittest.TestCase):
                 "    result = unittest.TextTestRunner(verbosity=2).run(suite)\n"
                 "sys.exit(0 if result.wasSuccessful() else 1)\n",
                 encoding="utf-8")
-            completed = subprocess.run([sys.executable, str(script)],
+            completed = subprocess.run([sys.executable, "-B", str(script)],
                                        capture_output=True, text=True, timeout=60)
         output = completed.stdout + completed.stderr
         self.assertEqual(completed.returncode, 1, output)
