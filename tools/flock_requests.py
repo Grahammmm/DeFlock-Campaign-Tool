@@ -2,6 +2,7 @@
 """Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
 draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
 import csv
+import io
 import os
 import re
 import sys
@@ -63,9 +64,9 @@ def check_row(r, folder, ids, bad):
         bad("determination_date", "conflicts with status")
 
 
-def load(path):
+def load(path, folder=None):
     p = Path(path)
-    files = [(f.parent.name, f) for f in sorted(p.glob("agencies/*/REQUESTS.csv"))] if p.is_dir() else [(None, p)]
+    files = [(f.parent.name, f) for f in sorted(p.glob("agencies/*/REQUESTS.csv"))] if p.is_dir() else [(folder, p)]
     rows, ids, errs = [], set(), [] if files else ["store: no agencies/*/REQUESTS.csv found"]
     for folder, f in files:
         pre = f"{folder}: " if folder else ""
@@ -284,13 +285,111 @@ def draft(rundir, requests, start, end):
     return print(f"items={len(inc)} held={len(held)} written=FOLLOWUP-DRAFT.md") or 0
 
 
+FLAGS = ("--agency", "--request", "--step", "--date", "--evidence", "--sha256")
+STEP_HEADER = ["request_id", "step", "date", "evidence", "source_sha256", "recorded_at"]
+STEPS = {"receipt": ("receipt_date", "receipt_evidence", "source_sha256"), "extension": ("extension_notice_date",),
+         "determination": ("determination_date",), "produced": (), "closed": ()}
+STEP_STATUS = {"determination": "determined", "produced": "produced", "closed": "closed"}
+
+
+def csv_text(rows):
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerows(rows)
+    return buf.getvalue()
+
+
+def replace(path, text):  # temp file in the same folder (0600) + os.replace; the temp never outlives the call
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+
+
+def record(store, o, today):
+    """Set one dated, sourced step on one REQUESTS.csv row and append it to REQUEST-STEPS.csv; refusals write nothing."""
+    s, rid, step, when, ev, sha = (o[k] for k in FLAGS)
+    root, d = Path(store).resolve(), day(when)
+    folder = root / "agencies" / s
+    req, log = folder / "REQUESTS.csv", folder / "REQUEST-STEPS.csv"
+    link = next((p.name for p in (folder, req, log) if p.is_symlink()), None)
+    why = ("store is inside the repository" if root == REPO or REPO in root.parents
+           else "--agency must be a folder slug" if not s or slug(s) != s
+           else f"{link} must not be a symlink" if link
+           else f"agency folder {s} not found" if not folder.is_dir()
+           else f"agency folder {s} has no REQUESTS.csv" if not req.is_file()
+           else "--date must be YYYY-MM-DD" if d is None else "--date is after --today" if d > today
+           else "--evidence must be 1-120 characters on one line" if not ev.strip() or len(ev) > 120 or re.search(r"[\r\n]", ev)
+           else "--sha256 must be 64 lowercase hex" if not re.fullmatch(r"[0-9a-f]{64}", sha) else None)
+    rows, errs = load(req, s) if why is None else ([], [])
+    why = why or (f"REQUESTS.csv fails --check ({errs[0]})" if errs else None)
+    row = next((r for r in rows if r["request_id"] == rid), None)
+    why = why or (None if row else f"request {rid} not found in {s}/REQUESTS.csv")
+    old_log, mine = "", []
+    try:  # O_NOFOLLOW: a link swapped in after the check is still refused
+        with open(os.open(log, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8", newline="") as fh:
+            old_log = fh.read()
+        table = list(csv.reader(io.StringIO(old_log)))
+        mine = [c for c in table[1:] if c and c[0] == rid]
+        why = why or (None if table and table[0] == STEP_HEADER and all(len(c) == 6 for c in table[1:] if c)
+                      else "REQUEST-STEPS.csv does not match REQUEST-STEPS.csv v1")
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        why = why or (None if isinstance(exc, FileNotFoundError) else f"REQUEST-STEPS.csv unreadable ({type(exc).__name__})")
+    if why:
+        return print(f"record: {why}", file=sys.stderr) or 1
+    line, new = [rid, step, when, ev.strip(), sha, today.isoformat()], dict(row)
+    for field, value in zip(STEPS[step], (when, ev.strip(), sha)):
+        why = why or (f"{field} is already set to a different value" if row[field] and row[field] != value else None)
+        new[field] = value
+    if not why and any(c[1:5] == line[1:5] for c in mine):
+        return print(f"unchanged | {s} | {rid} | {step} | {when}") or 0
+    new["status"] = STEP_STATUS.get(step, row["status"])
+    bad = []
+    check_row(new, s, set(), lambda field, reason: bad.append(f"{field} {reason}"))
+    floor = max([day(c[2]) for c in mine if day(c[2])] + [day(row["sent"])])
+    why = why or (f"request is {row['status']}; no step can follow" if row["status"] in ("closed", "withdrawn")
+                  else f"status regression ({row['status']} to {new['status']})"
+                  if ORDER.index(new["status"]) < ORDER.index(row["status"])
+                  else f"step {step} is already recorded with different values" if any(c[1] == step for c in mine)
+                  else f"order regression ({bad[0]})" if bad
+                  else "order regression (--date is before the sent date or an earlier step)" if d < floor else None)
+    if why:
+        return print(f"record: {why}", file=sys.stderr) or 1
+    before = req.read_bytes()
+    with open(req, encoding="utf-8-sig", newline="") as fh:
+        table = list(csv.reader(fh))
+    table = table[:1] + [[new[k] for k in HEADER] if c and c[0].strip() == rid else c for c in table[1:]]
+    head = "" if old_log else csv_text([STEP_HEADER])
+    try:
+        replace(req, csv_text(table))
+        try:
+            replace(log, head + old_log + ("" if not old_log or old_log.endswith("\n") else "\n") + csv_text([line]))
+        except OSError:
+            req.write_bytes(before)
+            raise
+    except OSError as exc:
+        return print(f"record: cannot write in agency folder ({type(exc).__name__})", file=sys.stderr) or 1
+    return print(f"recorded | {s} | {rid} | {step} | {when}") or 0
+
+
 USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] | summary PATH | "
          "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
-         "summary PATH [--inventory CSV] adds document counts")
+         "summary PATH [--inventory CSV] adds document counts; record STORE --agency SLUG --request ID "
+         "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]")
 
 def main(argv):
     if argv in (["--help"], ["-h"]):
         print(USAGE); return 0  # noqa: E702
+    if argv[:1] == ["record"]:
+        keys, o = argv[2::2], dict(zip(argv[2::2], argv[3::2]))
+        today = day(o.pop("--today", date.today().isoformat()))
+        if (len(argv) % 2 == 0 and len(set(keys)) == len(keys) and set(o) == set(FLAGS) and today
+                and o["--step"] in STEPS):
+            return record(argv[1], o, today)
+        return print(USAGE, file=sys.stderr) or 2
     if len(argv) == 8 and argv[0] == "draft" and argv[2::2] == ["--requests", "--from", "--to"]:
         start, end = day(argv[5]), day(argv[7])
         if start and end and start <= end:
