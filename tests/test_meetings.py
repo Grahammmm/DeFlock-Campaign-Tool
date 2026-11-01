@@ -45,7 +45,7 @@ class LegistarClientTests(unittest.TestCase):
         self.assertEqual([m["event_id"] for m in meetings], [1001, 1003])
         first = meetings[0]
         self.assertEqual(first["body"], "Example City Council")
-        self.assertEqual(first["starts_at"], "2026-10-14T18:00:00")
+        self.assertEqual(first["starts_at"], "2026-10-14T18:00:00-07:00")
         self.assertEqual(first["matched_terms"], ["alpr", "flock", "license plate"])
         self.assertEqual(first["matched_items"], 2)
         self.assertEqual(first["relevance"], "alpr_item")
@@ -53,7 +53,7 @@ class LegistarClientTests(unittest.TestCase):
         self.assertNotIn("<", first["agenda_item"])
         # insecure agenda URL dropped; unparseable date skipped (1004); zoning meeting excluded (1002)
         self.assertIsNone(meetings[1]["agenda_url"])
-        self.assertEqual(meetings[1]["starts_at"], "2026-10-21T00:00:00")
+        self.assertEqual(meetings[1]["starts_at"], "2026-10-21T00:00:00-07:00")
         self.assertEqual(len([u for u in opener.urls if "eventitems" in u]), 4)
 
     def test_keyword_matching(self):

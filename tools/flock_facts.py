@@ -1,5 +1,5 @@
 """Per-agency fact store (schema v2): import v1 FACTS.csv, check, and coverage per posted INVENTORY document. Prints counts only."""
-import argparse, contextlib, csv, datetime, hashlib, json, os, re, sys, tempfile, unicodedata
+import argparse, contextlib, csv, datetime, hashlib, importlib.util, json, os, re, sys, tempfile, unicodedata
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -299,6 +299,54 @@ def quote_check(args, parser):
     return 3 if seen & {"not-found", "page-hash-mismatch"} else 1 if "bad-row" in seen else 0
 
 
+def stale(args):
+    """NB-DF-08: facts expired on --date, superseded, disputed or not yet in force, and the findings citing them. Read-only;
+    ids, dates and counts only, never a value or quote. Nothing is printed unless the whole report can be built."""
+    files, errors = store_files(Path(args.store), slugify(args.agency or ""))
+    errors = errors or ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)]
+    if errors or not files:
+        return fail(errors or ["no FACTS.csv files in store"])
+    date, why, lines, total, count = args.date, {}, [], 0, dict.fromkeys((
+        "expired", "superseded", "disputed", "not_yet"), 0)
+    for f in files:
+        rows = [r for _, r in load(f, f.parent.name)[1]]
+        total += len(rows)
+        for r in rows:
+            start, end = r["effective_from"], r["effective_to"]
+            later = [(g["effective_from"], g["fact_id"]) for g in rows if start and not end and (g["kind"], g["fact_type"])
+                     == (r["kind"], r["fact_type"]) and start < g["effective_from"] <= date]
+            by = min((i for d, i in later if d == max(later)[0]), default=None)  # latest in force; equal dates: smallest id
+            got = [("expired", "expired " + end)] * bool(end and end < date) + [("superseded", "superseded-by %s" % by)] * bool(
+                by) + [("disputed", "disputed")] * (r["status"] == "disputed") + [("not_yet", "not-yet " + start)] * bool(
+                start and start > date)
+            for key, text in got:
+                count[key] += 1
+                lines.append("stale | %s | %s | %s" % (f.parent.name, r["fact_id"], text))
+                if key != "not_yet":
+                    why.setdefault(r["fact_id"], []).append(text)
+    affected = set()
+    if args.findings is not None:
+        spec = importlib.util.spec_from_file_location("_facts_compare", REPO / "tools" / "flock_compare.py")
+        spec.loader.exec_module(compare := importlib.util.module_from_spec(spec))  # ids() split, loaded by path
+        with open(args.findings, encoding="utf-8-sig", newline="") as handle:
+            records = list(csv.reader(handle))
+        head = records[0] if records else []
+        lacks = [c for c in ("finding_id", "fact_ids") if c not in head]
+        if lacks:
+            return fail(["findings: header lacks %s" % ", ".join(lacks)])
+        for number, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
+            if len(rec) != len(head):
+                return fail(["findings: row %d: columns have the wrong count" % number])
+            row = dict(zip(head, rec))
+            for cited in (i for i in dict.fromkeys(compare.ids(row["fact_ids"])) if i in why):
+                lines.append("stale | finding %s | cites %s (%s)" % (row["finding_id"].strip(), cited, ", ".join(why[cited])))
+                affected.add(number)
+    print(*lines, sep="\n") if lines else None
+    print("facts=%d expired=%d superseded=%d disputed=%d not_yet=%d findings_affected=%d" % (
+        total, count["expired"], count["superseded"], count["disputed"], count["not_yet"], len(affected)))
+    return 3 if (affected if args.findings is not None else count["expired"] + count["superseded"]) else 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -311,12 +359,12 @@ def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV"
                         " | status --store DIR [--agency SLUG] [--list unreviewed|disputed]"
-                        " | quote-check --store DIR --text EXPORT [--agency SLUG]")
-    for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text"):
+                        " | quote-check --store DIR --text EXPORT [--agency SLUG]"
+                        " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]")
+    for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text", "--findings", "--date"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
-    parser.add_argument("--date", default=datetime.date.today().isoformat())
     args = parser.parse_args(argv)
     if args.command[:1] == ["quote-check"]:
         if len(args.command) != 1 or args.check or not args.store or not args.text or args.inventory or args.list is not None \
@@ -325,6 +373,14 @@ def _main(argv=None):
         return quote_check(args, parser)
     if args.text is not None:
         parser.error("--text belongs to quote-check only")
+    if args.command[:1] == ["stale"]:
+        if len(args.command) != 1 or args.check or not args.store or not valid_date(args.date or "") or args.inventory \
+                or args.list is not None or args.added_by is not None or (args.agency is not None and not slugify(args.agency)):
+            parser.error("usage: stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]")
+        return stale(args)
+    if args.findings is not None:
+        parser.error("--findings belongs to stale only")
+    args.date = datetime.date.today().isoformat() if args.date is None else args.date
     if args.command[:1] == ["status"]:
         if len(args.command) != 1 or args.check or not args.store or args.inventory or args.added_by is not None \
                 or args.list not in (None, "unreviewed", "disputed") or (args.agency is not None and not slugify(args.agency)):
