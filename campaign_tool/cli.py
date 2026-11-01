@@ -215,12 +215,17 @@ def build(root, check=False):
         print(f"  {path.relative_to(public).as_posix():<40} {size:>9} bytes")
     print(f"  {len(written)} files, {total} bytes")
     if check:
+        from .site_check import check_links
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
-        if hits:
-            raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
-        print("Public tree check passed (pattern scan only; human review still required).")
+        broken = check_links(public)
+        for page, href in broken:
+            print(f"public/{page}: broken link {href}", file=sys.stderr)
+        found = ([f"{len(hits)} potential leak(s)"] if hits else []) + ([f"{len(broken)} broken link(s)"] if broken else [])
+        if found:
+            raise ValueError("public tree check found " + " and ".join(found) + "; fix content and rebuild")
+        print("Public tree check passed (pattern scan and internal links; human review still required).")
 
 
 def backup_cmd(args, root):
@@ -314,7 +319,8 @@ def main():
                              help="Stable non-secret production/message identity, not a signed URL")
         if name == "build":
             cmd.add_argument("--check", action="store_true",
-                             help="Scan the generated public/ tree for private paths and credential patterns")
+                             help="Scan the generated public/ tree for private paths and credential patterns, "
+                                  "and fail on site-local links or #fragments that do not resolve")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
