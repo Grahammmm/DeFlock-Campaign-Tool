@@ -786,6 +786,10 @@ class CountStageTests(StageTestCase):
         with closing(sqlite3.connect(self.portal / "portal.sqlite")) as pdb, pdb:
             pdb.execute("CREATE TABLE portal_items(id TEXT)")
             pdb.execute("INSERT INTO portal_items VALUES('a')")
+        # The extract stage's per-run list (input to the DOC-2 text-state pair).
+        (self.processing / "runs").mkdir(mode=0o700)
+        (self.processing / "runs" / "extract-run-1.json").write_text(json.dumps(
+            {"schema": "records-extract-outcomes-v1", "run_id": "run-1", "documents": []}))
         code, parsed, raw = self.stage("outputs")
         self.assertContract(code, parsed, raw)
         self.assertEqual(parsed["status"], "ok")
