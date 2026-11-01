@@ -28,6 +28,8 @@ A clean check is machine-valid and review-required, not legal acceptance.
    Every agency on one date: `python3 tools/flock_law_policy.py governing STORE --on YYYY-MM-DD` (STORE a directory).
    Days no adopted version governs: `python3 tools/flock_law_policy.py gaps STORE --on YYYY-MM-DD`; exit 3 lists each
    gap, closed policy or policy not established (a review prompt, not a finding of non-compliance).
+   Package rules with no LAW row: `python3 tools/flock_law_policy.py coverage STORE [--on YYYY-MM-DD]`; exit 3 names
+   each (with `--on`, also rules with no row in effect that day; any rule whose rows are all `disputed`).
    Policy facts that differ between consecutive adopted versions: `python3 tools/flock_law_policy.py changes STORE [--agency SLUG]`
    (fact types and FACTS ids only; exit 0 is a report, review each line; `no policy facts for LABEL` is unknown, not a change).
 6. Fix each reported `row N: <field> <reason>` at the source; the tool never repairs a row.
