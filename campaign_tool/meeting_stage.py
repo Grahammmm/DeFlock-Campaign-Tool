@@ -6,9 +6,10 @@ only, and the document is validated by ``content.load_meeting`` before it is wri
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 from .cli import read_config
-from .content import load_content, load_meeting, load_participation
+from .content import _read_json, load_content, load_finding, load_meeting, load_participation
 from .kit import _kit_folder, _write_json
 from .meetings import _clean, comment_kit_md
 
@@ -110,3 +111,29 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     _write_json(target, document)
     return {"written": f"content/meetings/{target.name}", "findings_cited": len(cited), "replaced": replaced,
             "note": NOTE}
+
+
+def stale_kits(root):
+    """Read-only: staged kits citing a corrected finding without its latest correction date.
+
+    Unreadable or invalid files are skipped; ``load_content`` and the site build report them."""
+    content = Path(root) / "content"
+    latest = {}
+    for path in sorted((content / "findings").glob("*.json")):
+        try:
+            finding = load_finding(_read_json(path), "findings/" + path.name)
+        except (ValueError, OSError, TypeError, KeyError):
+            continue
+        if finding["corrections"]:
+            latest[finding["slug"]] = max(c["date"] for c in finding["corrections"])
+    stale = []
+    for path in sorted((content / "meetings").glob("*.json")):
+        try:
+            meeting = load_meeting(_read_json(path), "meetings/" + path.name)
+        except (ValueError, OSError, TypeError, KeyError):
+            continue
+        kit = meeting["comment_kit_md"]
+        for slug, date in latest.items():
+            if f"/findings/{slug}.html" in kit and f"/findings/{slug}.html (corrected {date};" not in kit:
+                stale.append({"meeting": meeting["id"] or path.stem, "finding": slug, "latest_correction": date})
+    return sorted(stale, key=lambda entry: (entry["meeting"], entry["finding"]))
