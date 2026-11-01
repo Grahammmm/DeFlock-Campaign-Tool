@@ -245,20 +245,26 @@ class BackupDrillTests(unittest.TestCase):
         self.assert_no_abs_paths(out)
         self.assert_no_abs_paths(target.read_text(encoding="utf-8"))
 
-    def test_unsafe_absolute_member_name_receipt_has_no_path(self):
-        evil = self.work / "evil.tar"
-        payload = self.work / "payload.txt"
-        payload.write_bytes(b"x")
-        with tarfile.open(evil, "w") as tar:
-            info = tar.gettarinfo(str(payload), arcname="/unsafe-abs-dir/etc/passwd")
-            with payload.open("rb") as handle:
-                tar.addfile(info, handle)
-        target = self.work / "receipt.json"
-        code, out, _ = self.main("backup-drill", "--file", evil, "--receipt", target)
-        self.assertEqual(code, 3)
-        self.assert_failed_at(json.loads(out), "verify")
-        self.assert_no_abs_paths(out)
-        self.assert_no_abs_paths(target.read_text(encoding="utf-8"))
+    def test_unsafe_absolute_member_names_receipt_has_no_path(self):
+        names = ("/unsafe-abs-dir/etc/passwd", r"C:\\Users\\PrivateOwner\\sensitive\\record.txt",
+                 r"\\\\PrivateHost\\share\\record.txt")
+        for index, name in enumerate(names):
+            with self.subTest(name=name):
+                evil = self.work / f"evil{index}.tar"
+                shutil.copyfile(self.archive, evil)
+                with tarfile.open(evil, "a") as tar:
+                    info = tarfile.TarInfo(name)
+                    info.size = 1
+                    tar.addfile(info, io.BytesIO(b"x"))
+                target = self.work / f"receipt{index}.json"
+                code, out, _ = self.main("backup-drill", "--file", evil, "--receipt", target)
+                self.assertEqual(code, 3)
+                self.assertIn("unsafe_member_name", out)
+                self.assert_failed_at(json.loads(out), "verify")
+                receipt = target.read_text(encoding="utf-8")
+                self.assertIn("unsafe_member_name", receipt)
+                for text in (out, receipt):
+                    self.assert_no_abs_paths(text, "PrivateOwner", "PrivateHost", "record.txt")
 
     def test_failure_detail_redacts_member_and_archive_paths(self):
         def hostile(*_args, **_kwargs):

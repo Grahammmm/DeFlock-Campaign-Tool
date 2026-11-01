@@ -364,7 +364,10 @@ def diff(archive, root, expected_manifest_sha256=None):
 DRILL_STEPS = ("verify", "restore", "store_check", "doctor")
 
 
-_ABS_PATH = re.compile(r"(?<![\w>.<])/[^\s'\"<>:;,)]+")
+_ABS_PATH = re.compile(
+    r"(?<![\w>.<])/[^\s'\"<>:;,)]+"          # POSIX absolute
+    r"|(?<![\w])[A-Za-z]:[\\/][^\s'\"<>;,)]+"  # Windows drive
+    r"|\\\\[^\s'\"<>;,)]+")                 # Windows UNC
 
 
 def _drill_detail(exc, tmp, archive=None):
