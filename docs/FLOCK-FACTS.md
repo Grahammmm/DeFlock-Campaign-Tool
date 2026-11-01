@@ -41,6 +41,8 @@ row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v1: `fact_id,from
 mode 0600); a fact already at the target is `unchanged` and not logged. `--check` validates the log and names a fact whose
 FACTS status differs from its last logged `to_status` (a hand edit). Ids and counts only; the note is never printed.
 
+**Unreadable pages** (`unreadable --store DIR --out FILE.csv [--agency SLUG]`): writes a new private 0600 CSV `agency,source_sha256,page,fact_rows` (distinct pages with an `UNREADABLE` row; header only when none) outside the repo and `DIR/agencies`; stdout counts agencies checked, pages, documents and rows only.
+
 ## Store check
 
 `python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N] [--today YYYY-MM-DD]` runs the facts,
