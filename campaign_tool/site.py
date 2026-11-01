@@ -109,9 +109,10 @@ class Site:
         self.cfg = cfg
         self.model = model
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
+        # A cancelled meeting is never upcoming; it stays listed under past meetings.
         cutoff = (today or date.today()).isoformat()
-        self.upcoming = [m for m in model["meetings"] if m["starts_at"][:10] >= cutoff]
-        self.past = [m for m in model["meetings"] if m["starts_at"][:10] < cutoff][::-1]
+        self.upcoming = [m for m in model["meetings"] if m["starts_at"][:10] >= cutoff and m["status"] != "cancelled"]
+        self.past = [m for m in model["meetings"] if m["starts_at"][:10] < cutoff or m["status"] == "cancelled"][::-1]
         self.site = model["site"]
         self.name = e(cfg["name"])
         self.county = e(cfg["county"])
@@ -205,10 +206,11 @@ class Site:
                   if meeting["agenda_url"] else "")
         item = f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
+        cancelled = "Cancelled: " if meeting.get("status") == "cancelled" else ""
         kit = ('<details><summary>Public comment kit</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
                if meeting["comment_kit_md"] else "")
         return (f'<article id="meeting-{e(meeting["id"])}"><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time>'
-                f'{where}{agenda}<h3>{e(meeting["body"])}</h3>{item}{kit}</article>')
+                f'{where}{agenda}<h3>{cancelled}{e(meeting["body"])}</h3>{item}{kit}</article>')
 
     def picker(self):
         buttons = ['<button type="button" class="city-choice is-active" id="reset-county-map" data-city="" aria-pressed="true">'

@@ -2,7 +2,7 @@
 digest. Index pages only: links (PDFs included) are recorded by URL and never fetched."""
 import argparse, contextlib, csv, datetime, fcntl, hashlib, html.parser, os, re, sys, tempfile, urllib.error, urllib.request
 from pathlib import Path
-from urllib.parse import urldefrag, urljoin, urlsplit
+from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 WATCH_HEADER = ["agency", "kind", "url", "query", "official_domain", "last_seen_hash"]
@@ -192,12 +192,31 @@ def scan_locked(watchlist, rows, store, date, fetch):  # call only while holding
         write_atomic(Path(watchlist), header=WATCH_HEADER, rows=[r for _, r in rows])
     return out + [" ".join("%s=%d" % (k, counts[k]) for k in COUNTS)]
 
+def keywords():  # the shared meetings ALPR pattern, never a copy; a failed import fails the digest (no unranked digest)
+    if str(REPO) not in sys.path: sys.path.insert(0, str(REPO))
+    from campaign_tool.meetings import KEYWORDS
+    return KEYWORDS
+
+def alpr_terms(row, pattern):  # title plus percent-decoded URL path with -, _ and / read as spaces; lowercased, deduped
+    path = re.sub(r"[-_/]", " ", unquote(urlsplit(absolute(row["url"])).path))
+    return list(dict.fromkeys(m.group(0).lower() for m in pattern.finditer(row["title"] + " " + path)))
+
 def digest(store, date):
     path = private_store(store) / "digest" / (date + ".md")
     rows = [r for _, r in read_csv(path.parents[1] / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
-    items = [" ".join(("- %s %s: %s %s" % (r["agency"], r["watch_kind"], r["title"], r["url"])).split()) for r in rows]
-    lines = ["Flock monitor %s: %s" % (date, "%d new items (public, unreviewed)" % len(rows) if rows else "no new items")]
-    lines += items if len(items) <= 39 else items[:38] + ["- … and %d more in MONITOR.csv" % (len(items) - 38)]
+    pattern = keywords()
+    ranked = sorted(((r, alpr_terms(r, pattern)) for r in rows), key=lambda e: (slug(e[0]["agency"]), not e[1]))  # stable
+    items = [(" ".join(("- %s %s: %s %s" % (r["agency"], r["watch_kind"], r["title"], r["url"])).split())
+              + (" [ALPR: %s]" % ", ".join(terms) if terms else ""), bool(terms)) for r, terms in ranked]
+    relevant = sum(hit for _, hit in items)
+    lines = ["Flock monitor %s: %s" % (date, "%d new items (public, unreviewed), %d relevant" % (len(rows), relevant)
+                                       if rows else "no new items")]
+    if len(items) <= 39:
+        lines += [line for line, _ in items]
+    else:  # relevant items first into the 38 shown slots, then the rest; shown lines keep the ranked order
+        keep = sorted(sorted(range(len(items)), key=lambda i: not items[i][1])[:38])
+        lines += [items[i][0] for i in keep] + ["- … and %d more in MONITOR.csv (%d relevant)"
+                                                 % (len(items) - 38, relevant - sum(items[i][1] for i in keep))]
     _real(path.parent, "digest folder")
     write_atomic(path, "\n".join(lines) + "\n")
     return path
@@ -216,8 +235,9 @@ def main(argv=None):
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else digest(args.store, args.date.isoformat()))
-    except (Fail, OSError, UnicodeDecodeError, csv.Error) as err:  # csv.Error prints "io error: Error"
-        print(err if isinstance(err, Fail) else "io error: %s" % type(err).__name__)
+    except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
+        print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)
+                                                                   else type(err).__name__))
         return 1
     return 0
 
