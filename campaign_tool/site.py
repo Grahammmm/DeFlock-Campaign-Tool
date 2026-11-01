@@ -311,7 +311,9 @@ class Site:
                     + (f'<p>{len(findings)} published finding(s): ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else '<p>No published findings.</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "")
-                    + ('' if agency["verified"] else '<p class="archive-hint">Contact details unverified: confirm on the agency\'s official site.</p>'))
+                    + (f'<p class="contact-provenance">Contact checked {date_label(agency["verification"]["checked_on"])} on '
+                       f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">the official source</a>.</p>'
+                       if agency["verified"] else '<p class="archive-hint">Contact details unverified: confirm on the agency\'s official site.</p>'))
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Agencies</p>'
                 f'<h2>Public bodies in {self.county}.</h2></div><p>Listing an agency here says only that we asked or intend to ask it for records. '

@@ -383,7 +383,28 @@ def load_sources(document):
 
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
-               "flock_transparency_slug", "muckrock_agency_id", "notes"}
+               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification"}
+VERIFICATION_KEYS = {"source_url", "checked_on", "fields"}
+VERIFIED_FIELDS = ("records_email", "records_url", "portal")
+
+
+def _verification(entry, item, today=None):
+    """Where and when an organizer checked the contact; verified:true without it stops the build."""
+    label = f"{item}.verification"
+    if "verification" not in entry:
+        if entry.get("verified") is True:
+            raise ContentError(f"{label}: verified:true needs source_url and checked_on")
+        return None
+    value = entry["verification"]
+    _require_keys(value, VERIFICATION_KEYS, {"source_url", "checked_on"}, label)
+    checked_on = _timestamp(value["checked_on"], f"{label}.checked_on", date_only=True)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", checked_on) or date.fromisoformat(checked_on) > (today or date.today()):
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    fields = value.get("fields", [])
+    if not isinstance(fields, list) or any(name not in VERIFIED_FIELDS for name in fields):
+        raise ContentError(f"{label}.fields: must be a list of names from {list(VERIFIED_FIELDS)}")
+    return {"source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": checked_on,
+            "fields": list(fields)}
 
 
 def _agency_slug(agency):
@@ -393,7 +414,7 @@ def _agency_slug(agency):
     return _slug(rest, f"agencies[{agency['agency_id']}] derived slug")
 
 
-def load_agencies(document, label):
+def load_agencies(document, label, today=None):
     if not isinstance(document, list) or len(document) > 500:
         raise ContentError(f"{label}: must be a list of agencies")
     agencies, ids, slugs = [], set(), set()
@@ -429,6 +450,7 @@ def load_agencies(document, label):
             "portal": {"vendor": portal["vendor"],
                        "url": _https(portal.get("url"), f"{item}.portal.url", allow_none=True)},
             "verified": entry.get("verified") is True,
+            "verification": _verification(entry, item, today),
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),
