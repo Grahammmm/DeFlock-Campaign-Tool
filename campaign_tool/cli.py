@@ -347,6 +347,11 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
+    for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
+        verify_agency_p.add_argument(flag, required=True)
+    for flag in ("--records-email", "--records-url", "--portal"):
+        verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
     args = parser.parse_args()
     if args.command == "verify":
         try:
@@ -373,6 +378,12 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "kit-verify-agency":
+            from .kit import verify_agency
+            print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
+                                           records_email=args.records_email, records_url=args.records_url,
+                                           portal=args.portal), indent=2))
+            print("Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
