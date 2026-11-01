@@ -23,7 +23,9 @@ section without hard-coding a jurisdiction in the engine.
 `NaN`/`Infinity` refused) builds nothing and prints each problem, then `problems=N`. Exit 0 none, 1 problems,
 2 unreadable file or usage (one stderr line, no value echoed).
 
-New county text rejects angle-bracket markup. The selected-agency CITIES object
+New county text rejects angle-bracket markup, control characters other than newline/tab, invisible format and
+direction-override characters (Unicode `Cc`/`Cf`, e.g. U+200B, U+202E, U+2066, U+FEFF) and U+2028/U+2029: the field is a
+named problem, never rewritten or stripped. The selected-agency CITIES object
 remains **trusted, reviewed campaign source**, not an arbitrary JSON upload or
 record-extraction result. Its legacy list rendering uses innerHTML for compatibility;
 this is not an HTML sanitization boundary. Do not wire user input or AI drafts

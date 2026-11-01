@@ -73,6 +73,12 @@ date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
 "This is not legal advice" line.
 
+`/corrections.html` lists every correction on every published finding, newest
+first (same date: by finding slug, then the order in the finding), each linking
+to the finding's `#corrections` section. The footer and each finding page link
+to it, and finding lists mark a corrected finding with a "Corrected" pill
+showing its latest correction date. The starter preview has no such page.
+
 ### Agencies, cards and the picker
 
 Agencies come from `content/agencies.json` or the kit. Each gets a slug (the

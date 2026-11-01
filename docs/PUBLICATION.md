@@ -77,6 +77,15 @@ no originals, correspondence, subscribers or credentials. `GET /api/manifest.jso
 Both require an authenticated identity and a non-empty reason; both are visible in the
 Approvals list as the rebuild they trigger.
 
+## Social drafts (never posted)
+
+`python3 -m campaign_tool social --directory D` writes one private draft per published finding
+to `kit/social/<slug>.md`: classification label, title, finding URL and finding id, at most 280
+characters (only the title is shortened) plus `Corrected <latest date>.` when corrected. An
+edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts for slugs no
+longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
+under `public/`; posting stays an organizer decision outside this tool.
+
 ## Not done
 
 No reviewer directory or role assignment beyond the Access policy; no diff view between

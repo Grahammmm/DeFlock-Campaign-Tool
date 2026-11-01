@@ -194,6 +194,12 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
+def social_cmd(root):
+    from .social import build_social
+    print(json.dumps(build_social(root), indent=2, ensure_ascii=False))
+    print("Drafts written to kit/social. Nothing was posted.")
+
+
 def check_public_tree(public):
     """Run the repository leak scan over public/; returns (path, line, label) hits."""
     from .records.public_scan import violations
@@ -337,6 +343,8 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
+    commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
+                        ).add_argument("--directory", required=True)
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -366,6 +374,11 @@ def main():
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
     check_p = commands.add_parser("content-check", help="Name every content/ problem in one read-only pass (exit 3)")
     check_p.add_argument("--directory", required=True)
+    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
+    for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
+        verify_agency_p.add_argument(flag, required=True)
+    for flag in ("--records-email", "--records-url", "--portal"):
+        verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
     args = parser.parse_args()
     if args.command == "verify":
         try:
@@ -382,6 +395,8 @@ def main():
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
+        elif args.command == "social":
+            social_cmd(root)
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":
@@ -397,6 +412,12 @@ def main():
         elif args.command == "content-check":
             from .content_check import content_check_cmd
             content_check_cmd(root)
+        elif args.command == "kit-verify-agency":
+            from .kit import verify_agency
+            print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
+                                           records_email=args.records_email, records_url=args.records_url,
+                                           portal=args.portal), indent=2))
+            print("Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
