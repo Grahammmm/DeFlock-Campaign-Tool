@@ -4,7 +4,7 @@ Synthetic-only. Every store is created fresh by the existing ledger fixture
 factory (tests.records.test_ledger) and projected through the full
 project_units API with the real schema, append permit and binding guards.
 
-Acceptance mapping (see tools/accept_fa45_unit_finite.py):
+Acceptance mapping:
   A1 FinitePositiveTests       finite/zero/underflow/integer locators still project
   A2 OverflowRefusalTests      exponent overflow refused at every depth
   A3 MixedBatchRecoveryTests   reason histograms survive fresh run and restart

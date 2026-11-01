@@ -40,7 +40,7 @@ SEAM_NAMES = ("_resolved_tools", "_read", "PdfReader")
 # The single preflight line the negative control disables, and its pass-through replacement.
 GATE_TEXT = "    requested, holds = _page_selectors(pages, fidelity_holds)\n"
 GATE_DISABLED = "    requested, holds = pages, fidelity_holds\n"
-CONTROL_OUTCOMES = []  # read by tools/accept_fa101.py for the negative-control case
+CONTROL_OUTCOMES = []  # negative-control outcomes recorded by GateControl
 
 
 class TupleSubclass(tuple):

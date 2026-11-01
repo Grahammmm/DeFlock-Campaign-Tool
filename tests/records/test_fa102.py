@@ -3,7 +3,7 @@
 Card-owned synthetic ledgers only: every case builds a fresh initialized ledger under the
 active temporary root, captures fictional evidence through the real project() entry point,
 then mutates only that disposable copy. Runs under ordinary unittest as well as
-tools/accept_fa102.py.
+the negative-control GateControl case.
 """
 import hashlib
 import importlib.util
@@ -27,7 +27,7 @@ TABLES = ('rp_schema', 'rp_manifests', 'rp_sources', 'rp_artifacts', 'rp_items',
 CONSISTENCY = ('rp_source_consistency', 'rp_item_consistency', 'rp_gap_consistency', 'rp_step_consistency')
 APPEND_ONLY = tuple(t + suffix for t in TABLES for suffix in ('_no_replace', '_no_update', '_no_delete'))
 BASE_TRIGGERS = CONSISTENCY + APPEND_ONLY
-# Filled by GateControl; read back by tools/accept_fa102.py for the negative-control receipt.
+# Filled by GateControl with the negative-control receipt.
 CONTROL_OUTCOMES = []
 
 

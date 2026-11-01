@@ -8,7 +8,7 @@ inventoried. Every input here is synthetic: generated URLs, the existing
 synthetic export fixture from tests.records.test_export_bridge and a fresh
 temporary store. No network, mailbox, model, credential or live record.
 
-Class map (used by tools/accept_fa55_url_unicode.py):
+Class map:
   A1PositiveTests        valid Unicode / percent bytes / signed queries kept
   A2MalformedTests       lone surrogates refused with exactly invalid_url
   A2PreservationTests    existing host/path/scheme negatives keep their codes
@@ -32,7 +32,7 @@ from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
 from tests.records.test_export_bridge import BASE, HOST, PARSER, legacy_export
 
 # Name of the strict UTF-8 input gate in policy.py. The A4 negative control
-# (tools/accept_fa55_url_unicode.py) bypasses only this function in memory.
+# bypasses only this function in memory.
 GATE = "_utf8_encodable"
 
 HIGH = "\ud83d"   # lone high surrogate

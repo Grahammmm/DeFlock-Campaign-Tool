@@ -40,7 +40,7 @@ ELIGIBILITY = "ocr_eligibility_binding_mismatch"
 # The exact predicate the correction adds; GateControl reverts only this line in a copy.
 GUARD_TEXT = "    return type(value) is int and value >= 1\n"
 CONTROL_TEXT = "    return True\n"
-CONTROL_OUTCOMES = []  # read by tools/accept_fa100.py for the negative-control case
+CONTROL_OUTCOMES = []  # negative-control outcomes recorded by GateControl
 
 # base name -> (pdf kind, page, runner kind, fidelity holds, expected status, eligibility present)
 BASES = {
@@ -378,7 +378,7 @@ class Behavior(unittest.TestCase):
     def test_authored_sources_contain_no_machine_paths(self):
         root = Path(__file__).resolve().parents[2]
         tokens = ("/ho" + "me/", "agent" + "-work", "/Use" + "rs/", ".her" + "mes")
-        for relative in ("tests/records/test_fa100.py", "tools/accept_fa100.py"):
+        for relative in ("tests/records/test_fa100.py",):
             text = (root / relative).read_text(encoding="utf-8")
             for token in tokens:
                 with self.subTest(file=relative, token=token):
