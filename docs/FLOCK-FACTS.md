@@ -24,3 +24,10 @@ The v1 import header is the first seven columns. Any other header is an error. F
 - **Privacy:** the store and real FACTS.csv are never committed. The CLI prints row numbers, field
   names and counts only, and refuses a store inside the repository checkout.
 - A clean `--check` is machine validity, not review or acceptance.
+
+**Stale facts** (`stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]`, read-only, ids only):
+a fact is *expired* when `effective_to` is before the date (the end day itself is still in force) and *not-yet* when
+`effective_from` is after it. It is *superseded* when, in the same agency, another fact with the same `kind` and
+`fact_type` has a later `effective_from` on or before the date, while this fact has an `effective_from` and no
+`effective_to`; the latest such fact is named. `disputed` facts are listed too. With `--findings`, each finding citing an
+expired, superseded or disputed fact is listed; exit 3 when any does (without it: any expired or superseded fact).
