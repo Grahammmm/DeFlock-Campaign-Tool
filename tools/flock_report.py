@@ -4,6 +4,8 @@
   check CONFIG [--out DIR]    (read-only: are REPORT-DRAFT.md + SOURCES.json byte-equal to a fresh build? last line state=)
   region --matrix DIR --agency SLUG=CONFIG ... --out DIR [--replace]   (private REGION-REPORT-DRAFT.md + SOURCES.json from
       COMPARE-MATRIX.csv; one --agency per matrix column; an agency whose report is stale or missing is excluded, counted only)
+  region --check --matrix DIR --agency SLUG=CONFIG ... --out DIR   (read-only: both region files vs a fresh build, each
+      current|stale|missing|link, then each agency's state; never writes or creates --out; exit 0 only when both are current)
 Rows from not-posted records and rows the verifier disputed or could not source never appear; a final lint refuses to write
 otherwise. Prints counts and `line N: <rule>` / `row <id>: <rule>` errors only, never the offending text. No network.
 Exit 0 written (check: current), 1 validation/lint/IO (check: stale/missing/invalid), 2 usage. The draft is private: public use
@@ -250,7 +252,7 @@ def build(config, out):
 ORDER, RNAMES = {"rejected": 0, "weak": 1, "medium": 2, "strong": 3}, ("REGION-REPORT-DRAFT.md", "SOURCES.json")
 RNOTE = ("Ratings come from the cross-agency matrix. Each agency is cited only from its own current findings draft, and only "
          "findings on that topic. Rejected, unrated, not current and uncited agencies are counted, never named.")
-def region(args, parser):  # -> exit code; reads every agency draft, writes nothing unless every check and the lint pass
+def _region_build(args, parser):  # region and region --check: -> (errs, report, sources_text, counts, agencies); writes nothing
     configs, errs, agencies, out = {}, [], {}, Path(os.path.abspath(os.path.expanduser(args.out)))
     for slug, eq, config in (a.partition("=") for a in args.agency):
         if not (eq and slug and config) or slug in configs:
@@ -267,8 +269,7 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
         if any(v not in ORDER and v != "-" for r in rows for v in (r[s] for s in slugs)) or not rows:
             raise Fail("matrix: COMPARE-MATRIX.csv has no rows or a cell that is not strong|medium|weak|rejected|-")
     except (Fail, OSError, ValueError, StopIteration) as exc:
-        print(fault(exc) if not isinstance(exc, StopIteration) else "matrix: COMPARE-MATRIX.csv is empty")
-        return 1
+        return [fault(exc) if not isinstance(exc, StopIteration) else "matrix: COMPARE-MATRIX.csv is empty"], None, None, {}, {}
     for name, bad in (("matrix column %s has no --agency", [s for s in slugs if s not in configs]),
                       ("--agency %s has no matrix column", [s for s in configs if s not in slugs])):
         if bad:
@@ -284,8 +285,7 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
     elif any(under(out.resolve(), c[k].resolve()) for c in loaded for k in ("FO", "CO")):
         errs.append("out: is inside an agency store")
     if errs:
-        print("\n".join(dict.fromkeys(errs)))
-        return 1
+        return errs, None, None, {}, agencies
     current = [s for s in slugs if agencies[s][2] == "current"]
     cites = {}  # (slug, topic) -> that agency's SOURCES numbers cited by its shown findings on the topic
     for slug in current:
@@ -324,7 +324,13 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
     combined = {"deny": [d for c in loaded for d in c["deny"]]}  # every agency's hidden ids and denylist, current or not
     facts = {(c["slug"], k): v for c in loaded for k, v in c["facts"].items()}
     lint(combined, report, sources_text, {}, body_end, entries, facts, [r for c in loaded for r in c["inventory"]], errs)
-    for name in RNAMES:
+    counts = {"topics": len({r["topic"] for r in rows}), "agencies": len(slugs), "current": len(current),
+              "excluded": len(slugs) - len(current), "sources": len(entries)}
+    return errs, report, sources_text, counts, agencies
+def region(args, parser):  # -> exit code; reads every agency draft, writes nothing unless every check and the lint pass
+    errs, report, sources_text, counts, _ = _region_build(args, parser)
+    out = Path(os.path.abspath(os.path.expanduser(args.out)))
+    for name in RNAMES if report is not None else ():  # the --out rule joins the lint errors, never the earlier ones
         if os.path.lexists(out / name) and not (args.replace and stat.S_ISREG(os.lstat(out / name).st_mode)):
             errs.append("out: %s %s" % (name, "exists; pass --replace to supersede it" if not args.replace else "is not a regular file"))
     if errs:
@@ -344,17 +350,36 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
             with contextlib.suppress(OSError): os.unlink(tmp)
         print(fault(exc))
         return 1
-    print("region topics=%d agencies=%d current=%d excluded=%d sources=%d" % (
-        len({r["topic"] for r in rows}), len(slugs), len(current), len(slugs) - len(current), len(entries)))
+    print("region topics=%(topics)d agencies=%(agencies)d current=%(current)d excluded=%(excluded)d sources=%(sources)d" % counts)
     return 0
+def region_check(args, parser):  # read-only: never writes, never creates --out, names files and states only, never draft text
+    if args.replace:
+        parser.error("--check and --replace cannot be combined")
+    errs, report, sources_text, counts, agencies = _region_build(args, parser)
+    if errs:
+        print("\n".join(list(dict.fromkeys(errs)) + ["region-check: invalid"]))
+        return 1
+    out, states, lines = Path(os.path.abspath(os.path.expanduser(args.out))), Counter(), []
+    for name, text in zip(RNAMES, (report, sources_text)):
+        got = on_disk(out / name)  # O_NOFOLLOW: a link is named, its target never read; any other non-file is stale
+        state = (("current" if got == text.encode("utf-8") else "stale") if isinstance(got, bytes) else
+                 "missing" if got.startswith("missing") else "link" if got.startswith("is a link") else "stale")
+        states[state] += 1
+        lines.append("region-check: %s %s" % (name, state))
+    lines += ["region-check: agency %s %s" % (slug, a[2]) for slug, a in agencies.items()]
+    print("\n".join(lines + ["region-check: current=%d stale=%d missing=%d link=%d agencies_current=%d excluded=%d | draft vs a "
+                             "fresh build, not a review verdict" % (states["current"], states["stale"], states["missing"],
+                                                                    states["link"], counts["current"], counts["excluded"])]))
+    return 0 if states["current"] == len(RNAMES) else 1
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["region"]:
         rp = argparse.ArgumentParser(prog="flock_report.py region", description="Private cross-agency draft from COMPARE-MATRIX.csv.")
         rp.add_argument("--matrix", required=True), rp.add_argument("--out", required=True)
         rp.add_argument("--agency", action="append", required=True, metavar="SLUG=CONFIG")
-        rp.add_argument("--replace", action="store_true")
-        return region(rp.parse_args(argv[1:]), rp)
+        rp.add_argument("--replace", action="store_true"), rp.add_argument("--check", action="store_true")
+        args = rp.parse_args(argv[1:])
+        return (region_check if args.check else region)(args, rp)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["build", "check"]), parser.add_argument("config"), parser.add_argument("--out")
     args = parser.parse_args(argv)
