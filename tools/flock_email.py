@@ -3,8 +3,9 @@
 
 G's approval is a FIELD, never a sentence: EMAIL-APPROVAL.json beside the draft, {"state": "approved", ...}, bound by
 content_sha256 to the exact draft text and holding G's SSH signature. Only tools/flock_approve.py writes it, after the
-signature verifies; `flock_approve.py verify RUNDIR` re-checks the signature. A "G APPROVED:" line grants nothing. This
-file stays free of subprocess/campaign_tool imports (no send path), so here only the field's shape and text binding count."""
+signature verifies. This file stays free of subprocess/campaign_tool imports (no send path), so it cannot check the
+signature: here a well-formed field is only "approval unverified". It counts as "approval recorded" only through an
+injected verifier: `flock_approve.py status STORE` and flock_requests (open, --check) pass one. A "G APPROVED:" line grants nothing."""
 import csv, hashlib, importlib.util, json, os, re, sys, tempfile
 from datetime import date
 from pathlib import Path
@@ -17,11 +18,13 @@ USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.m
          "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)\n"
          "       check and draft also take [--max-age-days N [--today YYYY-MM-DD]]  (a contact checked more than N days ago is stale)\n"
          "       check and draft warn (never refuse) when the address domain is not the source_url host's site; a human checks the page\n"
-         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval)\n"
+         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval;\n"
+         "                                      signatures are not checked here, see flock_approve.py status STORE)\n"
          "       flock_email.py lint RUNDIR --drafts DIR  (run after any edit and before asking G to approve; reads only, exit 1 on findings)")
 PLACEHOLDER = re.compile(r"\{\{|\}\}|(?<![a-z])(?:todo|xxx|tbd)|[\[<]insert|____", re.I)
-STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval")
-LABELS = "runs followup drafted approved sent malformed inconsistent".split()
+STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval",
+          "approval unverified", "sent unverified")
+LABELS = "runs followup drafted approved sent malformed inconsistent unverified_approval unverified_sent".split()
 APPROVAL, KEYS = "EMAIL-APPROVAL.json", {"v", "state", "scope", "subject", "content_sha256", "approved_by", "signature"}
 
 def slug(text):
@@ -155,8 +158,10 @@ def approval_field(run):
         return rec if ok else None
     except (OSError, ValueError, UnicodeDecodeError): return None
 
-def stage(run):
-    """The email stage of one run folder, or None without a draft file. Approval comes from the state field only."""
+def stage(run, verify=None):
+    """The email stage of one run folder, or None without a draft file. Approval comes from the state field only, and it
+    is accepted (approval/sent recorded) only when `verify(run, record)` confirms the signature. This file cannot check a
+    signature itself (no subprocess), so without a verifier a well-formed field is only `approval/sent unverified`."""
     email, follow = run / "EMAIL-DRAFT.md", run / "FOLLOWUP-DRAFT.md"
     if run.is_symlink() or email.is_symlink() or follow.is_symlink() or (run / APPROVAL).is_symlink(): return "refused: link"
     if not email.exists(): return "follow-up drafted" if follow.exists() else None
@@ -165,10 +170,12 @@ def stage(run):
     sent, yes = marks(lines), approval_field(run)
     if lines[:1] != [HEAD] or len(sent) != 1 or yes is None: return "malformed"
     sent = bool(sent[0]) and not sent[0].startswith("____")
+    if yes and not (verify and verify(run, yes) is True): return STAGES[7] if sent else STAGES[6]
     return ("sent recorded" if yes else STAGES[5]) if sent else "approval recorded" if yes else "email drafted"
 
-def status(folders):
-    """One stage line per agency run holding a draft, then totals. Prints no address, subject or filled value."""
+def status(folders, verify=None):
+    """One stage line per agency run holding a draft, then totals. Prints no address, subject or filled value.
+    With a verifier an unverified approval fails (exit 1); without one it is reported, never counted as approved."""
     lines, seen = [], []
     for folder in folders:
         runs = folder / "runs"
@@ -176,12 +183,13 @@ def status(folders):
                       if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", p.name) and (p.is_symlink() or p.is_dir()))
         except OSError: dates = [None]  # an unreadable runs folder fails closed
         for run in dates:
-            got = stage(run) if run else "malformed"
+            got = stage(run, verify) if run else "malformed"
             if got: seen.append(got); lines.append(f"email | {folder.name} | {run.name if run else 'runs'} | {got}")
         if folder.is_symlink(): lines.append(f"email | {folder.name} | link refused")  # never entered
     n = [len(seen)] + [seen.count(s) for s in STAGES]
-    print("\n".join(lines + ["email | " + " ".join(f"{k}={v}" for k, v in zip(LABELS, n)) + " | records only what the files say"]))
-    return 1 if n[5] or n[6] else 0
+    note = "; signatures not checked here (flock_approve.py status STORE checks them)" * bool(not verify and (n[7] or n[8]))
+    print("\n".join(lines + ["email | " + " ".join(f"{k}={v}" for k, v in zip(LABELS, n)) + " | records only what the files say" + note]))
+    return 1 if n[5] or n[6] or verify and (n[7] or n[8]) else 0
 
 def lint(rundir, drafts):
     """One `lint | slug | date | rule` line per broken rule, then a summary. Never prints the offending text; writes nothing."""

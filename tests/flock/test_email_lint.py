@@ -139,7 +139,7 @@ class EmailLintTests(unittest.TestCase):
         write_field(self.run_dir)
         done = self.lint()
         self.assertEqual(self.rules(done), [])
-        self.assertEqual(done.stdout.splitlines()[-1], "lint | rules=0 | approval recorded" + SUMMARY)
+        self.assertEqual(done.stdout.splitlines()[-1], "lint | rules=0 | approval unverified" + SUMMARY)  # lint checks no signature
         self.edit("Please reference", "TODO Please reference")
         done = self.lint()
         self.assertEqual(self.rules(done), ["placeholder"])

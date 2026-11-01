@@ -10,7 +10,7 @@ any sender.
 | --- | --- | --- |
 | `campaign_tool/outbox.py` journal | `state = 'approved'` plus `approval_evidence` | An owner signature over `payload KEY`, re-verified before every send. |
 | Hosted gateway (`runner/outbox_gateway.py`) | the same columns | The Worker's HMAC-signed frame for this exact draft, re-verified before every send. It is honoured only inside the gateway. |
-| Flock email (`tools/flock_email.py`) | `EMAIL-APPROVAL.json` `"state": "approved"` | `tools/flock_approve.py` writes it only after the signature verifies, and `verify` re-checks it. `flock_email` itself checks only the shape and the binding to the text (see below). |
+| Flock email (`tools/flock_email.py`) | `EMAIL-APPROVAL.json` `"state": "approved"` | `tools/flock_approve.py` writes it only after the signature verifies. The stage reads `approval recorded` / `sent recorded` only when the signature is re-verified (`flock_approve.py status`, `flock_requests.py open` and `--check`); `flock_email.py` alone reports `approval unverified` (see below). |
 
 ## One-time setup (G, needs sudo; nothing works until this is done)
 
@@ -34,9 +34,19 @@ ssh-keygen -Y sign -f ~/.ssh/deflock_approver -n deflock-approval approve.txt   
 python3 -m campaign_tool.outbox --journal J approve KEY --signature approve.txt.sig
 ```
 
-The recorded `approved_by` is the principal from the trust file, not a name anyone types. After a
-definite failure, a retry needs a new signature over the next round (`round: 1`, and so on), so
-the first approval cannot be replayed.
+The recorded `approved_by` is the principal from the trust file, not a name anyone types.
+
+After a definite failure (state `failed`, no receipt), a retry needs a new signature over the
+next round. `payload KEY` then prints that round (`round: 1`, and so on), so the same three steps
+apply, with `approve-retry` in place of `approve`:
+
+```
+python3 -m campaign_tool.outbox --journal J payload KEY > retry.txt         # shows round: N+1
+ssh-keygen -Y sign -f ~/.ssh/deflock_approver -n deflock-approval retry.txt
+python3 -m campaign_tool.outbox --journal J approve-retry KEY --signature retry.txt.sig
+```
+
+The first approval's signature covers round 0, so it cannot be replayed for a retry.
 
 ## Approving a Flock email (G)
 
@@ -46,17 +56,23 @@ less approve.txt
 ssh-keygen -Y sign -f ~/.ssh/deflock_approver -n deflock-approval approve.txt
 python3 tools/flock_approve.py approve RUNDIR --signature approve.txt.sig   # writes EMAIL-APPROVAL.json
 python3 tools/flock_approve.py verify RUNDIR                               # operator, right before sending by hand
+python3 tools/flock_approve.py status STORE                                # every run's stage, signatures checked
 ```
 
 Any edit to the draft after approval, other than its `Sent by:` record line, voids the approval:
-`status` then reports `malformed`.
+`status` then reports `malformed`. A field whose signature does not verify (hand-written, fake,
+an untrusted key, or no trust file installed) is never `approval recorded`. It shows as
+`approval unverified` / `sent unverified`. `flock_approve.py status` exits 1 on it,
+`flock_requests.py open` refuses to open a request from it, and `flock_requests.py --check`
+reports it as an error.
 
 ## Known limits (follow-up cards)
 
-- `flock_email.py` has a no-send import guard (`tests/flock/test_email.py` forbids `subprocess`
-  and `campaign_tool`), so its `status` checks only the shape of the approval field and its
-  binding to the text, not the signature. A hand-written field with a fake signature shows as
-  `approval recorded` until `flock_approve.py verify` refuses it. The guard was left as it is.
+- `flock_email.py` keeps its no-send import guard (`tests/flock/test_email.py` forbids
+  `subprocess` and `campaign_tool`), so it cannot check a signature itself. Its own `status` and
+  `lint` therefore never report `approval recorded`, only `approval unverified`, and they point to
+  `flock_approve.py status`. Consumers inject the verifier from `tools/flock_approve.py`; the
+  guard was left as it is.
 - `Sent by:` in a Flock draft is still a prose record line. It is not a gate, but item 4 of
   DF-2 asks for state as a field.
 - Anyone who can write the journal can delete `outbox_retry_approval` rows, which lowers the

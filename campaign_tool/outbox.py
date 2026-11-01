@@ -332,12 +332,23 @@ class Outbox:
     def _round(self, key):
         return self.db.execute("SELECT count(*) FROM outbox_retry_approval WHERE idempotency_key=?", (key,)).fetchone()[0]
 
+    @staticmethod
+    def _retryable(row):
+        """A definite failure with no delivery evidence: the only state approve_retry accepts."""
+        return row["state"] == "failed" and not (row["provider_receipt"] or row["sending_at"] or row["sent_at"])
+
     def approval_payload(self, key, round_=None):
-        """The exact bytes an owner reads and signs: the full outgoing text plus the journal record."""
+        """The exact bytes an owner reads and signs: the full outgoing text plus the journal record.
+
+        By default the round is the one the next approval needs: the next retry round after a
+        definite failure, otherwise the current round. A signature over one round never fits another.
+        """
         row = self.row(key)
         if not row:
             raise OutboxError("unknown outbox row")
-        return approval.payload("outbox", key, preview(row["draft_json"]), self._round(key) if round_ is None else round_)
+        if round_ is None:
+            round_ = self._round(key) + (1 if self._retryable(row) else 0)
+        return approval.payload("outbox", key, preview(row["draft_json"]), round_)
 
     def _verify(self, row, evidence, round_):
         """Return the verified approver for ``evidence`` on this row's exact draft, or raise OutboxError."""
@@ -391,7 +402,7 @@ class Outbox:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.row(key)
-            if not row or row["state"] != "failed" or row["provider_receipt"] or row["sending_at"] or row["sent_at"]:
+            if not row or not self._retryable(row):
                 raise OutboxError("retry requires a definite failure without delivery evidence")
             failed = dt.datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
             if approval_time <= failed:
@@ -532,6 +543,10 @@ def main(argv=None):
     ap = sub.add_parser("approve", help="record a verified owner signature; a typed name is not accepted")
     ap.add_argument("key")
     ap.add_argument("--signature", required=True, help="the .sig file from ssh-keygen -Y sign")
+    ar = sub.add_parser("approve-retry", help="after a definite failure: record a verified signature over `payload KEY` "
+                        "(which then prints the next retry round); the original approval cannot be replayed")
+    ar.add_argument("key")
+    ar.add_argument("--signature", required=True, help="the .sig file from ssh-keygen -Y sign")
     se = sub.add_parser("send"); se.add_argument("key")
     se.add_argument("--smtp-host"); se.add_argument("--smtp-port", type=int, default=587)
     se.add_argument("--smtp-user", default=""); se.add_argument("--smtp-password-env", default="OUTBOX_SMTP_PASSWORD")
@@ -549,10 +564,10 @@ def main(argv=None):
             if not box.row(args.key):
                 p.error("unknown key")
             sys.stdout.write(box.approval_payload(args.key).decode("utf-8"))
-        elif args.command == "approve":
+        elif args.command in ("approve", "approve-retry"):
             evidence = {"kind": "ssh", "signature": Path(args.signature).read_text(encoding="utf-8")}
             try:
-                row = box.approve(args.key, evidence)
+                row = (box.approve if args.command == "approve" else box.approve_retry)(args.key, evidence)
             except OutboxError as exc:
                 print(json.dumps({"state": "refused", "reason": str(exc)}))
                 return 2

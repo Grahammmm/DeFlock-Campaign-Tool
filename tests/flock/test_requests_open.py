@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.flock.approval_field import APPROVAL_LINE, write_field
+from tests.flock.approval_field import APPROVAL_LINE, trusted, write_field
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,7 +60,7 @@ class OpenFromEmailTests(unittest.TestCase):
 
     def main(self, *argv):
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), trusted():
             code = TOOL_MODULE.main([str(a) for a in argv])
         for leaked in LEAKS:
             self.assertNotIn(leaked, out.getvalue() + err.getvalue())
@@ -77,6 +77,19 @@ class OpenFromEmailTests(unittest.TestCase):
         before = self.snap()
         self.assertEqual(self.open(run, **kw), (1, "", f"open: {why}\n"))
         self.assertEqual(self.snap(), before)
+
+    def test_forged_approval_with_correct_hash_never_opens_a_request(self):
+        """Round-1 P1: a hand-written field with the right text hash and a fake signature opened a ledger row."""
+        self.requests(OTHER)
+        run = self.email()
+        write_field(run, forged=True)
+        self.refused("email stage is sent unverified, not sent recorded", run)
+        self.assertFalse(self.log.exists())
+        code, out, err = self.main("--check", self.store)
+        self.assertEqual(code, 1)
+        self.assertIn(f"{SLUG}: run 2026-10-02: sent, but the approval signature does not verify", out + err)
+        write_field(run)  # the genuine signed control opens
+        self.assertEqual(self.open(run)[0], 0)
 
     def test_sent_run_opens_one_row_and_one_step_then_check_is_clean(self):
         self.requests(OTHER)

@@ -89,11 +89,46 @@ class FlockApprovalFieldTests(unittest.TestCase):
             self.assertEqual(self.flock_approve("verify", self.run_dir)[0], 0)
         rec = json.loads((self.run_dir / "EMAIL-APPROVAL.json").read_text(encoding="utf-8"))
         self.assertEqual((rec["state"], rec["approved_by"]), ("approved", "owner@example.invalid"))
-        self.assertEqual(self.email.stage(self.run_dir), "approval recorded")
-        self.edit("Sent by: ____", "Sent by: Alex 2026-11-01")  # the record line sits outside the approved text
-        self.assertEqual(self.email.stage(self.run_dir), "sent recorded")
-        self.edit("records@city.example", "other@city.example")  # any change to the approved text voids it
-        self.assertEqual(self.email.stage(self.run_dir), "malformed")
+        self.assertEqual(self.email.stage(self.run_dir), "approval unverified")  # no verifier: never accepted
+        with self.owner.trust():
+            self.assertEqual(self.stage(), "approval recorded")
+            self.edit("Sent by: ____", "Sent by: Alex 2026-11-01")  # the record line sits outside the approved text
+            self.assertEqual(self.stage(), "sent recorded")
+            code, out, _ = self.flock_approve("status", self.tmp / "store")
+            self.assertEqual(code, 0, out)
+            self.assertIn(f"{SLUG} | {DATE} | sent recorded", out)
+            self.edit("records@city.example", "other@city.example")  # any change to the approved text voids it
+            self.assertEqual(self.stage(), "malformed")
+
+    def stage(self):
+        verified = load("flock_approve").verified
+        return self.email.stage(self.run_dir, lambda run, rec: verified(run, rec, self.email))
+
+    def forge(self, signature):
+        """What an agent can write by hand: the right state, subject and public text hash, any signature."""
+        import hashlib
+        _, body = self.email.approved_text(self.run_dir)
+        (self.run_dir / "EMAIL-APPROVAL.json").write_text(json.dumps(
+            {"v": 1, "state": "approved", "scope": "flock-email", "subject": f"{SLUG}/{DATE}", "approved_by": "owner@example.invalid",
+             "content_sha256": hashlib.sha256(body.encode()).hexdigest(), "signature": signature}), encoding="utf-8")
+
+    def test_forged_field_with_correct_hash_is_never_approval_recorded(self):
+        """Round-1 P1: a fake signature with the right hash read as 'approval recorded' and then 'sent recorded'."""
+        fake = "-----BEGIN SSH SIGNATURE-----\nnot-a-signature\n-----END SSH SIGNATURE-----\n"
+        for name, sig in {"fake": fake, "agent-key": self.signed(self.agent).read_text(encoding="utf-8")}.items():
+            with self.subTest(sig=name):
+                self.forge(sig)
+                self.edit("Sent by: Alex 2026-11-01", "Sent by: ____")
+                with self.owner.trust():
+                    self.assertEqual(self.email.stage(self.run_dir), "approval unverified")
+                    self.assertEqual(self.stage(), "approval unverified")
+                    self.edit("Sent by: ____", "Sent by: Alex 2026-11-01")
+                    self.assertEqual(self.email.stage(self.run_dir), "sent unverified")
+                    self.assertEqual(self.stage(), "sent unverified")
+                    code, out, _ = self.flock_approve("status", self.tmp / "store")
+                self.assertEqual(code, 1)
+                self.assertIn(f"{SLUG} | {DATE} | sent unverified", out)
+        self.assertEqual(self.stage(), "sent unverified")  # and with no trust file at all
 
     def test_agent_key_cannot_write_the_field_and_forged_field_fails_verify(self):
         sig = self.signed(self.agent)

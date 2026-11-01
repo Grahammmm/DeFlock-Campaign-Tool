@@ -75,7 +75,8 @@ class Approvers:
         return box.approve(key, self.evidence(box, key, who))
 
     def approve_retry(self, box, key, who, approved_at=None):
-        return box.approve_retry(key, self.evidence(box, key, who, box._round(key) + 1), approved_at)
+        # The public default payload (no explicit round) must already be the retry round G signs.
+        return box.approve_retry(key, self.evidence(box, key, who), approved_at)
 
 
 class _Many:

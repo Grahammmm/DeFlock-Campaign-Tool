@@ -154,6 +154,41 @@ class ApprovalGateTests(unittest.TestCase):
         self.assertIn('"approved_by": "owner@example.invalid"', done.getvalue())
         self.assertEqual(self.box.row(self.key)["state"], "approved")
 
+    def test_retry_payload_export_is_the_round_retry_needs(self):
+        """After a definite failure `payload KEY` used to print round 0, which approve_retry refuses."""
+        with self.owner.trust():
+            first = self.evidence(self.owner)
+            self.box.approve(self.key, first)
+            with self.assertRaises(ob.OutboxError):
+                self.box.send(self.key, lambda d: (_ for _ in ()).throw(ob.OutboxError("definite refusal")))
+            self.assertEqual(self.box.row(self.key)["state"], "failed")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(ob.main(["--journal", str(self.journal), "payload", self.key]), 0)
+            self.assertIn("round: 1", out.getvalue())
+            later = "2099-01-01T00:00:00Z"
+            with self.assertRaises(ob.OutboxError):  # the original round-0 approval cannot be replayed
+                self.box.approve_retry(self.key, first, later)
+            evidence = {"kind": "ssh", "signature": self.owner.sign(out.getvalue().encode("utf-8"))}
+            row = self.box.approve_retry(self.key, evidence, later)
+            self.assertEqual((row["state"], row["approved_by"]), ("approved", "owner@example.invalid"))
+            self.assertIn("round: 1", self.box.approval_payload(self.key).decode("utf-8"))  # send re-verifies round 1
+            self.assertEqual(self.box.send(self.key, self.transport)["state"], "sent")
+        self.assertEqual(len(self.sent), 1)
+
+    def test_cli_approve_retry_refuses_the_original_signature(self):
+        with self.owner.trust():
+            sig = Path(self.tmp.name) / "first.sig"
+            sig.write_text(self.evidence(self.owner)["signature"], encoding="utf-8")
+            self.box.approve(self.key, {"kind": "ssh", "signature": sig.read_text(encoding="utf-8")})
+            self.box.db.execute("UPDATE outbox SET state='failed', updated_at='2000-01-01T00:00:00Z' WHERE idempotency_key=?",
+                                (self.key,))
+            with contextlib.redirect_stdout(io.StringIO()) as done:
+                code = ob.main(["--journal", str(self.journal), "approve-retry", self.key, "--signature", str(sig)])
+        self.assertEqual(code, 2)
+        self.assertIn('"state": "refused"', done.getvalue())
+        self.assertEqual(self.box.row(self.key)["state"], "failed")
+
 
 
 if __name__ == "__main__":

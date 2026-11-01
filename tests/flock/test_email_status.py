@@ -1,8 +1,8 @@
 """flock_email status STORE: each agency run's email stage, read back from the drafts; sent without approval fails (RF1140-9)."""
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
-from tests.flock.approval_field import write_field
+from tests.flock.approval_field import trusted, write_field
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIXTURES = ROOT / "tools" / "flock_email.py", ROOT / "tests" / "fixtures" / "flock"
@@ -16,9 +16,20 @@ def run(*argv):
     return subprocess.run([sys.executable, "-B", str(TOOL), *map(str, argv)], capture_output=True, text=True)
 
 
-def totals(runs=0, followup=0, drafted=0, approved=0, sent=0, malformed=0, inconsistent=0):
+def totals(runs=0, followup=0, drafted=0, approved=0, sent=0, malformed=0, inconsistent=0, ua=0, us=0, checked=False):
+    note = "; signatures not checked here (flock_approve.py status STORE checks them)" * bool((ua or us) and not checked)
     return (f"email | runs={runs} followup={followup} drafted={drafted} approved={approved} sent={sent} "
-            f"malformed={malformed} inconsistent={inconsistent}{TAIL}")
+            f"malformed={malformed} inconsistent={inconsistent} unverified_approval={ua} unverified_sent={us}{TAIL}{note}")
+
+
+def approved_status(store):
+    """flock_approve.py status STORE in-process with the test approver trusted: signatures checked."""
+    spec = importlib.util.spec_from_file_location("_status_flock_approve", ROOT / "tools" / "flock_approve.py")
+    tool = spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), trusted():
+        code = tool.main(["status", str(store)])
+    return subprocess.CompletedProcess([], code, out.getvalue(), err.getvalue())
 
 
 def snapshot(base):
@@ -67,10 +78,15 @@ class StatusTests(unittest.TestCase):
         before = snapshot(self.tmp)
         done = self.status()
         self.assertEqual((done.returncode, done.stderr), (0, ""))
-        self.assertEqual(done.stdout.splitlines(), [
-            f"email | {SLUG} | 2026-10-01 | follow-up drafted", f"email | {SLUG} | 2026-10-02 | email drafted",
+        ladder = [f"email | {SLUG} | 2026-10-01 | follow-up drafted", f"email | {SLUG} | 2026-10-02 | email drafted"]
+        self.assertEqual(done.stdout.splitlines(), ladder + [  # flock_email cannot check a signature: never accepted
+            f"email | {OTHER} | 2026-10-03 | approval unverified", f"email | {OTHER} | 2026-10-04 | sent unverified",
+            totals(4, 1, 1, ua=1, us=1)])
+        done = approved_status(self.store)
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        self.assertEqual(done.stdout.splitlines(), ladder + [
             f"email | {OTHER} | 2026-10-03 | approval recorded", f"email | {OTHER} | 2026-10-04 | sent recorded",
-            totals(4, 1, 1, 1, 1)])
+            totals(4, 1, 1, 1, 1, checked=True)])
         self.assertEqual(snapshot(self.tmp), before)
 
     def test_sent_without_approval_is_inconsistent_exit_1(self):
@@ -91,10 +107,10 @@ class StatusTests(unittest.TestCase):
                  "2026-10-07": (False, "Sent by: Alex 2026-10-31", ok, "inconsistent: sent without approval")}
         for date, (approve, sent, prose, _) in cases.items():
             self.make(date, approve=approve, sent=sent, prose=prose)
-        done = self.status()
+        done = approved_status(self.store)
         self.assertEqual(done.returncode, 1)
         self.assertEqual(done.stdout.splitlines(), [f"email | {SLUG} | {d} | {c[-1]}" for d, c in cases.items()]
-                         + [totals(7, drafted=3, approved=1, sent=1, inconsistent=2)])
+                         + [totals(7, drafted=3, approved=1, sent=1, inconsistent=2, checked=True)])
 
     def test_malformed_drafts_each_exit_1(self):
         cases = {"no-head": lambda t: t.split("\n", 1)[1], "no-sent": lambda t: t.replace(SENT, ""),
