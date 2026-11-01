@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from campaign_tool.content import ContentError, load_content
+from campaign_tool.content import load_content
 from campaign_tool.content_check import content_problems
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +46,7 @@ class ContentCheckTests(unittest.TestCase):
     def load_error(self):
         try:
             load_content(self.root)
-        except ContentError as exc:
+        except ValueError as exc:  # ContentError, or map_controller's plain ValueError
             return str(exc)
         return None
 
@@ -109,9 +109,9 @@ class ContentCheckTests(unittest.TestCase):
         self.write("content/findings/big.json", " " * (2 * 1024 * 1024 + 1))
         self.write("content/map/cities.json", " " * (2 * 1024 * 1024 + 1))
         problems = content_problems(self.root)
-        self.assertEqual(problems, ["cities.json: file too large",
-                                    "findings/big.json: file too large",
-                                    "findings/link.json: symlinks are not read"])
+        self.assertEqual(problems, ["findings/big.json: file too large",
+                                    "findings/link.json: symlinks are not read",
+                                    "map/cities.json: file too large"])
         result = self.cli()
         self.assertEqual(result.returncode, 3)
         self.assertNotIn(EMAIL, result.stdout + result.stderr)
@@ -133,6 +133,32 @@ class ContentCheckTests(unittest.TestCase):
         (self.root / "content/agencies.json").unlink()  # no kit/ either: an empty list still gets checked
         self.assertEqual(content_problems(self.root), [expected])
         self.assertEqual(self.load_error(), expected)
+
+    def test_map_controller_refusal_is_collected_with_the_rest(self):
+        self.write("content/map/map-config.json", {**self.read("content/map/map-config.json"), "group_slug": "Bad_Name"})
+        self.finding("b-draft.json", id="fnd_b", slug="b-draft", state="draft")
+        problems = content_problems(self.root)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertTrue(problems[0].startswith("findings/b-draft.json: state is 'draft'"), problems)
+        self.assertTrue(problems[1].startswith("map/map-config.json: group_slug: "), problems)
+        result = self.cli()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["content/: 2 problem(s)", *problems])
+
+    def test_every_broken_map_file_named_in_one_pass(self):
+        self.write("content/map/cameras.geojson", {"type": "FeatureCollection", "features": [{"geometry": None}]})
+        self.write("content/map/cities.json", {"cedar": {"bounds": [[1, 1], [0, 0]]}})
+        self.write("content/map/city-boundaries.geojson", [])
+        self.assertEqual(content_problems(self.root), [
+            "map/cameras.geojson.features[0]: cameras must be Point features",
+            "map/cities.json[cedar].bounds: bounds out of range or inverted",
+            "map/city-boundaries.geojson: expected a GeoJSON FeatureCollection"])
+        self.write("content/map/map-config.json", "{")  # config broken too: cameras and cities are still named
+        problems = content_problems(self.root)  # (the boundary file is named only by a readable map-config)
+        self.assertEqual(problems[:2], ["map/cameras.geojson.features[0]: cameras must be Point features",
+                                        "map/cities.json[cedar].bounds: bounds out of range or inverted"])
+        self.assertTrue(problems[2].startswith("map/map-config.json: not valid UTF-8 JSON"), problems)
+        self.assertEqual(len(problems), 3, problems)
 
     def test_parity_with_load_content_for_single_defects(self):
         def bad_json():
@@ -168,8 +194,11 @@ class ContentCheckTests(unittest.TestCase):
         def cameras_missing():
             (self.root / "content/map/cameras.geojson").unlink()
 
+        def map_group_slug():
+            self.write("content/map/map-config.json", {**self.read("content/map/map-config.json"), "group_slug": "B_"})
+
         defects = [bad_json, wrong_state, no_site, symlinked_meeting, sources_not_list, agency_kind,
-                   fallback_without_bounds, meeting_filename_slug, cameras_missing]
+                   fallback_without_bounds, meeting_filename_slug, cameras_missing, map_group_slug]
         for defect in [None, *defects]:
             with self.subTest(defect=getattr(defect, "__name__", "clean")):
                 shutil.rmtree(self.root)

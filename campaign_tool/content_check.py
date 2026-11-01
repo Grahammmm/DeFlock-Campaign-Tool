@@ -1,30 +1,66 @@
 """Name every content/ problem in one pass, with exactly the rules ``build`` enforces (read-only).
 
-``load_content`` stops at the first ``ContentError``. This module calls the same
-public loaders file by file, keeps each refusal and carries on, so an organizer
-fixes a broken site update in one pass. It adds no rule of its own: the
-parity invariant is ``content_problems(root) == []`` iff ``load_content(root)``
-returns without raising. Cross-file rules run only over documents that loaded.
+``load_content`` stops at the first refusal; this calls the same loaders file by file and keeps going. Parity
+invariant: ``content_problems(root) == []`` iff ``load_content(root)`` returns. Cross-file rules use loaded files.
 """
 from pathlib import Path
 
-from .content import (CITY_KINDS, ContentError, _read_json, _slug, default_agencies, load_agencies,
+from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _bounds, _read_json,
+                      _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
                       load_finding, load_map, load_meeting, load_site, load_sources)
 
 LIMIT = 200
 
 
 def _attempt(problems, label, call):
-    """Return ``call()`` or record its ContentError (labelled with ``label``) and return None."""
+    """Return ``call()`` or record its refusal (named after ``label``'s file) and return None."""
     try:
         return call()
     except ContentError as exc:
-        text = str(exc)
-        name = label.rsplit("/", 1)[-1]
-        if label != name and text.startswith(name + ":"):  # _read_json names the bare file
-            text = label[: -len(name)] + text
-        problems.append(text)
-        return None
+        text, head, folder = str(exc), str(exc).split(":", 1)[0], label.rpartition("/")[0]
+        if folder and "/" not in head and head.endswith((".json", ".geojson")):  # _read_json names the bare file
+            text = folder + "/" + text
+    except ValueError as exc:  # map_controller.render refuses with a plain ValueError naming the field
+        text = f"{label}: {exc}"
+    problems.append(text)
+    return None
+
+
+def _cities(path, _name):  # load_map's map/cities.json expressions
+    raw = _read_json(path)
+    if not isinstance(raw, dict) or len(raw) > 200:
+        raise ContentError("map/cities.json: expected {slug: {bounds: [[w,s],[e,n]]}}")
+    for slug, entry in raw.items():
+        _slug(slug, "map/cities.json key")
+        _require_keys(entry, {"bounds", "name"}, {"bounds"}, f"map/cities.json[{slug}]")
+        _bounds(entry["bounds"], f"map/cities.json[{slug}].bounds")
+        _text(entry, "name", f"map/cities.json[{slug}]", required=False, default=None)
+
+
+def _boundaries(path, name):  # load_map's city-boundary-file expressions
+    document = _read_json(path, MAX_GEOJSON_BYTES)
+    if not isinstance(document, dict) or document.get("type") != "FeatureCollection":
+        raise ContentError(f"map/{name}: expected a GeoJSON FeatureCollection")
+
+
+def _map(problems, content_dir):
+    """load_map stops at its first bad file; once it has refused (so parity holds), name the other files' too."""
+    before, map_dir = len(problems), content_dir / "map"
+    config = _attempt(problems, "map/map-config.json", lambda: load_map(content_dir))
+    if len(problems) == before:
+        return config
+    checks = {"cameras.geojson": lambda p, n: _validate_cameras(_read_json(p, MAX_GEOJSON_BYTES), "map/" + n),
+              "cities.json": _cities}
+    try:
+        url = _read_json(map_dir / "map-config.json")["city_boundaries_url"]
+        if LOCAL_ASSET.fullmatch(url):
+            checks.setdefault(Path(url).name, _boundaries)
+    except (ValueError, KeyError, TypeError):
+        pass  # map-config.json's own refusal is already listed
+    for name, check in checks.items():
+        if (map_dir / name).is_file():
+            _attempt(problems, "map/" + name, lambda: check(map_dir / name, name))
+    return config
 
 
 def _files(content_dir, sub):
@@ -83,7 +119,7 @@ def content_problems(root, limit=LIMIT):
     else:
         agencies = _attempt(problems, "kit/agencies.json", lambda: default_agencies(root))
 
-    map_config = _attempt(problems, "map/map-config.json", lambda: load_map(content_dir))
+    map_config = _map(problems, content_dir)
     if map_config and agencies is not None:  # a broken agency list would only add false lines
         known = {agency["slug"] for agency in agencies if agency["kind"] in CITY_KINDS}
         for slug in map_config["controller"]["bounding_box_fallbacks"]:
