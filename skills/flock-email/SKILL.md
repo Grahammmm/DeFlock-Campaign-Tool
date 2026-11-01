@@ -15,9 +15,10 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 ## Steps
 
 1. A Terra legwork card adds the cited CONTACT row; nobody guesses an address.
-2. Before a draft: `python3 tools/flock_email.py check <store>` lists who is ready (`contact | <slug> | ready | domain=<domain>`); reads only.
-3. `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo>`. It prints
+2. Before a draft: `python3 tools/flock_email.py check <store> --max-age-days 90` lists who is ready (`contact | <slug> | ready | domain=<domain>`) or `stale`; reads only.
+3. `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo> --max-age-days 90`. It prints
    `written=2 to_domain=<domain>`; errors name `row N: <field>` or `contact: no records row` and write nothing.
+   When draft says stale (or `in the future`), re-check the contact page and update `checked_at`; use `--max-age-days 90` unless the organizer sets another number.
 4. The operator shows G the draft; only G's explicit reply for that exact draft permits sending, by hand.
 5. After sending by hand, fill `Sent by:`; `python3 tools/flock_email.py status STORE` must exit 0
    (one `email | <slug> | <date> | <stage>` line per run; reads only, prints no address or filled value).

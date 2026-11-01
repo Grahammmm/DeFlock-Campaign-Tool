@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Wrap FOLLOWUP-DRAFT.md into a private EMAIL-DRAFT.md. Draft only: it writes files and cannot send. `status STORE` reads each run's email stage back."""
 import csv, os, re, sys, tempfile
+from datetime import date
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 HEAD = "DRAFT - not sent - G approval required"
@@ -9,6 +10,7 @@ CHECKS = {"role": r"records", "email": r"[^@\s,;<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,
           "source_sha256": r"[0-9a-f]{64}", "checked_at": r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "added_by": r".*\S.*"}
 USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.md; draft only, never sends)\n"
          "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)\n"
+         "       check and draft also take [--max-age-days N [--today YYYY-MM-DD]]  (a contact checked more than N days ago is stale)\n"
          "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval)")
 STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval")
 LABELS = "runs followup drafted approved sent malformed inconsistent".split()
@@ -16,7 +18,16 @@ LABELS = "runs followup drafted approved sent malformed inconsistent".split()
 def slug(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
-def contact(path, folder):
+def ages(rest):
+    """(max_age, today) from [--max-age-days N [--today D]]: (None, None) when empty, None when malformed or duplicated."""
+    got = dict(zip(rest[0::2], rest[1::2]))
+    if len(got) * 2 != len(rest) or not set(got) <= {"--max-age-days", "--today"}: return None
+    n, d = got.get("--max-age-days", ""), got.get("--today", date.today().isoformat())
+    ok = re.fullmatch(r"[0-9]{1,4}", n) and 1 <= int(n) <= 3650 and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", d)
+    try: return ((int(n), date.fromisoformat(d)) if ok else None) if got else (None, None)
+    except ValueError: return None
+
+def contact(path, folder, max_age=None, today=None):
     """Return (the one records address, error lines) from CONTACT.csv."""
     try: rows = list(csv.reader(Path(path).read_text(encoding="utf-8").splitlines()))
     except (OSError, UnicodeDecodeError): return None, ["contact: CONTACT.csv missing or unreadable"]
@@ -27,10 +38,16 @@ def contact(path, folder):
         bad = [k for k, p in CHECKS.items() if not re.fullmatch(p, row.get(k, ""))]
         bad += ["agency"] if slug(row.get("agency", "")) != folder else []
         errs += [f"row {n}: {k} is invalid" for k in bad]
-        found += [] if bad else [row["email"]]
-    return (found or [None])[0], errs or ([] if len(found) == 1 else ["contact: no records row" if not found else "contact: more than one records row"])
+        found += [] if bad else [row]
+    errs = errs or ([] if len(found) == 1 else ["contact: no records row" if not found else "contact: more than one records row"])
+    if not errs and max_age is not None:
+        try: age = ((today or date.today()) - date.fromisoformat(found[0]["checked_at"])).days
+        except ValueError: age = None  # shape-valid but not a calendar date
+        errs = [] if age is not None and 0 <= age <= max_age else ["contact: checked_at is not a real date" if age is None else
+                "contact: checked_at is in the future" if age < 0 else f"contact: checked_at {found[0]['checked_at']} is {age} days old (max {max_age})"]
+    return (found or [{"email": None}])[0]["email"], errs
 
-def draft(rundir, drafts):
+def draft(rundir, drafts, max_age=None, today=None):
     run, out_dir = Path(rundir).resolve(), Path(drafts).resolve()
     if not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
         return print("draft: RUNDIR must be <store>/agencies/<slug>/runs/<date>", file=sys.stderr) or 1
@@ -41,7 +58,7 @@ def draft(rundir, drafts):
     ends = [i for i, line in enumerate(lines) if line.startswith("END OF REQUEST DRAFT.")]
     if not (ends and lines[0] == HEAD and re.fullmatch(r"Subject: \S.*", lines[2] if len(lines) > 2 else "")):
         return print("draft: follow-up draft malformed", file=sys.stderr) or 1
-    to, errs = contact(run.parents[3] / "agencies" / name / "CONTACT.csv", name)
+    to, errs = contact(run.parents[3] / "agencies" / name / "CONTACT.csv", name, max_age, today)
     outs = [run / "EMAIL-DRAFT.md", out_dir / f"{name}-{run.name}-EMAIL-DRAFT.md"]
     errs = errs or (["draft: --drafts is inside the repository"] if REPO in (out_dir, *out_dir.parents) else [])
     errs = errs or (["draft: EMAIL-DRAFT already exists"] if any(os.path.lexists(p) for p in outs) else [])
@@ -67,7 +84,7 @@ def draft(rundir, drafts):
         return print(f"draft: {why}", file=sys.stderr) or 1
     return print(f"written=2 to_domain={to.rsplit('@', 1)[1]}") or 0
 
-def check(store, show=None):
+def check(store, show=None, max_age=None, today=None):
     """One readiness line per agency folder, then totals. Never prints an address local part; reads only."""
     root = Path(store).resolve()
     if REPO in (root, *root.parents): return print("check: STORE is inside the repository", file=sys.stderr) or 2
@@ -76,12 +93,15 @@ def check(store, show=None):
     try: folders = sorted(p for p in base.iterdir() if p.is_symlink() or p.is_dir())
     except OSError: return print("check: agencies folder unreadable", file=sys.stderr) or 2
     if show: return show(folders)  # status shares the STORE walk and its errors
-    lines, ready = [], 0
+    lines, ready, stale = [], 0, 0
     for folder in folders:  # a symlinked agency folder is refused, never followed
-        to, errs = (None, ["link refused"]) if folder.is_symlink() else contact(folder / "CONTACT.csv", folder.name)
+        to, errs = (None, ["link refused"]) if folder.is_symlink() else contact(folder / "CONTACT.csv", folder.name, max_age, today)
+        old = re.fullmatch(r"contact: checked_at (\S+) is ([0-9]+) days old \(max [0-9]+\)", errs[0]) if errs else None
         ready += not errs
-        lines.append(f"contact | {folder.name} | " + (f"ready | domain={to.rsplit('@', 1)[1]}" if not errs else f"not ready | {errs[0]}"))
-    print("\n".join(lines + [f"contact | agencies={len(folders)} ready={ready} not_ready={len(folders) - ready}"
+        stale += bool(old)
+        lines.append(f"contact | {folder.name} | " + (f"ready | domain={to.rsplit('@', 1)[1]}" if not errs else
+                     f"stale | checked {old[1]}, {old[2]} days old" if old else f"not ready | {errs[0]}"))
+    print("\n".join(lines + [f"contact | agencies={len(folders)} ready={ready} not_ready={len(folders) - ready - stale}{f' stale={stale}' * bool(max_age)}"
                              " | draft only; G approval required before any send"]))
     return 0 if ready == len(folders) else 1
 
@@ -115,8 +135,9 @@ def status(folders):
 
 def main(argv):
     if argv in (["--help"], ["-h"]): return print(USAGE) or 0
-    if len(argv) == 2 and argv[0] == "check": return check(argv[1])
+    opt = ages(argv[2:] if argv[:1] == ["check"] else argv[4:] if argv[:1] == ["draft"] and argv[2:3] == ["--drafts"] else [])
+    if opt and len(argv) >= 2 and argv[0] == "check": return check(argv[1], None, *opt)
     if len(argv) == 2 and argv[0] == "status": return check(argv[1], status)
-    if len(argv) == 4 and argv[0] == "draft" and argv[2] == "--drafts": return draft(argv[1], argv[3])
+    if opt and len(argv) >= 4 and argv[0] == "draft" and argv[2] == "--drafts": return draft(argv[1], argv[3], *opt)
     return print(USAGE, file=sys.stderr) or 2
 if __name__ == "__main__": sys.exit(main(sys.argv[1:]))
