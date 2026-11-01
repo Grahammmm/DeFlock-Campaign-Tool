@@ -225,6 +225,49 @@ class BackupDrillTests(unittest.TestCase):
         detail = backup.drill(self.archive, store_check=leaky, tmp_parent=self.parent)["steps"][2]["detail"]
         self.assertEqual(detail, "ValueError: <copy>/campaign/private/objects/<sha256>: bad")
 
+    # 7b failed-drill receipts carry no absolute path from an unreadable archive or an unsafe member name
+    def assert_no_abs_paths(self, text, *extra):
+        for needle in (str(self.work), str(self.base), str(self.parent), "/unsafe-abs-dir", *extra):
+            self.assertNotIn(needle, text)
+
+    def test_unreadable_archive_receipt_has_no_source_path(self):
+        if os.geteuid() == 0:
+            self.skipTest("root can read a mode-000 file")
+        locked = self.work / "locked-archive.tar"
+        shutil.copyfile(self.archive, locked)
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o600)
+        target = self.work / "receipt.json"
+        code, out, _ = self.main("backup-drill", "--file", locked, "--receipt", target)
+        self.assertEqual(code, 3)
+        self.assert_failed_at(json.loads(out), "verify")
+        self.assertIn("PermissionError", out)
+        self.assert_no_abs_paths(out)
+        self.assert_no_abs_paths(target.read_text(encoding="utf-8"))
+
+    def test_unsafe_absolute_member_name_receipt_has_no_path(self):
+        evil = self.work / "evil.tar"
+        payload = self.work / "payload.txt"
+        payload.write_bytes(b"x")
+        with tarfile.open(evil, "w") as tar:
+            info = tar.gettarinfo(str(payload), arcname="/unsafe-abs-dir/etc/passwd")
+            with payload.open("rb") as handle:
+                tar.addfile(info, handle)
+        target = self.work / "receipt.json"
+        code, out, _ = self.main("backup-drill", "--file", evil, "--receipt", target)
+        self.assertEqual(code, 3)
+        self.assert_failed_at(json.loads(out), "verify")
+        self.assert_no_abs_paths(out)
+        self.assert_no_abs_paths(target.read_text(encoding="utf-8"))
+
+    def test_failure_detail_redacts_member_and_archive_paths(self):
+        def hostile(*_args, **_kwargs):
+            raise backup.BackupError(f"/unsafe-abs-dir/etc/passwd: unsafe_member_name ({self.archive})")
+
+        with patch.object(backup, "verify", hostile):
+            detail = backup.drill(self.archive, tmp_parent=self.parent)["steps"][0]["detail"]
+        self.assertEqual(detail, f"BackupError: <path>: unsafe_member_name ({self.archive.name})")
+
     # 8 doctor output unchanged by the doctor_report factor-out
     def test_doctor_output_is_doctor_report(self):
         r = run_cli("doctor", "--directory", self.root)

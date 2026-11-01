@@ -364,10 +364,18 @@ def diff(archive, root, expected_manifest_sha256=None):
 DRILL_STEPS = ("verify", "restore", "store_check", "doctor")
 
 
-def _drill_detail(exc, tmp):
-    """Failure text for a receipt: no temp path, no member digests, bounded."""
-    text = re.sub(r"[0-9a-fA-F]{64}", "<sha256>", f"{type(exc).__name__}: {exc}".replace(tmp, "<copy>"))
-    return text[:300]
+_ABS_PATH = re.compile(r"(?<![\w>.<])/[^\s'\"<>:;,)]+")
+
+
+def _drill_detail(exc, tmp, archive=None):
+    """Failure text for a receipt: no absolute paths, no temp path, no member digests, bounded."""
+    text = f"{type(exc).__name__}: {exc}".replace(tmp, "<copy>")
+    if archive is not None:
+        archive = Path(archive)
+        for shown in {str(archive), str(archive.absolute()), str(archive.resolve())}:
+            text = text.replace(shown, archive.name)
+    text = _ABS_PATH.sub("<path>", text)
+    return re.sub(r"[0-9a-fA-F]{64}", "<sha256>", text)[:300]
 
 
 def drill(archive, expected_manifest_sha256=None, *, doctor=None, store_check=None, tmp_parent=None):
@@ -414,7 +422,7 @@ def drill(archive, expected_manifest_sha256=None, *, doctor=None, store_check=No
             try:
                 ok, detail = actions[name]()
             except Exception as exc:  # a drill records every failure instead of stopping
-                ok, detail = False, _drill_detail(exc, tmp)
+                ok, detail = False, _drill_detail(exc, tmp, archive)
             steps.append({"step": name, "ok": ok, "detail": detail})
     receipt["passed"] = all(step["ok"] is True for step in steps)
     return receipt
