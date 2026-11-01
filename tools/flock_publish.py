@@ -9,12 +9,14 @@ _spec = importlib.util.spec_from_file_location("_flock_verify", Path(__file__).r
 verify_tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(verify_tool)
 compare = verify_tool.compare
+_spec = importlib.util.spec_from_file_location("_flock_privacy", Path(__file__).resolve().parent / "flock_privacy.py")
+privacy = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(privacy)
 HEADLINE = "Research draft - not legal advice"
 HOSTS = ("leginfo.legislature.ca.gov", "oag.ca.gov")
 SLUG = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
-PRIVACY = (("email", re.compile(r"[^\s@]+@[^\s@]+\.[a-z]{2,}", re.I)), ("phone", re.compile(r"\(?\d{3}\)?[ .-]\d{3}-\d{4}")),
-           ("url", re.compile(r"https?://|www\.", re.I)), ("plate", re.compile(r"\b\d[A-Z]{3}\d{3}\b")),
-           ("hex", re.compile(r"[0-9a-f]{32,}", re.I)))
+PRIVACY = (("email", privacy.EMAIL), ("phone", privacy.PHONE), ("url", re.compile(r"https?://|www\.", re.I)),
+           ("plate", privacy.PLATE), ("hex", re.compile(r"[0-9a-f]{32,}", re.I)))
 FINDING_KEYS = {"finding_id", "topic", "claim_class", "rating", "text", "cites", "review"}
 TOP_KEYS = {"schema_version", "slug", "agency", "run_date", "header", "author_family", "verifier_family", "findings"}
 def text_rules(text, vigilant_only):  # categories that refuse publication; GATED is banned even with a quote (PLAN §3)

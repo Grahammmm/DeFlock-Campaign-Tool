@@ -1,7 +1,7 @@
 ---
 name: flock-compare
 description: Use when comparing one agency's Flock/ALPR facts with California law and its policy. Scaffolds a private run folder, then fails closed on findings without a rating, cited fact, rule or policy clause, or with banned wording.
-skill_version: 1.3
+skill_version: 1.4
 ---
 
 # Flock compare
@@ -23,7 +23,8 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
    It writes `agencies/<slug>/runs/<date>/` with RUN.json, a header-only FINDINGS.csv and FINDINGS.md.
 2. Model run per `skills/flock-compare/PROMPT.md`, writing only inside the run folder.
 3. Check: `python3 tools/flock_compare.py --check RUNDIR`; exit 0 only (`findings=F errors=K`).
-4. Summary: `python3 tools/flock_compare.py --summary RUNDIR`
+4. Summary: `python3 tools/flock_compare.py --summary RUNDIR`; a `policy off-date` line (a cited POLICY version not governing
+   on the RUN.json date) is a PROMPT/finding fix (cite the governing version), never a POLICY.csv edit.
    Compare with the previous run: `python3 tools/flock_compare.py --diff OLDRUN NEWRUN`
 5. Morro Bay: add `--golden tests/fixtures/flock/morrobay-golden.csv`. A mismatch becomes a
    PROMPT.md fix and a rerun, never a hand edit of the findings.
@@ -53,4 +54,5 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
 - 1.0: run scaffold, findings checker, banned wording and golden check.
 - 1.1: `--summary` read-only cited/uncited counts.
 - 1.2: RUN.json `inputs` hashes; `--check` names an input changed since scaffold.
-- 1.3: `--diff OLDRUN NEWRUN` lists findings added, removed and changed between two runs.
+- 1.3: `--summary` says which POLICY rows govern on the run date and names off-date policy citations.
+- 1.4: `--diff OLDRUN NEWRUN` lists findings added, removed and changed between two runs.

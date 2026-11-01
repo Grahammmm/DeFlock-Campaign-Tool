@@ -61,7 +61,16 @@ def _date(value, label):
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         raise DraftError(f"{label}: invalid timestamp {value!r}") from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise DraftError(f"{label}: timestamp needs a UTC offset")
     return parsed
+
+
+def _entries(items, label):
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise DraftError(f"{label}[{index}]: must be an object")
+    return items
 
 
 def _link(base_url, path, label):
@@ -86,7 +95,10 @@ DEFAULT_CONSENT_FOOTER = "You receive this because you signed up for {name} upda
 
 
 def build_draft(manifest, now=None):
-    """Return ``{"subject", "html", "text", "counts"}`` for the manifest.
+    """Return ``{"subject", "html", "text", "counts", "excluded", "consent_footer"}``.
+
+    Only findings published at or after ``since`` and meetings starting at or
+    after ``now`` (soonest first) are listed; ``excluded`` counts the rest.
 
     ``campaign.consent_footer`` is the campaign's reviewed consent and sender
     wording (it must keep the sentence ``Unsubscribe at any time.`` for the
@@ -101,11 +113,25 @@ def build_draft(manifest, now=None):
     if base_url is not None and (not isinstance(base_url, str) or not _HTTPS.fullmatch(base_url)):
         raise DraftError("campaign.base_url: must be an https:// URL")
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
     since = _date(manifest["since"], "since") if manifest.get("since") else None
     findings = manifest.get("findings") or []
     meetings = manifest.get("meetings") or []
     if not isinstance(findings, list) or not isinstance(meetings, list):
         raise DraftError("findings and meetings must be lists")
+    # The engine applies the documented window itself: findings published since the
+    # last send, meetings that have not started yet (soonest first). Labels keep the
+    # manifest index so a bad entry is named where the organizer can find it.
+    published = [(i, _date(f.get("published_at"), f"findings[{i}].published_at"))
+                 for i, f in enumerate(_entries(findings, "findings"))]
+    starts = [(_date(m.get("starts_at"), f"meetings[{i}].starts_at"), i)
+              for i, m in enumerate(_entries(meetings, "meetings"))]
+    kept_findings = [(i, findings[i]) for i, when in published if since is None or when >= since]
+    kept_meetings = [(i, meetings[i], when) for when, i in sorted(s for s in starts if s[0] >= now)]
+    excluded = {"findings_before_since": len(findings) - len(kept_findings),
+                "meetings_past": len(meetings) - len(kept_meetings)}
+    findings, meetings = kept_findings, kept_meetings
 
     lines = [f"## {name}: {_period_label(since, now)}"]
     lines.append("")
@@ -114,7 +140,7 @@ def build_draft(manifest, now=None):
                      "since our last update. Every one links to the record it came from.")
         lines.append("")
         lines.append("## New findings")
-        for index, finding in enumerate(findings[:MAX_FINDINGS]):
+        for index, finding in findings[:MAX_FINDINGS]:
             label = f"findings[{index}]"
             title = _clean(finding.get("title") or finding.get("summary"), label + ".title", 200)
             summary = _clean(finding.get("summary"), label + ".summary", 600)
@@ -133,10 +159,9 @@ def build_draft(manifest, now=None):
     lines.append("")
     if meetings:
         lines.append("## Upcoming meetings")
-        for index, meeting in enumerate(meetings[:MAX_MEETINGS]):
+        for index, meeting, starts in meetings[:MAX_MEETINGS]:
             label = f"meetings[{index}]"
             body = _clean(meeting.get("body"), label + ".body", 200)
-            starts = _date(meeting.get("starts_at"), label + ".starts_at")
             item = _clean(meeting.get("agenda_item"), label + ".agenda_item", 300)
             url = meeting.get("agenda_url")
             when = starts.strftime("%a %b %d, %Y %H:%M %Z").strip()
@@ -179,7 +204,7 @@ def build_draft(manifest, now=None):
         if UNSUBSCRIBE_PLACEHOLDER not in blob:
             raise DraftError(f"{label}: unsubscribe placeholder missing")
     return {"subject": subject[:200], "html": html, "text": text,
-            "counts": {"findings": len(findings), "meetings": len(meetings)},
+            "counts": {"findings": len(findings), "meetings": len(meetings)}, "excluded": excluded,
             "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
 
 

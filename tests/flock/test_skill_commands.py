@@ -9,7 +9,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS, SKILLS = ROOT / "tools", ROOT / "skills"
 COMMAND = re.compile(r"python3(?: -B)? tools/(flock_[a-z_]+\.py)(?: ([a-z][a-z-]*|--check))?")
-NOT_IN_SKILLS = {"flock_review_verify.py": "run by flock_review.py's verify stage, not quoted by hand"}
+NOT_IN_SKILLS = {"flock_review_verify.py": "run by flock_review.py's verify stage, not quoted by hand",
+                 "flock_privacy.py": "pattern module loaded by the report, page and publish tools; no CLI"}
 
 
 def collect(skills):

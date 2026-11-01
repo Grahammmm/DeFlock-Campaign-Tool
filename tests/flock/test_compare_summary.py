@@ -89,6 +89,15 @@ class CompareSummaryTest(unittest.TestCase):
         out += ["facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d" % (
             len(ids), len(used), len(ids - used), sum(f["value"] == "UNREADABLE" for f in facts),
             len({r["quote_fact_id"] for r in rows} - {""}))]
+        on, pol = "2026-10-30", sorted(records(self.agency / "POLICY.csv"),
+                                       key=lambda p: (p["footer_version_date"], p["policy_row_id"]))
+        state = {p["policy_row_id"]: "not established" if p["adoption_evidence"] == "unverified" else  # RF1200-2 lines
+                 "yes" if p["governs_from"] <= on <= (p["governs_to"] or on) else "no" for p in pol}
+        off = [(r["finding_id"], x.split("#")[0]) for r in rows for x in split(r["policy_refs"])
+               if state[x.split("#")[0]] != "yes"]
+        out += ["policy governs | %s | %s on %s" % (p, s, on) for p, s in state.items()]
+        out += ["policy off-date | %s | %s" % x for x in off]
+        out += ["policy | off_date_citations=%d findings_affected=%d" % (len(off), len({f for f, _ in off}))]
         return "\n".join(out + ["findings=%d | counts of what this run cited, not a review verdict" % len(rows)]) + "\n"
 
     def snapshot(self):
