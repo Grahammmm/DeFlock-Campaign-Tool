@@ -142,7 +142,7 @@ class OfflineBuildTests(unittest.TestCase):
         self.assertEqual(self.skipped_for(elements), ([], {"not-node": 6, "no-coordinates": 2}))
 
     def test_summary_lines_sorted_and_free_of_data(self):
-        no_lat = node(9000010, tags={"operator": "SecretTagText"})
+        no_lat = node(9000010, tags={"operator": "HiddenTagText"})
         del no_lat["lat"]
         extra = [{"type": "way", "id": 1}, {"type": "relation", "id": 2}, no_lat,
                  node(9000011, lat=200, lon=-120.123456), copy.deepcopy(ELEMENTS[0])]
@@ -156,7 +156,7 @@ class OfflineBuildTests(unittest.TestCase):
         self.assertTrue(lines[start + 5].startswith("ATTRIBUTION REQUIRED: "))
         self.assertTrue(lines[0].startswith("Wrote 3 points to "))
         summary = "\n".join(lines[1:])  # line 0 names the output path, which is random here
-        for needle in ("200", "120.123456", "SecretTagText", "Example", "1.25", "9000"):
+        for needle in ("200", "120.123456", "HiddenTagText", "Example", "1.25", "9000"):
             self.assertNotIn(needle, summary)
         self.assertEqual((self.map_dir / "cameras.geojson").read_text(encoding="utf-8"), golden(ELEMENTS))
 
