@@ -516,6 +516,13 @@ def main():
         verify_agency_p.add_argument(flag, required=True)
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
+    for flag in ("--directory", "--agency", "--date"):
+        sent_p.add_argument(flag, required=True)
+    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
+    sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
+    commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
+                        ).add_argument("--directory", required=True)
     sources_add = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                       ).add_subparsers(dest="sources_command", required=True).add_parser(
         "add", help="Register one ingested record by hash prefix; validates the whole list, publishes nothing")
@@ -571,6 +578,13 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "kit-sent":
+            from .kit_track import record_sent
+            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
+            print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-status":
+            from .kit_track import status as kit_track_status
+            print(json.dumps(kit_track_status(root), indent=2))
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
