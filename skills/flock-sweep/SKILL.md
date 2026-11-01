@@ -31,8 +31,9 @@ calls kanban or hermes and never writes into the store. Each model run stays its
 
 ## Stages (first match wins)
 unmapped, out-of-scope, scope-hold, no-facts, facts-unreadable, no-policy, no-law, store-errors,
-ready-compare, compare-open, ready-verify, family-refused, verify-open, finished. A store folder no
+ready-compare, stale-inputs, compare-open, ready-verify, family-refused, verify-open, finished. A store folder no
 roster row names is `store-only` (data, not an error).
+- `stale-inputs` = FACTS/LAW/POLICY/law package changed after the latest run was scaffolded; start a new dated run, never edit the old one.
 
 ## Never
 - Run a model from the tool, or create cards from it.
