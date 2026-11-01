@@ -24,7 +24,8 @@ PDFs included, are recorded by URL and never fetched. Monitor items are leads, n
 2. Scan: `python3 tools/flock_monitor.py scan WATCHLIST.csv --store STORE [--date YYYY-MM-DD]`.
    Fix every `row N: <field> <reason>` (exit 1, nothing fetched). `row N: refused <reason>` is data.
 3. Digest: `python3 tools/flock_monitor.py digest --store STORE --date YYYY-MM-DD` writes
-   `STORE/digest/<date>.md` (40 lines at most).
+   `STORE/digest/<date>.md` (40 lines at most). Agencies by slug; items whose title or URL path match the shared
+   `campaign_tool.meetings.KEYWORDS` come first, marked `[ALPR: terms]`, and are never cut while an unmarked one shows.
 4. Delivery is operator-owned (existing healthbot route). Social `query` rows belong to the
    operator's Grok `hermes cron` job; `scan` only counts them.
 

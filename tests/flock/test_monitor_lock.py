@@ -114,7 +114,7 @@ class MonitorLockTests(unittest.TestCase):
         self.assertEqual(self.run_main("check", str(self.watchlist))[0], 0)
         code, out = self.run_main("digest", "--store", str(self.store), "--date", DATE)
         self.assertEqual((code, Path(out[0]).read_text(encoding="utf-8").splitlines()[0]),
-                         (0, "Flock monitor 2026-10-30: 3 new items (public, unreviewed)"))
+                         (0, "Flock monitor 2026-10-30: 3 new items (public, unreviewed), 0 relevant"))
 
 if __name__ == "__main__":
     unittest.main()
