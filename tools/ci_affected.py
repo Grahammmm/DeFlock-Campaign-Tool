@@ -174,7 +174,8 @@ def run_timed(suite, shard, stream=None):
 
 
 # In-process after the children (<= 5 modules); add one only with its parallel-only failing CI run as evidence.
-SERIAL = frozenset()
+# test_fa21_report_finite: its whole-repo listing saw a sibling chunk's __pycache__ write (run 41252980614, shard 2).
+SERIAL = frozenset({'tests.test_fa21_report_finite'})
 RESULT = 'CI_CHUNK_RESULT '
 
 
