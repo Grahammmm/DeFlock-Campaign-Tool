@@ -167,10 +167,10 @@ class CampaignTests(unittest.TestCase):
         (self.content / f"{meeting_id}.json").write_text(json.dumps(record), encoding="utf-8")
 
     def test_site_never_lists_cancelled_as_upcoming(self):
-        self.add("future-off", "2026-11-04T18:00:00", "cancelled")
-        self.add("future-on", "2026-11-05T18:00:00", "scheduled")
-        self.add("future-default", "2026-11-06T18:00:00")
-        self.add("past-off", "2026-10-01T18:00:00", "cancelled")
+        self.add("future-off", "2026-11-04T18:00:00-08:00", "cancelled")
+        self.add("future-on", "2026-11-05T18:00:00-08:00", "scheduled")
+        self.add("future-default", "2026-11-06T18:00:00-08:00")
+        self.add("past-off", "2026-10-01T18:00:00-07:00", "cancelled")
         build_site(self.root, today=date(2026, 10, 20))
         index, page = ((self.root / "public" / n).read_text(encoding="utf-8") for n in ("index.html", "meetings.html"))
         home = index[index.index('<section class="section" id="meetings">'):]
@@ -188,7 +188,7 @@ class CampaignTests(unittest.TestCase):
 
 
 class ContentStatusTests(unittest.TestCase):
-    BASE = {"id": "m1", "body": "Synthetic council (fictional)", "starts_at": "2026-11-04T18:00:00"}
+    BASE = {"id": "m1", "body": "Synthetic council (fictional)", "starts_at": "2026-11-04T18:00:00-08:00"}
 
     def test_status_values(self):
         self.assertEqual(load_meeting(dict(self.BASE), "meetings/m1.json")["status"], "scheduled")
