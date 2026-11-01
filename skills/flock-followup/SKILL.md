@@ -1,7 +1,7 @@
 ---
 name: flock-followup
 description: Use when listing which open ALPR public-records requests need a provisional determination reminder, or when turning F4's QUESTIONS.md into a follow-up request draft. Reads private files; never sends or concludes lateness.
-skill_version: 1.3
+skill_version: 1.4
 ---
 
 # Flock follow-up (CPRA request tracker and follow-up draft)
@@ -34,6 +34,8 @@ skill never upgrades. Version 1.1 adds a draft-only follow-up request (`draft`);
    Relate it to a day: `python3 tools/flock_requests.py due <file or store dir> --as-of YYYY-MM-DD`.
 4. See where each agency stands: `python3 tools/flock_requests.py summary <file or store dir>`. One line per
    agency, then totals; no deadline is computed. With any error it prints nothing and exits 1.
+   Documents per request: `python3 tools/flock_requests.py summary <file or store dir> --inventory <INVENTORY.csv>`
+   adds posted/withheld counts per request and names INVENTORY rows with an unknown request; counts only; withheld never named.
 5. Draft a follow-up: `python3 tools/flock_requests.py draft <run folder> --requests <REQUESTS.csv or store dir>
    --from YYYY-MM-DD --to YYYY-MM-DD`. It checks every QUESTIONS.md line, holds back any item whose
    prior request is still `open` and any exact repeat, and exits 1 with `line N: <reason>` or
@@ -69,6 +71,7 @@ Draft: `tests/fixtures/flock/questions-sample.md` (synthetic) for agency folder
 
 ## Changelog
 
+- 1.4: `summary --inventory CSV` adds document counts per request (counts only; withheld never named).
 - 1.3: `due --as-of DATE` adds days to or since each reminder and upcoming_7d/passed totals.
 - 1.2: `summary` prints one request-status line per agency (stdout only).
 - 1.1: `draft` writes FOLLOWUP-DRAFT.md (draft only, held items listed).

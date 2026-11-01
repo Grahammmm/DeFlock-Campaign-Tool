@@ -63,7 +63,7 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(code, 0)
         digest = Path(out[0]).read_text(encoding="utf-8").splitlines()
         self.assertLessEqual(len(digest), 40)
-        self.assertEqual(digest[0], "Flock monitor 2026-10-30: 3 new items (public, unreviewed)")
+        self.assertEqual(digest[0], "Flock monitor 2026-10-30: 3 new items (public, unreviewed), 0 relevant")
         self.assertEqual(len(digest), 4)
         code, out = self.run_main("digest", "--store", str(self.store), "--date", "2026-10-31")
         self.assertEqual(Path(out[0]).read_text(encoding="utf-8"), "Flock monitor 2026-10-31: no new items\n")

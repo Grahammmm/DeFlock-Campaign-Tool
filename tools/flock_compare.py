@@ -247,6 +247,47 @@ def summary(rundir):  # report, not a gate: ids and counts of what a clean run c
     print("\n".join(out + ["findings=%d | counts of what this run cited, not a review verdict" % count]))
     return 0
 
+def _findings(run, label):  # {finding_id: row} from FINDINGS.csv alone (--check not required), or a refusal reason
+    table, rows = read_csv(run / "FINDINGS.csv") if (run / "FINDINGS.csv").is_file() else [], {}
+    if table[:1] != [HEADER]:
+        return label + " FINDINGS.csv missing or header wrong"
+    for n, rec in ((n, rec) for n, rec in enumerate(table[1:], 2) if any(c.strip() for c in rec)):
+        if len(rec) != len(HEADER) or not rec[0].strip() or rec[0].strip() in rows:
+            return "%s row %d: %s" % (label, n, "finding_id is empty or duplicated" if len(rec) == len(HEADER) else "wrong column count")
+        rows[rec[0].strip()] = dict(zip(HEADER, map(str.strip, rec)))
+    return rows
+
+def _labels(row):  # a label prints only in a form --check accepts: an unchecked run's odd value never reaches stdout
+    ok = re.fullmatch(r"[a-z0-9-]{1,80}", row["topic"]), row["claim_class"] in CLASSES, row["rating"] in RANK
+    return {k: row[k] if good else "invalid" for k, good in zip(("topic", "claim_class", "rating"), ok)}
+
+def _changes(a, b):  # labels old->new, id-set counts, which texts changed (squashed); never a text, fact, rule or ref
+    parts = ["%s %s->%s" % (k, _labels(a)[k], _labels(b)[k]) for k in ("rating", "claim_class", "topic") if a[k] != b[k]]
+    parts += ["%s +%d -%d" % (k, len(set(ids(b[k])) - set(ids(a[k]))), len(set(ids(a[k])) - set(ids(b[k]))))
+              for k in ("fact_ids", "rule_ids", "policy_refs") if set(ids(a[k])) != set(ids(b[k]))]
+    return parts + [k + " changed" for k in ("claim", "quote", "quote_fact_id", "next_step") if squash(a[k]) != squash(b[k])]
+
+def diff(olddir, newdir):  # read-only: both FINDINGS.csv and the old PUBLIC-OK.csv; finding ids, labels and counts only
+    old, new = Path(olddir).resolve(), Path(newdir).resolve()
+    a = ("not a <store>/agencies/<slug>/runs/<date> folder" if not all(len(p.parents) >= 4 and p.parent.name == "runs" and
+         p.parents[2].name == "agencies" for p in (old, new)) else "same run folder twice" if old == new else "different stores"
+         if old.parents[3] != new.parents[3] else "different agencies" if old.parents[1] != new.parents[1] else _findings(old, "old"))
+    b = a if isinstance(a, str) else _findings(new, "new")
+    public = [] if os.path.lexists(old / "PUBLIC-OK.csv") else None  # header flock_verify.PUBLIC (an import would be circular)
+    with contextlib.suppress(OSError, UnicodeDecodeError, csv.Error):  # unreadable stays [] and is refused below
+        public = None if public is None else read_csv(old / "PUBLIC-OK.csv")
+    if isinstance(b, str) or public is not None and public[:1] != [HEADER[:4] + HEADER[5:8]]:
+        print("diff refused: " + (b if isinstance(b, str) else "old PUBLIC-OK.csv unreadable"))
+        return 1
+    ok, out = {rec[0].strip() for rec in (public or [])[1:] if rec}, []
+    for fid, kind in sorted((f, "added" if f not in a else "removed" if f not in b else "changed") for f in set(a) | set(b)):
+        parts = _changes(a[fid], b[fid]) if kind == "changed" else ["%(topic)s/%(claim_class)s %(rating)s" % _labels(b.get(fid) or a[fid])]
+        out += ["%s | %s | %s%s" % (kind, fid, ", ".join(parts), " [old public-ok]" * (kind != "added" and fid in ok))] * bool(parts)
+    n = [sum(x.startswith(k) for x in out) for k in ("added |", "removed |", "changed |")] + [sum(x.endswith("public-ok]") for x in out)]
+    print("\n".join(out + ["old=%d new=%d added=%d removed=%d changed=%d unchanged=%d public_ok_affected=%s | finding ids only, not a "
+                           "review verdict" % (len(a), len(b), *n[:3], len(set(a) & set(b)) - n[2], "-" if public is None else n[3])]))
+    return 0
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -261,13 +302,14 @@ def _main(argv=None):
         parser.add_argument(name)
     parser.add_argument("--provider", choices=PROVIDERS)
     parser.add_argument("--summary")
+    parser.add_argument("--diff", nargs=2, metavar=("OLDRUN", "NEWRUN"))
     args = parser.parse_args(argv)
     usage = ("usage: scaffold --store DIR --agency SLUG --date YYYY-MM-DD --provider P --model M "
-             "--applicability TEXT | --check RUNDIR [--golden CSV] | --summary RUNDIR")
-    if args.summary is not None:
+             "--applicability TEXT | --check RUNDIR [--golden CSV] | --summary RUNDIR | --diff OLDRUN NEWRUN")
+    if args.summary is not None or args.diff is not None:
         others = (args.command, args.check, args.golden, args.store, args.agency, args.date, args.provider, args.model,
-                  args.applicability)  # any other flag, even empty, is a usage error
-        return parser.error(usage) if any(v is not None for v in others) else summary(args.summary)
+                  args.applicability, args.diff and args.summary)  # any other flag, even empty, is a usage error
+        return parser.error(usage) if any(v is not None for v in others) else diff(*args.diff) if args.diff else summary(args.summary)
     if args.check and not args.command:
         errs, count = check(args.check, args.golden)
         print("\n".join(errs + ["findings=%d errors=%d" % (count, len(errs))]))
