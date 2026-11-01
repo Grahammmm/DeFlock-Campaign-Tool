@@ -6,11 +6,14 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 MAX_BYTES = 50 * 1024 * 1024
+MAX_DIR_FILES = 2000
+OUTCOMES = ("stored", "present", "symlink", "not_regular", "too_large", "hidden")
 
 
 def now():
@@ -73,20 +76,19 @@ def initialize(args, root):
     print("Campaign initialized. No accounts created, messages sent, or laws verified.")
 
 
-def ingest(args, root):
-    read_config(root)
-    source = Path(args.file)
-    if source.is_symlink() or not source.is_file():
-        raise ValueError("Input must be a regular, non-symlink file")
-    with source.open("rb") as incoming:
+def _ingest_one(db, root, path, source_id):
+    """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as incoming:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Input must be a regular, non-symlink file")
         data = incoming.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
     digest = hashlib.sha256(data).hexdigest()
     identity = hashlib.sha256(json.dumps(
-        [args.source_id, digest], separators=(",", ":")).encode()).hexdigest()
-    db = database(root)
-    try:
+        [source_id, digest], separators=(",", ":")).encode()).hexdigest()
+    with db:  # one transaction per file; the object is written before its rows
         objects = root / "private" / "objects"
         objects.mkdir(mode=0o700, exist_ok=True)
         target = objects / digest
@@ -106,16 +108,62 @@ def ingest(args, root):
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
-        with db:
-            db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
-                       (digest, len(data), now()))
-            cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
-                                (identity, digest, args.source_id, now(), source.name))
-        print(json.dumps({"sha256": digest, "receipt_id": identity,
-                          "new_receipt": cursor.rowcount == 1,
-                          "analysis_status": "not_started"}, indent=2))
+        new_object = db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
+                                (digest, len(data), now())).rowcount == 1
+        cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
+                            (identity, digest, source_id, now(), path.name))
+    return {"sha256": digest, "receipt_id": identity, "new_receipt": cursor.rowcount == 1,
+            "analysis_status": "not_started", "outcome": "stored" if new_object else "present"}
+
+
+def ingest(args, root):
+    read_config(root)
+    if getattr(args, "dir", None) is not None:
+        return _ingest_dir(args, root)
+    source = Path(args.file)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Input must be a regular, non-symlink file")
+    if source.stat().st_size > MAX_BYTES:
+        raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
+    db = database(root)
+    try:
+        result = _ingest_one(db, root, source, args.source_id)
     finally:
         db.close()
+    print(json.dumps({k: result[k] for k in ("sha256", "receipt_id", "new_receipt", "analysis_status")}, indent=2))
+
+
+def _ingest_dir(args, root):
+    """One production folder: list it without following links (hidden names skipped), then ingest file by file."""
+    top, entries, stack = Path(args.dir), [], [(args.dir, "")]
+    if top.is_symlink() or not top.is_dir():
+        raise ValueError("--dir must be a real directory, not a symlink or a file")
+    while stack:
+        folder, prefix = stack.pop()
+        with os.scandir(folder) as listing:
+            for entry in listing:
+                hidden, rel = entry.name.startswith("."), prefix + entry.name
+                if entry.is_dir(follow_symlinks=False) and not hidden:
+                    stack.append((entry.path, rel + "/"))
+                    continue
+                entries.append((rel, entry.path, "hidden" if hidden else "symlink" if entry.is_symlink()
+                                else "not_regular" if not entry.is_file(follow_symlinks=False)
+                                else "too_large" if entry.stat(follow_symlinks=False).st_size > MAX_BYTES else None))
+                if len(entries) > MAX_DIR_FILES:
+                    raise ValueError(f"{args.dir}: more than {MAX_DIR_FILES} files; split the folder")
+    files, db = [], database(root)
+    try:
+        for rel, path, code in sorted(entries):
+            try:
+                result = {"sha256": None, "new_receipt": False} if code else _ingest_one(db, root, Path(path), args.source_id)
+            except ValueError as exc:
+                raise ValueError(f"{exc}: {rel}") from None
+            files.append({"path": rel, "sha256": result["sha256"] and result["sha256"][:12],
+                          "outcome": code or result["outcome"], "new_receipt": result["new_receipt"]})
+    finally:
+        db.close()
+    print(json.dumps({"dir": os.path.basename(os.path.abspath(args.dir)), "files": files,
+                      "counts": {k: sum(f["outcome"] == k for f in files) for k in OUTCOMES}}, indent=2))
 
 
 def status(root, check=False):
@@ -322,7 +370,9 @@ def main():
             cmd.add_argument("--state", required=True)
             cmd.add_argument("--location", help="City or county to resolve (default: the county)")
         if name == "ingest":
-            cmd.add_argument("--file", required=True)
+            source = cmd.add_mutually_exclusive_group(required=True)
+            source.add_argument("--file")
+            source.add_argument("--dir", help="One local production folder; symlinks are never followed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
         if name == "build":
