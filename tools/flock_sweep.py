@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Flock sweep: each watch-list agency's F1->F3->F4 stage, blocker and next command; CARDS plan; rating matrix.
-  status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out FILE|DIR] [--max N] [--date YYYY-MM-DD]
+  status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out FILE|DIR] [--max N] [--date YYYY-MM-DD] [--prev DIR]
 Reads the store only; never runs a model, kanban or hermes. Prints slugs, stages, counts and commands, never claim,
 quote or fact text. Summary: blocked = agencies - finished - ready - unmapped; unwatched = in_scope=yes roster rows
 with no watch-list row, named (roster order) on the line before it. Exit 0 ok, 1 errors, 2 usage."""
@@ -139,7 +139,31 @@ def plan(mapped, cap):  # mapped = roster rows in roster order
                   CAPS, "family: " + family]
     print("\n".join(lines + ([GATE] if gate else [] if len(lines) > 1 else ["- none ready"])))
 
-def matrix(store, mapped, out):
+def prev_matrix(path):  # the previous COMPARE-MATRIX.csv, fully read and checked before anything is written
+    if path.is_symlink() or (path / "COMPARE-MATRIX.csv").is_symlink(): raise Fail("prev: COMPARE-MATRIX.csv is a link")
+    if not (path / "COMPARE-MATRIX.csv").is_file(): raise Fail("prev: COMPARE-MATRIX.csv is missing")
+    with open(path / "COMPARE-MATRIX.csv", newline="") as handle:
+        rows = list(csv.reader(handle))
+    head, cells = rows[0] if rows else [], {}
+    if head[:2] != ["topic", "claim_class"] or not all(head[2:]) or len(set(head[2:])) != len(head) - 2:
+        raise Fail("prev: header is invalid")
+    for n, row in enumerate(rows[1:], 2):
+        if len(row) != len(head) or not all(row[:2]) or tuple(row[:2]) in cells or not set(row[2:]) <= set(ORDER) | {"-"}:
+            raise Fail("prev: row %d is invalid" % n)
+        cells[tuple(row[:2])] = dict(zip(head[2:], row[2:]))
+    return head[2:], cells
+
+def changes(old, new):  # (agencies, {(topic, claim_class): {slug: cell}}) each; one row per changed cell
+    rows = []
+    for key in sorted(set(old[1]) | set(new[1])):
+        for slug in sorted(set(old[0]) | set(new[0])):
+            a, b = old[1].get(key, {}).get(slug, "-"), new[1].get(key, {}).get(slug, "-")
+            if a != b:
+                rows.append(list(key) + [slug, a, b, "added" if a == "-" else "removed" if b == "-" else
+                                         "up" if ORDER[b] > ORDER[a] else "down"])
+    return rows
+
+def matrix(store, mapped, out, prev=None):
     done = list(dict.fromkeys(r["slug"] for r in mapped if r["stage"] == "finished"))
     dates, cells, loaded, refused = {r["slug"]: r["run_date"] for r in mapped}, {}, {}, []
     for slug in done:  # check every finished run before mkdir or any write; counts only, never ids, quotes or paths
@@ -152,6 +176,7 @@ def matrix(store, mapped, out):
         loaded[slug] = findings, ver
     if refused:
         raise Fail("\n".join(refused))
+    old = prev_matrix(Path(prev)) if prev else None
     for slug in done:
         findings, ver = loaded[slug]
         for f in findings:
@@ -170,24 +195,32 @@ def matrix(store, mapped, out):
                                                     [list(k) + [cells[k].get(s, "-") for s in done] for k in keys]))
     verify.write(out / "COMPARE.md", "\n".join(lines) + "\n")
     print("matrix rows=%d agencies=%d" % (len(keys), len(done)))
+    if old is None: return
+    diff = changes(old, (done, {k: {s: cells[k].get(s, "-") for s in done} for k in keys}))
+    verify.write(out / "COMPARE-CHANGES.csv", as_csv(["topic", "claim_class", "agency", "old", "new", "change"], diff))
+    count = [sum(r[5] == c for r in diff) for c in ("up", "down", "added", "removed")]
+    print("changes rows=%d up=%d down=%d added=%d removed=%d agencies_added=%d agencies_removed=%d" % tuple(
+        [len(diff)] + count + [len(set(done) - set(old[0])), len(set(old[0]) - set(done))]))
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["status", "plan", "matrix"])
-    for name in ("--watchlist", "--roster", "--store", "--out"):
+    for name in ("--watchlist", "--roster", "--store", "--out", "--prev"):
         parser.add_argument(name)
     parser.add_argument("--max", type=int, default=2)
     parser.add_argument("--date", default=datetime.date.today().isoformat())
     a = parser.parse_args(argv)
     if not (a.watchlist and a.roster and a.store) or a.max < 1 or not facts_tool.valid_date(a.date) \
-            or (a.command == "matrix") != bool(a.out) and a.command != "status":
-        parser.error("usage: status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out PATH] [--max N] [--date D]")
+            or (a.command == "matrix") != bool(a.out) and a.command != "status" or a.prev and a.command != "matrix":
+        parser.error("usage: status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out PATH] [--max N] [--date D]"
+                     " [--prev DIR]")
     try:
         store, agencies, roster = load_inputs(a)
         out = outside(a.out, store) if a.out else None
         rows = status_rows(store, agencies, roster, a.date)
         if a.command != "status":
-            return (plan(rows[:len(roster)], a.max) if a.command == "plan" else matrix(store, rows[:len(roster)], out)) or 0
+            mapped = rows[:len(roster)]
+            return (plan(mapped, a.max) if a.command == "plan" else matrix(store, mapped, out, a.prev)) or 0
         text = as_csv(STATUS, [[r[k] for k in STATUS] for r in rows])
         if out:
             verify.write(out, text)
