@@ -188,7 +188,7 @@ class BackupDiffTests(unittest.TestCase):
         self.assertEqual(report["removed"], [])
 
     def test_read_only_and_no_hashes_or_content_in_output(self):
-        (self.root / "content" / "site.json").write_text('{"schema_version":1,"tagline":"edited-secret-words"}')
+        (self.root / "content" / "site.json").write_text('{"schema_version":1,"tagline":"edited-tagline-words"}')
         self.ingest(b"Third synthetic record.\n", "demo-3")
         archive_before = self.archive.read_bytes()
         archive_mtime = self.archive.stat().st_mtime_ns
@@ -202,7 +202,7 @@ class BackupDiffTests(unittest.TestCase):
         stripped = re.sub(r"private/objects/[0-9a-f]{64}", "private/objects/<name>", r.stdout)
         self.assertIsNone(HEX64.search(stripped), stripped)
         self.assertNotIn(self.manifest["manifest_sha256"], r.stdout)
-        for text in ("edited-secret-words", "synthetic-tagline", "Third synthetic record", "sha256", "bytes"):
+        for text in ("edited-tagline-words", "synthetic-tagline", "Third synthetic record", "sha256", "bytes"):
             self.assertNotIn(text, r.stdout)
 
 
