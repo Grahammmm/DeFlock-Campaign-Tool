@@ -89,6 +89,21 @@ controller fits the map to `CITIES[slug].bounds`.
 also the `id` of the matching section in `sources.html`. Agencies without
 sources route to `sources.html#library`.
 
+### Adding a source record
+
+```
+python3 -m campaign_tool sources add --directory D --sha256 PREFIX --title T \
+  --agency-id A --received-at 2026-01-20T16:30:00+00:00 --fragment F \
+  [--public-url https://...] [--pages N] [--note TEXT]
+```
+
+`PREFIX` is the full hash printed by `ingest` or a unique prefix of at least 12
+hex characters; it must name an object in `private/ledger.sqlite` (opened
+read-only). The new entry is appended, the whole list is validated by the same
+loader as `build`, `agency_id` must be one of the campaign's agencies, and the
+file is replaced atomically; on any refusal it is left untouched. `--public-url`
+is only recorded, never fetched or uploaded, and nothing is published.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
