@@ -192,7 +192,11 @@ def write_map(campaign, collection, allow_empty):
         map_dir = map_dir / name
         if map_dir.is_symlink() or (map_dir.exists() and not map_dir.is_dir()):
             raise WriteRefused(f"fetch_osm_alprs: {map_dir} is a symlink or not a directory; nothing written")
-        map_dir.mkdir(exist_ok=True)
+        try:
+            map_dir.mkdir(exist_ok=True)
+        except OSError:  # read-only filesystem, no permission, or a racing non-directory
+            raise WriteRefused(f"fetch_osm_alprs: could not create {name}/ under the campaign directory; "
+                               "nothing written") from None
     cameras = map_dir / "cameras.geojson"
     if cameras.is_symlink():  # refused before the empty guard reads the current map: a link is never followed
         raise WriteRefused("fetch_osm_alprs: cameras.geojson is a symlink; not written")

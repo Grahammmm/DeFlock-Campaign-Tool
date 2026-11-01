@@ -224,6 +224,19 @@ class SafeWriteTests(unittest.TestCase):
             self.assertEqual(self.cameras.read_bytes(), before)
             self.assertEqual(self.temps(), [])
 
+    def test_output_directory_creation_failure_exit_2_fixed_message(self):
+        fresh = self.tmp / "fresh"
+        fresh.mkdir()
+        (fresh / "campaign.json").write_text("{}\n", encoding="utf-8")
+        for error in (OSError(errno.EROFS, "Read-only file system"), PermissionError(errno.EACCES, "denied")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(Path, "mkdir", side_effect=error):
+                code, out, err = self.run_tool(directory=fresh)
+            self.assertEqual((code, out), (2, ""))
+            self.assertEqual(err.strip(), "fetch_osm_alprs: could not create content/ under the campaign "
+                                          "directory; nothing written")
+            self.assertEqual(sorted(p.name for p in fresh.iterdir()), ["campaign.json"])
+
     def test_attribution_temp_failure_says_cameras_was_written(self):
         real = tempfile.mkstemp
 
