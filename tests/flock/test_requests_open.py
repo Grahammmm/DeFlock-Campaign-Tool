@@ -8,6 +8,8 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.flock.approval_field import APPROVAL_LINE, write_field
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,9 +47,11 @@ class OpenFromEmailTests(unittest.TestCase):
         run.mkdir(parents=True, exist_ok=True)
         (run / "FOLLOWUP-DRAFT.md").write_text(HEAD + "\n", encoding="utf-8")
         if sent is not None:
-            text = [head, f"To: {ADDR}", SUBJ, "---", BODY, "---", f"G APPROVED: {approve or '____'}",
+            text = [head, f"To: {ADDR}", SUBJ, "---", BODY, "---", APPROVAL_LINE,
                     f"Sent by: {sent or '____ (operator, by hand, after G' + chr(39) + 's reply)'}"]
             (run / "EMAIL-DRAFT.md").write_text("\n".join(text) + "\n", encoding="utf-8")
+            if approve and approve.strip():  # the state field, never a line
+                write_field(run)
         return run
 
     def requests(self, *rows):

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.flock.approval_field import write_field
+
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "flock_email.py"
 FIXTURES = ROOT / "tests" / "fixtures" / "flock"
@@ -133,22 +135,24 @@ class EmailLintTests(unittest.TestCase):
                 self.assertEqual(self.rules(done), ["private: email"])
                 self.assertNotIn(other, done.stdout + done.stderr)
 
-    def test_approval_filled_in_both_still_linted(self):
-        self.edit("G APPROVED: ____", "G APPROVED: G 2026-10-31")
+    def test_approval_field_still_linted_and_an_edit_voids_it(self):
+        write_field(self.run_dir)
         done = self.lint()
         self.assertEqual(self.rules(done), [])
         self.assertEqual(done.stdout.splitlines()[-1], "lint | rules=0 | approval recorded" + SUMMARY)
         self.edit("Please reference", "TODO Please reference")
         done = self.lint()
         self.assertEqual(self.rules(done), ["placeholder"])
-        self.assertIn("| approval recorded |", done.stdout.splitlines()[-1])
+        self.assertIn("| malformed |", done.stdout.splitlines()[-1])  # the field no longer matches the text
 
-    def test_approval_filled_in_one_copy_only(self):
-        self.edit("G APPROVED: ____", "G APPROVED: G 2026-10-31", both=False)
-        rules = self.rules(self.lint())
+    def test_prose_approval_in_one_copy_grants_nothing(self):
+        self.edit("Sent by: ____", "G APPROVED: G 2026-10-31\nSent by: ____", both=False)
+        done = self.lint()
+        rules = self.rules(done)
         self.assertEqual(len(rules), 1)
         self.assertTrue(rules[0].startswith("copies differ (first differing line "))
         self.assertNotIn("G 2026", rules[0])
+        self.assertIn("| email drafted |", done.stdout.splitlines()[-1])
 
     def test_length_limits(self):
         subject = next(ln for ln in self.copy.read_text(encoding="utf-8").splitlines() if ln.startswith("Subject: "))
@@ -162,7 +166,7 @@ class EmailLintTests(unittest.TestCase):
 
     def test_malformed_shapes(self):
         cases = [("DRAFT - not sent - G approval required\n", "", False), (f"To: {OLD}\n", "", False),
-                 ("Sent by: ____", "Sent by: ____\nSent by: ____", True), ("G APPROVED: ____", "", True)]
+                 ("Sent by: ____", "Sent by: ____\nSent by: ____", True), ("Sent by: ____ (operator, by hand, after G's reply)\n", "", True)]
         for old, new, to_ok in cases:
             with self.subTest(old=old):
                 self.setUp()

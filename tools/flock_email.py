@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Wrap FOLLOWUP-DRAFT.md into a private EMAIL-DRAFT.md. Draft only: it writes files and cannot send. `status STORE` reads each run's email stage back."""
-import csv, importlib.util, os, re, sys, tempfile
+"""Wrap FOLLOWUP-DRAFT.md into a private EMAIL-DRAFT.md. Draft only: it writes files and cannot send. `status STORE` reads each run's email stage back.
+
+G's approval is a FIELD, never a sentence: EMAIL-APPROVAL.json beside the draft, {"state": "approved", ...}, bound by
+content_sha256 to the exact draft text and holding G's SSH signature. Only tools/flock_approve.py writes it, after the
+signature verifies; `flock_approve.py verify RUNDIR` re-checks the signature. A "G APPROVED:" line grants nothing. This
+file stays free of subprocess/campaign_tool imports (no send path), so here only the field's shape and text binding count."""
+import csv, hashlib, importlib.util, json, os, re, sys, tempfile
 from datetime import date
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
@@ -17,6 +22,7 @@ USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.m
 PLACEHOLDER = re.compile(r"\{\{|\}\}|(?<![a-z])(?:todo|xxx|tbd)|[\[<]insert|____", re.I)
 STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval")
 LABELS = "runs followup drafted approved sent malformed inconsistent".split()
+APPROVAL, KEYS = "EMAIL-APPROVAL.json", {"v", "state", "scope", "subject", "content_sha256", "approved_by", "signature"}
 
 def slug(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -84,7 +90,8 @@ def draft(rundir, drafts, max_age=None, today=None):
     body = "\n".join(lines[3:ends[0]]).strip("\n")
     ids = re.search(r"related to requests ([^\n]*?)\.(?:\s|$)", body)
     text = "\n".join([HEAD, f"To: {to}", lines[2], "---", body, "", "Please reference this request by your agency's request number in any response.",
-                      f"Related prior requests: {ids.group(1) if ids else 'none on file'}.", "---", "G APPROVED: ____",
+                      f"Related prior requests: {ids.group(1) if ids else 'none on file'}.", "---",
+                      f"Approval: only a signed {APPROVAL} beside this file records G's approval; no line here can.",
                       "Sent by: ____ (operator, by hand, after G's reply)"]) + "\n"
     out_dir.mkdir(mode=0o700, exist_ok=True)
     linked = []  # only paths this call created; the rollback never touches anything else
@@ -127,19 +134,37 @@ def check(store, show=None, max_age=None, today=None):
     return 0 if ready == len(folders) else 1
 
 def marks(lines):
-    """The values of every `G APPROVED:` and every `Sent by:` line (stage and lint share this parse)."""
-    return [[ln.split(":", 1)[1].strip() for ln in lines if ln.startswith(k)] for k in ("G APPROVED:", "Sent by:")]
+    """The values of every `Sent by:` line (stage and lint share this parse). Approval is never read from a line."""
+    return [ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("Sent by:")]
+
+def approved_text(run):
+    """(subject, text G approves) for a run: EMAIL-DRAFT.md without its `Sent by:` record line. Links are refused."""
+    with open(os.open(run / "EMAIL-DRAFT.md", os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh: text = fh.read()
+    return f"{run.parent.parent.name}/{run.name}", "\n".join(ln for ln in text.splitlines() if not ln.startswith("Sent by:")) + "\n"
+
+def approval_field(run):
+    """The approval record when well-formed and bound to the current draft text; False when absent; None when bad."""
+    if not os.path.lexists(run / APPROVAL): return False
+    try:
+        with open(os.open(run / APPROVAL, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh: rec = json.load(fh)
+        subject, body = approved_text(run)
+        ok = isinstance(rec, dict) and set(rec) == KEYS and rec["v"] == 1 and rec["state"] == "approved" \
+            and rec["scope"] == "flock-email" and rec["subject"] == subject and isinstance(rec["approved_by"], str) \
+            and rec["approved_by"].strip() != "" and isinstance(rec["signature"], str) and "BEGIN SSH SIGNATURE" in rec["signature"] \
+            and rec["content_sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+        return rec if ok else None
+    except (OSError, ValueError, UnicodeDecodeError): return None
 
 def stage(run):
-    """The email stage of one run folder, or None without a draft file. Never returns a filled value."""
+    """The email stage of one run folder, or None without a draft file. Approval comes from the state field only."""
     email, follow = run / "EMAIL-DRAFT.md", run / "FOLLOWUP-DRAFT.md"
-    if run.is_symlink() or email.is_symlink() or follow.is_symlink(): return "refused: link"  # never read
+    if run.is_symlink() or email.is_symlink() or follow.is_symlink() or (run / APPROVAL).is_symlink(): return "refused: link"
     if not email.exists(): return "follow-up drafted" if follow.exists() else None
     try: lines = email.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError): return "malformed"
-    ok = marks(lines)
-    if lines[:1] != [HEAD] or [len(v) for v in ok] != [1, 1]: return "malformed"
-    yes, sent = ok[0][0] not in ("", "____"), bool(ok[1][0]) and not ok[1][0].startswith("____")
+    sent, yes = marks(lines), approval_field(run)
+    if lines[:1] != [HEAD] or len(sent) != 1 or yes is None: return "malformed"
+    sent = bool(sent[0]) and not sent[0].startswith("____")
     return ("sent recorded" if yes else STAGES[5]) if sent else "approval recorded" if yes else "email drafted"
 
 def status(folders):
@@ -177,7 +202,7 @@ def lint(rundir, drafts):
     cut = [i for i, ln in enumerate(lines) if ln == "---"]
     to = lines[1][4:].strip() if len(lines) > 1 and lines[1].startswith("To: ") else None
     subject = lines[2][9:] if len(lines) > 2 and lines[2].startswith("Subject: ") else ""
-    if lines[:1] != [HEAD] or to is None or not subject or len(cut) < 2 or [len(v) for v in marks(lines)] != [1, 1]: rules.append("malformed")
+    if lines[:1] != [HEAD] or to is None or not subject or len(cut) < 2 or len(marks(lines)) != 1: rules.append("malformed")
     body = "\n".join(lines[cut[0] + 1:cut[1]] if len(cut) > 1 else lines[3:])  # no --- pair: scan the rest (fail closed)
     addr, errs, _ = contact(run.parents[3] / "agencies" / name / "CONTACT.csv", name)
     if errs or to != addr: rules.append(f"to: CONTACT.csv {errs[0]}" if errs else "to: not the current records address")

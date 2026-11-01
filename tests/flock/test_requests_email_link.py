@@ -2,6 +2,8 @@
 import shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
+from tests.flock.approval_field import APPROVAL_LINE, write_field
+
 ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIXTURE = ROOT / "tools" / "flock_requests.py", ROOT / "tests" / "fixtures" / "flock" / "requests-sample.csv"
 HEADER = "request_id,agency,sent,receipt_evidence,receipt_date,determination_date,extension_notice_date,status,source_sha256\n"
@@ -38,9 +40,11 @@ class SentRunLinkTests(unittest.TestCase):
         rundir.mkdir(parents=True, exist_ok=True)
         (rundir / "FOLLOWUP-DRAFT.md").write_text(HEAD + "\n", encoding="utf-8")
         if sent is not None:
-            text = [HEAD, f"To: {ADDR}", SUBJ, "---", "body", "---", f"G APPROVED: {approve or '____'}",
+            text = [HEAD, f"To: {ADDR}", SUBJ, "---", "body", "---", APPROVAL_LINE,
                     f"Sent by: {sent or '____ (operator, by hand, after G' + chr(39) + 's reply)'}"]
             (rundir / "EMAIL-DRAFT.md").write_text("\n".join(text) + "\n", encoding="utf-8")
+            if approve and approve.strip():  # the state field, never a line
+                write_field(rundir)
         return rundir
 
     def check(self, path=None):
