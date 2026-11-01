@@ -50,3 +50,13 @@ law/policy, requests, contact, watch list and publish checkers in-process, then 
 with no agency folder is an error; a folder in no ROSTER is a note; linked folders are named, never followed) and `backup`
 (the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
 `flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. It writes nothing.
+
+## Report text state
+
+`tools/flock_report.py` reads an optional `review.text_state_file` (absolute path outside the repository to the extraction run's
+`run-outputs/<run>/text-state.json`, schema `records-text-state-v1`). Each cited record that is not `text_reviewed` there is
+labelled on its bullet, its Sources line (and so in `region`) and as `text_state` in `SOURCES.json`: `(OCR text, not
+visually reviewed)`, `(text state: <words>)`, or `(text state not recorded)` when the file does not list it. A missing,
+linked, oversize or invalid file is a `config:` error and nothing is written. The label never changes which findings are
+included. Operators should point live report configs at the latest text-state file; without the key a report makes no
+claim about text state.
