@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Flock region: draft a county region config from the engine agency seed, check it, and scaffold the private store.
   new --county-fips FIPS --region SLUG --out PATH [--jurisdiction us-ca] [--seed-dir DIR]
-  --check CONFIG [--seed-dir DIR]  |  init CONFIG --store DIR [--seed-dir DIR] [--dry-run]
+  --check CONFIG [--seed-dir DIR]  |  init CONFIG --store DIR [--seed-dir DIR] [--dry-run]  |  coverage CONFIG [--seed-dir DIR]
 init writes agencies/<slug>/ (yes|hold) and regions/<region>/WATCHLIST.csv (F7), ROSTER.csv (F10), PLAN.md; with --dry-run it
-runs the same checks and prints what it would create, write or drop, writing nothing. No network;
+runs the same checks and prints what it would create, write or drop, writing nothing. coverage (read-only) names each seed
+sheriff/police agency of the county that no config agency points at and exits 3 if there is one. No network;
 the seed is read, never edited or verified; FACTS/POLICY/REQUESTS/LAW are never written. Exit 0 ok, 1 errors, 2 usage."""
-import argparse, contextlib, csv, importlib.util, io, json, os, re, sys
+import argparse, contextlib, csv, importlib.util, io, json, os, re, sys, unicodedata
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -213,22 +214,49 @@ def cmd_init(args):
           % (len(cfg["agencies"]), len(folders), len(rows), len(dropped), len(roster)))
     return 0
 
+def clean(name):  # seed names are public agency names; control/format characters dropped, cut at 120 chars
+    return "".join(c for c in name if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp"))[:120]
+
+def cmd_coverage(args):  # reads only the config and the seed; writes nothing
+    cfg = load_config(args.config)
+    errs, _ = check(cfg, args.seed_dir)
+    if errs:
+        print("\n".join(errs + ["coverage: config has %d error(s); run --check first" % len(errs)]))
+        return 1
+    county = county_of(cfg["jurisdiction"], cfg["county_fips"], args.seed_dir)[1]
+    listed = {a.get("seed_agency_id") for a in cfg["agencies"]} - {None}  # no/hold are decisions: still listed
+    lines, other = [], {}
+    for e in county["agencies"]:
+        if e["agency_id"] in listed:
+            continue
+        if e["kind"] in NEW_KINDS:
+            lines.append("unlisted %s %s %s" % (e["agency_id"], e["kind"], clean(e["name"])))
+        else:
+            other[e["kind"]] = other.get(e["kind"], 0) + 1
+    hand = sum(1 for a in cfg["agencies"] if a.get("seed_agency_id") is None)
+    print("\n".join(lines + ["seed_agencies=%d listed=%d unlisted=%d other_unlisted=%s hand_added=%d" % (
+        len(county["agencies"]), len(listed), len(lines), ",".join("%s:%d" % kv for kv in sorted(other.items())) or "0",
+        hand)]))
+    return 3 if lines else 0
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", nargs="?", choices=("new", "init"))
-    p.add_argument("config", nargs="?", help="region config (init)")
+    p.add_argument("command", nargs="?", choices=("new", "init", "coverage"))
+    p.add_argument("config", nargs="?", help="region config (init, coverage)")
     for flag in ("--check", "--county-fips", "--region", "--out", "--store", "--seed-dir"):
         p.add_argument(flag)
     p.add_argument("--jurisdiction", default="us-ca")
     p.add_argument("--dry-run", action="store_true", help="init only: print what init would change; write nothing")
     a = p.parse_args(argv)
-    need = {None: (a.check,), "new": (a.county_fips, a.region, a.out), "init": (a.config, a.store)}
-    if (a.check is None) == (a.command is None) or not all(need[a.command]) or (a.command != "init" and a.config):
-        p.error("use exactly one of: new, --check CONFIG, init CONFIG")
+    need = {None: (a.check,), "new": (a.county_fips, a.region, a.out), "init": (a.config, a.store), "coverage": (a.config,)}
+    if (a.check is None) == (a.command is None) or not all(need[a.command]) or (
+            a.command not in ("init", "coverage") and a.config):
+        p.error("use exactly one of: new, --check CONFIG, init CONFIG, coverage CONFIG")
     if a.dry_run and (a.check or a.command != "init"):
         p.error("--dry-run is valid only with init")
     try:
-        return cmd_check(a) if a.check else cmd_new(a) if a.command == "new" else cmd_init(a)
+        return (cmd_check(a) if a.check else cmd_new(a) if a.command == "new" else
+                cmd_coverage(a) if a.command == "coverage" else cmd_init(a))
     except Fail as exc:
         return print(exc) or 1
     except OSError as exc:  # the class only, never a path or content
