@@ -93,6 +93,26 @@ where `client.get(path) -> bytes` is bound to the runner token.
   job outputs. Until then the job sits queued and `export_hosted` can be run by hand with a
   client bound to the runner token.
 
+## Flock store
+
+`tools/flock_backup.py` archives the private flock store (outside the repo): the regular files
+under `agencies/` and `regions/`, and `LAW.csv`. Symlinks are never followed; they, dot-files
+(`.monitor.lock`, `.*.tmp`) and any other root entry are skipped and counted in the manifest
+(`skipped_links`, `skipped_hidden`, `skipped_other`). Same tar rules as above (PAX, `manifest.json`
+first with `kind: "flock-store"`, members 0600 uid/gid 0); local files only, no upload or encryption.
+
+```
+python3 tools/flock_backup.py create STORE --out FILE.tar
+python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
+python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
+```
+
+`create` refuses a store inside the repo and an `--out` that exists or lies in the store or repo; it
+writes a temp file, verifies it, then links it into place, leaving nothing on failure. Record the
+printed `manifest_sha256` elsewhere. `verify` and `restore` name each bad member (codes as above, plus
+`duplicate_member`) and exit 1; `restore` verifies first, never overwrites, extracts 0700/0600 and
+re-hashes on disk. Output is counts only; file names appear only in errors.
+
 ## Limits and cautions
 
 Member limit 2 GiB and 200,000 members. The archive contains private records, the receipt
