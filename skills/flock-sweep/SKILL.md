@@ -32,7 +32,9 @@ calls kanban or hermes and never writes into the store. Each model run stays its
    research diff, not a legal conclusion.
 6. Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
    `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).
-7. Daily to-do: `python3 tools/flock_today.py --store S --watchlist W --roster R --date D [--findings SLUG=CSV ...]` ranks due
+7. `python3 tools/flock_sweep.py funnel ... --out DIR [--inventory SLUG=CSV ...]`: FUNNEL.csv (0600) and one counts line per roster
+   agency, requested -> posted -> facts -> facts_cited -> findings -> verified -> public_ok, `stalls_at` = first 0 (`-` = unknown).
+8. Daily to-do: `python3 tools/flock_today.py --store S --watchlist W --roster R --date D [--findings SLUG=CSV ...]` ranks due
    reminders, stale-cited findings, new leads, review waits, unreviewed facts and receipt-unknown requests, each with its next
    command, then counts. Read-only; reminders are provisional, not legal status. A bad source is one `source-error` line (exit 1).
 
