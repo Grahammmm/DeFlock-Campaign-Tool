@@ -4,7 +4,7 @@ import contextlib, csv, datetime, importlib.util, io, json, shlex, unittest
 from unittest import mock
 from tests.flock import test_compare_inputs as inputs_test, test_sweep as base
 
-AGENCY, TOOLS, CI = base.AGENCY, base.TOOLS, inputs_test.CompareInputsTest
+AGENCY, TOOLS = base.AGENCY, base.TOOLS
 _spec = importlib.util.spec_from_file_location("_rf1239_sweep", TOOLS / "flock_sweep.py")
 sweep = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sweep)
@@ -16,6 +16,7 @@ LATER = "2026-11-02"
 class SweepStaleInputs(unittest.TestCase):
     sweep = base.FlockSweepTest.sweep
     finish = base.FlockSweepTest.finish
+    CI = inputs_test.CompareInputsTest  # class attribute, so the loader does not collect its tests twice
     edit_facts, edit_law, edit_policy, facts_import = CI.edit_facts, CI.edit_law, CI.edit_policy, CI.facts_import
 
     def setUp(self):
