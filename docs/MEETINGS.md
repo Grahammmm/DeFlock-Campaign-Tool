@@ -40,6 +40,14 @@ meeting that dropped out of the list is `past` when it was dated before `--since
 today) and `removed` otherwise. A missing, symlinked, unparseable or other-client previous file
 is named and never blocks the write; a failed fetch leaves the old file untouched.
 
+Every meeting carries `status`: `cancelled` when Legistar's `EventAgendaStatusName` is
+`Cancelled`/`Canceled` (any case, trimmed) or `EventComment` contains the word `cancelled` or
+`canceled`, otherwise `scheduled`. The CLI prints `cancelled_meetings`; `changes.cancelled` lists
+ids that were scheduled (or had no `status`) in the previous file and are cancelled now, and a
+cancelled meeting is never `agenda_changed`. `meetings-stage` refuses a cancelled meeting and
+writes nothing; a content meeting may set `status` (`scheduled` default, or `cancelled`), and the
+site never lists a cancelled meeting as upcoming: it stays under past meetings marked `Cancelled`.
+
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
