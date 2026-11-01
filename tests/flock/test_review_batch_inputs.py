@@ -10,12 +10,12 @@ REAL = "out: --out must be a real folder"
 # Captured from the same call on main 7b3edae (clean roster, --out a new folder, --run); {TMP} is the test's temp folder.
 GOLD_OUT = ("golden ok keys=10\nrun sample-city-police-department rc=3 state=waiting\nrun second-city-police rc=3 state=waiting\n"
             "sample-city-police-department waiting 5/28 next=fact-drafts\nsecond-city-police waiting 5/28 next=fact-drafts\n"
-            "campus-police held 2/28 next=inventory\n"
+            "campus-police held 2/28 next=inventory why=roster:not-in-scope\n"
             "agencies=3 done=0 waiting=2 in_flight=0 failed=0 invalid=0 held=1 locked=0 ready=0\n")
-GOLD_CSV = ("slug,config,state,stages_done,stages_total,next,waiting_for,input_present,author_family,verifier_family,run_date\n"
-            "sample-city-police-department,{TMP}/a0/review.json,waiting,5,28,fact-drafts,fact-drafts,no,,,2026-10-30\n"
-            "second-city-police,{TMP}/a1/review.json,waiting,5,28,fact-drafts,fact-drafts,no,,,2026-10-30\n"
-            "campus-police,{TMP}/a2/review.json,held,2,28,inventory,,,,,2026-10-30\n")
+GOLD_CSV = ("slug,config,state,stages_done,stages_total,next,waiting_for,input_present,author_family,verifier_family,run_date,why\n"
+            "sample-city-police-department,{TMP}/a0/review.json,waiting,5,28,fact-drafts,fact-drafts,no,,,2026-10-30,\n"
+            "second-city-police,{TMP}/a1/review.json,waiting,5,28,fact-drafts,fact-drafts,no,,,2026-10-30,\n"
+            "campus-police,{TMP}/a2/review.json,held,2,28,inventory,,,,,2026-10-30,roster:not-in-scope\n")
 
 
 class ReviewBatchInputsTest(unittest.TestCase):

@@ -15,7 +15,7 @@ def _tool(name):  # G1 and G5 are loaded by file path, never copied
     spec = importlib.util.spec_from_file_location("_batch_" + name, TOOLS / (name + ".py"))
     return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
 fr, gold = _tool("flock_review"), _tool("flock_review_golden")
-HEADER = "slug,config,state,stages_done,stages_total,next,waiting_for,input_present,author_family,verifier_family,run_date".split(",")
+HEADER = "slug,config,state,stages_done,stages_total,next,waiting_for,input_present,author_family,verifier_family,run_date,why".split(",")
 ROSTER = "watch_agency,slug,in_scope,applicability,site_slug".split(",")
 GATE = "golden gate: Morro Bay golden must pass first"
 FACTS, RULES, COMPARE, VERIFY = ("sonnet-coder", "skills/agency-review/facts-intake step 5"), ("opus-coder-bopus", "skills/agency-review/rules-intake step 2"), \
@@ -26,6 +26,24 @@ OTHER = {"anthropic": "openai", "openai": "anthropic"}
 REASON = re.compile(r"stage [a-z0-9][a-z0-9-]* failed rc=-?\d+ log=[^\x00-\x1f\x7f-\x9f]+|io: [A-Za-z_]\w*|locked: [^\x00-\x1f\x7f-\x9f]+", re.ASCII)
 CHANGE, KINDS, BAD = "key,change,old_state,new_state,old_done,new_done".split(","), ("regressed", "advanced", "state", "new", "removed"), \
     {"failed", "invalid", "locked"}
+# why= codes are fixed words plus config field names: never config values, pids, hosts or free text
+FIELD = re.compile(r"[A-Za-z0-9_.]+", re.ASCII)
+LOCKS = ((r"not a regular file", "not-regular-file"), (r"unreadable", "unreadable"), (r"pid \d+ on another host", "other-host"),
+         (r"pid \d+", "live-writer"), (r"unparseable", "unparseable"))
+
+
+def config_why(problems):  # `config: <field> <reason>` -> config:<field of the first problem>[+N more]
+    head = str(problems[0])
+    field = head[len("config: "):].split(" ", 1)[0] if head.startswith("config: ") else ""
+    return "config:" + (field if FIELD.fullmatch(field) else "other") + ("+%d" % (len(problems) - 1) if len(problems) > 1 else "")
+
+
+def held_why(c, roster):  # -> a roster: code, or "" when the roster lets the agency through (or there is none)
+    if roster is None:
+        return ""
+    scope = roster.get(c["slug"])
+    return "roster:no-row" if scope is None else "roster:not-in-scope" if (scope.get("in_scope") or "").strip() != "yes" else \
+        "roster:applicability-differs" if (scope.get("applicability") or "") != c["appl"] else ""
 
 
 def read_roster(path):
@@ -96,7 +114,9 @@ def worked(p):  # real model work: a non-empty file; a CSV needs a row past its 
 def agency(c, roster):  # read-only; -> row dict (HEADER keys) plus 'files' (the wait stage's input files)
     row = dict.fromkeys(HEADER, "")
     row.update(slug=c["slug"], config=str(c["path"]), state="invalid", files=[])
-    if "cfg" not in c or fr.check(c):
+    problems = fr.check(c) if "cfg" in c else None
+    if problems is None or problems:
+        row["why"] = config_why(problems) if problems else "config-unreadable"
         return row
     try:
         state, dig, made = fr.load_state(c), {}, marks(c)
@@ -111,13 +131,17 @@ def agency(c, roster):  # read-only; -> row dict (HEADER keys) plus 'files' (the
         # Shared rules inputs do not establish agency-specific activity: only its explicit marker does.
         active = (c["out"] / ".review" / "in-flight" / sid).is_file() or (sid != "rules-read" and any(
             worked(p) and (str(p) not in marked or fr.fhash(p) != marked[str(p)]) for p in files))
-    except (fr.Fail, OSError, KeyError, TypeError, ValueError):
+    except (fr.Fail, OSError, KeyError, TypeError, ValueError) as exc:
+        name = type(exc).__name__
+        row["why"] = "state-unreadable:" + (name if FIELD.fullmatch(name) else "other")
         return row
-    slug, scope = c["slug"], (roster or {}).get(c["slug"]) or {}
-    held = roster is not None and ((scope.get("in_scope") or "").strip() != "yes" or (scope.get("applicability") or "") != c["appl"])
-    word = "held" if held else "locked" if fr.lock_state(c)[0] == "held" else "failed" if bad else "done" if first is None \
+    why = held_why(c, roster)
+    lock = ("none", "") if why else fr.lock_state(c)
+    if lock[0] == "held":
+        why = "lock:" + next((code for form, code in LOCKS if re.fullmatch(form, str(lock[1]), re.ASCII)), "held")
+    word = "held" if why.startswith("roster:") else "locked" if why else "failed" if bad else "done" if first is None \
         else ("in-flight" if active else "waiting") if kind == "wait" else "ready"
-    row.update(state=word, stages_done=len(words) - len(todo), stages_total=len(words), next=sid, files=files, run_date=c["date"],
+    row.update(state=word, why=why, stages_done=len(words) - len(todo), stages_total=len(words), next=sid, files=files, run_date=c["date"],
                input_present=("yes" if present else "no") if kind == "wait" else "", author_family=made.get("assess", ""),
                verifier_family=made.get("verify", ""), waiting_for=sid if word in ("waiting", "in-flight") else "")
     return row
@@ -149,7 +173,7 @@ def advance(entries, roster):  # one flock_review run at a time, in list order; 
                                   capture_output=True, check=False)
             rows[i] = agency(c, roster)
             failed = done.returncode not in (0, 3)
-            rows[i]["state"] = "failed" if failed else rows[i]["state"]
+            rows[i]["state"], rows[i]["why"] = ("failed", "") if failed else (rows[i]["state"], rows[i]["why"])
             print("run %s rc=%d state=%s" % (c["slug"], done.returncode, rows[i]["state"]))
             if failed:  # the child's own failure line from stdout only (never stderr or free text), else a fixed form
                 why = [x for x in (done.stdout or b"").decode("utf-8", "replace").splitlines() if REASON.fullmatch(x)]
@@ -168,7 +192,7 @@ def read_prev(raw):  # read before anything runs or is written, so --prev may be
     try:
         with open(path, encoding="utf-8", newline="", opener=lambda p, f: os.open(p, f | os.O_NOFOLLOW)) as handle:
             reader, prev = csv.DictReader(handle), {}
-            if reader.fieldnames != HEADER:
+            if reader.fieldnames not in (HEADER, HEADER[:-1]):  # a BATCH-STATUS.csv from before the trailing `why` column too
                 raise fr.Fail("prev: header differs")
             for n, r in enumerate(reader, 2):  # the header is row 1
                 if key(r) in prev:
@@ -238,7 +262,8 @@ def main(argv=None):
         if args.command == "plan":
             return plan(entries, rows, args.max) or 0
         for row in rows:
-            print("%s %s %s/%s next=%s" % (row["slug"] or "-", row["state"], row["stages_done"], row["stages_total"], row["next"] or "-"))
+            print("%s %s %s/%s next=%s" % (row["slug"] or "-", row["state"], row["stages_done"], row["stages_total"], row["next"] or "-")
+                  + (" why=" + row["why"] if row["why"] else ""))
         if out:
             text = io.StringIO()
             writer = csv.DictWriter(text, fieldnames=HEADER, extrasaction="ignore", lineterminator="\n")
