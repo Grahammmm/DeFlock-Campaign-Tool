@@ -50,9 +50,13 @@ Brevo's `{{ unsubscribe }}` placeholder, inserted exactly once outside any manif
 builder refuses manifests with angle brackets, email addresses or phone-like numbers, script
 content, non-https links or over-long fields (`DraftError`).
 
-Offline: `python3 -m campaign_tool.newsletter --directory D [--manifest FILE]` writes
-`kit/newsletter-draft.html`, `.txt` and `.json`. Without `--manifest` it renders the empty
-template from `campaign.json`. Nothing is sent.
+Offline: `python3 -m campaign_tool.newsletter --directory D [--manifest FILE | --from-content
+[--since YYYY-MM-DD]]` writes `kit/newsletter-draft.html`, `.txt` and `.json`. `--from-content`
+builds the manifest from `content/`: published findings (`/findings/<slug>.html`, corrected
+when they carry corrections) and meetings not `cancelled`; `--since` (UTC midnight) needs it.
+The window above still applies: a finding corrected after `--since` but published before it is
+left out. Without either flag it renders the empty template from `campaign.json`. The JSON
+names its `source` (`content`, `manifest` or `template`). Nothing is sent.
 
 ## Approve & send
 
