@@ -1,7 +1,6 @@
 ---
 name: flock-email
 description: Use when turning a FOLLOWUP-DRAFT.md into an email draft with a cited recipient. Writes a draft only; never sends, queues or approves.
-skill_version: 1.2
 ---
 
 # Flock email (draft only)
@@ -12,17 +11,24 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 - `<store>/agencies/<slug>/CONTACT.csv`, header `agency,role,email,source_url,source_sha256,checked_at,added_by`:
   one `records` row with an `https` source_url, 64-hex hash and YYYY-MM-DD date.
 
-## Steps
+## Cite
+- A Terra legwork card adds the cited CONTACT row; nobody guesses an address.
 
-1. A Terra legwork card adds the cited CONTACT row; nobody guesses an address.
-2. Before a draft: `python3 tools/flock_email.py check <store> --max-age-days 90` lists who is ready (`contact | <slug> | ready | domain=<domain>`) or `stale`; reads only.
-3. `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo> --max-age-days 90`. It prints
-   `written=2 to_domain=<domain>`; errors name `row N: <field>` or `contact: no records row` and write nothing.
-   When draft says stale (or `in the future`), re-check the contact page and update `checked_at`; use `--max-age-days 90` unless the organizer sets another number.
-4. The operator shows G the draft; only G's explicit reply for that exact draft permits sending, by hand.
-5. After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_email.py status STORE` must exit 0
-   (one `email | <slug> | <date> | <stage>` line per run; reads only, prints no address or filled value).
-   `python3 tools/flock_requests.py --check STORE` then needs a REQUESTS row of that agency with `sent` equal to that date.
+## Check
+- Before a draft: `python3 tools/flock_email.py check <store> --max-age-days 90` lists who is ready (`contact | <slug> | ready | domain=<domain>`) or `stale`; reads only.
+
+## Draft
+- `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo> --max-age-days 90`. It prints
+  `written=2 to_domain=<domain>`; errors name `row N: <field>` or `contact: no records row` and write nothing.
+  When draft says stale (or `in the future`), re-check the contact page and update `checked_at`; use `--max-age-days 90` unless the organizer sets another number.
+
+## Show
+- The operator shows G the draft; only G's explicit reply for that exact draft permits sending, by hand.
+
+## Status
+- After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_email.py status STORE` must exit 0
+  (one `email | <slug> | <date> | <stage>` line per run; reads only, prints no address or filled value).
+  `python3 tools/flock_requests.py --check STORE` then needs a REQUESTS row of that agency with `sent` equal to that date.
 
 ## Never
 

@@ -1,7 +1,6 @@
 ---
 name: flock-sweep
 description: Use when tracking every watch-list agency through flock-facts, flock-compare and flock-verify. Shows each agency's stage, blocker and exact next command, plans the next run cards, and builds the cross-agency topic x agency rating matrix from finished runs.
-skill_version: 1.1
 ---
 
 # Flock sweep
@@ -17,21 +16,29 @@ calls kanban or hermes and never writes into the store. Each model run stays its
   and `applicability` (max 200 chars, required for yes) becomes flock-compare's `--applicability`.
 - `--store`: the private fact store, outside the repository.
 
-## Steps
-1. Convert L3 to the F7 header, then write or refresh the ROSTER (the operator confirms `in_scope`).
-2. `python3 tools/flock_sweep.py status --watchlist W --roster R --store S [--out FILE]`: one row per
-   agency with `stage` and the exact `next` command, then `agencies=N finished=F ready=R blocked=B unmapped=U unwatched=W`
-   (unwatched = in-scope roster agencies with no watch row; add one with flock-monitor if it should be monitored). When W > 0, the line before it names those agencies.
-3. `python3 tools/flock_sweep.py plan ... --max 2`: paste the printed `CARDS` block into card bodies. The
-   operator creates compare cards (opus-coder-bopus) and verify cards (codex-reviewer), each within
-   40 turns / 2 h, chunked by document, with `REMAINING.md` on cap.
-4. After each card, run `status` again.
-5. Once 2 or more agencies are `finished`: `python3 tools/flock_sweep.py matrix ... --out DIR` writes
-   COMPARE-MATRIX.csv and COMPARE.md (0600, outside the repository). They hold ids, slugs and ratings only.
-   Keep the last matrix folder: `--prev OLD` also writes COMPARE-CHANGES.csv (up/down/added/removed per cell), a
-   research diff, not a legal conclusion.
-6. Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
-   `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).
+## Convert
+- Convert L3 to the F7 header, then write or refresh the ROSTER (the operator confirms `in_scope`).
+
+## Status
+- `python3 tools/flock_sweep.py status --watchlist W --roster R --store S [--out FILE]`: one row per
+  agency with `stage` and the exact `next` command, then `agencies=N finished=F ready=R blocked=B unmapped=U unwatched=W`
+  (unwatched = in-scope roster agencies with no watch row; add one with flock-monitor if it should be monitored). When W > 0, the line before it names those agencies.
+- After each card, run `status` again.
+
+## Plan
+- `python3 tools/flock_sweep.py plan ... --max 2`: paste the printed `CARDS` block into card bodies. The
+  operator creates compare cards (opus-coder-bopus) and verify cards (codex-reviewer), each within
+  40 turns / 2 h, chunked by document, with `REMAINING.md` on cap.
+
+## Matrix
+- Once 2 or more agencies are `finished`: `python3 tools/flock_sweep.py matrix ... --out DIR` writes
+  COMPARE-MATRIX.csv and COMPARE.md (0600, outside the repository). They hold ids, slugs and ratings only.
+  Keep the last matrix folder: `--prev OLD` also writes COMPARE-CHANGES.csv (up/down/added/removed per cell), a
+  research diff, not a legal conclusion.
+
+## Report
+- Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
+  `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).
 
 ## Stages (first match wins)
 unmapped, out-of-scope, scope-hold, no-facts, facts-unreadable, no-policy, no-law, store-errors,
@@ -47,6 +54,6 @@ roster row names is `store-only` (data, not an error).
 - Treat `finished` or the matrix as publishable. Publication goes through F9, redaction and G.
 - Bypass a 403 or bot wall, add an allowlist host or download anything.
 
-## Changes
+## Roster
 - A ROSTER agency without a watch-list row is accepted and assessed from the store; all other roster checks stay.
-- 1.1: the `status` summary ends with `unwatched=W` (in-scope roster agencies with no watch-list row, exact name match).
+- The `status` summary ends with `unwatched=W` (in-scope roster agencies with no watch-list row, exact name match).
