@@ -5,6 +5,7 @@ only, and the document is validated by ``content.load_meeting`` before it is wri
 """
 import json
 import os
+from datetime import datetime
 
 from .cli import read_config
 from .content import load_content, load_meeting
@@ -51,6 +52,12 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
     meeting = _find(_read_kit(root), meeting_id)
     if meeting.get("status") == "cancelled":
         raise MeetingStageError(f"meeting {meeting_id} is cancelled; no comment kit")
+    try:
+        naive = datetime.fromisoformat(str(meeting.get("starts_at")).replace("Z", "+00:00")).tzinfo is None
+    except ValueError:
+        naive = False  # unparseable: load_meeting names it below
+    if naive:
+        raise MeetingStageError("kit/meetings.json predates time zones; run meetings again")
     model = load_content(root)
     if model is None:
         raise MeetingStageError("content/ is required (the site reads content/meetings/); create content/site.json first")

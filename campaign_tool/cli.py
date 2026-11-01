@@ -252,7 +252,11 @@ def verify_cmd(args):
 
 def meetings_cmd(args, root):
     from datetime import date
-    from .meetings import LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, write_meetings
+    from .meetings import LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    zone = resolve_zone(args.tz)
+    if zone is None:
+        print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
+        raise SystemExit(2)
     read_config(root)
     if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
@@ -262,11 +266,11 @@ def meetings_cmd(args, root):
         raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
     client = LegistarClient(args.client, opener=opener)
     since = date.fromisoformat(args.since) if args.since else None
-    meetings = relevant_events(client, since=since)
+    meetings = relevant_events(client, since=since, zone=zone)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
                else compare_meetings(previous, meetings, args.client, since or date.today()))
-    target = write_meetings(root, meetings, args.client, None if previous is None else changes)
+    target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone)
     report = {"client": args.client, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
     if "added" in changes:
@@ -335,6 +339,7 @@ def main():
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
+    meetings_p.add_argument("--tz", default="America/Los_Angeles", help="IANA time zone for starts_at (default America/Los_Angeles)")
     stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
     stage_p.add_argument("--directory", required=True)
     stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
