@@ -139,7 +139,7 @@ class PublishBriefTest(base.FlockPublishTest):
                 self.assertEqual(base.run("flock_publish.py", *argv), (2, ""))
         self.assertFalse(self.brief_md.exists())
         done = subprocess.run([sys.executable, "-B", str(base.TOOLS / "flock_publish_brief.py"), "--help"], capture_output=True, text=True)
-        self.assertEqual((done.returncode, "{export,status,stage,brief}" in done.stdout), (0, True))
+        self.assertEqual((done.returncode, "{export,status,stage,brief,recheck}" in done.stdout), (0, True))
 
     def test_linked_run_or_file_skipped_never_read(self):
         self.approve(A, "N1")

@@ -18,6 +18,9 @@ review-required, not a legal conclusion.
 4. The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id).
 5. `python3 tools/flock_publish.py --check FILE --run <run folder>` until exit 0, before G sees approvals: any entry whose
    text, cites, topic or class drifted from the verified run is refused (`review` is the only field a human edits).
+5a. Before staging and after any facts review: `python3 tools/flock_publish.py recheck RUNDIR [--today D] [--dry-run]`. An approved
+   entry citing a disputed, removed or expired fact moves to `needs-review` (exit 3; not approved anywhere) and needs a fresh human
+   review and G's re-approval. Only a FACTS.csv edit is allowed past its drift gate; any other drift refuses (exit 1, no write).
 6. `python3 tools/flock_publish.py stage RUNDIR --copy COPY.json --out DIR` (DIR outside the repo, absent or empty) turns
    approved entries plus the human-written copy into private `content/findings/*.json` (`state: "staged"`, schema-checked)
    and `STAGE-MANIFEST.json`; never builds or deploys. The operator copies them into the site PR and sets `state`/`published_at` there.

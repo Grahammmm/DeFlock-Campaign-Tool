@@ -23,6 +23,7 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
    It writes `agencies/<slug>/runs/<date>/` with RUN.json, a header-only FINDINGS.csv and FINDINGS.md.
 2. Model run per `skills/flock-compare/PROMPT.md`, writing only inside the run folder.
 3. Check: `python3 tools/flock_compare.py --check RUNDIR`; exit 0 only (`findings=F errors=K`).
+   A finding citing a `disputed` fact (`fact_ids` or `quote_fact_id`) is an error: review the fact again or drop it.
 4. Summary: `python3 tools/flock_compare.py --summary RUNDIR`; a `policy off-date` line (a cited POLICY version not governing
    on the RUN.json date) is a PROMPT/finding fix (cite the governing version), never a POLICY.csv edit.
    Compare with the previous run: `python3 tools/flock_compare.py --diff OLDRUN NEWRUN`
@@ -32,6 +33,7 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
 ## Outputs
 - Row numbers, field names, ids and counts. Never claim, quote or fact text.
 - `--summary` (clean runs only, else refused) gives rating counts per topic and cited/uncited LAW rules, POLICY rows and facts; a report, not a review verdict.
+  Each `topic |` line ends `unreviewed_cited=K` (findings citing an `unreviewed` fact; a count, not a gate); `facts |` ends `unreviewed_cited_facts= checked_cited=`.
 - `--diff` (read-only; no clean `--check` needed) lists findings added, removed and changed by id, flags `[old public-ok]` ids, and never prints text, fact ids, rule ids or policy refs.
 - RUN.json records the input hashes; if FACTS, LAW, POLICY or the law package change, `--check`
   fails until the comparison is redone in a new run folder.
