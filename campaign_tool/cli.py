@@ -364,6 +364,8 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    check_p = commands.add_parser("content-check", help="Name every content/ problem in one read-only pass (exit 3)")
+    check_p.add_argument("--directory", required=True)
     args = parser.parse_args()
     if args.command == "verify":
         try:
@@ -392,6 +394,9 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "content-check":
+            from .content_check import content_check_cmd
+            content_check_cmd(root)
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:

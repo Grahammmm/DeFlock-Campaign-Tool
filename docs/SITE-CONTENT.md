@@ -13,6 +13,11 @@ The loader (`campaign_tool/content.py`) refuses malformed or unpublishable input
 and the build writes nothing in that case; it is not a publication approval,
 a legal review or an HTML sanitizer.
 
+**Check before build.** `python3 -m campaign_tool content-check --directory D` applies
+the same loader rules to every file in `D/content/` and prints all problems at once
+(`content/: N problem(s)`, one line each, at most 200), exiting 3 when any exist and 0
+when clean or when there is no `content/`. It is read-only and writes nothing.
+
 ## Content directory
 
 | Path | Required | Purpose |
