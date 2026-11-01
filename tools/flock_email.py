@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Wrap FOLLOWUP-DRAFT.md into a private EMAIL-DRAFT.md. Draft only: it writes files and cannot send. `status STORE` reads each run's email stage back."""
-import csv, os, re, sys, tempfile
+import csv, importlib.util, os, re, sys, tempfile
 from datetime import date
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
@@ -11,7 +11,9 @@ CHECKS = {"role": r"records", "email": r"[^@\s,;<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,
 USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.md; draft only, never sends)\n"
          "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)\n"
          "       check and draft also take [--max-age-days N [--today YYYY-MM-DD]]  (a contact checked more than N days ago is stale)\n"
-         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval)")
+         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval)\n"
+         "       flock_email.py lint RUNDIR --drafts DIR  (run after any edit and before asking G to approve; reads only, exit 1 on findings)")
+PLACEHOLDER = re.compile(r"\{\{|\}\}|(?<![a-z])(?:todo|xxx|tbd)|[\[<]insert|____", re.I)
 STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval")
 LABELS = "runs followup drafted approved sent malformed inconsistent".split()
 
@@ -47,11 +49,15 @@ def contact(path, folder, max_age=None, today=None):
                 "contact: checked_at is in the future" if age < 0 else f"contact: checked_at {found[0]['checked_at']} is {age} days old (max {max_age})"]
     return (found or [{"email": None}])[0]["email"], errs
 
+def layout(run):
+    """Why RUNDIR breaks the <store>/agencies/<slug>/runs/<date>-outside-the-repository rule, or None."""
+    if not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
+        return "RUNDIR must be <store>/agencies/<slug>/runs/<date>"
+    return "RUNDIR is inside the repository" if REPO in (run, *run.parents) else None
+
 def draft(rundir, drafts, max_age=None, today=None):
     run, out_dir = Path(rundir).resolve(), Path(drafts).resolve()
-    if not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
-        return print("draft: RUNDIR must be <store>/agencies/<slug>/runs/<date>", file=sys.stderr) or 1
-    if REPO in (run, *run.parents): return print("draft: RUNDIR is inside the repository", file=sys.stderr) or 1
+    if bad := layout(run): return print(f"draft: {bad}", file=sys.stderr) or 1
     name = run.parent.parent.name
     try: lines = (run / "FOLLOWUP-DRAFT.md").read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError): lines = []
@@ -105,6 +111,10 @@ def check(store, show=None, max_age=None, today=None):
                              " | draft only; G approval required before any send"]))
     return 0 if ready == len(folders) else 1
 
+def marks(lines):
+    """The values of every `G APPROVED:` and every `Sent by:` line (stage and lint share this parse)."""
+    return [[ln.split(":", 1)[1].strip() for ln in lines if ln.startswith(k)] for k in ("G APPROVED:", "Sent by:")]
+
 def stage(run):
     """The email stage of one run folder, or None without a draft file. Never returns a filled value."""
     email, follow = run / "EMAIL-DRAFT.md", run / "FOLLOWUP-DRAFT.md"
@@ -112,7 +122,7 @@ def stage(run):
     if not email.exists(): return "follow-up drafted" if follow.exists() else None
     try: lines = email.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError): return "malformed"
-    ok = [[ln.split(":", 1)[1].strip() for ln in lines if ln.startswith(k)] for k in ("G APPROVED:", "Sent by:")]
+    ok = marks(lines)
     if lines[:1] != [HEAD] or [len(v) for v in ok] != [1, 1]: return "malformed"
     yes, sent = ok[0][0] not in ("", "____"), bool(ok[1][0]) and not ok[1][0].startswith("____")
     return ("sent recorded" if yes else STAGES[5]) if sent else "approval recorded" if yes else "email drafted"
@@ -133,11 +143,49 @@ def status(folders):
     print("\n".join(lines + ["email | " + " ".join(f"{k}={v}" for k, v in zip(LABELS, n)) + " | records only what the files say"]))
     return 1 if n[5] or n[6] else 0
 
+def lint(rundir, drafts):
+    """One `lint | slug | date | rule` line per broken rule, then a summary. Never prints the offending text; writes nothing."""
+    run = Path(rundir).resolve()
+    if bad := layout(run): return print(f"lint: {bad}", file=sys.stderr) or 1
+    name, copy = run.parent.parent.name, run / "EMAIL-DRAFT.md"
+    twin = Path(drafts).resolve() / f"{name}-{run.name}-EMAIL-DRAFT.md"
+    if copy.is_symlink() or twin.is_symlink(): return print("lint: link refused", file=sys.stderr) or 1  # never read
+    try: raw = copy.read_bytes()
+    except OSError: return print("lint: EMAIL-DRAFT.md missing", file=sys.stderr) or 1
+    try: other = twin.read_bytes()
+    except OSError: other = None
+    rules, lines = [], raw.decode("utf-8", "replace").splitlines()
+    if other is None: rules.append("twin missing")
+    elif other != raw:
+        a, b = raw.split(b"\n"), other.split(b"\n")
+        rules.append(f"copies differ (first differing line {next((i for i, (x, y) in enumerate(zip(a, b), 1) if x != y), min(len(a), len(b)) + 1)})")
+    cut = [i for i, ln in enumerate(lines) if ln == "---"]
+    to = lines[1][4:].strip() if len(lines) > 1 and lines[1].startswith("To: ") else None
+    subject = lines[2][9:] if len(lines) > 2 and lines[2].startswith("Subject: ") else ""
+    if lines[:1] != [HEAD] or to is None or not subject or len(cut) < 2 or [len(v) for v in marks(lines)] != [1, 1]: rules.append("malformed")
+    body = "\n".join(lines[cut[0] + 1:cut[1]] if len(cut) > 1 else lines[3:])  # no --- pair: scan the rest (fail closed)
+    addr, errs = contact(run.parents[3] / "agencies" / name / "CONTACT.csv", name)
+    if errs or to != addr: rules.append(f"to: CONTACT.csv {errs[0]}" if errs else "to: not the current records address")
+    if PLACEHOLDER.search(subject + "\n" + body): rules.append("placeholder")
+    privacy = _privacy()
+    allowed = {a.lower() for a in (to, addr) if a}  # the records address may appear; every other address is private
+    scan = privacy.EMAIL.sub(lambda m: " " if m.group(0).lower().lstrip("<([\"'") in allowed else m.group(0), subject + "\n" + body)
+    rules += [f"private: {c}" for c in privacy.categories(scan)]
+    if len(subject) > 150 or len(body) > 8000: rules.append("length")
+    print("\n".join([f"lint | {name} | {run.name} | {r}" for r in rules] +
+                    [f"lint | rules={len(rules)} | {stage(run)} | draft only; G approval required before any send"]))
+    return 1 if rules else 0
+
+def _privacy():  # loaded by file path like report/page/publish do; the patterns are never copied
+    spec = importlib.util.spec_from_file_location("_email_flock_privacy", REPO / "tools" / "flock_privacy.py")
+    return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
+
 def main(argv):
     if argv in (["--help"], ["-h"]): return print(USAGE) or 0
     opt = ages(argv[2:] if argv[:1] == ["check"] else argv[4:] if argv[:1] == ["draft"] and argv[2:3] == ["--drafts"] else [])
     if opt and len(argv) >= 2 and argv[0] == "check": return check(argv[1], None, *opt)
     if len(argv) == 2 and argv[0] == "status": return check(argv[1], status)
     if opt and len(argv) >= 4 and argv[0] == "draft" and argv[2] == "--drafts": return draft(argv[1], argv[3], *opt)
+    if len(argv) == 4 and argv[0] == "lint" and argv[2] == "--drafts": return lint(argv[1], argv[3])
     return print(USAGE, file=sys.stderr) or 2
 if __name__ == "__main__": sys.exit(main(sys.argv[1:]))
