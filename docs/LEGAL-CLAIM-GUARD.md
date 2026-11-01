@@ -32,7 +32,7 @@ even if the disclosure was accidental` flags (the assertion comes before the `if
   but not a clause opened by a joining word.
 - A negation (`not`, `never`, `no`, `n't`; but not `not only`) within three words before the matched wording negates that
   match, whatever the predicate, instead of a fixed list of negated verbs.
-- Denials and statute text (`did not violate`, `no violation`, `this section`, a trailing `?`) neutralise their whole clause.
+- Requirement and no-determination cues (`requires`, `prohibits`, `forbids`, `determined that`, `finding that`, `this section`) neutralise only what FOLLOWS them, like the cues above. A conditional or question that OPENS a comma segment (`If X broke the law and violated SB 34, ...`) covers the whole segment across and/but. Denials (`did not violate`) are handled by negation next to the matched wording, so unrelated denial words (`did not determine retention`) cannot hide an accusation. Only a trailing `?` neutralises a whole clause.
 
 Known gaps (accepted for an alert-only lint): an assertion with none of those verb shapes (`a breach by X`) is missed;
 `the complaint alleges X violated` passes though a reader may take it as ours; a negation more than three words before the

@@ -20,7 +20,9 @@
     "The agency violated SB 34, even if the disclosure was accidental.",
     "The agency violated SB 34 even if the disclosure was accidental.",
     "The agency declined to say whether it kept logs, and it broke the law.",
-    "The agency did not respond to our request and broke the law."
+    "The agency did not respond to our request and broke the law.",
+    "Agency X violated SB 34 despite no finding of liability.",
+    "Agency X violated SB 34 because it did not determine retention periods."
   ],
   "pass": [
     "SB 34 requires agencies to publish a usage and privacy policy.",
@@ -50,6 +52,8 @@
     "The agency did not act unlawfully.",
     "The agency is not non-compliant with SB 34.",
     "The agency declined to say whether it kept logs, and has not answered since.",
-    "According to the county counsel, the program was in violation of the old policy, and the agency disputes this."
+    "According to the county counsel, the program was in violation of the old policy, and the agency disputes this.",
+    "SB 34 prohibits agencies from unlawfully sharing data.",
+    "If Agency X broke the law and violated SB 34, a court could impose penalties."
   ]
 }

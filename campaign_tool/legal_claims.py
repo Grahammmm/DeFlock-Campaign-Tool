@@ -26,17 +26,21 @@ SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 SEGMENT_SPLIT = re.compile(r"[,;:]\s+")
 JOINER_SPLIT = re.compile(r"\s+(?:and|but|yet|while|although|though|however)\s+", re.I)
 QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’')
-# Cues that make only what FOLLOWS them in the clause neutral (a condition, a question, an attribution). Text before the cue still
-# counts: "X violated SB 34 even if it was accidental" flags, "whether X violated SB 34" passes.
-SCOPED = re.compile(r"\b(?:whether|if|unless|alleg\w*|according to|claims? that|claimed that|asserts? that|argues? that)\b", re.I)
+# Cues that make only what FOLLOWS them in the clause neutral: a condition, a question, an attribution, a statement of what a law
+# requires, or a statement that nothing was determined. Text before the cue still counts: "X violated SB 34 even if it was
+# accidental" flags, "whether X violated SB 34" and "SB 34 prohibits agencies from unlawfully sharing data" pass.
+SCOPED = re.compile(r"\b(?:whether|if|unless|alleg\w*|according to|claims? that|claimed that|asserts? that|argues? that|"
+                    r"(?:determin\w*|find(?:ing)?s?|found|conclu\w*) that|(?:requires?|required|prohibits?|forbids?|bars?|mandates?|permits?|"
+                    r"makes? it|provides? that)|this (?:section|chapter|title|article|act|part|subdivision))\b", re.I)
+# A conditional or question that OPENS a comma segment ("If X broke the law and violated SB 34, ...") covers the whole segment,
+# across and/but joiners. A cue in the middle of a segment covers only its own clause.
+LEADING = re.compile(r"\s*(?:if|whether|unless)\b", re.I)
 # An attribution ("According to counsel, ...", "The complaint alleges ...; ...") also covers later comma segments of its sentence,
 # but not a clause opened by a joining word ("..., and it broke the law"): that is a new statement.
 ATTRIBUTION = re.compile(r"\b(?:alleg\w*|according to|claims? that|claimed that|asserts? that|argues? that)\b", re.I)
-# Cues that make the whole clause neutral: the clause is itself a denial, a disclaimer or statute text.
-NEUTRAL = re.compile(
-    r"\b(?:(?:did|does|do|has|have|had|is|are|was|were|will|would|can|could)(?: not|n['’]t)(?: \w+){0,3}? "
-    r"(?:violat\w*|determin\w*|assert\w*|claim\w*|alleg\w*|conclud\w*|find|found)|not (?:a |an )?(?:claim|determination|finding)|"
-    r"no (?:violation|determination|finding)s?|not been determined|without determin\w*|this (?:section|chapter|title|article|act|part|subdivision))\b|\?\s*$", re.I)
+# A clause that is itself a question is neutral. Denials ("did not violate", "no violation") need no cue: they never match a rule,
+# or are negated by NEGATED below, so unrelated denial words ("did not determine retention") cannot hide a real accusation.
+NEUTRAL = re.compile(r"\?\s*$")
 # A negation within three words before the matched wording negates that match ("did not break the law", "is not non-compliant",
 # "did not act unlawfully"). "not only" is emphasis, not negation.
 NEGATED = re.compile(r"\b(?:not(?! only)|never|nor|n['’]t|no)\W+(?:\w+\W+){0,3}$", re.I)
@@ -69,8 +73,9 @@ def _asserts(clause, inherited=False):
 def _sentence_claims(sentence):
     found, attributed = set(), False
     for segment in SEGMENT_SPLIT.split(sentence):
+        covered = bool(LEADING.match(segment))
         for n, clause in enumerate(JOINER_SPLIT.split(segment)):
-            found |= _asserts(clause, inherited=attributed and n == 0)
+            found |= _asserts(clause, inherited=covered or (attributed and n == 0))
         attributed = attributed or bool(ATTRIBUTION.search(segment))
     return found
 
