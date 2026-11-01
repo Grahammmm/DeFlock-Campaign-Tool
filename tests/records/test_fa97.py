@@ -20,6 +20,7 @@ from campaign_tool.records.portal.policy import PortalError
 from campaign_tool.records.portal.store import Queue
 from campaign_tool.records.run import Pipeline, root_lock
 from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
+from contextlib import closing
 
 HOST = producer.HOST
 BASE = producer.BASE
@@ -71,9 +72,9 @@ class Fixture(unittest.TestCase):
         # Every portal table includes notice counts, generations, attempts and
         # versions; every canonical table and immutable source byte is compared.
         portal = tuple(self.queue.db.iterdump())
-        with sqlite3.connect(self.root.ledger) as con:
+        with closing(sqlite3.connect(self.root.ledger)) as con, con:
             canonical = tuple(con.iterdump())
-        with sqlite3.connect(self.root.intake_db) as con:
+        with closing(sqlite3.connect(self.root.intake_db)) as con, con:
             intake = tuple(con.iterdump())
         files = {}
         for root in (self.export, self.root.intake / "blobs", self.queue.objects):

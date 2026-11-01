@@ -12,6 +12,7 @@ from campaign_tool.records.runner.contracts import Preserved
 from campaign_tool.records.runner.core import attachment_identity_ok,observed_runtime
 from tests.records import native_msg_fixtures as native
 from tests.records.test_mail_wire_intake import chain,mixed,leaf,binary
+from contextlib import closing
 
 
 class NativeCompletionTests(unittest.TestCase):
@@ -221,7 +222,7 @@ class NativeP2RegressionTests(unittest.TestCase):
             (inbox/"synthetic.eml").write_bytes(raw)
             out=base/"out";out.mkdir(mode=0o700)
             config=folder.load_config(roots=[str(inbox)],output=str(out))
-            with sqlite3.connect(":memory:") as db:
+            with closing(sqlite3.connect(":memory:")) as db, db:
                 db.row_factory=sqlite3.Row;db.executescript(folder.SCHEMA)
                 folder.inventory(db,out,[str(inbox)],config)
                 folder.extract(db,out,dict(folder.LIMITS),selection=outer,config=config)

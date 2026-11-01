@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import closing
 
 
 @contextmanager
@@ -86,7 +87,7 @@ def capture(root):
     original = hashlib.sha256(b'FA1605 fictional original').hexdigest()
     receipt = json.dumps(dict(mtime_ns=1, ctime_ns=2, device=3, inode=4,
                               observed_at='2000-01-01T00:00:00+00:00'))
-    with sqlite3.connect(source / 'intake.sqlite') as con:
+    with closing(sqlite3.connect(source / 'intake.sqlite')) as con, con:
         con.execute('CREATE TABLE docs(sha TEXT PRIMARY KEY,bytes INTEGER,format TEXT,stage TEXT)')
         con.execute('INSERT INTO docs VALUES(?,?,?,?)', (original, 12, 'txt', 'complete'))
         con.execute('CREATE TABLE occurrences(oid TEXT,sha TEXT,root TEXT,path TEXT,parent TEXT,locator TEXT,receipt TEXT,ignored_note TEXT,PRIMARY KEY(oid,sha))')

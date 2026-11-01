@@ -60,9 +60,30 @@ site never lists a cancelled meeting as upcoming: it stays under past meetings m
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
-`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--location TEXT] [--replace]`,
+`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--location TEXT] [--participation FILE] [--replace]`,
 which writes `content/meetings/<id>.json` with a comment kit that cites published findings only;
 nothing is fetched, and `--replace` regenerates an existing file.
+
+### Participation (organizer-verified)
+
+`meetings-stage --participation FILE` adds the facts an organizer checked on the agency's own page.
+The kit never guesses them: no default deadline, no model-filled value, nothing scraped.
+
+```json
+{"in_person": true, "remote": {"available": true, "how": "Zoom link on the posted agenda"},
+ "written_comment": {"how": "Email the city clerk", "deadline": "2026-10-14T12:00:00-07:00"},
+ "source_url": "https://example.invalid/council/agenda", "verified_by": "Synthetic Organizer",
+ "verified_at": "2026-10-10"}
+```
+
+`null` (or an absent key) means "not stated by the source" and prints nothing. `source_url` (https),
+`verified_by` (not empty) and `verified_at` (`YYYY-MM-DD`) are required; unknown keys are refused. The
+deadline (or `null`) needs a UTC offset and must be before `starts_at`; `verified_at` must not be in the
+future nor more than 30 days before the meeting; `how` is at most 200 characters with angle brackets
+stripped. The file must be a regular file (no symlink) of at most 64 KB, and it is validated before
+anything is written. The kit adds `## How to take part` after the asks: one line per stated fact, then
+`Source: <url> (checked <date>)`. Without the flag the document has no `participation` and the section
+says only `Check the posted agenda for how and when to comment; participation details were not verified.`
 
 ## Workspace Meetings screen
 
@@ -89,6 +110,10 @@ campaign_name, base_url)` produces the same structure for the offline kit:
 
 With no published findings the kit says so and cites the records request instead. Kits
 never include subscriber data, correspondence or unpublished analysis.
+
+A cited finding with corrections shows `(corrected <latest date>)` after its bullet and, in Sources,
+a link to `<finding link>#corrections`; the summary is always the current text. `doctor` lists staged kits
+that predate a finding's latest correction as `stale_comment_kits`; re-stage them with `meetings-stage --id <id> --replace`.
 
 ## Not done
 

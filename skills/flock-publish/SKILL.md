@@ -24,6 +24,11 @@ review-required, not a legal conclusion.
 - `python3 tools/flock_publish.py --check FILE --run <run folder>` until exit 0, before G sees approvals: any entry whose
   text, cites, topic or class drifted from the verified run is refused (`review` is the only field a human edits).
 
+## Recheck
+- Before staging and after any facts review: `python3 tools/flock_publish.py recheck RUNDIR [--today D] [--dry-run]`. An approved
+  entry citing a disputed, removed or expired fact moves to `needs-review` (exit 3; not approved anywhere) and needs a fresh human
+  review and G's re-approval. Only a FACTS.csv edit is allowed past its drift gate; any other drift refuses (exit 1, no write).
+
 ## Stage
 - `python3 tools/flock_publish.py stage RUNDIR --copy COPY.json --out DIR` (DIR outside the repo, absent or empty) turns
   approved entries plus the human-written copy into private `content/findings/*.json` (`state: "staged"`, schema-checked)
@@ -35,6 +40,19 @@ review-required, not a legal conclusion.
 
 ## Status
 - Any time: `python3 tools/flock_publish.py status STORE` lists every verified run's publication stage (counts only, read-only).
+
+## Brief
+- Private draft (**NEEDS G** before any send): `python3 tools/flock_publish.py brief STORE --agency SLUG --out FILE.md`
+  (same as `python3 tools/flock_publish_brief.py STORE --agency SLUG --out FILE.md`) writes one 0600 Markdown draft of the agency's
+  approved entries from runs that pass `--check`; FILE is new and outside the repo and `STORE/agencies`. Never sent, posted or built.
+
+## Withdraw
+- Withdraw or correct a published entry. **NEEDS G**: G approves a withdrawal or correction; record his approval_ref.
+  `python3 tools/flock_publish.py withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF`, or
+  `python3 tools/flock_publish.py correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID --on D --by NAME --approval-ref REF` (NEWID approved in
+  a run of the same agency, with new text). The entry becomes terminal `withdrawn`/`superseded` with a row in private `PUBLISH-CHANGES.csv`;
+  `--check --run` and `stage` then refuse any approved entry with that text in the agency's runs. The operator removes or replaces the
+  site file in a site PR (the tool never edits a site).
 
 ## Never
 - Set `approved` from a model, or edit an exported `text` instead of re-running the run.

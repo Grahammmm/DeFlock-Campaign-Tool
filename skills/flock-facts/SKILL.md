@@ -17,7 +17,7 @@ store (outside the repo). No model step: the tool validates, it does not read do
 - Check the source first: `python3 tools/flock_facts.py --check SRC.csv`.
 - Fix each reported `row N: <field> <reason>` at the source. A page that cannot be read
   becomes an `UNREADABLE` row with page and sha256, for the extraction owner.
-- Verify the store: `python3 tools/flock_facts.py --check STORE`; exit 0 only.
+- Verify the store: `python3 tools/flock_facts.py --check STORE`; exit 0 only. It also names a `policy` fact not citing its agency's POLICY.csv `doc_sha256` and a `law` fact not citing a LAW.csv `text_sha256`.
 - Treat a clean check as machine-valid and review-required, not accepted.
 - Whole-store check, read-only: `python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N]`; exit 0 only (docs/FLOCK-FACTS.md "Store check").
 
@@ -40,6 +40,12 @@ store (outside the repo). No model step: the tool validates, it does not read do
 
 ## Back up
 - Back up the store locally: `python3 tools/flock_backup.py create STORE --out FILE.tar`, then `verify` (docs/BACKUP.md "Flock store").
+
+## Review
+- A second person reviews; use review, not hand edits: `python3 tools/flock_facts.py review --store STORE --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME [--date YYYY-MM-DD] [--note TEXT]`; refused when NAME is the fact's `added_by`; each change goes to FACT-REVIEWS.csv; ids/counts only.
+
+## Unreadable
+- Unreadable pages: `python3 tools/flock_facts.py unreadable --store STORE --out FILE.csv [--agency SLUG]` writes a private (agency, sha256, page) list, outside the repo and STORE/agencies; hand the file to the extraction owner; do not re-OCR here.
 
 ## Outputs
 - `STORE/agencies/<slug>/FACTS.csv` (schema v2, one folder per agency slug).

@@ -26,12 +26,14 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
 
 ## Check
 - `python3 tools/flock_compare.py --check RUNDIR`; exit 0 only (`findings=F errors=K`).
+  A finding citing a `disputed` fact (`fact_ids` or `quote_fact_id`) is an error: review the fact again or drop it.
 - Morro Bay: add `--golden tests/fixtures/flock/morrobay-golden.csv`. A mismatch becomes a
   PROMPT.md fix and a rerun, never a hand edit of the findings.
 
 ## Summary
 - `python3 tools/flock_compare.py --summary RUNDIR`; a `policy off-date` line (a cited POLICY version not governing
   on the RUN.json date) is a PROMPT/finding fix (cite the governing version), never a POLICY.csv edit.
+  Each `topic |` line ends `unreviewed_cited=K` (findings citing an `unreviewed` fact; a count, not a gate); `facts |` ends `unreviewed_cited_facts= checked_cited=`.
 
 ## Diff
 - Compare with the previous run: `python3 tools/flock_compare.py --diff OLDRUN NEWRUN`

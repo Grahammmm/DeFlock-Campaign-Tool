@@ -1,5 +1,5 @@
 """Per-agency fact store (schema v2): import v1 FACTS.csv, check, and coverage per posted INVENTORY document. Prints counts only."""
-import argparse, contextlib, csv, datetime, hashlib, importlib.util, json, os, re, sys, tempfile, unicodedata
+import argparse, contextlib, csv, datetime, hashlib, importlib.util, io, json, os, re, sys, tempfile, unicodedata
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -7,6 +7,7 @@ V1 = ["agency", "request", "fact_type", "value", "source_sha256", "page", "verba
 V2 = V1 + ["fact_id", "kind", "effective_from", "effective_to", "added_by", "added_at", "status"]
 KINDS = {"record", "policy", "law", "public"}
 STATUSES = {"unreviewed", "checked", "disputed"}
+REVIEW_HEAD = ["fact_id", "from_status", "to_status", "reviewer", "reviewed_at", "note"]  # FACT-REVIEWS.csv v1
 
 
 def slugify(agency):
@@ -85,9 +86,74 @@ def check_file(path, folder=None):
 def check_path(target):
     if not Path(target).is_dir():
         return check_file(target)
-    files = sorted(Path(target).glob("agencies/*/FACTS.csv"))
-    return ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)] \
+    files, said = sorted(Path(target).glob("agencies/*/FACTS.csv")), set()
+    return ["file %d: %s" % (n, e) for n, f in enumerate(files, 1)
+            for e in check_file(f, f.parent.name) + check_reviews(f.parent / "FACT-REVIEWS.csv", f)
+            + link_errors(Path(target), f.parent.name, load(f, f.parent.name)[1], said)] \
         or ([] if files else ["no FACTS.csv files in store"])
+
+
+def link_errors(store, folder, rows, said=None):
+    """Store mode only (DF1537-14): a policy fact cites a doc_sha256 of its agency's POLICY.csv, a law fact a text_sha256 of
+    STORE/LAW.csv. Hashes are compared, never printed; a missing, linked or invalid POLICY/LAW file is named, not cascaded."""
+    said = set() if said is None else said  # "LAW.csv has errors" is reported once per run
+    errors, cited = [], {}
+    for number, row in rows:
+        if row["kind"] in ("policy", "law") and re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"].strip()):
+            cited.setdefault(row["kind"], []).append((number, row["source_sha256"].strip()))
+    for kind, path, field in (("policy", store / "agencies" / folder / "POLICY.csv", "doc_sha256"),
+                              ("law", store / "LAW.csv", "text_sha256")):
+        name, owner = path.name, "agency" if kind == "policy" else "store"
+        if not cited.get(kind):
+            continue
+        if not os.path.lexists(path):
+            errors += ["row %d: %s fact but %s has no %s" % (n, kind, owner, name) for n, _ in cited[kind]]
+            continue
+        bad = "%s is a link or not a file; refusing" % name if os.path.islink(path) or not path.is_file() else None
+        if bad is None:
+            spec = importlib.util.spec_from_file_location("_facts_law_policy", REPO / "tools" / "flock_law_policy.py")
+            spec.loader.exec_module(tool := importlib.util.module_from_spec(spec))  # loaded by path, never a copy
+            found, errs = tool.load_policy(path, folder) if kind == "policy" else tool.load_law(path)
+            bad = errs and "%s has errors (run flock_law_policy.py --check)" % name
+        if bad:
+            errors += [] if kind == "law" and "law" in said else [bad]
+            said.add(kind)
+            continue
+        known = {r[field] for _, r in found}
+        errors += ["row %d: %s fact source is not a %s" % (n, kind, "POLICY version of this agency" if kind == "policy"
+                                                            else "LAW row") for n, h in cited[kind] if h not in known]
+    return errors
+
+
+def check_reviews(log, facts):
+    """FACT-REVIEWS.csv v1 if present (DF1537-01): rows valid, ids in FACTS.csv, last logged to_status == FACTS status."""
+    if os.path.islink(log) or (os.path.lexists(log) and not log.is_file()):
+        return ["FACT-REVIEWS.csv: is a symlink or not a file; refusing"]
+    if not log.exists():
+        return []
+    with open(log, encoding="utf-8-sig", newline="") as handle:
+        records = list(csv.reader(handle))
+    if not records or records[0] != REVIEW_HEAD:
+        return ["reviews row 1: header is not FACT-REVIEWS.csv v1"]
+    by_id, last, errors = {r["fact_id"]: r for _, r in load(facts, facts.parent.name)[1]}, {}, []
+    for n, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
+        if len(rec) != len(REVIEW_HEAD):
+            errors.append("reviews row %d: columns have the wrong count" % n)
+            continue
+        r, fact = dict(zip(REVIEW_HEAD, rec)), by_id.get(rec[0])
+        who = r["reviewer"].strip().casefold()
+        checks = (("fact_id", fact),
+                  ("from_status", r["from_status"] in STATUSES and r["from_status"] == last.get(rec[0], r["from_status"])),
+                  ("to_status", r["to_status"] in {"checked", "disputed"} - {r["from_status"]}),
+                  ("reviewer", who and not (fact and fact["added_by"].strip().casefold() == who)),
+                  ("reviewed_at", valid_date(r["reviewed_at"])),
+                  ("note", not re.search(r"[\r\n]|.{121}", r["note"])))
+        for field, ok in checks:
+            if not ok:
+                errors.append("reviews row %d: %s %s" % (n, field, "is not in FACTS.csv" if field == "fact_id" else "is invalid"))
+        last[rec[0]] = r["to_status"]
+    return errors + ["reviews: %s: FACTS status %s does not match the review log (%s)" % (i, by_id[i]["status"], s)
+                     for i, s in last.items() if i in by_id and by_id[i]["status"] != s]
 
 
 def write_atomic(path, rows):
@@ -219,6 +285,40 @@ def status(args):
     return 0
 
 
+def unreadable(args):
+    """DF1537-15: private CSV of distinct (agency, source_sha256, page) with UNREADABLE fact rows, for the extraction owner.
+    New file only (0600, temp + link), outside the repository and STORE/agencies; stdout has counts, never a hash or page."""
+    out, store = Path(args.out), Path(args.store)
+    where, agencies = out.parent.resolve() / out.name, store.resolve() / "agencies"
+    refuse = ["--out: is inside the repository"] * (where == REPO or REPO in where.parents) + [
+        "--out: is inside the store's agencies folder"] * (where == agencies or agencies in where.parents)
+    refuse = refuse or ["--out: exists or is a link; not overwritten"] * os.path.lexists(out) or [
+        "--out: parent folder is missing"] * (not out.parent.is_dir())
+    files, errors = ([], refuse) if refuse else store_files(store, slugify(args.agency or ""))
+    bad = 0 if errors else sum(len(check_file(f, f.parent.name)) for f in files)
+    if errors or bad or not files:
+        return fail(errors or ["facts: %d errors (run --check)" % bad] * bool(bad) or ["no FACTS.csv files in store"])
+    pages = {}
+    for f in files:
+        for _, r in load(f, f.parent.name)[1]:
+            if r["value"].strip() == "UNREADABLE":
+                key = (f.parent.name, r["source_sha256"].strip(), int(r["page"].strip()))
+                pages[key] = pages.get(key, 0) + 1
+    text = io.StringIO()
+    csv.writer(text, lineterminator="\n").writerows([["agency", "source_sha256", "page", "fact_rows"]]
+                                                    + [[*key, n] for key, n in sorted(pages.items())])
+    fd, tmp = tempfile.mkstemp(prefix=".unreadable.", suffix=".tmp", dir=out.parent)  # mode 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text.getvalue())
+        os.link(tmp, out)  # fails rather than overwrite a file that appeared meanwhile
+    finally:
+        with contextlib.suppress(OSError): os.unlink(tmp)
+    print("unreadable | agencies=%d pages=%d documents=%d rows=%d written=%s | hand-off for the extraction owner;"
+          " not a review verdict" % (len(files), len(pages), len({k[:2] for k in pages}), sum(pages.values()), out.name))
+    return 0
+
+
 OUTCOMES = ("found", "not-found", "no-document", "ambiguous-export", "no-page", "page-hash-mismatch", "unreadable-fact",
             "skipped-kind", "bad-row")
 FOLD = str.maketrans("\u2018\u2019\u201a\u201b\u2032\u201c\u201d\u201e\u201f\u2033\u2010\u2011\u2012\u2013\u2014\u2015\u2212",
@@ -347,6 +447,55 @@ def stale(args):
     return 3 if (affected if args.findings is not None else count["expired"] + count["superseded"]) else 0
 
 
+def review(args):
+    """DF1537-01: set checked or disputed on listed fact ids by a reviewer other than added_by, each change logged to
+    FACT-REVIEWS.csv. All or nothing; ids and counts only, never a value, quote, page or note."""
+    store, slug, date, who = Path(args.store).resolve(), slugify(args.agency), args.date, args.reviewer.strip()
+    if store == REPO or REPO in store.parents:
+        return fail(["store inside repository"])
+    files, errors = store_files(store, slug)
+    log = store / "agencies" / slug / "FACT-REVIEWS.csv"
+    errors = errors or ["file 1: %s" % e for e in check_file(files[0], slug) + check_reviews(log, files[0])]
+    if errors:
+        return fail(errors)
+    rows = [r for _, r in load(files[0], slug)[1]]
+    by_id, ids, ok_date = {r["fact_id"]: r for r in rows}, [i.strip() for i in args.ids.split(",")], valid_date(date)
+    shown = lambda n, i: i if re.fullmatch(r"F-[0-9a-f]{12}", i) else "at position %d" % n  # noqa: E731
+    errors = ["--ids: more than 200 ids"] * (len(ids) > 200)
+    errors += ["--ids: duplicate id %s" % shown(n, i) for n, i in enumerate(ids, 1) if i in ids[:n - 1]]
+    errors += ["--ids: unknown fact id %s" % shown(n, i) for n, i in enumerate(ids, 1) if i not in by_id]
+    errors += ["--reviewer: is empty"] * (not who) + ["--date: is not YYYY-MM-DD"] * (not ok_date)
+    errors += ["--date: is after today"] * (ok_date and date > datetime.date.today().isoformat())
+    errors += ["--note: longer than 120 characters or has a line break"] * bool(re.search(r"[\r\n]|.{121}", args.note or ""))
+    for i in (i for i in dict.fromkeys(ids) if i in by_id):
+        errors += ["%s: reviewer is the person who added it" % i] * (who.casefold() == by_id[i]["added_by"].strip().casefold())
+        errors += ["%s: --date is before added_at" % i] * (ok_date and date < by_id[i]["added_at"])
+    if errors:
+        return fail(errors)
+    lines = ["review | %s | %s | %s" % (slug, i, "unchanged" if by_id[i]["status"] == args.set else "%s -> %s" % (
+        by_id[i]["status"], args.set)) for i in ids]
+    changed = [[i, by_id[i]["status"], args.set, who, date, args.note or ""] for i in ids if by_id[i]["status"] != args.set]
+    if changed:
+        for i, *_ in changed:
+            by_id[i]["status"] = args.set
+        old, add, swapped = plain_bytes(log), io.StringIO(), False
+        csv.writer(add, lineterminator="\n").writerows(([] if old else [REVIEW_HEAD]) + changed)
+        fd, tmp = tempfile.mkstemp(prefix=".FACT-REVIEWS.csv.", suffix=".tmp", dir=log.parent)
+        try:  # the log is replaced first; if FACTS.csv then cannot be, the old log is put back
+            with os.fdopen(fd, "wb") as out:
+                out.write((old + b"\n" if old and not old.endswith(b"\n") else old or b"") + add.getvalue().encode())
+            os.replace(tmp, log)
+            swapped = True
+            write_atomic(files[0], rows)
+        except BaseException:
+            with contextlib.suppress(OSError): os.unlink(tmp)
+            if swapped:
+                with contextlib.suppress(OSError): log.write_bytes(old) if old is not None else log.unlink()
+            raise
+    print(*lines, "reviewed=%d changed=%d unchanged=%d" % (len(ids), len(changed), len(ids) - len(changed)), sep="\n")
+    return 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -360,12 +509,28 @@ def _main(argv=None):
     parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV"
                         " | status --store DIR [--agency SLUG] [--list unreviewed|disputed]"
                         " | quote-check --store DIR --text EXPORT [--agency SLUG]"
-                        " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]")
-    for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text", "--findings", "--date"):
+                        " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]"
+                        " | review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME"
+                        " [--date YYYY-MM-DD] [--note TEXT] | unreadable --store DIR --out FILE.csv [--agency SLUG]")
+    for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text", "--findings", "--date",
+                 "--ids", "--reviewer", "--note", "--out"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
+    parser.add_argument("--set", choices=["checked", "disputed"])
     args = parser.parse_args(argv)
+    if args.out is not None and args.command[:1] != ["unreadable"]:
+        parser.error("--out belongs to unreadable only")
+    if args.command[:1] == ["review"]:
+        if len(args.command) != 1 or args.check or not args.store or not slugify(args.agency or "") or not args.ids \
+                or not args.set or args.reviewer is None or args.inventory or args.list is not None \
+                or args.added_by is not None or args.text is not None or args.findings is not None:
+            parser.error("usage: review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME"
+                         " [--date YYYY-MM-DD] [--note TEXT]")
+        args.date = datetime.date.today().isoformat() if args.date is None else args.date
+        return review(args)
+    if any(v is not None for v in (args.ids, args.set, args.reviewer, args.note)):
+        parser.error("--ids, --set, --reviewer and --note belong to review only")
     if args.command[:1] == ["quote-check"]:
         if len(args.command) != 1 or args.check or not args.store or not args.text or args.inventory or args.list is not None \
                 or args.added_by is not None or (args.agency is not None and not slugify(args.agency)):
@@ -380,6 +545,11 @@ def _main(argv=None):
         return stale(args)
     if args.findings is not None:
         parser.error("--findings belongs to stale only")
+    if args.command[:1] == ["unreadable"]:
+        if len(args.command) != 1 or args.check or not args.store or not args.out or args.inventory or args.list is not None \
+                or args.added_by is not None or args.date is not None or (args.agency is not None and not slugify(args.agency)):
+            parser.error("usage: unreadable --store DIR --out FILE.csv [--agency SLUG]")
+        return unreadable(args)
     args.date = datetime.date.today().isoformat() if args.date is None else args.date
     if args.command[:1] == ["status"]:
         if len(args.command) != 1 or args.check or not args.store or args.inventory or args.added_by is not None \

@@ -19,7 +19,13 @@ fragment slugs. Explicit alias mappings handle a group's differently named sourc
 section without hard-coding a jurisdiction in the engine.
 `agency_cards.problems(config)` lists every problem at once (sorted, dotted field names such as `county_profile.vendor`, never a value); `render` raises them joined by `; `.
 
-New county text rejects angle-bracket markup. The selected-agency CITIES object
+**Check a config.** `python3 -m campaign_tool.agency_cards --check cards.json` (≤ 2 MB UTF-8 JSON object;
+`NaN`/`Infinity` refused) builds nothing and prints each problem, then `problems=N`. Exit 0 none, 1 problems,
+2 unreadable file or usage (one stderr line, no value echoed).
+
+New county text rejects angle-bracket markup, control characters other than newline/tab, invisible format and
+direction-override characters (Unicode `Cc`/`Cf`, e.g. U+200B, U+202E, U+2066, U+FEFF) and U+2028/U+2029: the field is a
+named problem, never rewritten or stripped. The selected-agency CITIES object
 remains **trusted, reviewed campaign source**, not an arbitrary JSON upload or
 record-extraction result. Its legacy list rendering uses innerHTML for compatibility;
 this is not an HTML sanitization boundary. Do not wire user input or AI drafts

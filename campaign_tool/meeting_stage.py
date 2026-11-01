@@ -6,9 +6,10 @@ only, and the document is validated by ``content.load_meeting`` before it is wri
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 from .cli import read_config
-from .content import load_content, load_meeting
+from .content import _read_json, load_content, load_finding, load_meeting, load_participation
 from .kit import _kit_folder, _write_json
 from .meetings import _clean, comment_kit_md
 
@@ -47,7 +48,7 @@ def _find(meetings, meeting_id):
     raise MeetingStageError(f"no meeting {meeting_id} in kit/meetings.json; known: {', '.join(known) or 'none'}")
 
 
-def stage(root, meeting_id, agency_id=None, location=None, replace=False):
+def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None):
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
     if meeting.get("status") == "cancelled":
@@ -64,6 +65,19 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
     findings = [f for f in model["findings"] if agency_id is None or f.get("agency_id") == agency_id]
     cited = [{**f, "path": f"/findings/{f['slug']}.html"} for f in findings]
     entry = {**meeting, "body": _clean(meeting.get("body")), "agenda_item": _clean(meeting.get("agenda_item"))}
+    if participation is not None:  # organizer-verified JSON; validated before anything is written
+        try:
+            if os.path.islink(participation) or os.path.getsize(participation) > 64 * 1024:
+                raise ValueError("symlink or larger than 64 KB")
+            with open(participation, "rb") as handle:
+                part = json.loads(handle.read().decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            raise MeetingStageError(f"--participation: not a regular UTF-8 JSON file up to 64 KB ({exc})") from None
+        for value in part.values() if isinstance(part, dict) else ():
+            if isinstance(value, dict) and isinstance(value.get("how"), str):
+                value["how"] = _clean(value["how"])
+        entry["participation"] = load_participation(part, str(meeting.get("starts_at")),
+                                                    f"meetings/{meeting_id}.json.participation", today)
     document = {
         "id": meeting_id,
         "body": entry["body"],
@@ -77,7 +91,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
         document["agency_id"] = agency_id
     if location is not None:
         document["location"] = location
-    load_meeting(document, f"meetings/{meeting_id}.json")
+    document.update({"participation": entry["participation"]} if participation is not None else {})
+    load_meeting(document, f"meetings/{meeting_id}.json", today=today)
 
     folder = root / "content" / "meetings"
     _kit_folder(folder, mode=0o755)
@@ -96,3 +111,29 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
     _write_json(target, document)
     return {"written": f"content/meetings/{target.name}", "findings_cited": len(cited), "replaced": replaced,
             "note": NOTE}
+
+
+def stale_kits(root):
+    """Read-only: staged kits citing a corrected finding without its latest correction date.
+
+    Unreadable or invalid files are skipped; ``load_content`` and the site build report them."""
+    content = Path(root) / "content"
+    latest = {}
+    for path in sorted((content / "findings").glob("*.json")):
+        try:
+            finding = load_finding(_read_json(path), "findings/" + path.name)
+        except (ValueError, OSError, TypeError, KeyError):
+            continue
+        if finding["corrections"]:
+            latest[finding["slug"]] = max(c["date"] for c in finding["corrections"])
+    stale = []
+    for path in sorted((content / "meetings").glob("*.json")):
+        try:
+            meeting = load_meeting(_read_json(path), "meetings/" + path.name)
+        except (ValueError, OSError, TypeError, KeyError):
+            continue
+        kit = meeting["comment_kit_md"]
+        for slug, date in latest.items():
+            if f"/findings/{slug}.html" in kit and f"/findings/{slug}.html (corrected {date};" not in kit:
+                stale.append({"meeting": meeting["id"] or path.stem, "finding": slug, "latest_correction": date})
+    return sorted(stale, key=lambda entry: (entry["meeting"], entry["finding"]))

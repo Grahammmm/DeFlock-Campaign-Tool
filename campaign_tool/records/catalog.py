@@ -21,6 +21,7 @@ import tempfile
 from .gates.reconcile_coverage import reconcile
 from .gates.safe_output import write_private
 from .intake.folder import active
+from contextlib import closing
 
 SCHEMA_VERSION = 1
 STAGE_FIELDS = (
@@ -287,8 +288,8 @@ def import_catalog(database, queue, snapshot, digests_root, output, *, support_r
             objects.mkdir(mode=0o700)
             backup_path = stage / "intake.sqlite"
             backup_path.touch(mode=0o600, exist_ok=False)
-            with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as source:
-                with sqlite3.connect(backup_path) as target:
+            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as source, source:
+                with closing(sqlite3.connect(backup_path)) as target, target:
                     source.backup(target)
             manifest = {"schema_version": 1, "database_source": str(database),
                         "database_snapshot_sha256": digest_file(backup_path), "inputs": []}
@@ -308,7 +309,7 @@ def import_catalog(database, queue, snapshot, digests_root, output, *, support_r
             support_files = sorted(p for p in support_root.rglob("*") if p.is_file() or p.is_symlink()) if support_root else []
             for path in support_files:
                 capture(path, "preserved_support_not_adjudicated")
-            with sqlite3.connect(backup_path.as_uri() + "?mode=ro", uri=True) as db:
+            with closing(sqlite3.connect(backup_path.as_uri() + "?mode=ro", uri=True)) as db, db:
                 db.row_factory = sqlite3.Row
                 if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("snapshot database integrity check failed")

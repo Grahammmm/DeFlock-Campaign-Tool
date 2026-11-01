@@ -22,6 +22,7 @@ from unittest.mock import patch
 from campaign_tool.records import correspondence
 from campaign_tool.records.ledger.store import canonical, initialize, ledger
 from campaign_tool.records.understanding import agency_timeline
+from contextlib import closing
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE_DIR = REPO / "tests" / "fixtures" / "n3_agency_timeline"
@@ -110,7 +111,7 @@ def build_ledger(path, spec=None):
 
 
 def database_state(path):
-    with sqlite3.connect(path) as con:
+    with closing(sqlite3.connect(path)) as con, con:
         logical = "\n".join(con.iterdump())
     return hashlib.sha256(Path(path).read_bytes()).hexdigest(), logical
 

@@ -25,7 +25,7 @@ from .shell import render
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
-GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html",
+GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor"}
 CLASSIFICATION_LABELS = {
@@ -167,7 +167,8 @@ class Site:
         if self.map:
             parts.append(f'<p>{e(self.map["attribution"])}</p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
-        parts.append('<p><a href="/feed.xml">Findings feed</a> · <a href="/sitemap.xml">Sitemap</a></p>')
+        parts.append('<p><a href="/feed.xml">Findings feed</a> · <a href="/corrections.html">Corrections</a> · '
+                     '<a href="/sitemap.xml">Sitemap</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def head(self, title, description, path, scripts=(), stylesheets=()):
@@ -192,8 +193,11 @@ class Site:
     # -- fragments -----------------------------------------------------------
 
     def finding_item(self, finding):
+        latest = max((c["date"] for c in finding["corrections"]), default=None)
+        corrected = (f'<span class="status-pill">Corrected <time datetime="{e(latest)}">{e(latest)}</time></span>'
+                     if latest else "")
         return (f'<li><div class="finding-meta"><span class="status-pill">{e(CLASSIFICATION_LABELS[finding["classification"]])}</span>'
-                f'<span>{e(CONFIDENCE_LABELS[finding["confidence"]])}</span><span>Event date {date_label(finding["event_date"])}</span></div>'
+                f'<span>{e(CONFIDENCE_LABELS[finding["confidence"]])}</span><span>Event date {date_label(finding["event_date"])}</span>{corrected}</div>'
                 f'<h3><a href="/findings/{e(finding["slug"])}.html">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
 
     def findings_list(self, findings, empty="No findings have been published yet."):
@@ -347,8 +351,21 @@ class Site:
                 + f'<h3>Sources</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>'
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
+                + '<p><a href="/corrections.html">All corrections</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main)
+
+    def corrections_html(self):
+        rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
+        rows.sort(key=lambda row: (row[0]["slug"], row[2]))
+        rows.sort(key=lambda row: row[1]["date"], reverse=True)  # stable: same-date rows keep slug/index order
+        items = "".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time> · '
+                        f'<a href="/findings/{e(f["slug"])}.html#corrections">{e(f["title"])}</a>: {e(c["note"])}</li>'
+                        for f, c, _ in rows)
+        main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Findings</p>'
+                '<h2>Corrections</h2></div><p>Every correction issued on a published finding, newest first.</p></div>'
+                + (f'<ul>{items}</ul>' if items else '<p>No corrections have been issued.</p>') + '</section>\n')
+        return self.page("findings", "Corrections", "Every correction issued on a published finding", "/corrections.html", main)
 
     def sources_html(self):
         groups = {}
@@ -491,7 +508,7 @@ class Site:
                 "  Content-Security-Policy: " + self.csp() + "\n")
 
     def page_paths(self):
-        paths = ["/", "/agencies.html", "/findings/", "/sources.html", "/meetings.html", "/about.html"]
+        paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         return paths
 
@@ -592,6 +609,7 @@ def build_site(root, today=None):
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
         "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
+        "corrections.html": site.corrections_html(),
     }
     for finding in model["findings"]:
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)

@@ -26,6 +26,10 @@ outputs. A clean check is machine-valid and review-required, not semantic or leg
 ## Current
 - Is it still current? `python3 tools/flock_verify.py current RUNDIR` (read-only). If stale or missing: move both files aside and run finish again.
 
+## Diff
+- After a re-run, `python3 tools/flock_verify.py diff OLD NEW` the previous and new run (read-only; exit 3 on any
+  `public-ok lost`). Every `public-ok lost` id goes to the organizer before any publication step.
+
 ## Never
 - Verify a run authored by your own family, or take the family from a profile name.
 - Put a strong finding into PUBLIC-OK without a `confirm`, or upgrade a rating or review label.

@@ -179,6 +179,11 @@ def doctor(root):
         report["law_package_error"] = law["law_package_error"]
     from .kit import kit_status
     report.update(kit_status(root))
+    from .meeting_stage import stale_kits
+    stale = report["stale_comment_kits"] = stale_kits(root)
+    if stale:
+        report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
+                                      + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
     print(json.dumps(report, indent=2))
 
 
@@ -187,6 +192,12 @@ def kit(args, root):
     summary = build_kit(root, online=args.online, include=args.include)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
+
+
+def social_cmd(root):
+    from .social import build_social
+    print(json.dumps(build_social(root), indent=2, ensure_ascii=False))
+    print("Drafts written to kit/social. Nothing was posted.")
 
 
 def check_public_tree(public):
@@ -250,6 +261,14 @@ def verify_cmd(args):
     print(json.dumps(report, indent=2))
 
 
+def backup_diff_cmd(args, root):
+    from .backup import diff
+    report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256)
+    print(json.dumps(report, indent=2))
+    if not report["current"]:
+        sys.exit(3)
+
+
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
@@ -292,7 +311,7 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, agency_id=args.agency_id, location=args.location, replace=args.replace),
+    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation),
                      indent=2))
 
 
@@ -324,6 +343,8 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
+    commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
+                        ).add_argument("--directory", required=True)
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -333,6 +354,10 @@ def main():
     verify_p = commands.add_parser("verify", help="Re-hash every member of a backup against its manifest")
     verify_p.add_argument("--file", required=True)
     verify_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`, kept apart from the archive")
+    diff_p = commands.add_parser("backup-diff", help="List files added/removed/changed since a backup (read-only; exit 3 on drift)")
+    diff_p.add_argument("--file", required=True)
+    diff_p.add_argument("--directory", required=True)
+    diff_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
@@ -345,7 +370,13 @@ def main():
     stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
     stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
     stage_p.add_argument("--location")
+    stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
+    for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
+        verify_agency_p.add_argument(flag, required=True)
+    for flag in ("--records-email", "--records-url", "--portal"):
+        verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
     args = parser.parse_args()
     if args.command == "verify":
         try:
@@ -362,16 +393,26 @@ def main():
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
+        elif args.command == "social":
+            social_cmd(root)
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":
             backup_cmd(args, root)
         elif args.command == "restore":
             restore_cmd(args, root)
+        elif args.command == "backup-diff":
+            backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "kit-verify-agency":
+            from .kit import verify_agency
+            print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
+                                           records_email=args.records_email, records_url=args.records_url,
+                                           portal=args.portal), indent=2))
+            print("Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:

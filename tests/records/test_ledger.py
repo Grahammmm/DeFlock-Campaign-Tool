@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from campaign_tool.records.ledger.store import STAGES, counts, import_legacy, initialize, ledger
+from contextlib import closing
 
 
 class LedgerTests(unittest.TestCase):
@@ -144,7 +145,7 @@ class LedgerTests(unittest.TestCase):
             initialize(self.output)
 
     def test_unclassified_source_table_refused(self):
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("CREATE TABLE unexpected(value TEXT)")
         self.refresh_manifest()
         with self.assertRaisesRegex(ValueError,"unexpected legacy schema"):
@@ -152,7 +153,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_composite_occurrence_identity_retained(self):
         other = hashlib.sha256(b"different synthetic original").hexdigest()
-        with sqlite3.connect(self.snapshot / "intake.sqlite") as con:
+        with closing(sqlite3.connect(self.snapshot / "intake.sqlite")) as con, con:
             con.execute("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?,?,?)", ("delivery",other,"synthetic-v2.txt","fixture",None,"file","test",None,None,None))
         self.refresh_manifest()
         import_legacy(self.snapshot,self.output)

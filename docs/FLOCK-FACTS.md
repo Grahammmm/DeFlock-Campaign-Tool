@@ -10,6 +10,8 @@ One CSV per agency in a private store outside the repo; `tools/flock_facts.py` i
 | `verbatim_quote` | non-empty, unless `value` is `UNREADABLE` |
 | `fact_id` | derived, see below |
 | `kind` | `record`, `policy`, `law` or `public` |
+| `kind` `policy` (`--check STORE`) | source must be the POLICY version it quotes: a `doc_sha256` in that agency's POLICY.csv |
+| `kind` `law` (`--check STORE`) | source must be the LAW row it quotes: a `text_sha256` in `STORE/LAW.csv`; `--check FILE` skips both links |
 | `effective_from`, `effective_to` | empty or YYYY-MM-DD, from <= to |
 | `added_by`, `added_at` | importer name; YYYY-MM-DD |
 | `status` | `unreviewed`, `checked` or `disputed` |
@@ -31,6 +33,15 @@ a fact is *expired* when `effective_to` is before the date (the end day itself i
 `fact_type` has a later `effective_from` on or before the date, while this fact has an `effective_from` and no
 `effective_to`; the latest such fact is named. `disputed` facts are listed too. With `--findings`, each finding citing an
 expired, superseded or disputed fact is listed; exit 3 when any does (without it: any expired or superseded fact).
+
+**Review log** (`review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME [--date D] [--note T]`):
+the only way to change `status` after import. A reviewer equal to the fact's `added_by` (case and spaces ignored), an unknown or
+duplicate id, a date after today or before `added_at`, or any `--check` error refuses the whole call. Each change appends a
+row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v1: `fact_id,from_status,to_status,reviewer,reviewed_at,note`,
+mode 0600); a fact already at the target is `unchanged` and not logged. `--check` validates the log and names a fact whose
+FACTS status differs from its last logged `to_status` (a hand edit). Ids and counts only; the note is never printed.
+
+**Unreadable pages** (`unreadable --store DIR --out FILE.csv [--agency SLUG]`): writes a new private 0600 CSV `agency,source_sha256,page,fact_rows` (distinct pages with an `UNREADABLE` row; header only when none) outside the repo and `DIR/agencies`; stdout counts agencies checked, pages, documents and rows only.
 
 ## Store check
 

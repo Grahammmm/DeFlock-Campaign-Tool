@@ -23,6 +23,7 @@ from campaign_tool.records.detectors.core import DETECTORS, canonical, digest
 from campaign_tool.records.ledger import store
 from campaign_tool.records.ledger.migrations import v001
 from tools import detectors_run
+from contextlib import closing
 
 
 def h(value):
@@ -252,7 +253,7 @@ class DetectorsRunTests(unittest.TestCase):
             self.assertEqual(receipt["manifest_sha256"], expected["structured"][name]["manifest"]["manifest_sha256"])
             self.assertFalse(receipt["replayed"])
             self.assertEqual(receipt["stage_promotions"], 0)
-        with sqlite3.connect((out / "detectors.sqlite").as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect((out / "detectors.sqlite").as_uri() + "?mode=ro", uri=True)) as con, con:
             count = lambda table: con.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
             self.assertEqual(count("wp6_manifests"), 7)
             self.assertEqual(count("detector_hits"), 2)

@@ -98,6 +98,10 @@ def check_row(n, row, ctx):
         errs.append("fact_ids cites a fact not in FACTS.csv")
     if any(facts[f]["value"].strip() == "UNREADABLE" for f in fact_ids if f in facts):
         errs.append("fact_ids cites an UNREADABLE fact (routes back to the coordinator)")
+    if any(facts[f].get("status") == "disputed" for f in fact_ids if f in facts):  # DF1537-02: one error per kind, no value
+        errs.append("fact_ids cites a disputed fact (review it again or drop it)")
+    if facts.get(row["quote_fact_id"].strip(), {}).get("status") == "disputed":
+        errs.append("quote_fact_id is a disputed fact")
     rules, refs = ids(row["rule_ids"]), ids(row["policy_refs"])
     if not rules and not refs:
         errs.append("rule_ids and policy_refs are both empty")
@@ -222,11 +226,13 @@ def summary(rundir):  # report, not a gate: ids and counts of what a clean run c
         print("summary refused: RUN.json date")
         return 1
     rows = [dict(zip(HEADER, map(str.strip, rec))) for rec in read_csv(run / "FINDINGS.csv")[1:] if any(map(str.strip, rec))]
-    topics = {}
+    topics, status = {}, {f: r["status"] for f, r in facts.items()}  # DF1537-02: unreviewed is a count, never a gate
     for r in rows:
-        topics.setdefault((r["topic"], r["claim_class"]), dict.fromkeys(RANK, 0))[r["rating"]] += 1
-    out = ["topic | %s | %s | strong=%d medium=%d weak=%d" % (t, c, n["strong"], n["medium"], n["weak"])
-           for (t, c), n in sorted(topics.items())]
+        n = topics.setdefault((r["topic"], r["claim_class"]), dict.fromkeys((*RANK, "unreviewed"), 0))
+        n[r["rating"]] += 1
+        n["unreviewed"] += any(status.get(f) == "unreviewed" for f in ids(r["fact_ids"]) + [r["quote_fact_id"]])
+    out = ["topic | %s | %s | strong=%d medium=%d weak=%d unreviewed_cited=%d" % (t, c, n["strong"], n["medium"], n["weak"],
+           n["unreviewed"]) for (t, c), n in sorted(topics.items())]
     rules, cited = set(law_ids), {x for r in rows for x in ids(r["rule_ids"])}
     out.append("law | rules=%d cited=%d uncited=%d attorney_review_cited=%d" % (len(rules), len(cited & rules), len(rules - cited),
                sum(package.get(x) == "needs_attorney_review" for x in cited)))
@@ -235,8 +241,9 @@ def summary(rundir):  # report, not a gate: ids and counts of what a clean run c
     out.append("policy | rows=%d cited=%d uncited=%d" % (len(policy), len(cited & policy), len(policy - cited)))
     out += ["policy uncited | " + x for x in sorted(policy - cited)]
     cited, quoted = {x for r in rows for x in ids(r["fact_ids"])}, {r["quote_fact_id"] for r in rows if r["quote_fact_id"]}
-    out.append("facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d" % (len(facts), len(cited & set(facts)),
-               len(set(facts) - cited), sum(r["value"].strip() == "UNREADABLE" for r in facts.values()), len(quoted)))
+    out.append("facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d unreviewed_cited_facts=%d checked_cited=%d" % (
+               len(facts), len(cited & set(facts)), len(set(facts) - cited), sum(r["value"].strip() == "UNREADABLE"
+               for r in facts.values()), len(quoted), *(sum(status.get(f) == s for f in cited) for s in ("unreviewed", "checked"))))
     state = {p: governs(r, on) for p, r in policies.items()}  # ids, fixed labels and the date only; never adoption text
     out += ["policy governs | %s | %s on %s" % (p, state[p], on)
             for p in sorted(state, key=lambda p: (policies[p]["footer_version_date"], p))]

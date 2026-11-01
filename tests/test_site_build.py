@@ -20,7 +20,7 @@ from campaign_tool.cli import read_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/cedar-policy-posted.html",
-         "sources.html", "meetings.html", "about.html"]
+         "sources.html", "meetings.html", "about.html", "corrections.html"]
 FILES = PAGES + ["style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                  "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
                  "data/city-boundaries.geojson"]

@@ -2,6 +2,7 @@
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 ASSET = Path(__file__).parent / "assets" / "agency-cards.js.tmpl"
@@ -13,8 +14,13 @@ SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")
 NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 
+def visible(char):  # refuse controls (except newline/tab), invisible format/bidi chars and line/paragraph separators
+    return char in "\n\t" or (unicodedata.category(char) not in ("Cc", "Cf") and char not in "\u2028\u2029")
+
+
 def text(value):
-    return isinstance(value, str) and len(value) <= 20000 and "<" not in value and ">" not in value
+    return (isinstance(value, str) and len(value) <= 20000 and "<" not in value and ">" not in value
+            and all(map(visible, value)))
 
 
 def keyset(value, keys, prefix=""):  # an odd key name is shown by its length only
@@ -84,7 +90,34 @@ def render(config):
     return token.sub(lambda match: tokens[match.group(1)], template)
 
 
-def main():
+def _refuse(name):
+    raise ValueError("non-finite number")
+
+
+def check(path):
+    """Print each config problem (never a value) then problems=N; exit 0 none, 1 problems, 2 unreadable."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(MAX_BYTES + 1)
+        config = json.loads(raw.decode("utf-8"), parse_constant=_refuse) if len(raw) <= MAX_BYTES else None
+        if not isinstance(config, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError, RecursionError):
+        print("Agency-card check stopped: config file missing, unreadable, over 2 MB, not UTF-8 JSON or not an object",
+              file=sys.stderr)
+        return 2
+    found = problems(config)
+    print("\n".join(found + [f"problems={len(found)}"]))
+    return 1 if found else 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv:
+        if len(argv) == 2 and argv[0] == "--check":
+            return check(argv[1])
+        print("usage: agency_cards [--check CONFIG.json]  (no arguments: build from stdin)", file=sys.stderr)
+        return 2
     try:
         raw = sys.stdin.buffer.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:

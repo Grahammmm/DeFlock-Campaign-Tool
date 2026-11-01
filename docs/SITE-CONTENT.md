@@ -68,6 +68,12 @@ date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
 "This is not legal advice" line.
 
+`/corrections.html` lists every correction on every published finding, newest
+first (same date: by finding slug, then the order in the finding), each linking
+to the finding's `#corrections` section. The footer and each finding page link
+to it, and finding lists mark a corrected finding with a "Corrected" pill
+showing its latest correction date. The starter preview has no such page.
+
 ### Agencies, cards and the picker
 
 Agencies come from `content/agencies.json` or the kit. Each gets a slug (the
@@ -127,10 +133,12 @@ no-referrer` and a restrictive `Permissions-Policy` are always set.
 
 ## Map data and MapLibre
 
-`tools/fetch_osm_alprs.py --directory D --bbox S W N E | --relation ID` queries
-the Overpass API (network; never run by tests) for
+`tools/fetch_osm_alprs.py --directory D --bbox S W N E | --relation ID | --from-file SAVED.json`
+queries the Overpass API (network; never run by tests), or reads a reviewed saved answer offline, for
 `man_made=surveillance` + `surveillance:type=ALPR` nodes and writes
-`content/map/cameras.geojson` and `content/map/attribution.txt`. The data is
+`content/map/cameras.geojson` and `content/map/attribution.txt`. `--check` writes nothing: it compares by
+OSM node URL with the current `cameras.geojson`, prints added/removed/moved (beyond `--move-metres`, default 10)/retagged
+counts and up to 20 node URLs each, and exits 3 when any point would be removed. The data is
 (c) OpenStreetMap contributors under the ODbL; most points are contributed by
 the DeFlock community, which is the community source of these observations. A
 mapped point says a camera was observed, not which agency owns it. The

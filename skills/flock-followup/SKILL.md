@@ -46,6 +46,14 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   Documents per request: `python3 tools/flock_requests.py summary <file or store dir> --inventory <INVENTORY.csv>`
   adds posted/withheld counts per request and names INVENTORY rows with an unknown request; counts only; withheld never named.
 
+## Open
+
+- New row from a sent email run: `python3 tools/flock_requests.py open --from-email <run folder> --request-id <id> [--today D]` (flock-email "Open").
+
+## Reconcile
+
+- Compare with the correspondence report: `python3 tools/flock_requests.py reconcile <store dir> --report <REPORT.json>`; the report is the records owner's export; reconcile only reads it, names sent/determination/status disagreements, unmatched rows and report-only counts (no ledger ids), exit 3 on any.
+
 ## Record
 
 - Record a step (use record, not hand edits): `python3 tools/flock_requests.py record <store dir> --agency <slug> --request <id>
@@ -65,6 +73,11 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   prior request is still `open` and any exact repeat, and exits 1 with `line N: <reason>` or
   `no items to draft` and no file. It never overwrites an existing FOLLOWUP-DRAFT.md. Read the
   held list at the end of the file, remove it, and leave sending to G's approval.
+
+## Privacy scan
+
+- Before handing any draft folder to G, run `python3 tools/flock_privacy_scan.py <folder>` on the folder first; it prints
+  `path:line: category` only and exits 3 on an email/phone/plate. Fix or list each in `--allow FILE`, then rerun.
 
 ## Outputs
 
