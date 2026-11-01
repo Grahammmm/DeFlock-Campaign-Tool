@@ -93,6 +93,10 @@ controller fits the map to `CITIES[slug].bounds`.
 also the `id` of the matching section in `sources.html`. Agencies without
 sources route to `sources.html#library`.
 
+Each `sources.html` entry ends with `Cited by:` and links to every published
+finding that cites its `sha256` (model order, once each), or with
+`Not cited by a published finding`. Drafts never appear.
+
 ### Adding a source record
 
 ```
@@ -131,6 +135,10 @@ three); `meetings.html` then lists `#past-meetings`, most recent first.
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
 files above.
+
+Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
+each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
+kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
 
 ## Content-Security-Policy
 
