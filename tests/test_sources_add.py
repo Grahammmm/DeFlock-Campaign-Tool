@@ -108,6 +108,19 @@ class SourcesAddTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (1, ""))
         self.assertIn("Stopped: not ingested", result.stderr)
 
+    def test_deeply_nested_sources_file_refused_by_cli(self):
+        self.ingest()
+        self.sources.write_bytes(b"[" * 200000 + b"]" * 200000)
+        before = self.sources.read_bytes()
+        result = cli("sources", "add", "--directory", str(self.root), "--sha256", DIGEST[:12], "--title", "T",
+                     "--agency-id", "ca-cedar-police", "--received-at", "2026-02-01T10:00:00+00:00",
+                     "--fragment", "cedar-new-record")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("Stopped: sources.json: not valid UTF-8 JSON", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.sources.read_bytes(), before)
+        self.assertEqual([p.name for p in self.sources.parent.glob(".sources-*")], [])
+
     def test_ambiguous_prefix_refused_longer_prefix_resolves(self):
         self.ingest()
         twin = DIGEST[:12] + ("0" if DIGEST[12] != "0" else "1") * 52

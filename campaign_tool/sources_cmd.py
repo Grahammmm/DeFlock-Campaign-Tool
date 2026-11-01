@@ -51,6 +51,8 @@ def _read_existing(path):
         return data.decode("utf-8"), json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"sources.json: not valid UTF-8 JSON ({exc})") from None
+    except RecursionError:
+        raise ContentError("sources.json: not valid UTF-8 JSON (nested too deeply)") from None
 
 
 def _known_agencies(root):
