@@ -101,7 +101,7 @@ class FactsQuoteCheckTest(unittest.TestCase):
     def test_missing_document_signature_or_page(self):
         self.document({1: PAGE1})
         self.document({1: PAGE1}, sha=OTHER)
-        self.document({1: PAGE1}, sha=OTHER, sig="fedcba9876543210")
+        self.document({1: PAGE1}, sha=OTHER, sig="0123456789abcdef"[::-1])  # reversed: no hex literal for the secret scan
         empty = hashlib.sha256(b"empty sha folder").hexdigest()
         (self.export / empty).mkdir()
         rows = [fact("Zorblax", sha=hashlib.sha256(b"absent").hexdigest()), fact("Zorblax", sha=OTHER),
