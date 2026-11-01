@@ -132,6 +132,17 @@ def match_items(items):
     return hits
 
 
+CANCELLED_COMMENT = re.compile(r"\bcancel(?:l)?ed\b", re.IGNORECASE)
+
+
+def event_status(event):
+    """``cancelled`` when Legistar's agenda status or event comment says so, else ``scheduled``."""
+    status, comment = event.get("EventAgendaStatusName"), event.get("EventComment")
+    if isinstance(status, str) and status.strip().casefold() in ("cancelled", "canceled"):
+        return "cancelled"
+    return "cancelled" if isinstance(comment, str) and CANCELLED_COMMENT.search(comment) else "scheduled"
+
+
 def relevant_events(client, since=None, max_events=MAX_EVENTS):
     """Upcoming events with at least one ALPR-related agenda item, as meeting dicts."""
     meetings = []
@@ -160,6 +171,7 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS):
             "event_id": event["EventId"],
             "matched_terms": sorted({t for _, ts in hits for t in ts}),
             "matched_items": len(hits),
+            "status": event_status(event),
         })
     meetings.sort(key=lambda m: m["starts_at"])
     return meetings
@@ -193,6 +205,8 @@ def compare_meetings(previous_doc, meetings, client, since):
     gone = sorted(set(before) - set(after))
     both = sorted(set(before) & set(after))
     generated = previous_doc.get("generated")
+    # An old file without ``status`` reads as all scheduled; a cancelled meeting is never agenda_changed.
+    now_cancelled = {i for i in after if after[i].get("status") == "cancelled"}
     return {
         "previous": "compared",
         "previous_generated": generated if isinstance(generated, str) else None,
@@ -200,9 +214,10 @@ def compare_meetings(previous_doc, meetings, client, since):
         "removed": [i for i in gone if before[i]["starts_at"][:10] >= cutoff],
         "rescheduled": [{"id": i, "from": before[i]["starts_at"], "to": after[i]["starts_at"]}
                         for i in both if before[i]["starts_at"] != after[i]["starts_at"]],
-        "agenda_changed": [i for i in both if any(before[i].get(k) != after[i].get(k)
-                                                  for k in ("agenda_item", "agenda_url"))],
+        "agenda_changed": [i for i in both if i not in now_cancelled and any(before[i].get(k) != after[i].get(k)
+                                                                         for k in ("agenda_item", "agenda_url"))],
         "past": [i for i in gone if before[i]["starts_at"][:10] < cutoff],
+        "cancelled": [i for i in both if i in now_cancelled and before[i].get("status") != "cancelled"],
     }
 
 

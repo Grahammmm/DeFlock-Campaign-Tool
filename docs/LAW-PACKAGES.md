@@ -94,6 +94,18 @@ the binding statute cited alongside so a reader can see which is which.
    that jurisdiction. A later amendment to any cited section returns the package
    to `draft` until re-reviewed.
 
+## Review worksheet (not a review)
+
+`python3 -m campaign_tool.law review-sheet us-ca --out FILE.csv --as-of YYYY-MM-DD
+[--stale-days N] [--base DIR]` writes a private CSV worksheet (mode 0600, refused
+inside the repository or over an existing file): one `records_law` row, then one row
+per rule in package order, with the rule text, its sources, the oldest access date
+and its age, and four blank reviewer columns. Stdout JSON names every source
+accessed more than N days (default 180, 1..3650) before `--as-of`. The worksheet is
+not legal advice and not a review: it never changes `status`, `reviewed_by`,
+`reviewed_at` or any `review` label. Only a human reviewer moves a package to
+reviewed, through the process above.
+
 ## Current state
 
 `us-ca` is a draft authored from leginfo.legislature.ca.gov and the California

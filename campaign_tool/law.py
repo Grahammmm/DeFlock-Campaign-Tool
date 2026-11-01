@@ -15,9 +15,12 @@ extension prerequisites are not established by this arithmetic. The CLI's
 ``deadline`` reminders are provisional too; see ``HOLIDAY_NOTE``.
 """
 import argparse
+import csv
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -394,6 +397,8 @@ def _rule_view(rule):
 
 def _command_output(args, package):
     head = {"jurisdiction": package["jurisdiction"], "status": package["status"]}
+    if args.command == "review-sheet":
+        return _review_sheet_output(args, package)
     if args.command == "rules":
         rules = [r for r in rules_in_force(package, parse_date(args.on, "--on"))
                  if args.review is None or r["review"] == args.review]
@@ -406,6 +411,68 @@ def _command_output(args, package):
             "days": days, "reminder": reminder.isoformat(), "note": HOLIDAY_NOTE}
 
 
+SHEET_COLUMNS = tuple("rule_id citation actor activity duty exceptions remedy effective_from effective_to "
+                      "current_review source_titles source_urls oldest_access source_age_days "
+                      "reviewer_conclusion reviewer_notes reviewer_name reviewed_on".split())
+
+
+def review_sheet(package, as_of, stale_days=180):
+    """records_law row, then rules in order (reviewer columns blank), and sources older than stale_days."""
+    law = package["records_law"]
+    rows, stale = [], []
+    for rule in [{"rule_id": "records_law", "citation": law["citation"], "duty": law["name"],
+                  "sources": law["sources"]}] + package["rules"]:
+        sources = rule["sources"]
+        ages = [(as_of - date.fromisoformat(s["accessed"])).days for s in sources]
+        oldest = max(range(len(sources)), key=lambda i: (ages[i], -i))
+        rows.append({**{column: rule.get(column) or "" for column in SHEET_COLUMNS},
+                     "exceptions": " | ".join(rule.get("exceptions", [])), "current_review": rule.get("review", ""),
+                     "source_titles": " | ".join(s["title"] for s in sources),
+                     "source_urls": " | ".join(s["url"] for s in sources),
+                     "oldest_access": sources[oldest]["accessed"], "source_age_days": str(ages[oldest])})
+        for source, age in zip(sources, ages):
+            if age > stale_days:
+                stale.append({"rule_id": rule["rule_id"], **{k: source[k] for k in ("title", "url", "accessed")},
+                              "age_days": age})
+    return rows, stale
+
+
+def write_review_sheet(out, rows):
+    """Plain CSV, mode 0600, written atomically; never overwrites and never inside the repository."""
+    target = Path(out).resolve()
+    if target == REPO_ROOT or REPO_ROOT in target.parents:
+        raise ValueError(f"--out must be outside the repository: {out}")
+    if os.path.lexists(out):
+        raise ValueError(f"--out already exists, not overwriting: {out}")
+    handle, temporary = tempfile.mkstemp(prefix=".review-sheet-", dir=target.parent)  # mode 0600
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=SHEET_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.link(temporary, target)  # refuses, never replaces, a target that appeared meanwhile
+    except FileExistsError:
+        raise ValueError(f"--out already exists, not overwriting: {out}") from None
+    finally:
+        os.unlink(temporary)
+
+
+def _stale_days(text):
+    if not re.fullmatch(r"\d{1,4}", text) or not 1 <= int(text) <= 3650:
+        raise argparse.ArgumentTypeError(f"expected an integer 1..3650, got {text!r}")
+    return int(text)
+
+
+def _review_sheet_output(args, package):
+    rows, stale = review_sheet(package, parse_date(args.as_of, "--as-of"), args.stale_days)
+    write_review_sheet(args.out, rows)
+    return {"jurisdiction": package["jurisdiction"], "status": package["status"],
+            "reviewed_by": list(package["reviewed_by"]), "as_of": args.as_of, "stale_days": args.stale_days,
+            "rule_count": len(package["rules"]), "rows_written": len(rows), "stale_sources": stale,
+            "note": ("Worksheet for a human legal review. It is not legal advice and not a review; the package "
+                     f"stays {package['status']} until a human reviewer records reviewed_by and reviewed_at.")}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="campaign_tool.law", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -416,7 +483,11 @@ def main(argv=None):
     remind = commands.add_parser("deadline", help="Print the provisional reminder date")
     remind.add_argument("--sent", required=True, help="Send date, YYYY-MM-DD")
     remind.add_argument("--extension", action="store_true", help="Add the extension days")
-    for sub in (show, rules, remind):
+    sheet = commands.add_parser("review-sheet", help="Write a private worksheet for a human legal review")
+    sheet.add_argument("--out", required=True, help="New CSV path outside the repository")
+    sheet.add_argument("--as-of", required=True, help="Date ages are counted to, YYYY-MM-DD")
+    sheet.add_argument("--stale-days", type=_stale_days, default=180, help="1..3650 (default 180)")
+    for sub in (show, rules, remind, sheet):
         sub.add_argument("jurisdiction")
         sub.add_argument("--base", help="Alternate jurisdictions directory")
     args = parser.parse_args(argv)
