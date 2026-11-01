@@ -224,8 +224,14 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(len(result.failures), 1)
         self.assertEqual(result.errors, [])
         self.assertEqual(result.skipped, [])
-        self.assertIn("qualification_blocked_reason", result.failures[0][1])
-        print("DECLARED_NEGATIVE_CONTROL " + name + "\n" + stream.getvalue())
+        detail = result.failures[0][1]
+        self.assertIn("qualification_blocked_reason", detail)
+        # The probe must fail on exactly the reason the mutant produces, not on another field.
+        self.assertIn("AssertionError: 'supplied_context_evaluated' != "
+                      "'rule_version_or_applicability_unresolved'\n", detail)
+        # Keep the probe's FAIL report in its own stream. Printed into the shared CI log it was
+        # read as a real failure twice (MAINRED-DF, DFMAINRED-3) while the real one was elsewhere.
+        print("DECLARED_NEGATIVE_CONTROL " + name + ": integer 1 mutant caught, as intended")
         self.blocked_reason(self.pipeline.evaluate_structured(**args)["structured"][name],
                             "rule_version_or_applicability_unresolved")
         args["rules"]["entries"][0]["version_verified"] = True

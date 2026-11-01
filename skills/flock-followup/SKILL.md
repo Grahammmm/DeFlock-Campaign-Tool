@@ -50,6 +50,8 @@ skill never upgrades. Version 1.1 adds a draft-only follow-up request (`draft`);
    prior request is still `open` and any exact repeat, and exits 1 with `line N: <reason>` or
    `no items to draft` and no file. It never overwrites an existing FOLLOWUP-DRAFT.md. Read the
    held list at the end of the file, remove it, and leave sending to G's approval.
+6. Before handing any draft folder to G, run `python3 tools/flock_privacy_scan.py <folder>` on the folder first; it prints
+   `path:line: category` only and exits 3 on an email/phone/plate. Fix or list each in `--allow FILE`, then rerun.
 
 ## Outputs
 
