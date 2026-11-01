@@ -23,6 +23,8 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 5. After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_email.py status STORE` must exit 0
    (one `email | <slug> | <date> | <stage>` line per run; reads only, prints no address or filled value).
    `python3 tools/flock_requests.py --check STORE` then needs a REQUESTS row of that agency with `sent` equal to that date.
+6. Add that row with `python3 tools/flock_requests.py open --from-email <run folder> --request-id <your id>` (not by hand): it
+   refuses a run not `sent recorded` or already opened, appends an `open` row and an `opened` REQUEST-STEPS line; ids only.
 
 ## Never
 

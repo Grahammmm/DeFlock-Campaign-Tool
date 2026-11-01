@@ -40,6 +40,7 @@ skill never upgrades. Version 1.1 adds a draft-only follow-up request (`draft`);
    Record a step (use record, not hand edits): `python3 tools/flock_requests.py record <store dir> --agency <slug> --request <id>
    --step receipt|extension|determination|produced|closed --date YYYY-MM-DD --evidence <text, 120 max> --sha256 <hex>`. It updates
    the row and appends to private REQUEST-STEPS.csv; a status or date regression is refused and nothing is written.
+   New row from a sent email run: `python3 tools/flock_requests.py open --from-email <run folder> --request-id <id> [--today D]` (flock-email step 6).
    Compare with the correspondence report: `python3 tools/flock_requests.py reconcile <store dir> --report <REPORT.json>`; the report is the records owner's export; reconcile only reads it, names sent/determination/status disagreements, unmatched rows and report-only counts (no ledger ids), exit 3 on any.
    Fees: `python3 tools/flock_requests.py fees record <store dir> --agency <slug> --request <id> --kind estimate|invoice|paid
    --amount-cents N --date YYYY-MM-DD --evidence <text> --sha256 <hex>` appends to private FEES.csv; `python3 tools/flock_requests.py fees
