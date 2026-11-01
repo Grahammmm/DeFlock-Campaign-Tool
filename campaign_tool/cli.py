@@ -6,11 +6,14 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 MAX_BYTES = 50 * 1024 * 1024
+MAX_DIR_FILES = 2000
+OUTCOMES = ("stored", "present", "symlink", "not_regular", "too_large", "hidden")
 
 
 def now():
@@ -73,20 +76,26 @@ def initialize(args, root):
     print("Campaign initialized. No accounts created, messages sent, or laws verified.")
 
 
-def ingest(args, root):
-    read_config(root)
-    source = Path(args.file)
-    if source.is_symlink() or not source.is_file():
-        raise ValueError("Input must be a regular, non-symlink file")
-    with source.open("rb") as incoming:
+def _ingest_one(db, root, path, source_id, dir_fd=None):
+    """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome.
+
+    With dir_fd, `path` is a bare name opened relative to that verified directory descriptor."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        if dir_fd is None:
+            raise
+        raise ValueError("Input changed or is not a regular, non-symlink file") from None
+    with os.fdopen(fd, "rb") as incoming:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Input must be a regular, non-symlink file")
         data = incoming.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
     digest = hashlib.sha256(data).hexdigest()
     identity = hashlib.sha256(json.dumps(
-        [args.source_id, digest], separators=(",", ":")).encode()).hexdigest()
-    db = database(root)
-    try:
+        [source_id, digest], separators=(",", ":")).encode()).hexdigest()
+    with db:  # one transaction per file; the object is written before its rows
         objects = root / "private" / "objects"
         objects.mkdir(mode=0o700, exist_ok=True)
         target = objects / digest
@@ -106,16 +115,117 @@ def ingest(args, root):
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
-        with db:
-            db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
-                       (digest, len(data), now()))
-            cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
-                                (identity, digest, args.source_id, now(), source.name))
-        print(json.dumps({"sha256": digest, "receipt_id": identity,
-                          "new_receipt": cursor.rowcount == 1,
-                          "analysis_status": "not_started"}, indent=2))
+        new_object = db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
+                                (digest, len(data), now())).rowcount == 1
+        cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
+                            (identity, digest, source_id, now(), os.path.basename(path)))
+    return {"sha256": digest, "receipt_id": identity, "new_receipt": cursor.rowcount == 1,
+            "analysis_status": "not_started", "outcome": "stored" if new_object else "present"}
+
+
+def ingest(args, root):
+    read_config(root)
+    if getattr(args, "dir", None) is not None:
+        return _ingest_dir(args, root)
+    source = Path(args.file)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Input must be a regular, non-symlink file")
+    if source.stat().st_size > MAX_BYTES:
+        raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
+    db = database(root)
+    try:
+        result = _ingest_one(db, root, source, args.source_id)
     finally:
         db.close()
+    print(json.dumps({k: result[k] for k in ("sha256", "receipt_id", "new_receipt", "analysis_status")}, indent=2))
+
+
+def _open_dir(top_fd, parts):
+    """Descriptor for top/parts..., every component opened relative to its verified parent without following links."""
+    fd = os.dup(top_fd)
+    try:
+        for part in parts:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError:
+                raise ValueError("Folder changed during the run (not a real directory)") from None
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_root(path):
+    """Open --dir without following a symlink, even when written as link/ or link/. (O_NOFOLLOW only
+    covers the final component, so the last real name is opened relative to its parent descriptor)."""
+    text = os.fspath(path)
+    # Drop empty and "." components only; ".." is kept so valid parent-relative paths (../production-001)
+    # still work. Symlinks in the parent chain are ordinary path resolution; only the final name is guarded.
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts:
+        return os.open("/" if text.startswith("/") else ".", os.O_RDONLY | os.O_DIRECTORY)
+    name = parts[-1]
+    parent = ("/" if text.startswith("/") else "") + "/".join(parts[:-1])
+    parent_fd = os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _ingest_dir(args, root):
+    """One production folder: list it without following links (hidden names skipped), then ingest file by file.
+
+    All traversal and opens are anchored to directory descriptors, so a subfolder swapped for a link
+    after listing is refused rather than followed."""
+    entries, stack = [], [()]
+    try:
+        top_fd = _open_root(args.dir)
+    except OSError:
+        raise ValueError("--dir must be a real directory, not a symlink or a file") from None
+    try:
+        while stack:
+            parts = stack.pop()
+            folder_fd = _open_dir(top_fd, parts)
+            try:
+                with os.scandir(folder_fd) as listing:
+                    for entry in listing:
+                        hidden = entry.name.startswith(".")
+                        if entry.is_dir(follow_symlinks=False) and not hidden:
+                            stack.append(parts + (entry.name,))
+                            continue
+                        entries.append(("/".join(parts + (entry.name,)), parts, entry.name,
+                                        "hidden" if hidden else "symlink" if entry.is_symlink()
+                                        else "not_regular" if not entry.is_file(follow_symlinks=False)
+                                        else "too_large" if entry.stat(follow_symlinks=False).st_size > MAX_BYTES else None))
+                        if len(entries) > MAX_DIR_FILES:
+                            raise ValueError(f"{args.dir}: more than {MAX_DIR_FILES} files; split the folder")
+            finally:
+                os.close(folder_fd)
+        files, db = [], database(root)
+        try:
+            for rel, parts, name, code in sorted(entries):
+                try:
+                    if code:
+                        result = {"sha256": None, "new_receipt": False}
+                    else:
+                        folder_fd = _open_dir(top_fd, parts)
+                        try:
+                            result = _ingest_one(db, root, name, args.source_id, dir_fd=folder_fd)
+                        finally:
+                            os.close(folder_fd)
+                except ValueError as exc:
+                    raise ValueError(f"{exc}: {rel}") from None
+                files.append({"path": rel, "sha256": result["sha256"] and result["sha256"][:12],
+                              "outcome": code or result["outcome"], "new_receipt": result["new_receipt"]})
+        finally:
+            db.close()
+    finally:
+        os.close(top_fd)
+    print(json.dumps({"dir": os.path.basename(os.path.abspath(args.dir)), "files": files,
+                      "counts": {k: sum(f["outcome"] == k for f in files) for k in OUTCOMES}}, indent=2))
 
 
 def status(root, check=False):
@@ -157,6 +267,10 @@ def law_package_report(cfg):
 
 
 def doctor(root):
+    print(json.dumps(doctor_report(root), indent=2))
+
+
+def doctor_report(root):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -184,7 +298,7 @@ def doctor(root):
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
-    print(json.dumps(report, indent=2))
+    return report
 
 
 def kit(args, root):
@@ -261,6 +375,20 @@ def verify_cmd(args):
     print(json.dumps(report, indent=2))
 
 
+def backup_drill_cmd(args):
+    from .backup import drill
+    if args.receipt and os.path.lexists(args.receipt):
+        raise ValueError(f"{args.receipt} exists; the drill never overwrites a receipt")
+    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report)
+    text = json.dumps(receipt, indent=2)
+    if args.receipt:
+        with os.fdopen(os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
+            out.write(text + "\n")
+    print(text)
+    if not receipt["passed"]:
+        sys.exit(3)
+
+
 def backup_diff_cmd(args, root):
     from .backup import diff
     report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256)
@@ -328,7 +456,9 @@ def main():
             cmd.add_argument("--state", required=True)
             cmd.add_argument("--location", help="City or county to resolve (default: the county)")
         if name == "ingest":
-            cmd.add_argument("--file", required=True)
+            source = cmd.add_mutually_exclusive_group(required=True)
+            source.add_argument("--file")
+            source.add_argument("--dir", help="One local production folder; symlinks are never followed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
         if name == "build":
@@ -358,6 +488,10 @@ def main():
     diff_p.add_argument("--file", required=True)
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    drill_p = commands.add_parser("backup-drill", help="Restore a backup into a temp copy, check it there, remove it (exit 3 on fail)")
+    drill_p.add_argument("--file", required=True)
+    drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    drill_p.add_argument("--receipt", help="Also write the receipt JSON here (must not exist)")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
@@ -372,15 +506,26 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
+    evidence_p.add_argument("--directory", required=True)
+    evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
     verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
     for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
         verify_agency_p.add_argument(flag, required=True)
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    sources_add = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
+                                      ).add_subparsers(dest="sources_command", required=True).add_parser(
+        "add", help="Register one ingested record by hash prefix; validates the whole list, publishes nothing")
+    for flag in ("--directory", "--sha256", "--title", "--agency-id", "--received-at", "--fragment"):
+        sources_add.add_argument(flag, required=True)
+    sources_add.add_argument("--public-url", default=None, help="Recorded only; never fetched or uploaded")
+    sources_add.add_argument("--pages", type=int, default=None)
+    sources_add.add_argument("--note", default="")
     args = parser.parse_args()
-    if args.command == "verify":
+    if args.command in ("verify", "backup-drill"):
         try:
-            verify_cmd(args)
+            verify_cmd(args) if args.command == "verify" else backup_drill_cmd(args)
         except (OSError, ValueError) as exc:
             print("Stopped: " + str(exc), file=sys.stderr)
             sys.exit(1)
@@ -407,6 +552,14 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "sources":
+            from .sources_cmd import add_source
+            print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
+                                        received_at=args.received_at, fragment=args.fragment,
+                                        public_url=args.public_url, pages=args.pages, note=args.note)))
+        elif args.command == "evidence":
+            from .evidence import run_cli
+            run_cli(root, check=args.check)
         elif args.command == "kit-verify-agency":
             from .kit import verify_agency
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,

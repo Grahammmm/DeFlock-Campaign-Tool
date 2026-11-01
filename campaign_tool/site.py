@@ -254,7 +254,7 @@ class Site:
                 '<p class="eyebrow">Agency profile</p><h3 id="city-name"></h3>'
                 '<p class="city-meta"><span class="status-pill" id="city-status"></span> <span class="city-vendor" id="city-vendor"></span> '
                 '<span id="city-camera-count" hidden></span></p><p class="city-summary" id="city-summary"></p>'
-                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library"></a></p></div>'
+                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library"></a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>Flock transparency portal</a></p></div>'
                 '<aside class="city-watch"><p class="eyebrow">Open questions</p><p id="city-open"></p>'
                 '<div class="policy-flags" id="city-flags"></div></aside></article>')
 
@@ -324,6 +324,8 @@ class Site:
                 links.append(f'<a href="{e(agency["records_url"])}" rel="noopener noreferrer">Records request page</a>')
             if agency["portal"]["url"]:
                 links.append(f'<a href="{e(agency["portal"]["url"])}" rel="noopener noreferrer">Portal ({e(agency["portal"]["vendor"])})</a>')
+            if agency["flock_transparency_url"]:
+                links.append(f'<a href="{e(agency["flock_transparency_url"])}" rel="noopener noreferrer">Flock transparency portal</a>')
             if sources:
                 links.append(f'<a href="/sources.html#{e(self.fragment_for_agency[agency["agency_id"]])}">{len(sources)} source record(s)</a>')
             body = (f'<p class="eyebrow">{e(KIND_LABELS[agency["kind"]])}</p><h3>{e(agency["name"])}</h3>'
@@ -460,7 +462,7 @@ class Site:
                 entry["bounds"] = city["bounds"]
                 if city["name"]:
                     entry["name"] = city["name"]
-            entry.update(agency["profile"])
+            entry.update(agency["profile"], **({"flockTransparencyUrl": agency["flock_transparency_url"]} if agency["flock_transparency_url"] else {}))
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]

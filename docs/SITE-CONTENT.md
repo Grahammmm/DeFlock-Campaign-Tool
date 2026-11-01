@@ -93,6 +93,21 @@ controller fits the map to `CITIES[slug].bounds`.
 also the `id` of the matching section in `sources.html`. Agencies without
 sources route to `sources.html#library`.
 
+### Adding a source record
+
+```
+python3 -m campaign_tool sources add --directory D --sha256 PREFIX --title T \
+  --agency-id A --received-at 2026-01-20T16:30:00+00:00 --fragment F \
+  [--public-url https://...] [--pages N] [--note TEXT]
+```
+
+`PREFIX` is the full hash printed by `ingest` or a unique prefix of at least 12
+hex characters; it must name an object in `private/ledger.sqlite` (opened
+read-only). The new entry is appended, the whole list is validated by the same
+loader as `build`, `agency_id` must be one of the campaign's agencies, and the
+file is replaced atomically; on any refusal it is left untouched. `--public-url`
+is only recorded, never fetched or uploaded, and nothing is published.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
@@ -148,6 +163,9 @@ the DeFlock community, which is the community source of these observations. A
 mapped point says a camera was observed, not which agency owns it. The
 controller labels points outside city boundaries without an operator tag as
 candidates with ownership unconfirmed; keep that label.
+A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call). An answer with no points never
+replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
+through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`

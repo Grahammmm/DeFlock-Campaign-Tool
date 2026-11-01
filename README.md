@@ -29,6 +29,7 @@ Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, no
 
 ```sh
 python3 -m campaign_tool ingest --directory ../my-campaign --file examples/synthetic-county/policy.txt --source-id demo-production-001
+python3 -m campaign_tool ingest --directory ../my-campaign --dir ../production-001 --source-id demo-production-001  # whole folder; per-file stored/present/skipped, no links followed
 python3 -m campaign_tool status --directory ../my-campaign
 python3 -m campaign_tool status --directory ../my-campaign --check
 ```

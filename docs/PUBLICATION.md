@@ -63,6 +63,19 @@ agencies and the optional map. Withdrawn findings never appear. `site_version` i
 hash, so an unchanged manifest re-uses the same build job and deploy card. The manifest carries
 no originals, correspondence, subscribers or credentials. `GET /api/manifest.json` returns it.
 
+## Before publishing: evidence check
+
+`python3 -m campaign_tool evidence --directory D --check` reads `content/` and, read-only,
+`private/ledger.sqlite`. For every published finding and every record it cites it prints one
+problem row (finding slug, first 12 hex of the hash, code); `--check` exits 3 when any is listed:
+
+- `unregistered`: the hash is not in `content/sources.json`.
+- `not_ingested`: no ledger row; the original was never ingested (every citation without a ledger).
+- `object_missing`: a ledger row exists but `private/objects/<sha256>` is missing or a symlink.
+
+It never reads receipts or re-hashes objects (`status --check` does that). Invalid content stops
+with exit 1.
+
 ## Corrections and withdrawal
 
 - `POST /findings/:id/correct` with `reason` and optional `replacement_finding_id` (which must

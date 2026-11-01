@@ -1,7 +1,6 @@
 ---
 name: flock-law-policy
 description: Use when recording California law rules or per-agency ALPR policy versions for the Flock work. Checks LAW.csv and POLICY.csv fail-closed and lists which policy version governs on a date.
-skill_version: 1.3
 ---
 
 # Flock law and policy
@@ -15,24 +14,36 @@ A clean check is machine-valid and review-required, not legal acceptance.
 - `agencies/<slug>/POLICY.csv`, one row per policy version found for that agency.
 - Column lists and rules: `tools/flock_law_policy.py` (`LAW_HEADER`, `POLICY_HEADER`).
 
-## Steps
-1. Transcribe LAW rows from the official text the acquisition owner has already fetched:
-   `rule_id`, `review` and `effective_from` are copied exactly from the law package.
-2. Transcribe POLICY rows: hash the policy document bytes (`doc_sha256`); put the footer date
-   in `footer_version_date`. Use `adoption_evidence` `unverified` until adoption is shown.
-3. For adopted versions give short evidence text, its `adoption_sha256` and `governs_from`.
-4. Check: `python3 tools/flock_law_policy.py --check STORE` (or one CSV); exit 0 only. Two adopted versions
-   of one agency + `policy_id` whose governing windows share a day (ends inclusive) are refused.
-5. List versions: `python3 tools/flock_law_policy.py versions STORE --agency SLUG [--on YYYY-MM-DD]`.
-   Exit 3 with `no adopted version established for DATE` means the date is not covered.
-   Every agency on one date: `python3 tools/flock_law_policy.py governing STORE --on YYYY-MM-DD` (STORE a directory).
-   Days no adopted version governs: `python3 tools/flock_law_policy.py gaps STORE --on YYYY-MM-DD`; exit 3 lists each
-   gap, closed policy or policy not established (a review prompt, not a finding of non-compliance).
-   Package rules with no LAW row: `python3 tools/flock_law_policy.py coverage STORE [--on YYYY-MM-DD]`; exit 3 names
-   each (with `--on`, also rules with no row in effect that day; any rule whose rows are all `disputed`).
-   Policy facts that differ between consecutive adopted versions: `python3 tools/flock_law_policy.py changes STORE [--agency SLUG]`
-   (fact types and FACTS ids only; exit 0 is a report, review each line; `no policy facts for LABEL` is unknown, not a change).
-6. Fix each reported `row N: <field> <reason>` at the source; the tool never repairs a row.
+## Transcribe
+- Transcribe LAW rows from the official text the acquisition owner has already fetched:
+  `rule_id`, `review` and `effective_from` are copied exactly from the law package.
+- Transcribe POLICY rows: hash the policy document bytes (`doc_sha256`); put the footer date
+  in `footer_version_date`. Use `adoption_evidence` `unverified` until adoption is shown.
+- For adopted versions give short evidence text, its `adoption_sha256` and `governs_from`.
+
+## Check
+- Check: `python3 tools/flock_law_policy.py --check STORE` (or one CSV); exit 0 only. Two adopted versions
+  of one agency + `policy_id` whose governing windows share a day (ends inclusive) are refused.
+- Fix each reported `row N: <field> <reason>` at the source; the tool never repairs a row.
+
+## Versions
+- List versions: `python3 tools/flock_law_policy.py versions STORE --agency SLUG [--on YYYY-MM-DD]`.
+  Exit 3 with `no adopted version established for DATE` means the date is not covered.
+
+## Governing
+- Every agency on one date: `python3 tools/flock_law_policy.py governing STORE --on YYYY-MM-DD` (STORE a directory).
+
+## Gaps
+- Days no adopted version governs: `python3 tools/flock_law_policy.py gaps STORE --on YYYY-MM-DD`; exit 3 lists each
+  gap, closed policy or policy not established (a review prompt, not a finding of non-compliance).
+
+## Coverage
+- Package rules with no LAW row: `python3 tools/flock_law_policy.py coverage STORE [--on YYYY-MM-DD]`; exit 3 names
+  each (with `--on`, also rules with no row in effect that day; any rule whose rows are all `disputed`).
+
+## Changes
+- Policy facts that differ between consecutive adopted versions: `python3 tools/flock_law_policy.py changes STORE [--agency SLUG]`
+  (fact types and FACTS ids only; exit 0 is a report, review each line; `no policy facts for LABEL` is unknown, not a change).
 
 ## Outputs
 - Counts `law=L policy=P errors=K`, row numbers, ids, labels and dates. Never duty or evidence text.
@@ -49,9 +60,3 @@ A clean check is machine-valid and review-required, not legal acceptance.
 ## Golden case
 - `python3 -B tools/flock_law_policy.py --check tests/fixtures/flock/law-sample.csv` exits 0 (synthetic);
   likewise `policy-sample.csv`, whose `versions ... --agency sample-city-police-department --on 2025-07-01` exits 3.
-
-## Changelog
-- 1.0: LAW.csv and POLICY.csv schema, `--check` and `versions`.
-- 1.1: `--check` refuses overlapping governing windows for one agency + `policy_id`.
-- 1.2: `governing STORE --on DATE` lists each agency's governing version and LAW rows in effect.
-- 1.3: `gaps STORE --on DATE` names ungoverned spans, closed and unestablished policies per agency + `policy_id`.
