@@ -101,21 +101,17 @@ class SitePrintTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(prefix="synthetic-site-print-")
+        cls.addClassCleanup(cls.temporary.cleanup)
         root = Path(cls.temporary.name) / "campaign"
         shutil.copytree(EXAMPLE, root, ignore=shutil.ignore_patterns("public"))
-        cls.root, cls.public = root, root / "public"
+        cls.public = root / "public"
         build_site(root)
         cls.css = (cls.public / "style.css").read_text(encoding="utf-8")
         cls.pages = {p.relative_to(cls.public).as_posix(): p.read_text(encoding="utf-8")
                      for p in cls.public.rglob("*.html")}
-        prints = [r for r in top_level_at_rules(cls.css) if r[2] == "@media print"]
-        cls.block = prints
-        cls.start, cls.end, _ = prints[-1] if prints else (0, 0, "")
-        cls.body = cls.css[cls.css.index("{", cls.start) + 1:cls.end - 1] if prints else ""
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.temporary.cleanup()
+        cls.block = [r for r in top_level_at_rules(cls.css) if r[2] == "@media print"]
+        cls.start, cls.end, _ = cls.block[-1] if cls.block else (0, 0, "")
+        cls.body = cls.css[cls.css.index("{", cls.start) + 1:cls.end - 1] if cls.block else ""
 
     def hidden(self):
         return [sel for sels, decl in rules(self.body) if "display:none" in decl.replace(" ", "") for sel in sels]
