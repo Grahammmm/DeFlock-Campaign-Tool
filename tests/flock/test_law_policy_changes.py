@@ -15,7 +15,7 @@ SPEC = importlib.util.spec_from_file_location("_flock_facts_t", ROOT / "tools" /
 FACTS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FACTS)
 CITY, SLUG = "Sample City Police Department", "sample-city-police-department"
-SECRET = "SENTINEL-QUOTE-77"
+PLANTED = "SENTINEL-QUOTE-77"
 
 
 def run(*args):
@@ -36,7 +36,7 @@ def policy(label, start, end="", pid="P", agency=CITY, evidence="Synthetic minut
 
 def fact(label, fact_type, value, kind="policy", status="unreviewed", page="1", agency=CITY):
     r = dict(agency=agency, request="R-1", fact_type=fact_type, value=value, source_sha256=doc(label), page=page,
-             verbatim_quote=f"{SECRET} {value}", kind=kind, effective_from="", effective_to="", added_by="tester",
+             verbatim_quote=f"{PLANTED} {value}", kind=kind, effective_from="", effective_to="", added_by="tester",
              added_at="2026-10-30", status=status)
     r["fact_id"] = FACTS.fact_id(r)
     return r
@@ -190,7 +190,7 @@ class ChangesTest(unittest.TestCase):
         code, out, _ = self.changes()
         text = "\n".join(out)
         self.assertEqual((code, out[-1]), (0, counts(c=1)))
-        for leak in ("VALUE-SENTINEL", SECRET, doc("v1"), "f" * 64, "Synthetic minutes", str(self.store)):
+        for leak in ("VALUE-SENTINEL", PLANTED, doc("v1"), "f" * 64, "Synthetic minutes", str(self.store)):
             self.assertNotIn(leak, text)
 
     def test_usage_errors(self):
