@@ -144,6 +144,9 @@ the DeFlock community, which is the community source of these observations. A
 mapped point says a camera was observed, not which agency owns it. The
 controller labels points outside city boundaries without an operator tag as
 candidates with ownership unconfirmed; keep that label.
+A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call). An answer with no points never
+replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
+through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`
