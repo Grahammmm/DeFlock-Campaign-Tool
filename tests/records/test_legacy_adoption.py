@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -21,10 +22,18 @@ class LegacyAdoptionTests(unittest.TestCase):
         self.helper.setUp()
         self.addCleanup(self.helper.doCleanups)
         self.base = self.helper.database.parent
-        self.export = self.helper.snapshot.parent / "export"
-        self.supplement = self.helper.snapshot.parent / "supplement"
+        # Source trees live under the system temp root, not tempfile's TMPDIR: agent
+        # runtimes point TMPDIR below a `.hermes` directory, which source_class()
+        # refuses by design, so the fixture must not inherit the runner's TMPDIR.
+        sources = tempfile.TemporaryDirectory(dir=os.path.realpath("/tmp"))
+        self.addCleanup(sources.cleanup)
+        self.sources = Path(sources.name)
+        self.export = self.sources / "export"
+        self.supplement = self.sources / "supplement"
         self.export.mkdir(mode=0o700)
         self.supplement.mkdir(mode=0o700)
+        for root in (self.export, self.supplement):
+            self.assertNotIn(".hermes", root.parts)
         self.rows = []
         for index, form in enumerate(("txt", "pdf", "png", "json", "csv", "other")):
             data = b"synthetic original" if index == 0 else ("synthetic " + form).encode()
@@ -124,7 +133,7 @@ class LegacyAdoptionTests(unittest.TestCase):
 
     def test_forbidden_paths_refuse_before_source_open(self):
         for path, code in ((self.export / ".hermes" / "unread.pdf", "legacy_source_path_forbidden"),
-                           (self.base / "outside.pdf", "legacy_source_root_not_admitted"),
+                           (self.sources / "outside.pdf", "legacy_source_root_not_admitted"),
                            (self.export / "agent-work" / "flock-mvp" / "unread.pdf", "legacy_source_path_forbidden"),
                            (self.export / "unknown" / "unread.pdf", "legacy_source_class_unknown")):
             with self.subTest(code=code):
