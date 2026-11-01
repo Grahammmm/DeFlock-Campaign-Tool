@@ -16,7 +16,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .agency_cards import text as plain_text
@@ -99,7 +99,6 @@ class LegistarClient:
 
 
 def resolve_zone(name):
-    """``ZoneInfo`` for an IANA zone name, or None when the name is unknown."""
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError, TypeError):
@@ -108,16 +107,18 @@ def resolve_zone(name):
 
 def _starts_at(event, zone):
     """(local time with the zone's offset for that date, time_known); None without a date."""
+    day = str(event.get("EventDate") or "")[:10]
     try:
-        day = date.fromisoformat(str(event.get("EventDate") or "")[:10])
+        date.fromisoformat(day)
     except ValueError:
         return None
-    text = str(event.get("EventTime") or "").strip()
+    time = str(event.get("EventTime") or "").strip()
     try:
-        parsed = datetime.strptime(text.upper(), "%I:%M %p").time() if text else None
+        parsed = datetime.strptime(time.upper(), "%I:%M %p").time() if time else None
     except ValueError:
         parsed = None
-    return datetime.combine(day, parsed or time(0), tzinfo=zone).isoformat(timespec="seconds"), parsed is not None
+    local = datetime.fromisoformat(f"{day}T{parsed.strftime('%H:%M:%S') if parsed else '00:00:00'}")
+    return local.replace(tzinfo=zone).isoformat(timespec="seconds"), parsed is not None
 
 
 def _moved(old, new):
@@ -126,9 +127,8 @@ def _moved(old, new):
         before, after = (datetime.fromisoformat(v.replace("Z", "+00:00")) for v in (old, new))
     except ValueError:
         return old != new
-    if before.tzinfo is None or after.tzinfo is None:
-        return before.replace(tzinfo=None) != after.replace(tzinfo=None)
-    return before != after
+    naive = before.tzinfo is None or after.tzinfo is None
+    return before.replace(tzinfo=None) != after.replace(tzinfo=None) if naive else before != after
 
 
 def _item_text(item):
