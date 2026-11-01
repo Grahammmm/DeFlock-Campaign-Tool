@@ -455,3 +455,35 @@ def kit_status(root):
         except (ValueError, OSError):
             report["kit_error"] = "kit/agencies.json is not readable JSON"
     return report
+
+
+def stale_contacts(root, max_age_days, today=None):
+    """Selected, verified kit agencies whose verification.checked_on is more than max_age_days old (read-only).
+
+    Missing kit/agencies.json -> []; unreadable -> None (doctor already reports kit_error). A verified entry with a
+    missing or unparseable checked_on is listed with nulls (first): it cannot be shown fresh. doctor caps the list."""
+    path = Path(root) / "kit" / "agencies.json"
+    if not path.is_file():
+        return []
+    try:
+        agencies = _read_json(path)
+    except (ValueError, OSError):
+        return None
+    if not isinstance(agencies, list):
+        return []
+    today = today or date.today()
+    stale = []
+    for entry in agencies:
+        if not (isinstance(entry, dict) and entry.get("selected") is True and entry.get("verified") is True):
+            continue
+        verification = entry.get("verification")
+        raw = verification.get("checked_on") if isinstance(verification, dict) else None
+        try:
+            checked = date.fromisoformat(raw) if isinstance(raw, str) and DATE.fullmatch(raw) else None
+        except ValueError:
+            checked = None
+        age = (today - checked).days if checked else None
+        if age is None or age > max_age_days:
+            stale.append({"agency_id": str(entry.get("agency_id")), "checked_on": checked and raw, "age_days": age})
+    stale.sort(key=lambda item: (item["age_days"] is not None, -(item["age_days"] or 0), item["agency_id"]))
+    return stale
