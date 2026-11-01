@@ -120,7 +120,9 @@ signup, meetings), `agencies.html`, `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
 `#<fragment>` section per source group), `meetings.html`, `about.html`,
 `style.css`, `_headers`, `robots.txt`, `sitemap.xml`, `feed.xml` (Atom of
-findings), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
+findings), `findings/agency/<slug>.xml` (the same Atom entries for one agency,
+only for an agency with at least one published finding; linked as "Findings
+feed" from its `agencies.html` entry), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
 a picker-only bootstrap without a map), `data/*.geojson` and `vendor/*` when
