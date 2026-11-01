@@ -7,6 +7,7 @@ by tests; --from-file reads a saved Overpass answer the organizer reviewed, offl
     python3 tools/fetch_osm_alprs.py --directory my-campaign --bbox SOUTH WEST NORTH EAST
     python3 tools/fetch_osm_alprs.py --directory my-campaign --relation 396490
     python3 tools/fetch_osm_alprs.py --directory my-campaign --from-file SAVED.json
+    python3 tools/fetch_osm_alprs.py --directory my-campaign --relation 396490 --check   # writes nothing
 
 It queries the Overpass API for nodes tagged ``man_made=surveillance`` and
 ``surveillance:type=ALPR`` inside a bounding box or an OSM relation (a county
@@ -29,6 +30,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import time
@@ -47,6 +49,9 @@ TEXT_LIMIT = 200
 MAX_ANSWER_BYTES = 50 * 1024 * 1024
 NOT_CAMPAIGN = "fetch_osm_alprs: --directory is not a campaign directory (no campaign.json)"
 EMPTY_KEPT = "fetch_osm_alprs: answer has no points; current map kept (use --allow-empty to replace)"
+NODE_URL = re.compile(r"https://www\.openstreetmap\.org/node/[1-9][0-9]{0,18}")
+CHANGE_KINDS = ("added", "removed", "moved", "retagged")
+LIST_LIMIT = 20
 
 
 class WriteRefused(Exception):
@@ -195,6 +200,67 @@ def write_map(campaign, collection, allow_empty):
     return map_dir
 
 
+def load_current(path):
+    """The current FeatureCollection (no features when absent), or None when it is not readable GeoJSON."""
+    try:
+        current = json.loads(Path(path).read_bytes().decode("utf-8"), parse_constant=_refuse_constant)
+    except FileNotFoundError:
+        return {"type": "FeatureCollection", "features": []}
+    except (OSError, ValueError, RecursionError):
+        return None
+    valid = isinstance(current, dict) and current.get("type") == "FeatureCollection"
+    return current if valid and isinstance(current.get("features"), list) else None
+
+
+def _keyed(collection):
+    """Node URL -> (tags, [lon, lat] or None); features without a valid first-seen node URL are only counted."""
+    keyed, unkeyed = {}, 0
+    for feature in collection["features"]:
+        props = feature.get("properties") if isinstance(feature, dict) else None
+        url = props.get("url") if isinstance(props, dict) else None
+        if not isinstance(url, str) or not NODE_URL.fullmatch(url) or url in keyed:
+            unkeyed += 1
+            continue
+        point = (feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}).get("coordinates")
+        valid = isinstance(point, list) and len(point) == 2 and _coordinate(point[0], 180) \
+            and _coordinate(point[1], 90)
+        keyed[url] = (tuple(str(props.get(k) or "") for k in ("manufacturer", "operator")), point if valid else None)
+    return keyed, unkeyed
+
+
+def _metres(a, b):
+    """Haversine distance in metres between two [lon, lat] points."""
+    lon1, lat1, lon2, lat2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * 6371008.8 * math.asin(math.sqrt(min(1.0, h)))
+
+
+def diff(old_collection, new_collection, move_m=10.0):
+    """Compare by node URL; a point can be moved and retagged at once; an unusable old point counts as moved."""
+    old, unkeyed_old = _keyed(old_collection)
+    new = _keyed(new_collection)[0]
+    result = {"added": sorted(new.keys() - old.keys()), "removed": sorted(old.keys() - new.keys()),
+              "moved": [], "retagged": [], "unchanged": [], "unkeyed_old": unkeyed_old}
+    for url in sorted(old.keys() & new.keys()):
+        (old_tags, old_point), (new_tags, new_point) = old[url], new[url]
+        moved = old_point is None or new_point is None or _metres(old_point, new_point) > move_m
+        for kind in ["moved"] * moved + ["retagged"] * (old_tags != new_tags) or ["unchanged"]:
+            result[kind].append(url)
+    return result
+
+
+def print_check(changes):
+    """Counts, then up to LIST_LIMIT sorted URLs per change kind; never tag text or coordinates. 3 on removals."""
+    counts = (f"{k}={len(changes[k])}" for k in (*CHANGE_KINDS, "unchanged"))
+    print(*counts, f"unkeyed_old={changes['unkeyed_old']}")
+    for kind in (k for k in CHANGE_KINDS if changes[k]):
+        print(f"{kind}:", *(f"  {url}" for url in changes[kind][:LIST_LIMIT]), sep="\n")
+        if len(changes[kind]) > LIST_LIMIT:
+            print(f"  … +{len(changes[kind]) - LIST_LIMIT} more")
+    print("Check only: nothing was written.")
+    return 3 if changes["removed"] else 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--directory", required=True, help="Campaign directory (contains campaign.json)")
@@ -205,15 +271,30 @@ def main(argv=None):
                        help="saved Overpass JSON answer the organizer reviewed (offline, no network)")
     parser.add_argument("--allow-empty", action="store_true",
                         help="let an answer with no points replace a map that has points")
+    parser.add_argument("--check", action="store_true", help="compare with the current cameras.geojson by node "
+                        "URL and write nothing; exit 3 when any point would be removed")
+    parser.add_argument("--move-metres", type=float, metavar="M", help="with --check: moved beyond M metres (10)")
     args = parser.parse_args(argv)
+    if args.move_metres is not None and not (args.check and math.isfinite(args.move_metres)
+                                             and args.move_metres >= 0):
+        parser.error("--move-metres needs --check and a finite number of metres >= 0")
     if args.bbox:
         south, west, north, east = args.bbox
         if not (-90 <= south < north <= 90 and -180 <= west < east <= 180):
             parser.error("bbox must be SOUTH WEST NORTH EAST within valid ranges")
-    marker = Path(args.directory) / "campaign.json"
-    if marker.is_symlink() or not marker.is_file():
-        print(NOT_CAMPAIGN, file=sys.stderr)
-        return 2
+    # --check (RF1730-10) only reads and writes nothing, so it keeps its own gate; the campaign.json gate
+    # (RF1730-11) guards every write and runs before any fetch or read of the answer.
+    current = None
+    if args.check:
+        current = load_current(Path(args.directory) / "content" / "map" / "cameras.geojson")
+        if current is None:
+            print("fetch_osm_alprs: current cameras.geojson is not readable GeoJSON", file=sys.stderr)
+            return 2
+    else:
+        marker = Path(args.directory) / "campaign.json"
+        if marker.is_symlink() or not marker.is_file():
+            print(NOT_CAMPAIGN, file=sys.stderr)
+            return 2
     if args.from_file:
         elements = load_saved(args.from_file)
         if elements is None:
@@ -222,6 +303,8 @@ def main(argv=None):
     else:
         elements = fetch(query_for(args)).get("elements", [])
     collection, skipped = to_geojson(elements if isinstance(elements, list) else [])
+    if args.check:
+        return print_check(diff(current, collection, 10.0 if args.move_metres is None else args.move_metres))
     try:
         map_dir = write_map(Path(args.directory), collection, args.allow_empty)
     except WriteRefused as exc:

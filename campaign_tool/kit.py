@@ -21,6 +21,7 @@ import json
 import os
 import re
 import tempfile
+import urllib.parse
 from datetime import date
 from pathlib import Path
 
@@ -389,6 +390,56 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
     cfg["jurisdiction"] = jurisdiction
     _write_json(root / "campaign.json", cfg)
     return summary
+
+
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}")
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _https_url(value, field):
+    parts = urllib.parse.urlsplit(value) if isinstance(value, str) else None
+    if not parts or parts.scheme != "https" or not parts.hostname or any(ord(c) < 33 for c in value):
+        raise ValueError(f"{field} must be an https:// URL with a host")
+
+
+def verify_agency(root, agency_id, *, source_url, checked_on, records_email=None, records_url=None,
+                  portal=None, today=None):
+    """Record an organizer-checked contact, its official source and date; never fetches source_url."""
+    path = Path(root) / "kit" / "agencies.json"
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("run kit first: kit/agencies.json is missing")
+    _load_existing(path)
+    agencies = _read_json(path)
+    matches = [entry for entry in agencies if entry["agency_id"] == agency_id]
+    if len(matches) != 1:
+        raise ValueError(f"agency_id {agency_id!r} must appear exactly once in kit/agencies.json (found {len(matches)})")
+    given = {name: value for name, value in (("records_email", records_email), ("records_url", records_url),
+                                             ("portal", portal)) if value is not None}
+    if not given:
+        raise ValueError("give at least one of records_email, records_url, portal")
+    _https_url(source_url, "source_url")
+    for field in ("records_url", "portal"):
+        if field in given:
+            _https_url(given[field], field)
+    if "records_email" in given and not (isinstance(records_email, str) and EMAIL.fullmatch(records_email)):
+        raise ValueError("records_email must be a plain address like records@agency.example")
+    try:
+        checked = date.fromisoformat(checked_on) if DATE.fullmatch(str(checked_on)) else None
+    except ValueError:
+        checked = None
+    if checked is None:
+        raise ValueError("checked_on must be a real YYYY-MM-DD date")
+    if checked > (today or date.today()):
+        raise ValueError(f"checked_on {checked_on} is after today")
+    entry = matches[0]
+    if "portal" in given:
+        base = entry["portal"] if isinstance(entry.get("portal"), dict) else {"vendor": "unknown"}
+        given["portal"] = {**base, "url": given["portal"]}
+    entry.update(given)
+    entry["verified"] = True
+    entry["verification"] = {"source_url": source_url, "checked_on": checked_on, "fields": sorted(given)}
+    _write_json(path, agencies)
+    return {"agency_id": agency_id, "fields": sorted(given), "checked_on": checked_on, "verified": True}
 
 
 def kit_status(root):

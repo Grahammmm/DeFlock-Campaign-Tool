@@ -84,7 +84,34 @@ def render(config):
     return token.sub(lambda match: tokens[match.group(1)], template)
 
 
-def main():
+def _refuse(name):
+    raise ValueError("non-finite number")
+
+
+def check(path):
+    """Print each config problem (never a value) then problems=N; exit 0 none, 1 problems, 2 unreadable."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(MAX_BYTES + 1)
+        config = json.loads(raw.decode("utf-8"), parse_constant=_refuse) if len(raw) <= MAX_BYTES else None
+        if not isinstance(config, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError, RecursionError):
+        print("Agency-card check stopped: config file missing, unreadable, over 2 MB, not UTF-8 JSON or not an object",
+              file=sys.stderr)
+        return 2
+    found = problems(config)
+    print("\n".join(found + [f"problems={len(found)}"]))
+    return 1 if found else 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv:
+        if len(argv) == 2 and argv[0] == "--check":
+            return check(argv[1])
+        print("usage: agency_cards [--check CONFIG.json]  (no arguments: build from stdin)", file=sys.stderr)
+        return 2
     try:
         raw = sys.stdin.buffer.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
