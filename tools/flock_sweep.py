@@ -4,7 +4,7 @@
 Reads the store only; never runs a model, kanban or hermes. Prints slugs, stages, counts and commands, never claim,
 quote or fact text. Summary: blocked = agencies - finished - ready - unmapped; unwatched = in_scope=yes roster rows
 with no watch-list row, named (roster order) on the line before it. Exit 0 ok, 1 errors, 2 usage."""
-import argparse, csv, datetime, importlib.util, io, json, re, shlex, sys
+import argparse, csv, datetime, functools, importlib.util, io, json, re, shlex, sys
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -83,6 +83,10 @@ def assess(store, slug, watch_agency, r, date):
                "--applicability \"%s\"; compare card" % (q(TOOLS / "flock_compare.py"), q(store), slug, date,
                                                          re.sub(r'([\\"$`])', r"\\\1", app))
     start = "python3 %s start %s --provider %s --model <model>; verify card" % (q(TOOLS / "flock_verify.py"), q(run), other)
+    checked = functools.lru_cache(None)(lambda: compare.check(run))  # at most one compare.check per agency
+    stale = lambda: sorted(m[1] for e in checked()[0] if (m := re.match(r"inputs: (\S+) changed since scaffold", e)))
+    rescaffold = lambda: "inputs changed since %s (%s); %s" % (run.name, ",".join(stale()), scaffold) + \
+        (" (pick a later --date; the folder exists)" if date == run.name else "")
     steps = ((lambda: r["in_scope"] == "no", "out-of-scope", "-"),
              (lambda: r["in_scope"] == "hold" or not app, "scope-hold", "operator: applicability line"),
              (lambda: not out["facts"], "no-facts", "legwork facts + flock_facts.py import"),
@@ -92,7 +96,8 @@ def assess(store, slug, watch_agency, r, date):
              (lambda: facts_tool.check_file(facts_path, slug) or law_policy.load_law(law_path)[1]
               or law_policy.load_policy(policy_path, slug)[1], "store-errors", "fix store rows (flock_facts.py --check)"),
              (lambda: run is None, "ready-compare", scaffold),
-             (lambda: (run / "REMAINING.md").exists() or (lambda c: c[0] or not c[1])(compare.check(run)),
+             (stale, "stale-inputs", rescaffold),  # a changed input cannot be resumed: start a new dated run
+             (lambda: (run / "REMAINING.md").exists() or (lambda c: c[0] or not c[1])(checked()),
               "compare-open", "resume compare card (REMAINING.md)"),
              (lambda: not (run / "VERIFY.json").exists(), "ready-verify", start),
              (lambda: verify.family(run), "family-refused", "operator: re-run verify in another family"),
@@ -100,7 +105,7 @@ def assess(store, slug, watch_agency, r, date):
               "verify-open", "resume verify card"))
     for cond, stage, nxt in steps:
         if cond():
-            return dict(out, stage=stage, next=nxt)
+            return dict(out, stage=stage, next=nxt() if callable(nxt) else nxt)
     return dict(out, stage="finished", next="F5b drafts; F9 export if public_ok>0")
 
 def status_rows(store, agencies, roster, date):

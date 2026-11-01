@@ -128,12 +128,52 @@ def due(rows, as_of=None):
     return lines
 
 
-def summary(rows):
-    """One status line per agency (slug order, first-seen label), then totals. Counts only: no law package, no deadline."""
+def inventory(path):
+    """([(row number, row)], None) or (None, reason); same header and row checks as flock_facts coverage."""
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
+            table = list(csv.reader(fh))
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        return None, f"inventory unreadable ({type(exc).__name__})"
+    head = table[0] if table else []
+    lacks = [c for c in ("request", "doc_id", "sha256", "analysis_only") if c not in head]
+    if lacks:
+        return None, "inventory header lacks " + ", ".join(lacks)
+    out = []
+    for n, cells in ((n, c) for n, c in enumerate(table[1:], 2) if c):
+        if len(cells) != len(head):
+            return None, f"inventory row {n}: columns have the wrong count"
+        out.append((n, dict(zip(head, cells))))
+    return out, None
+
+
+def documents(groups, inv):
+    """{(agency slug, request_id): {sha256: withheld}} and one named line per unmatched row. Withheld: any analysis_only
+    other than "no" (the coverage rule). Titles, doc_ids, shas and source_ids are never put in a line."""
+    owners, docs, named = {}, {}, []
+    for key, rs in groups.items():
+        for r in rs:
+            owners.setdefault(r["request_id"], []).append(key)
+    for n, rec in inv:
+        rid, held = rec["request"].strip(), owners.get(rec["request"].strip(), [])
+        if rid and len(held) == 1:
+            got = docs.setdefault((held[0], rid), {})
+            sha = rec["sha256"].strip()
+            got[sha] = got.get(sha, False) or rec["analysis_only"] != "no"
+        else:
+            why = f"request {rid} | " + ("ambiguous request" if held else "unknown request") if rid else "request missing"
+            named.append(f"request docs | inventory row {n} | {why}")
+    return docs, named
+
+
+def summary(rows, inv=None):
+    """One status line per agency (slug order, first-seen label), then totals. Counts only: no law package, no deadline.
+    inv (from inventory()) adds a document-count line per request after its agency and names unmatched rows."""
     groups = {}
     for r in rows:
         groups.setdefault(slug(r["agency"]), []).append(r)
-    lines, unknown = [], 0
+    docs, named = documents(groups, inv) if inv is not None else ({}, [])
+    lines, unknown, posted, withheld = [], 0, 0, 0
     for key in sorted(groups):
         rs = groups[key]
         opened = [r for r in rs if r["status"] == "open"]
@@ -142,9 +182,18 @@ def summary(rows):
         counts = " ".join(f"{s}={sum(r['status'] == s for r in rs)}" for s in ORDER)
         oldest = min((r["sent"] for r in opened), default="-")
         lines.append(f"request status | {rs[0]['agency']} | {counts} | receipt_unknown={unk} | oldest_open_sent {oldest}")
+        for r in sorted(rs, key=lambda r: r["request_id"]) if inv is not None else ():
+            got = docs.get((key, r["request_id"]), {})
+            held = sum(got.values())
+            posted, withheld = posted + len(got) - held, withheld + held
+            lines.append(f"request docs | {rs[0]['agency']} | {r['request_id']} | status={r['status']}"
+                         f" | posted={len(got) - held} withheld={held}")
     opened = sum(r["status"] == "open" for r in rows)
+    extra = (f" documents={posted + withheld} posted={posted} withheld={withheld} unknown_rows={len(named)}"
+             if inv is not None else "")
+    lines += named
     lines.append(f"request status | agencies={len(groups)} requests={len(rows)} open={opened} receipt_unknown={unknown}"
-                 " | not a legal status; the canonical ledger wins")
+                 f"{extra} | not a legal status; the canonical ledger wins")
     return lines
 
 
@@ -236,7 +285,8 @@ def draft(rundir, requests, start, end):
 
 
 USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] | summary PATH | "
-         "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD")
+         "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
+         "summary PATH [--inventory CSV] adds document counts")
 
 def main(argv):
     if argv in (["--help"], ["-h"]):
@@ -245,7 +295,9 @@ def main(argv):
         start, end = day(argv[5]), day(argv[7])
         if start and end and start <= end:
             return draft(argv[1], argv[3], argv[5], argv[7])
-    as_of = None
+    as_of = inv = None
+    if len(argv) == 4 and argv[0] == "summary" and argv[2] == "--inventory":
+        inv, argv = argv[3], argv[:2]
     if len(argv) == 4 and argv[0] == "due" and argv[2] == "--as-of":
         as_of, argv = day(argv[3]), argv[:2]
         if as_of is None:
@@ -261,7 +313,10 @@ def main(argv):
         print("\n".join(errs), file=sys.stderr)
         return 1
     if argv[0] == "summary":
-        print("\n".join(summary(rows)))
+        table, why = inventory(inv) if inv is not None else (None, None)
+        if why:
+            return print(f"summary: {why}", file=sys.stderr) or 1
+        print("\n".join(summary(rows, table)))
         return 0
     try:
         lines = due(rows, as_of)
