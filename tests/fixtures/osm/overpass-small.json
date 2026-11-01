@@ -1,0 +1,26 @@
+{
+ "version": 0.6,
+ "generator": "synthetic test fixture (made-up ids and coordinates)",
+ "elements": [
+  {
+   "type": "node",
+   "id": 9000003,
+   "lat": 1.25,
+   "lon": 1.5,
+   "tags": {"man_made": "surveillance", "surveillance:type": "ALPR", "manufacturer": "Example Vendor", "operator": "  <Example> Agency  "}
+  },
+  {
+   "type": "node",
+   "id": 9000001,
+   "lat": 1,
+   "lon": 1.75,
+   "tags": {"man_made": "surveillance", "surveillance:type": "ALPR", "manufacturer": "Example Vendor"}
+  },
+  {
+   "type": "node",
+   "id": 9000002,
+   "lat": 0.5,
+   "lon": 0.25
+  }
+ ]
+}

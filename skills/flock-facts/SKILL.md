@@ -21,7 +21,7 @@ store (outside the repo). No model step: the tool validates, it does not read do
 3. Import: `python3 tools/flock_facts.py import SRC.csv --store STORE --added-by NAME`.
 4. Expect `imported=I duplicates=D errors=0`. Any error leaves the store untouched.
 5. Re-import is safe: duplicates are skipped by the dedupe key.
-6. Verify the store: `python3 tools/flock_facts.py --check STORE`; exit 0 only.
+6. Verify the store: `python3 tools/flock_facts.py --check STORE`; exit 0 only. It also names a `policy` fact not citing its agency's POLICY.csv `doc_sha256` and a `law` fact not citing a LAW.csv `text_sha256`.
 7. Treat a clean check as machine-valid and review-required, not accepted.
 8. Coverage: `python3 tools/flock_facts.py coverage --store STORE --agency SLUG --inventory INVENTORY.csv`
 9. Review state: `python3 tools/flock_facts.py status --store STORE [--agency SLUG] [--list unreviewed|disputed]`; ids, never values.
