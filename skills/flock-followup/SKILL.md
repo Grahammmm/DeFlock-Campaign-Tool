@@ -1,7 +1,7 @@
 ---
 name: flock-followup
 description: Use when listing which open ALPR public-records requests need a provisional determination reminder, or when turning F4's QUESTIONS.md into a follow-up request draft. Reads private files; never sends or concludes lateness.
-skill_version: 1.6
+skill_version: 1.5
 ---
 
 # Flock follow-up (CPRA request tracker and follow-up draft)
@@ -76,7 +76,6 @@ Draft: `tests/fixtures/flock/questions-sample.md` (synthetic) for agency folder
 
 ## Changelog
 
-- 1.6: `reconcile STORE --report REPORT.json` compares REQUESTS rows with the correspondence report (read-only).
 - 1.5: `record` sets one dated, sourced step on a request; regressions refused.
 - 1.4: `summary --inventory CSV` adds document counts per request (counts only; withheld never named).
 - 1.3: `due --as-of DATE` adds days to or since each reminder and upcoming_7d/passed totals.
