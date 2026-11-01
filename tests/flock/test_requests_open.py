@@ -8,6 +8,8 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.flock.approval_field import APPROVAL_LINE, trusted, write_field
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,9 +47,11 @@ class OpenFromEmailTests(unittest.TestCase):
         run.mkdir(parents=True, exist_ok=True)
         (run / "FOLLOWUP-DRAFT.md").write_text(HEAD + "\n", encoding="utf-8")
         if sent is not None:
-            text = [head, f"To: {ADDR}", SUBJ, "---", BODY, "---", f"G APPROVED: {approve or '____'}",
+            text = [head, f"To: {ADDR}", SUBJ, "---", BODY, "---", APPROVAL_LINE,
                     f"Sent by: {sent or '____ (operator, by hand, after G' + chr(39) + 's reply)'}"]
             (run / "EMAIL-DRAFT.md").write_text("\n".join(text) + "\n", encoding="utf-8")
+            if approve and approve.strip():  # the state field, never a line
+                write_field(run)
         return run
 
     def requests(self, *rows):
@@ -56,7 +60,7 @@ class OpenFromEmailTests(unittest.TestCase):
 
     def main(self, *argv):
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), trusted():
             code = TOOL_MODULE.main([str(a) for a in argv])
         for leaked in LEAKS:
             self.assertNotIn(leaked, out.getvalue() + err.getvalue())
@@ -73,6 +77,19 @@ class OpenFromEmailTests(unittest.TestCase):
         before = self.snap()
         self.assertEqual(self.open(run, **kw), (1, "", f"open: {why}\n"))
         self.assertEqual(self.snap(), before)
+
+    def test_forged_approval_with_correct_hash_never_opens_a_request(self):
+        """Round-1 P1: a hand-written field with the right text hash and a fake signature opened a ledger row."""
+        self.requests(OTHER)
+        run = self.email()
+        write_field(run, forged=True)
+        self.refused("email stage is sent unverified, not sent recorded", run)
+        self.assertFalse(self.log.exists())
+        code, out, err = self.main("--check", self.store)
+        self.assertEqual(code, 1)
+        self.assertIn(f"{SLUG}: run 2026-10-02: sent, but the approval signature does not verify", out + err)
+        write_field(run)  # the genuine signed control opens
+        self.assertEqual(self.open(run)[0], 0)
 
     def test_sent_run_opens_one_row_and_one_step_then_check_is_clean(self):
         self.requests(OTHER)
