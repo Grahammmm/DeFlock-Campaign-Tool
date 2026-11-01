@@ -18,7 +18,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, map_controller
-from .content import CITY_KINDS, ContentError, load_content
+from .content import CITY_KINDS, ContentError, load_content, utc_moment
 from .markdown_lite import render as markdown
 from .shell import render
 
@@ -110,6 +110,18 @@ def short_hash(sha256):
 
 def date_label(value):
     return e(value[:10])
+
+
+def _day(value):
+    return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+
+
+def finding_updated(finding):
+    """Latest of updated_at, published_at and each correction date (a date read as midnight UTC), as the winner's
+    own string; a tie keeps that order."""
+    candidates = [finding["updated_at"], finding["published_at"]]
+    candidates += [_day(c["date"]) + "T00:00:00+00:00" for c in finding["corrections"]]
+    return max((value for value in candidates if value), key=utc_moment)
 
 
 def js_json(value):
@@ -578,7 +590,7 @@ class Site:
         ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + self_path) if self.base else campaign_urn + urn_suffix
         ET.SubElement(feed, f"{{{ns}}}link", href=self.base + self_path, rel="self")
         ET.SubElement(feed, f"{{{ns}}}link", href=self.base + alternate_path)
-        latest = max((f["updated_at"] or f["published_at"] for f in findings), default=None)
+        latest = max((finding_updated(f) for f in findings), key=utc_moment, default=None)
         ET.SubElement(feed, f"{{{ns}}}updated").text = latest or datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
         ET.SubElement(ET.SubElement(feed, f"{{{ns}}}author"), f"{{{ns}}}name").text = self.cfg["name"]
         for finding in findings:
@@ -587,8 +599,9 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}id").text = "urn:deflock-finding:" + finding["id"]
             ET.SubElement(entry, f"{{{ns}}}link", href=f'{self.base}/findings/{finding["slug"]}.html')
             ET.SubElement(entry, f"{{{ns}}}published").text = finding["published_at"]
-            ET.SubElement(entry, f"{{{ns}}}updated").text = finding["updated_at"] or finding["published_at"]
-            ET.SubElement(entry, f"{{{ns}}}summary").text = (
+            ET.SubElement(entry, f"{{{ns}}}updated").text = finding_updated(finding)
+            corrected = max((_day(c["date"]) for c in finding["corrections"]), default=None)
+            ET.SubElement(entry, f"{{{ns}}}summary").text = (f"Corrected {corrected}. " if corrected else "") + (
                 f'[{CLASSIFICATION_LABELS[finding["classification"]]}; {CONFIDENCE_LABELS[finding["confidence"]]}; '
                 f'event date {finding["event_date"]}] {finding["summary"]}')
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
