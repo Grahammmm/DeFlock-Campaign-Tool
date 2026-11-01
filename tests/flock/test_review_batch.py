@@ -52,7 +52,7 @@ class FlockReviewBatchTest(unittest.TestCase):
         before = self.trees()
         code, out = self.status()
         self.assertEqual(code, 0, out)
-        self.assertIn("agencies=3 done=0 waiting=0 in_flight=0 failed=0 invalid=0 held=1 locked=0\n", out)
+        self.assertIn("agencies=3 done=0 waiting=0 in_flight=0 failed=0 invalid=0 held=1 locked=0 ready=2\n", out)
         header, rows = self.rows()
         self.assertEqual((header, [r["state"] for r in rows], [r["slug"] for r in rows]), (HEADER, ["ready", "ready", "held"], list(SLUGS)))
         self.assertEqual((self.out / "BATCH-STATUS.csv").stat().st_mode & 0o777, 0o600)
