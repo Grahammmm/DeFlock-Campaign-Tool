@@ -28,6 +28,8 @@ calls kanban or hermes and never writes into the store. Each model run stays its
 4. After each card, run `status` again.
 5. Once 2 or more agencies are `finished`: `python3 tools/flock_sweep.py matrix ... --out DIR` writes
    COMPARE-MATRIX.csv and COMPARE.md (0600, outside the repository). They hold ids, slugs and ratings only.
+6. Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
+   `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).
 
 ## Stages (first match wins)
 unmapped, out-of-scope, scope-hold, no-facts, facts-unreadable, no-policy, no-law, store-errors,
