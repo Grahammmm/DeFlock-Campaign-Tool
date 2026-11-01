@@ -70,9 +70,14 @@ def fact_edit(run, errs, findings, facts):  # DF1537-10 recheck: drop only the e
         v = None if m[1] else checks.get(int(m[2]))
         f = rows.get(int(m[2])) if m[1] else by_id.get(v["finding_id"]) if v else None
         gone = {i for i in compare.ids(f["fact_ids"]) if i not in facts} if f else set()
+        # DFMAINRED-4: DF1537-02's disputed-cite errors are a FACTS.csv status edit too; recheck moves those entries itself.
+        # A disputed quote_fact_id outside fact_ids is not moved by recheck, so that error still refuses (fail closed).
+        disputed = {i for i in compare.ids(f["fact_ids"]) if facts.get(i, {}).get("status") == "disputed"} if f else set()
         if m[1]:
             return bool(gone) and (m[3] == "fact_ids cites a fact not in FACTS.csv" or
-                                   m[3] == "quote is not in the verbatim_quote of quote_fact_id" and f["quote_fact_id"] in gone)
+                                   m[3] == "quote is not in the verbatim_quote of quote_fact_id" and f["quote_fact_id"] in gone) or \
+                bool(disputed) and (m[3] == "fact_ids cites a disputed fact (review it again or drop it)" or
+                                    m[3] == "quote_fact_id is a disputed fact" and f["quote_fact_id"] in disputed)
         return m[3] == "reread_fact_id is not a fact cited by the finding" and bool(v) and v["reread_fact_id"] in gone
     return [e for e in errs if not caused(e)]
 def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc, no write -> (code, lines, doc); new: refuse an existing file
