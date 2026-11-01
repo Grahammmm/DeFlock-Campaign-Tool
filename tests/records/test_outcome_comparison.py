@@ -263,10 +263,15 @@ class OutputsStage(unittest.TestCase):
 
     def fingerprint(self, project):
         return {str(p.relative_to(project)): (p.stat().st_ino, hashlib.sha256(p.read_bytes()).hexdigest())
-                for subdir in ("processing-v1", "portal-queue-v1") for p in (project / subdir).iterdir()}
+                for subdir in ("processing-v1", "portal-queue-v1") for p in (project / subdir).rglob("*")
+                if p.is_file()}
 
     def test_real_stage_writes_both_reports_without_canonical_changes(self):
         project = self.project()
+        # The extract stage's per-run list (input to the DOC-2 text-state pair).
+        (project / "processing-v1" / "runs").mkdir(mode=0o700)
+        (project / "processing-v1" / "runs" / "extract-synthetic-run.json").write_text(json.dumps(
+            {"schema": "records-extract-outcomes-v1", "run_id": "synthetic-run", "documents": []}))
         before = self.fingerprint(project)
         self.assertEqual(self.invoke(project), (run_stages.result("ok", {"input": 1, "output": 1}), 0))
         output = project / "run-outputs/synthetic-run"
