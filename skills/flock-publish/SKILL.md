@@ -24,6 +24,9 @@ review-required, not a legal conclusion.
 7. Merge the site PR (staging deploy only).
 8. Production dispatch is G-only (`production.yml`).
 9. Any time: `python3 tools/flock_publish.py status STORE` lists every verified run's publication stage (counts only, read-only).
+10. brief (private draft; **NEEDS G** before any send): `python3 tools/flock_publish.py brief STORE --agency SLUG --out FILE.md`
+   (same as `python3 tools/flock_publish_brief.py STORE --agency SLUG --out FILE.md`) writes one 0600 Markdown draft of the agency's
+   approved entries from runs that pass `--check`; FILE is new and outside the repo and `STORE/agencies`. Never sent, posted or built.
 
 ## Never
 - Set `approved` from a model, or edit an exported `text` instead of re-running the run.
