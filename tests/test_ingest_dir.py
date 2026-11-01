@@ -220,6 +220,24 @@ class IngestDirTests(unittest.TestCase):
         self.assertFalse(self.stored(b"Synthetic outside bytes\n"))
         self.assertFalse(self.stored(b"Synthetic inside bytes\n"))
 
+    def test_symlink_root_with_trailing_syntax_is_refused_and_real_dir_works(self):
+        from argparse import Namespace
+        from campaign_tool import cli
+        outside = self.base / "outside-root"
+        outside.mkdir()
+        (outside / "secret.txt").write_bytes(b"Synthetic root secret\n")
+        link = self.base / "rootlink"
+        link.symlink_to(outside, target_is_directory=True)
+        for suffix in ("", "/", "/."):
+            with self.assertRaises(ValueError, msg=repr(suffix)):
+                cli._ingest_dir(Namespace(dir=str(link) + suffix, source_id="synthetic-link"), self.root)
+        self.assertFalse(self.stored(b"Synthetic root secret\n"))
+        self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
+        self.write("ok.txt", b"Synthetic real folder\n")
+        for suffix in ("/", "/."):
+            cli._ingest_dir(Namespace(dir=str(self.folder) + suffix, source_id="synthetic-real"), self.root)
+        self.assertTrue(self.stored(b"Synthetic real folder\n"))
+
     def test_file_output_is_unchanged(self):
         data = b"Synthetic policy only.\n"
         source = self.write("policy.txt", data)

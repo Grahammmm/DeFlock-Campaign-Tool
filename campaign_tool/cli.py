@@ -157,6 +157,23 @@ def _open_dir(top_fd, parts):
         raise
 
 
+def _open_root(path):
+    """Open --dir without following a symlink, even when written as link/ or link/. (O_NOFOLLOW only
+    covers the final component, so the last real name is opened relative to its parent descriptor)."""
+    text = os.fspath(path)
+    if ".." in text.split("/"):
+        raise OSError("parent references are not allowed")
+    norm = os.path.normpath(text)  # drops trailing slashes and "." components
+    parent, name = os.path.split(norm)
+    if not name:
+        return os.open(norm, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    parent_fd = os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def _ingest_dir(args, root):
     """One production folder: list it without following links (hidden names skipped), then ingest file by file.
 
@@ -164,7 +181,7 @@ def _ingest_dir(args, root):
     after listing is refused rather than followed."""
     entries, stack = [], [()]
     try:
-        top_fd = os.open(args.dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        top_fd = _open_root(args.dir)
     except OSError:
         raise ValueError("--dir must be a real directory, not a symlink or a file") from None
     try:
