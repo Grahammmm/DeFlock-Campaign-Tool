@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 
 from .cli import read_config
-from .content import load_content, load_meeting
+from .content import load_content, load_meeting, load_participation
 from .kit import _kit_folder, _write_json
 from .meetings import _clean, comment_kit_md
 
@@ -47,7 +47,7 @@ def _find(meetings, meeting_id):
     raise MeetingStageError(f"no meeting {meeting_id} in kit/meetings.json; known: {', '.join(known) or 'none'}")
 
 
-def stage(root, meeting_id, agency_id=None, location=None, replace=False):
+def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None):
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
     if meeting.get("status") == "cancelled":
@@ -64,6 +64,19 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
     findings = [f for f in model["findings"] if agency_id is None or f.get("agency_id") == agency_id]
     cited = [{**f, "path": f"/findings/{f['slug']}.html"} for f in findings]
     entry = {**meeting, "body": _clean(meeting.get("body")), "agenda_item": _clean(meeting.get("agenda_item"))}
+    if participation is not None:  # organizer-verified JSON; validated before anything is written
+        try:
+            if os.path.islink(participation) or os.path.getsize(participation) > 64 * 1024:
+                raise ValueError("symlink or larger than 64 KB")
+            with open(participation, "rb") as handle:
+                part = json.loads(handle.read().decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            raise MeetingStageError(f"--participation: not a regular UTF-8 JSON file up to 64 KB ({exc})") from None
+        for value in part.values() if isinstance(part, dict) else ():
+            if isinstance(value, dict) and isinstance(value.get("how"), str):
+                value["how"] = _clean(value["how"])
+        entry["participation"] = load_participation(part, str(meeting.get("starts_at")),
+                                                    f"meetings/{meeting_id}.json.participation", today)
     document = {
         "id": meeting_id,
         "body": entry["body"],
@@ -77,7 +90,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False):
         document["agency_id"] = agency_id
     if location is not None:
         document["location"] = location
-    load_meeting(document, f"meetings/{meeting_id}.json")
+    document.update({"participation": entry["participation"]} if participation is not None else {})
+    load_meeting(document, f"meetings/{meeting_id}.json", today=today)
 
     folder = root / "content" / "meetings"
     _kit_folder(folder, mode=0o755)

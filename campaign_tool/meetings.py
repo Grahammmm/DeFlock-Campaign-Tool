@@ -308,6 +308,24 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
                  "presented at a noticed meeting.")
     lines.append("- Answer in writing which agencies can query this data today and under what written agreement.")
     lines.append("")
+    lines.append("## How to take part")
+    part = meeting.get("participation")
+    if not part:
+        lines.append("Check the posted agenda for how and when to comment; participation details were not verified.")
+    else:
+        if part.get("in_person") is not None:
+            lines.append("- In person: " + ("yes" if part["in_person"] else "no"))
+        remote, written = part.get("remote"), part.get("written_comment")
+        if remote:
+            how = _clean(remote.get("how")) if remote.get("available") else ""
+            lines.append("- Remote: " + ("yes" if remote.get("available") else "no") + (f", {how}" if how else ""))
+        if written:
+            due = written.get("deadline")
+            due = datetime.fromisoformat(due.replace("Z", "+00:00")) if due else None
+            lines.append(f"- Written comment: {_clean(written.get('how'))}"
+                         + (f", by {due:%Y-%m-%d %H:%M} (UTC{due.isoformat()[-6:]})" if due else ""))
+        lines.append(f"Source: {_clean(part.get('source_url'))} (checked {_clean(part.get('verified_at'))})")
+    lines.append("")
     lines.append("## Sources")
     if not findings:
         lines.append("- No published findings yet; cite the records request itself and its date.")
