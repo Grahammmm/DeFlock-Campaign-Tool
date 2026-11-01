@@ -130,7 +130,9 @@ no-referrer` and a restrictive `Permissions-Policy` are always set.
 `tools/fetch_osm_alprs.py --directory D --bbox S W N E | --relation ID | --from-file SAVED.json`
 queries the Overpass API (network; never run by tests), or reads a reviewed saved answer offline, for
 `man_made=surveillance` + `surveillance:type=ALPR` nodes and writes
-`content/map/cameras.geojson` and `content/map/attribution.txt`. The data is
+`content/map/cameras.geojson` and `content/map/attribution.txt`. `--check` writes nothing: it compares by
+OSM node URL with the current `cameras.geojson`, prints added/removed/moved (beyond `--move-metres`, default 10)/retagged
+counts and up to 20 node URLs each, and exits 3 when any point would be removed. The data is
 (c) OpenStreetMap contributors under the ODbL; most points are contributed by
 the DeFlock community, which is the community source of these observations. A
 mapped point says a camera was observed, not which agency owns it. The
