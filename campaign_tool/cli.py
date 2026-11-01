@@ -506,6 +506,8 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
+                        ).add_argument("--directory", required=True)
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
     evidence_p.add_argument("--directory", required=True)
     evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
@@ -557,6 +559,9 @@ def main():
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
                                         received_at=args.received_at, fragment=args.fragment,
                                         public_url=args.public_url, pages=args.pages, note=args.note)))
+        elif args.command == "content-check":
+            from .content_check import run_cli as content_check_cli
+            content_check_cli(root)
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
