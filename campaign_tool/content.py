@@ -292,10 +292,13 @@ def load_meeting(document, label):
     status = document.get("status", "scheduled")
     if not isinstance(status, str) or status not in MEETING_STATUSES:
         raise ContentError(f"{label}.status: must be scheduled or cancelled")
+    starts_at = _timestamp(document["starts_at"], f"{label}.starts_at")
+    if datetime.fromisoformat(starts_at.replace("Z", "+00:00")).tzinfo is None:
+        raise ContentError(f"{label}.starts_at: needs a UTC offset (e.g. -07:00)")
     return {
         "id": _slug(document["id"], f"{label}.id") if "id" in document else None,
         "body": _text(document, "body", label, allow_empty=False),
-        "starts_at": _timestamp(document["starts_at"], f"{label}.starts_at"),
+        "starts_at": starts_at,
         "agenda_url": _https(document.get("agenda_url"), f"{label}.agenda_url", allow_none=True),
         "agenda_item": _text(document, "agenda_item", label, default=""),
         "comment_kit_md": _text(document, "comment_kit_md", label, default=""),

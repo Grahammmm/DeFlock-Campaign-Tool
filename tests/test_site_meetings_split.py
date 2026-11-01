@@ -83,7 +83,7 @@ class MeetingsSplitTests(unittest.TestCase):
 
     def test_meeting_today_is_upcoming_until_the_next_day(self):
         self.clear()
-        self.add("late", "2026-10-20T23:30:00")
+        self.add("late", "2026-10-20T23:30:00-07:00")
         index, meetings = self.build(date(2026, 10, 20))
         self.assertEqual(IDS.findall(self.home_section(index)), ["late"])
         self.assertEqual(self.split(meetings)[1], "")
@@ -92,12 +92,12 @@ class MeetingsSplitTests(unittest.TestCase):
         upcoming, past = self.split(meetings)
         self.assertEqual((IDS.findall(upcoming), IDS.findall(past)), ([], ["late"]))
 
-    def test_offset_and_naive_forms_use_the_typed_date(self):
+    def test_utc_and_offset_forms_use_the_typed_date(self):
         self.clear()
         self.add("utc", "2026-10-21T01:00:00Z")  # 2026-10-20 in Pacific time; typed date wins
-        self.add("naive", "2026-10-21T18:00:00")
-        for today, upcoming_ids, past_ids in ((date(2026, 10, 21), ["utc", "naive"], []),
-                                              (date(2026, 10, 22), [], ["naive", "utc"])):
+        self.add("local", "2026-10-21T18:00:00-07:00")
+        for today, upcoming_ids, past_ids in ((date(2026, 10, 21), ["utc", "local"], []),
+                                              (date(2026, 10, 22), [], ["local", "utc"])):
             _, meetings = self.build(today)
             upcoming, past = self.split(meetings)
             self.assertEqual(IDS.findall(upcoming), upcoming_ids, today)
@@ -126,7 +126,7 @@ class MeetingsSplitTests(unittest.TestCase):
     def test_past_meetings_most_recent_first(self):
         self.clear()
         for meeting_id, day in (("m1008", "2026-10-08"), ("m1014", "2026-10-14"), ("m1001", "2026-10-01")):
-            self.add(meeting_id, day + "T18:00:00")
+            self.add(meeting_id, day + "T18:00:00-07:00")
         _, meetings = self.build()
         upcoming, past = self.split(meetings)
         self.assertEqual(IDS.findall(upcoming), [])

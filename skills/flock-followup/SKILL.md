@@ -29,6 +29,7 @@ skill never upgrades. Version 1.1 adds a draft-only follow-up request (`draft`);
    date is not receipt. Fill `extension_notice_date` only from an extension notice you hold.
 2. Validate: `python3 tools/flock_requests.py --check <file or store dir>`. Fix every
    `row N: <field> <reason>` line (N is the spreadsheet row) until it ends with `errors=0`.
+   With a store dir it also ties each sent email run to a request (`<slug>: run <date>: ...` lines; `sent_runs= matched=`).
 3. List reminders: `python3 tools/flock_requests.py due <file or store dir>`. One line per open
    row, soonest first, unknown receipts last. With any error it prints nothing and exits 1.
    Relate it to a day: `python3 tools/flock_requests.py due <file or store dir> --as-of YYYY-MM-DD`.

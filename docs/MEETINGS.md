@@ -19,12 +19,21 @@ matches `license plate`, `ALPR`, `Flock` or `surveillance` (case-insensitive) an
 
 ```json
 {"schema_version": 1, "source": "legistar", "client": "examplecity", "generated": "...",
+ "time_zone": "America/Los_Angeles",
  "meetings": [{"id": "legistar-examplecity-1001", "body": "Example City Council",
-               "starts_at": "2026-10-14T18:00:00", "agenda_url": "https://...",
+               "starts_at": "2026-10-14T18:00:00-07:00", "time_known": true, "agenda_url": "https://...",
                "agenda_item": "Item 7: ...", "relevance": "alpr_item", "source": "legistar",
                "event_id": 1001, "matched_terms": ["alpr", "flock", "license plate"], "matched_items": 2}],
  "note": "Agenda matches are keyword hits, not confirmation that ALPR will be discussed. ..."}
 ```
+
+`starts_at` is the local wall time with the UTC offset of `--tz` (IANA name, default
+`America/Los_Angeles`) for that date (DST-correct: `-07:00` in October, `-08:00` after the November
+change); an unknown zone exits 2
+(`meetings: unknown time zone ZONE`) before any fetch. A missing or unparseable `EventTime` gives
+local midnight with `time_known: false` (verify the time on the agenda). An older kit without
+offsets is compared by wall time, so the upgrade alone reports nothing `rescheduled`;
+`meetings-stage` refuses such a kit (run `meetings` again). Content meetings need an offset or `Z`.
 
 Network is used only with `--online`; `--from-json` replays recorded responses keyed by URL
 path suffix (the fixture is synthetic, `example.invalid` hosts). Responses are bounded to
