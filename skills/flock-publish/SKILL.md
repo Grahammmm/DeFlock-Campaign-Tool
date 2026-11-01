@@ -30,6 +30,12 @@ review-required, not a legal conclusion.
 10. brief (private draft; **NEEDS G** before any send): `python3 tools/flock_publish.py brief STORE --agency SLUG --out FILE.md`
    (same as `python3 tools/flock_publish_brief.py STORE --agency SLUG --out FILE.md`) writes one 0600 Markdown draft of the agency's
    approved entries from runs that pass `--check`; FILE is new and outside the repo and `STORE/agencies`. Never sent, posted or built.
+11. Withdraw or correct a published entry. **NEEDS G**: G approves a withdrawal or correction; record his approval_ref.
+   `python3 tools/flock_publish.py withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF`, or
+   `python3 tools/flock_publish.py correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID --on D --by NAME --approval-ref REF` (NEWID approved in
+   a run of the same agency, with new text). The entry becomes terminal `withdrawn`/`superseded` with a row in private `PUBLISH-CHANGES.csv`;
+   `--check --run` and `stage` then refuse any approved entry with that text in the agency's runs. The operator removes or replaces the
+   site file in a site PR (the tool never edits a site).
 
 ## Never
 - Set `approved` from a model, or edit an exported `text` instead of re-running the run.
