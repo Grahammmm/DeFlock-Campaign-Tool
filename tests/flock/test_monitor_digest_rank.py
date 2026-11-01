@@ -63,6 +63,11 @@ class DigestRankTests(unittest.TestCase):
             "[ALPR: alpr, license plate]",
             "- Zed County agenda: Surveillance use policy https://www.zed.example/a/5 [ALPR: surveillance]",
             "- Zed County agenda: Budget hearing https://www.zed.example/a/1",
+            "",
+            "Leads (3 new)",  # NB-DF-07: each newly relevant item, ranked order, listed once
+            "- alpha city: FLOCK camera contract https://www.alpha.example/x/2 [M-000000000002]",
+            "- Zed County: ALPR policy and License Plate readers, alpr https://www.zed.example/a/3 [M-000000000003]",
+            "- Zed County: Surveillance use policy https://www.zed.example/a/5 [M-000000000005]",
         ])
 
     def test_url_path_matches_only_path_and_follows_shared_boundaries(self):
@@ -85,12 +90,14 @@ class DigestRankTests(unittest.TestCase):
         rows = [item(n, "Example City", "Item %d" % n, "https://www.city.example/i/%d" % n) for n in range(40)]
         rows += [item(n, "Example City", "Flock item %d" % n, "https://www.city.example/i/%d" % n) for n in range(40, 45)]
         lines = self.digest(rows)
-        self.assertEqual(len(lines), 40)
+        self.assertEqual(len(lines), 47)  # 40 ranked lines, then "" and Leads (5 new) with all five
         self.assertEqual(lines[0], "Flock monitor 2026-10-30: 45 new items (public, unreviewed), 5 relevant")
         self.assertEqual([line.endswith("[ALPR: flock]") for line in lines[1:39]], [True] * 5 + [False] * 33)
         self.assertEqual(lines[1], "- Example City agenda: Flock item 40 https://www.city.example/i/40 [ALPR: flock]")
         self.assertEqual(lines[6], "- Example City agenda: Item 0 https://www.city.example/i/0")
         self.assertEqual(lines[39], "- … and 7 more in MONITOR.csv (0 relevant)")
+        self.assertEqual(lines[40:], ["", "Leads (5 new)"] + [
+            "- Example City: Flock item %d https://www.city.example/i/%d [M-0000000000%d]" % (n, n, n) for n in range(40, 45)])
 
     def test_cap_relevant_in_later_agency_still_shown_and_grouped(self):
         rows = [item(n, "Aaa Town", "Item %d" % n, "https://www.aaa.example/i/%d" % n) for n in range(40)]
@@ -99,20 +106,24 @@ class DigestRankTests(unittest.TestCase):
         self.assertEqual([line.split()[1] for line in lines[1:39]], ["Aaa"] * 33 + ["Bbb"] * 5)
         self.assertEqual(lines[33], "- Aaa Town agenda: Item 32 https://www.aaa.example/i/32")
         self.assertEqual(lines[39], "- … and 7 more in MONITOR.csv (0 relevant)")
+        self.assertEqual(lines[40:42] + [len(lines)], ["", "Leads (5 new)", 47])
 
     def test_cap_all_relevant_counts_hidden_relevant(self):
         rows = [item(n, "Example City", "ALPR %d" % n, "https://www.city.example/i/%d" % n) for n in range(45)]
         lines = self.digest(rows)
-        self.assertEqual((len(lines), lines[0]), (40, "Flock monitor 2026-10-30: 45 new items (public, unreviewed), 45 relevant"))
+        self.assertEqual((len(lines), lines[0]), (87, "Flock monitor 2026-10-30: 45 new items (public, unreviewed), 45 relevant"))
         self.assertEqual(lines[38], "- Example City agenda: ALPR 37 https://www.city.example/i/37 [ALPR: alpr]")
         self.assertEqual(lines[39], "- … and 7 more in MONITOR.csv (7 relevant)")
+        self.assertEqual(lines[40:42] + lines[-1:], ["", "Leads (45 new)",  # hidden relevant items still become leads
+                                                     "- Example City: ALPR 44 https://www.city.example/i/44 [M-000000000044]"])
 
     def test_cap_boundary_39_shown_40_overflows(self):
         rows = [item(n, "Example City", "Item %d" % n, "https://www.city.example/i/%d" % n) for n in range(40)]
         self.assertEqual(len(self.digest(rows[:39])), 40)
         lines = self.digest(rows[:39] + [item(99, "Example City", "Flock", "https://www.city.example/f")])
-        self.assertEqual((len(lines), lines[1].endswith("[ALPR: flock]")), (40, True))
-        self.assertEqual(lines[39], "- … and 2 more in MONITOR.csv (0 relevant)")
+        self.assertEqual((len(lines), lines[1].endswith("[ALPR: flock]")), (43, True))
+        self.assertEqual(lines[39:], ["- … and 2 more in MONITOR.csv (0 relevant)", "", "Leads (1 new)",
+                                      "- Example City: Flock https://www.city.example/f [M-000000000099]"])
 
     def test_no_items_for_date_unchanged(self):
         self.digest([item(1, "Example City", "Flock", "https://www.city.example/f", seen_at="2026-10-29")])
@@ -127,6 +138,9 @@ class DigestRankTests(unittest.TestCase):
         self.assertEqual(lines[1:], [
             "- Example City agenda: Line one # Flock <script>x</script> - [x](y) https://www.city.example/1 [ALPR: flock]",
             "- Example City agenda: **bold** <b>plain</b> | https://www.city.example/2",
+            "",
+            "Leads (1 new)",
+            "- Example City: Line one # Flock <script>x</script> - [x](y) https://www.city.example/1 [M-000000000001]",
         ])
 
     def test_import_failure_fails_digest_without_writing(self):
