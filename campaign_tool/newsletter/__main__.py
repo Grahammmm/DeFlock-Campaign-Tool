@@ -32,7 +32,7 @@ def main(argv=None):
     except (OSError, ValueError, DraftError, KeyError) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         return 1
-    print(json.dumps({"subject": draft["subject"], "counts": draft["counts"],
+    print(json.dumps({"subject": draft["subject"], "counts": draft["counts"], "excluded": draft["excluded"],
                       "written": [str(p) for p in paths], "sent": False}, indent=2))
     return 0
 

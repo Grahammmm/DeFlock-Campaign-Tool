@@ -9,6 +9,7 @@ this module claims that an agency operates ALPR.
 ``locate_online`` is the only function that touches the network, and only
 when a caller explicitly asks for it (``campaign_tool kit --online``).
 """
+import difflib
 import json
 import re
 import unicodedata
@@ -116,6 +117,27 @@ def _find(seed, hint, text):
     return [c for c in _candidates(seed) if c[1] == text and (hint is None or c[0] == hint)]
 
 
+def _label(candidate):
+    kind, _text, county, place, _fips = candidate
+    return f"{county['name']} County" if kind == "county" else f"City of {place} ({county['name']} County)"
+
+
+def suggestions(seed, query, hint=None, limit=3):
+    """Up to ``limit`` seed labels whose name is close to ``query``, closest first.
+
+    Only a hint for the organizer: a suggestion is never selected automatically.
+    """
+    text = normalize(query)
+    labels = {}
+    for candidate in _candidates(seed):
+        if hint is None or candidate[0] == hint:
+            labels.setdefault(candidate[1], set()).add(_label(candidate))
+    ranked = sorted((-difflib.SequenceMatcher(None, name, text).ratio(), label)
+                    for name in difflib.get_close_matches(text, list(labels), n=limit * 3, cutoff=0.8)
+                    for label in labels[name])
+    return list(dict.fromkeys(label for _score, label in ranked))[:limit]
+
+
 def locate(query, state, seed):
     """Resolve ``query`` (county or city name) against ``seed`` offline.
 
@@ -137,11 +159,13 @@ def locate(query, state, seed):
         # "Morro Bay city" (Census style) but not "Yuba City", which matched above.
         matches = _find(seed, "city", text[: -len(" city")])
     if not matches:
+        close = suggestions(seed, text, hint)
+        did_you_mean = f" Did you mean: {'; '.join(close)}?" if close else ""
         raise ValueError(f"No county or city named {query!r} in the {state} agency seed; "
-                         "check spelling, add it to tools/build_agency_seed.py, or use --online")
+                         "check spelling, add it to tools/build_agency_seed.py, or use --online"
+                         + did_you_mean)
     if len(matches) > 1:
-        labels = sorted({f"{c[2]['name']} County" if c[0] == "county"
-                         else f"City of {c[3]} ({c[2]['name']} County)" for c in matches})
+        labels = sorted({_label(c) for c in matches})
         raise ValueError(f"Ambiguous location {query!r}; candidates: {labels}")
     kind, _text, county, place, fips = matches[0]
     return Location(county["county_fips"], county["name"], state, fips, place, kind, query)

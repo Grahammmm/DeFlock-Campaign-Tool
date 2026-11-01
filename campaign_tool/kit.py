@@ -101,7 +101,10 @@ def _resolve(cfg, seed, online):
     except ValueError as offline_error:
         if not online:
             raise
-        found = discovery.locate_online(query, cfg["state"])
+        try:
+            found = discovery.locate_online(query, cfg["state"])
+        except ValueError as online_error:
+            raise ValueError(f"{offline_error} Online lookup also failed: {online_error}") from None
         county = discovery.county_for(found, seed)
         if found.match_kind == "city":
             names = dict(discovery.cities_in(county))
