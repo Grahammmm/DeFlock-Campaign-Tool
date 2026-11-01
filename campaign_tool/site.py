@@ -50,6 +50,15 @@ EXTRA_CSS = """
 .signup-form{max-width:480px}.signup-row{display:flex;gap:.5rem}.signup-row input{flex:1;padding:.75rem;font:inherit;border:1px solid var(--line)}.signup-row button{font:inherit;font-weight:700;background:var(--coral);color:#fff;border:0;padding:.75rem 1.1rem;cursor:pointer}
 .city-panel-static{position:relative}.city-panel-static .city-picker{position:static;margin-bottom:1.5rem;box-shadow:none;padding:0}
 .site-footer p{margin:0}.site-footer a{color:inherit}
+@media print{
+/* Print: chrome removed, black on white, external link addresses after the text */
+.skip-link,.site-nav,.banner-signup-link,.hero,.city-picker,.map-key,.map-credit,.signup-form,.signup-embed,iframe,dialog{display:none!important}
+body,.topbar,.campaign-banner,.site-footer,.finding-list li,.notice,.source-table code{background:#fff!important;color:#000!important;box-shadow:none!important}
+.section{padding:0 0 1rem;max-width:none}a{color:#000}
+a[href^="http"]::after{content:" (" attr(href) ")";font-size:.85em;overflow-wrap:anywhere}
+.finding-body h3,.source-table li,.meeting-list article,.agency-document-group{break-inside:avoid}h2,h3{break-after:avoid}
+details::details-content{content-visibility:visible;display:block}details>summary{list-style:none}
+}
 """
 
 
