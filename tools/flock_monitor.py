@@ -7,6 +7,8 @@ from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 REPO = Path(__file__).resolve().parents[1]
 WATCH_HEADER = ["agency", "kind", "url", "query", "official_domain", "last_seen_hash"]
 MONITOR_HEADER = ["item_id", "agency", "watch_kind", "url", "title", "page_sha256", "seen_at", "kind", "status"]
+LEADS_HEADER = ["item_id", "agency", "first_seen", "state", "state_at", "state_by"]  # v1
+MOVES = {"new": ("requested", "ignored"), "ignored": ("requested",), "requested": ()}  # requested is final
 KINDS = {"agenda", "minutes", "news", "social"}
 CAP = 2_000_000
 USER_AGENT = "DeFlock-Campaign-Tool flock-monitor/1.0 (index-page check; github.com/Grahammmm/DeFlock-Campaign-Tool)"
@@ -145,12 +147,17 @@ def scan(watchlist, store, date, fetch=fetch):
     rows = validated(watchlist)  # before any fetch
     _real(watchlist, "watchlist")
     _real((store := private_store(store)) / "MONITOR.csv", "MONITOR.csv")
+    with store_lock(store, "store busy: another scan is running"):
+        return scan_locked(watchlist, rows, store, date, fetch)
+
+@contextlib.contextmanager
+def store_lock(store, busy="store busy: another monitor command is running"):
     store.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = os.open(store / ".monitor.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)  # a symlink raises OSError
-    try:  # one scan per store at a time; the kernel drops the flock when the fd closes or the scan dies
+    try:  # one writer per store at a time; the kernel drops the flock when the fd closes or the process dies
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: raise Fail("store busy: another scan is running") from None
-        return scan_locked(watchlist, rows, store, date, fetch)
+        except BlockingIOError: raise Fail(busy) from None
+        yield
     finally:
         os.close(lock)  # the lock file itself is never deleted
 
@@ -201,7 +208,46 @@ def alpr_terms(row, pattern):  # title plus percent-decoded URL path with -, _ a
     path = re.sub(r"[-_/]", " ", unquote(urlsplit(absolute(row["url"])).path))
     return list(dict.fromkeys(m.group(0).lower() for m in pattern.finditer(row["title"] + " " + path)))
 
-def digest(store, date):
+def leads_rows(path):  # rows of <store>/LEADS.csv (missing = none); a linked, wrong-kind or malformed file is refused
+    _real(path, "LEADS.csv")
+    try: return [r for _, r in read_csv(path, LEADS_HEADER, missing_ok=True)]
+    except Fail as err: raise Fail("LEADS.csv %s" % err) from None
+
+def new_leads(path, date, relevant):  # call only under the store lock: add unknown relevant items, list date's leads
+    rows, ids, add = leads_rows(path), set(), []
+    known = {r["item_id"] for r in rows}
+    for r in relevant:
+        if r["item_id"] not in known | ids:
+            ids.add(r["item_id"])
+            add.append(dict(item_id=r["item_id"], agency=r["agency"], first_seen=date, state="new", state_at=date,
+                            state_by="digest"))
+    if add:
+        write_atomic(path, header=LEADS_HEADER, rows=rows + add)
+    first, shown = {r["item_id"] for r in rows + add if r["first_seen"] == date}, {}
+    for r in relevant:  # a lead first flagged on an earlier date is never listed again, whatever its state
+        if r["item_id"] in first:
+            shown.setdefault(r["item_id"], " ".join(("- %s: %s %s [%s]" % (r["agency"], r["title"], r["url"],
+                                                                           r["item_id"])).split()))
+    return ["", "Leads (%d new)" % len(shown)] + list(shown.values())
+
+def lead(store, item, state, by, date):  # triage one lead: new -> requested|ignored, ignored -> requested
+    if not re.fullmatch(r"M-[0-9a-f]{12}", item): raise Fail("lead: --item is not M- and 12 lowercase hex")
+    if state not in ("requested", "ignored"): raise Fail("lead: --state is not requested or ignored")
+    if not by.strip(): raise Fail("lead: --by is empty")
+    path = private_store(store) / "LEADS.csv"
+    if not leads_rows(path): raise Fail("lead: unknown item " + item)  # no store or no leads: nothing is created
+    with store_lock(path.parent):
+        rows = leads_rows(path)
+        row = next((r for r in rows if r["item_id"] == item), None)
+        if row is None: raise Fail("lead: unknown item " + item)
+        if row["state"] == state: return "lead | %s | %s -> %s unchanged" % (item, state, state)
+        old = row["state"]
+        if state not in MOVES.get(old, ()): raise Fail("lead: %s cannot move %s -> %s" % (item, old, state))
+        row.update(state=state, state_at=date, state_by=" ".join(by.split()))
+        write_atomic(path, header=LEADS_HEADER, rows=rows)
+    return "lead | %s | %s -> %s" % (item, old, state)
+
+def digest(store, date, leads=False):
     path = private_store(store) / "digest" / (date + ".md")
     rows = [r for _, r in read_csv(path.parents[1] / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
     pattern = keywords()
@@ -218,7 +264,9 @@ def digest(store, date):
         lines += [items[i][0] for i in keep] + ["- … and %d more in MONITOR.csv (%d relevant)"
                                                  % (len(items) - 38, relevant - sum(items[i][1] for i in keep))]
     _real(path.parent, "digest folder")
-    write_atomic(path, "\n".join(lines) + "\n")
+    with store_lock(path.parents[1]) if leads else contextlib.nullcontext():  # --leads: LEADS.csv and digest locked
+        lines += new_leads(path.parents[1] / "LEADS.csv", date, [r for r, terms in ranked if terms]) if leads else []
+        write_atomic(path, "\n".join(lines) + "\n")
     return path
 
 def main(argv=None):
@@ -227,14 +275,21 @@ def main(argv=None):
     scan_p = sub.add_parser("scan", help="fetch each non-social WATCHLIST index page once and record new links")
     scan_p.add_argument("watchlist")
     sub.add_parser("check", help="validate WATCHLIST and print the pages scan would fetch (no network, no writes)").add_argument("watchlist")
-    for p, required in ((scan_p, False), (sub.add_parser("digest", help="write <store>/digest/<date>.md"), True)):
+    digest_p = sub.add_parser("digest", help="write <store>/digest/<date>.md")
+    digest_p.add_argument("--leads", action="store_true", help="record new relevant items in LEADS.csv; list each once")
+    lead_p = sub.add_parser("lead", help="set a LEADS.csv lead to requested or ignored (who and when recorded)")
+    lead_p.add_argument("--item", required=True)
+    lead_p.add_argument("--state", required=True, help="requested or ignored")
+    lead_p.add_argument("--by", required=True)
+    for p, required in ((scan_p, False), (digest_p, True), (lead_p, False)):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
     args = parser.parse_args(argv)
     try:
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
-              else digest(args.store, args.date.isoformat()))
+              else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
+              else digest(args.store, args.date.isoformat(), leads=args.leads))
     except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)
                                                                    else type(err).__name__))
