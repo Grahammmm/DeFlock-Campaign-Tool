@@ -86,10 +86,43 @@ def check_file(path, folder=None):
 def check_path(target):
     if not Path(target).is_dir():
         return check_file(target)
-    files = sorted(Path(target).glob("agencies/*/FACTS.csv"))
+    files, said = sorted(Path(target).glob("agencies/*/FACTS.csv")), set()
     return ["file %d: %s" % (n, e) for n, f in enumerate(files, 1)
-            for e in check_file(f, f.parent.name) + check_reviews(f.parent / "FACT-REVIEWS.csv", f)] \
+            for e in check_file(f, f.parent.name) + check_reviews(f.parent / "FACT-REVIEWS.csv", f)
+            + link_errors(Path(target), f.parent.name, load(f, f.parent.name)[1], said)] \
         or ([] if files else ["no FACTS.csv files in store"])
+
+
+def link_errors(store, folder, rows, said=None):
+    """Store mode only (DF1537-14): a policy fact cites a doc_sha256 of its agency's POLICY.csv, a law fact a text_sha256 of
+    STORE/LAW.csv. Hashes are compared, never printed; a missing, linked or invalid POLICY/LAW file is named, not cascaded."""
+    said = set() if said is None else said  # "LAW.csv has errors" is reported once per run
+    errors, cited = [], {}
+    for number, row in rows:
+        if row["kind"] in ("policy", "law") and re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"].strip()):
+            cited.setdefault(row["kind"], []).append((number, row["source_sha256"].strip()))
+    for kind, path, field in (("policy", store / "agencies" / folder / "POLICY.csv", "doc_sha256"),
+                              ("law", store / "LAW.csv", "text_sha256")):
+        name, owner = path.name, "agency" if kind == "policy" else "store"
+        if not cited.get(kind):
+            continue
+        if not os.path.lexists(path):
+            errors += ["row %d: %s fact but %s has no %s" % (n, kind, owner, name) for n, _ in cited[kind]]
+            continue
+        bad = "%s is a link or not a file; refusing" % name if os.path.islink(path) or not path.is_file() else None
+        if bad is None:
+            spec = importlib.util.spec_from_file_location("_facts_law_policy", REPO / "tools" / "flock_law_policy.py")
+            spec.loader.exec_module(tool := importlib.util.module_from_spec(spec))  # loaded by path, never a copy
+            found, errs = tool.load_policy(path, folder) if kind == "policy" else tool.load_law(path)
+            bad = errs and "%s has errors (run flock_law_policy.py --check)" % name
+        if bad:
+            errors += [] if kind == "law" and "law" in said else [bad]
+            said.add(kind)
+            continue
+        known = {r[field] for _, r in found}
+        errors += ["row %d: %s fact source is not a %s" % (n, kind, "POLICY version of this agency" if kind == "policy"
+                                                            else "LAW row") for n, h in cited[kind] if h not in known]
+    return errors
 
 
 def check_reviews(log, facts):

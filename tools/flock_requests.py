@@ -2,6 +2,7 @@
 """Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
 draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -492,21 +493,72 @@ def sent_runs(store, rows):
             if got != "sent recorded":
                 continue
             sent += 1
-            try:  # O_NOFOLLOW: a link swapped in after stage() is still refused
-                with open(os.open(run / "EMAIL-DRAFT.md", os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh:
-                    value = next(ln for ln in fh.read().splitlines() if ln.startswith("Sent by:"))
-            except (OSError, UnicodeDecodeError, StopIteration):
-                errs.append(pre + "EMAIL-DRAFT.md unreadable")
-                continue
-            token = re.search(r"(?<![0-9])[0-9]{4}-[0-9]{2}-[0-9]{2}(?![0-9])", value)
-            when = day(token.group()) if token else None
-            why = ("sent date missing on the Sent by line" if when is None
-                   else f"sent date {when} is before the run date" if when < day(run.name)
+            _, when, why = sent_on(run)
+            why = (why if why
                    else None if any(slug(r["agency"]) == folder.name and r["sent"] == str(when) for r in rows)
                    else f"no request with sent {when}")
             matched += why is None
             errs += [pre + why] if why else []
     return errs, f" sent_runs={sent} matched={matched}"
+
+
+def sent_on(run):
+    """(EMAIL-DRAFT.md bytes, sent date, refusal): --check and open's one rule, the first date on Sent by, not before the run."""
+    try:  # O_NOFOLLOW: a link swapped in after stage() is still refused
+        with open(os.open(run / "EMAIL-DRAFT.md", os.O_RDONLY | os.O_NOFOLLOW), "rb") as fh:
+            data = fh.read()
+        value = next(ln for ln in data.decode("utf-8").splitlines() if ln.startswith("Sent by:"))
+    except (OSError, UnicodeDecodeError, StopIteration):
+        return None, None, "EMAIL-DRAFT.md unreadable"
+    token = re.search(r"(?<![0-9])[0-9]{4}-[0-9]{2}-[0-9]{2}(?![0-9])", value)
+    when = day(token.group()) if token else None
+    return data, when, ("sent date missing on the Sent by line" if when is None
+                        else f"sent date {when} is before the run date" if when < day(run.name) else None)
+
+
+def appended(old, head, line):  # old text (or a new file's header) + one row, never glued onto an unterminated last row
+    return (old or csv_text([head])) + ("" if not old or old.endswith("\n") else "\n") + csv_text([line])
+
+
+def open_run(rundir, rid, today):
+    """An open REQUESTS row + an `opened` REQUEST-STEPS row from a sent recorded run; prints ids and dates, never draft text."""
+    given = Path(os.path.abspath(rundir))
+    if not (len(given.parents) >= 4 and given.parent.name == "runs" and given.parents[2].name == "agencies" and day(given.name)):
+        return print("open: RUNDIR must be <store>/agencies/<slug>/runs/<YYYY-MM-DD>", file=sys.stderr) or 1
+    root, s = given.parents[3].resolve(), given.parents[1].name
+    run, req, log = (folder := root / "agencies" / s) / "runs" / given.name, folder / "REQUESTS.csv", folder / "REQUEST-STEPS.csv"
+    link = next((p.name for p in (root / "agencies", folder, folder / "runs", run, req, log) if p.is_symlink()), None)
+    got = None if link or not run.is_dir() else _tool("flock_email").stage(run)
+    data, when, why = sent_on(run) if got == "sent recorded" else (None, None, None)
+    why = ("store is inside the repository" if root == REPO or REPO in root.parents
+           else f"{link} must not be a symlink" if link
+           else "agency folder name must be a slug" if slug(s) != s
+           else "RUNDIR missing or not a folder" if not run.is_dir()
+           else f"email stage is {got or 'none'}, not sent recorded" if got != "sent recorded"
+           else why or (f"sent date {when} is after --today" if when > today else None))
+    rows, errs = load(req, s) if not why and req.exists() else ([], [])
+    old_log, table, bad = read_log(log) if not why else (None, [], None)
+    first = next((c[0] for c in table[1:] if len(c) == 6 and c[1:2] + c[3:4] == ["opened", f"email run {run.name}"]), None)
+    fine = old_log is None or table[:1] == [STEP_HEADER] and all(len(c) == 6 for c in table[1:] if c)
+    why = why or (f"REQUESTS.csv fails --check ({errs[0]})" if errs else bad
+                  or (None if fine else "REQUEST-STEPS.csv does not match REQUEST-STEPS.csv v1")
+                  or (f"run already opened as {first}" if first else None)
+                  or (f"request {rid} already exists in {s}/REQUESTS.csv" if any(r["request_id"] == rid for r in rows)
+                      else None))
+    old_req, _, bad = read_log(req) if not why else (None, [], None)
+    if why or bad:
+        return print(f"open: {why or bad}", file=sys.stderr) or 1
+    try:
+        replace(req, appended(old_req, HEADER, [rid, rows[0]["agency"] if rows else s, str(when), "", "", "", "", "open", ""]))
+        try:
+            replace(log, appended(old_log, STEP_HEADER, [rid, "opened", str(when), f"email run {run.name}",
+                                                         hashlib.sha256(data).hexdigest(), today.isoformat()]))
+        except OSError:  # roll the REQUESTS row back: restore the old bytes, or remove the file this call created
+            replace(req, old_req) if old_req is not None else os.unlink(req)
+            raise
+    except OSError as exc:
+        return print(f"open: cannot write in agency folder ({type(exc).__name__})", file=sys.stderr) or 1
+    return print(f"opened | {s} | {rid} | sent {when} | run {run.name}") or 0
 
 
 def read_report(path):
@@ -590,11 +642,17 @@ USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] 
          "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]; "
          "fees record STORE --agency SLUG --request ID --kind estimate|invoice|paid --amount-cents N --date D "
          "--evidence TEXT --sha256 HEX [--today D]; fees check STORE --cap-cents N (required; there is no default cap); "
-         "reconcile STORE --report REPORT.json")
+         "reconcile STORE --report REPORT.json; open --from-email RUNDIR --request-id ID [--today D]")
 
 def main(argv):
     if argv in (["--help"], ["-h"]):
         print(USAGE); return 0  # noqa: E702
+    if argv[:1] == ["open"]:  # ID is the organizer's own label; the tool never invents one
+        keys, o = argv[1::2], dict(zip(argv[1::2], argv[2::2]))
+        today = day(o.pop("--today", date.today().isoformat()))
+        ok = len(argv) % 2 and len(set(keys)) == len(keys) and today and set(o) == {"--from-email", "--request-id"}
+        ok = ok and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}", o["--request-id"])
+        return open_run(o["--from-email"], o["--request-id"], today) if ok else print(USAGE, file=sys.stderr) or 2
     if len(argv) == 4 and argv[0] == "reconcile" and argv[2] == "--report":
         data, why = read_report(argv[3])
         rows, errs = load(argv[1]) if not why else ([], [f"report: {why}"])

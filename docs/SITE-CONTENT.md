@@ -127,8 +127,8 @@ no-referrer` and a restrictive `Permissions-Policy` are always set.
 
 ## Map data and MapLibre
 
-`tools/fetch_osm_alprs.py --directory D --bbox S W N E | --relation ID` queries
-the Overpass API (network; never run by tests) for
+`tools/fetch_osm_alprs.py --directory D --bbox S W N E | --relation ID | --from-file SAVED.json`
+queries the Overpass API (network; never run by tests), or reads a reviewed saved answer offline, for
 `man_made=surveillance` + `surveillance:type=ALPR` nodes and writes
 `content/map/cameras.geojson` and `content/map/attribution.txt`. The data is
 (c) OpenStreetMap contributors under the ODbL; most points are contributed by
