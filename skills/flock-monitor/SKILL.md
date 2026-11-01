@@ -24,10 +24,10 @@ PDFs included, are recorded by URL and never fetched. Monitor items are leads, n
 2. Scan: `python3 tools/flock_monitor.py scan WATCHLIST.csv --store STORE [--date YYYY-MM-DD]`.
    Fix every `row N: <field> <reason>` (exit 1, nothing fetched). `row N: refused <reason>` is data.
 3. Digest: `python3 tools/flock_monitor.py digest --store STORE --date YYYY-MM-DD` writes
-   `STORE/digest/<date>.md` (40 lines at most). Agencies by slug; items whose title or URL path match the shared
+   `STORE/digest/<date>.md` (40 lines at most before any Leads section). Agencies by slug; items whose title or URL path match the shared
    `campaign_tool.meetings.KEYWORDS` come first, marked `[ALPR: terms]`, and are never cut while an unmarked one shows.
-   With `--leads` (under the store lock) each relevant item not yet in private `STORE/LEADS.csv` is added as `new` and
-   listed once in a `Leads (N new)` section; a link first flagged on an earlier date is never listed again.
+   Under the store lock, each relevant item not yet in private `STORE/LEADS.csv` is added as `new` and listed once in
+   a trailing `Leads (N new)` section (omitted when N is 0); a link first flagged on an earlier date is never listed again.
    Triage: `python3 tools/flock_monitor.py lead --store STORE --item M-xxxxxxxxxxxx --state requested|ignored --by NAME`
    (moves `new → requested|ignored`, `ignored → requested`; `requested` is final; who and when are recorded).
 4. Delivery is operator-owned (existing healthbot route). Social `query` rows belong to the
@@ -54,4 +54,4 @@ The scheduled timer and the Grok cron job are operator installs after merge; thi
 
 - 1.0: WATCHLIST.csv, `scan` and `digest`.
 - 1.1: check (dry run).
-- 1.2: `digest --leads` and `lead` (LEADS.csv triage state).
+- 1.2: `digest` keeps LEADS.csv under the store lock; `lead` (triage state).

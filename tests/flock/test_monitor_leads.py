@@ -1,4 +1,4 @@
-"""NB-DF-07: digest --leads keeps LEADS.csv triage state across digests; a flagged link is listed once; lead sets state."""
+"""NB-DF-07: digest keeps LEADS.csv triage state across digests; a flagged link is listed once; lead sets state."""
 import contextlib
 import csv
 import fcntl
@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("_test_monitor_leads", ROOT / "tools" / "flock_monitor.py")
@@ -47,7 +48,7 @@ class LeadsTests(unittest.TestCase):
         return code, out.getvalue().splitlines()
 
     def digest(self, date=D1, expect=0):
-        code, out = self.run_main("digest", "--store", str(self.store), "--date", date, "--leads")
+        code, out = self.run_main("digest", "--store", str(self.store), "--date", date)
         self.assertEqual(code, expect, out)
         return out if expect else (self.store / "digest" / (date + ".md")).read_text(encoding="utf-8").splitlines()
 
@@ -104,16 +105,31 @@ class LeadsTests(unittest.TestCase):
         self.assertEqual(self.section(self.digest())[0], "Leads (2 new)")
         self.assertEqual(len(self.table()), 3)
 
-    def test_no_relevant_items_empty_section_no_file(self):
+    def test_no_relevant_items_no_section_no_file(self):
         self.monitor_rows([item(0x01, "Budget hearing")])
-        self.assertEqual(self.section(self.digest()), ["Leads (0 new)"])
+        self.assertEqual(self.digest(), ["Flock monitor 2026-10-30: 1 new items (public, unreviewed), 0 relevant",
+                                         "- Example City agenda: Budget hearing https://www.city.example/i/1"])
         self.assertFalse(self.leads.exists())
 
-    def test_digest_without_leads_flag_unchanged(self):
+    def test_leads_flag_is_gone(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            monitor.main(["digest", "--store", str(self.store), "--date", D1, "--leads"])
+
+    def test_scan_committed_while_digest_waits_is_read_under_the_lock(self):
         self.monitor_rows(DAY1)
-        self.assertEqual(self.run_main("digest", "--store", str(self.store), "--date", D1)[0], 0)
-        self.assertNotIn("", (self.store / "digest" / (D1 + ".md")).read_text(encoding="utf-8").splitlines())
-        self.assertFalse(self.leads.exists())
+        real = monitor.store_lock
+
+        @contextlib.contextmanager
+        def late_scan(store, *args):  # a scan commits a relevant row for D1 just before digest gets the lock
+            self.monitor_rows(DAY1 + [item(0xC3, "Surveillance use policy")])
+            with real(store, *args):
+                yield
+
+        with mock.patch.object(monitor, "store_lock", late_scan):
+            lines = self.digest()
+        self.assertEqual(lines[0], "Flock monitor 2026-10-30: 6 new items (public, unreviewed), 3 relevant")
+        self.assertEqual(self.section(lines)[0], "Leads (3 new)")
+        self.assertEqual([r[0] for r in self.table()[1:]], [A, "M-0000000000c3", B])
 
     def test_lead_moves_allowed_and_refused(self):
         self.monitor_rows(DAY1)

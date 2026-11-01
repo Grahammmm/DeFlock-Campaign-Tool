@@ -228,7 +228,7 @@ def new_leads(path, date, relevant):  # call only under the store lock: add unkn
         if r["item_id"] in first:
             shown.setdefault(r["item_id"], " ".join(("- %s: %s %s [%s]" % (r["agency"], r["title"], r["url"],
                                                                            r["item_id"])).split()))
-    return ["", "Leads (%d new)" % len(shown)] + list(shown.values())
+    return ["", "Leads (%d new)" % len(shown)] + list(shown.values()) if shown else []  # no leads for D: no section
 
 def lead(store, item, state, by, date):  # triage one lead: new -> requested|ignored, ignored -> requested
     if not re.fullmatch(r"M-[0-9a-f]{12}", item): raise Fail("lead: --item is not M- and 12 lowercase hex")
@@ -247,9 +247,13 @@ def lead(store, item, state, by, date):  # triage one lead: new -> requested|ign
         write_atomic(path, header=LEADS_HEADER, rows=rows)
     return "lead | %s | %s -> %s" % (item, old, state)
 
-def digest(store, date, leads=False):
-    path = private_store(store) / "digest" / (date + ".md")
-    rows = [r for _, r in read_csv(path.parents[1] / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
+def digest(store, date):
+    with store_lock(store := private_store(store)):  # date filter, relevance match and both writes: one locked pass
+        return digest_locked(store, date)
+
+def digest_locked(store, date):  # call only under the store lock; a scan committed before it is always included
+    path = store / "digest" / (date + ".md")
+    rows = [r for _, r in read_csv(store / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
     pattern = keywords()
     ranked = sorted(((r, alpr_terms(r, pattern)) for r in rows), key=lambda e: (slug(e[0]["agency"]), not e[1]))  # stable
     items = [(" ".join(("- %s %s: %s %s" % (r["agency"], r["watch_kind"], r["title"], r["url"])).split())
@@ -263,10 +267,9 @@ def digest(store, date, leads=False):
         keep = sorted(sorted(range(len(items)), key=lambda i: not items[i][1])[:38])
         lines += [items[i][0] for i in keep] + ["- … and %d more in MONITOR.csv (%d relevant)"
                                                  % (len(items) - 38, relevant - sum(items[i][1] for i in keep))]
-    _real(path.parent, "digest folder")
-    with store_lock(path.parents[1]) if leads else contextlib.nullcontext():  # --leads: LEADS.csv and digest locked
-        lines += new_leads(path.parents[1] / "LEADS.csv", date, [r for r, terms in ranked if terms]) if leads else []
-        write_atomic(path, "\n".join(lines) + "\n")
+    _real(path.parent, "digest folder")  # checked before LEADS.csv is touched
+    lines += new_leads(store / "LEADS.csv", date, [r for r, terms in ranked if terms])
+    write_atomic(path, "\n".join(lines) + "\n")
     return path
 
 def main(argv=None):
@@ -275,8 +278,7 @@ def main(argv=None):
     scan_p = sub.add_parser("scan", help="fetch each non-social WATCHLIST index page once and record new links")
     scan_p.add_argument("watchlist")
     sub.add_parser("check", help="validate WATCHLIST and print the pages scan would fetch (no network, no writes)").add_argument("watchlist")
-    digest_p = sub.add_parser("digest", help="write <store>/digest/<date>.md")
-    digest_p.add_argument("--leads", action="store_true", help="record new relevant items in LEADS.csv; list each once")
+    digest_p = sub.add_parser("digest", help="write <store>/digest/<date>.md; list new relevant items once (LEADS.csv)")
     lead_p = sub.add_parser("lead", help="set a LEADS.csv lead to requested or ignored (who and when recorded)")
     lead_p.add_argument("--item", required=True)
     lead_p.add_argument("--state", required=True, help="requested or ignored")
@@ -289,7 +291,7 @@ def main(argv=None):
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
-              else digest(args.store, args.date.isoformat(), leads=args.leads))
+              else digest(args.store, args.date.isoformat()))
     except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)
                                                                    else type(err).__name__))
