@@ -152,9 +152,12 @@ def to_geojson(elements):
 
 
 def _current_points(path):
-    """Feature count of the current map: 0 when absent, None when unreadable (it is already broken)."""
-    if not path.exists() and not path.is_symlink():
+    """Feature count of the current map: 0 when absent, None when unreadable or not a regular file (it is
+    already broken; a FIFO or device is never opened). The caller has already refused a symlink."""
+    if not path.exists():
         return 0
+    if not path.is_file():
+        return None
     try:
         features = json.loads(path.read_text(encoding="utf-8"))["features"]
         return len(features) if isinstance(features, list) else None
@@ -166,8 +169,9 @@ def _write_atomic(final, text, after=""):
     """Replace final through a fresh temp file in the same directory; never follow a symlinked final."""
     if final.is_symlink():
         raise WriteRefused(f"fetch_osm_alprs: {final.name} is a symlink; not written{after}")
-    fd, tmp = tempfile.mkstemp(dir=final.parent, prefix="." + final.name + ".")
+    tmp = None
     try:
+        fd, tmp = tempfile.mkstemp(dir=final.parent, prefix="." + final.name + ".")
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
@@ -175,8 +179,9 @@ def _write_atomic(final, text, after=""):
         os.chmod(tmp, 0o644)
         os.replace(tmp, final)
     except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
         raise WriteRefused(f"fetch_osm_alprs: could not write {final.name}; it was left unchanged{after}") from None
 
 
@@ -189,6 +194,8 @@ def write_map(campaign, collection, allow_empty):
             raise WriteRefused(f"fetch_osm_alprs: {map_dir} is a symlink or not a directory; nothing written")
         map_dir.mkdir(exist_ok=True)
     cameras = map_dir / "cameras.geojson"
+    if cameras.is_symlink():  # refused before the empty guard reads the current map: a link is never followed
+        raise WriteRefused("fetch_osm_alprs: cameras.geojson is a symlink; not written")
     if not collection["features"] and not allow_empty:
         current = _current_points(cameras)
         if current is None:

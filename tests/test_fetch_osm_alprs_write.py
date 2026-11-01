@@ -1,5 +1,6 @@
 """fetch_osm_alprs safe write: campaign dir required, empty answer keeps a map, atomic no-follow (RF1730-11)."""
 import contextlib
+import errno
 import io
 import json
 import os
@@ -127,6 +128,31 @@ class SafeWriteTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"original\n")
         self.assertEqual(self.temps(), [])
 
+    def test_empty_answer_symlinked_cameras_refused_before_any_read(self):
+        before = self.three_point_map()
+        target = self.tmp / "target.geojson"
+        target.write_bytes(before)
+        self.cameras.unlink()
+        self.cameras.symlink_to(target)
+        for extra in ((), ("--allow-empty",)):
+            with self.subTest(extra=extra), mock.patch.object(tool, "_current_points",
+                                                              side_effect=AssertionError("target read")):
+                code, out, err = self.run_tool(*extra, document=EMPTY)
+            self.assertEqual((code, out, err.strip()),
+                             (2, "", "fetch_osm_alprs: cameras.geojson is a symlink; not written"))
+            self.assertTrue(self.cameras.is_symlink())
+            self.assertEqual(target.read_bytes(), before)
+            self.assertEqual(self.temps(), [])
+
+    def test_empty_answer_over_fifo_never_opens_it(self):
+        self.map_dir.mkdir(parents=True)
+        os.mkfifo(self.cameras)
+        with mock.patch.object(tool.Path, "read_text", side_effect=AssertionError("fifo opened")):
+            code, _, err = self.run_tool(document=EMPTY)
+        self.assertEqual(code, 0)
+        self.assertEqual(err.strip(), "fetch_osm_alprs: warning: current cameras.geojson is unreadable; replacing it")
+        self.assertTrue(self.cameras.is_file())
+
     def test_symlinked_attribution_refused_after_cameras_written(self):
         self.map_dir.mkdir(parents=True)
         target = self.tmp / "target.txt"
@@ -186,6 +212,34 @@ class SafeWriteTests(unittest.TestCase):
             self.assertEqual((code, out, err.strip()), (2, "", WRITE_FAILED))
             self.assertEqual(self.cameras.read_bytes(), before)
             self.assertEqual(self.temps(), [])
+
+    def test_temp_creation_failure_exit_2_fixed_message(self):
+        before = self.three_point_map()
+        document = {"elements": ELEMENTS[:1]}
+        for error in (OSError(errno.ENOSPC, "No space left on device"), PermissionError(errno.EACCES, "denied")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(tool.tempfile, "mkstemp", side_effect=error):
+                code, out, err = self.run_tool(document=document)
+            self.assertEqual((code, out, err.strip()), (2, "", WRITE_FAILED))
+            self.assertEqual(self.cameras.read_bytes(), before)
+            self.assertEqual(self.temps(), [])
+
+    def test_attribution_temp_failure_says_cameras_was_written(self):
+        real = tempfile.mkstemp
+
+        def mkstemp(*args, **kwargs):
+            if kwargs.get("prefix") == ".attribution.txt.":
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(tool.tempfile, "mkstemp", side_effect=mkstemp):
+            code, out, err = self.run_tool()
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err.strip(), "fetch_osm_alprs: could not write attribution.txt; it was left unchanged "
+                                      "(the new cameras.geojson was written)")
+        self.assertEqual(self.cameras.read_bytes(), self.reference_bytes())
+        self.assertFalse((self.map_dir / "attribution.txt").exists())
+        self.assertEqual(sorted(p.name for p in self.map_dir.iterdir()), ["cameras.geojson"])
 
     # 9. stale temp from an earlier crash: ignored, not reused, not removed
     def test_stale_temp_ignored(self):
