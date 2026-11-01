@@ -84,6 +84,10 @@ TEMPLATES = {
 def plan(mode="test", ocr=None):
     if mode not in MODES:
         raise ValueError(f"mode: expected one of {sorted(MODES)}")
+    # DOC-1: every LIVE plan OCRs scans (tesseract receipts) on the run that
+    # processes them; TEST stays Phase 1 (scans remain AWAITING_OCR there).
+    if mode == "live" and ocr is None:
+        ocr = "ocr"
     if ocr is not None and (ocr not in OCR_EXTRACT or mode != "live"):
         raise ValueError(f"ocr: expected one of {sorted(OCR_EXTRACT)} on a live plan")
     stages = []

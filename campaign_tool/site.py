@@ -91,6 +91,10 @@ def e(value):
     return escape(str(value), quote=True)
 
 
+def _one_line(text):
+    return " ".join(str(text).split())
+
+
 def short_hash(sha256):
     return sha256[:12]
 
@@ -171,21 +175,38 @@ class Site:
                      '<a href="/sitemap.xml">Sitemap</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
-    def head(self, title, description, path, scripts=(), stylesheets=()):
+    def share(self, title, description, path, kind, published, modified):
+        """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
+        tags = [("property", "og:site_name", self.name), ("property", "og:title", e(_one_line(title))),
+                ("property", "og:description", e(_one_line(description))), ("property", "og:type", kind)]
+        if self.base:
+            tags.append(("property", "og:url", e(self.base + path)))
+        tags += [("name", "twitter:card", "summary"), ("name", "twitter:title", e(_one_line(title))),
+                 ("name", "twitter:description", e(_one_line(description)))]
+        if kind == "article":
+            tags.append(("property", "article:published_time", e(_one_line(published))))
+            if modified:
+                tags.append(("property", "article:modified_time", e(_one_line(modified))))
+        return "".join(f'  <meta {attr}="{key}" content="{value}">\n' for attr, key, value in tags)
+
+    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None):
         canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base else ""
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
-                f'  <meta name="description" content="{e(description)}">\n  <title>{e(title)} | {self.name}</title>\n'
+                f'  <meta name="description" content="{e(description)}">\n'
+                + self.share(title, description, path, kind, published, modified)
+                + f'  <title>{e(title)} | {self.name}</title>\n'
                 '  <link rel="stylesheet" href="/style.css">\n'
                 '  <link rel="alternate" type="application/atom+xml" title="Findings" href="/feed.xml">\n'
                 + canonical + extra)
 
-    def page(self, current, title, description, path, main, scripts=(), stylesheets=()):
+    def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
+             kind="website", published=None, modified=None):
         return render({
             "schema_version": 1,
             "language": self.site["language"],
-            "html": {"head": self.head(title, description, path, scripts, stylesheets),
+            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified),
                      "header": self.header(current), "main": main, "footer": self.footer()},
             "styles": {"font_family": self.site["font_family"], "font_faces": ""},
         })
@@ -355,7 +376,8 @@ class Site:
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
                 + '<p><a href="/corrections.html">All corrections</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
-        return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main)
+        return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main,
+                         kind="article", published=finding["published_at"], modified=finding["updated_at"])
 
     def corrections_html(self):
         rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
