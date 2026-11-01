@@ -27,12 +27,16 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 - Run `python3 tools/flock_email.py lint <run folder> --drafts <operator folder>` after any edit and before asking G to approve: copies agree,
   `To:` is the current CONTACT.csv address, no placeholder or private pattern; exit 0 (`rules=0`) is not approval.
 
-## Show
-- The operator shows G the draft; only G's explicit reply for that exact draft permits sending, by hand.
+## Show and approve
+- The operator shows G `python3 tools/flock_approve.py payload <run folder>`. G signs it with the approval key and runs
+  `flock_approve.py approve <run folder> --signature <file>.sig`, which writes `EMAIL-APPROVAL.json` (`"state": "approved"`).
+  That field, never a line in the draft, is the approval (docs/APPROVALS.md).
+- Right before sending by hand, `python3 tools/flock_approve.py verify <run folder>` must exit 0. Any edit voids it.
 
 ## Status
-- After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_email.py status STORE` must exit 0
-  (one `email | <slug> | <date> | <stage>` line per run; reads only, prints no address or filled value).
+- After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_approve.py status STORE` must exit 0
+  (one `email | <slug> | <date> | <stage>` line per run, signatures checked; reads only, prints no address or filled value).
+  `flock_email.py status` cannot check signatures and shows an approval only as `approval unverified`.
   `python3 tools/flock_requests.py --check STORE` then needs a REQUESTS row of that agency with `sent` equal to that date.
 
 ## Open
@@ -41,5 +45,5 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 
 ## Never
 
-- Send, schedule, queue or call any outbox, SMTP or API; fill `G APPROVED`; drop the DRAFT header.
+- Send, schedule, queue or call any outbox, SMTP or API; write or edit `EMAIL-APPROVAL.json` or sign for G; drop the DRAFT header.
 - Guess an address or use a contact without a cited source; commit or quote real drafts or contacts.

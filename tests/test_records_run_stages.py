@@ -978,7 +978,22 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("@CONTAINER_APPROVAL_FILE_TEST@", by_name["portal"])
         mapped = json.loads(json.dumps(test_plan["stages"]).replace("_TEST@", "@"))
         self.assertNotEqual(test_plan["stages"], live_plan["stages"])
+        # DOC-1: LIVE extract = mapped TEST (Phase 1) extract with exactly the tesseract OCR tail.
+        head = mapped[4]["argv"][:mapped[4]["argv"].index("--timeout")]
+        self.assertEqual(head[-3:], ["extract", "--project", "@CONTAINER_PROJECT_DIR@"])
+        self.assertEqual(mapped[4], {"name": "extract", "timeout_seconds": 600, "on_fail": "stop", "argv": head + [
+            "--timeout", "590", "--run-id", "{run_id}", "--max-documents", "200", "--document-timeout", "120"]})
+        mapped[4] = {"name": "extract", "timeout_seconds": 1500, "on_fail": "stop", "argv": head + [
+            "--timeout", "1490", "--run-id", "{run_id}", "--max-documents", "20", "--document-timeout", "1200",
+            "--ocr-page-timeout", "180", "--ocr"]}
         self.assertEqual(mapped, live_plan["stages"])
+        # The kept alias is byte-identical, and the mail plan is LIVE plus only the sync script.
+        live_text = (directory / "live-container.json.in").read_text(encoding="utf-8")
+        self.assertEqual((directory / "live-ocr-container.json.in").read_text(encoding="utf-8"), live_text)
+        mail = json.loads((directory / module.LIVE_MAIL_TEMPLATE).read_text(encoding="utf-8"))
+        self.assertEqual(mail["stages"][0]["argv"][-2:], ["--sync-script", "@CONTAINER_SYNC_SCRIPT@"])
+        mail["stages"][0]["argv"] = mail["stages"][0]["argv"][:-2]
+        self.assertEqual(mail, json.loads(live_text))
 
     def test_committed_ocr_plans_match_generator_and_differ_only_in_extract(self):
         # T6-plan: Phase 2 LIVE plans. Only the extract stage differs from the Phase 1 LIVE plan.

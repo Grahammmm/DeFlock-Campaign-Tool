@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.flock.approval_field import APPROVAL_LINE
+
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "flock_email.py"
 FIXTURES = ROOT / "tests" / "fixtures" / "flock"
@@ -32,8 +34,9 @@ class EmailDraftTests(unittest.TestCase):
             lines = text.splitlines()
             self.assertEqual(lines[:2], ["DRAFT - not sent - G approval required", "To: records@city.example"])
             self.assertTrue(lines[2].startswith("Subject: CPRA request"))
-            for want in ("Related prior requests: SAMPLE-4.", "G APPROVED: ____"):
+            for want in ("Related prior requests: SAMPLE-4.", APPROVAL_LINE):
                 self.assertIn(want, text)
+            self.assertNotIn("G APPROVED", text)  # approval is a signed field, never a line to fill
             for gone in ("Held (internal", "END OF REQUEST DRAFT"):
                 self.assertNotIn(gone, text)
             self.assertEqual(subprocess.run(cmd, capture_output=True, text=True).returncode, 1)

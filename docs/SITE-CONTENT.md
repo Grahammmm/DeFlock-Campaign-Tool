@@ -74,6 +74,10 @@ to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
 
+Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
+(a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
+when `site.json.base_url` is set. There is no share image by design and nothing is fetched.
+
 ### Agencies, cards and the picker
 
 Agencies come from `content/agencies.json` or the kit. Each gets a slug (the
@@ -88,6 +92,10 @@ controller fits the map to `CITIES[slug].bounds`.
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without
 sources route to `sources.html#library`.
+
+Each `sources.html` entry ends with `Cited by:` and links to every published
+finding that cites its `sha256` (model order, once each), or with
+`Not cited by a published finding`. Drafts never appear.
 
 ### Adding a source record
 
@@ -111,7 +119,9 @@ signup, meetings), `agencies.html`, `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
 `#<fragment>` section per source group), `meetings.html`, `about.html`,
 `style.css`, `_headers`, `robots.txt`, `sitemap.xml`, `feed.xml` (Atom of
-findings), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
+findings), `findings/agency/<slug>.xml` (the same Atom entries for one agency,
+only for an agency with at least one published finding; linked as "Findings
+feed" from its `agencies.html` entry), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
 a picker-only bootstrap without a map), `data/*.geojson` and `vendor/*` when
@@ -125,6 +135,10 @@ three); `meetings.html` then lists `#past-meetings`, most recent first.
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
 files above.
+
+Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
+each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
+kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
 
 ## Content-Security-Policy
 
