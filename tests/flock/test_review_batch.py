@@ -6,7 +6,7 @@ from tests.flock.test_review_verify import compare_build
 from tests.flock.test_review_golden import SAMPLE, golden_review
 
 TOOL, ROSTER = ROOT / "tools" / "flock_review_batch.py", FIX / "review-roster.csv"
-HEADER = "slug,config,state,stages_done,stages_total,next,waiting_for,input_present,author_family,verifier_family,run_date".split(",")
+HEADER = "slug,config,state,stages_done,stages_total,next,waiting_for,input_present,author_family,verifier_family,run_date,why".split(",")
 SLUGS = (SLUG, "second-city-police", "campus-police")
 GATE = "golden gate: Morro Bay golden must pass first"
 
