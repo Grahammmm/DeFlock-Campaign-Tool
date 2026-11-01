@@ -18,7 +18,7 @@ UNSUPPORTED_KINDS = (None, True, False, 0, 1, 2.5, [], ['mail'], ['attachment'],
                      'unsupported-kind', '', 'MAIL', 'Mail', 'mail ', 'Attachment', 'message', 'portal',
                      'digests')
 GATE = 'FA01-KIND-GATE'
-# Raw outcomes of the synthetic control, read back by tools/accept_fa01.py.
+# Raw outcomes of the synthetic control.
 CONTROL_OUTCOMES = []
 
 

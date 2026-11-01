@@ -49,7 +49,7 @@ INVALID_VARIANTS = (
     ("unknown_field", {"url": "https://records.example.test/documents/fa91-item-a"}, "unknown_field"),
 )
 
-# Evidence of the last GateControl run, read by tools/accept_fa91.py.
+# Evidence of the last GateControl run.
 CONTROL_EVIDENCE = {}
 
 

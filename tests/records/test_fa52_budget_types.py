@@ -10,8 +10,7 @@ instead of the fixed refusal. These regressions drive the real producer
 
 All fixtures are generated from the existing synthetic mail-wire producer
 fixtures under ``tempfile`` roots; nothing reads received mail, a mailbox or a
-live ledger. ``tools/accept_fa52_budget_types.py`` redirects ``tempfile`` to a
-fresh per-invocation root before this module is imported.
+live ledger. Each run uses its own temporary root.
 """
 import functools
 import hashlib
