@@ -430,8 +430,10 @@ def kit(args, root):
 
 
 def social_cmd(root, platforms=None):
-    from .social import build_social
+    from .social import build_social, review_notes
     print(json.dumps(build_social(root, platforms), indent=2, ensure_ascii=False))
+    for note in review_notes(root):  # DF-4 alert-only: stderr; the stdout summary and exit code are unchanged
+        print(note, file=sys.stderr)
     print("Drafts written to kit/social. Nothing was posted.")
 
 

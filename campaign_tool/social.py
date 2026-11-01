@@ -18,6 +18,7 @@ import stat
 
 from .content import load_content
 from .kit import _kit_folder, _write_json, _write_text
+from .legal_claims import legal_notes
 from .site import CLASSIFICATION_LABELS
 
 SOCIAL_MAX_CHARS = 280
@@ -77,6 +78,18 @@ def _load_record(path):
     if isinstance(record, dict) and all(isinstance(v, str) for v in record.values()):
         return record
     return {}
+
+
+def review_notes(root):
+    """DF-4 alert-only: ``review-required`` notes for generated posts whose wording asserts a violation. Never raises, never blocks."""
+    try:
+        model = load_content(root)
+        base_url = (model or {}).get("site", {}).get("base_url")
+        if not (model and base_url):
+            return []
+        return legal_notes((f"social/{f['slug']}", post_text(f, base_url)) for f in model["findings"])
+    except Exception:  # noqa: BLE001 - alert-only; build_social reports its own refusals
+        return ["review-required: social: legal-claim wording (posts could not be scanned; read them before use)"]
 
 
 def _published(root):

@@ -120,6 +120,19 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
         manifest["findings"][0]["summary"] = "The agency declined to answer. SB 34 requires a published policy."
         self.assertEqual(build_draft(manifest)["review_flags"], [])
 
+    def test_social_post_flag_is_a_note_and_the_draft_is_still_written(self):
+        from campaign_tool import social
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "campaign"
+            shutil.copytree(ROOT / "examples" / "fictional-campaign", root, ignore=shutil.ignore_patterns("public"))
+            path = next((root / "content" / "findings").glob("*.json"))
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(social.review_notes(root), [])  # the shipped example reads as fact
+            doc["title"] = "Cedar Police violated SB 34 (fictional)"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(social.review_notes(root), ["review-required: social/%s: legal-claim wording (violation-verb)" % doc["slug"]])
+            self.assertEqual(social.build_social(root)["written"], [doc["slug"]])  # still drafted
+
     def test_site_build_scan_flags_findings_and_never_raises(self):
         from campaign_tool import cli
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,6 +141,15 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
             (root / "content" / "site.json").write_text("{}")
             self.assertEqual(len(cli._site_claim_notes(root)), 1)  # an unreadable model: one note asking for a manual read, no raise
             self.assertIn("review-required", cli._site_claim_notes(root)[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "campaign"
+            shutil.copytree(ROOT / "examples" / "fictional-campaign", root, ignore=shutil.ignore_patterns("public"))
+            self.assertEqual(cli._site_claim_notes(root), [])
+            path = next((root / "content" / "findings").glob("*.json"))
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc["summary"] = "The department is in violation of SB 34 (fictional)."
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(cli._site_claim_notes(root), ["review-required: findings/%s: legal-claim wording (violation-noun)" % doc["slug"]])
 
 
 if __name__ == "__main__":
