@@ -29,6 +29,8 @@ skill). A clean lint is machine-valid and review-required, not editorial or lega
 4. Fix every error in CARDS.json and build again. Errors read `<area> <index>: <rule> <reason>`;
    the tool never prints card text. Re-check a story at any time with `lint --story … --thread …
    --location … --base-sources N --not-posted …`.
+4a. Before adopting a story, run `check` with build's flags (`--story F` for `--out`): it rebuilds in memory, writes
+   nothing, and must end `state=current` (stale/missing/link/invalid exit 1; rebuild with `--replace`).
 5. A reviewer checks rules 5 and 6 by hand: say what is missing with dates; the policy card names
    what the policy fails to limit.
 6. Hand the story JSON to the operator's site card. Adoption and publication go through the site's

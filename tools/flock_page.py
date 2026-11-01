@@ -2,6 +2,7 @@
 """Flock page: records-page story data builder + lint for the site rules (G4).
   build --cards C --sources S --location L --thread T --base-sources N --out F [--replace] [--not-posted ID..] [--not-posted-title T..]
   lint  --story S --location L --thread T --base-sources N [--not-posted ID..] [--not-posted-title T..]
+  check --cards C --sources S --location L --thread T --base-sources N --story F [--not-posted ID..] [--not-posted-title T..]
 build turns a model-written CARDS.json plus G3's SOURCES.json into <slug>-story.json (the keys of the site's morrobay-story.mjs),
 numbering cites after the page's N base sources; it lints its own result first and writes nothing on any error. lint checks story,
 thread and location against site rules 1, 2, 3, 4, 7, 8, 9 and the draft tone; it prints `<area> <index>: <rule> <reason>` errors
@@ -183,6 +184,18 @@ def assemble(cards, sources, location, base):
 def report(errs, n):
     print("\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
     return 1 if errs else 0
+def dump(story): return json.dumps(story, indent=2, ensure_ascii=False) + "\n"
+def fresh(args):  # build's shared part: inputs -> assemble -> lint; -> (story | None, errs, counts), errors as build printed them
+    errs, n = [], dict.fromkeys(COUNTS, 0)
+    try:
+        got = _inputs(args, ("cards", "sources", "location", "thread"))
+        story, errs = _stage("cards", assemble, got["cards"], got["sources"], got["location"], args.base_sources)
+        more, n = _stage("lint", lint, story, got["thread"], got["location"], args.base_sources, args.not_posted, args.not_posted_title)
+        return story, list(dict.fromkeys(errs + more)), n
+    except Fail as exc:
+        return None, errs + str(exc).splitlines(), n
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return None, errs + ["io 0: %s" % type(exc).__name__], n
 def build(args):
     n, errs, tmp = dict.fromkeys(COUNTS, 0), [], None
     try:
@@ -192,16 +205,13 @@ def build(args):
         out = out.resolve()
         if out == REPO or REPO in out.parents:
             raise Fail("out 0: refused inside the repository")
-        got = _inputs(args, ("cards", "sources", "location", "thread"))
-        story, errs = _stage("cards", assemble, got["cards"], got["sources"], got["location"], args.base_sources)
-        more, n = _stage("lint", lint, story, got["thread"], got["location"], args.base_sources, args.not_posted, args.not_posted_title)
-        errs = list(dict.fromkeys(errs + more))
+        story, errs, n = fresh(args)
         if not errs and out.exists() and not args.replace:
             errs.append("out 0: exists; pass --replace to supersede it")
         if not errs:
             fd, tmp = tempfile.mkstemp(prefix="." + out.name + ".", suffix=".tmp", dir=out.parent)  # 0600, exclusive
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(story, indent=2, ensure_ascii=False) + "\n")
+                handle.write(dump(story))
             if out.exists():
                 old = out.with_name(out.name + ".superseded-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
                 os.link(out, old)  # keep the old file aside; never deleted
@@ -226,12 +236,44 @@ def run_lint(args):
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         errs, n = ["io 0: %s" % type(exc).__name__], dict.fromkeys(COUNTS, 0)
     return report(errs, n)
+def superseded(f):  # regular files named <F>.superseded-* beside F; links are not counted
+    with contextlib.suppress(OSError):
+        return sum(e.name.startswith(f.name + ".superseded-") and e.is_file(follow_symlinks=False) for e in os.scandir(f.parent))
+    return 0
+def check(args):  # read-only: the story on disk vs a fresh in-memory build; never writes, never follows a final link
+    f, errs, n, state = Path(os.path.expanduser(args.story)), [], dict.fromkeys(COUNTS, 0), "invalid"
+    if os.path.islink(f):
+        state = "link"
+    elif f.resolve() == REPO or REPO in f.resolve().parents:
+        errs.append("out 0: refused inside the repository")
+    else:
+        story, errs, n = fresh(args)
+        try:
+            if not errs:
+                with os.fdopen(os.open(f, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
+                    disk = handle.read()
+                state = "current" if disk == dump(story).encode("utf-8") else "stale"
+                if state == "stale":
+                    old = json.loads(disk.decode("utf-8"))
+                    old = old if isinstance(old, dict) else {}
+                    errs.append("story 0: differs from a fresh build (keys: %s)" % (", ".join(k for k in KEYS if old.get(k) != story[k])
+                                                                                     or "none"))
+        except FileNotFoundError:
+            state = "missing"
+        except ValueError:  # not UTF-8, not JSON or truncated
+            errs.append("story 0: unreadable JSON")
+        except OSError as exc:
+            state, errs = "invalid", ["io 0: %s" % type(exc).__name__]
+    print("\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d superseded=%d state=%s"
+                            % (len(errs), superseded(f), state)]))
+    return 0 if state == "current" else 1
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("build", "lint"):
+    for name in ("build", "lint", "check"):
         p = sub.add_parser(name)
-        for flag in (("--cards", "--sources", "--out") if name == "build" else ("--story",)) + ("--location", "--thread"):
+        for flag in {"build": ("--cards", "--sources", "--out"), "lint": ("--story",), "check": ("--cards", "--sources", "--story")}[name] \
+                + ("--location", "--thread"):
             p.add_argument(flag, required=True)
         p.add_argument("--base-sources", type=int, required=True)
         p.add_argument("--not-posted", nargs="*", default=[], action="extend")
@@ -239,6 +281,6 @@ def main(argv=None):
         if name == "build":
             p.add_argument("--replace", action="store_true")
     args = parser.parse_args(argv)
-    return build(args) if args.command == "build" else run_lint(args)
+    return {"build": build, "lint": run_lint, "check": check}[args.command](args)
 if __name__ == "__main__":
     sys.exit(main())

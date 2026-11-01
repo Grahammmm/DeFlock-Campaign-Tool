@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date), gaps and changes (policy-kind
-FACTS types that differ between consecutive adopted versions). Prints ids, labels, dates, fact types, counts only."""
+"""Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date), gaps, changes (policy-kind
+FACTS types that differ between consecutive adopted versions) and coverage (us-ca package rules with no LAW row).
+Prints ids, labels, dates, fact types, counts only."""
 import csv
 import hashlib
 import importlib.util
@@ -191,6 +192,26 @@ def gaps(policy_rows, on):  # per (agency, policy_id): days no adopted window go
     agencies = len({a for a, _ in groups})
     return out + [f"agencies={agencies} policies={len(groups)} " + " ".join(f"{k}={v}" for k, v in n.items())]
 
+def coverage(law_rows, rules, on=None):  # per package rule (sorted id): no LAW row, none in effect on `on`, only disputed
+    by, out, n, flagged = {}, [], {"missing": 0, "not_in_effect": 0, "disputed_only": 0}, set()
+    for _, r in law_rows:
+        by.setdefault(r["rule_id"], []).append(r)
+    for rid, review in sorted((x["rule_id"], x["review"]) for x in rules):
+        mine, hits = by.get(rid, []), []
+        if not mine:
+            hits.append(("missing", f"no LAW row | review {review}"))
+        if mine and on and not any(r["effective_from"] <= on and (not r["effective_to"] or on <= r["effective_to"]) for r in mine):
+            hits.append(("not_in_effect", f"not in effect on {on} ({len(mine)} rows)"))
+        if mine and all(r["status"] == "disputed" for r in mine):
+            hits.append(("disputed_only", f"only disputed rows ({len(mine)})"))
+        for kind, text in hits:
+            out.append(f"coverage | {rid} | {text}")
+            n[kind] += 1
+            flagged.add(rid)
+    total = len({x["rule_id"] for x in rules})
+    return out + [f"rules={total} covered={total - len(flagged)} " + " ".join(f"{k}={v}" for k, v in n.items())
+                  + " | research view, not a legal conclusion"]
+
 def policy_facts(store, agencies):  # -> ({slug: policy-kind FACTS rows}, errors); a folder without FACTS.csv has none
     spec = importlib.util.spec_from_file_location("_flock_facts", Path(__file__).resolve().parent / "flock_facts.py")
     tool, out, errs = importlib.util.module_from_spec(spec), {}, []  # the sibling tool by file path, never a copy
@@ -240,7 +261,8 @@ def changes(policy_rows, facts):  # per agency + policy_id: fact types differing
                   + " ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, review-required"]
 
 USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
-         " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]")
+         " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]"
+         " | coverage STORE [--on YYYY-MM-DD]")
 
 def main(argv):
     try:
@@ -264,6 +286,22 @@ def run(argv):
         out = errs or (governing(law_rows, policy_rows, argv[3]) if argv[0] == "governing" else gaps(policy_rows, argv[3]))
         print("\n".join(out), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 3 if argv[0] == "gaps" and len(out) > 1 else 0  # gaps: every line but the count is a finding
+    if argv[:1] == ["coverage"]:  # STORE a directory with LAW.csv; any load or package error -> stderr only, exit 1
+        on = argv[3] if len(argv) == 4 else None
+        if len(argv) not in (2, 4) or (on and (argv[2] != "--on" or not day(on))) or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        if not (Path(argv[1]) / "LAW.csv").is_file():
+            print("store: no LAW.csv", file=sys.stderr)
+            return 1
+        (law_rows, _, errs), rules = load_all(argv[1]), []
+        try:
+            rules = rules if errs else law.load_package("us-ca")["rules"]
+        except (ValueError, KeyError, TypeError, OSError):
+            errs = ["row 1: law package unreadable"]
+        out = errs or coverage(law_rows, rules, on)
+        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
+        return 1 if errs else 3 if len(out) > 1 else 0
     if argv[:1] == ["changes"]:  # a report, not findings: exit 0 clean; any POLICY or in-scope FACTS error -> stderr, exit 1
         if not (len(argv) == 2 or len(argv) == 4 and argv[2] == "--agency" and argv[3] and slug(argv[3]) == argv[3]) \
                 or not Path(argv[1]).is_dir():
