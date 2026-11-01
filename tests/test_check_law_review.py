@@ -1,9 +1,4 @@
-"""Tests for tools/check_law_review.py, the structural law-package review check.
-
-Fixtures are in-test copies of jurisdictions/us-ca/package.json; the real file is
-never edited. Run from the repository root:
-python3 -B -m unittest tests.test_check_law_review -v
-"""
+"""Tests for tools/check_law_review.py on in-test copies of the us-ca package (unittest)."""
 
 import copy
 import json
@@ -154,8 +149,7 @@ class CheckLawReviewTest(unittest.TestCase):
         new = copy.deepcopy(self.old)
         new["records_law"]["determination_days"] += 1
         result = self.check(new, code=3)
-        self.assertEqual((result["disallowed"], result["errors"]),
-                         (["$.records_law.determination_days"], []))
+        self.assertEqual((result["disallowed"], result["errors"]), (["$.records_law.determination_days"], []))
         new = copy.deepcopy(self.old)
         new["schema_version"] = 2
         result = self.check(new, code=3)
@@ -220,17 +214,15 @@ class CheckLawReviewTest(unittest.TestCase):
         self.refused(good, big)
 
     def test_usage_error_exits_2(self):
-        done = subprocess.run([sys.executable, "-B", str(TOOL), str(PACKAGE)],
-                              capture_output=True, text=True, cwd=REPO_ROOT, check=False)
-        self.assertEqual(done.returncode, 2)
+        self.assertEqual(subprocess.run([sys.executable, "-B", str(TOOL), str(PACKAGE)],
+                                        capture_output=True, check=False).returncode, 2)
 
     # 8. The real package compared with itself.
     def test_real_package_with_itself(self):
         done = self.invoke(PACKAGE, PACKAGE)
         self.assertEqual(done.returncode, 0, done.stdout)
-        result = json.loads(done.stdout)
-        self.assertEqual(result, {"ok": True, "allowed_changes": [], "disallowed": [], "errors": [],
-                                  "downgrade": False, "note": NOTE})
+        self.assertEqual(json.loads(done.stdout), {"ok": True, "allowed_changes": [], "disallowed": [],
+                                                   "errors": [], "downgrade": False, "note": NOTE})
 
 
 if __name__ == "__main__":
