@@ -51,7 +51,8 @@ def copy_errors(block, claim_class):  # the human copy for one approved entry ->
         errs.append("counterevidence must be a list of non-empty texts")
     if block.get("agency_id") is not None and not isinstance(block["agency_id"], str):
         errs.append("agency_id must be text or null")
-    for key, values in (() if errs else (("title", [block["title"]]), ("limitations", block["limitations"]),
+    for key, values in (() if errs else (("title", [block["title"]]), ("slug", [block["slug"]]),
+                                          ("author", [block["author"]]), ("limitations", block["limitations"]),
                                           ("counterevidence", block["counterevidence"]))):
         cats = sorted({c for v in values for c in publish.text_rules(v, False)})
         errs += ["%s refused %s" % (key, ",".join(cats))] if cats else []
