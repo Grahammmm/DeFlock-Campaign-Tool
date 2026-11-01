@@ -14,7 +14,7 @@ belong in ``content/``.
 """
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -111,6 +111,12 @@ def _timestamp(value, label, date_only=False):
     except ValueError:
         raise ContentError(f"{label}: invalid ISO-8601 value {value!r}") from None
     return value
+
+
+def utc_moment(value):
+    """An ISO timestamp as an aware datetime; a zone-less value is read as UTC."""
+    moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def _slug(value, label):
@@ -245,11 +251,18 @@ def load_finding(document, label):
             "title": _text(source, "title", f"{label}.sources[{index}]", default="Source record"),
             "rule_id": _text(source, "rule_id", f"{label}.sources[{index}]", required=False, default=None),
         })
+    published_at = _timestamp(document["published_at"], f"{label}.published_at")
+    published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
     corrections = []
     for index, correction in enumerate(document["corrections"]):
         _require_keys(correction, CORRECTION_KEYS, CORRECTION_KEYS, f"{label}.corrections[{index}]")
         corrections.append({"date": _timestamp(correction["date"], f"{label}.corrections[{index}].date", date_only=True),
                             "note": _text(correction, "note", f"{label}.corrections[{index}]", allow_empty=False)})
+        if datetime.strptime(corrections[-1]["date"], "%Y-%m-%d").date() < published_day:
+            raise ContentError(f"{label}.corrections[{index}].date: is before the publication date {published_day}")
+    updated_at = _timestamp(document["updated_at"], f"{label}.updated_at") if document.get("updated_at") else None
+    if updated_at and utc_moment(updated_at) < utc_moment(published_at):
+        raise ContentError(f"{label}.updated_at: {updated_at} is before published_at {published_at}")
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
         raise ContentError(f"{label}.agency_id: invalid agency identifier")
@@ -263,8 +276,8 @@ def load_finding(document, label):
         "confidence": document["confidence"],
         "event_date": _timestamp(document["event_date"], f"{label}.event_date", date_only=True),
         "sources": sources,
-        "published_at": _timestamp(document["published_at"], f"{label}.published_at"),
-        "updated_at": _timestamp(document["updated_at"], f"{label}.updated_at") if document.get("updated_at") else None,
+        "published_at": published_at,
+        "updated_at": updated_at,
         "corrections": corrections,
         "author": _text(document, "author", label, allow_empty=False),
         "limitations": _text_list(document, "limitations", label),

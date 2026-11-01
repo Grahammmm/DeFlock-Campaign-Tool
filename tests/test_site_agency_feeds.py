@@ -16,16 +16,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 A = "{http://www.w3.org/2005/Atom}"
 BASE = "https://cedar-records.example.invalid"
-SUMMARY = ("[Documented fact; Verified against the record; event date 2026-01-15] In response to a synthetic records "
+SUMMARY = ("Corrected 2026-02-03. "
+           "[Documented fact; Verified against the record; event date 2026-01-15] In response to a synthetic records "
            "request, the fictional Cedar Police Department produced a two-page usage and privacy policy dated 2026-01-15.")
-# feed.xml of the fictional build recorded from the base commit (before the _atom refactor).
+# feed.xml of the fictional build recorded from the base commit (before the _atom refactor); RF2030-1 then made the
+# example's 2026-02-03 correction set both `updated` values and lead the summary.
 BASE_FEED = [
     ("feed", {}, ""),
     ("title", {}, "Cedar County Records Project findings"),
     ("id", {}, BASE + "/feed.xml"),
     ("link", {"href": BASE + "/feed.xml", "rel": "self"}, ""),
     ("link", {"href": BASE + "/"}, ""),
-    ("updated", {}, "2026-02-01T18:00:00+00:00"),
+    ("updated", {}, "2026-02-03T00:00:00+00:00"),
     ("author", {}, ""),
     ("name", {}, "Cedar County Records Project"),
     ("entry", {}, ""),
@@ -33,7 +35,7 @@ BASE_FEED = [
     ("id", {}, "urn:deflock-finding:fnd_0000000000000001"),
     ("link", {"href": BASE + "/findings/cedar-policy-posted.html"}, ""),
     ("published", {}, "2026-02-01T18:00:00+00:00"),
-    ("updated", {}, "2026-02-01T18:00:00+00:00"),
+    ("updated", {}, "2026-02-03T00:00:00+00:00"),
     ("summary", {}, SUMMARY),
     ("category", {"term": "documented_fact"}, ""),
 ]
@@ -91,7 +93,7 @@ class AgencyFeedTests(unittest.TestCase):
         self.assertEqual(root.findtext(f"{A}id"), BASE + "/findings/agency/cedar.xml")
         links = [(l.get("rel"), l.get("href")) for l in root.findall(f"{A}link")]
         self.assertEqual(links, [("self", BASE + "/findings/agency/cedar.xml"), (None, BASE + "/agencies.html#cedar")])
-        self.assertEqual(root.findtext(f"{A}updated"), "2026-02-01T18:00:00+00:00")
+        self.assertEqual(root.findtext(f"{A}updated"), "2026-02-03T00:00:00+00:00")
         # Same entry builder as feed.xml: the entry subtree is identical.
         self.assertEqual(tuples(self.read("findings/agency/cedar.xml"))[8:], BASE_FEED[8:])
 
