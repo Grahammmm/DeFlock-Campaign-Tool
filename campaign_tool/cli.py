@@ -76,9 +76,16 @@ def initialize(args, root):
     print("Campaign initialized. No accounts created, messages sent, or laws verified.")
 
 
-def _ingest_one(db, root, path, source_id):
-    """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def _ingest_one(db, root, path, source_id, dir_fd=None):
+    """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome.
+
+    With dir_fd, `path` is a bare name opened relative to that verified directory descriptor."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        if dir_fd is None:
+            raise
+        raise ValueError("Input changed or is not a regular, non-symlink file") from None
     with os.fdopen(fd, "rb") as incoming:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("Input must be a regular, non-symlink file")
@@ -111,7 +118,7 @@ def _ingest_one(db, root, path, source_id):
         new_object = db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
                                 (digest, len(data), now())).rowcount == 1
         cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
-                            (identity, digest, source_id, now(), path.name))
+                            (identity, digest, source_id, now(), os.path.basename(path)))
     return {"sha256": digest, "receipt_id": identity, "new_receipt": cursor.rowcount == 1,
             "analysis_status": "not_started", "outcome": "stored" if new_object else "present"}
 
@@ -133,35 +140,72 @@ def ingest(args, root):
     print(json.dumps({k: result[k] for k in ("sha256", "receipt_id", "new_receipt", "analysis_status")}, indent=2))
 
 
-def _ingest_dir(args, root):
-    """One production folder: list it without following links (hidden names skipped), then ingest file by file."""
-    top, entries, stack = Path(args.dir), [], [(args.dir, "")]
-    if top.is_symlink() or not top.is_dir():
-        raise ValueError("--dir must be a real directory, not a symlink or a file")
-    while stack:
-        folder, prefix = stack.pop()
-        with os.scandir(folder) as listing:
-            for entry in listing:
-                hidden, rel = entry.name.startswith("."), prefix + entry.name
-                if entry.is_dir(follow_symlinks=False) and not hidden:
-                    stack.append((entry.path, rel + "/"))
-                    continue
-                entries.append((rel, entry.path, "hidden" if hidden else "symlink" if entry.is_symlink()
-                                else "not_regular" if not entry.is_file(follow_symlinks=False)
-                                else "too_large" if entry.stat(follow_symlinks=False).st_size > MAX_BYTES else None))
-                if len(entries) > MAX_DIR_FILES:
-                    raise ValueError(f"{args.dir}: more than {MAX_DIR_FILES} files; split the folder")
-    files, db = [], database(root)
+def _open_dir(top_fd, parts):
+    """Descriptor for top/parts..., every component opened relative to its verified parent without following links."""
+    fd = os.dup(top_fd)
     try:
-        for rel, path, code in sorted(entries):
+        for part in parts:
             try:
-                result = {"sha256": None, "new_receipt": False} if code else _ingest_one(db, root, Path(path), args.source_id)
-            except ValueError as exc:
-                raise ValueError(f"{exc}: {rel}") from None
-            files.append({"path": rel, "sha256": result["sha256"] and result["sha256"][:12],
-                          "outcome": code or result["outcome"], "new_receipt": result["new_receipt"]})
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError:
+                raise ValueError("Folder changed during the run (not a real directory)") from None
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _ingest_dir(args, root):
+    """One production folder: list it without following links (hidden names skipped), then ingest file by file.
+
+    All traversal and opens are anchored to directory descriptors, so a subfolder swapped for a link
+    after listing is refused rather than followed."""
+    entries, stack = [], [()]
+    try:
+        top_fd = os.open(args.dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise ValueError("--dir must be a real directory, not a symlink or a file") from None
+    try:
+        while stack:
+            parts = stack.pop()
+            folder_fd = _open_dir(top_fd, parts)
+            try:
+                with os.scandir(folder_fd) as listing:
+                    for entry in listing:
+                        hidden = entry.name.startswith(".")
+                        if entry.is_dir(follow_symlinks=False) and not hidden:
+                            stack.append(parts + (entry.name,))
+                            continue
+                        entries.append(("/".join(parts + (entry.name,)), parts, entry.name,
+                                        "hidden" if hidden else "symlink" if entry.is_symlink()
+                                        else "not_regular" if not entry.is_file(follow_symlinks=False)
+                                        else "too_large" if entry.stat(follow_symlinks=False).st_size > MAX_BYTES else None))
+                        if len(entries) > MAX_DIR_FILES:
+                            raise ValueError(f"{args.dir}: more than {MAX_DIR_FILES} files; split the folder")
+            finally:
+                os.close(folder_fd)
+        files, db = [], database(root)
+        try:
+            for rel, parts, name, code in sorted(entries):
+                try:
+                    if code:
+                        result = {"sha256": None, "new_receipt": False}
+                    else:
+                        folder_fd = _open_dir(top_fd, parts)
+                        try:
+                            result = _ingest_one(db, root, name, args.source_id, dir_fd=folder_fd)
+                        finally:
+                            os.close(folder_fd)
+                except ValueError as exc:
+                    raise ValueError(f"{exc}: {rel}") from None
+                files.append({"path": rel, "sha256": result["sha256"] and result["sha256"][:12],
+                              "outcome": code or result["outcome"], "new_receipt": result["new_receipt"]})
+        finally:
+            db.close()
     finally:
-        db.close()
+        os.close(top_fd)
     print(json.dumps({"dir": os.path.basename(os.path.abspath(args.dir)), "files": files,
                       "counts": {k: sum(f["outcome"] == k for f in files) for k in OUTCOMES}}, indent=2))
 

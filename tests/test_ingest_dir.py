@@ -194,6 +194,32 @@ class IngestDirTests(unittest.TestCase):
         self.assertIn("one of the arguments --file --dir is required", neither.stderr)
         self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
 
+    def test_subfolder_swapped_for_symlink_after_listing_is_not_followed(self):
+        """Deterministic swap: after the listing, sub/ is replaced by a link to an outside folder."""
+        from argparse import Namespace
+        from campaign_tool import cli
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "inner.txt").write_bytes(b"Synthetic outside bytes\n")
+        self.write("sub/inner.txt", b"Synthetic inside bytes\n")
+        real_one, swapped = cli._ingest_one, []
+
+        def swap_then_ingest(*arguments, **keywords):
+            if not swapped:
+                swapped.append(True)
+                (self.folder / "sub" / "inner.txt").unlink()
+                (self.folder / "sub").rmdir()
+                (self.folder / "sub").symlink_to(outside, target_is_directory=True)
+            return real_one(*arguments, **keywords)
+
+        cli._ingest_one = swap_then_ingest
+        self.addCleanup(setattr, cli, "_ingest_one", real_one)
+        with self.assertRaises(ValueError):
+            cli._ingest_dir(Namespace(dir=str(self.folder), source_id="synthetic-swap"), self.root)
+        self.assertTrue(swapped)
+        self.assertFalse(self.stored(b"Synthetic outside bytes\n"))
+        self.assertFalse(self.stored(b"Synthetic inside bytes\n"))
+
     def test_file_output_is_unchanged(self):
         data = b"Synthetic policy only.\n"
         source = self.write("policy.txt", data)
