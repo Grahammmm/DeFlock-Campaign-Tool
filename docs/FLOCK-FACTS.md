@@ -31,3 +31,11 @@ a fact is *expired* when `effective_to` is before the date (the end day itself i
 `fact_type` has a later `effective_from` on or before the date, while this fact has an `effective_from` and no
 `effective_to`; the latest such fact is named. `disputed` facts are listed too. With `--findings`, each finding citing an
 expired, superseded or disputed fact is listed; exit 3 when any does (without it: any expired or superseded fact).
+
+## Store check
+
+`python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N] [--today YYYY-MM-DD]` runs the facts,
+law/policy, requests, contact, watch list and publish checkers in-process, then `slugs` (a ROSTER slug or WATCHLIST agency
+with no agency folder is an error; a folder in no ROSTER is a note; linked folders are named, never followed) and `backup`
+(the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
+`flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. It writes nothing.

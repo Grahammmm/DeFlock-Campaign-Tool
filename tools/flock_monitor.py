@@ -8,6 +8,8 @@ REPO = Path(__file__).resolve().parents[1]
 WATCH_HEADER = ["agency", "kind", "url", "query", "official_domain", "last_seen_hash"]
 MONITOR_HEADER = ["item_id", "agency", "watch_kind", "url", "title", "page_sha256", "seen_at", "kind", "status"]
 LEADS_HEADER = ["item_id", "agency", "first_seen", "state", "state_at", "state_by"]  # v1
+LOG_HEADER = ["scan_date", "agency", "url", "outcome", "reason"]  # v1; outcome ok|unchanged|refused
+LOG_KEEP = 60  # SCAN-LOG.csv rows kept per (agency, url); older rows are dropped when the log is rewritten
 MOVES = {"new": ("requested", "ignored"), "ignored": ("requested",), "requested": ()}  # requested is final
 KINDS = {"agenda", "minutes", "news", "social"}
 CAP = 2_000_000
@@ -147,6 +149,7 @@ def scan(watchlist, store, date, fetch=fetch):
     rows = validated(watchlist)  # before any fetch
     _real(watchlist, "watchlist")
     _real((store := private_store(store)) / "MONITOR.csv", "MONITOR.csv")
+    _real(store / "SCAN-LOG.csv", "SCAN-LOG.csv")
     with store_lock(store, "store busy: another scan is running"):
         return scan_locked(watchlist, rows, store, date, fetch)
 
@@ -161,9 +164,25 @@ def store_lock(store, busy="store busy: another monitor command is running"):
     finally:
         os.close(lock)  # the lock file itself is never deleted
 
+def log_rows(path):  # rows of <store>/SCAN-LOG.csv (missing = none); a linked, wrong-kind or malformed file is refused
+    _real(path, "SCAN-LOG.csv")
+    try: return [r for _, r in read_csv(path, LOG_HEADER, missing_ok=True)]
+    except Fail as err: raise Fail("SCAN-LOG.csv %s" % err) from None
+
+def keep_last(rows, keep=LOG_KEEP):  # the last `keep` rows of each (agency, url) in file order, and how many were dropped
+    seen, kept = {}, []
+    for r in reversed(rows):
+        key = (r["agency"], r["url"])
+        seen[key] = seen.get(key, 0) + 1
+        kept += [r] if seen[key] <= keep else []
+    return kept[::-1], len(rows) - len(kept)
+
 def scan_locked(watchlist, rows, store, date, fetch):  # call only while holding <store>/.monitor.lock
-    counts, out, new, changed = dict.fromkeys(COUNTS, 0), [], [], False
+    counts, out, new, changed, logged = dict.fromkeys(COUNTS, 0), [], [], False, []
     monitor = [r for _, r in read_csv(store / "MONITOR.csv", MONITOR_HEADER, missing_ok=True)]
+    log = log_rows(store / "SCAN-LOG.csv")  # before any fetch: a bad log fails the scan with nothing fetched or written
+    note = lambda row, outcome, reason="": logged.append(dict(scan_date=date, agency=row["agency"], url=row["url"],
+                                                              outcome=outcome, reason=reason))
     known = {r["item_id"] for r in monitor}
     for n, row in rows:
         dom, social = row["official_domain"], row["kind"] == "social"
@@ -176,11 +195,14 @@ def scan_locked(watchlist, rows, store, date, fetch):  # call only while holding
         except Refused as err:
             counts["refused"] += 1
             out.append("row %d: refused %s" % (n, err))
+            note(row, "refused", str(err))
             continue
         page = hashlib.sha256(body).hexdigest()
         if page == row["last_seen_hash"]:
             counts["unchanged"] += 1
+            note(row, "unchanged")
             continue
+        note(row, "ok")
         for href, title in Links(body.decode("utf-8", "replace")).links:
             url = absolute(href, final)
             if not in_scope(url, dom):  # off-domain, non-https or malformed: dropped and counted
@@ -197,7 +219,11 @@ def scan_locked(watchlist, rows, store, date, fetch):  # call only while holding
         write_atomic(store / "MONITOR.csv", header=MONITOR_HEADER, rows=monitor + new)
     if changed:
         write_atomic(Path(watchlist), header=WATCH_HEADER, rows=[r for _, r in rows])
-    return out + [" ".join("%s=%d" % (k, counts[k]) for k in COUNTS)]
+    trimmed = 0
+    if logged:  # one atomic rewrite after MONITOR.csv and the watch list: old rows (trimmed) + this scan's rows
+        kept, trimmed = keep_last(log + logged)
+        write_atomic(store / "SCAN-LOG.csv", header=LOG_HEADER, rows=kept)
+    return out + [" ".join("%s=%d" % (k, counts[k]) for k in COUNTS) + (" log_trimmed=%d" % trimmed if trimmed else "")]
 
 def keywords():  # the shared meetings ALPR pattern, never a copy; a failed import fails the digest (no unranked digest)
     if str(REPO) not in sys.path: sys.path.insert(0, str(REPO))
@@ -247,11 +273,22 @@ def lead(store, item, state, by, date):  # triage one lead: new -> requested|ign
         write_atomic(path, header=LEADS_HEADER, rows=rows)
     return "lead | %s | %s -> %s" % (item, old, state)
 
-def digest(store, date):
-    with store_lock(store := private_store(store)):  # date filter, relevance match and both writes: one locked pass
-        return digest_locked(store, date)
+def unreachable(log, date, n):  # pages whose last n log rows with scan_date <= date are all refused (the log is the source)
+    pages = {}
+    for r in log:
+        if r["scan_date"] <= date: pages.setdefault((r["agency"], r["url"]), []).append(r)
+    lines = []
+    for (agency, url), rs in sorted(pages.items(), key=lambda e: (slug(e[0][0]), e[0])):
+        streak = next((i for i, r in enumerate(reversed(rs)) if r["outcome"] != "refused"), len(rs))
+        if streak >= n:  # fewer than n rows, or an ok/unchanged among the last n: not listed
+            lines.append("- %s: %s (%s, since %s)" % (agency, url, rs[-1]["reason"], rs[-streak]["scan_date"]))
+    return ["", "Unreachable (%d pages, last %d scans refused)" % (len(lines), n)] + lines if lines else []
 
-def digest_locked(store, date):  # call only under the store lock; a scan committed before it is always included
+def digest(store, date, after=3):
+    with store_lock(store := private_store(store)):  # date filter, relevance match and both writes: one locked pass
+        return digest_locked(store, date, after)
+
+def digest_locked(store, date, after=3):  # call only under the store lock; a scan committed before it is always included
     path = store / "digest" / (date + ".md")
     rows = [r for _, r in read_csv(store / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
     pattern = keywords()
@@ -267,10 +304,16 @@ def digest_locked(store, date):  # call only under the store lock; a scan commit
         keep = sorted(sorted(range(len(items)), key=lambda i: not items[i][1])[:38])
         lines += [items[i][0] for i in keep] + ["- … and %d more in MONITOR.csv (%d relevant)"
                                                  % (len(items) - 38, relevant - sum(items[i][1] for i in keep))]
+    down = unreachable(log_rows(store / "SCAN-LOG.csv"), date, after)  # a bad log fails before any write
     _real(path.parent, "digest folder")  # checked before LEADS.csv is touched
-    lines += new_leads(store / "LEADS.csv", date, [r for r, terms in ranked if terms])
+    lines += new_leads(store / "LEADS.csv", date, [r for r, terms in ranked if terms]) + down
     write_atomic(path, "\n".join(lines) + "\n")
     return path
+
+def scans(text):  # --unreachable-after: an integer 2..30, else argparse usage exit 2
+    if not re.fullmatch(r"[0-9]{1,2}", text) or not 2 <= int(text) <= 30:
+        raise argparse.ArgumentTypeError("must be an integer from 2 to 30")
+    return int(text)
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -283,6 +326,8 @@ def main(argv=None):
     lead_p.add_argument("--item", required=True)
     lead_p.add_argument("--state", required=True, help="requested or ignored")
     lead_p.add_argument("--by", required=True)
+    digest_p.add_argument("--unreachable-after", type=scans, default=3, metavar="N",
+                          help="list pages whose last N logged scans (2..30, default 3) were all refused")
     for p, required in ((scan_p, False), (digest_p, True), (lead_p, False)):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
@@ -291,7 +336,7 @@ def main(argv=None):
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
-              else digest(args.store, args.date.isoformat()))
+              else digest(args.store, args.date.isoformat(), args.unreachable_after))
     except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)
                                                                    else type(err).__name__))

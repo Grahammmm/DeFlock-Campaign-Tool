@@ -312,12 +312,19 @@ def replace(path, text):  # temp file in the same folder (0600) + os.replace; th
             os.unlink(tmp)
 
 
-def record(store, o, today):
-    """Set one dated, sourced step on one REQUESTS.csv row and append it to REQUEST-STEPS.csv; refusals write nothing."""
-    s, rid, step, when, ev, sha = (o[k] for k in FLAGS)
+def read_log(path):  # (text or None when missing, csv table, refusal); O_NOFOLLOW: a swapped-in link is refused
+    try:
+        with open(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8", newline="") as fh:
+            return (text := fh.read()), list(csv.reader(io.StringIO(text))), None
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        return None, [], None if isinstance(exc, FileNotFoundError) else f"{path.name} unreadable ({type(exc).__name__})"
+
+
+def locate(store, s, rid, when, ev, sha, today, name):
+    """Shared record/fees refusals: (refusal or None, agency folder, rows, row, date, folder / name)."""
     root, d = Path(store).resolve(), day(when)
     folder = root / "agencies" / s
-    req, log = folder / "REQUESTS.csv", folder / "REQUEST-STEPS.csv"
+    req, log = folder / "REQUESTS.csv", folder / name
     link = next((p.name for p in (folder, req, log) if p.is_symlink()), None)
     why = ("store is inside the repository" if root == REPO or REPO in root.parents
            else "--agency must be a folder slug" if not s or slug(s) != s
@@ -331,16 +338,18 @@ def record(store, o, today):
     why = why or (f"REQUESTS.csv fails --check ({errs[0]})" if errs else None)
     row = next((r for r in rows if r["request_id"] == rid), None)
     why = why or (None if row else f"request {rid} not found in {s}/REQUESTS.csv")
-    old_log, mine = "", []
-    try:  # O_NOFOLLOW: a link swapped in after the check is still refused
-        with open(os.open(log, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8", newline="") as fh:
-            old_log = fh.read()
-        table = list(csv.reader(io.StringIO(old_log)))
-        mine = [c for c in table[1:] if c and c[0] == rid]
-        why = why or (None if table and table[0] == STEP_HEADER and all(len(c) == 6 for c in table[1:] if c)
-                      else "REQUEST-STEPS.csv does not match REQUEST-STEPS.csv v1")
-    except (OSError, UnicodeDecodeError, csv.Error) as exc:
-        why = why or (None if isinstance(exc, FileNotFoundError) else f"REQUEST-STEPS.csv unreadable ({type(exc).__name__})")
+    return why, folder, rows, row, d, log
+
+
+def record(store, o, today):
+    """Set one dated, sourced step on one REQUESTS.csv row and append it to REQUEST-STEPS.csv; refusals write nothing."""
+    s, rid, step, when, ev, sha = (o[k] for k in FLAGS)
+    why, folder, _, row, d, log = locate(store, s, rid, when, ev, sha, today, "REQUEST-STEPS.csv")
+    req, (old_log, table, bad) = folder / "REQUESTS.csv", read_log(log)
+    mine = [c for c in table[1:] if c and c[0] == rid]
+    fine = old_log is None or table[:1] == [STEP_HEADER] and all(len(c) == 6 for c in table[1:] if c)
+    why = why or bad or (None if fine else "REQUEST-STEPS.csv does not match REQUEST-STEPS.csv v1")
+    old_log = old_log or ""
     if why:
         return print(f"record: {why}", file=sys.stderr) or 1
     line, new = [rid, step, when, ev.strip(), sha, today.isoformat()], dict(row)
@@ -376,6 +385,81 @@ def record(store, o, today):
     except OSError as exc:
         return print(f"record: cannot write in agency folder ({type(exc).__name__})", file=sys.stderr) or 1
     return print(f"recorded | {s} | {rid} | {step} | {when}") or 0
+
+
+FEE_FLAGS = ("--agency", "--request", "--kind", "--amount-cents", "--date", "--evidence", "--sha256")
+FEE_HEADER = ["request_id", "kind", "amount_cents", "date", "evidence", "source_sha256", "recorded_at"]
+KINDS, AMOUNT = ("estimate", "invoice", "paid"), re.compile(r"0|[1-9][0-9]{0,6}|10000000")  # no decimals/sign/text
+
+
+def fee_errors(table, known):
+    """Named FEES.csv v1 problems (header, columns, request, kind, amount, dates, paid only after an earlier invoice)."""
+    if table[:1] != [FEE_HEADER]:
+        return ["FEES.csv row 1: header does not match FEES.csv v1"]
+    errs, invoiced = [], {}
+    for n, c in ((n, c) for n, c in enumerate(table[1:], 2) if c):
+        d = day(c[3]) if len(c) == 7 else None
+        why = (f"columns expected 7, found {len(c)}" if len(c) != 7
+               else f"request {c[0]} not in REQUESTS.csv" if c[0] not in known
+               else "kind must be estimate, invoice or paid" if c[1] not in KINDS
+               else "amount_cents must be an integer 0-10000000" if not AMOUNT.fullmatch(c[2])
+               else "date must be YYYY-MM-DD, not before sent or after recorded_at"
+               if not d or not day(c[6]) or d > day(c[6]) or d < day(known[c[0]]["sent"])
+               else "paid has no earlier invoice row" if c[1] == "paid" and invoiced.get(c[0], date.max) > d
+               else None)
+        if why:
+            errs.append(f"FEES.csv row {n}: {why}")
+        elif c[1] == "invoice":
+            invoiced[c[0]] = min(invoiced.get(c[0], d), d)
+    return errs
+
+
+def fee_record(store, o, today):
+    """Append one sourced fee row (estimate, invoice or paid) for a known request to private FEES.csv; never pays."""
+    s, rid, kind, amount, when, ev, sha = (o[k] for k in FEE_FLAGS)
+    why, folder, rows, row, d, path = locate(store, s, rid, when, ev, sha, today, "FEES.csv")
+    (old, table, bad), line = read_log(path), [rid, kind, amount, when, ev.strip(), sha, today.isoformat()]
+    mine = [c for c in table[1:] if c and c[0] == rid]
+    errs = fee_errors(table, {r["request_id"]: r for r in rows}) if old is not None and not why else []
+    why = why or (f"request {rid} is withdrawn" if row["status"] == "withdrawn"
+                  else "--amount-cents must be an integer 0-10000000" if not AMOUNT.fullmatch(amount)
+                  else "--date is before the request's sent date" if d < day(row["sent"])
+                  else bad or f"FEES.csv fails fees check ({errs[0]})" if bad or errs
+                  else f"paid needs an earlier invoice row for request {rid}"
+                  if kind == "paid" and not any(c[1] == "invoice" and day(c[3]) <= d for c in mine) else None)
+    if why:
+        return print(f"fees: {why}", file=sys.stderr) or 1
+    if any(c[1:4] + c[5:6] == line[1:4] + line[5:6] for c in mine):  # same kind, amount, date and source
+        return print(f"unchanged | {s} | {rid} | {kind} | {amount} | {when}") or 0
+    try:
+        replace(path, (old or csv_text([FEE_HEADER])) + ("" if not old or old.endswith("\n") else "\n") + csv_text([line]))
+    except OSError as exc:
+        return print(f"fees: cannot write in agency folder ({type(exc).__name__})", file=sys.stderr) or 1
+    return print(f"fee | {s} | {rid} | {kind} | {amount} | {when}") or 0
+
+
+def fee_check(store, cap):
+    """Read-only; over cap = latest invoice (else estimate) > cap on an open/determined request (wins over paid over)."""
+    rows, errs = load(store)
+    lines, over = [], 0
+    for f in sorted(Path(store).glob("agencies/*/FEES.csv")) if not errs else ():
+        s, (_, table, bad) = f.parent.name, read_log(f)
+        known = {r["request_id"]: r for r in rows if slug(r["agency"]) == s}
+        found = [bad] if bad else fee_errors(table, known)
+        errs += [f"{s}: {e}" for e in found]
+        for rid in sorted({c[0] for c in table[1:] if c} if not found else ()):
+            mine = sorted((c for c in table[1:] if c and c[0] == rid), key=lambda c: c[3])  # stable: ties keep file order
+            by = {k: [int(c[2]) for c in mine if c[1] == k] for k in KINDS}  # [-1] is the latest
+            top, paid = (by["invoice"] or by["estimate"])[-1:], sum(by["paid"])
+            hit = known[rid]["status"] in ("open", "determined") and any(v > cap for v in top)
+            over += hit
+            word = "over cap" if hit else "paid over invoice" if by["invoice"] and paid > by["invoice"][-1] else "ok"
+            shown = " ".join(f"{k}={(by[k] or ['-'])[-1]}" for k in KINDS[:2])
+            lines.append(f"fees | {s} | {rid} | {shown} paid={paid} | {word}")
+    if errs:
+        return print("\n".join(errs), file=sys.stderr) or 1
+    lines.append(f"fees | requests={len(lines)} over_cap={over} cap_cents={cap} | not a payment decision; G decides any spending")
+    return print("\n".join(lines)) or (3 if over else 0)
 
 
 def _tool(name):  # siblings are loaded by file path, never copied
@@ -504,6 +588,8 @@ USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] 
          "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
          "summary PATH [--inventory CSV] adds document counts; record STORE --agency SLUG --request ID "
          "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]; "
+         "fees record STORE --agency SLUG --request ID --kind estimate|invoice|paid --amount-cents N --date D "
+         "--evidence TEXT --sha256 HEX [--today D]; fees check STORE --cap-cents N (required; there is no default cap); "
          "reconcile STORE --report REPORT.json")
 
 def main(argv):
@@ -514,12 +600,17 @@ def main(argv):
         rows, errs = load(argv[1]) if not why else ([], [f"report: {why}"])
         lines, code = (errs, 1) if errs else reconcile(rows, data)
         return print("\n".join(lines), file=sys.stderr if errs else sys.stdout) or code
-    if argv[:1] == ["record"]:
+    if argv[:2] == ["fees", "check"]:  # --cap-cents is required: the organizer sets the cap, there is no default
+        ok = len(argv) == 5 and argv[3] == "--cap-cents" and re.fullmatch(r"[0-9]+", argv[4])
+        return fee_check(argv[2], int(argv[4])) if ok else print(USAGE, file=sys.stderr) or 2
+    fee = argv[:2] == ["fees", "record"]
+    if argv[:1] == ["record"] or fee:
+        argv, flags, choice, verb = (argv[1:], FEE_FLAGS, KINDS, fee_record) if fee else (argv, FLAGS, STEPS, record)
         keys, o = argv[2::2], dict(zip(argv[2::2], argv[3::2]))
         today = day(o.pop("--today", date.today().isoformat()))
-        if (len(argv) % 2 == 0 and len(set(keys)) == len(keys) and set(o) == set(FLAGS) and today
-                and o["--step"] in STEPS):
-            return record(argv[1], o, today)
+        if (len(argv) % 2 == 0 and len(set(keys)) == len(keys) and set(o) == set(flags) and today
+                and o[flags[2]] in choice):
+            return verb(argv[1], o, today)
         return print(USAGE, file=sys.stderr) or 2
     if len(argv) == 8 and argv[0] == "draft" and argv[2::2] == ["--requests", "--from", "--to"]:
         start, end = day(argv[5]), day(argv[7])
