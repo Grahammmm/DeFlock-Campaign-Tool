@@ -372,6 +372,9 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
+    evidence_p.add_argument("--directory", required=True)
+    evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
     verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
     for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
         verify_agency_p.add_argument(flag, required=True)
@@ -407,6 +410,9 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "evidence":
+            from .evidence import run_cli
+            run_cli(root, check=args.check)
         elif args.command == "kit-verify-agency":
             from .kit import verify_agency
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
