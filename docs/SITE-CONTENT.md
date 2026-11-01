@@ -89,6 +89,10 @@ controller fits the map to `CITIES[slug].bounds`.
 also the `id` of the matching section in `sources.html`. Agencies without
 sources route to `sources.html#library`.
 
+Each `sources.html` entry ends with `Cited by:` and links to every published
+finding that cites its `sha256` (model order, once each), or with
+`Not cited by a published finding`. Drafts never appear.
+
 ### Adding a source record
 
 ```
