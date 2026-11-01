@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Flock review batch: where every agency config in a list stands in the G1 pipeline, and what it waits for.
-  status LIST [--run] [--roster ROSTER.csv] [--golden-config CFG --golden-expect FILE] [--out DIR] | plan LIST [--max N] (N <= 2) [same options but --out]
-status is read-only and writes only <out>/BATCH-STATUS.csv. --run (needs the golden pair) advances every `ready` agency one flock_review
+  status LIST [--run] [--roster ROSTER.csv] [--golden-config CFG --golden-expect FILE] [--out DIR] [--prev OLD.csv]
+  | plan LIST [--max N] (N <= 2) [same options but --out, --prev]
+status is read-only and writes only <out>/BATCH-STATUS.csv (and BATCH-CHANGES.csv with --prev: rows advanced, regressed, state, new, removed
+since OLD.csv, which is read first). --run (needs the golden pair) advances every `ready` agency one flock_review
 `run` at a time (exit 3 = reached a wait stage; exit 1 = failed, the batch goes on). plan prints at most N `[RUN]` card bodies for
 agencies waiting on a model step. The Morro Bay golden must pass before --run or plan. Never runs a model, never touches kanban; no network.
 Prints slugs, stage ids, states, counts and paths only. Exit 0 ok, 1 validation / gate / IO, 2 usage. done is not review or release."""
@@ -22,6 +24,8 @@ LANES = {"fact-drafts": FACTS, "rules-read": RULES, "assess": COMPARE, "f3-findi
 OTHER = {"anthropic": "openai", "openai": "anthropic"}
 # flock_review's own failure lines (ids, codes, exception names, paths); no control characters, so no free text or escapes pass
 REASON = re.compile(r"stage [a-z0-9][a-z0-9-]* failed rc=-?\d+ log=[^\x00-\x1f\x7f-\x9f]+|io: [A-Za-z_]\w*|locked: [^\x00-\x1f\x7f-\x9f]+", re.ASCII)
+CHANGE, KINDS, BAD = "key,change,old_state,new_state,old_done,new_done".split(","), ("regressed", "advanced", "state", "new", "removed"), \
+    {"failed", "invalid", "locked"}
 
 
 def read_roster(path):
@@ -153,6 +157,47 @@ def advance(entries, roster):  # one flock_review run at a time, in list order; 
     return rows
 
 
+def key(row):  # the slug; an invalid row has none, so its config path
+    return (row.get("slug") or "") or "config:" + str(row.get("config") or "")
+
+
+def read_prev(raw):  # read before anything runs or is written, so --prev may be the BATCH-STATUS.csv this call replaces
+    path = Path(os.path.expanduser(raw))
+    if path.is_symlink():
+        raise fr.Fail("prev: is a link; refused")
+    try:
+        with open(path, encoding="utf-8", newline="", opener=lambda p, f: os.open(p, f | os.O_NOFOLLOW)) as handle:
+            reader, prev = csv.DictReader(handle), {}
+            if reader.fieldnames != HEADER:
+                raise fr.Fail("prev: header differs")
+            for n, r in enumerate(reader, 2):  # the header is row 1
+                if key(r) in prev:
+                    raise fr.Fail("prev row %d: duplicate" % n)
+                prev[key(r)] = r
+            return prev
+    except (OSError, ValueError, csv.Error):
+        raise fr.Fail("prev: cannot be read") from None
+
+
+def changes(prev, rows):  # -> [(kind, key, old_state, new_state, old_done, new_done)] sorted; unchanged ones carry kind ""
+    def done(r):
+        try:
+            return int(r["stages_done"])
+        except (KeyError, TypeError, ValueError):
+            return None  # unknown: only the state is compared
+    cell = lambda r, f: "" if r is None or r.get(f) is None else str(r[f])  # noqa: E731
+    now, found = {key(r): r for r in rows}, []
+    for k in now.keys() | prev.keys():
+        old, new = prev.get(k), now.get(k)
+        before, after = done(old), done(new)
+        moved = after - before if before is not None and after is not None else 0  # stages_done delta; 0 when unknown
+        kind = "new" if old is None else "removed" if new is None else "regressed" if moved < 0 or (
+            new["state"] in BAD and old["state"] not in BAD) else "advanced" if moved > 0 else \
+            "state" if new["state"] != old["state"] else ""
+        found.append((kind, k, cell(old, "state"), cell(new, "state"), cell(old, "stages_done"), cell(new, "stages_done")))
+    return sorted(found, key=lambda c: (KINDS.index(c[0]) if c[0] else len(KINDS), c[1]))
+
+
 def plan(entries, rows, limit):  # at most `limit` model cards in flight, counting the agencies whose card is already working
     print("CARDS")
     for c, row in [(c, r) for c, r in zip(entries, rows) if r["state"] == "waiting"][:max(limit - sum(r["state"] == "in-flight" for r in rows), 0)]:
@@ -174,14 +219,17 @@ def main(argv=None):
     parser.add_argument("list", metavar="LIST")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--max", type=int, default=2, metavar="N")
-    for name in ("--roster", "--golden-config", "--golden-expect", "--out"):
+    for name in ("--roster", "--golden-config", "--golden-expect", "--out", "--prev"):
         parser.add_argument(name)
     args = parser.parse_args(argv)
     if (args.run and args.command != "status") or not 1 <= args.max <= 2:
         parser.error("usage: status LIST [--run] | plan LIST [--max 1|2]")
     if args.out and args.command == "plan":
         parser.error("plan prints cards only; --out is for status")
+    if args.prev and args.command == "plan":
+        parser.error("plan prints cards only; --prev is for status")
     try:
+        prev = read_prev(args.prev) if args.prev else None
         out = out_dir(args.out) if args.out else None
         roster, entries = read_roster(args.roster) if args.roster else None, read_list(args.list)
         if args.run or args.command == "plan":
@@ -197,9 +245,20 @@ def main(argv=None):
             writer.writeheader()
             writer.writerows(rows)
             fr.put(out / "BATCH-STATUS.csv", text.getvalue().encode())
+        if prev is not None:  # what moved since the last status (unchanged rows are counted, not listed)
+            found = changes(prev, rows)
+            for c in (c for c in found if c[0]):
+                print("change %s %s %s->%s %s->%s" % (c[1], c[0], c[2] or "-", c[3] or "-", c[4] or "-", c[5] or "-"))
+            print("changes " + " ".join("%s=%d" % (k, sum(c[0] == k for c in found)) for k in ("advanced", "regressed", "state", "new",
+                  "removed")) + " unchanged=%d" % sum(not c[0] for c in found))
+            if out:
+                text = io.StringIO()
+                csv.writer(text, lineterminator="\n").writerows([CHANGE] + [[c[1], c[0], *c[2:]] for c in found if c[0]])
+                fr.put(out / "BATCH-CHANGES.csv", text.getvalue().encode())
         count = lambda word: sum(r["state"] == word for r in rows)  # noqa: E731
-        print("agencies=%d done=%d waiting=%d in_flight=%d failed=%d invalid=%d held=%d locked=%d" % (
-            len(rows), count("done"), count("waiting"), count("in-flight"), count("failed"), count("invalid"), count("held"), count("locked")))
+        print("agencies=%d done=%d waiting=%d in_flight=%d failed=%d invalid=%d held=%d locked=%d ready=%d" % (
+            len(rows), count("done"), count("waiting"), count("in-flight"), count("failed"), count("invalid"), count("held"), count("locked"),
+            count("ready")))
         return 0
     except fr.Fail as exc:
         return print(exc) or exc.code
