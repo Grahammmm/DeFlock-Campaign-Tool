@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Flock sweep: each watch-list agency's F1->F3->F4 stage, blocker and next command; CARDS plan; rating matrix.
   status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out FILE|DIR] [--max N] [--date YYYY-MM-DD] [--prev DIR]
+  funnel ... --out DIR [--inventory SLUG=CSV ...]: FUNNEL.csv + one counts line per roster row, first zero = stalls_at
 Reads the store only; never runs a model, kanban or hermes. Prints slugs, stages, counts and commands, never claim,
 quote or fact text. Summary: blocked = agencies - finished - ready - unmapped; unwatched = in_scope=yes roster rows
 with no watch-list row, named (roster order) on the line before it. Exit 0 ok, 1 errors, 2 usage."""
-import argparse, csv, datetime, functools, importlib.util, io, json, re, shlex, sys
+import argparse, csv, datetime, functools, importlib.util, io, json, os, re, shlex, sys
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -202,25 +203,62 @@ def matrix(store, mapped, out, prev=None):
     print("changes rows=%d up=%d down=%d added=%d removed=%d agencies_added=%d agencies_removed=%d" % tuple(
         [len(diff)] + count + [len(set(done) - set(old[0])), len(set(old[0]) - set(done))]))
 
+FUNNEL = ["slug", "stage", "requested", "posted", "facts", "facts_cited", "findings", "verified", "public_ok", "stalls_at"]
+
+def funnel(store, roster, mapped, inv, out):  # counts only: never ids, quotes, titles or paths; all reads before any write
+    req_tool, posted, rows = _tool("flock_requests"), {}, []
+    for slug, path in inv.items():  # posted = distinct sha256 whose every row is analysis_only == "no" (coverage rule)
+        got, why = req_tool.inventory(path)
+        if why: raise Fail("inventory %s: %s" % (slug, why))
+        shas = {}
+        for sha, held in ((r["sha256"].strip(), r["analysis_only"] != "no") for _, r in got if r["sha256"].strip()):
+            shas[sha] = shas.get(sha, True) and not held
+        posted[slug] = sum(shas.values())
+    for r, a in zip(roster, mapped):
+        agency = store / "agencies" / r["slug"]
+        req = agency / "REQUESTS.csv"  # no file = nothing requested yet (0); a file load() refuses = unknown (-)
+        requests, errs = req_tool.load(req, r["slug"]) if os.path.lexists(req) else ([], [])
+        run = agency / "runs" / a["run_date"] if a["run_date"] else None
+        findings, facts, ver = verify.load(run)[1:] if run else ([], {}, {})
+        cited = {i for f in findings for i in compare.ids(f["fact_ids"]) if i in facts}
+        vals = ["-" if errs else len(requests), posted.get(r["slug"], "-"), a["facts"], len(cited) if run else "-",
+                len(findings), sum(ver.get(f["finding_id"], {}).get("verdict", "reject") != "reject" for f in findings),
+                a["public_ok"] or 0]
+        rows.append([r["slug"], a["stage"]] + vals + [next((c for c, v in zip(FUNNEL[2:], vals) if v == 0), "-")])
+    out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    verify.write(out / "FUNNEL.csv", as_csv(FUNNEL, rows))
+    for row in rows:
+        print("funnel | %s | requested=%s posted=%s facts=%s cited=%s findings=%s verified=%s public_ok=%s | stalls_at %s"
+              % tuple([row[0]] + row[2:]))
+    print("funnel | agencies=%d stalled=%d unknown_cells=%d" % (len(rows), sum(row[-1] != "-" for row in rows),
+                                                              sum(v == "-" for row in rows for v in row[2:-1])))
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["status", "plan", "matrix"])
+    parser.add_argument("command", choices=["status", "plan", "matrix", "funnel"])
     for name in ("--watchlist", "--roster", "--store", "--out", "--prev"):
         parser.add_argument(name)
+    parser.add_argument("--inventory", action="append", default=[])
     parser.add_argument("--max", type=int, default=2)
     parser.add_argument("--date", default=datetime.date.today().isoformat())
     a = parser.parse_args(argv)
+    form = r"[a-z0-9]+(-[a-z0-9]+)*=.+"
     if not (a.watchlist and a.roster and a.store) or a.max < 1 or not facts_tool.valid_date(a.date) \
-            or (a.command == "matrix") != bool(a.out) and a.command != "status" or a.prev and a.command != "matrix":
-        parser.error("usage: status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out PATH] [--max N] [--date D]"
-                     " [--prev DIR]")
+            or (a.command in ("matrix", "funnel")) != bool(a.out) and a.command != "status" or a.prev and a.command != "matrix" \
+            or a.inventory and (a.command != "funnel" or not all(re.fullmatch(form, x) for x in a.inventory)):
+        parser.error("usage: status|plan|matrix|funnel --watchlist CSV --roster CSV --store DIR [--out PATH] [--max N]"
+                     " [--date D] [--prev DIR] [--inventory SLUG=CSV ...]")
     try:
         store, agencies, roster = load_inputs(a)
+        inv = dict(x.split("=", 1) for x in a.inventory)
+        if len(inv) < len(a.inventory) or set(inv) - {r["slug"] for r in roster}:
+            parser.error("--inventory: a slug is repeated or not in the roster")
         out = outside(a.out, store) if a.out else None
         rows = status_rows(store, agencies, roster, a.date)
         if a.command != "status":
             mapped = rows[:len(roster)]
-            return (plan(mapped, a.max) if a.command == "plan" else matrix(store, mapped, out, a.prev)) or 0
+            return (plan(mapped, a.max) if a.command == "plan" else matrix(store, mapped, out, a.prev)
+                    if a.command == "matrix" else funnel(store, roster, mapped, inv, out)) or 0
         text = as_csv(STATUS, [[r[k] for k in STATUS] for r in rows])
         if out:
             verify.write(out, text)

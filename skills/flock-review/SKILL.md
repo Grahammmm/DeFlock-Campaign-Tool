@@ -85,6 +85,7 @@ never touches kanban and never forces, re-marks or skips a stage.
    `input_present` is file presence only. F4 scaffolding (a header-only VERIFY.csv) and unchanged previously marked output are not work.
    A CSV counts as work once it has a row past its header. Rules-read relies only on its explicit operator marker: shared sources/specs
    never establish agency-specific activity, regardless of their contents or timestamps.
+   invalid/held/locked lines end `why=<code>` (also the `why` column): `config-unreadable`, `config:<field>[+N]`, `state-unreadable:<Exception>`, `roster:no-row|not-in-scope|applicability-differs`, `lock:not-regular-file|unreadable|other-host|live-writer|unparseable|held`.
    `--prev OLD.csv` (an earlier BATCH-STATUS.csv, read first) adds `change` lines (regressed, advanced, state, new, removed) and `DIR/BATCH-CHANGES.csv`.
 3. `... status LIST --run --golden-config MBCFG --golden-expect FILE` runs each `ready` agency one at a time (`run` exit 3 is normal).
 4. `... plan LIST --golden-config MBCFG --golden-expect FILE [--max 1|2]` prints at most 2 `[RUN]` card bodies (lane, method, files, mark
