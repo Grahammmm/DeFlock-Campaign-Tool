@@ -135,6 +135,15 @@ provide a transaction spanning mutable `content/` and `kit/` files, an inventory
 of the full records runtime, or recovery of hosted derived R2 text. The records
 recovery-v2 library has a separate declared-profile and caller-quiescence contract.
 
+## Restore drill
+
+`python3 -m campaign_tool backup-drill --file ARCHIVE [--expect-manifest-sha256 D] [--receipt OUT.json]`
+proves an archive restores into a working campaign without touching the source: it verifies the
+archive, restores it into a fresh `deflock-drill-*/campaign` temp directory, runs the store check
+(`status --check`) and `doctor` on that copy, then removes the copy. It prints one receipt JSON
+(archive basename, manifest digest, per-step result; no paths or file digests); `--receipt` also
+writes it with mode 0600 and never overwrites. Exit 0 pass, 3 fail, 1 when the archive is missing.
+
 ## Not done
 
 Encryption inside the tool, incremental or scheduled backups from cron, restore of a hosted

@@ -157,6 +157,10 @@ def law_package_report(cfg):
 
 
 def doctor(root):
+    print(json.dumps(doctor_report(root), indent=2))
+
+
+def doctor_report(root):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -184,7 +188,7 @@ def doctor(root):
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
-    print(json.dumps(report, indent=2))
+    return report
 
 
 def kit(args, root):
@@ -253,6 +257,20 @@ def verify_cmd(args):
     if not args.expect_manifest_sha256:
         report["note"] = "integrity check only; pass --expect-manifest-sha256 <digest from backup> to detect a rewritten archive"
     print(json.dumps(report, indent=2))
+
+
+def backup_drill_cmd(args):
+    from .backup import drill
+    if args.receipt and os.path.lexists(args.receipt):
+        raise ValueError(f"{args.receipt} exists; the drill never overwrites a receipt")
+    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report)
+    text = json.dumps(receipt, indent=2)
+    if args.receipt:
+        with os.fdopen(os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
+            out.write(text + "\n")
+    print(text)
+    if not receipt["passed"]:
+        sys.exit(3)
 
 
 def backup_diff_cmd(args, root):
@@ -350,6 +368,10 @@ def main():
     diff_p.add_argument("--file", required=True)
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    drill_p = commands.add_parser("backup-drill", help="Restore a backup into a temp copy, check it there, remove it (exit 3 on fail)")
+    drill_p.add_argument("--file", required=True)
+    drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    drill_p.add_argument("--receipt", help="Also write the receipt JSON here (must not exist)")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
@@ -365,9 +387,9 @@ def main():
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
     args = parser.parse_args()
-    if args.command == "verify":
+    if args.command in ("verify", "backup-drill"):
         try:
-            verify_cmd(args)
+            verify_cmd(args) if args.command == "verify" else backup_drill_cmd(args)
         except (OSError, ValueError) as exc:
             print("Stopped: " + str(exc), file=sys.stderr)
             sys.exit(1)
