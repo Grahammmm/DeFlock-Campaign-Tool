@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Flock publish: a verified run's confirmed strong findings -> PUBLISH.json for human review (every entry pending).
 Exit 1 = errors/empty, 2 = usage, 3 = family refusal. Only a human approves (skills/flock-publish).
-export RUNDIR must lie outside the repository."""
-import argparse, collections, contextlib, importlib.util, io, json, re, sys
+recheck: 3 = entries moved to needs-review. export and recheck RUNDIR must lie outside the repository."""
+import argparse, collections, contextlib, datetime, importlib.util, io, json, operator, re, sys
 from pathlib import Path
 from urllib.parse import urlsplit
 _spec = importlib.util.spec_from_file_location("_flock_verify", Path(__file__).resolve().parent / "flock_verify.py")
@@ -53,9 +53,29 @@ def cites_for(f, law_rows, policy_rows, package, facts):
         p = policy_rows[m.group(1)]
         out.append({"kind": "policy", "label": "Policy %s (%s), %s" % (p["policy_id"], p["version_label"], m.group(2).strip())})
     pages = {("Request %s, page %s" % (facts[i]["request"].strip(), facts[i]["page"].strip())) if facts[i]["request"].strip()
-             else "Source page %s" % facts[i]["page"].strip() for i in compare.ids(f["fact_ids"])}
-    return out + [{"kind": "record", "label": label} for label in sorted(pages)]
-def derive(run, site_slug, new=False):  # export's checks and doc, no write -> (code, lines, doc); new: refuse an existing file
+             else "Source page %s" % facts[i]["page"].strip() for i in compare.ids(f["fact_ids"]) if i in facts}
+    lost = [{"kind": "record", "label": None}] * sum(i not in facts for i in compare.ids(f["fact_ids"]))  # recheck only
+    return out + [{"kind": "record", "label": label} for label in sorted(pages)] + lost
+FACT_EDIT = "findings: inputs: FACTS.csv changed since scaffold (compare again in a new run folder)"
+def fact_edit(run, errs, findings, facts):  # DF1537-10 recheck: drop only the errors a FACTS.csv edit or removed cited fact causes
+    def numbered(path, header):  # row number -> row, numbered exactly as compare.check and verify_tool.load number them
+        table = compare.read_csv(path) if path.is_file() else []
+        return {n: dict(zip(header, (c.strip() for c in rec))) for n, rec in enumerate(table[1:], 2) if len(rec) == len(header)}
+    rows, checks = numbered(run / "FINDINGS.csv", compare.HEADER), numbered(run / "VERIFY.csv", verify_tool.HEADER)
+    by_id = {f["finding_id"]: f for f in findings}
+    def caused(e):  # each such row's entry is moved as `missing`; every other check_row or VERIFY error still refuses
+        m = re.fullmatch(r"(findings: )?row (\d+): (.*)", e)
+        if e == FACT_EDIT or not m:
+            return e == FACT_EDIT
+        v = None if m[1] else checks.get(int(m[2]))
+        f = rows.get(int(m[2])) if m[1] else by_id.get(v["finding_id"]) if v else None
+        gone = {i for i in compare.ids(f["fact_ids"]) if i not in facts} if f else set()
+        if m[1]:
+            return bool(gone) and (m[3] == "fact_ids cites a fact not in FACTS.csv" or
+                                   m[3] == "quote is not in the verbatim_quote of quote_fact_id" and f["quote_fact_id"] in gone)
+        return m[3] == "reread_fact_id is not a fact cited by the finding" and bool(v) and v["reread_fact_id"] in gone
+    return [e for e in errs if not caused(e)]
+def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc, no write -> (code, lines, doc); new: refuse an existing file
     if not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
         return 1, ["export refused: RUNDIR must be <store>/agencies/<slug>/runs/<date>"], None
     refusal = verify_tool.family(run)
@@ -65,6 +85,7 @@ def derive(run, site_slug, new=False):  # export's checks and doc, no write -> (
     if new and (target.is_symlink() or target.exists()):  # a dangling link is refused too, never replaced
         return 1, ["export refused: PUBLISH.json already exists"], None
     errs, findings, facts, verify = verify_tool.load(run)
+    errs = fact_edit(run, errs, findings, facts) if recheck else errs
     package = {r["rule_id"]: r for r in compare.law.load_package("us-ca")["rules"]}
     ok, more = eligible(run, findings, verify, package) if not errs else ([], [])
     if errs or more:
@@ -97,8 +118,12 @@ def export(run, site_slug):
     print("".join(line + "\n" for line in lines[:-1]), end="")
     if doc: verify_tool.write(run / "PUBLISH.json", json.dumps(doc, indent=2, ensure_ascii=False) + "\n")  # noqa: E701
     return print(lines[-1]) or code
-def drift(doc, run):  # RF1130-2: every entry but its `review` must equal the run's re-derived export -> (notes, errors)
-    code, lines, fresh = derive(run, doc["slug"])  # never echoes text, cite labels or urls
+def same_cites(have, want):  # None labels (recheck: removed cited facts) still require every derivable cite, and no more
+    known = [c for c in want if c["label"] is not None]
+    return have == want if known == want else all(c in have for c in known) and len(have) <= len(want) and \
+        [c for c in have if c["kind"] != "record"] == [c for c in known if c["kind"] != "record"]
+def drift(doc, run, recheck=False):  # RF1130-2: every entry but its `review` must equal the run's re-derived export -> (notes, errors)
+    code, lines, fresh = derive(run, doc["slug"], recheck=recheck)  # never echoes text, cite labels or urls
     if not fresh:
         return lines, ["run: cannot re-derive (exit %d)" % code]
     errs = ["file: %s differs from the run" % k for k in sorted(TOP_KEYS - {"findings"}) if doc[k] != fresh[k]]
@@ -107,7 +132,7 @@ def drift(doc, run):  # RF1130-2: every entry but its `review` must equal the ru
         fid, name = f["finding_id"], f["finding_id"] if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", f["finding_id"]) else "#%d" % n
         why = ["appears more than once in the file"] if fid in ids[:n - 1] else ["not in the run's eligible findings"] \
             if fid not in want else ["%s differs from the run" % k for k in ("text", "cites", "topic", "claim_class")
-                                     if f[k] != want[fid][k]]
+                                     if not (same_cites if k == "cites" else operator.eq)(f[k], want[fid][k])]
         errs += ["finding %s: %s" % (name, w) for w in why]
     missing = [fid for fid in want if fid not in ids]
     if any(f["review"]["status"] == "approved" for f in doc["findings"]):
@@ -136,8 +161,8 @@ def finding_errors(f):
     r = f["review"] if isinstance(f["review"], dict) else {}
     if set(r) != {"status", "approved_by", "approved_on", "approval_ref"} or not all(isinstance(v, str) for v in r.values()):
         return errs + ["review keys or values differ from the schema"]
-    if r["status"] not in ("pending", "approved"):
-        errs.append("review status is not pending or approved")
+    if r["status"] not in ("pending", "approved", "needs-review"):  # needs-review (DF1537-10) counts as not approved
+        errs.append("review status is not pending, approved or needs-review")
     elif r["status"] == "approved" and not (r["approved_by"].strip() and r["approval_ref"].strip() and iso_day(r["approved_on"])):
         errs.append("approved needs approved_by, an ISO approved_on and approval_ref")
     return errs
@@ -193,16 +218,44 @@ def status(store):  # RF1130-3: one publication-stage line per verified run (age
     print("publish | runs=%d %s | review-required; G decides any site use" % (len(rows), " ".join("%s=%d" % (
         k.replace("-", "_"), tally[k]) for k in ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"))))
     return 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
+def recheck(run, today, dry):  # DF1537-10: approved entries citing a disputed, missing or expired fact -> needs-review (exit 3)
+    target, buf = run / "PUBLISH.json", io.StringIO()
+    if target.is_symlink() or not target.is_file():
+        return print("PUBLISH.json: missing\nrecheck refused | nothing written") or 1
+    with contextlib.redirect_stdout(buf):
+        bad = check(target)  # schema gate, unchanged
+    doc = None if bad else json.loads(target.read_text(encoding="utf-8"))
+    notes, moved = drift(doc, run, recheck=True) if doc else ([], [])  # drift gate: a FACTS.csv edit is the one allowance
+    if bad or moved:
+        return print("\n".join(buf.getvalue().splitlines() + notes + moved + ["recheck refused | nothing written"])) or 1
+    _, findings, facts, _ = verify_tool.load(run)
+    cited, lines, approved = {f["finding_id"]: list(dict.fromkeys(compare.ids(f["fact_ids"]))) for f in findings}, [], 0
+    for n, e in ((n, e) for n, e in enumerate(doc["findings"], 1) if e["review"]["status"] == "approved"):
+        approved, found = approved + 1, [facts[i] for i in cited[e["finding_id"]] if i in facts]
+        why = {"disputed": sum(r["status"] == "disputed" for r in found), "missing": len(cited[e["finding_id"]]) - len(found),
+               "expired": sum("" < r["effective_to"] < today for r in found)}  # dates are checked YYYY-MM-DD
+        if any(why.values()):
+            e["review"]["status"] = "needs-review"  # approved_by/on/ref stay as the audit trail
+            name = e["finding_id"] if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", e["finding_id"]) else "#%d" % n
+            lines.append("recheck | %s | needs-review | %s" % (name, ",".join("%s=%d" % kv for kv in why.items() if kv[1])))
+    if lines and not dry:
+        verify_tool.write(target, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    print("\n".join(lines + ["recheck | approved=%d moved=%d | review-required; G decides any site use" % (approved, len(lines))]))
+    return 3 if lines else 0
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", choices=["export", "status", "stage", "brief"])
+    parser.add_argument("command", nargs="?", choices=["export", "status", "stage", "brief", "recheck"])
     parser.add_argument("rundir", nargs="?")
     parser.add_argument("--site-slug"); parser.add_argument("--check"); parser.add_argument("--run")
     parser.add_argument("--copy"); parser.add_argument("--out")  # stage only (NB-DF-17, tools/flock_publish_stage.py)
     parser.add_argument("--agency")  # brief only (DF1537-12, tools/flock_publish_brief.py; --out FILE)
+    parser.add_argument("--today"); parser.add_argument("--dry-run", action="store_true")  # recheck only (DF1537-10)
     args = parser.parse_args(argv)
     usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE | stage RUNDIR --copy FILE --out DIR"
-             " | brief STORE --agency SLUG --out FILE")
+             " | brief STORE --agency SLUG --out FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]")
+    rechecking = args.command == "recheck" and args.rundir and (args.check, args.run, args.site_slug, args.copy, args.out, args.agency) == (None,) * 6
+    if (args.today is not None or args.dry_run) and not rechecking or rechecking and args.today is not None and not iso_day(args.today):
+        parser.error(usage)
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
     listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
     staging = args.command == "stage" and args.rundir and args.copy and args.out and (args.check, args.run, args.site_slug) == (None,) * 3
@@ -210,13 +263,15 @@ def main(argv=None):
     if (args.copy is not None or args.out is not None) and not (staging or briefing) or args.agency is not None and not briefing: parser.error(usage)  # noqa: E701
     if checking and args.run is None:
         return check(args.check)
-    if not (checking or listing or staging or briefing) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
+    if not (checking or listing or staging or briefing or rechecking) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
                                                  not SLUG.fullmatch(args.site_slug or "")):
         parser.error(usage)
     run = Path(args.run if checking else args.rundir).resolve()
     if run == verify_tool.REPO or verify_tool.REPO in run.parents:
         return print("flock-publish: %s is inside the repository" % ("STORE" if listing or briefing else "RUNDIR")) or 1
     try:
+        if rechecking:
+            return recheck(run, args.today or datetime.date.today().isoformat(), args.dry_run)
         if staging or briefing:  # loaded only for its verb; --out/--copy are refused inside the same repository root
             spec = importlib.util.spec_from_file_location("_flock_publish_" + args.command, Path(__file__).resolve().with_name("flock_publish_%s.py" % args.command))
             spec.loader.exec_module(verb := importlib.util.module_from_spec(spec))
