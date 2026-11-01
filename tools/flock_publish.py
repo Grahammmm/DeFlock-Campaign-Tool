@@ -108,6 +108,7 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
         out.append({"finding_id": f["finding_id"], "topic": f["topic"], "claim_class": f["claim_class"], "rating": "strong",
                     "text": text, "cites": cites,
                     "review": {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": ""}})
+    flags = claim_notes(out)  # DF-4 alert-only: the entry is still exported, pending; its human approval is the gate
     if not out:
         return 1, lines + ["exported=0 refused=%d" % len(lines)], None
     meta = json.loads((run / "RUN.json").read_text(encoding="utf-8"))
@@ -115,7 +116,10 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
     doc = {"schema_version": 1, "slug": site_slug, "agency": agency.name, "run_date": run.name, "header": HEADLINE,
            "author_family": meta["author_provider"].strip().lower(), "verifier_family": signed["verifier_provider"].strip().lower(),
            "findings": out}
-    return 0, lines + ["exported=%d refused=%d" % (len(out), len(lines))], doc
+    return 0, lines + flags + ["exported=%d refused=%d" % (len(out), len(lines))], doc
+def claim_notes(findings):  # DF-4: review-required notes naming the finding id and rules, never the text; not errors
+    return privacy.legal_notes(("finding %s" % (f["finding_id"] if isinstance(f, dict) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", str(f.get("finding_id"))) else "#%d" % n), f.get("text") if isinstance(f, dict) else None)
+                               for n, f in enumerate(findings, 1))
 def export(run, site_slug):
     code, lines, doc = derive(run, site_slug, new=True)
     print("".join(line + "\n" for line in lines[:-1]), end="")
@@ -212,7 +216,7 @@ def check(path, run=None, logged=None):
     notes, moved = drift(doc, run) if run and not errs else ([], [])
     errs += history(doc, run) if run and not errs and not moved else []
     last = "findings=%d approved=%d errors=%d" % (len(doc["findings"]), approved, len(errs + moved))
-    print("\n".join(notes + errs + moved + [last + (" drift=%d" % len(moved) if run else "")]))
+    print("\n".join(notes + claim_notes(doc["findings"]) + errs + moved + [last + (" drift=%d" % len(moved) if run else "")]))
     return 1 if errs or moved else 0
 def stage(run):  # RF1130-3 -> (stage, counts); check's per-entry lines are captured, never printed
     if not (run / "PUBLISH.json").exists():

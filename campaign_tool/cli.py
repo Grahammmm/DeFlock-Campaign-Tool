@@ -447,6 +447,18 @@ def check_public_tree(public):
     return hits
 
 
+def _site_claim_notes(root):
+    from .content import load_content
+    from .legal_claims import legal_notes as notes
+    try:
+        model = load_content(root)
+        walk = lambda v: [t for x in v.values() for t in walk(x)] if isinstance(v, dict) else \
+            [t for x in v for t in walk(x)] if isinstance(v, (list, tuple)) else [v] if isinstance(v, str) else []
+        return notes((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f))
+    except Exception:  # noqa: BLE001 - alert-only
+        return ["review-required: legal-claim wording (site content could not be scanned; read the findings before publishing)"]
+
+
 def build(root, check=False):
     from .site import build_site
     public = root / "public"
@@ -463,6 +475,8 @@ def build(root, check=False):
         total += size
         print(f"  {path.relative_to(public).as_posix():<40} {size:>9} bytes")
     print(f"  {len(written)} files, {total} bytes")
+    for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
+        print(note)
     if check:
         hits = check_public_tree(public)
         for path, line, label in hits:

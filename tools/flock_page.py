@@ -181,9 +181,11 @@ def assemble(cards, sources, location, base):
     story = {k: meta[k] for k in META}
     story.update(programEvents=cards.get("programEvents") or [], keyDates=cards.get("keyDates") or [], extraSources=lines, **out)
     return {k: story[k] for k in KEYS}, errs
-def report(errs, n):
-    print("\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
+def report(errs, n, story=None):
+    print("\n".join(claim_notes(story) + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
     return 1 if errs else 0
+def claim_notes(story):  # DF-4 alert-only: review-required notes for wording that asserts a violation; never errors, never text
+    return privacy.legal_notes(("%s %d" % (area, i), text) for area, i, text in walk(story)) if isinstance(story, dict) else []
 def dump(story): return json.dumps(story, indent=2, ensure_ascii=False) + "\n"
 def fresh(args):  # build's shared part: inputs -> assemble -> lint; -> (story | None, errs, counts), errors as build printed them
     errs, n = [], dict.fromkeys(COUNTS, 0)
@@ -197,7 +199,7 @@ def fresh(args):  # build's shared part: inputs -> assemble -> lint; -> (story |
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         return None, errs + ["io 0: %s" % type(exc).__name__], n
 def build(args):
-    n, errs, tmp = dict.fromkeys(COUNTS, 0), [], None
+    n, errs, tmp, story = dict.fromkeys(COUNTS, 0), [], None, None
     try:
         out = Path(os.path.expanduser(args.out))  # a link as the final component is refused; links above it still resolve
         if os.path.islink(out) or not out.parent.is_dir():
@@ -225,8 +227,9 @@ def build(args):
         if tmp is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)  # a failed build leaves no temp file
-    return report(errs, n)
+    return report(errs, n, story)
 def run_lint(args):
+    got = {}
     try:
         got = _inputs(args, ("story", "location", "thread"))
         errs, n = _stage("lint", lint, got["story"], got["thread"], got["location"], args.base_sources, args.not_posted,
@@ -235,13 +238,14 @@ def run_lint(args):
         errs, n = str(exc).splitlines(), dict.fromkeys(COUNTS, 0)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         errs, n = ["io 0: %s" % type(exc).__name__], dict.fromkeys(COUNTS, 0)
-    return report(errs, n)
+    return report(errs, n, got.get("story"))
 def superseded(f):  # regular files named <F>.superseded-* beside F; links are not counted
     with contextlib.suppress(OSError):
         return sum(e.name.startswith(f.name + ".superseded-") and e.is_file(follow_symlinks=False) for e in os.scandir(f.parent))
     return 0
 def check(args):  # read-only: the story on disk vs a fresh in-memory build; never writes, never follows a final link
     f, errs, n, state = Path(os.path.expanduser(args.story)), [], dict.fromkeys(COUNTS, 0), "invalid"
+    story = None
     if os.path.islink(f):
         state = "link"
     elif f.resolve() == REPO or REPO in f.resolve().parents:
@@ -264,7 +268,7 @@ def check(args):  # read-only: the story on disk vs a fresh in-memory build; nev
             errs.append("story 0: unreadable JSON")
         except OSError as exc:
             state, errs = "invalid", ["io 0: %s" % type(exc).__name__]
-    print("\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d superseded=%d state=%s"
+    print("\n".join(claim_notes(story) + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d superseded=%d state=%s"
                             % (len(errs), superseded(f), state)]))
     return 0 if state == "current" else 1
 def main(argv=None):

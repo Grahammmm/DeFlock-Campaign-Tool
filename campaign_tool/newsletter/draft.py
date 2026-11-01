@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ..agency_cards import text as plain_text
 from ..kit import _kit_folder
+from ..legal_claims import legal_notes as legal_claim_notes
 from ..markdown_lite import render
 
 UNSUBSCRIBE_PLACEHOLDER = "{{ unsubscribe }}"
@@ -346,7 +347,9 @@ def build_draft(manifest, now=None):
             raise DraftError(f"{label}: contact details found; newsletters carry no personal data")
         if UNSUBSCRIBE_PLACEHOLDER not in blob:
             raise DraftError(f"{label}: unsubscribe placeholder missing")
-    result = {"subject": subject[:200], "html": html, "text": text,
+    # DF-4 alert-only: wording that asserts a violation never blocks the draft; the notes travel with it to the approval card.
+    review_flags = legal_claim_notes([("subject", subject)] + [("text line %d" % n, line) for n, line in enumerate(text.splitlines(), 1)])
+    result = {"subject": subject[:200], "html": html, "text": text, "review_flags": review_flags,
               "counts": {"findings": len(findings), "meetings": len(meetings),
                          **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
               "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}

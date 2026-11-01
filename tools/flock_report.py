@@ -223,6 +223,8 @@ def write(path, text):  # fresh exclusive 0600 temp (mkstemp: O_EXCL, random nam
     return tmp, path
 def fault(exc): return str(exc) if isinstance(exc, Fail) else "io: %s" % type(exc).__name__
 def summary(errs, n): return "\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)])
+def claim_notes(report):  # DF-4 alert-only: review-required notes for wording that asserts a violation; never errors, never text
+    return privacy.legal_notes(("line %d" % i, line) for i, line in enumerate((report or "").splitlines(), 1))
 def prepare(config, out):  # build and check share it: -> (c, report, sources_text, n, errs); writes nothing
     c, report, sources_text, errs, n = None, None, None, [], Counter({k: 0 for k in COUNTS})
     try:
@@ -246,7 +248,7 @@ def on_disk(path):  # -> bytes, or why not; read-only, O_NOFOLLOW never follows 
 def check(config, out):  # never writes, never prints draft text: names files, counts and the build errors only
     c, report, sources_text, n, errs = prepare(config, out)
     state = disk_state(c, report, sources_text, errs)
-    print(summary(errs := list(dict.fromkeys(errs)), n) + " state=" + state)
+    print("".join(note + "\n" for note in claim_notes(report)) + summary(errs := list(dict.fromkeys(errs)), n) + " state=" + state)
     return 1 if errs else 0
 def disk_state(c, report, sources_text, errs):  # check and region: -> invalid|missing|stale|current; appends check: errors
     state = "invalid"
@@ -280,7 +282,7 @@ def build(config, out):
                 raise
     except (Fail, OSError, ValueError, KeyError, TypeError) as exc:
         errs.append(fault(exc))
-    print(summary(errs := list(dict.fromkeys(errs)), n))
+    print("".join(note + "\n" for note in claim_notes(report)) + summary(errs := list(dict.fromkeys(errs)), n))
     return 1 if errs else 0
 ORDER, RNAMES = {"rejected": 0, "weak": 1, "medium": 2, "strong": 3}, ("REGION-REPORT-DRAFT.md", "SOURCES.json")
 RNOTE = ("Ratings come from the cross-agency matrix. Each agency is cited only from its own current findings draft, and only "
@@ -383,6 +385,7 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
             with contextlib.suppress(OSError): os.unlink(tmp)
         print(fault(exc))
         return 1
+    print("".join(note + "\n" for note in claim_notes(report)), end="")
     print("region topics=%(topics)d agencies=%(agencies)d current=%(current)d excluded=%(excluded)d sources=%(sources)d" % counts)
     return 0
 def region_check(args, parser):  # read-only: never writes, never creates --out, names files and states only, never draft text

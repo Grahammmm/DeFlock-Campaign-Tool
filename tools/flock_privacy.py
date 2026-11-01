@@ -30,3 +30,16 @@ PATTERNS = (("email", EMAIL), ("phone", PHONE), ("plate", PLATE))
 def categories(text):
     """-> the names of email, phone, plate (in that order) that match text."""
     return [name for name, rx in PATTERNS if rx.search(text)]
+
+
+# --- DF-4 legal-claim wording guard (ALERT-ONLY) ------------------------------------------------------------------------
+# The rules (and the boundary between asserting a violation and stating a requirement or a fact) live in
+# campaign_tool/legal_claims.py so the packaged newsletter and site build use the same single copy; they are exposed here, beside
+# the email/phone/plate patterns, for the report, page and publish lints. Callers print review-required notes and carry on.
+import importlib.util
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("_df4_legal_claims", Path(__file__).resolve().parents[1] / "campaign_tool" / "legal_claims.py")
+_legal = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_legal)
+legal_claims, legal_notes = _legal.legal_claims, _legal.legal_notes
