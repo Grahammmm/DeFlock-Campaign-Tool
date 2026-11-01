@@ -91,7 +91,9 @@ class CoverageCliTests(unittest.TestCase):
         self.dir = Path(self.tmp.name)
 
     def run_cli(self, *args):
-        return subprocess.run([sys.executable, "-m", "campaign_tool.records.run_coverage", *args],
+        # -B: no __pycache__ in the shared tree (tests/test_fa21_report_finite.py
+        # snapshots it while parallel CI chunks run).
+        return subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records.run_coverage", *args],
                               cwd=ROOT, capture_output=True, text=True, timeout=60)
 
     def write(self, payload, name="run-report.json"):
