@@ -2,6 +2,7 @@
 """Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
 draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
 import csv
+import importlib.util
 import io
 import os
 import re
@@ -375,6 +376,53 @@ def record(store, o, today):
     return print(f"recorded | {s} | {rid} | {step} | {when}") or 0
 
 
+def _tool(name):  # siblings are loaded by file path, never copied
+    spec = importlib.util.spec_from_file_location("_requests_" + name, Path(__file__).resolve().parent / (name + ".py"))
+    return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
+
+
+def sent_runs(store, rows):
+    """Errors and a counts tail: each agencies/<slug>/runs/<date>/ whose email stage (flock_email.stage) is sent recorded
+    needs a sent date on its Sent by line and a request of that agency with that sent date. Reads only; symlinked
+    agency, runs or run folders are skipped, never entered. Lines carry slug, run date and sent date, no draft text."""
+    stage, errs, sent, matched = _tool("flock_email").stage, [], 0, 0
+    base = Path(store) / "agencies"
+    try:
+        folders = sorted(p for p in base.iterdir() if p.is_dir() and not p.is_symlink()) if not base.is_symlink() else []
+    except OSError:
+        folders = []
+    for folder in folders:
+        runs = folder / "runs"
+        try:
+            dates = [] if runs.is_symlink() or not runs.is_dir() else sorted(
+                p for p in runs.iterdir() if day(p.name) and p.is_dir() and not p.is_symlink())
+        except OSError:
+            errs.append(f"{folder.name}: runs folder unreadable")
+            dates = []
+        for run in dates:
+            got, pre = stage(run), f"{folder.name}: run {run.name}: "
+            if got == "inconsistent: sent without approval":
+                errs.append(pre + "sent without approval")
+            if got != "sent recorded":
+                continue
+            sent += 1
+            try:  # O_NOFOLLOW: a link swapped in after stage() is still refused
+                with open(os.open(run / "EMAIL-DRAFT.md", os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh:
+                    value = next(ln for ln in fh.read().splitlines() if ln.startswith("Sent by:"))
+            except (OSError, UnicodeDecodeError, StopIteration):
+                errs.append(pre + "EMAIL-DRAFT.md unreadable")
+                continue
+            token = re.search(r"(?<![0-9])[0-9]{4}-[0-9]{2}-[0-9]{2}(?![0-9])", value)
+            when = day(token.group()) if token else None
+            why = ("sent date missing on the Sent by line" if when is None
+                   else f"sent date {when} is before the run date" if when < day(run.name)
+                   else None if any(slug(r["agency"]) == folder.name and r["sent"] == str(when) for r in rows)
+                   else f"no request with sent {when}")
+            matched += why is None
+            errs += [pre + why] if why else []
+    return errs, f" sent_runs={sent} matched={matched}"
+
+
 USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] | summary PATH | "
          "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
          "summary PATH [--inventory CSV] adds document counts; record STORE --agency SLUG --request ID "
@@ -406,7 +454,9 @@ def main(argv):
         return 2
     rows, errs = load(argv[1])
     if argv[0] == "--check":
-        print("\n".join(errs + [f"requests={len(rows)} errors={len(errs)}"]))
+        more, tail = sent_runs(argv[1], rows) if Path(argv[1]).is_dir() else ([], "")
+        errs += more
+        print("\n".join(errs + [f"requests={len(rows)} errors={len(errs)}{tail}"]))
         return 1 if errs else 0
     if errs:
         print("\n".join(errs), file=sys.stderr)
