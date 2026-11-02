@@ -16,7 +16,7 @@ from campaign_tool.image_meta import PNG_SIGNATURE
 from campaign_tool.site import EXTRA_CSS, build_site
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "fictional-campaign"
-SECRET = "private-name-77"  # a file-name value that must never appear in a refusal
+HIDDEN_NAME = "private-name-77"  # a file-name value that must never appear in a refusal
 LOGO_RULE = ".brand-logo{max-height:48px;width:auto;height:auto}\n"
 
 
@@ -41,7 +41,7 @@ def vp8x(width, height):
     return riff(b"VP8X", b"\x10" + bytes(3) + (width - 1).to_bytes(3, "little") + (height - 1).to_bytes(3, "little"))
 
 
-TEXT_PNG = png(120, 40, chunk(b"tEXt", b"Comment\0" + SECRET.encode()))
+TEXT_PNG = png(120, 40, chunk(b"tEXt", b"Comment\0" + HIDDEN_NAME.encode()))
 EXIF_PNG = png(120, 40, chunk(b"eXIf", b"II*\0\x08\0\0\0\0\0"))
 TRUNCATED_PNG = PNG_SIGNATURE + chunk(b"IDAT", b"\x78") + chunk(b"IEND", b"")
 BAD_WEBP = webp(b"VP8X" + (1000).to_bytes(4, "little") + bytes(10))
@@ -82,7 +82,7 @@ class BrandSite(unittest.TestCase):
             build_site(self.root)
         message = str(caught.exception)
         self.assertTrue(message.startswith(f"site.json.brand{field}: "), message)
-        self.assertNotIn(SECRET, message)
+        self.assertNotIn(HIDDEN_NAME, message)
         self.assertFalse((self.root / "public").exists())
         self.assertIn(message, content_problems(self.root))
         return message
@@ -120,19 +120,19 @@ class BrandSite(unittest.TestCase):
 
     # 3. missing, symlinked, outside, wrong suffix, image metadata -> refused by name, value never printed
     def test_logo_file_refusals(self):
-        (self.root / "content" / f"{SECRET}.png").write_bytes(png(120, 40))
-        os.symlink(self.assets / "logo.png", self.assets / f"{SECRET}.png")
+        (self.root / "content" / f"{HIDDEN_NAME}.png").write_bytes(png(120, 40))
+        os.symlink(self.assets / "logo.png", self.assets / f"{HIDDEN_NAME}.png")
         (self.assets / "dir").mkdir()
         os.symlink(self.assets / "dir", self.assets / "linked")
         (self.assets / "dir" / "logo.png").write_bytes(png(120, 40))
-        (self.assets / f"{SECRET}-text.png").write_bytes(TEXT_PNG)
-        (self.assets / f"{SECRET}-exif.png").write_bytes(EXIF_PNG)
-        (self.assets / f"{SECRET}.jpg").write_bytes(b"\xff\xd8\xff\xd9")
-        cases = {f"missing-{SECRET}.png": "file not found", f"{SECRET}.png": "symlink",
-                 "linked/logo.png": "symlink", f"../{SECRET}.png": "plain file name", f"/{SECRET}.png": "plain file name",
-                 f"dir//{SECRET}.png": "plain file name", f"{SECRET}.jpg": "use a .png or .webp file",
-                 f"{SECRET}.gif": "use a .png or .webp file", f"{SECRET}-text.png": "image metadata (text)",
-                 f"{SECRET}-exif.png": "image metadata (EXIF)", 7: "plain file name"}
+        (self.assets / f"{HIDDEN_NAME}-text.png").write_bytes(TEXT_PNG)
+        (self.assets / f"{HIDDEN_NAME}-exif.png").write_bytes(EXIF_PNG)
+        (self.assets / f"{HIDDEN_NAME}.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        cases = {f"missing-{HIDDEN_NAME}.png": "file not found", f"{HIDDEN_NAME}.png": "symlink",
+                 "linked/logo.png": "symlink", f"../{HIDDEN_NAME}.png": "plain file name", f"/{HIDDEN_NAME}.png": "plain file name",
+                 f"dir//{HIDDEN_NAME}.png": "plain file name", f"{HIDDEN_NAME}.jpg": "use a .png or .webp file",
+                 f"{HIDDEN_NAME}.gif": "use a .png or .webp file", f"{HIDDEN_NAME}-text.png": "image metadata (text)",
+                 f"{HIDDEN_NAME}-exif.png": "image metadata (EXIF)", 7: "plain file name"}
         for value, reason in cases.items():
             with self.subTest(value=value):
                 message = self.refused({"logo": value, "logo_alt": "Logo"}, ".logo")
@@ -206,10 +206,10 @@ class BrandSite(unittest.TestCase):
     def test_favicon_refusals(self):
         self.assertIn(b'<link rel="icon" href="/logo.png">', self.build({"favicon": "logo.png"})["404.html"])
         shutil.rmtree(self.root / "public")
-        (self.assets / f"{SECRET}-text.png").write_bytes(TEXT_PNG)
+        (self.assets / f"{HIDDEN_NAME}-text.png").write_bytes(TEXT_PNG)
         (self.assets / "trunc.png").write_bytes(TRUNCATED_PNG)
-        for value, reason in ((f"{SECRET}.ico", "file not found"), (f"{SECRET}.gif", "use a .ico or .png file"),
-                              ("logo.webp", "use a .ico or .png file"), (f"{SECRET}-text.png", "image metadata (text)"),
+        for value, reason in ((f"{HIDDEN_NAME}.ico", "file not found"), (f"{HIDDEN_NAME}.gif", "use a .ico or .png file"),
+                              ("logo.webp", "use a .ico or .png file"), (f"{HIDDEN_NAME}-text.png", "image metadata (text)"),
                               ("trunc.png", "unreadable image")):
             with self.subTest(value=value):
                 self.assertIn(reason, self.refused({"favicon": value}, ".favicon"))
