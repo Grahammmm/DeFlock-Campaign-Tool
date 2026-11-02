@@ -858,6 +858,9 @@ def main():
                                         "(banner, noindex; never public/, feed or sitemap)")
     for flag in ("--directory", "--out"):
         preview_p.add_argument(flag, required=True)
+    packet_p = finding_cmds.add_parser("packet", help="Private packet for an outside reviewer in a new --out folder")
+    for flag in ("--directory", "--out"):
+        packet_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     status_p = finding_cmds.add_parser("status", help="Every draft, published and withdrawn finding with its state "
@@ -1029,6 +1032,13 @@ def main():
                 sys.exit(2)
             print(json.dumps(result))
             print("Private preview only; public/ was not changed and nothing was published.")
+        elif args.command == "finding" and args.finding_command == "packet":
+            from .finding_packet import build_packet
+            try:
+                print(json.dumps(build_packet(root, args.draft, args.out)))
+            except (OSError, ValueError) as exc:
+                sys.exit(fixes.emit(exc) or 2)
+            print("Private packet only; nothing was zipped, uploaded or sent.")
         elif args.command == "finding" and args.finding_command == "new":
             from . import findings
             read_config(root)

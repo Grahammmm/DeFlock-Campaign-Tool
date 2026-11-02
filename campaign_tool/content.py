@@ -768,7 +768,7 @@ def load_map(content_dir):
 # --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
-                                       "agency-cards", "app", "data", "vendor", "meetings"}  # generated top-level names
+                                       "agency-cards", "app", "data", "vendor", "meetings", "methods"}  # generated top-level names
 
 
 def _page_string(document, key, label, limit, required):

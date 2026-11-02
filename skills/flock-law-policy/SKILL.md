@@ -45,6 +45,13 @@ A clean check is machine-valid and review-required, not legal acceptance.
 - Policy facts that differ between consecutive adopted versions: `python3 tools/flock_law_policy.py changes STORE [--agency SLUG]`
   (fact types and FACTS ids only; exit 0 is a report, review each line; `no policy facts for LABEL` is unknown, not a change).
 
+## Compare
+- Agencies side by side on one date: `python3 tools/flock_law_policy.py compare STORE --on YYYY-MM-DD [--types T1,T2]`.
+  Per fact type, agencies whose governing adopted policy documents it are grouped into `class 1`, `class 2`, ... by
+  normalised value (FACTS ids shown, values never); `undocumented:` lists the rest, and an agency with no governing
+  policy is named once. Disputed facts are counted, not used. Exit 3 when any type `differ`s: a prompt to read those
+  documents, not a legal conclusion.
+
 ## Outputs
 - Counts `law=L policy=P errors=K`, row numbers, ids, labels and dates. Never duty or evidence text.
 - `governing`: a line per agency (version governing, `none on DATE` or `none established`), LAW rows in effect, then counts; a research view, not a legal conclusion.
