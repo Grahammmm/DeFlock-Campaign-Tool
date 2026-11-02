@@ -11,6 +11,7 @@ Content-Security-Policy that names only the hosts the content model declared.
 import json
 import re
 import shutil
+import sys
 import tempfile
 from datetime import date, datetime, timezone
 from html import escape
@@ -196,8 +197,8 @@ class Site:
         if self.map:
             parts.append(f'<p>{e(self.map["attribution"])}</p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
-        parts.append('<p><a href="/feed.xml">Findings feed</a> · <a href="/corrections.html">Corrections</a> · '
-                     '<a href="/sitemap.xml">Sitemap</a></p>')
+        sitemap = ' · <a href="/sitemap.xml">Sitemap</a>' if self.base else ""  # no sitemap without base_url
+        parts.append(f'<p><a href="/feed.xml">Findings feed</a> · <a href="/corrections.html">Corrections</a>{sitemap}</p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -571,10 +572,16 @@ class Site:
         return paths
 
     def sitemap_xml(self):
+        """Only built with a base_url (absolute <loc>); lastmod = UTC day of each finding's latest change."""
         root = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+        days = {f'/findings/{f["slug"]}.html': utc_moment(finding_updated(f)).astimezone(timezone.utc).date().isoformat()
+                for f in self.model["findings"]}
+        days["/"] = days["/findings/"] = max(days.values(), default="")
         for path in self.page_paths():
             url = ET.SubElement(root, "url")
             ET.SubElement(url, "loc").text = self.base + path
+            if days.get(path):
+                ET.SubElement(url, "lastmod").text = days[path]
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
     def feed_xml(self):
@@ -692,7 +699,7 @@ def build_site(root, today=None):
     files = {name: page["html"] for name, page in pages.items()}
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
-        "sitemap.xml": site.sitemap_xml(), "feed.xml": site.feed_xml(),
+        **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
         "app.js": site.app_js(),
     })
@@ -727,4 +734,6 @@ def build_site(root, today=None):
             new.rename(public)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    if not site.base:
+        print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
     return [public / path.relative_to(new) for path in written]
