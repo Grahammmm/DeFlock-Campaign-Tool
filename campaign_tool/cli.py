@@ -729,10 +729,10 @@ def main():
         batch.add_argument(flag, required=True)
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
-    commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+    content_init = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True).add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
-    ).add_argument("--directory", required=True)
+    ); content_init.add_argument("--directory", required=True); content_init.add_argument("--from", dest="source_campaign")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -924,8 +924,8 @@ def main():
             print("Nothing was sent.")
         elif args.command == "content":
             from .content_init import init_content
-            print(json.dumps(init_content(root), indent=2))
-            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+            print(json.dumps(init_content(root, args.source_campaign), indent=2))
+            print(f"content/ written from {Path(args.source_campaign).name}. Review every copied page and replace anything specific to the other locality; nothing was built or deployed." if args.source_campaign is not None else 'content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
