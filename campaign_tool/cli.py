@@ -563,6 +563,11 @@ def main():
                               "city_council, district_attorney, chp")
     commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
                         ).add_argument("--directory", required=True)
+    press = commands.add_parser("press", help="Draft private press material; sends nothing")
+    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_draft.add_argument("--directory", required=True)
+    press_draft.add_argument("--finding", action="append", default=[])
+    press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -693,6 +698,10 @@ def main():
             kit(args, root)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "press":
+            from .press import build_press
+            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+            print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":
