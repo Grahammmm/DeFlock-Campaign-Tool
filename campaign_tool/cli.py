@@ -633,6 +633,10 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
+                                     "records, sources, findings (read-only)")
+    coverage_p.add_argument("--directory", required=True)
+    coverage_p.add_argument("--csv", action="store_true", help="RFC 4180 CSV on stdout instead of a table")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -782,6 +786,10 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-coverage":
+            from .kit_track import coverage, format_coverage
+            sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,

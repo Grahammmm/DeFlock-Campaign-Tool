@@ -183,3 +183,10 @@ at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every 
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
 private `kit/sent.json`; `kit-response` and `kit-status` print 12-character prefixes only (`records`,
 `record_prefixes`, at most 50 then `more`). Which records an agency produced is never published.
+
+`kit-coverage --directory D [--csv]` prints one row per selected agency in `kit/agencies.json`: whether its draft
+exists (a regular file, not a symlink), sent date and channel, last response step, distinct records linked on
+`produced` steps, `content/sources.json` entries and published findings for the agency. Agencies with no sent request
+come first, then a totals line (selected, drafted, sent, answered, with records, with findings, and requests for
+agencies no longer selected). Without `content/` sources and findings are 0. `--csv` writes RFC 4180 CSV to stdout;
+cells starting with `=`, `+`, `-` or `@` get a leading `'`. It writes nothing and sends nothing.
