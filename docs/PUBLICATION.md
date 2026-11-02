@@ -39,6 +39,14 @@ from all receipts after every submission.
 
 ## Offline review receipts (CLI)
 
+Start a draft with `python3 -m campaign_tool finding new --directory D --agency ID --title T
+[--source PREFIX ...] [--author NAME]`. It writes a new `D/private/drafts/fnd_<12 hex>.json` (directory 0700, file
+0600; never overwrites; a symlinked `private/` or `private/drafts/` is refused) with every required field, the
+agency, and each `--source` (12–64 hex of exactly one `content/sources.json` record) resolved to its hash and
+title. Hand-written fields hold `[EDIT ME: ...]` markers; `review-status` names one `edit_marker:<field>`
+blocker per marked field (`edit_marker:sources[i].locator` for sources), and `build` refuses a published
+finding that still carries one. Nothing is published.
+
     python3 -m campaign_tool finding review DRAFT --directory D --role factual|legal|privacy \
         --decision approve|reject|changes_requested --reviewer NAME --rationale TEXT
     python3 -m campaign_tool finding review-status DRAFT --directory D
