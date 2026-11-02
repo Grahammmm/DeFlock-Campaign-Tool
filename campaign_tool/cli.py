@@ -534,6 +534,10 @@ def main():
     for flag in ("--name", "--county", "--state", "--location"):
         setup_p.add_argument(flag)
     setup_p.add_argument("--yes", action="store_true", help="Use flags only; never prompt")
+    import_p = commands.add_parser("import-existing", help="Preserve a local folder with private receipts; no parsing")
+    for flag in ("--directory", "--label"):
+        import_p.add_argument(flag, required=True)
+    import_p.add_argument("--from", dest="folder", required=True)
     for name in ("init", "ingest", "doctor", "status", "build"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--directory", required=True)
@@ -719,6 +723,11 @@ def main():
         elif args.command == "setup":
             from .setup_cmd import run_cli
             run_cli(args, root, parser, sys.stdin, sys.stdout)
+        elif args.command == "import-existing":
+            from .import_existing import run
+            report = run(root, args.folder, args.label)
+            print(json.dumps(report, indent=2))
+            sys.exit(3 if report["stopped"] or report["counts"]["error"] else 0)
         elif args.command == "ingest":
             ingest(args, root)
         elif args.command == "kit":
