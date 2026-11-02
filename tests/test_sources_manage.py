@@ -52,6 +52,14 @@ class SourcesManageTests(unittest.TestCase):
     def write_library(self, document):
         self.sources.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
+    def write_malformed_finding(self):
+        """A published, verified finding with every required key but classification=[] (TypeError in the loader)."""
+        findings = self.root / "content" / "findings"
+        finding = json.loads((findings / f"{CITING}.json").read_text(encoding="utf-8"))
+        self.assertEqual((finding["state"], finding["confidence"]), ("published", "verified"))
+        finding.update(classification=[], slug="synthetic-malformed", id="synthetic-malformed")
+        (findings / "malformed.json").write_text(json.dumps(finding), encoding="utf-8")
+
     def run_cli(self, command, *args):
         return cli("sources", command, "--directory", str(self.root), *args)
 
@@ -80,6 +88,9 @@ class SourcesManageTests(unittest.TestCase):
         self.assertEqual(listed["entries"][1]["public_url"], "https://example.invalid/fixtures/agreement-excerpt")
         (self.root / "content" / "findings" / "broken.json").write_text("{", encoding="utf-8")
         self.assertEqual(list_sources(self.root), listed)  # unreadable finding skipped by list
+        self.write_malformed_finding()
+        result = self.run_cli("list")
+        self.assertEqual((result.returncode, json.loads(result.stdout)), (0, listed), result.stderr)
         self.write_library([])
         self.assertEqual(list_sources(self.root), {"entries": [], "count": 0})
         self.sources.unlink()
@@ -163,6 +174,12 @@ class SourcesManageTests(unittest.TestCase):
         (self.root / "content" / "findings" / "broken.json").write_text("{", encoding="utf-8")
         before = self.sources.read_bytes()
         self.assertStopped(self.run_cli("remove", "--sha256", DIGEST[:12]), "findings/broken.json cannot be read")
+        self.assertUnchanged(before)
+
+    def test_remove_refused_when_a_finding_has_a_malformed_field(self):
+        self.write_malformed_finding()
+        before = self.sources.read_bytes()
+        self.assertStopped(self.run_cli("remove", "--sha256", DIGEST[:12]), "findings/malformed.json cannot be read")
         self.assertUnchanged(before)
 
     def test_remove_uncited_entry_keeps_ledger_and_objects_and_build_passes(self):

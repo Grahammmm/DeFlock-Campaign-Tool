@@ -136,7 +136,8 @@ def _citations(root, strict):
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         try:
             finding = load_finding(_read_json(path), "findings/" + path.name)
-        except (OSError, ValueError, RecursionError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError, LookupError, RecursionError) as exc:
+            # Malformed field types (e.g. classification=[]) fail inside the loader with TypeError & co.
             if strict:
                 raise ContentError(f"findings/{path.name} cannot be read, so its citations cannot be checked "
                                    f"({exc})") from None
