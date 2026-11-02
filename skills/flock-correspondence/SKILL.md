@@ -16,6 +16,10 @@ and interpretation rules. In an engine checkout, read its `AGENTS.md` and
 If the command or supported ledger is unavailable, report that concrete blocker;
 do not initialize, migrate, or substitute a different database to make it run.
 
+For an organizer-readable private thread from an existing report JSON, see
+[Readable version](../../docs/CORRESPONDENCE.md#readable-version).
+The renderer does not open the ledger, retrieve mail, send, or publish.
+
 ## Working boundaries
 
 - Operate on the existing `campaign_tool.records.ledger.store` canonical schema

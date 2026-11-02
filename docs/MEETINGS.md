@@ -122,6 +122,17 @@ A cited finding with corrections shows `(corrected <latest date>)` after its bul
 a link to `<finding link>#corrections`; the summary is always the current text. `doctor` lists staged kits
 that predate a finding's latest correction as `stale_comment_kits`; re-stage them with `meetings-stage --id <id> --replace`.
 
+## Printing a meeting pack
+
+`python3 -m campaign_tool meeting-pack --directory D --id M` reads a staged meeting
+and writes private `kit/meeting-packs/M/handout.html`, `comment.md` and `sources.csv`.
+Open the handout locally and print on letter paper; the comment is the staged text verbatim.
+Only published findings are included (newest first, five by default; `--max-findings 1..10`).
+Sources use 12-character record fingerprints; a fingerprint is not proof of authorship.
+Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage --id M --replace`.
+Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
+Nothing is sent or published. Review the print preview before handing it over.
+
 ## Not done
 
 No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is
