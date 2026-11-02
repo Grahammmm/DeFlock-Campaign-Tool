@@ -152,6 +152,12 @@ Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must
 and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
 fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.
 
+Contacts go out of date. `doctor --directory ../my-campaign --contact-max-age-days 180` adds `stale_contacts`: each
+selected, verified entry whose `verification.checked_on` is more than 180 days old (`agency_id`, `checked_on`,
+`age_days`, oldest first; a missing or invalid date is listed with nulls), at most 100 plus `stale_contacts_more`,
+and a next action to re-check them with `kit-verify-agency`. It reads only `kit/agencies.json` (not the flock
+store's `CONTACT.csv`), writes nothing and fetches nothing. Without the option `doctor` is unchanged.
+
 ## Recording a hand-sent request
 
 After you send a draft yourself, record it (nothing is sent by the tool):

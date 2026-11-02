@@ -290,6 +290,7 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
         lines.append(f"Agenda item: {_clean(meeting['agenda_item'])}")
     lines.append("")
     lines.append("## Two-minute comment")
+    start = len(lines)
     lines.append(f"Good evening. My name is [name] and I live in [city]. I am speaking with "
                  f"{_clean(campaign_name)} about automated license plate readers.")
     if findings:
@@ -307,6 +308,18 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
     lines.append("We are not asking you to take our word for it. Every claim links to the record it came "
                  "from. Please read them before this item moves forward.")
     lines.append("")
+    minutes = (meeting.get("participation") or {}).get("speaker_minutes")
+    if type(minutes) is int and 1 <= minutes <= 10:  # organizer-verified limit only; never assumed
+        budget, body = 130 * minutes, lines[start:-1]  # 130 spoken words a minute
+        words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
+        while words(body) > budget and any(row.startswith("- ") for row in body):  # whole bullets, from the end
+            del body[max(i for i, row in enumerate(body) if row.startswith("- "))]
+        lines.append(f"## Spoken comment ({minutes} minute{'' if minutes == 1 else 's'}, about {budget} words)")
+        if words(body) > budget:
+            lines.append("The speaker limit is too short for this kit; use the first sentence and one ask.")
+        else:
+            lines.extend(body + [f"Word count: {words(body)} of {budget}."])
+        lines.append("")
     lines.append("## Three asks")
     lines.append("- " + ASKS.get(meeting.get("relevance") or "", DEFAULT_ASK))
     lines.append("- Require an annual public audit of searches, retention and outside-agency sharing, "
