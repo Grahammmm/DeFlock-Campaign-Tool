@@ -68,6 +68,7 @@ class TodayTests(unittest.TestCase):
         self.ok("kit", "--directory", self.root)
         ready_drafts(self.root)  # kit-sent refuses unfilled placeholders and unverified recipients (DF1507-07)
         self.a, self.b, self.c = (p.stem for p in sorted((self.root / "kit" / "requests").glob("*.md"))[:3])
+        ready_drafts(self.root, (self.a, self.c))  # kit-sent refuses unfilled placeholders and unverified recipients (DF1507-07)
         for agency, on in ((self.c, "2026-03-02"), (self.a, "2026-03-10")):  # due 2026-03-12 (past) / 2026-03-20
             self.ok("kit-sent", "--directory", self.root, "--agency", agency, "--date", on, "--channel", "email")
         path = self.root / "kit" / "agencies.json"
