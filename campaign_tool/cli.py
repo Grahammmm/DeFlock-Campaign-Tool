@@ -915,10 +915,8 @@ def main():
     pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
-        if not args.upcoming or args.allow_past:
-            pack.error("--within-days needs --upcoming; --allow-past is only for --id")
-        if args.within_days is not None and not 1 <= args.within_days <= 90:
-            pack.error("--within-days must be 1..90")
+        if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
+            pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
