@@ -391,7 +391,7 @@ def doctor_report(root, contact_max_age_days=None):
 
 def kit(args, root):
     from .kit import build_kit
-    summary = build_kit(root, online=args.online, include=args.include)
+    summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
@@ -590,6 +590,7 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
+    kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
                         ).add_argument("--directory", required=True)
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
