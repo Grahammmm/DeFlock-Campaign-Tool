@@ -422,3 +422,13 @@ N = 60, B = 2640 (44 min). Worst case is 2640 + 17 + 62 = 2719 s.
 Tests: `python3 -B -m unittest tests.test_records_runtime -v`. They use a
 fake docker shim, the stub backend and a loopback fake Telegram, with no
 external network.
+
+## Stale-stage check
+
+`python3 tools/stage_stale_check.py check --reports reports/ --now <UTC>` reads the run
+reports only (no ledger, no clock) and alerts `stale:<stage>` when a stage was stuck (input,
+no output), failed or skipped/stubbed in each of the last `--runs` (default 3, minimum 2)
+scheduled runs; idle stages (no input) never alert. It also flags no scheduled report for
+36 h, an invalid or unparseable newest report and duplicate run ids. Exit 3 alerts, 0 none,
+1 untrusted. It complements `records health`. Scheduling it and delivering its alerts beyond
+stdout or `--json-out` are separate operator decisions; it installs and sends nothing.

@@ -183,3 +183,9 @@ sorted by provisional `due` date (extended when recorded), with `days` left (neg
 `past_due`, `due_today` or `upcoming`. Requests with a `determination`, `produced` or `denied` step appear under
 `answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
 request is past due, else 0. These are reminders, not lateness conclusions.
+
+On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
+at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
+ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
+private `kit/sent.json`; `kit-response` and `kit-status` print 12-character prefixes only (`records`,
+`record_prefixes`, at most 50 then `more`). Which records an agency produced is never published.

@@ -8,7 +8,9 @@ configured, the MapLibre controller. All generated JavaScript is self-hosted;
 pages contain no inline scripts, and the emitted ``_headers`` file carries a
 Content-Security-Policy that names only the hosts the content model declared.
 """
+import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -20,8 +22,10 @@ from xml.etree import ElementTree as ET
 
 from . import agency_cards, map_controller
 from .content import CITY_KINDS, ContentError, load_content, utc_moment
+from .corrections_policy import policy_html
 from .markdown_lite import render as markdown
 from .shell import render
+from .provenance_text import EXPLAINER, source_line
 
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
@@ -75,11 +79,21 @@ EXTRA_CSS = """
 .finding-body{max-width:760px}.finding-body h3{margin-top:2rem}
 .source-table{list-style:none;padding:0;margin:0}.source-table li{padding:.9rem 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.source-table code{font-size:.85rem;background:var(--paper);padding:.1rem .3rem}
 .notice{border-left:3px solid var(--coral);background:var(--paper);padding:1rem 1.25rem;margin:1.5rem 0}
-.agency-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}.agency-list article{background:#fff;padding:1.4rem;border-top:3px solid var(--coral)}.agency-list h3{margin:.4rem 0}.agency-list a{color:var(--ink)}
+.agency-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr));gap:1rem}.agency-list article{background:#fff;padding:1.4rem;border-top:3px solid var(--coral)}.agency-list h3{margin:.4rem 0}.agency-list a{color:var(--ink)}
 .meeting-list article{padding:1.4rem 0;border-bottom:1px solid var(--line)}.meeting-list time{font-weight:700}
 .signup-form{max-width:480px}.signup-row{display:flex;gap:.5rem}.signup-row input{flex:1;padding:.75rem;font:inherit;border:1px solid var(--line)}.signup-row button{font:inherit;font-weight:700;background:var(--coral);color:#fff;border:0;padding:.75rem 1.1rem;cursor:pointer}
 .city-panel-static{position:relative}.city-panel-static .city-picker{position:static;margin-bottom:1.5rem;box-shadow:none;padding:0}
 .finding-filter{display:flex;gap:1rem;flex-wrap:wrap;align-items:end;margin:0 0 1.5rem}.finding-filter[hidden]{display:none}.finding-filter label{display:block;font-size:.8rem;color:var(--muted)}.finding-filter select{font:inherit;padding:.4rem}.filter-count{flex-basis:100%;margin:0;font-size:.9rem}
+.site-nav a:focus-visible{outline:3px solid var(--mint);outline-offset:2px}
+@media(max-width:850px){
+.campaign-banner .site-nav{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.5rem}
+.campaign-banner .site-nav a{display:inline-flex;align-items:center;min-height:44px;padding:0 .7rem;font-size:1rem}
+.campaign-banner .site-nav a[aria-current=page]{background:#ffffff1f}
+.agency-list{grid-template-columns:minmax(0,1fr)}
+.finding-body,.agency-list article,.meeting-list article,.finding-list li{overflow-wrap:anywhere}
+.finding-filter select,.signup-row input,.signup-row button{min-height:44px}
+.finding-body img,.finding-body table{max-width:100%}.finding-body table{display:block;overflow-x:auto}
+}
 .site-footer p{margin:0}.site-footer a{color:inherit}
 @media print{
 /* Print: chrome removed, black on white, external link addresses after the text */
@@ -465,9 +479,12 @@ class Site:
         sources = []
         for source in finding["sources"]:
             fragment = self.fragment_for_sha.get(source["sha256"])
-            title = (f'<a href="/sources.html#{e(fragment)}">{e(source["title"])}</a>' if fragment else e(source["title"]))
-            rule = f' · rule {e(source["rule_id"])}' if source["rule_id"] else ""
-            sources.append(f'<li>{title} · <code>sha256 {e(short_hash(source["sha256"]))}</code> · {e(source["locator"])}{rule}</li>')
+            entry = next((s for s in self.model["sources"] if s["sha256"] == source["sha256"]), None)
+            owner = self.agencies_by_id.get(entry["agency_id"], {}) if entry else {}
+            sentence, record = source_line(entry, source, owner.get("name"))
+            number = f'Record no. <code>{record}</code>'
+            number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
+            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or '<li>No corrections have been issued.</li>')
         agency = self.agencies_by_id.get(finding["agency_id"])
@@ -492,9 +509,11 @@ class Site:
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
                 + (markdown(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>Sources</h3><ul class="source-table">{"".join(sources)}</ul>'
+                + f'<p class="provenance-note">{e(EXPLAINER)}</p>'
                 + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>' + related
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
                 + '<p><a href="/corrections.html">All corrections</a></p>'
+                + '<p><a href="/corrections.html#request">Ask for a correction</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main,
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
@@ -508,6 +527,7 @@ class Site:
                         for f, c, _ in rows)
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Findings</p>'
                 '<h2>Corrections</h2></div><p>Every correction issued on a published finding, newest first.</p></div>'
+                + policy_html(self.site["contact_email"])
                 + (f'<ul>{items}</ul>' if items else '<p>No corrections have been issued.</p>') + '</section>\n')
         return self.page("findings", "Corrections", "Every correction issued on a published finding", "/corrections.html", main)
 
@@ -528,11 +548,11 @@ class Site:
                 citing = self.cited_by.get(source["sha256"], [])
                 cited = (' · Cited by: ' + ", ".join(f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in citing)
                          if citing else ' · Not cited by a published finding')
-                items.append(f'<li><strong>{e(source["title"])}</strong> · <code>sha256 {e(short_hash(source["sha256"]))}</code> · '
-                             f'received {date_label(source["received_at"])}{pages} · {link}{note}{cited}</li>')
+                sentence, record = source_line(source, source, self.agencies_by_id.get(source["agency_id"], {}).get("name"))
+                items.append(f'<li><p>{sentence}</p><p class="record-no">Record no. <code>{record}</code>{pages} · {link}{note}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
         main = ('    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">Source library</p>'
-                '<h2>Every record we cite, by hash.</h2></div><p>Each entry lists the SHA-256 prefix of the original bytes as received. '
+                '<h2>Every document we cite, and where it came from.</h2></div><p class="provenance-note">' + e(EXPLAINER) + ' '
                 'Originals stay in the private archive unless a public copy is linked. '
                 'Each entry names the published findings that cite it.</p></div>'
                 + ("".join(sections) or '<p>No source records have been catalogued yet.</p>') + '</section>\n')
@@ -792,25 +812,16 @@ def _asset_plan(model):
     return plan
 
 
-def build_site(root, today=None):
-    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
-
-    ``today`` (a ``datetime.date``, default the build date) splits meetings into
-    upcoming (on or after it) and past.
-
-    Falls back to the neutral starter when ``content/`` does not exist.
-    Raises ``ContentError``/``ValueError`` and writes nothing when content is
-    not publishable.
-    """
+def _plan_site(root, today=None):
+    """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
     root = Path(root)
     cfg = read_config(root)
-    public = root / "public"
-    if public.is_symlink():
+    if (root / "public").is_symlink():
         raise ContentError("public/ must not be a symlink")
     model = load_content(root)
     if model is None:
-        return build_starter(cfg, public)
+        return None
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
@@ -842,6 +853,26 @@ def build_site(root, today=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    return files, plan
+
+
+def build_site(root, today=None):
+    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
+
+    ``today`` (a ``datetime.date``, default the build date) splits meetings into
+    upcoming (on or after it) and past.
+
+    Falls back to the neutral starter when ``content/`` does not exist.
+    Raises ``ContentError``/``ValueError`` and writes nothing when content is
+    not publishable.
+    """
+    from .cli import read_config
+    root = Path(root)
+    public = root / "public"
+    planned = _plan_site(root, today)
+    if planned is None:
+        return build_starter(read_config(root), public)
+    files, plan = planned
     staging = Path(tempfile.mkdtemp(dir=root, prefix=".public.new-"))  # swapped in only when complete
     new, written = staging / "public", []
     try:
@@ -862,6 +893,37 @@ def build_site(root, today=None):
             new.rename(public)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    if not site.base:
+    if "sitemap.xml" not in files:  # planned exactly when content/site.json has a base_url
         print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
     return [public / path.relative_to(new) for path in written]
+
+
+def preview_site(root, today=None):
+    """Compare a fresh render with the current ``public/`` by path, size and SHA-256; writes nothing."""
+    public = Path(root) / "public"
+    planned = _plan_site(root, today)
+    if planned is None:
+        raise ValueError("build --preview needs content/; the starter has nothing to compare")
+    files, plan = planned
+
+    def sized(data):
+        return len(data), hashlib.sha256(data).hexdigest()
+    new = {name: sized(text.encode("utf-8")) for name, text in files.items()}
+    new.update({Path(relative).as_posix(): sized(Path(source).read_bytes()) for source, relative, _ in plan})
+    old, unreadable = {}, []
+    if public.is_dir():
+        for folder, dirs, names in os.walk(public, followlinks=False):
+            for name in names + [d for d in dirs if (Path(folder) / d).is_symlink()]:
+                path = Path(folder) / name
+                relative = path.relative_to(public).as_posix()
+                if path.is_symlink() or not path.is_file():  # never followed or opened
+                    unreadable.append(relative)
+                else:
+                    old[relative] = sized(path.read_bytes())
+    both = sorted(new.keys() & old.keys())
+    changed = [{"path": p, "bytes_before": old[p][0], "bytes_after": new[p][0], "delta": new[p][0] - old[p][0]}
+               for p in both if old[p] != new[p]]
+    return {"public_exists": public.exists(),
+            "added": [{"path": p, "bytes": new[p][0]} for p in sorted(new.keys() - old.keys())],
+            "removed": [{"path": p, "bytes": old[p][0]} for p in sorted(old.keys() - new.keys())],
+            "changed": changed, "unchanged": len(both) - len(changed), "unreadable": sorted(unreadable)}

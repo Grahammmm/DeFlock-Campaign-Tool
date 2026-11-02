@@ -6,6 +6,12 @@ Open-source tools to help local organizers investigate automated license plate r
 
 ## Start locally
 
+New organizer? After cloning, run `python3 -m campaign_tool setup --directory ../my-campaign`.
+Answer name, county, two-letter state and optional city/place; setup runs offline and lists drafts to review.
+For no prompts, add `--name "Your Campaign" --county "Your County" --state CA --yes`.
+Re-run with the same answers to keep existing work. Nothing is sent or published.
+The individual commands remain available below.
+
 The portable offline starter below requires Python 3.11 or newer and no third-party
 Python packages. Full records intake/extraction has a separate Linux runtime and
 parser requirements; see [Records runtime](docs/RECORDS-RUNTIME.md). Running the
@@ -30,6 +36,7 @@ Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, no
 ```sh
 python3 -m campaign_tool ingest --directory ../my-campaign --file examples/synthetic-county/policy.txt --source-id demo-production-001
 python3 -m campaign_tool ingest --directory ../my-campaign --dir ../production-001 --source-id demo-production-001  # whole folder; per-file stored/present/skipped, no links followed
+python3 -m campaign_tool ingest --directory ../my-campaign --dir ../production-001 --source-id demo-production-001 --dry-run  # preview: would_store/present/skipped; writes nothing
 python3 -m campaign_tool status --directory ../my-campaign
 python3 -m campaign_tool status --directory ../my-campaign --check
 ```
