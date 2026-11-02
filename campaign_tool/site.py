@@ -158,6 +158,10 @@ def time_tag(value):
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                   "amended": "Approved with amendments", "no_action": "No action taken",
                   "informational": "Informational item only"}
+# English names, independent of the host locale (DF1822-08 deadline line).
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December")
 
 
 def meeting_outcome_html(meeting):
@@ -359,11 +363,31 @@ class Site:
         return (f'<form class="finding-filter" id="finding-filter" aria-label="{self.t("finding.filter_label")}" hidden>{fields}'
                 f'<p class="filter-count" id="filter-count" aria-live="polite">{self.t("finding.filter_count", count=len(findings))}</p></form>')
 
+    def _written_deadline(self, meeting):
+        """DF1822-08: the verified written-comment deadline line, in the deadline's own offset; "" when none or cancelled.
+
+        Closed when the deadline is at or before the build instant, which is the build date (``self.today``) at
+        00:00 UTC: the builder carries a date, not a clock time.
+        """
+        written = (meeting.get("participation") or {}).get("written_comment") or {}
+        if meeting.get("status") == "cancelled" or not written.get("deadline"):
+            return ""
+        due = datetime.fromisoformat(written["deadline"].replace("Z", "+00:00"))
+        if due <= datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc):
+            text = "Written comment period closed"
+        else:
+            offset = int(due.utcoffset().total_seconds()) // 60
+            text = (f'Written comments due {WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
+                    f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
+                    f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+        return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
+
     def meeting_item(self, meeting):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
+        item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
         kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
@@ -680,6 +704,7 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
