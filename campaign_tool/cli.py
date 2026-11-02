@@ -53,6 +53,12 @@ def database(root):
             source_id TEXT NOT NULL, received_at TEXT NOT NULL,
             original_name TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS contains (
+            container_sha256 TEXT NOT NULL REFERENCES objects(sha256),
+            member_sha256 TEXT NOT NULL REFERENCES objects(sha256),
+            member_path TEXT NOT NULL,
+            PRIMARY KEY (container_sha256, member_path)
+        );
     """)
     return db
 
@@ -150,9 +156,15 @@ def _preview_one(known, path, source_id, dir_fd=None):
 
 def _ingest_one(db, root, path, source_id, dir_fd=None):
     """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome."""
-    data, digest = _read_checked(path, dir_fd)
+    return _store_bytes(db, root, _read_checked(path, dir_fd)[0], source_id, os.path.basename(path))
+
+
+def _store_bytes(db, root, data, source_id, name, contained_in=None):
+    """Store bytes under their hash with one receipt named `name` (and, for an archive member, its
+    `contains` row given as (container_sha256, member_path)) in one transaction."""
+    digest = hashlib.sha256(data).hexdigest()
     identity = _receipt_id(source_id, digest)
-    with db:  # one transaction per file; the object is written before its rows
+    with db:  # one transaction per object; the object is written before its rows
         objects = root / "private" / "objects"
         objects.mkdir(mode=0o700, exist_ok=True)
         target = objects / digest
@@ -175,7 +187,9 @@ def _ingest_one(db, root, path, source_id, dir_fd=None):
         new_object = db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
                                 (digest, len(data), now())).rowcount == 1
         cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
-                            (identity, digest, source_id, now(), os.path.basename(path)))
+                            (identity, digest, source_id, now(), name))
+        if contained_in is not None:
+            db.execute("INSERT OR IGNORE INTO contains VALUES (?, ?, ?)", (contained_in[0], digest, contained_in[1]))
     return {"sha256": digest, "receipt_id": identity, "new_receipt": cursor.rowcount == 1,
             "analysis_status": "not_started", "outcome": "stored" if new_object else "present"}
 
@@ -184,6 +198,9 @@ def ingest(args, root):
     read_config(root)
     if getattr(args, "dir", None) is not None:
         return _ingest_dir(args, root)
+    if getattr(args, "zip", None) is not None:
+        from .ingest_zip import ingest_zip
+        return ingest_zip(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -620,6 +637,8 @@ def main():
             source = cmd.add_mutually_exclusive_group(required=True)
             source.add_argument("--file")
             source.add_argument("--dir", help="One local production folder; symlinks are never followed")
+            source.add_argument("--zip", help="One production .zip: archive and regular members stored by hash, "
+                                "never extracted to disk; nested archives are stored, not opened")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")

@@ -1,0 +1,249 @@
+"""DF2037-06: `ingest --zip ARCHIVE --source-id ID` stores the archive and each regular member by hash.
+
+Members are read in memory, never extracted to disk; each gets a receipt `<archive>/<member path>` and a
+ledger `contains` row. Every archive is built here from synthetic bytes. Run from the repository root:
+python3 -B -m unittest tests.test_ingest_zip -v
+"""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import resource
+import sqlite3
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+import zlib
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MAX_BYTES = 50 * 1024 * 1024
+
+
+def deflate(data):
+    packer = zlib.compressobj(6, zlib.DEFLATED, -zlib.MAX_WBITS)
+    return packer.compress(data) + packer.flush()
+
+
+def build_zip(entries):
+    """Zip bytes from (name, data, options); options may set method, flags, mode, raw, size and crc
+    so headers can say what a hostile archive would say."""
+    body, central = b"", b""
+    for name, data, opt in entries:
+        encoded = name.encode("utf-8")
+        method = opt.get("method", 8)
+        raw = opt.get("raw", deflate(data) if method == 8 else data)
+        common = struct.pack("<HHHHHIII", 20, opt.get("flags", 0x800), method, 0, 0x21,
+                             opt.get("crc", zlib.crc32(data)), len(raw), opt.get("size", len(data)))
+        offset = len(body)
+        body += b"PK\x03\x04" + common + struct.pack("<HH", len(encoded), 0) + encoded + raw
+        central += (b"PK\x01\x02" + struct.pack("<H", 0x0314) + common
+                    + struct.pack("<HHHHHII", len(encoded), 0, 0, 0, 0, opt.get("mode", 0o100644) << 16, offset)
+                    + encoded)
+    end = b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, len(entries), len(entries), len(central), len(body), 0)
+    return body + central + end
+
+
+def limit_memory():
+    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+
+
+class IngestZipTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="synthetic-ingest-zip-")
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root, self.work, self.inbox = self.base / "campaign", self.base / "work", self.base / "inbox"
+        self.work.mkdir()
+        self.inbox.mkdir()
+        self.cli("init", "--name", "Synthetic Campaign", "--county", "Synthetic County", "--state", "ca")
+
+    def cli(self, command, *arguments, returncode=0, preexec_fn=None):
+        env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(REPO_ROOT)}
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "campaign_tool", command, "--directory", str(self.root), *map(str, arguments)],
+            cwd=self.work, env=env, capture_output=True, text=True, timeout=300, preexec_fn=preexec_fn)
+        self.assertEqual(result.returncode, returncode, f"stdout={result.stdout!r}; stderr={result.stderr!r}")
+        self.assertNotIn("Traceback", result.stderr)
+        return result
+
+    def ingest(self, archive, source_id="synthetic-1", dry=False, **kwargs):
+        result = self.cli("ingest", "--zip", archive, "--source-id", source_id, *(["--dry-run"] if dry else []),
+                          **kwargs)
+        if dry:
+            body, last = result.stdout.rstrip("\n").rsplit("\n", 1)
+            self.assertEqual(last, "Dry run: nothing was written.")
+            return json.loads(body)
+        return json.loads(result.stdout)
+
+    def archive(self, entries, name="a.zip"):
+        path = self.inbox / name
+        path.write_bytes(build_zip(entries))
+        return path
+
+    def files(self):
+        return {str(p.relative_to(self.base)): p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+
+    def rows(self, query):
+        db = sqlite3.connect(self.root / "private" / "ledger.sqlite")
+        try:
+            return db.execute(query).fetchall()
+        finally:
+            db.close()
+
+    def skipped(self, report):
+        return {item["path"]: item["code"] for item in report["skipped"]}
+
+    def test_two_members_three_objects_receipts_two_contains_rows_and_nothing_else_written(self):
+        x, y = b"%PDF-1.4 synthetic x\n", b"synthetic y\n"
+        path = self.archive([("x.pdf", x, {}), ("sub/y.txt", y, {"method": 0})])
+        before = self.files()
+        report = self.ingest(path)
+        whole = hashlib.sha256(path.read_bytes()).hexdigest()
+        sx, sy = hashlib.sha256(x).hexdigest(), hashlib.sha256(y).hexdigest()
+        self.assertEqual(report["archive"]["sha256"], whole)
+        self.assertEqual(report["archive"]["outcome"], "stored")
+        self.assertEqual(report["members"], [{"path": "x.pdf", "sha256": sx, "outcome": "stored"},
+                                             {"path": "sub/y.txt", "sha256": sy, "outcome": "stored"}])
+        self.assertEqual((report["skipped"], report["stored"], report["present"]), ([], 3, 0))
+        created = {k: v for k, v in self.files().items() if k not in before}
+        objects = "campaign/private/objects/"
+        self.assertEqual(set(created), {"campaign/private/ledger.sqlite", objects + whole, objects + sx, objects + sy})
+        self.assertEqual((created[objects + sx], created[objects + sy]), (x, y))
+        self.assertEqual(sorted(r[0] for r in self.rows("SELECT original_name FROM receipts")),
+                         ["a.zip", "a.zip/sub/y.txt", "a.zip/x.pdf"])
+        self.assertEqual(sorted(self.rows("SELECT * FROM contains")), sorted([(whole, sx, "x.pdf"), (whole, sy, "sub/y.txt")]))
+        self.cli("status", "--check")
+
+    def test_reingest_same_source_all_present_and_new_source_adds_receipts_only(self):
+        path = self.archive([("x.pdf", b"x", {}), ("sub/y.txt", b"y", {})])
+        self.ingest(path)
+        counts = "SELECT (SELECT count(*) FROM objects), (SELECT count(*) FROM receipts), (SELECT count(*) FROM contains)"
+        self.assertEqual(self.rows(counts), [(3, 3, 2)])
+        again = self.ingest(path)
+        self.assertEqual([again["archive"]["outcome"]] + [m["outcome"] for m in again["members"]], ["present"] * 3)
+        self.assertEqual((again["stored"], again["present"]), (0, 3))
+        self.assertEqual(self.rows(counts), [(3, 3, 2)])
+        other = self.ingest(path, source_id="synthetic-2")
+        self.assertEqual((other["stored"], other["present"]), (0, 3))
+        self.assertEqual(self.rows(counts), [(3, 6, 2)])
+        self.assertEqual(self.rows("SELECT count(*) FROM receipts WHERE source_id = 'synthetic-2'"), [(3,)])
+
+    def test_traversal_absolute_drive_nul_and_long_names_skipped_unsafe_nothing_outside_objects(self):
+        names = ["../evil.txt", "/etc/x", "C:\\x", "a\\..\\..\\b", "./dot.txt", "a//b.txt", "nul\0.txt", "n" * 250]
+        path = self.archive([(n, b"evil " + n.encode(), {}) for n in names] + [("ok.txt", b"ok", {})])
+        before = self.files()
+        report = self.ingest(path)
+        self.assertEqual(sorted(self.skipped(report).values()), ["unsafe_name"] * len(names))
+        self.assertEqual([m["path"] for m in report["members"]], ["ok.txt"])
+        created = set(self.files()) - set(before)
+        self.assertEqual({c for c in created if not c.startswith("campaign/private/objects/")},
+                         {"campaign/private/ledger.sqlite"})
+        self.assertEqual(len(created), 3)
+        self.assertFalse((self.base / "evil.txt").exists() or (self.work / "evil.txt").exists())
+
+    def test_encrypted_symlink_directory_and_duplicate_name_each_skipped_by_code(self):
+        first = b"first x\n"
+        path = self.archive([("sub/", b"", {"mode": 0o040755}), ("locked.pdf", b"secret", {"flags": 0x801}),
+                             ("link", b"/etc/passwd", {"mode": 0o120777}), ("x.pdf", first, {}),
+                             ("x.pdf", b"second x\n", {})])
+        report = self.ingest(path)
+        self.assertEqual(report["skipped"], [{"path": "sub/", "code": "directory"},
+                                             {"path": "locked.pdf", "code": "encrypted"},
+                                             {"path": "link", "code": "symlink"},
+                                             {"path": "x.pdf", "code": "duplicate_name"}])
+        self.assertEqual(report["members"], [{"path": "x.pdf", "sha256": hashlib.sha256(first).hexdigest(),
+                                              "outcome": "stored"}])
+        self.assertEqual(self.rows("SELECT count(*) FROM objects"), [(2,)])
+
+    def test_lying_header_capped_read_bombs_and_corrupt_members_skipped_archive_still_stored(self):
+        packer, raw = zlib.compressobj(1, zlib.DEFLATED, -zlib.MAX_WBITS), b""
+        chunk = bytes(1024 * 1024)
+        for _ in range(1024):  # 1 GiB of zeros inflated from about 1 MiB; the header claims 10 bytes
+            raw += packer.compress(chunk)
+        raw += packer.flush()
+        small = deflate(b"z" * 200_000)
+        path = self.archive([
+            ("liar.bin", b"", {"raw": raw, "size": 10, "crc": 0}),
+            ("bomb.bin", bytes(1_000_000), {}),
+            ("quiet-bomb.bin", b"", {"raw": small, "size": 10, "crc": 0}),
+            ("bad-crc.txt", b"synthetic", {"crc": 1}),
+            ("short.txt", b"synthetic", {"size": 4}),
+            ("ok.txt", b"ok", {})])
+        report = self.ingest(path, preexec_fn=limit_memory)  # 512 MiB address space: the 1 GiB is never held
+        self.assertEqual(self.skipped(report), {"liar.bin": "too_large", "bomb.bin": "ratio",
+                                                "quiet-bomb.bin": "ratio", "bad-crc.txt": "unreadable",
+                                                "short.txt": "unreadable"})
+        self.assertEqual(report["archive"]["outcome"], "stored")
+        self.assertEqual([m["path"] for m in report["members"]], ["ok.txt"])
+        self.assertTrue((self.root / "private" / "objects" / report["archive"]["sha256"]).is_file())
+
+    def test_header_over_50_mib_skipped_too_large_without_reading(self):
+        path = self.archive([("huge.bin", b"tiny", {"size": MAX_BYTES + 1}), ("ok.txt", b"ok", {})])
+        report = self.ingest(path, preexec_fn=limit_memory)
+        self.assertEqual(self.skipped(report), {"huge.bin": "too_large"})
+        self.assertEqual([m["path"] for m in report["members"]], ["ok.txt"])
+
+    def test_2001_entries_refused_before_any_write_and_non_zip_stopped(self):
+        many = self.archive([(f"f{i}.txt", b"%d" % i, {"method": 0}) for i in range(2001)])
+        before = self.files()
+        result = self.cli("ingest", "--zip", many, "--source-id", "synthetic-1", returncode=1)
+        self.assertIn("Stopped: a.zip: more than 2000 entries; nothing was imported", result.stderr)
+        self.assertEqual(self.files(), before)
+        exactly = self.archive([(f"f{i}.txt", b"%d" % i, {"method": 0}) for i in range(2000)], name="ok.zip")
+        self.assertEqual(len(self.ingest(exactly, dry=True)["members"]), 2000)  # the boundary itself is accepted
+        fake = self.inbox / "fake.zip"
+        fake.write_bytes(b"%PDF-1.4 not a zip\n")
+        before = self.files()
+        for dry in ([], ["--dry-run"]):
+            result = self.cli("ingest", "--zip", fake, "--source-id", "synthetic-1", *dry, returncode=1)
+            self.assertIn("Stopped: not a zip archive", result.stderr)
+        link = self.inbox / "link.zip"
+        link.symlink_to(exactly)
+        result = self.cli("ingest", "--zip", link, "--source-id", "synthetic-1", returncode=1)
+        self.assertIn("Stopped: --zip must be a regular, non-symlink file", result.stderr)
+        self.assertEqual({k for k in self.files() if k != "inbox/link.zip"}, set(before))
+
+    def test_nested_archive_stored_as_member_never_opened(self):
+        inner = build_zip([("inner-secret.txt", b"inner bytes", {})])
+        path = self.archive([("inner.zip", inner, {}), ("letter.txt", b"letter", {})])
+        result = self.cli("ingest", "--zip", path, "--source-id", "synthetic-1")
+        report = json.loads(result.stdout)
+        self.assertEqual([m["path"] for m in report["members"]], ["inner.zip", "letter.txt"])
+        self.assertNotIn("inner-secret", result.stdout)
+        digest = hashlib.sha256(inner).hexdigest()
+        self.assertEqual((self.root / "private" / "objects" / digest).read_bytes(), inner)
+        self.assertEqual(self.rows("SELECT count(*) FROM objects"), [(3,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM contains WHERE container_sha256 = '%s'" % digest), [(0,)])
+
+    def test_dry_run_fresh_campaign_and_old_ledger_without_contains_write_nothing(self):
+        x = b"synthetic x\n"
+        path = self.archive([("x.pdf", x, {}), ("y.txt", b"y", {}), ("../evil", b"e", {})])
+        (self.root / "private").rmdir()
+        before = self.files()
+        report = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before)
+        self.assertFalse((self.root / "private").exists())
+        self.assertEqual((report["would_store"], report["present"], report["dry_run"]), (3, 0, True))
+        self.assertEqual(self.skipped(report), {"../evil": "unsafe_name"})
+        (self.root / "private").mkdir(mode=0o700)
+        old = sqlite3.connect(self.root / "private" / "ledger.sqlite")
+        old.executescript("CREATE TABLE objects (sha256 TEXT PRIMARY KEY, byte_count INTEGER NOT NULL, "
+                          "stored_at TEXT NOT NULL); CREATE TABLE receipts (receipt_id TEXT PRIMARY KEY, "
+                          "object_sha256 TEXT NOT NULL, source_id TEXT NOT NULL, received_at TEXT NOT NULL, "
+                          "original_name TEXT NOT NULL);")
+        old.execute("INSERT INTO objects VALUES (?, ?, 'synthetic')", (hashlib.sha256(x).hexdigest(), len(x)))
+        old.commit()
+        old.close()
+        before = self.files()
+        report = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before, "dry run changed the old ledger or wrote a file")
+        self.assertEqual([m["outcome"] for m in report["members"]], ["present", "would_store"])
+        self.assertEqual((report["archive"]["outcome"], report["would_store"], report["present"]), ("would_store", 2, 1))
+        self.assertEqual(self.rows("SELECT name FROM sqlite_master WHERE name = 'contains'"), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
