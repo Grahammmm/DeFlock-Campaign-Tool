@@ -235,7 +235,7 @@ app.post("/setup/6", async (c) => {
   const f = await c.req.parseBody();
   if (String(f.confirm ?? "") !== "yes") return page(c, 6, S.screenDeploy(s, buildPlan(s), c.env.DRY_RUN === "1"), "confirm the authorization checkbox");
   const dryRun = c.env.DRY_RUN === "1";
-  const client = new CloudflareClient(s.accounts.cloudflare.api_token, { dryRun, base: c.env.CLOUDFLARE_API_BASE });
+  const client = new CloudflareClient(s.accounts.cloudflare.api_token, { dryRun, dryZoneName: s.campaign!.domain, base: c.env.CLOUDFLARE_API_BASE });
   const plan = buildPlan(s);
   const result = await applyPlan(plan, { client, bundles: { workspace: WORKSPACE_BUNDLE, public_site: PUBLIC_SITE_BUNDLE, migrations: WORKSPACE_MIGRATIONS } });
   const { generated, ...deploy } = result;
