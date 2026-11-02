@@ -49,6 +49,15 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
+`ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
+spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
+them with `ssh-keygen -Y sign -n deflock-finding-review -f KEY payload` and pass `--signature payload.sig`.
+The tool verifies before writing; `review-status` reports `signed`, `self_asserted` and `bad_signatures`
+(re-verified each time), and `publish` prints the same counts. This trust root is the organizer-held
+campaign file, **weaker than** the root-owned `/etc/deflock` approval file; `approval.verify` and
+`/etc/deflock` are not used or changed. Without `ssh-keygen` (OpenSSH 8.2+) only unsigned review works.
+
     python3 -m campaign_tool finding publish DRAFT --directory D --approved-by NAME
 
 `finding publish` writes `D/content/findings/<slug>.json` with `state: "published"`, `published_at`
@@ -137,10 +146,18 @@ edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts f
 longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
 under `public/`; posting stays an organizer decision outside this tool.
 
+## Reviewer roster (role assignment, not authentication)
+
+`finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges
+roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list` prints it. With a
+roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
+`unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
+
 ## Not done
 
-No reviewer directory or role assignment beyond the Access policy; no diff view between
-content versions in the workspace Worker; no automatic notification to reviewers. The runner that executes
+No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
+no reviewer directory or role assignment beyond the Access policy and no diff view between content
+versions; no automatic notification to reviewers. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
 
 The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`
