@@ -496,6 +496,32 @@ def review(args):
     return 0
 
 
+def reviews(args):
+    """RF0420-9: one agency's FACT-REVIEWS.csv history after the full check `review` runs. Read-only; ids, statuses, dates
+    and counts only, never a reviewer, note, value, quote or page. A reversal is a fact changed into both checked and disputed."""
+    store, slug = Path(args.store).resolve(), slugify(args.agency)
+    if store == REPO or REPO in store.parents:
+        return fail(["store inside repository"])
+    files, errors = store_files(store, slug)
+    log = store / "agencies" / slug / "FACT-REVIEWS.csv"
+    errors = errors or ["file 1: %s" % e for e in check_file(files[0], slug) + check_reviews(log, files[0])]
+    if errors:
+        return fail(errors)
+    if args.fact is not None and args.fact not in {r["fact_id"] for _, r in load(files[0], slug)[1]}:
+        return fail(["--fact: unknown fact id"])
+    rows = []
+    if log.exists():
+        with open(log, encoding="utf-8-sig", newline="") as handle:
+            rows = [dict(zip(REVIEW_HEAD, rec)) for rec in list(csv.reader(handle))[1:] if rec]
+    rows = [r for r in rows if args.fact in (None, r["fact_id"]) and r["reviewed_at"] >= (args.since or "")]
+    into = {s: {r["fact_id"] for r in rows if r["to_status"] == s} for s in ("checked", "disputed")}
+    for r in rows:
+        print("reviews | %s | %s | %s -> %s | %s" % (slug, r["fact_id"], r["from_status"], r["to_status"], r["reviewed_at"]))
+    print("reviews=%d facts=%d to_checked=%d to_disputed=%d reversals=%d" % (len(rows), len({r["fact_id"] for r in rows}), sum(
+        r["to_status"] == "checked" for r in rows), sum(r["to_status"] == "disputed" for r in rows), len(into["checked"] & into["disputed"])))
+    return 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -511,9 +537,10 @@ def _main(argv=None):
                         " | quote-check --store DIR --text EXPORT [--agency SLUG]"
                         " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]"
                         " | review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME"
-                        " [--date YYYY-MM-DD] [--note TEXT] | unreadable --store DIR --out FILE.csv [--agency SLUG]")
+                        " [--date YYYY-MM-DD] [--note TEXT] | unreadable --store DIR --out FILE.csv [--agency SLUG]"
+                        " | reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]")
     for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text", "--findings", "--date",
-                 "--ids", "--reviewer", "--note", "--out"):
+                 "--ids", "--reviewer", "--note", "--out", "--fact", "--since"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
@@ -521,6 +548,15 @@ def _main(argv=None):
     args = parser.parse_args(argv)
     if args.out is not None and args.command[:1] != ["unreadable"]:
         parser.error("--out belongs to unreadable only")
+    if (args.fact is not None or args.since is not None) and args.command[:1] != ["reviews"]:
+        parser.error("--fact and --since belong to reviews only")
+    if args.command[:1] == ["reviews"]:
+        if len(args.command) != 1 or args.check or not args.store or not slugify(args.agency or "") or any(v is not None for v in (
+                args.inventory, args.list, args.added_by, args.date, args.findings, args.text, args.ids, args.set, args.reviewer,
+                args.note)) or (args.fact is not None and not re.fullmatch(r"F-[0-9a-f]{12}", args.fact)) \
+                or (args.since is not None and not valid_date(args.since)):
+            parser.error("usage: reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]")
+        return reviews(args)
     if args.command[:1] == ["review"]:
         if len(args.command) != 1 or args.check or not args.store or not slugify(args.agency or "") or not args.ids \
                 or not args.set or args.reviewer is None or args.inventory or args.list is not None \
