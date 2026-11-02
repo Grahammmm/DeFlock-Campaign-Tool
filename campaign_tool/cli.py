@@ -586,6 +586,15 @@ def main():
         dest="content_command", required=True).add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
     ).add_argument("--directory", required=True)
+    finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
+                                       ).add_subparsers(dest="finding_command", required=True)
+    review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
+    for flag in ("--directory", "--role", "--decision", "--reviewer", "--rationale"):
+        review_p.add_argument(flag, required=True)
+    finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
+                            ).add_argument("--directory", required=True)
+    for sub in finding_cmds.choices.values():
+        sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
@@ -632,6 +641,12 @@ def main():
                              edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
                                          public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
             print("Nothing was published.")
+        elif args.command == "finding":
+            from . import findings
+            read_config(root)
+            draft = findings.load_draft(args.draft)
+            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
+                             if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root)
