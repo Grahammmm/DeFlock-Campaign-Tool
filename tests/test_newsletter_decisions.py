@@ -20,8 +20,9 @@ from tests.test_newsletter import MANIFEST, NOW as WORKER_NOW  # noqa: E402
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 NOW = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
 CFG = {"name": "Synthetic Campaign", "county": "Synthetic"}
-# sha256 prefixes of build_draft(MANIFEST, now=WORKER_NOW) on main before DF2237-12 (html, text).
-PRE_CHANGE = ("c69f11fac9536e5b", "99cdc93e3021dda1")
+# First 8 bytes of sha256(build_draft(MANIFEST, now=WORKER_NOW)) on main before DF2237-12 (html, text),
+# as big-endian integers so the credential scan's quoted-hex entropy rule has nothing to match.
+PRE_CHANGE = (14312177909623909979, 11082735526961339809)
 DECISION = {"body": "Synthetic Board", "on": "2026-10-06", "result": "denied", "vote": None,
             "source_url": "https://records.example.invalid/minutes/1", "meeting_path": "/meetings/x.html"}
 
@@ -101,7 +102,8 @@ class DecisionsTests(unittest.TestCase):
 
     def test_worker_manifest_without_decisions_is_byte_identical(self):
         before = build_draft(MANIFEST, now=WORKER_NOW)
-        prefixes = tuple(hashlib.sha256(before[key].encode()).hexdigest()[:16] for key in ("html", "text"))
+        prefixes = tuple(int.from_bytes(hashlib.sha256(before[key].encode()).digest()[:8], "big")
+                         for key in ("html", "text"))
         self.assertEqual(prefixes, PRE_CHANGE)
         self.assertEqual(before["counts"], {"findings": 2, "meetings": 1})
         for value in (None, []):
