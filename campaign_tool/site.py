@@ -20,7 +20,7 @@ from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, camera_counts, finding_law, law, map_controller
+from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
 from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
@@ -234,6 +234,14 @@ class Site:
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
         self.labels = model.get("labels") or DEFAULTS  # content/labels.json merged over the English defaults
+        # DF1822-13: "/<relative>" -> (width, height) of each readable PNG/JPEG/WebP public asset, for markdown images.
+        self.image_sizes = {}
+        for source in model.get("public_assets", ()):
+            if (source.suffix.lower() in image_meta.FORMATS and not source.is_symlink() and source.is_file()
+                    and source.stat().st_size <= ASSET_MAX_BYTES):
+                size = image_meta.image_size(source.read_bytes(), source.suffix)
+                if size:
+                    self.image_sizes["/" + source.relative_to(model["assets_dir"]).as_posix()] = size
         # Legal basis (DF1507-02): the package is read once, only when a finding cites a rule.
         self.rule_citations, self.law_status = {}, None
         if any(finding_law.cited(f) for f in model["findings"]):
@@ -250,6 +258,10 @@ class Site:
     def t(self, key, **values):
         """Label ``key`` escaped once; ``values`` are HTML the page already escaped (a name, a <time> tag, a count)."""
         return html_text(self.labels[key]).format(**values)
+
+    def md(self, text):
+        """``markdown_lite`` with this site's public-asset image sizes (own-line ``![alt](/path)`` images render)."""
+        return markdown(text, images=self.image_sizes) if self.image_sizes else markdown(text)
 
     # -- shared frame ------------------------------------------------------
 
@@ -402,7 +414,7 @@ class Site:
         item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
-        kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
+        kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + self.md(meeting["comment_kit_md"]) + '</details>'
                if meeting["comment_kit_md"] else "")
         return (f'<article id="meeting-{e(meeting["id"])}"><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time>'
                 f'{where}{agenda}<h3>{cancelled}{e(meeting["body"])}</h3>{item}{kit}</article>')
@@ -482,7 +494,7 @@ class Site:
     # -- pages ---------------------------------------------------------------
 
     def index_html(self):
-        mission = markdown(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
+        mission = self.md(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
             f'<article><span>0{n}</span><h3>{self.t(f"intro.step{n}_title")}</h3><p>{self.t(f"intro.step{n}")}</p></article>'
             for n in (1, 2, 3)) + '</div>')
         cards = (f'    <section class="section cities-section" id="agencies"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
@@ -623,7 +635,7 @@ class Site:
                 f'<span>{self.t("finding.event_date", date=when(finding))}</span>'
                 f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}{updated}</span></div>'
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
-                + (markdown(finding["body_md"]) if finding["body_md"] else "")
+                + (self.md(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
                 + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>' + related
@@ -710,7 +722,7 @@ class Site:
         cancelled = meeting.get("status") == "cancelled"
         agenda = (f'<p><a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a></p>'
                   if meeting["agenda_url"] else "")
-        kit = (markdown(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
+        kit = (self.md(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
                else f'<p>{self.t("notice.no_kit")}</p>')
         main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.meeting")}</p>'
                 f'<h2>{self.t("meeting.cancelled") + " " if cancelled else ""}{e(meeting["body"])}</h2>'
@@ -729,7 +741,7 @@ class Site:
         contact = (f'<p>{self.t("footer.contact")} <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
                    if self.site["contact_email"] else "")
         main = (f'    <section class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.about")}</p>'
-                f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
+                f'<h2>{self.name}</h2>{self.md(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
                 '<a href="/data/sources.json" type="application/json">data/sources.json</a>.</p>'
@@ -739,7 +751,7 @@ class Site:
 
     def content_page_html(self, page):
         """``/<slug>.html`` from ``content/pages/<slug>.json`` (DF2237-07); body_md through markdown_lite."""
-        main = (f'    <article class="section finding-body" id="content"><h2>{e(page["title"])}</h2>{markdown(page["body_md"])}'
+        main = (f'    <article class="section finding-body" id="content"><h2>{e(page["title"])}</h2>{self.md(page["body_md"])}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
                          f'/{page["slug"]}.html', main)

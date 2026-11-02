@@ -242,6 +242,8 @@ parse is refused as `unreadable image`; re-export it. To clean one, run
 profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
 inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
 
+Images in text: in a finding, page, about, mission or comment-kit text, a line that is only `![Council chamber, 3 June](/photos/council.jpg)` shows `content/public-assets/photos/council.jpg` (PNG, JPEG or WebP) with that alt text (required, 1-200 characters), its own width and height and lazy loading; anything else (inline, in a list, another site, a missing file or SVG, empty alt) stays text, and `markdown_lite --lint` names it as `image`. The newsletter shows no images.
+
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
 kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
