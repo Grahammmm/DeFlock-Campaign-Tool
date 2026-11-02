@@ -118,6 +118,16 @@ stops the build naming `<file>[n].verification`. A verified agency shows
 link only and is never fetched. With `verified` not true the object is still
 validated but not shown, and the "Contact details unverified" hint stays.
 
+An agency's optional `profile.alpr_policy` links a posted ALPR usage policy an
+organizer found: `{"url": "https://…", "source_url": "https://…", "checked_on":
+"YYYY-MM-DD"}`, exactly these three keys. `url` is the policy itself and
+`source_url` the page where it was found (both https); `checked_on` is a real
+date not after the build date. A missing key, an extra key or a bad value stops
+the build naming `<file>[n].profile.alpr_policy` (and the field); `null` or
+absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
+<date>, where we found it)" on that agency's card only; neither URL is fetched.
+Linking a policy says only that it was posted; it is not a finding about compliance.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without
