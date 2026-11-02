@@ -20,6 +20,8 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 
 ## Content directory
 
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
 Finding citations and the source library lead with “From a document we hold”,
 the receipt date and agency when known, and public-copy or private-original status.
 Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps
@@ -169,6 +171,10 @@ three); `meetings.html` then lists `#past-meetings`, most recent first.
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
 files above.
+
+Not-found page: `404.html` is always generated (site shell, links to findings, agencies, meetings and home, a note
+that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
+is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
 
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment

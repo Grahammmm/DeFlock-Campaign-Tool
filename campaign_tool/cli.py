@@ -298,10 +298,12 @@ def _ingest_dir(args, root):
                       **({"dry_run": True} if dry else {})}, indent=2))
 
 
-def status(root, check=False):
+def status(root, check=False, fix=False):
     read_config(root)
-    from .store_check import check_store
-    result = check_store(root) if check else None
+    from .store_check import check_store, fix_modes
+    if fix:
+        print(json.dumps(fix_modes(root), indent=2))
+    result = check_store(root) if check or fix else None
     status_counts(root)
     if result is not None:
         print(json.dumps({"check": result}, indent=2))
@@ -532,6 +534,10 @@ def main():
     for flag in ("--name", "--county", "--state", "--location"):
         setup_p.add_argument(flag)
     setup_p.add_argument("--yes", action="store_true", help="Use flags only; never prompt")
+    import_p = commands.add_parser("import-existing", help="Preserve a local folder with private receipts; no parsing")
+    for flag in ("--directory", "--label"):
+        import_p.add_argument(flag, required=True)
+    import_p.add_argument("--from", dest="folder", required=True)
     for name in ("init", "ingest", "doctor", "status", "build"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--directory", required=True)
@@ -555,8 +561,12 @@ def main():
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
+            cmd.add_argument("--fix-modes", action="store_true",
+                             help="chmod loose private dirs/files to 0700/0600, then run --check")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
+            cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
+            cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -633,6 +643,9 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
+    due_p.add_argument("--directory", required=True)
+    due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -661,6 +674,10 @@ def main():
         sources_edit.add_argument(flag, default=None)
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
+    commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+        dest="content_command", required=True).add_parser(
+        "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
+    ).add_argument("--directory", required=True)
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
@@ -678,6 +695,14 @@ def main():
     for flag in ("--directory", "--date", "--note"):
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
+                                          ).add_subparsers(dest="reviewers_command", required=True)
+    roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
+    roster_add.add_argument("--name", required=True)
+    roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
+    roster_cmds.add_parser("list", help="Print the roster (read-only)")
+    for sub in roster_cmds.choices.values():
+        sub.add_argument("--directory", required=True)
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -687,6 +712,8 @@ def main():
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
+    if getattr(args, "json", False) and not args.checklist:
+        parser.error("--json requires --checklist")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -701,6 +728,11 @@ def main():
         elif args.command == "setup":
             from .setup_cmd import run_cli
             run_cli(args, root, parser, sys.stdin, sys.stdout)
+        elif args.command == "import-existing":
+            from .import_existing import run
+            report = run(root, args.folder, args.label)
+            print(json.dumps(report, indent=2))
+            sys.exit(3 if report["stopped"] or report["counts"]["error"] else 0)
         elif args.command == "ingest":
             ingest(args, root)
         elif args.command == "kit":
@@ -743,6 +775,14 @@ def main():
                              edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
                                          public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
             print("Nothing was published.")
+        elif args.command == "finding" and args.finding_command == "reviewers":
+            from . import findings
+            read_config(root)
+            add = args.reviewers_command == "add"
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role) if add else findings.list_reviewers(root),
+                             indent=2, ensure_ascii=False))
+            if add:
+                print("Private roster updated; nothing was published.")
         elif args.command == "finding":
             from . import findings
             read_config(root)
@@ -767,6 +807,10 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content":
+            from .content_init import init_content
+            print(json.dumps(init_content(root), indent=2))
+            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
@@ -781,13 +825,26 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-due":
+            from .kit_track import due as kit_track_due
+            report = kit_track_due(root, args.as_of)
+            print(json.dumps(report, indent=2))
+            if report["past_due"]:
+                sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "doctor" and args.checklist:
+            from .doctor_checklist import render
+            print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,
+                         agency_list_exists=(root / "kit" / "agencies.json").is_file()))
         else:
-            status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
+            if args.command == "status":
+                status(root, check=args.check, fix=args.fix_modes)
+            else:
+                doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(1)
