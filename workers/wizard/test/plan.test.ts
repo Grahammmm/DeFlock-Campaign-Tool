@@ -31,6 +31,28 @@ export function fullState(): WizardState {
 }
 
 describe("plan", () => {
+  it("mail-off creates no mail steps or mailbox secrets", () => {
+    const s = fullState();
+    s.accounts!.mailbox = { mode: "none", address: "", imap_password: "synthetic-stale", smtp_password: "synthetic-stale" };
+    const ids = buildPlan(s).map((p) => p.id);
+    expect(ids.some((id) => id.startsWith("email."))).toBe(false);
+    expect(ids.some((id) => /^secret\.(IMAP|SMTP)_/.test(id))).toBe(false);
+  });
+
+  it("uses an explicit first-level workspace host everywhere, preserving the default", () => {
+    const s = fullState();
+    expect(planNames(s).workspaceHostname).toBe("workspace.campaign.example.invalid");
+    s.campaign!.domain = "tool.example.invalid";
+    s.campaign!.workspace_hostname = "tool-workspace.example.invalid";
+    const host = "tool-workspace.example.invalid";
+    expect(planNames(s).workspaceHostname).toBe(host);
+    const plan = buildPlan(s);
+    expect(plan.find((p) => p.id === "access.app")!.body).toMatchObject({ domain: host });
+    expect(plan.find((p) => p.id === "dns.workspace")!.body).toMatchObject({ name: host });
+    expect(plan.find((p) => p.id === "route.workspace")!.body).toMatchObject({ pattern: host + "/*" });
+    expect(seedSql(s)).toContain("'" + host + "'");
+  });
+
   it("lists every resource with its API call and rollback", () => {
     const s = fullState();
     const plan = buildPlan(s);
