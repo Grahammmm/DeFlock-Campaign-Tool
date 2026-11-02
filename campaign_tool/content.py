@@ -25,7 +25,8 @@ from .review import CLASSIFICATIONS, review_blockers
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
 SIGNUP_MODES = ("none", "brevo_hosted")
 SIGNUP_HOST_SUFFIXES = (".sibforms.com",)
-AGENCY_KINDS = ("sheriff", "police", "chp", "district_attorney", "county_board", "city_council", "other")
+AGENCY_KINDS = ("sheriff", "police", "chp", "campus_police", "district_attorney", "county_board", "city_council",
+                "other")
 CITY_KINDS = ("police", "city_council")
 PORTAL_VENDORS = ("nextrequest", "govqa", "justfoia", "none", "unknown")
 SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")

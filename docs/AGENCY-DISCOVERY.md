@@ -27,6 +27,15 @@ Every county gets a sheriff, board of supervisors, district attorney and one
 CHP entry (`jurisdiction_name: "California Highway Patrol"`, so county kits
 include the statewide agency; requests go to CHP headquarters public records).
 
+UC and CSU campus police departments (33, from the `CAMPUSES` table) are
+seeded per county as kind `campus_police`, after the CHP entry. They are
+opt-in: a kit lists them only with `--include campus_police`, never by
+default, so a kit without it is unchanged. Each entry is unverified with null
+contacts; its source note says to submit to the campus records office, which
+is separate from the city and county records offices and has its own
+procedure. Community colleges, private universities and school police are not
+seeded.
+
 Coverage: all 58 counties. City lists are believed complete for San Luis
 Obispo, Santa Barbara, Monterey, Santa Cruz, Ventura, Kern, Fresno,
 Sacramento, San Diego, Alameda and Los Angeles counties; other counties list
@@ -75,7 +84,7 @@ with `suggested: true`. For a city match the city's own agencies come first,
 then the county-wide ones; for a county match the county-wide agencies come
 first, then every city's agencies in seed order. `--include` (repeatable)
 restricts and orders kinds: `sheriff`, `police`, `county_board`,
-`city_council`, `district_attorney`, `chp`.
+`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police`.
 
 ## Online mode
 
