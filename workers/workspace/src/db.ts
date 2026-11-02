@@ -694,17 +694,19 @@ export class Repo {
       ).bind(marker, clock, this.campaignId, this.campaignId, clock, bound),
       this.db.prepare(
         "UPDATE job SET state = 'failed', error = 'lease_attempts_exhausted', leased_until = NULL, finished_at = ?, updated_at = ? " +
-        "WHERE campaign_id = ? AND EXISTS (SELECT 1 FROM job_claim WHERE job_claim.job_id = job.job_id " +
+        "WHERE job_id IN (SELECT job_id FROM job_claim WHERE campaign_id = ? AND completion_id = ?) " +
+        "AND EXISTS (SELECT 1 FROM job_claim WHERE job_claim.job_id = job.job_id " +
         "AND job_claim.campaign_id = job.campaign_id AND job_claim.claim_token = job.claim_token AND completion_id = ?)",
-      ).bind(clock, clock, this.campaignId, marker),
+      ).bind(clock, clock, this.campaignId, marker, marker),
       this.db.prepare(
         "INSERT INTO incident (incident_id, campaign_id, fingerprint, severity, message, first_seen, last_seen, created_at, updated_at) " +
         "SELECT 'inc_' || lower(hex(randomblob(8))), campaign_id, 'job:' || kind || ':' || idempotency_key, 'warning', " +
         "'job ' || job_id || ' (' || kind || ') lease_attempts_exhausted after ' || attempt || ' attempts', ?, ?, ?, ? " +
-        "FROM job WHERE campaign_id = ? AND EXISTS (SELECT 1 FROM job_claim WHERE job_claim.job_id = job.job_id " +
+        "FROM job WHERE job_id IN (SELECT job_id FROM job_claim WHERE campaign_id = ? AND completion_id = ?) " +
+        "AND EXISTS (SELECT 1 FROM job_claim WHERE job_claim.job_id = job.job_id " +
         "AND job_claim.campaign_id = job.campaign_id AND job_claim.claim_token = job.claim_token AND completion_id = ?) " +
         "ON CONFLICT(campaign_id, fingerprint) DO NOTHING",
-      ).bind(clock, clock, clock, clock, this.campaignId, marker),
+      ).bind(clock, clock, clock, clock, this.campaignId, marker, marker),
     ]);
     return results[1]!.meta.changes ?? 0;
   }
@@ -718,7 +720,8 @@ export class Repo {
     const results = await this.db.batch([
       this.db.prepare(
         "UPDATE job SET state = 'leased', leased_until = ?, claim_token = ?, attempt = attempt + 1, updated_at = ? " +
-        "WHERE job_id = (SELECT job_id FROM job WHERE campaign_id = ? AND attempt < max_attempts " +
+        "WHERE job_id = (SELECT job_id FROM job INDEXED BY job_runnable WHERE campaign_id = ? " +
+        "AND state IN ('queued', 'leased') AND attempt < max_attempts " +
         "AND (state = 'queued' OR (state = 'leased' AND leased_until <= ?)) ORDER BY enqueued_at, job_id LIMIT 1) RETURNING *",
       ).bind(until, token, clock, this.campaignId, clock),
       this.db.prepare(
