@@ -22,7 +22,7 @@ BUILD_DAY = date(2026, 10, 20)
 ROWS = re.compile(r'<li><time datetime="([^"]+)">\1</time> · <a href="/findings/([^"]+)\.html#corrections">([^<]*)</a>: ([^<]*)</li>')
 PILL = re.compile(r'<span class="status-pill">Corrected <time datetime="([^"]+)">\1</time></span>')
 FOOTER_LINKS = ('<p><a href="/feed.xml">Findings feed</a> · <a href="/corrections.html">Corrections</a> · '
-                '<a href="/sitemap.xml">Sitemap</a></p>')
+                '<a href="/sitemap.xml">Sitemap</a> · <a href="/methods.html">How to read our findings</a></p>')
 
 
 class SiteCorrectionsTests(unittest.TestCase):
