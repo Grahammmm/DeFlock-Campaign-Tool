@@ -71,6 +71,8 @@ class CheckTests(unittest.TestCase):
         return code, out.getvalue().splitlines(), err.getvalue()
 
     def test_same_answer_twice_all_unchanged(self):
+        self.campaign.mkdir()  # the write run needs a campaign directory (RF1730-11); --check does not
+        (self.campaign / "campaign.json").write_text("{}\n", encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(tool.main(["--directory", str(self.campaign), "--from-file", str(SMALL)]), 0)
         for _ in range(2):

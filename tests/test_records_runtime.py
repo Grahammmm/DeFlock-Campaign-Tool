@@ -47,8 +47,8 @@ def as_live(stages):
 # plans) must not change them. Update only with an intentional, reviewed edit.
 PHASE1_TEMPLATE_SHA256 = {
     # pragma comments: SHA-256 of public committed templates, not credentials.
-    "live-container.json.in":
-        "ed928535b1b110fdd63ece9d47cecf770a097935c7c4e20a18a78fff40c73071",  # pragma: allowlist secret
+    "live-container.json.in":  # re-pinned on purpose by DOC-1 (LIVE carries the tesseract OCR extract)
+        "555cd77121b13bbe1c8ad0572a455fe00147f8427be4366670a97a4b77759354",  # pragma: allowlist secret
     "test-container.json.in":  # re-pinned on purpose by AUD-DF1 (own _TEST placeholders)
         "bdee382e7ebd4c400dd4731f7f19b43c17096c75c2ce3a4381a757bb01c53aa8",  # pragma: allowlist secret
 }
@@ -891,7 +891,7 @@ class RendererTests(unittest.TestCase):
         self.assertEqual({str(p) for p in self.render.plan_projects(test)}, {"/srv/flock-test"})
         self.assertEqual({str(p) for p in self.render.plan_projects(live)}, {"/srv/flock-live"})
         self.assertNotEqual(test["stages"], live["stages"])
-        self.assertEqual(as_live(test["stages"]), live["stages"])
+        self.assertEqual(self.as_live_ocr(test["stages"]), live["stages"])
         for name in ("TEST", "LIVE"):
             self.assertIsNone(re.search(r"@[A-Z_]+@",
                                         (out / "targets" / f"{name}.json").read_text()), name)
@@ -977,8 +977,21 @@ class RendererTests(unittest.TestCase):
         self.assertNotIn("--sync-script", test["stages"][0]["argv"])
         self.assertEqual(live["stages"][0]["argv"][-2:],
                          ["--sync-script", "/srv/mail/sync.py"])
-        self.assertEqual(as_live(test["stages"][1:]), live["stages"][1:])
+        self.assertEqual(self.as_live_ocr(test["stages"])[1:], live["stages"][1:])
         self.assertEqual(live["stages"][0]["on_fail"], "stop")
+
+    def as_live_ocr(self, test_stages):
+        """DOC-1: a rendered TEST plan mapped to LIVE, with exactly the tesseract OCR extract tail."""
+        stages = as_live(test_stages)
+        extract = stages[4]
+        head = extract["argv"][:extract["argv"].index("--timeout")]
+        self.assertEqual(head[-3:], ["extract", "--project", "/srv/flock-live"])
+        self.assertEqual(extract, {"name": "extract", "timeout_seconds": 600, "on_fail": "stop", "argv": head + [
+            "--timeout", "590", "--run-id", "{run_id}", "--max-documents", "200", "--document-timeout", "120"]})
+        stages[4] = {"name": "extract", "timeout_seconds": 1500, "on_fail": "stop", "argv": head + [
+            "--timeout", "1490", "--run-id", "{run_id}", "--max-documents", "20", "--document-timeout", "1200",
+            "--ocr-page-timeout", "180", "--ocr"]}
+        return stages
 
     # ---- Phase 2 (T6-plan) OCR-enabled LIVE stage plans ----
 

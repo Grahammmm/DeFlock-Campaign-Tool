@@ -468,11 +468,18 @@ def _tool(name):  # siblings are loaded by file path, never copied
     return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
 
 
+def _stage():
+    """flock_email.stage with flock_approve's signature check: only a verified approval reaches sent recorded."""
+    email, check = _tool("flock_email"), _tool("flock_approve").verified
+    return lambda run: email.stage(run, lambda r, rec: check(r, rec, email))
+
+
 def sent_runs(store, rows):
     """Errors and a counts tail: each agencies/<slug>/runs/<date>/ whose email stage (flock_email.stage) is sent recorded
     needs a sent date on its Sent by line and a request of that agency with that sent date. Reads only; symlinked
-    agency, runs or run folders are skipped, never entered. Lines carry slug, run date and sent date, no draft text."""
-    stage, errs, sent, matched = _tool("flock_email").stage, [], 0, 0
+    agency, runs or run folders are skipped, never entered. Lines carry slug, run date and sent date, no draft text.
+    A sent run whose approval signature does not verify is an error, like sent without approval."""
+    stage, errs, sent, matched = _stage(), [], 0, 0
     base = Path(store) / "agencies"
     try:
         folders = sorted(p for p in base.iterdir() if p.is_dir() and not p.is_symlink()) if not base.is_symlink() else []
@@ -490,6 +497,8 @@ def sent_runs(store, rows):
             got, pre = stage(run), f"{folder.name}: run {run.name}: "
             if got == "inconsistent: sent without approval":
                 errs.append(pre + "sent without approval")
+            if got == "sent unverified":
+                errs.append(pre + "sent, but the approval signature does not verify")
             if got != "sent recorded":
                 continue
             sent += 1
@@ -528,7 +537,7 @@ def open_run(rundir, rid, today):
     root, s = given.parents[3].resolve(), given.parents[1].name
     run, req, log = (folder := root / "agencies" / s) / "runs" / given.name, folder / "REQUESTS.csv", folder / "REQUEST-STEPS.csv"
     link = next((p.name for p in (root / "agencies", folder, folder / "runs", run, req, log) if p.is_symlink()), None)
-    got = None if link or not run.is_dir() else _tool("flock_email").stage(run)
+    got = None if link or not run.is_dir() else _stage()(run)
     data, when, why = sent_on(run) if got == "sent recorded" else (None, None, None)
     why = ("store is inside the repository" if root == REPO or REPO in root.parents
            else f"{link} must not be a symlink" if link

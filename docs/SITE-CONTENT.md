@@ -13,7 +13,18 @@ The loader (`campaign_tool/content.py`) refuses malformed or unpublishable input
 and the build writes nothing in that case; it is not a publication approval,
 a legal review or an HTML sanitizer.
 
+**Check before build.** `python3 -m campaign_tool content-check --directory D`
+lists every problem in `content/` at once (`content/: N problem(s)`, one line per
+file problem, capped at 200) with exactly the rules `build` enforces. It is
+read-only and exits 0 when clean or without `content/`, 3 when anything is listed.
+
 ## Content directory
+
+Finding citations and the source library lead with “From a document we hold”,
+the receipt date and agency when known, and public-copy or private-original status.
+Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps
+the 12-character SHA-256 prefix and existing library links. The on-page explainer
+distinguishes unchanged bytes from authorship or truth; it is not authentication.
 
 | Path | Required | Purpose |
 | --- | --- | --- |
@@ -74,6 +85,10 @@ to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
 
+Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
+(a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
+when `site.json.base_url` is set. There is no share image by design and nothing is fetched.
+
 ### Agencies, cards and the picker
 
 Agencies come from `content/agencies.json` or the kit. Each gets a slug (the
@@ -84,10 +99,39 @@ entries. Police and city_council agencies appear in the picker; when a map is
 configured only those with bounds in `map/cities.json` do, because the
 controller fits the map to `CITIES[slug].bounds`.
 
+An agency with `verified: true` must carry `verification` (written by
+`kit-verify-agency`): `{"source_url": "https://…", "checked_on": "YYYY-MM-DD",
+"fields": [...]}`. `source_url` must be an https URL, `checked_on` a real date
+not after the build date, and `fields` (optional) names only `records_email`,
+`records_url` or `portal`; unknown keys are refused. `verified: true` without it
+stops the build naming `<file>[n].verification`. A verified agency shows
+"Contact checked <date> on the official source" on `agencies.html`; the URL is a
+link only and is never fetched. With `verified` not true the object is still
+validated but not shown, and the "Contact details unverified" hint stays.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without
 sources route to `sources.html#library`.
+
+Each `sources.html` entry ends with `Cited by:` and links to every published
+finding that cites its `sha256` (model order, once each), or with
+`Not cited by a published finding`. Drafts never appear.
+
+### Adding a source record
+
+```
+python3 -m campaign_tool sources add --directory D --sha256 PREFIX --title T \
+  --agency-id A --received-at 2026-01-20T16:30:00+00:00 --fragment F \
+  [--public-url https://...] [--pages N] [--note TEXT]
+```
+
+`PREFIX` is the full hash printed by `ingest` or a unique prefix of at least 12
+hex characters; it must name an object in `private/ledger.sqlite` (opened
+read-only). The new entry is appended, the whole list is validated by the same
+loader as `build`, `agency_id` must be one of the campaign's agencies, and the
+file is replaced atomically; on any refusal it is left untouched. `--public-url`
+is only recorded, never fetched or uploaded, and nothing is published.
 
 ## Generated pages and files
 
@@ -95,12 +139,27 @@ sources route to `sources.html#library`.
 signup, meetings), `agencies.html`, `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
 `#<fragment>` section per source group), `meetings.html`, `about.html`,
-`style.css`, `_headers`, `robots.txt`, `sitemap.xml`, `feed.xml` (Atom of
-findings), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
+`style.css`, `_headers`, `robots.txt`, `sitemap.xml` (only when `base_url` is
+set: absolute `<loc>`s, finding pages and `/`, `/findings/` with the UTC day of
+the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
+no footer link, and `build` notes the skip on stderr), `feed.xml` (Atom of
+findings), `findings/agency/<slug>.xml` (the same Atom entries for one agency,
+only for an agency with at least one published finding; linked as "Findings
+feed" from its `agencies.html` entry), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
 a picker-only bootstrap without a map), `data/*.geojson` and `vendor/*` when
-present. `public/` is regenerated from scratch on every content build; do not
+present. `data/findings.json` is the published findings as open data
+(`schemas/findings-open-data.schema.json`), linked from `findings/index.html` and
+`about.html`: per finding `id`, `slug`, `title`, `summary`, `body_md`,
+`classification`, `confidence`, `event_date`, `published_at`, `updated_at`,
+`agency_id`, `url` (absolute only when `base_url` is set; top-level `url_kind`
+says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
+`sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
+`locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
+`duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
+nothing if any other key or a 40+ hex string would appear. `public/` is
+regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
 over the output and fails on any hit. The command prints a manifest of every
 written file with its size. Meetings on or after the build date (the typed
@@ -110,6 +169,15 @@ three); `meetings.html` then lists `#past-meetings`, most recent first.
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
 files above.
+
+Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
+each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
+kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
+
+## Phones
+At widths up to 850 px, content-page menus wrap with 44 px tap targets and a visible keyboard focus outline.
+Agency cards use a single column; long finding, agency and meeting text wraps, and wide finding tables scroll locally.
+Filter and signup controls have 44 px minimum heights. Starter and print layouts and the CSP are unchanged.
 
 ## Content-Security-Policy
 
@@ -144,6 +212,9 @@ the DeFlock community, which is the community source of these observations. A
 mapped point says a camera was observed, not which agency owns it. The
 controller labels points outside city boundaries without an operator tag as
 candidates with ownership unconfirmed; keep that label.
+A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call). An answer with no points never
+replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
+through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`

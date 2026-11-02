@@ -14,7 +14,7 @@ belong in ``content/``.
 """
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -111,6 +111,12 @@ def _timestamp(value, label, date_only=False):
     except ValueError:
         raise ContentError(f"{label}: invalid ISO-8601 value {value!r}") from None
     return value
+
+
+def utc_moment(value):
+    """An ISO timestamp as an aware datetime; a zone-less value is read as UTC."""
+    moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def _slug(value, label):
@@ -245,11 +251,18 @@ def load_finding(document, label):
             "title": _text(source, "title", f"{label}.sources[{index}]", default="Source record"),
             "rule_id": _text(source, "rule_id", f"{label}.sources[{index}]", required=False, default=None),
         })
+    published_at = _timestamp(document["published_at"], f"{label}.published_at")
+    published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
     corrections = []
     for index, correction in enumerate(document["corrections"]):
         _require_keys(correction, CORRECTION_KEYS, CORRECTION_KEYS, f"{label}.corrections[{index}]")
         corrections.append({"date": _timestamp(correction["date"], f"{label}.corrections[{index}].date", date_only=True),
                             "note": _text(correction, "note", f"{label}.corrections[{index}]", allow_empty=False)})
+        if datetime.strptime(corrections[-1]["date"], "%Y-%m-%d").date() < published_day:
+            raise ContentError(f"{label}.corrections[{index}].date: is before the publication date {published_day}")
+    updated_at = _timestamp(document["updated_at"], f"{label}.updated_at") if document.get("updated_at") else None
+    if updated_at and utc_moment(updated_at) < utc_moment(published_at):
+        raise ContentError(f"{label}.updated_at: {updated_at} is before published_at {published_at}")
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
         raise ContentError(f"{label}.agency_id: invalid agency identifier")
@@ -263,8 +276,8 @@ def load_finding(document, label):
         "confidence": document["confidence"],
         "event_date": _timestamp(document["event_date"], f"{label}.event_date", date_only=True),
         "sources": sources,
-        "published_at": _timestamp(document["published_at"], f"{label}.published_at"),
-        "updated_at": _timestamp(document["updated_at"], f"{label}.updated_at") if document.get("updated_at") else None,
+        "published_at": published_at,
+        "updated_at": updated_at,
         "corrections": corrections,
         "author": _text(document, "author", label, allow_empty=False),
         "limitations": _text_list(document, "limitations", label),
@@ -282,7 +295,8 @@ def load_finding(document, label):
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
                 "status", "participation"}
 MEETING_STATUSES = ("scheduled", "cancelled")
-PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "source_url", "verified_by", "verified_at"}
+PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
+                      "verified_at"}
 
 
 def load_participation(value, starts_at, label, today=None):
@@ -308,13 +322,17 @@ def load_participation(value, starts_at, label, today=None):
     for key, part in (("remote", remote), ("written_comment", written)):
         if part and len(part["how"]) > 200:
             raise ContentError(f"{label}.{key}.how: at most 200 characters")
+    minutes = value.get("speaker_minutes")  # per-speaker limit from the same official source; never assumed
+    if minutes is not None and (type(minutes) is not int or not 1 <= minutes <= 10):
+        raise ContentError(f"{label}.speaker_minutes: must be a whole number of minutes from 1 to 10, or null")
     verified_at = _timestamp(value["verified_at"], f"{label}.verified_at", date_only=True)
     checked = datetime.strptime(verified_at, "%Y-%m-%d").date()
     if checked > (today or date.today()) or (starts.date() - checked).days > 30:
         raise ContentError(f"{label}.verified_at: must not be in the future or more than 30 days before the meeting")
     return {"in_person": in_person, "remote": remote, "written_comment": written,
             "source_url": _https(value["source_url"], f"{label}.source_url"),
-            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at}
+            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at,
+            **({"speaker_minutes": minutes} if minutes is not None else {})}
 
 
 def load_meeting(document, label, today=None):
@@ -383,7 +401,40 @@ def load_sources(document):
 
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
-               "flock_transparency_slug", "muckrock_agency_id", "notes"}
+               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification"}
+FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
+VERIFIED_FIELDS = ("records_email", "records_url", "portal")
+
+
+def _verification(entry, item):
+    """Where and when an organizer checked the contact; required when ``verified`` is true, never fetched."""
+    value = entry.get("verification")
+    label = f"{item}.verification"
+    if value is None:
+        if entry.get("verified") is True:
+            raise ContentError(f"{label}: verified:true needs source_url and checked_on")
+        return None
+    _require_keys(value, {"source_url", "checked_on", "fields"}, {"source_url", "checked_on"}, label)
+    source_url = _https(value["source_url"], f"{label}.source_url")
+    checked_on = _timestamp(value["checked_on"], f"{label}.checked_on", date_only=True)
+    checked = datetime.strptime(checked_on, "%Y-%m-%d").date()
+    if checked.isoformat() != checked_on or checked > date.today():
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    fields = value.get("fields", [])
+    if (not isinstance(fields, list) or any(name not in VERIFIED_FIELDS for name in fields)
+            or len(set(fields)) != len(fields)):
+        raise ContentError(f"{label}.fields: list names from {list(VERIFIED_FIELDS)} only, each once")
+    return {"source_url": source_url, "checked_on": checked_on, "fields": list(fields)}
+
+
+def _flock_url(entry, item):
+    """Transparency-portal link for an organizer-verified slug; built from the slug only, never fetched."""
+    slug = entry.get("flock_transparency_slug")
+    if slug is None:
+        return None
+    if not isinstance(slug, str) or len(slug) > 80 or not FLOCK_SLUG.fullmatch(slug):
+        raise ContentError(f"{item}.flock_transparency_slug: lowercase letters, digits and single hyphens only")
+    return f"https://transparency.flocksafety.com/{slug}" if entry.get("verified") is True else None
 
 
 def _agency_slug(agency):
@@ -429,6 +480,8 @@ def load_agencies(document, label):
             "portal": {"vendor": portal["vendor"],
                        "url": _https(portal.get("url"), f"{item}.portal.url", allow_none=True)},
             "verified": entry.get("verified") is True,
+            "verification": _verification(entry, item),
+            "flock_transparency_url": _flock_url(entry, item),
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),

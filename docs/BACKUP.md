@@ -114,13 +114,17 @@ first with `kind: "flock-store"`, members 0600 uid/gid 0); local files only, no 
 python3 tools/flock_backup.py create STORE --out FILE.tar
 python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
+python3 tools/flock_backup.py diff FILE.tar --store STORE [--manifest-sha256 HEX]
 ```
 
 `create` refuses a store inside the repo and an `--out` that exists or lies in the store or repo; it
 writes a temp file, verifies it, then links it into place, leaving nothing on failure. Record the
 printed `manifest_sha256` elsewhere. `verify` and `restore` name each bad member (codes as above, plus
 `duplicate_member`) and exit 1; `restore` verifies first, never overwrites, extracts 0700/0600 and
-re-hashes on disk. Output is counts only; file names appear only in errors.
+re-hashes on disk. Their output is counts only; file names appear only in errors. `diff` verifies the archive
+first (a bad one stops, exit 1, no diff), then prints JSON naming store files `added`, `removed` or
+`changed` (sha256 or size) since it, each capped at 200 (rest under `more`), plus `unchanged` and
+`store_skipped`; names only, nothing written. Exit 0 when `current`, 3 on drift (a new backup is due).
 
 ## Limits and cautions
 
@@ -135,8 +139,27 @@ provide a transaction spanning mutable `content/` and `kit/` files, an inventory
 of the full records runtime, or recovery of hosted derived R2 text. The records
 recovery-v2 library has a separate declared-profile and caller-quiescence contract.
 
+## Restore drill
+
+`python3 -m campaign_tool backup-drill --file ARCHIVE [--expect-manifest-sha256 D] [--receipt OUT.json]`
+proves an archive restores into a working campaign without touching the source: it verifies the
+archive, restores it into a fresh `deflock-drill-*/campaign` temp directory, runs the store check
+(`status --check`) and `doctor` on that copy, then removes the copy. It prints one receipt JSON
+(archive basename, manifest digest, per-step result; no paths or file digests); `--receipt` also
+writes it with mode 0600 and never overwrites. Exit 0 pass, 3 fail, 1 when the archive is missing.
+
+## Archive inventory and keep rule
+
+`python3 -m campaign_tool backup-list --dir DIR [--keep-daily N] [--keep-weekly M]` re-verifies every
+`*.tar` directly in `DIR` (symlinks are listed under `skipped` and never opened; other files and
+subfolders are ignored) and prints each archive's `created_at`, size, manifest digest and verify
+result, newest first, failed ones last. With a keep rule it also names, among verified archives,
+the newest per UTC day for the `N` most recent days and the newest per ISO week for the `M` most
+recent weeks (`keep`), the rest (`would_not_keep`) and the failed ones (`failed_never_kept`). It is a
+report only: nothing is deleted, renamed or written. Exit 0, 3 when any archive failed, 1 for a bad folder.
+
 ## Not done
 
 Encryption inside the tool, incremental or scheduled backups from cron, restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
-script is straightforward but not written), and retention policy.
+script is straightforward but not written), and retention deletion (`backup-list` only reports).

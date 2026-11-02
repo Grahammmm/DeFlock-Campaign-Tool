@@ -30,6 +30,25 @@ the verified Access JWT email, never a form field. Authors cannot review their o
 (403). Each receipt is bound to the content hash at submission time; the state is recomputed
 from all receipts after every submission.
 
+## Offline review receipts (CLI)
+
+    python3 -m campaign_tool finding review DRAFT --directory D --role factual|legal|privacy \
+        --decision approve|reject|changes_requested --reviewer NAME --rationale TEXT
+    python3 -m campaign_tool finding review-status DRAFT --directory D
+
+`finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
+file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
+concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
+are **self-asserted**: offline
+there is no identity check, unlike the hosted flow, where the identity is the Access JWT email.
+The tool only refuses a reviewer whose name matches the draft `author` (case and spacing
+ignored) and a duplicate receipt. Each receipt is bound to the hash of the draft without its
+publication fields (`state`, `published_at`, `updated_at`, `corrections`), so changing those
+keeps it bound, while any edit to a reviewed field (for example `summary`) unbinds every earlier
+receipt. `finding review-status` is read-only and prints the receipts for the current content,
+the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
+and privacy, with no reject or changes_requested on the current content).
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
@@ -63,6 +82,19 @@ agencies and the optional map. Withdrawn findings never appear. `site_version` i
 hash, so an unchanged manifest re-uses the same build job and deploy card. The manifest carries
 no originals, correspondence, subscribers or credentials. `GET /api/manifest.json` returns it.
 
+## Before publishing: evidence check
+
+`python3 -m campaign_tool evidence --directory D --check` reads `content/` and, read-only,
+`private/ledger.sqlite`. For every published finding and every record it cites it prints one
+problem row (finding slug, first 12 hex of the hash, code); `--check` exits 3 when any is listed:
+
+- `unregistered`: the hash is not in `content/sources.json`.
+- `not_ingested`: no ledger row; the original was never ingested (every citation without a ledger).
+- `object_missing`: a ledger row exists but `private/objects/<sha256>` is missing or a symlink.
+
+It never reads receipts or re-hashes objects (`status --check` does that). Invalid content stops
+with exit 1.
+
 ## Corrections and withdrawal
 
 - `POST /findings/:id/correct` with `reason` and optional `replacement_finding_id` (which must
@@ -76,6 +108,11 @@ no originals, correspondence, subscribers or credentials. `GET /api/manifest.jso
 
 Both require an authenticated identity and a non-empty reason; both are visible in the
 Approvals list as the rebuild they trigger.
+
+In `feed.xml` (and each per-agency feed) a corrected finding's entry `updated` is the latest of
+`published_at`, `updated_at` and its correction dates (a date counts as midnight UTC) and its summary
+starts `Corrected YYYY-MM-DD.` with the newest correction date, so feed readers show it again. The build
+refuses a correction dated before the calendar date of `published_at` and an `updated_at` earlier than it.
 
 ## Social drafts (never posted)
 

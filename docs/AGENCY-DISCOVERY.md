@@ -36,6 +36,12 @@ than guess. `records_url`, `records_email`, `portal.url`, `place_fips`,
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
 
+`flock_transparency_slug` is the last path part of the agency's own Flock
+transparency page (`https://transparency.flocksafety.com/<slug>`), checked by
+the organizer: lowercase letters, digits and single hyphens, at most 80
+characters, or the build stops naming the field. The site links it only on
+`verified: true` agencies and never fetches it.
+
 ### Filling `place_fips` (network, organizer-run)
 
 `python3 tools/refresh_agency_seed_online.py` downloads the Census Gazetteer
@@ -98,6 +104,21 @@ Under `<campaign>/kit/`:
 
 `doctor` reports `agencies_selected` and `kit_built`.
 
+### Request settings
+
+To fill every draft at once, write a private `kit/request-settings.json` (never commit it):
+
+    {"schema_version": 1, "requester": ["A. Organizer", "a@example.org"], "fee_cap_usd": 50,
+     "date_from": "2023-01-01", "date_to": "today"}
+
+`requester` is 1–8 lines of 1–120 characters (no control characters); `fee_cap_usd` is a number from 0 to
+10000 and prints as `$50.00` (`$0.00` means no fees authorized); `date_from` is a real `YYYY-MM-DD` date
+not after today, and `date_to` is such a date not before it or `"today"` (default `"today"`; `date_to`
+alone is refused). The next `kit` run puts them into every law-package and template draft; a missing
+key keeps that placeholder and its `next_steps` line, and `summary.json` reports `request_settings`.
+Any other key or a bad value stops `kit` before a draft is written, naming the key but never the value.
+Edited drafts are still kept, with the fresh draft in `requests.suggested/`.
+
 ## What organizers must verify before sending
 
 The kit is a starting point, not a mailing list. Before any request leaves:
@@ -130,3 +151,35 @@ Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must
 `verified: true` and `verification` (`source_url`, `checked_on`, `fields`); a later call replaces `verification`
 and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
 fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.
+
+Contacts go out of date. `doctor --directory ../my-campaign --contact-max-age-days 180` adds `stale_contacts`: each
+selected, verified entry whose `verification.checked_on` is more than 180 days old (`agency_id`, `checked_on`,
+`age_days`, oldest first; a missing or invalid date is listed with nulls), at most 100 plus `stale_contacts_more`,
+and a next action to re-check them with `kit-verify-agency`. It reads only `kit/agencies.json` (not the flock
+store's `CONTACT.csv`), writes nothing and fetches nothing. Without the option `doctor` is unchanged.
+
+## Recording a hand-sent request
+
+After you send a draft yourself, record it (nothing is sent by the tool):
+
+    python3 -m campaign_tool kit-sent --directory ../my-campaign --agency ca-example-police --date 2026-10-01 --channel email
+
+`--channel` is `email`, `portal` or `mail`; the date must be a real day between 2000-01-01 and today. `kit/sent.json`
+keeps the date, channel and SHA-256 of `requests/<agency_id>.md`. A second record is refused; `--replace` corrects
+one with no steps. `kit-status --directory D` lists each request with `determination_due` and `with_extension` from
+the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
+the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
+
+Record what the agency did, and when, with `kit-response --directory D --agency ID --date YYYY-MM-DD --kind K
+[--note TEXT]`. `K` is `acknowledged`, `extension`, `determination`, `produced`, `denied` or `closed`. Dates must
+not be before the send date or the previous step, or in the future. `acknowledged` is first and once only; `extension`
+is once only and not after `determination`, `produced` or `denied`. `determination` and `denied` are once each;
+`produced` may repeat. `closed` needs an earlier step, and nothing follows it. The note is plain text (no `<`, `>` or
+control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
+`closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
+
+On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
+at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
+ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
+private `kit/sent.json`; `kit-response` and `kit-status` print 12-character prefixes only (`records`,
+`record_prefixes`, at most 50 then `more`). Which records an agency produced is never published.

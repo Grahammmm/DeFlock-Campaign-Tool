@@ -6,11 +6,16 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import fixes
+
 MAX_BYTES = 50 * 1024 * 1024
+MAX_DIR_FILES = 2000
+OUTCOMES = ("stored", "present", "symlink", "not_regular", "too_large", "hidden")
 
 
 def now():
@@ -73,20 +78,81 @@ def initialize(args, root):
     print("Campaign initialized. No accounts created, messages sent, or laws verified.")
 
 
-def ingest(args, root):
-    read_config(root)
-    source = Path(args.file)
-    if source.is_symlink() or not source.is_file():
-        raise ValueError("Input must be a regular, non-symlink file")
-    with source.open("rb") as incoming:
+def _read_checked(path, dir_fd=None):
+    """Read one regular file (no link followed) within the alpha limit; returns (data, sha256 hex).
+
+    With dir_fd, `path` is a bare name opened relative to that verified directory descriptor."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        if dir_fd is None:
+            raise
+        raise ValueError("Input changed or is not a regular, non-symlink file") from None
+    with os.fdopen(fd, "rb") as incoming:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Input must be a regular, non-symlink file")
         data = incoming.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
-    digest = hashlib.sha256(data).hexdigest()
-    identity = hashlib.sha256(json.dumps(
-        [args.source_id, digest], separators=(",", ":")).encode()).hexdigest()
-    db = database(root)
-    try:
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def _receipt_id(source_id, digest):
+    return hashlib.sha256(json.dumps([source_id, digest], separators=(",", ":")).encode()).hexdigest()
+
+
+def _ledger_lookup(root):
+    """Dry run: (known(digest, receipt_id) -> (object_known, receipt_known), close) over the ledger and this run.
+
+    SQLite never opens the ledger file: even mode=ro creates -wal/-shm sidecars for a WAL-mode
+    database. The bytes are read once (no link followed) and queried from an in-memory copy.
+    A journal or WAL sidecar means the file alone may not hold the committed state: refused."""
+    path, seen, db = root / "private" / "ledger.sqlite", set(), None
+    if os.path.lexists(path) or path.parent.is_symlink():  # absent ledger: nothing stored yet
+        if any(os.path.lexists(f"{path}-{suffix}") for suffix in ("journal", "wal", "shm")):
+            raise ValueError("ledger has a journal or WAL file beside it; nothing was written")
+        try:
+            if path.parent.is_symlink():
+                raise OSError
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError
+                with os.fdopen(os.dup(fd), "rb") as handle:
+                    data = bytearray(handle.read())
+            finally:
+                os.close(fd)
+            if data[:16] == b"SQLite format 3\0" and data[18:20] == b"\2\2":
+                data[18:20] = b"\1\1"  # WAL header, no -wal file: the file is complete; read it as rollback
+            db = sqlite3.connect(":memory:")
+            db.deserialize(bytes(data))
+            db.execute("SELECT count(*) FROM objects JOIN receipts ON 0").fetchone()
+        except (OSError, sqlite3.Error):
+            db and db.close()
+            raise ValueError("ledger is not readable; nothing was written") from None
+
+    def known(digest, identity):
+        hits = tuple(key in seen or (db is not None and db.execute(query, (key,)).fetchone() is not None)
+                     for key, query in ((digest, "SELECT 1 FROM objects WHERE sha256 = ?"),
+                                        (identity, "SELECT 1 FROM receipts WHERE receipt_id = ?")))
+        seen.update((digest, identity))
+        return hits
+    return known, (db.close if db is not None else lambda: None)
+
+
+def _preview_one(known, path, source_id, dir_fd=None):
+    """Dry run of _ingest_one: same read and hashing, outcome would_store/present, nothing written."""
+    digest = _read_checked(path, dir_fd)[1]
+    object_known, receipt_known = known(digest, identity := _receipt_id(source_id, digest))
+    return {"sha256": digest, "receipt_id": identity, "new_receipt": not receipt_known,
+            "analysis_status": "not_started", "outcome": "present" if object_known else "would_store"}
+
+
+def _ingest_one(db, root, path, source_id, dir_fd=None):
+    """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome."""
+    data, digest = _read_checked(path, dir_fd)
+    identity = _receipt_id(source_id, digest)
+    with db:  # one transaction per file; the object is written before its rows
         objects = root / "private" / "objects"
         objects.mkdir(mode=0o700, exist_ok=True)
         target = objects / digest
@@ -106,16 +172,130 @@ def ingest(args, root):
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
-        with db:
-            db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
-                       (digest, len(data), now()))
-            cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
-                                (identity, digest, args.source_id, now(), source.name))
-        print(json.dumps({"sha256": digest, "receipt_id": identity,
-                          "new_receipt": cursor.rowcount == 1,
-                          "analysis_status": "not_started"}, indent=2))
+        new_object = db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
+                                (digest, len(data), now())).rowcount == 1
+        cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
+                            (identity, digest, source_id, now(), os.path.basename(path)))
+    return {"sha256": digest, "receipt_id": identity, "new_receipt": cursor.rowcount == 1,
+            "analysis_status": "not_started", "outcome": "stored" if new_object else "present"}
+
+
+def ingest(args, root):
+    read_config(root)
+    if getattr(args, "dir", None) is not None:
+        return _ingest_dir(args, root)
+    source = Path(args.file)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Input must be a regular, non-symlink file")
+    if source.stat().st_size > MAX_BYTES:
+        raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
+    if getattr(args, "dry_run", False):
+        known, close = _ledger_lookup(root)
+        try:
+            print(json.dumps({**_preview_one(known, source, args.source_id), "dry_run": True}, indent=2))
+        finally:
+            close()
+        print("Dry run: nothing was written.")
+        return
+    db = database(root)
+    try:
+        result = _ingest_one(db, root, source, args.source_id)
     finally:
         db.close()
+    print(json.dumps({k: result[k] for k in ("sha256", "receipt_id", "new_receipt", "analysis_status")}, indent=2))
+
+
+def _open_dir(top_fd, parts):
+    """Descriptor for top/parts..., every component opened relative to its verified parent without following links."""
+    fd = os.dup(top_fd)
+    try:
+        for part in parts:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError:
+                raise ValueError("Folder changed during the run (not a real directory)") from None
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_root(path):
+    """Open --dir without following a symlink, even when written as link/ or link/. (O_NOFOLLOW only
+    covers the final component, so the last real name is opened relative to its parent descriptor)."""
+    text = os.fspath(path)
+    # Drop empty and "." components only; ".." is kept so valid parent-relative paths (../production-001)
+    # still work. Symlinks in the parent chain are ordinary path resolution; only the final name is guarded.
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts:
+        return os.open("/" if text.startswith("/") else ".", os.O_RDONLY | os.O_DIRECTORY)
+    name = parts[-1]
+    parent = ("/" if text.startswith("/") else "") + "/".join(parts[:-1])
+    parent_fd = os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _ingest_dir(args, root):
+    """One production folder: list it without following links (hidden names skipped), then ingest file by file.
+
+    All traversal and opens are anchored to directory descriptors, so a subfolder swapped for a link
+    after listing is refused rather than followed."""
+    entries, stack = [], [()]
+    try:
+        top_fd = _open_root(args.dir)
+    except OSError:
+        raise ValueError("--dir must be a real directory, not a symlink or a file") from None
+    try:
+        while stack:
+            parts = stack.pop()
+            folder_fd = _open_dir(top_fd, parts)
+            try:
+                with os.scandir(folder_fd) as listing:
+                    for entry in listing:
+                        hidden = entry.name.startswith(".")
+                        if entry.is_dir(follow_symlinks=False) and not hidden:
+                            stack.append(parts + (entry.name,))
+                            continue
+                        entries.append(("/".join(parts + (entry.name,)), parts, entry.name,
+                                        "hidden" if hidden else "symlink" if entry.is_symlink()
+                                        else "not_regular" if not entry.is_file(follow_symlinks=False)
+                                        else "too_large" if entry.stat(follow_symlinks=False).st_size > MAX_BYTES else None))
+                        if len(entries) > MAX_DIR_FILES:
+                            raise ValueError(f"{args.dir}: more than {MAX_DIR_FILES} files; split the folder")
+            finally:
+                os.close(folder_fd)
+        dry = getattr(args, "dry_run", False)
+        files, (known, close) = [], _ledger_lookup(root) if dry else (None, None)
+        db = None if dry else database(root)
+        try:
+            for rel, parts, name, code in sorted(entries):
+                try:
+                    if code:
+                        result = {"sha256": None, "new_receipt": False}
+                    else:
+                        folder_fd = _open_dir(top_fd, parts)
+                        try:
+                            result = (_preview_one(known, name, args.source_id, dir_fd=folder_fd) if dry else
+                                      _ingest_one(db, root, name, args.source_id, dir_fd=folder_fd))
+                        finally:
+                            os.close(folder_fd)
+                except ValueError as exc:
+                    raise ValueError(f"{exc}: {rel}") from None
+                files.append({"path": rel, "sha256": result["sha256"] and result["sha256"][:12],
+                              "outcome": code or result["outcome"], "new_receipt": result["new_receipt"]})
+        finally:
+            close() if dry else db.close()
+    finally:
+        os.close(top_fd)
+    print(json.dumps({"dir": os.path.basename(os.path.abspath(args.dir)), "files": files,
+                      "counts": {k: sum(f["outcome"] == k for f in files)
+                                 for k in (("would_store",) + OUTCOMES[1:] if dry else OUTCOMES)},
+                      **({"dry_run": True} if dry else {})}, indent=2))
 
 
 def status(root, check=False, fix=False):
@@ -158,7 +338,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root):
+def doctor(root, contact_max_age_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
+
+
+def doctor_report(root, contact_max_age_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -179,14 +363,17 @@ def doctor(root):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
-    from .kit import kit_status
+    from .kit import kit_status, stale_contacts
     report.update(kit_status(root))
+    if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
+        report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
+        report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
-    print(json.dumps(report, indent=2))
+    return report
 
 
 def kit(args, root):
@@ -263,6 +450,27 @@ def verify_cmd(args):
     print(json.dumps(report, indent=2))
 
 
+def backup_drill_cmd(args):
+    from .backup import drill
+    if args.receipt and os.path.lexists(args.receipt):
+        raise ValueError(f"{args.receipt} exists; the drill never overwrites a receipt")
+    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report)
+    text = json.dumps(receipt, indent=2)
+    if args.receipt:
+        with os.fdopen(os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
+            out.write(text + "\n")
+    print(text)
+    if not receipt["passed"]:
+        sys.exit(3)
+
+
+def backup_list_cmd(args):
+    from .backup import list_archives
+    report = list_archives(args.dir, args.keep_daily, args.keep_weekly)
+    print(json.dumps(report, indent=2) + "\nReport only; nothing was deleted.")
+    sys.exit(3 if any(item["verify"] == "failed" for item in report["archives"]) else 0)
+
+
 def backup_diff_cmd(args, root):
     from .backup import diff
     report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256)
@@ -321,6 +529,11 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    setup_p = commands.add_parser("setup", help="Guided offline setup; nothing sent or published")
+    setup_p.add_argument("--directory", required=True)
+    for flag in ("--name", "--county", "--state", "--location"):
+        setup_p.add_argument(flag)
+    setup_p.add_argument("--yes", action="store_true", help="Use flags only; never prompt")
     for name in ("init", "ingest", "doctor", "status", "build"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--directory", required=True)
@@ -330,9 +543,12 @@ def main():
             cmd.add_argument("--state", required=True)
             cmd.add_argument("--location", help="City or county to resolve (default: the county)")
         if name == "ingest":
-            cmd.add_argument("--file", required=True)
+            source = cmd.add_mutually_exclusive_group(required=True)
+            source.add_argument("--file")
+            source.add_argument("--dir", help="One local production folder; symlinks are never followed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
+            cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
         if name == "build":
             cmd.add_argument("--check", action="store_true",
                              help="Scan the generated public/ tree for private paths and credential patterns")
@@ -340,6 +556,8 @@ def main():
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
                              help="chmod loose private dirs/files to 0700/0600, then run --check")
+        if name == "doctor":
+            cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -362,6 +580,15 @@ def main():
     diff_p.add_argument("--file", required=True)
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    drill_p = commands.add_parser("backup-drill", help="Restore a backup into a temp copy, check it there, remove it (exit 3 on fail)")
+    drill_p.add_argument("--file", required=True)
+    drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    drill_p.add_argument("--receipt", help="Also write the receipt JSON here (must not exist)")
+    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar in a folder; report what a keep rule keeps (deletes nothing)")
+    list_p.add_argument("--dir", required=True)
+    from .backup import KEEP_LIMITS, keep_count
+    for flag, key, period in (("--keep-daily", "keep_daily", "UTC day"), ("--keep-weekly", "keep_weekly", "ISO week")):
+        list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
@@ -376,23 +603,91 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
+                        ).add_argument("--directory", required=True)
+    evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
+    evidence_p.add_argument("--directory", required=True)
+    evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
     verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
     for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
         verify_agency_p.add_argument(flag, required=True)
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    agency_cmds = commands.add_parser("kit-agency", help="Add, select or deselect agencies in kit/agencies.json; the next"
+                                      " kit run drafts requests for selected law-enforcement agencies"
+                                      ).add_subparsers(dest="agency_command", required=True)
+    for name, text in (("select", "Mark one agency selected"), ("deselect", "Mark one agency not selected"),
+                       ("add", "Append an organizer-added agency (selected, verified: false)")):
+        agency_p = agency_cmds.add_parser(name, help=text, description=text + "; the next kit run drafts requests for"
+                                          " selected law-enforcement agencies. Nothing is sent.")
+        agency_p.add_argument("--directory", required=True)
+        agency_p.add_argument("--id", required=True, dest="agency_id")
+        if name == "add":
+            agency_p.add_argument("--name", required=True)
+            agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
+                                  "district_attorney or other")
+            agency_p.add_argument("--note", default=None, help="Up to 300 characters")
+    sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
+    for flag in ("--directory", "--agency", "--date"):
+        sent_p.add_argument(flag, required=True)
+    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
+    sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
+    commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
+                        ).add_argument("--directory", required=True)
+    response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
+    for flag in ("--directory", "--agency", "--date"):
+        response_p.add_argument(flag, required=True)
+    response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
+                                                               "produced", "denied", "closed"))
+    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
+                            help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
+                                  ).add_subparsers(dest="sources_command", required=True)
+    sources_add = sources.add_parser(
+        "add", help="Register one ingested record by hash prefix; validates the whole list, publishes nothing")
+    for flag in ("--directory", "--sha256", "--title", "--agency-id", "--received-at", "--fragment"):
+        sources_add.add_argument(flag, required=True)
+    sources_add.add_argument("--public-url", default=None, help="Recorded only; never fetched or uploaded")
+    sources_add.add_argument("--pages", type=int, default=None)
+    sources_add.add_argument("--note", default="")
+    sources.add_parser("list", help="Print every library entry and the published findings citing it (read-only)"
+                       ).add_argument("--directory", required=True)
+    sources_edit = sources.add_parser("edit", help="Change title, note, public_url or pages of one entry; publishes nothing")
+    sources_remove = sources.add_parser("remove", help="Delete one entry unless a published finding cites its record")
+    for sub in (sources_edit, sources_remove):  # entries chosen by >= 12 hex of the library hash (+ --fragment)
+        for flag, required in (("--directory", True), ("--sha256", True), ("--fragment", False)):
+            sub.add_argument(flag, required=required, default=None)
+    for flag in ("--title", "--note", "--public-url"):
+        sources_edit.add_argument(flag, default=None)
+    sources_edit.add_argument("--clear-public-url", action="store_true")
+    sources_edit.add_argument("--pages", type=int, default=None)
+    finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
+                                       ).add_subparsers(dest="finding_command", required=True)
+    review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
+    for flag in ("--directory", "--role", "--decision", "--reviewer", "--rationale"):
+        review_p.add_argument(flag, required=True)
+    finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
+                            ).add_argument("--directory", required=True)
+    for sub in finding_cmds.choices.values():
+        sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     args = parser.parse_args()
-    if args.command == "verify":
+    if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
+        parser.error("--contact-max-age-days must be at least 1")
+    if args.command in ("verify", "backup-drill", "backup-list"):
         try:
-            verify_cmd(args)
+            {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
         except (OSError, ValueError) as exc:
-            print("Stopped: " + str(exc), file=sys.stderr)
+            fixes.emit(exc)
             sys.exit(1)
         return
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
             initialize(args, root)
+        elif args.command == "setup":
+            from .setup_cmd import run_cli
+            run_cli(args, root, parser, sys.stdin, sys.stdout)
         elif args.command == "ingest":
             ingest(args, root)
         elif args.command == "kit":
@@ -411,14 +706,62 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "sources" and args.sources_command == "add":
+            from .sources_cmd import add_source
+            print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
+                                        received_at=args.received_at, fragment=args.fragment,
+                                        public_url=args.public_url, pages=args.pages, note=args.note)))
+        elif args.command == "sources" and args.sources_command == "list":
+            from .sources_cmd import list_sources
+            print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
+        elif args.command == "sources":
+            from .sources_cmd import edit_source, remove_source
+            print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
+                             edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
+                                         public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
+            print("Nothing was published.")
+        elif args.command == "finding":
+            from . import findings
+            read_config(root)
+            draft = findings.load_draft(args.draft)
+            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
+                             if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
+        elif args.command == "content-check":
+            from .content_check import run_cli as content_check_cli
+            content_check_cli(root)
+        elif args.command == "evidence":
+            from .evidence import run_cli
+            run_cli(root, check=args.check)
         elif args.command == "kit-verify-agency":
             from .kit import verify_agency
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "kit-agency":
+            from . import kit_agencies
+            print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
+                             if args.agency_command == "add" else
+                             kit_agencies.set_selected(root, args.agency_id, args.agency_command == "select"),
+                             indent=2, ensure_ascii=False))
+            print("Nothing was sent.")
+        elif args.command == "kit-sent":
+            from .kit_track import record_sent
+            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
+            print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-status":
+            from .kit_track import status as kit_track_status
+            print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-response":
+            from .kit_track import record_step
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
+                                         records=args.record), indent=2))
+            print("Recorded only. Nothing was sent.")
         else:
-            status(root, check=args.check, fix=args.fix_modes) if args.command == "status" else doctor(root)
+            if args.command == "status":
+                status(root, check=args.check, fix=args.fix_modes)
+            else:
+                doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        print("Stopped: " + str(exc), file=sys.stderr)
+        fixes.emit(exc)
         sys.exit(1)

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Wrap FOLLOWUP-DRAFT.md into a private EMAIL-DRAFT.md. Draft only: it writes files and cannot send. `status STORE` reads each run's email stage back."""
-import csv, importlib.util, os, re, sys, tempfile
+"""Wrap FOLLOWUP-DRAFT.md into a private EMAIL-DRAFT.md. Draft only: it writes files and cannot send. `status STORE` reads each run's email stage back.
+
+G's approval is a FIELD, never a sentence: EMAIL-APPROVAL.json beside the draft, {"state": "approved", ...}, bound by
+content_sha256 to the exact draft text and holding G's SSH signature. Only tools/flock_approve.py writes it, after the
+signature verifies. This file stays free of subprocess/campaign_tool imports (no send path), so it cannot check the
+signature: here a well-formed field is only "approval unverified". It counts as "approval recorded" only through an
+injected verifier: `flock_approve.py status STORE` and flock_requests (open, --check) pass one. A "G APPROVED:" line grants nothing."""
+import csv, hashlib, importlib.util, json, os, re, sys, tempfile
 from datetime import date
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
@@ -12,11 +18,14 @@ USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.m
          "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)\n"
          "       check and draft also take [--max-age-days N [--today YYYY-MM-DD]]  (a contact checked more than N days ago is stale)\n"
          "       check and draft warn (never refuse) when the address domain is not the source_url host's site; a human checks the page\n"
-         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval)\n"
+         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval;\n"
+         "                                      signatures are not checked here, see flock_approve.py status STORE)\n"
          "       flock_email.py lint RUNDIR --drafts DIR  (run after any edit and before asking G to approve; reads only, exit 1 on findings)")
 PLACEHOLDER = re.compile(r"\{\{|\}\}|(?<![a-z])(?:todo|xxx|tbd)|[\[<]insert|____", re.I)
-STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval")
-LABELS = "runs followup drafted approved sent malformed inconsistent".split()
+STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval",
+          "approval unverified", "sent unverified")
+LABELS = "runs followup drafted approved sent malformed inconsistent unverified_approval unverified_sent".split()
+APPROVAL, KEYS = "EMAIL-APPROVAL.json", {"v", "state", "scope", "subject", "content_sha256", "approved_by", "signature"}
 
 def slug(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -84,7 +93,8 @@ def draft(rundir, drafts, max_age=None, today=None):
     body = "\n".join(lines[3:ends[0]]).strip("\n")
     ids = re.search(r"related to requests ([^\n]*?)\.(?:\s|$)", body)
     text = "\n".join([HEAD, f"To: {to}", lines[2], "---", body, "", "Please reference this request by your agency's request number in any response.",
-                      f"Related prior requests: {ids.group(1) if ids else 'none on file'}.", "---", "G APPROVED: ____",
+                      f"Related prior requests: {ids.group(1) if ids else 'none on file'}.", "---",
+                      f"Approval: only a signed {APPROVAL} beside this file records G's approval; no line here can.",
                       "Sent by: ____ (operator, by hand, after G's reply)"]) + "\n"
     out_dir.mkdir(mode=0o700, exist_ok=True)
     linked = []  # only paths this call created; the rollback never touches anything else
@@ -127,23 +137,50 @@ def check(store, show=None, max_age=None, today=None):
     return 0 if ready == len(folders) else 1
 
 def marks(lines):
-    """The values of every `G APPROVED:` and every `Sent by:` line (stage and lint share this parse)."""
-    return [[ln.split(":", 1)[1].strip() for ln in lines if ln.startswith(k)] for k in ("G APPROVED:", "Sent by:")]
+    """The values of every `Sent by:` line (stage and lint share this parse). Approval is never read from a line."""
+    return [ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("Sent by:")]
 
-def stage(run):
-    """The email stage of one run folder, or None without a draft file. Never returns a filled value."""
+def approved_text(run):
+    """(subject, text G approves) for a run: EMAIL-DRAFT.md exactly as stored, minus only its LAST line, which must be the
+    one `Sent by:` record line. A `Sent by:` line anywhere else stays in the signed text. Links are refused; ValueError
+    when the draft does not end with that record line."""
+    with open(os.open(run / "EMAIL-DRAFT.md", os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8", newline="") as fh: text = fh.read()
+    head, _, last = text.removesuffix("\n").rpartition("\n")
+    if not last.startswith("Sent by:") or len(last.splitlines()) != 1:
+        raise ValueError("EMAIL-DRAFT.md must end with its one Sent by: record line")
+    return f"{run.parent.parent.name}/{run.name}", head + "\n"
+
+def approval_field(run):
+    """The approval record when well-formed and bound to the current draft text; False when absent; None when bad."""
+    if not os.path.lexists(run / APPROVAL): return False
+    try:
+        with open(os.open(run / APPROVAL, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as fh: rec = json.load(fh)
+        subject, body = approved_text(run)
+        ok = isinstance(rec, dict) and set(rec) == KEYS and rec["v"] == 1 and rec["state"] == "approved" \
+            and rec["scope"] == "flock-email" and rec["subject"] == subject and isinstance(rec["approved_by"], str) \
+            and rec["approved_by"].strip() != "" and isinstance(rec["signature"], str) and "BEGIN SSH SIGNATURE" in rec["signature"] \
+            and rec["content_sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+        return rec if ok else None
+    except (OSError, ValueError, UnicodeDecodeError): return None
+
+def stage(run, verify=None):
+    """The email stage of one run folder, or None without a draft file. Approval comes from the state field only, and it
+    is accepted (approval/sent recorded) only when `verify(run, record)` confirms the signature. This file cannot check a
+    signature itself (no subprocess), so without a verifier a well-formed field is only `approval/sent unverified`."""
     email, follow = run / "EMAIL-DRAFT.md", run / "FOLLOWUP-DRAFT.md"
-    if run.is_symlink() or email.is_symlink() or follow.is_symlink(): return "refused: link"  # never read
+    if run.is_symlink() or email.is_symlink() or follow.is_symlink() or (run / APPROVAL).is_symlink(): return "refused: link"
     if not email.exists(): return "follow-up drafted" if follow.exists() else None
     try: lines = email.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError): return "malformed"
-    ok = marks(lines)
-    if lines[:1] != [HEAD] or [len(v) for v in ok] != [1, 1]: return "malformed"
-    yes, sent = ok[0][0] not in ("", "____"), bool(ok[1][0]) and not ok[1][0].startswith("____")
+    sent, yes = marks(lines), approval_field(run)
+    if lines[:1] != [HEAD] or len(sent) != 1 or yes is None: return "malformed"
+    sent = bool(sent[0]) and not sent[0].startswith("____")
+    if yes and not (verify and verify(run, yes) is True): return STAGES[7] if sent else STAGES[6]
     return ("sent recorded" if yes else STAGES[5]) if sent else "approval recorded" if yes else "email drafted"
 
-def status(folders):
-    """One stage line per agency run holding a draft, then totals. Prints no address, subject or filled value."""
+def status(folders, verify=None):
+    """One stage line per agency run holding a draft, then totals. Prints no address, subject or filled value.
+    With a verifier an unverified approval fails (exit 1); without one it is reported, never counted as approved."""
     lines, seen = [], []
     for folder in folders:
         runs = folder / "runs"
@@ -151,12 +188,13 @@ def status(folders):
                       if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", p.name) and (p.is_symlink() or p.is_dir()))
         except OSError: dates = [None]  # an unreadable runs folder fails closed
         for run in dates:
-            got = stage(run) if run else "malformed"
+            got = stage(run, verify) if run else "malformed"
             if got: seen.append(got); lines.append(f"email | {folder.name} | {run.name if run else 'runs'} | {got}")
         if folder.is_symlink(): lines.append(f"email | {folder.name} | link refused")  # never entered
     n = [len(seen)] + [seen.count(s) for s in STAGES]
-    print("\n".join(lines + ["email | " + " ".join(f"{k}={v}" for k, v in zip(LABELS, n)) + " | records only what the files say"]))
-    return 1 if n[5] or n[6] else 0
+    note = "; signatures not checked here (flock_approve.py status STORE checks them)" * bool(not verify and (n[7] or n[8]))
+    print("\n".join(lines + ["email | " + " ".join(f"{k}={v}" for k, v in zip(LABELS, n)) + " | records only what the files say" + note]))
+    return 1 if n[5] or n[6] or verify and (n[7] or n[8]) else 0
 
 def lint(rundir, drafts):
     """One `lint | slug | date | rule` line per broken rule, then a summary. Never prints the offending text; writes nothing."""
@@ -177,7 +215,7 @@ def lint(rundir, drafts):
     cut = [i for i, ln in enumerate(lines) if ln == "---"]
     to = lines[1][4:].strip() if len(lines) > 1 and lines[1].startswith("To: ") else None
     subject = lines[2][9:] if len(lines) > 2 and lines[2].startswith("Subject: ") else ""
-    if lines[:1] != [HEAD] or to is None or not subject or len(cut) < 2 or [len(v) for v in marks(lines)] != [1, 1]: rules.append("malformed")
+    if lines[:1] != [HEAD] or to is None or not subject or len(cut) < 2 or len(marks(lines)) != 1: rules.append("malformed")
     body = "\n".join(lines[cut[0] + 1:cut[1]] if len(cut) > 1 else lines[3:])  # no --- pair: scan the rest (fail closed)
     addr, errs, _ = contact(run.parents[3] / "agencies" / name / "CONTACT.csv", name)
     if errs or to != addr: rules.append(f"to: CONTACT.csv {errs[0]}" if errs else "to: not the current records address")
