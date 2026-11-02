@@ -46,6 +46,12 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   Documents per request: `python3 tools/flock_requests.py summary <file or store dir> --inventory <INVENTORY.csv>`
   adds posted/withheld counts per request and names INVENTORY rows with an unknown request; counts only; withheld never named.
 
+## State
+
+- One explicit state per request and email run: `python3 tools/flock_state.py state <store dir> [--json]` prints
+  `state | request|run | <slug> | <id or date> | state=<s> | basis=<fields>` lines, then totals. Fields only; never a legal
+  status: free text (evidence, a draft body, a `Sent by:` sentence) never changes a state. Exit 1 on any record or run problem.
+
 ## Open
 
 - New row from a sent email run: `python3 tools/flock_requests.py open --from-email <run folder> --request-id <id> [--today D]` (flock-email "Open").
