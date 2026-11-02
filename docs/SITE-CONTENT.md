@@ -230,7 +230,15 @@ parse is refused as `unreadable image`; re-export it. To clean one, run
 `python3 -m campaign_tool content strip-metadata content/public-assets/photos/council.jpg` (optional `--out PATH`): it writes
 `council.clean.jpg` beside it with those segments or chunks removed and every image byte kept (no re-encoding; colour
 profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
-inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
+inside a `public/` folder. Check the copy, then replace the original yourself. ICO files are not checked.
+
+PDFs and SVGs: `build` and `content-check` also refuse, naming file and kinds but never a script, URL or name
+(`public-assets/docs/agenda.pdf: PDF (JavaScript, more than one revision)`), a PDF with JavaScript, open/launch
+actions (`OpenAction`, `Launch`, `AA`), embedded files, an `Author` field or XMP creator, or more than one revision
+(an incremental update keeps the earlier text, so a redaction saved that way can still be read), names in compressed
+streams included; and an SVG with a `DOCTYPE`/entity, `script`, `foreignObject`, `on*` handlers or a link, `url()` or
+`@import` pointing anywhere but `#` in the file (`data:` too). Unparseable: `unreadable PDF`/`SVG`. Fix: save the PDF
+flattened as a new single-revision file without author fields; export the SVG as plain shapes, or use a PNG.
 
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
