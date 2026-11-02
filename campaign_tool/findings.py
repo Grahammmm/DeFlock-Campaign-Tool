@@ -583,9 +583,10 @@ def _status_row(root, document, state=None):
                 corrections=len(corrections) if isinstance(corrections, list) else 0)
 
 
-def status_rows(root, extra_drafts=()):
+def status_rows(root, extra_drafts=(), *, draft_paths=False):
     """Read-only: one row per published or withdrawn finding and per draft (private/drafts/*.json, one level, plus
-    ``extra_drafts``). An unreadable file or folder is an ``unreadable`` row naming its path, never a crash or a skip."""
+    ``extra_drafts``). An unreadable file or folder is an ``unreadable`` row naming its path, never a crash or a skip.
+    ``draft_paths`` adds ``draft_path`` (the file actually read, whatever its name) to each draft row."""
     rows, found = [], {"published finding": [], "withdrawn finding": []}
 
     def attempt(path, build, what="file"):
@@ -629,7 +630,7 @@ def status_rows(root, extra_drafts=()):
             row = _status_row(root, load_draft(path))
             row["state"] = ("withdrawn" if row["id"] in withdrawn_ids else
                             "pending correction" if row["id"] in live_ids else row["state"])
-            return [row]
+            return [dict(row, draft_path=str(path)) if draft_paths else row]
         rows.extend(attempt(path, draft_row, "draft") or [])
     return sorted(rows, key=lambda r: (STATUS_ORDER.index(r["state"]), r["id"] or "", r.get("path", "")))
 
