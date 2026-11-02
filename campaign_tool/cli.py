@@ -757,8 +757,11 @@ def main():
         sent_p.add_argument(flag, required=True)
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
-    commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
-                        ).add_argument("--directory", required=True)
+    sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
+                        "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
+    status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
     check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
@@ -776,6 +779,7 @@ def main():
     due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
+    due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -784,6 +788,7 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1107,7 +1112,8 @@ def main():
             print("Nothing was sent.")
         elif args.command == "kit-sent":
             from .kit_track import record_sent
-            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
+            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
+                                         replace=args.replace), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
@@ -1117,7 +1123,7 @@ def main():
             kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
-            print(json.dumps(kit_track_status(root), indent=2))
+            print(json.dumps(kit_track_status(root, request=args.request), indent=2))
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
@@ -1128,14 +1134,14 @@ def main():
             print(today_cli(root, args.as_of, args.as_json))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
-            report = kit_track_due(root, args.as_of)
+            report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
             if report["past_due"]:
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
-                                         records=args.record), indent=2))
+                                         records=args.record, request=args.request), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)
