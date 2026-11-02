@@ -737,6 +737,12 @@ def main():
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
     check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
+    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt or an unsent .eml; "
+                                 "sends nothing")
+    for flag in ("--directory", "--agency"):
+        copy_p.add_argument(flag, required=True)
+    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email"))
+    copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -1047,6 +1053,9 @@ def main():
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
+        elif args.command == "kit-copy":
+            from .kit_copy import run_cli as kit_copy_cli
+            kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
