@@ -88,6 +88,12 @@ class PdfKindsTests(unittest.TestCase):
             if gap.strip().startswith(b"["):
                 commented = commented.replace(b"/FlateDecode", b"/FlateDecode %y\n]")
             self.assertEqual(pdf_kinds(pdf(commented)), ["JavaScript", "author metadata"], gap)
+        # an ``obj``/``stream``/``endobj`` inside a comment or string is not a keyword: the real header still counts
+        for decoy in (b"/Filter % object comment\n/FlateDecode", b"/Filter % 1 0 obj\r/FlateDecode",
+                      b"/Filter /FlateDecode /T (obj) /U (a\\) 7 0 obj (\\(nested obj)) )",
+                      b"/T (stream\n) /Filter /FlateDecode", b"/Filter %endobj stream\n/FlateDecode"):
+            tricky = flate(b"<< /JS (x) /Author (a) >>").replace(b"/Filter /FlateDecode", decoy)
+            self.assertEqual(pdf_kinds(pdf(tricky)), ["JavaScript", "author metadata"], decoy)
 
     # 3b. a stream encoded other than Flate-only or image-only cannot be read for names: unreadable
     def test_other_encodings(self):

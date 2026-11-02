@@ -21,11 +21,15 @@ PDF_NAMES = {b"JavaScript": "JavaScript", b"JS": "JavaScript", b"OpenAction": "a
 PDF_NAME = re.compile(rb"/([^\x00\t\n\x0c\r ()<>\[\]{}/%]+)")
 PDF_HEX = re.compile(rb"#([0-9A-Fa-f]{2})")
 XMP_AUTHOR = re.compile(rb"<(?:pdf:Author|dc:creator)\b|\bpdf:Author\s*=")
-STREAM = re.compile(rb"(?<![A-Za-z])stream\r?\n")
 # whitespace and comments; a comment runs to end of line (the lookahead stops ``%%%...`` backtracking)
-PDF_GAP = rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*(?=[\r\n]|\Z))*"
-FILTER = re.compile(rb"/Filter(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])" + PDF_GAP)
-FILTER_ARRAY = re.compile(rb"\[(" + PDF_GAP + rb"(?:/[^\x00\t\n\x0c\r ()<>\[\]{}/%]+" + PDF_GAP + rb")*)\]")
+PDF_GAP = re.compile(rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*(?=[\r\n]|\Z))*")
+# one lexical unit outside stream data: comment, name, literal-string start, dict brackets, hex string, array
+# bracket, or a run of whitespace and regular characters (which holds any ``obj``/``stream`` keyword)
+PDF_TOKEN = re.compile(rb"%[^\r\n]*|/[^\x00\t\n\x0c\r ()<>\[\]{}/%]*|\(|<<|>>|<[^<>]*>|\[|\]"
+                       rb"|[^%/()<>\[\]]+|[\s\S]")
+PDF_KEYWORD = re.compile(rb"(?<![^\x00\t\n\x0c\r ()<>\[\]{}/%])(obj|stream)(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])")
+PDF_STRING_PART = re.compile(rb"\\[\s\S]|[()]")
+PDF_EOL = re.compile(rb"\r?\n")
 FLATE = {b"FlateDecode", b"Fl"}
 IMAGE_FILTERS = {b"DCTDecode", b"DCT", b"JPXDecode", b"CCITTFaxDecode", b"CCF", b"JBIG2Decode"}  # carry no names
 SVG_DOCTYPE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
@@ -50,25 +54,72 @@ def _names(data, kinds):
         kinds.add("author metadata")
 
 
-def _filters(header):
-    """Each ``/Filter`` value in a stream header as a list of names; ``Unreadable`` if it is not a name or array."""
-    for match in FILTER.finditer(header):
-        at = match.end()
-        array = FILTER_ARRAY.match(header, at)
-        if array:
-            names = PDF_NAME.findall(re.sub(rb"%[^\r\n]*", b"", array[1]))
-        else:
-            name = PDF_NAME.match(header, at)
-            if not name:
-                raise Unreadable()  # an indirect reference or a malformed name: cannot tell what encodes it
-            names = [name[1]]
-        yield names
+def _skip_string(data, at):
+    """The offset just past the literal string whose ``(`` ends at ``at``; ``Unreadable`` if it never closes."""
+    depth = 1
+    for match in PDF_STRING_PART.finditer(data, at):
+        if match[0] == b"(":
+            depth += 1
+        elif match[0] == b")":
+            depth -= 1
+            if not depth:
+                return match.end()
+    raise Unreadable()
 
 
-def _is_flate(header):
+def _filter_value(data, at):
+    """The ``/Filter`` value at ``at`` as (names, end); ``Unreadable`` unless it is a name or an array of names."""
+    at = PDF_GAP.match(data, at).end()
+    name = PDF_NAME.match(data, at)
+    if name:
+        return [_unhex(name[1])], name.end()
+    if data[at:at + 1] != b"[":
+        raise Unreadable()  # an indirect reference or a malformed value: cannot tell what encodes it
+    names, at = [], at + 1
+    while True:
+        at = PDF_GAP.match(data, at).end()
+        if data[at:at + 1] == b"]":
+            return names, at + 1
+        name = PDF_NAME.match(data, at)
+        if not name:
+            raise Unreadable()
+        names.append(_unhex(name[1]))
+        at = name.end()
+
+
+def _streams(data):
+    """Yield (filters, start, end) per stream: every ``/Filter`` value since the object's ``obj`` keyword, and the
+    stream data bounds. Comments and strings are lexed, so an ``obj`` or ``stream`` inside them is not a keyword."""
+    at, filters = 0, []
+    while at < len(data):
+        token = PDF_TOKEN.match(data, at)
+        text, at = token[0], token.end()
+        if text == b"(":
+            at = _skip_string(data, at)
+        elif text[:1] == b"/" and _unhex(text[1:]) == b"Filter":
+            names, at = _filter_value(data, at)
+            filters.append(names)
+        elif text[:1] not in b"%/<>[]":
+            for keyword in PDF_KEYWORD.finditer(data, token.start(), at):
+                if keyword[1] == b"obj":
+                    filters = []
+                    continue
+                newline = PDF_EOL.match(data, keyword.end())
+                if not newline:
+                    raise Unreadable()
+                start = newline.end()
+                end = data.find(b"endstream", start)
+                if end < 0:
+                    raise Unreadable()
+                yield filters, start, end
+                at = end + len(b"endstream")
+                break
+
+
+def _is_flate(filters):
     """True for a Flate-only stream, False for none or image-only; other encodings could hide names: ``Unreadable``."""
     flate = False
-    for names in _filters(header):
+    for names in filters:
         if len(names) == 1 and names[0] in FLATE:
             flate = True
         elif not set(names) <= IMAGE_FILTERS:
@@ -79,14 +130,11 @@ def _is_flate(header):
 def _inflated(data):
     """Yield each ``/FlateDecode`` stream's inflated bytes; raises ``Unreadable`` past a bound or on bad data."""
     view, count = memoryview(data), 0
-    for match in STREAM.finditer(data):
-        start = match.end()
-        header = _unhex(data[data.rfind(b"obj", 0, match.start()) + 3:match.start()])
-        if not _is_flate(header):
+    for filters, start, end in _streams(data):
+        if not _is_flate(filters):
             continue
         count += 1
-        end = data.find(b"endstream", start)
-        if count > MAX_STREAMS or end < 0:
+        if count > MAX_STREAMS:
             raise Unreadable()
         inflater = zlib.decompressobj()
         try:
