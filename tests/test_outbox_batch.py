@@ -4,12 +4,18 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from campaign_tool import approval, outbox as ob, outbox_batch as batch
+from tests import outbox_entry_driver
+from tests.approval_signing import Signer
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 class BatchTests(unittest.TestCase):
@@ -201,6 +207,57 @@ class BatchTests(unittest.TestCase):
             results = batch.approve_all(self.box, self.out)
         self.assertEqual([r["state"] for r in results], ["changed", "changed"])
         self.assertFalse(self.box.db.in_transaction)
+
+
+class EntryPointTests(unittest.TestCase):
+    """The documented `python3 -m campaign_tool.outbox` entry point, run in a real subprocess."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.journal = self.root / "private" / "outbox.sqlite"
+        self.out = self.root / "letters"
+        self.signer = Signer()
+        self.addCleanup(self.signer.close)
+
+    def run_cli(self, *args, trusted=False):
+        entry = [outbox_entry_driver.__file__, str(self.signer.signers)] if trusted \
+            else ["-m", "campaign_tool.outbox"]
+        result = subprocess.run([sys.executable, "-B", *entry, "--journal", str(self.journal), *args],
+                                cwd=REPO, capture_output=True, text=True, timeout=120, check=False)
+        self.assertNotIn("Traceback", result.stderr)
+        return result.returncode, [json.loads(line) for line in result.stdout.splitlines()]
+
+    def test_invalid_signature_then_valid_letter_and_path_errors(self):
+        box = ob.Outbox(self.journal)
+        try:
+            keys = sorted(box.propose(ob.RequestDraft(r, "Agency A", 1, "email", "Synthetic letter",
+                                                      "Dear Agency A, records please.",
+                                                      "records@example.invalid"))["idempotency_key"]
+                          for r in ("one", "two"))
+        finally:
+            box.close()
+        self.assertEqual(self.run_cli("payload-batch", "--out", str(self.out)), (0, [{"written": 2, "dir": str(self.out)}]))
+        bad, good = (self.out / (k + ".txt") for k in keys)
+        Path(str(bad) + ".sig").write_text("-----BEGIN SSH SIGNATURE-----\ninvalid\n-----END SSH SIGNATURE-----\n")
+        Path(str(good) + ".sig").write_text(self.signer.sign(good.read_bytes()))
+        code, lines = self.run_cli("approve-batch", "--dir", str(self.out), trusted=True)
+        self.assertEqual(code, 2)
+        self.assertEqual([(r["idempotency_key"], r["state"]) for r in lines[:-1]],
+                         [(keys[0], "refused"), (keys[1], "approved")])
+        self.assertIn("approval refused", lines[0]["reason"])
+        self.assertEqual(lines[1]["approved_by"], "owner@example.invalid")
+        self.assertEqual(lines[-1], {"approved": 1, "skipped": 1})
+        box = ob.Outbox(self.journal)
+        try:
+            self.assertEqual([box.row(k)["state"] for k in keys], ["proposed", "approved"])
+        finally:
+            box.close()
+        self.assertEqual(self.run_cli("payload-batch", "--out", str(self.out)),
+                         (2, [{"state": "refused", "reason": "output directory must be empty"}]))
+        code, lines = self.run_cli("approve-batch", "--dir", str(self.root / "missing"))
+        self.assertEqual((code, lines[0]["state"]), (2, "refused"))
 
 
 if __name__ == "__main__":

@@ -622,4 +622,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Run the imported module, not this __main__ copy, so the CLI, Outbox and
+    # outbox_batch share one OutboxError class.
+    from campaign_tool import outbox as _outbox
+    raise SystemExit(_outbox.main())
