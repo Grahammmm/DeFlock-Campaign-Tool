@@ -15,7 +15,7 @@ import re
 import shutil
 import sys
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -158,6 +158,10 @@ def date_label(value):
     return e(value[:10])
 
 
+def time_tag(value):
+    return f'<time datetime="{e(value)}">{e(value)}</time>'
+
+
 def _day(value):
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
@@ -179,6 +183,7 @@ class Site:
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
+        self.today = today or date.today()  # build date: contract terms
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
         cutoff = (today or date.today()).isoformat()
@@ -388,6 +393,24 @@ class Site:
         return ('    <section class="section movement-section" id="participate"><h2>Participate with evidence.</h2>'
                 f'{form}</section>\n')
 
+    def contract_line(self, contract):
+        if not contract:
+            return ""
+        return (f'<p class="contract-term">Contract with {e(contract["vendor"])}, {time_tag(contract["start"])} – '
+                f'{time_tag(contract["end"])}' + (", ended" if contract["end"] < self.today.isoformat() else "")
+                + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
+                + f' (checked {date_label(contract["checked_on"])} on <a href="{e(contract["source_url"])}" '
+                  'rel="noopener noreferrer">the source</a>).</p>')
+
+    def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
+        first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
+        soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
+                      key=lambda a: (a["contract"]["end"], a["name"]))
+        items = "".join(f'<li><a href="/agencies.html#{e(a["slug"])}">{e(a["name"])}</a>: contract with '
+                        f'{e(a["contract"]["vendor"])} ends {time_tag(a["contract"]["end"])}</li>' for a in soon)
+        return ('    <section class="section" id="contracts"><div class="section-heading"><div><p class="eyebrow">Contracts</p>'
+                f'<h2>Contracts ending soon</h2></div></div><ul class="contract-list">{items}</ul></section>\n') if soon else ""
+
     # -- pages ---------------------------------------------------------------
 
     def index_html(self):
@@ -405,7 +428,7 @@ class Site:
         meetings = ('    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">Meetings</p><h2>Show up informed.</h2></div>'
                     '<p><a href="/meetings.html">All meetings and comment kits</a></p></div><div class="meeting-list">'
                     + ("".join(self.meeting_item(m) for m in self.upcoming[:3]) or empty) + '</div></section>\n')
-        main = (self.map_section() + cards
+        main = (self.map_section() + cards + self.contracts_section()
                 + '    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">Evidence before conclusions</p>'
                   f'<h2>{e(self.site["tagline"])}</h2></div></div>{mission}</section>\n'
                 + '    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">Latest findings</p><h2>Published with sources.</h2></div>'
@@ -437,7 +460,7 @@ class Site:
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
                     + (f'<p>{len(findings)} published finding(s): ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else '<p>No published findings.</p>')
-                    + (f'<p>{" · ".join(links)}</p>' if links else "")
+                    + (f'<p>{" · ".join(links)}</p>' if links else "") + self.contract_line(agency["contract"])
                     + (f'<p class="contact-provenance">Contact checked {date_label(agency["verification"]["checked_on"])} on '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">the official source</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
