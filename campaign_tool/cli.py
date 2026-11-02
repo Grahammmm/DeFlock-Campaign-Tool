@@ -543,8 +543,8 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation),
-                     indent=2))
+    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
+                           finding_ids=args.finding), indent=2))
 
 
 def main():
@@ -643,7 +643,9 @@ def main():
     stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
     stage_p.add_argument("--directory", required=True)
     stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
-    stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
+    stage_p.add_argument("--agency-id", help="The meeting's agency; its published findings are cited first")
+    stage_p.add_argument("--finding", action="append", metavar="ID",
+                         help="Published finding id to cite (repeatable, max 3, in this order; default: 3 chosen)")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
