@@ -138,6 +138,7 @@ class IngestDryRunTests(unittest.TestCase):
                     result = self.dry(*arguments, "--source-id", "synthetic-1", returncode=1)
                     self.assertEqual(result.stdout, "")
                     self.assertIn("Stopped: ledger is not readable; nothing was written", result.stderr)
+                    self.assertIn("Fix: The dry run wrote nothing.", result.stderr)
 
     def test_wal_mode_ledger_is_read_without_creating_sidecars(self):
         source = self.write("a.txt", b"Synthetic wal\n")
@@ -168,6 +169,7 @@ class IngestDryRunTests(unittest.TestCase):
                     self.assertEqual(result.stdout, "")
                     self.assertIn("Stopped: ledger has a journal or WAL file beside it; nothing was written",
                                   result.stderr)
+                    self.assertIn("Fix: The dry run wrote nothing.", result.stderr)
             sidecar.unlink()
 
     def test_more_than_max_dir_files_refused_like_a_real_run(self):
