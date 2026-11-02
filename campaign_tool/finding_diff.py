@@ -78,9 +78,10 @@ def diff(old, new):
         a, b = old.get(field), new.get(field)
         if field == "body_md":
             if (a or "") != (b or ""):
-                lines = difflib.unified_diff((a or "").splitlines(), (b or "").splitlines(), n=1, lineterm="")
-                changes.append({"field": field, "lines": [line for line in lines
-                                                          if not line.startswith(("--- ", "+++ "))]})
+                lines = list(difflib.unified_diff((a or "").splitlines(), (b or "").splitlines(), n=1, lineterm=""))
+                # Drop only the two generated '--- '/'+++ ' file headers; hunk lines such as '--- old detail'
+                # (a removed '-- old detail') are body changes and stay.
+                changes.append({"field": field, "lines": lines[2:]})
         elif field == "sources":
             entry = _sources(a, b)
             if entry["removed"] or entry["added"] or entry["changed"]:

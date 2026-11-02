@@ -93,6 +93,18 @@ class FindingDiffTests(unittest.TestCase):
         text = self.cli("syn-diff-1", "--from", path, returncode=3).stdout.splitlines()
         self.assertEqual(text, ["body_md:", *expected, "1 field(s) differ"])
 
+    def test_body_lines_that_look_like_file_headers_are_kept(self):
+        # Removing '-- old detail' gives hunk line '--- old detail'; adding '++ new detail' gives '+++ new detail'.
+        old = self.draft("old.json", body_md="intro\n-- old detail\nend")
+        new = self.draft("new.json", body_md="intro\n++ new detail\nend")
+        expected = ["@@ -1,3 +1,3 @@", " intro", "--- old detail", "+++ new detail", " end"]
+        self.assertEqual(self.as_json(old, new), [{"field": "body_md", "lines": expected}])
+        self.assertEqual(self.cli(old, new, returncode=3).stdout.splitlines(),
+                         ["body_md:", *expected, "1 field(s) differ"])
+        only_removed = self.draft("removed.json", body_md="intro\nend")
+        self.assertEqual(self.as_json(old, only_removed)[0]["lines"],
+                         ["@@ -1,3 +1,2 @@", " intro", "--- old detail", " end"])
+
     def test_sources_added_removed_and_locator_changed(self):
         sources = [{"sha256": SHA_A, "locator": "page:9"}, {"sha256": SHA_C, "locator": "page:3"}]
         path = self.draft(sources=sources)
