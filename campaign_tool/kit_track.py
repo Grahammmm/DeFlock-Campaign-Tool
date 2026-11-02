@@ -216,6 +216,78 @@ def status(root, today=None, law_base=None):
 
 
 ANSWERED = {"determination", "produced", "denied"}
+CSV_HEADER = ("agency_id", "name", "drafted", "sent_on", "channel", "last_step_on", "last_step_kind", "records",
+              "sources", "findings")
+
+
+def coverage(root):
+    """One row per selected kit agency from draft to published finding; read-only, unsent requests first."""
+    from .content import load_content
+    root = Path(root)
+    path = root / "kit" / "agencies.json"
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("run kit first: kit/agencies.json is missing")
+    selected = {}
+    for entry in kit._load_existing(path):
+        if entry.get("selected") is True:
+            selected.setdefault(entry["agency_id"], entry["name"])
+    requests = read_sent(root)
+    model = load_content(root)
+    sources = [s["agency_id"] for s in model["sources"]] if model else []
+    findings = [f["agency_id"] for f in model["findings"]] if model else []
+    rows = []
+    for agency_id, name in selected.items():
+        entry = requests.get(agency_id) or {}
+        steps = [s for s in entry.get("steps", []) if isinstance(s, dict)]
+        draft = root / "kit" / "requests" / (agency_id + ".md")
+        rows.append({"agency_id": agency_id, "name": name, "drafted": draft.is_file() and not draft.is_symlink(),
+                     "sent_on": entry.get("sent_on"), "channel": entry.get("channel"),
+                     "last_step": {"on": steps[-1].get("on"), "kind": steps[-1].get("kind")} if steps else None,
+                     "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
+                     "sources": sources.count(agency_id), "findings": findings.count(agency_id),
+                     "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
+    rows.sort(key=lambda row: (row["sent_on"] is not None, row["agency_id"]))
+    totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
+              "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
+              "with_records": sum(r["records"] > 0 for r in rows), "with_findings": sum(r["findings"] > 0 for r in rows),
+              "unselected_with_requests": len(set(requests) - set(selected))}
+    note = ("Read-only counts from kit/ and content/." if model else
+            "No content/ folder: sources and findings are 0.") + " Agencies with no sent request come first."
+    return {"rows": rows, "totals": totals, "note": note}
+
+
+def _cells(row):
+    step = row["last_step"] or {}
+    return [row["agency_id"], row["name"], row["drafted"], row["sent_on"], row["channel"], step.get("on"),
+            step.get("kind"), row["records"], row["sources"], row["findings"]]
+
+
+def _csv_cell(value):
+    text = "" if value is None else ("true" if value else "false") if isinstance(value, bool) else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text  # spreadsheet formula guard
+
+
+def format_coverage(report, as_csv=False):
+    """The coverage report as a fixed-column table, or RFC 4180 CSV with a spreadsheet formula guard."""
+    import csv
+    import io
+    if as_csv:
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(CSV_HEADER)
+        for row in report["rows"]:
+            writer.writerow([_csv_cell(c) for c in _cells(row)])
+        return out.getvalue()
+    line = "{:<36} {:<40} {:<7} {:<10} {:<7} {:<10} {:<13} {:>7} {:>7} {:>8}"
+    lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
+                         "sources", "findings")]
+    for row in report["rows"]:
+        cells = _cells(row)
+        cells[1] = "".join(c if c.isprintable() else " " for c in cells[1])[:40]
+        cells[2] = "yes" if cells[2] else "no"
+        lines.append(line.format(*("-" if c is None else c for c in cells)))
+    lines.append("totals: " + ", ".join(f"{k} {v}" for k, v in report["totals"].items()))
+    return "\n".join(lines + [report["note"]]) + "\n"
 
 
 def due(root, as_of=None, *, today=None, law_base=None):

@@ -643,6 +643,10 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
+                                     "records, sources, findings (read-only)")
+    coverage_p.add_argument("--directory", required=True)
+    coverage_p.add_argument("--csv", action="store_true", help="RFC 4180 CSV on stdout instead of a table")
     due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
@@ -827,6 +831,10 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-coverage":
+            from .kit_track import coverage, format_coverage
+            sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of)
