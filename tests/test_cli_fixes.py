@@ -69,6 +69,10 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--record #5: the same record is given twice", "--record #5: already linked on 5",
         "--record #5: name",  # wraps the resolve_hash refusal (not ingested / no ledger / 12 hex / ambiguous)
     ), "kit-response --record message that names the record number and the rule to change; not in the table"),
+    **dict.fromkeys((
+        "fee_estimate needs --amount USD", "--amount is only for fee_estimate steps",
+        "--amount must be US dollars like 245 or 245.50 (no sign, commas or exponent)", "--amount must be from 0 to 100000",
+    ), "kit-response --amount message that already names the option and the rule; not in the table"),
     "--as-of must be a real YYYY-MM-DD date": "kit-due message that already names the option and the format",
     "no sent request */5: no agency has a request recorded under that name":
         "kit-due --request message that already names the request; not in the table",
