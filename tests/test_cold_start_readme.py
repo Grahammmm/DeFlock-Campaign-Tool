@@ -117,7 +117,8 @@ class ColdStartReadmeTests(unittest.TestCase):
                          {"DeFlock-Campaign-Tool", "home", "my-campaign"})
         self.assertEqual(list((self.sandbox / "home").iterdir()), [])
         self.assertTrue(any((campaign / "kit" / "requests").glob("*.md")))
-        names = [p.name.lower() for p in self.sandbox.rglob("*") if p.is_file()]
+        names = [p.name.lower() for tree in (campaign, self.sandbox / "home") for p in tree.rglob("*")
+                 if p.is_file()]
         self.assertFalse([n for n in names if "outbox" in n or n.endswith((".sqlite", ".db"))])
         self.assertIn('"sent": false', (campaign / "kit" / "summary.json").read_text(encoding="utf-8"))
 
@@ -158,16 +159,18 @@ class ColdStartReadmeTests(unittest.TestCase):
                 self.assertIn(expected, str(caught.exception))
 
     def test_fork_doc_links_and_commands_resolve(self):
-        text = (self.clone / "docs" / "FORK-AND-RUN.md").read_text(encoding="utf-8")
+        text = (REPO / "docs" / "FORK-AND-RUN.md").read_text(encoding="utf-8")
         self.assertLessEqual(len(text.splitlines()), 90)
-        helped = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "--help"], cwd=self.clone,
+        helped = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "--help"], cwd=REPO,
                                 capture_output=True, text=True, timeout=60).stdout
-        subcommands = set(re.search(r"\{([a-z,-]+)\}", helped).group(1).split(","))
+        found = re.search(r"\{([a-z,-]+)\}", helped)
+        self.assertIsNotNone(found, helped)
+        subcommands, tracked = set(found.group(1).split(",")), set(tracked_files(REPO))
         self.assertIn("kit-verify-agency", subcommands)
-        self.assertEqual(lint_doc(text, set(tracked_files(self.clone)), subcommands), [])
+        self.assertEqual(lint_doc(text, tracked, subcommands), [])
         bad = text + "\n[x](nope.md) `python3 -m campaign_tool frobnicate`\n"
-        self.assertEqual(len(lint_doc(bad, set(tracked_files(self.clone)), subcommands)), 2)
-        self.assertIn("docs/FORK-AND-RUN.md", (self.clone / "CONTRIBUTING.md").read_text(encoding="utf-8"))
+        self.assertEqual(len(lint_doc(bad, tracked, subcommands)), 2)
+        self.assertIn("docs/FORK-AND-RUN.md", (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
