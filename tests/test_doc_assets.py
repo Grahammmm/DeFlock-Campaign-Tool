@@ -2,6 +2,7 @@
 
 Every PDF and SVG is built here from bytes. A script body, URL or author name must never be printed.
 """
+import re
 import shutil
 import subprocess
 import sys
@@ -94,6 +95,17 @@ class PdfKindsTests(unittest.TestCase):
                       b"/T (stream\n) /Filter /FlateDecode", b"/Filter %endobj stream\n/FlateDecode"):
             tricky = flate(b"<< /JS (x) /Author (a) >>").replace(b"/Filter /FlateDecode", decoy)
             self.assertEqual(pdf_kinds(pdf(tricky)), ["JavaScript", "author metadata"], decoy)
+        # stream bounds come from neither /Length nor ``endstream``: an ``endstream\n(`` inside benign stream data,
+        # closed by a ``)`` in a later benign stream, or a lying /Length, still leaves the hidden stream inflated
+        opening = b"<< /Length 13 >>\nstream\nendstream\n(\nendstream"
+        closing = b"<< /Subtype /Image /Filter /DCTDecode /Length 3 >>\nstream\n\xff)\xd8\nendstream"
+        hidden = flate(b"<< /JS (x) /Author (a) >>")
+        self.assertEqual(pdf_kinds(pdf(opening, hidden, closing)), ["JavaScript", "author metadata"])
+        lying = re.sub(rb"/Length \d+", b"/Length 1", hidden)
+        self.assertNotEqual(lying, hidden)
+        self.assertEqual(pdf_kinds(pdf(lying)), ["JavaScript", "author metadata"])
+        unfiltered = b"<< /Length 99 >>\nstream\n" + hidden + b"\nendstream"  # a stream keyword inside stream data
+        self.assertEqual(pdf_kinds(pdf(unfiltered)), ["JavaScript", "author metadata"])
 
     # 3b. a stream encoded other than Flate-only or image-only cannot be read for names: unreadable
     def test_other_encodings(self):
@@ -144,6 +156,11 @@ class PdfKindsTests(unittest.TestCase):
         many = [flate(b"q Q", b"") for _ in range(doc_assets.MAX_STREAMS)]
         self.assertEqual(pdf_kinds(pdf(*many)), [])
         self.assertEqual(pdf_kinds(pdf(*many, flate(b"q Q", b""))), [PDF_UNREADABLE])
+        large = [flate(bytes(1000), b"") for _ in range(3)]
+        with mock.patch.object(doc_assets, "MAX_INFLATE_TOTAL", 2999):  # all streams together are bounded too
+            self.assertEqual(pdf_kinds(pdf(*large)), [PDF_UNREADABLE])
+        with mock.patch.object(doc_assets, "MAX_INFLATE_TOTAL", 3000):
+            self.assertEqual(pdf_kinds(pdf(*large)), [])
         bad_flate = b"<< /Filter /FlateDecode >>\nstream\nnot zlib\nendstream"
         cut = pdf(flate(b"q Q"))
         cut = cut[:cut.index(b"endstream")] + b"\n%%EOF\n"

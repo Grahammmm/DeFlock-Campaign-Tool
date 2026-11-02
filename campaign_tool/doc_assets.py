@@ -1,10 +1,13 @@
 """PDF and SVG public assets: name the active, hidden or revealing kinds a file carries; never a value.
 
-Stdlib only and bounded: input <= ``MAX_BYTES``; at most ``MAX_STREAMS`` Flate streams inflated, each to at most
-``MAX_INFLATE`` bytes (``decompressobj().decompress(data, max_length)``, so memory stays bounded). Anything malformed
-or over a bound, and any stream encoded other than Flate-only or image-only, is ``unreadable PDF`` / ``unreadable SVG``
-and is refused too. Only kind names leave this module.
+Stdlib only and bounded: input <= ``MAX_BYTES``; at most ``MAX_STREAMS`` zlib streams inflated, each to at most
+``MAX_INFLATE`` bytes and all to at most ``MAX_INFLATE_TOTAL`` (``decompressobj().decompress(data, max_length)``, so
+memory stays bounded). Streams are found by sweeping every raw ``stream`` keyword, not by parsing, so no comment,
+string, ``/Length`` or stray ``endstream`` can hide one. Anything malformed or over a bound, and any ``/Filter`` other
+than Flate-only or image-only, is ``unreadable PDF`` / ``unreadable SVG`` and is refused too. Only kind names leave
+this module.
 """
+import bisect
 import re
 import zlib
 from xml.etree import ElementTree
@@ -14,6 +17,7 @@ from .content import ContentError
 MAX_BYTES = 5 * 1024 * 1024  # equals site.ASSET_MAX_BYTES
 MAX_STREAMS = 2_000
 MAX_INFLATE = 8 * 1024 * 1024
+MAX_INFLATE_TOTAL = 16 * MAX_INFLATE  # all streams together: bounds the time a 5 MiB file of bombs can take
 PDF_UNREADABLE, SVG_UNREADABLE = "unreadable PDF", "unreadable SVG"
 PDF_NAMES = {b"JavaScript": "JavaScript", b"JS": "JavaScript", b"OpenAction": "actions", b"Launch": "actions",
              b"AA": "actions", b"EmbeddedFile": "embedded files", b"EmbeddedFiles": "embedded files",
@@ -23,13 +27,10 @@ PDF_HEX = re.compile(rb"#([0-9A-Fa-f]{2})")
 XMP_AUTHOR = re.compile(rb"<(?:pdf:Author|dc:creator)\b|\bpdf:Author\s*=")
 # whitespace and comments; a comment runs to end of line (the lookahead stops ``%%%...`` backtracking)
 PDF_GAP = re.compile(rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*(?=[\r\n]|\Z))*")
-# one lexical unit outside stream data: comment, name, literal-string start, dict brackets, hex string, array
-# bracket, or a run of whitespace and regular characters (which holds any ``obj``/``stream`` keyword)
-PDF_TOKEN = re.compile(rb"%[^\r\n]*|/[^\x00\t\n\x0c\r ()<>\[\]{}/%]*|\(|<<|>>|<[^<>]*>|\[|\]"
-                       rb"|[^%/()<>\[\]]+|[\s\S]")
-PDF_KEYWORD = re.compile(rb"(?<![^\x00\t\n\x0c\r ()<>\[\]{}/%])(obj|stream)(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])")
-PDF_STRING_PART = re.compile(rb"\\[\s\S]|[()]")
-PDF_EOL = re.compile(rb"\r?\n")
+# every ``stream`` keyword in the raw bytes (not ``endstream``), with the blanks and end of line a reader skips; it is
+# found wherever it is - in a comment, string or other stream's data too - so no parsing can be led astray
+PDF_STREAM = re.compile(rb"(?<![^\x00\t\n\x0c\r ()<>\[\]{}/%])stream[\x00\t\x0c ]*(?:\r\n|\n|\r)?")
+INFLATE_CHUNK = 64 * 1024
 FLATE = {b"FlateDecode", b"Fl"}
 IMAGE_FILTERS = {b"DCTDecode", b"DCT", b"JPXDecode", b"CCITTFaxDecode", b"CCF", b"JBIG2Decode"}  # carry no names
 SVG_DOCTYPE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
@@ -54,19 +55,6 @@ def _names(data, kinds):
         kinds.add("author metadata")
 
 
-def _skip_string(data, at):
-    """The offset just past the literal string whose ``(`` ends at ``at``; ``Unreadable`` if it never closes."""
-    depth = 1
-    for match in PDF_STRING_PART.finditer(data, at):
-        if match[0] == b"(":
-            depth += 1
-        elif match[0] == b")":
-            depth -= 1
-            if not depth:
-                return match.end()
-    raise Unreadable()
-
-
 def _filter_value(data, at):
     """The ``/Filter`` value at ``at`` as (names, end); ``Unreadable`` unless it is a name or an array of names."""
     at = PDF_GAP.match(data, at).end()
@@ -87,61 +75,65 @@ def _filter_value(data, at):
         at = name.end()
 
 
-def _streams(data):
-    """Yield (filters, start, end) per stream: every ``/Filter`` value since the object's ``obj`` keyword, and the
-    stream data bounds. Comments and strings are lexed, so an ``obj`` or ``stream`` inside them is not a keyword."""
-    at, filters = 0, []
-    while at < len(data):
-        token = PDF_TOKEN.match(data, at)
-        text, at = token[0], token.end()
-        if text == b"(":
-            at = _skip_string(data, at)
-        elif text[:1] == b"/" and _unhex(text[1:]) == b"Filter":
-            names, at = _filter_value(data, at)
-            filters.append(names)
-        elif text[:1] not in b"%/<>[]":
-            for keyword in PDF_KEYWORD.finditer(data, token.start(), at):
-                if keyword[1] == b"obj":
-                    filters = []
-                    continue
-                newline = PDF_EOL.match(data, keyword.end())
-                if not newline:
-                    raise Unreadable()
-                start = newline.end()
-                end = data.find(b"endstream", start)
-                if end < 0:
-                    raise Unreadable()
-                yield filters, start, end
-                at = end + len(b"endstream")
-                break
+def _is_flate(names):
+    """True for a Flate-only ``/Filter`` value, False for image-only; other encodings may hide names: Unreadable."""
+    if len(names) == 1 and names[0] in FLATE:
+        return True
+    if not set(names) <= IMAGE_FILTERS:
+        raise Unreadable()
+    return False
 
 
-def _is_flate(filters):
-    """True for a Flate-only stream, False for none or image-only; other encodings could hide names: ``Unreadable``."""
-    flate = False
-    for names in filters:
-        if len(names) == 1 and names[0] in FLATE:
-            flate = True
-        elif not set(names) <= IMAGE_FILTERS:
+def _zlib_header(view, at):
+    """True if a zlib header (deflate, no preset dictionary, valid check bits) starts at ``at``."""
+    head = view[at:at + 2]
+    return len(head) == 2 and head[0] & 0x0F == 8 and head[0] >> 4 <= 7 and not head[1] & 0x20 and (
+        (head[0] << 8 | head[1]) % 31 == 0)
+
+
+def _inflate(data, at):
+    """Inflate the zlib stream at ``at`` to its end; ``Unreadable`` if corrupt, truncated (no ``endstream`` after it)
+    or over ``MAX_INFLATE``. No ``/Length`` or ``endstream`` bounds it: the data ends where the deflate stream says."""
+    view, inflater, out = memoryview(data), zlib.decompressobj(), bytearray()
+    while not inflater.eof:
+        if at >= len(view):
+            raise Unreadable()  # truncated
+        chunk = view[at:at + INFLATE_CHUNK]
+        try:
+            out += inflater.decompress(chunk, MAX_INFLATE + 1 - len(out))
+        except zlib.error:
+            raise Unreadable() from None
+        if inflater.unconsumed_tail or len(out) > MAX_INFLATE:
             raise Unreadable()
-    return flate
+        at += len(chunk)
+    if data.find(b"endstream", at - len(inflater.unused_data)) < 0:
+        raise Unreadable()
+    return bytes(out)
 
 
 def _inflated(data):
-    """Yield each ``/FlateDecode`` stream's inflated bytes; raises ``Unreadable`` past a bound or on bad data."""
-    view, count = memoryview(data), 0
-    for filters, start, end in _streams(data):
-        if not _is_flate(filters):
-            continue
+    """Yield the inflated bytes of every zlib stream after any raw ``stream`` keyword; raises ``Unreadable`` past a
+    bound, on bad data, on a ``/Filter`` that is neither Flate-only nor image-only, or on a Flate ``/Filter`` whose
+    next stream is not zlib. Nothing is lexed, so no comment, string or stream data can hide a stream from the sweep."""
+    view = memoryview(data)
+    starts = [match.end() for match in PDF_STREAM.finditer(data)]
+    for match in PDF_NAME.finditer(data):
+        if _unhex(match[1]) == b"Filter":
+            names, end = _filter_value(data, match.end())
+            if _is_flate(names):
+                following = bisect.bisect_left(starts, end)
+                if following == len(starts) or not _zlib_header(view, starts[following]):
+                    raise Unreadable()
+    count = total = 0
+    for start in starts:
+        if not _zlib_header(view, start):
+            continue  # unfiltered or image data: carries no compressed names
         count += 1
         if count > MAX_STREAMS:
             raise Unreadable()
-        inflater = zlib.decompressobj()
-        try:
-            out = inflater.decompress(view[start:end], MAX_INFLATE)
-        except zlib.error:
-            raise Unreadable() from None
-        if not inflater.eof:  # truncated, or more than MAX_INFLATE bytes (input left in unconsumed_tail)
+        out = _inflate(data, start)
+        total += len(out)
+        if total > MAX_INFLATE_TOTAL:
             raise Unreadable()
         yield out
 
