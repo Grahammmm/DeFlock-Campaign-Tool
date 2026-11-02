@@ -158,6 +158,10 @@ def time_tag(value):
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                   "amended": "Approved with amendments", "no_action": "No action taken",
                   "informational": "Informational item only"}
+# English names, independent of the host locale (DF1822-08 deadline line).
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December")
 
 
 def meeting_outcome_html(meeting):
@@ -249,6 +253,9 @@ class Site:
         links = "".join(
             f'<a href="{href}"' + (' aria-current="page"' if key == current else "") + f'>{self.t("nav." + label)}</a>'
             for href, label, key in items)
+        links += "".join(  # content pages with nav: true (DF2237-07), after About, labelled by their own title
+            f'<a href="/{page["slug"]}.html"' + (' aria-current="page"' if current == "page:" + page["slug"] else "")
+            + f'>{e(page["title"])}</a>' for page in self.model.get("pages", []) if page["nav"])
         return f'<nav class="site-nav" aria-label="{self.t("nav.label")}">{links}</nav>'
 
     def header(self, current):
@@ -356,11 +363,31 @@ class Site:
         return (f'<form class="finding-filter" id="finding-filter" aria-label="{self.t("finding.filter_label")}" hidden>{fields}'
                 f'<p class="filter-count" id="filter-count" aria-live="polite">{self.t("finding.filter_count", count=len(findings))}</p></form>')
 
+    def _written_deadline(self, meeting):
+        """DF1822-08: the verified written-comment deadline line, in the deadline's own offset; "" when none or cancelled.
+
+        Closed when the deadline is at or before the build instant, which is the build date (``self.today``) at
+        00:00 UTC: the builder carries a date, not a clock time.
+        """
+        written = (meeting.get("participation") or {}).get("written_comment") or {}
+        if meeting.get("status") == "cancelled" or not written.get("deadline"):
+            return ""
+        due = datetime.fromisoformat(written["deadline"].replace("Z", "+00:00"))
+        if due <= datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc):
+            text = "Written comment period closed"
+        else:
+            offset = int(due.utcoffset().total_seconds()) // 60
+            text = (f'Written comments due {WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
+                    f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
+                    f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+        return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
+
     def meeting_item(self, meeting):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
+        item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
         kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
@@ -594,6 +621,17 @@ class Site:
         return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main,
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
 
+    def finding_preview_html(self, finding):
+        """``finding_html`` for a private draft preview (DF1822-02) plus exactly two lines: a robots noindex meta
+        and a "Draft - not published" banner at the top of ``<main>``. Never part of build output."""
+        page = self.finding_html(finding)
+        html, title, main = page["html"], "  <title>", '  <main id="top">\n'
+        if html.count(title) != 1 or html.count(main) != 1:
+            raise ValueError("finding preview: the page shell changed; refusing to place the draft banner")
+        html = html.replace(title, '  <meta name="robots" content="noindex">\n' + title)
+        html = html.replace(main, main + '    <p class="draft-banner" role="note">Draft - not published</p>\n')
+        return dict(page, html=html)
+
     def corrections_html(self):
         rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
         rows.sort(key=lambda row: (row[0]["slug"], row[2]))
@@ -666,6 +704,7 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
@@ -682,6 +721,13 @@ class Site:
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
+
+    def content_page_html(self, page):
+        """``/<slug>.html`` from ``content/pages/<slug>.json`` (DF2237-07); body_md through markdown_lite."""
+        main = (f'    <article class="section finding-body" id="content"><h2>{e(page["title"])}</h2>{markdown(page["body_md"])}'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
+        return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
+                         f'/{page["slug"]}.html', main)
 
     # -- scripts and data ----------------------------------------------------
 
@@ -804,6 +850,7 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
+        paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
         return paths
@@ -926,6 +973,7 @@ def _copy(source, target, written, limit):
 def _asset_plan(model):
     from .image_meta import check_asset  # local: the only site.py change for the image-metadata gate
     assets_dir, plan = model["assets_dir"], []
+    page_files = {f'{page["slug"]}.html' for page in model.get("pages", [])}
     for source in model["public_assets"]:
         relative = source.relative_to(assets_dir)
         if source.suffix.lower() not in ASSET_EXTENSIONS:
@@ -933,7 +981,7 @@ def _asset_plan(model):
                                f"({', '.join(sorted(ASSET_EXTENSIONS))})")
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}", part) for part in relative.parts):
             raise ContentError(f"public-assets/{relative}: use plain file and folder names")
-        if relative.parts[0] in GENERATED_TOP_LEVEL:
+        if relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files:
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
         check_asset(source, relative, ASSET_MAX_BYTES)
         plan.append((source, relative))
@@ -962,6 +1010,8 @@ def _plan_site(root, today=None, notes=None):
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
     for meeting in model["meetings"]:
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
+    for page in model["pages"]:
+        pages[f'{page["slug"]}.html'] = site.content_page_html(page)
     css = pages["index.html"]["css"] + EXTRA_CSS
     files = {name: page["html"] for name, page in pages.items()}
     files.update({

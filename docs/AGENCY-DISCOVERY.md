@@ -196,6 +196,16 @@ package is `reviewed`, its status. It refuses a request never recorded, answered
 `denied`), closed or not yet past due, and when there is no law package. An existing draft is kept unless `--replace`;
 symlinks are refused. Nothing is sent and `sent.json` is not changed: send it yourself after review.
 
+`kit-denial-reply --directory D --agency ID [--rule RULE_ID]... [--replace]` writes a private draft
+`kit/followups/<agency_id>-denial-<denied date>.md` (0600, folder 0700) for a request with a recorded `denied` step
+(the latest one when there are several). It asks which exemption the agency relied on, for the non-exempt parts with
+only the exempt portions redacted, and for a written explanation; fill in `[EDIT ME: what you asked for]` and `[name]`.
+The tool never picks an exemption. Each `--rule` you name must be a `rule_id` in the law package in force on the denial
+date; it is cited as `RULE_ID (law package status: draft): <the package's citation>`. Unknown, repeated or out-of-force
+ids, `--rule` without a law package, and a request without a `denied` step are refused and nothing is written. Without
+`--rule` the draft has no citations. An existing draft is kept unless `--replace`; symlinks are refused. Nothing is sent
+and `sent.json` is not changed. The draft is not legal advice.
+
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in

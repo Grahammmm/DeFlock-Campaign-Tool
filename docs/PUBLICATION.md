@@ -64,6 +64,10 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Preview before you approve: `finding preview DRAFT --directory D --out DIR` (DIR outside `public/` and `content/`) writes `DIR/findings/<slug>.html` and `DIR/style.css`,
+the page `build` would render, with a "Draft - not published" banner and `noindex`; it never touches `public/`, the feed or the sitemap.
+The draft is rendered alongside the published findings (cited-rule citations and law-package status as build shows them); a slug already used by another finding or a cited rule build would refuse stops the preview.
+
 Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
 `ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
 spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
@@ -104,6 +108,15 @@ corrections are kept. One `{at, action: "correct", id, slug, date, content_sha25
 `{at, action: "withdraw", id, slug}` (the reason stays in the private copy only). The copy is kept and its id
 and slug stay taken: a later `publish` of either is refused. The next `build` omits it; no notice page is made.
 If the content file cannot be removed both copies remain and the leftover is named. It never builds or deploys.
+
+    python3 -m campaign_tool finding status --directory D [--draft PATH ...] [--json]
+
+`finding status` is read-only (it opens nothing for writing) and prints one row per finding: every
+`D/private/drafts/*.json` (one level, symlinks not followed) and `--draft PATH`, every `content/findings/` file and every
+`private/withdrawn/` copy, with the states above applied to these files, current/stale receipt counts and blocker names
+(never reviewer names, rationales or notes). A draft whose id is published is a second `pending correction` row; a withdrawn
+id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
+(not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
 
 ## Propose, approve, execute
 
