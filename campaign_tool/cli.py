@@ -579,6 +579,11 @@ def main():
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
                              help="chmod loose private dirs/files to 0700/0600, then run --check")
+            cmd.add_argument("--list", action="store_true", help="List ingested receipts with 12-char hash prefixes")
+            cmd.add_argument("--source-id", help="With --list: only receipts with this exact source_id")
+            cmd.add_argument("--since", help="With --list: received on/after YYYY-MM-DD or an ISO timestamp with offset")
+            cmd.add_argument("--not-in-sources", action="store_true",
+                             help="With --list: only objects not registered in content/sources.json")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
@@ -877,6 +882,10 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
+            read_config(root)
+            from .ledger_list import run_cli as list_cli
+            print(json.dumps(list_cli(args, root), indent=2))
         elif args.command == "kit-followup":
             from .kit_track import followup
             print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
