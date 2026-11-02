@@ -535,14 +535,26 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
-    sources_add = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
-                                      ).add_subparsers(dest="sources_command", required=True).add_parser(
+    sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
+                                  ).add_subparsers(dest="sources_command", required=True)
+    sources_add = sources.add_parser(
         "add", help="Register one ingested record by hash prefix; validates the whole list, publishes nothing")
     for flag in ("--directory", "--sha256", "--title", "--agency-id", "--received-at", "--fragment"):
         sources_add.add_argument(flag, required=True)
     sources_add.add_argument("--public-url", default=None, help="Recorded only; never fetched or uploaded")
     sources_add.add_argument("--pages", type=int, default=None)
     sources_add.add_argument("--note", default="")
+    sources.add_parser("list", help="Print every library entry and the published findings citing it (read-only)"
+                       ).add_argument("--directory", required=True)
+    sources_edit = sources.add_parser("edit", help="Change title, note, public_url or pages of one entry; publishes nothing")
+    sources_remove = sources.add_parser("remove", help="Delete one entry unless a published finding cites its record")
+    for sub in (sources_edit, sources_remove):  # entries chosen by >= 12 hex of the library hash (+ --fragment)
+        for flag, required in (("--directory", True), ("--sha256", True), ("--fragment", False)):
+            sub.add_argument(flag, required=required, default=None)
+    for flag in ("--title", "--note", "--public-url"):
+        sources_edit.add_argument(flag, default=None)
+    sources_edit.add_argument("--clear-public-url", action="store_true")
+    sources_edit.add_argument("--pages", type=int, default=None)
     args = parser.parse_args()
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
@@ -573,11 +585,20 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
-        elif args.command == "sources":
+        elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
                                         received_at=args.received_at, fragment=args.fragment,
                                         public_url=args.public_url, pages=args.pages, note=args.note)))
+        elif args.command == "sources" and args.sources_command == "list":
+            from .sources_cmd import list_sources
+            print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
+        elif args.command == "sources":
+            from .sources_cmd import edit_source, remove_source
+            print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
+                             edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
+                                         public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
+            print("Nothing was published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root)
