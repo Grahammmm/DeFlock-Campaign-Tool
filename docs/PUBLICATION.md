@@ -140,5 +140,11 @@ under `public/`; posting stays an organizer decision outside this tool.
 ## Not done
 
 No reviewer directory or role assignment beyond the Access policy; no diff view between
-content versions; no automatic notification to reviewers. The runner that executes
+content versions in the workspace Worker; no automatic notification to reviewers. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
+
+The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`
+renders into memory and prints, as JSON, every `public/` file a rebuild would add, remove or change
+(path and byte delta; equality by SHA-256), then `Preview only; public/ was not changed.` It exits 3
+when anything differs and 0 when the rebuild would be identical. Symlinks inside `public/` are listed
+as `unreadable` and never followed. Nothing is written to the campaign folder.

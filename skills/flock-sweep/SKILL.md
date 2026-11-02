@@ -45,6 +45,11 @@ calls kanban or hermes and never writes into the store. Each model run stays its
   reminders, stale-cited findings, new leads, review waits, unreviewed facts and receipt-unknown requests, each with its next
   command, then counts. Read-only; reminders are provisional, not legal status. A bad source is one `source-error` line (exit 1).
 
+## Agency timeline
+- Before a meeting: `python3 tools/flock_agency.py timeline S --agency SLUG [--as-of D] [--inventory CSV] [--json]` prints one
+  agency's recorded events oldest first, then `still open` lines with a provisional reminder. Ids, counts and amounts only;
+  read-only. A bad source is one `source-error` line (exit 1); a failing email-run state also exits 1.
+
 ## Report
 - Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
   `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).
