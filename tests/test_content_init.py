@@ -1,4 +1,5 @@
 """`content init`: minimal valid content/ tree for the content site (synthetic campaigns only)."""
+import contextlib
 import hashlib
 import json
 import os
@@ -174,7 +175,7 @@ class ContentInitTests(unittest.TestCase):
             seen.append(path.name)
 
         with mock.patch.object(content_init, "_write", side_effect=spy), \
-                mock.patch.object(content_init.os, "rename", side_effect=OSError("injected rename failure")):
+                mock.patch.object(content_init, "_rename_noreplace", side_effect=OSError("injected rename failure")):
             with self.assertRaisesRegex(OSError, "injected rename failure"):
                 content_init.init_content(self.root)
         self.assertEqual(seen, ["site.json", "sources.json"])
@@ -186,6 +187,42 @@ class ContentInitTests(unittest.TestCase):
                 content_init.init_content(self.root)
         self.assertEqual(list((self.root / "content").iterdir()), [])
         self.assertEqual(list(self.root.glob(".content.new-*")), [])
+
+    def test_content_created_at_the_rename_boundary_is_never_replaced(self):
+        # An empty content/ appears after every check, immediately before the publishing rename itself
+        # (plain rename(2) would silently replace it); covered with renameat2(RENAME_NOREPLACE) and with
+        # the exclusive-mkdir fallback.
+        self.init_campaign()
+        real_publish = content_init._rename_noreplace
+        content = self.root / "content"
+
+        def racing_publish(source, target):
+            os.mkdir(target)
+            return real_publish(source, target)
+
+        for forced_fallback in (False, True):
+            with self.subTest(forced_fallback=forced_fallback):
+                fallback = (mock.patch.object(content_init, "_renameat2", return_value=None)
+                            if forced_fallback else contextlib.nullcontext())
+                with mock.patch.object(content_init, "_rename_noreplace", side_effect=racing_publish), fallback:
+                    with self.assertRaisesRegex(ValueError, REFUSED):
+                        content_init.init_content(self.root)
+                self.assertEqual(list(content.iterdir()), [])
+                self.assertEqual(list(self.root.glob(".content.new-*")), [])
+                content.rmdir()
+
+    def test_fallback_publication_writes_the_same_private_tree(self):
+        self.init_campaign()
+        with mock.patch.object(content_init, "_renameat2", return_value=None):
+            result = content_init.init_content(self.root)
+        content = self.root / "content"
+        self.assertEqual(sorted(str(p.relative_to(content)) for p in content.rglob("*")),
+                         ["findings", "meetings", "site.json", "sources.json"])
+        self.assertEqual(result["written"], ["content/findings/", "content/meetings/", "content/site.json",
+                                             "content/sources.json"])
+        self.assertEqual(list(self.root.glob(".content.new-*")), [])
+        for path in [content, *content.rglob("*")]:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700 if path.is_dir() else 0o600, path)
 
     def test_modes_are_private_under_the_cli_umask(self):
         self.init_campaign()

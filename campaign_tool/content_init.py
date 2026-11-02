@@ -2,10 +2,13 @@
 
 Every organizer-owned sentence is a "[EDIT ME: ...]" placeholder; nothing is built, sent or published.
 """
+import ctypes
+import errno
 import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -14,6 +17,8 @@ from .content import load_site
 from .markdown_lite import lint
 
 PLACEHOLDER = "[EDIT ME: "
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
 
 
 def _plain(value):
@@ -42,6 +47,37 @@ def _write(path, text):
         out.write(text)
 
 
+def _renameat2():
+    """Linux renameat2(2), or None where it is unavailable."""
+    if not sys.platform.startswith("linux"):
+        return None
+    rename = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if rename is not None:
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+    return rename
+
+
+def _rename_noreplace(source, target):
+    """Move directory source to target; FileExistsError, never a replacement, when target exists."""
+    rename = _renameat2()
+    if rename is not None:
+        if rename(_AT_FDCWD, os.fsencode(source), _AT_FDCWD, os.fsencode(target), _RENAME_NOREPLACE) == 0:
+            return
+        code = ctypes.get_errno()
+        if code not in (errno.ENOSYS, errno.EINVAL):  # EINVAL: filesystem without RENAME_NOREPLACE
+            raise OSError(code, os.strerror(code), str(target))
+    # No atomic no-replace rename: claim target with an exclusive mkdir, then move the entries in.
+    os.mkdir(target, 0o700)
+    try:
+        for name in os.listdir(source):
+            os.rename(os.path.join(source, name), os.path.join(target, name))
+        os.rmdir(source)
+    except BaseException:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+
 def init_content(root):
     """Create root/content atomically; refuse when anything named content already exists."""
     root = Path(root)
@@ -62,9 +98,10 @@ def init_content(root):
         os.mkdir(temporary / "findings", 0o700)
         os.mkdir(temporary / "meetings", 0o700)
         _write(temporary / "sources.json", "[]\n")
-        if os.path.lexists(target):
-            raise ValueError("content/ already exists; nothing was written")
-        os.rename(temporary, target)
+        try:
+            _rename_noreplace(temporary, target)
+        except FileExistsError:
+            raise ValueError("content/ already exists; nothing was written") from None
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
