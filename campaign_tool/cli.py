@@ -506,6 +506,8 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
+                        ).add_argument("--directory", required=True)
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
     evidence_p.add_argument("--directory", required=True)
     evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
@@ -514,6 +516,13 @@ def main():
         verify_agency_p.add_argument(flag, required=True)
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
+    for flag in ("--directory", "--agency", "--date"):
+        sent_p.add_argument(flag, required=True)
+    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
+    sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
+    commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
+                        ).add_argument("--directory", required=True)
     sources_add = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                       ).add_subparsers(dest="sources_command", required=True).add_parser(
         "add", help="Register one ingested record by hash prefix; validates the whole list, publishes nothing")
@@ -561,6 +570,9 @@ def main():
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
                                         received_at=args.received_at, fragment=args.fragment,
                                         public_url=args.public_url, pages=args.pages, note=args.note)))
+        elif args.command == "content-check":
+            from .content_check import run_cli as content_check_cli
+            content_check_cli(root)
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
@@ -574,6 +586,13 @@ def main():
             from .content_init import init_content
             print(json.dumps(init_content(root), indent=2))
             print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+        elif args.command == "kit-sent":
+            from .kit_track import record_sent
+            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
+            print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-status":
+            from .kit_track import status as kit_track_status
+            print(json.dumps(kit_track_status(root), indent=2))
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root)
     except (OSError, ValueError, sqlite3.Error) as exc:
