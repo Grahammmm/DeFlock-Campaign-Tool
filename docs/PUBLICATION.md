@@ -49,6 +49,15 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
+`ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
+spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
+them with `ssh-keygen -Y sign -n deflock-finding-review -f KEY payload` and pass `--signature payload.sig`.
+The tool verifies before writing; `review-status` reports `signed`, `self_asserted` and `bad_signatures`
+(re-verified each time), and `publish` prints the same counts. This trust root is the organizer-held
+campaign file, **weaker than** the root-owned `/etc/deflock` approval file; `approval.verify` and
+`/etc/deflock` are not used or changed. Without `ssh-keygen` (OpenSSH 8.2+) only unsigned review works.
+
     python3 -m campaign_tool finding publish DRAFT --directory D --approved-by NAME
 
 `finding publish` writes `D/content/findings/<slug>.json` with `state: "published"`, `published_at`
