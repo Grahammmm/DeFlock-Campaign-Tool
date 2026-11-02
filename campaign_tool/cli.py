@@ -636,6 +636,8 @@ def main():
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed"))
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
+                            help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -663,6 +665,9 @@ def main():
         review_p.add_argument(flag, required=True)
     finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
                             ).add_argument("--directory", required=True)
+    publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
+    for flag in ("--directory", "--approved-by"):
+        publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     args = parser.parse_args()
@@ -717,6 +722,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "publish":
+                print(json.dumps(findings.publish(root, args.draft, args.approved_by)))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
             draft = findings.load_draft(args.draft)
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
@@ -748,7 +757,8 @@ def main():
             print(json.dumps(kit_track_status(root), indent=2))
         elif args.command == "kit-response":
             from .kit_track import record_step
-            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
+                                         records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
