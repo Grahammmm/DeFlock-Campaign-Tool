@@ -587,8 +587,9 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
-    commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
-                        ).add_argument("--directory", required=True)
+    social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
+    social_p.add_argument("--directory", required=True)
+    social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -758,6 +759,11 @@ def main():
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
+        elif args.command == "social" and args.check:
+            from .social import check_social
+            report = check_social(root)
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root)
         elif args.command == "build" and args.preview:
