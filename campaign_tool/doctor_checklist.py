@@ -25,6 +25,15 @@ def _stale_kits_next(report, d):
         f"`{TOOL} meetings-stage --directory {d} --id {shlex.quote(m)} --replace`" for m in meetings)
 
 
+def _select_agencies_next(report, d):
+    # `kit` keeps an existing kit/agencies.json as it is, so rerunning it never selects anything there.
+    if not report.get("agency_list_exists"):
+        return f"Select agencies: `{TOOL} kit --directory {d}`"
+    return (f"Select at least one agency in kit/agencies.json: `{TOOL} kit-agency select --directory {d} --id ID` "
+            f"(ids are listed in that file; add one with `{TOOL} kit-agency add --directory {d} --id ID --name NAME "
+            f"--kind KIND`), then rerun `{TOOL} kit --directory {d}`")
+
+
 def _kit_ok(key):
     return lambda r: None if "kit_error" in r else bool(r[key])
 
@@ -47,7 +56,7 @@ RULES = (
     ("agencies_selected", _kit_ok("agencies_selected"),
      lambda r: ("Agencies selected: unknown until kit/agencies.json is readable" if "kit_error" in r
                 else f"Agencies selected ({r['agencies_selected']})"),
-     lambda r, d: f"Select agencies: `{TOOL} kit --directory {d}`", ORGANIZER),
+     _select_agencies_next, ORGANIZER),
     ("kit_built", lambda r: bool(r["kit_built"]), "Kit built",
      lambda r, d: f"Build the kit: `{TOOL} kit --directory {d}`", ORGANIZER),
     ("stale_contacts", lambda r: not r["stale_contacts"], "Agency contacts recently checked",
@@ -69,17 +78,20 @@ def _short(value, limit=80):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
-def checklist(report, directory):
-    """Rows in RULES order, then unknown keys as info, then the derived production_ready row."""
+def checklist(report, directory, agency_list_exists=False):
+    """Rows in RULES order, then unknown keys as info, then the derived production_ready row.
+
+    agency_list_exists: kit/agencies.json is present, so the agencies_selected fix is a kit-agency selection."""
     d = shlex.quote(str(directory))
+    facts = dict(report, agency_list_exists=agency_list_exists)
     rows = []
     for key, ok, label, todo, owner in RULES:
         if key not in report:
             continue
-        result = ok(report)
+        result = ok(facts)
         state = "info" if result is None else "ok" if result else "todo"
-        rows.append({"key": key, "state": state, "label": label(report) if callable(label) else label,
-                     "next": todo(report, d) if state == "todo" else None,
+        rows.append({"key": key, "state": state, "label": label(facts) if callable(label) else label,
+                     "next": todo(facts, d) if state == "todo" else None,
                      "owner": owner if state == "todo" else None})
     for key in report:
         if key not in KNOWN:
@@ -92,8 +104,8 @@ def checklist(report, directory):
     return rows
 
 
-def render(report, directory, as_json=False):
-    rows = checklist(report, directory)
+def render(report, directory, as_json=False, agency_list_exists=False):
+    rows = checklist(report, directory, agency_list_exists)
     if as_json:
         return json.dumps(rows, indent=2, ensure_ascii=False)
     lines = []

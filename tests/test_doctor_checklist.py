@@ -135,6 +135,29 @@ class ChecklistCLITests(unittest.TestCase):
         self.assertIn(f"kit --directory {shlex.quote(given)}`", rows["agencies_selected"]["next"])
         self.assertEqual(shlex.split(rows["kit_built"]["next"].split("`")[1])[-1], given)
 
+    def test_existing_list_with_all_deselected_names_kit_agency_select(self):
+        self.init()
+        self.cli("kit")
+        path = self.root / "kit" / "agencies.json"
+        ids = [entry["agency_id"] for entry in json.loads(path.read_text())]
+        self.assertTrue(ids)
+        for agency_id in ids:
+            subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "kit-agency", "deselect", "--directory",
+                            str(self.root), "--id", agency_id], cwd=REPO_ROOT, check=True, capture_output=True)
+        # The missing-list advice (`kit`) keeps the existing file, so it would leave zero agencies selected.
+        self.cli("kit")
+        row = by_key(json.loads(self.cli("doctor", "--checklist", "--json").stdout))["agencies_selected"]
+        self.assertEqual((row["state"], row["label"], row["owner"]), ("todo", "Agencies selected (0)", "organizer"))
+        self.assertIn("kit-agency add --directory", row["next"])
+        command = shlex.split(row["next"].split("`")[1])
+        self.assertEqual(command[3:5], ["kit-agency", "select"])
+        filled = [ids[0] if token == "ID" else token for token in command[3:]]
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", *filled], cwd=REPO_ROOT,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = by_key(json.loads(self.cli("doctor", "--checklist", "--json").stdout))["agencies_selected"]
+        self.assertEqual((after["state"], after["label"]), ("ok", "Agencies selected (1)"))
+
     def test_unreadable_config_keeps_stopped_path(self):
         self.root.mkdir(parents=True)
         result = self.cli("doctor", "--checklist", returncode=1)
@@ -177,6 +200,11 @@ class ChecklistRowTests(unittest.TestCase):
         row = by_key(checklist(done_report(agencies_selected=0), "D"))["agencies_selected"]
         self.assertEqual((row["state"], row["owner"]), ("todo", "organizer"))
         self.assertEqual(row["next"], "Select agencies: `python3 -m campaign_tool kit --directory D`")
+        listed = by_key(checklist(done_report(agencies_selected=0), "D", agency_list_exists=True))["agencies_selected"]
+        self.assertTrue(listed["next"].startswith(
+            "Select at least one agency in kit/agencies.json: "
+            "`python3 -m campaign_tool kit-agency select --directory D --id ID`"), listed["next"])
+        self.assertIsNone(by_key(checklist(done_report(), "D", agency_list_exists=True))["agencies_selected"]["next"])
 
     def test_stale_contacts_more_is_counted(self):
         stale = [{"agency_id": f"a{i}", "checked_on": None, "age_days": None} for i in range(100)]

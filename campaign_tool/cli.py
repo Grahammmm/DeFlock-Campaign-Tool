@@ -775,7 +775,8 @@ def main():
             print("Recorded only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
-            print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json))
+            print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,
+                         agency_list_exists=(root / "kit" / "agencies.json").is_file()))
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
