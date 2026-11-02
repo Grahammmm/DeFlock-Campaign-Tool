@@ -606,6 +606,11 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    press = commands.add_parser("press", help="Draft private press material; sends nothing")
+    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_draft.add_argument("--directory", required=True)
+    press_draft.add_argument("--finding", action="append", default=[])
+    press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -802,6 +807,10 @@ def main():
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "press":
+            from .press import build_press
+            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+            print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build" and args.preview:
             from .site import preview_site
             report = preview_site(root)
