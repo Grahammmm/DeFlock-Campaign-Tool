@@ -266,11 +266,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root):
-    print(json.dumps(doctor_report(root), indent=2))
+def doctor(root, contact_max_age_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
 
 
-def doctor_report(root):
+def doctor_report(root, contact_max_age_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -291,8 +291,11 @@ def doctor_report(root):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
-    from .kit import kit_status
+    from .kit import kit_status, stale_contacts
     report.update(kit_status(root))
+    if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
+        report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
+        report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
@@ -473,6 +476,8 @@ def main():
                              help="Scan the generated public/ tree for private paths and credential patterns")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
+        if name == "doctor":
+            cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -556,6 +561,8 @@ def main():
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
     args = parser.parse_args()
+    if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
+        parser.error("--contact-max-age-days must be at least 1")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -619,7 +626,7 @@ def main():
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
         else:
-            status(root, check=args.check) if args.command == "status" else doctor(root)
+            status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         sys.exit(1)
