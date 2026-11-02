@@ -15,8 +15,18 @@ from tests.test_site_build import EXPECTED_CSP, PAGES
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/fictional-campaign"
 # Captured from main before this CSS-only change; not candidate-derived snapshots.
-PRINT_SHA = "f7818cba38e2d51844cff79c0cfc3c586d2514e54ef168aa64bda5cc2fd1c252"
-STARTER_SHA = "b67013717d1d96015f0153fd7b0fac0d27cac03515f8eb372c9d352bbbd9c7cc"
+PRINT_SHA = (
+    "f7818cba38e2d518"  # pragma: allowlist secret
+    "44cff79c0cfc3c58"  # pragma: allowlist secret
+    "6d2514e54ef168aa"  # pragma: allowlist secret
+    "64bda5cc2fd1c252"  # pragma: allowlist secret
+)
+STARTER_SHA = (
+    "b67013717d1d9601"  # pragma: allowlist secret
+    "5f0153fd7b0fac0d"  # pragma: allowlist secret
+    "27cac03515f8eb37"  # pragma: allowlist secret
+    "2c9d352bbbd9c7cc"  # pragma: allowlist secret
+)
 
 
 def css_rules(css):
