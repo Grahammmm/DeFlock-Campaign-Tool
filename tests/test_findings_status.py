@@ -150,8 +150,8 @@ class FindingStatusTests(unittest.TestCase):
         self.assertIn("unreadable " + str(self.drafts / "broken.json"), self.status())  # exit 0 checked by cli()
 
     def test_unknown_key_text_is_withheld_not_quoted(self):
-        secret = "Private reviewer note: Rev Three doubts page four"
-        document = dict(draft(id="st-leak", slug="st-leak"), **{secret: "Unpublished rationale text."})
+        note_text = "Private reviewer note: Rev Three doubts page four"
+        document = dict(draft(id="st-leak", slug="st-leak"), **{note_text: "Unpublished rationale text."})
         (self.drafts / "st-leak.json").write_text(json.dumps(document), encoding="utf-8")
         baseline = self.rows()
         [bad] = [r for r in baseline if r["state"] == "unreadable"]
@@ -162,7 +162,7 @@ class FindingStatusTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown key"):
             findings.load_draft(self.drafts / "st-leak.json")  # the withheld reason is real
         for text in (self.status("--json"), self.status()):
-            for hidden in (secret, "Rev Three", "page four", "Unpublished rationale"):
+            for hidden in (note_text, "Rev Three", "page four", "Unpublished rationale"):
                 self.assertNotIn(hidden, text)
         self.assertEqual({r["id"]: (r["state"], r["blockers"]) for r in baseline if r["id"]}, EXPECTED)
 
