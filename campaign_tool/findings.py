@@ -8,6 +8,7 @@ import errno
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -24,7 +25,8 @@ except ImportError:  # Windows
 from . import content
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
-from .review import ROLES, _who, content_hash, review_blockers
+from .review import CLASSIFICATIONS, ROLES, _who, content_hash, review_blockers
+from .sources_cmd import PREFIX as HEX_PREFIX, _known_agencies, _library
 
 PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections")
 DECISIONS = ("approve", "reject", "changes_requested")
@@ -423,6 +425,80 @@ def cited_problems(root, finding):
         elif not _object_present(objects, sha):
             problems.append(f"{sha[:PREFIX]} object_missing")
     return problems
+
+
+EDIT, DRAFT_ATTEMPTS = "[EDIT ME: ", 5
+
+
+def _draft_slug(title):
+    """Lowercase [a-z0-9-] slug from the title, cut to content.SLUG's 64 characters (within the 80 bound)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:64].strip("-")
+    if not content.SLUG.fullmatch(slug):
+        raise ValueError("--title must start its slug with a letter (a-z) so the finding can be published")
+    if slug in content.STARTER_SLUGS:
+        raise ValueError(f"--title gives the slug {slug!r}, which is reserved for a site page")
+    return slug
+
+
+def _resolve_sources(root, prefixes):
+    """Each prefix names exactly one library record (read with sources_cmd's reader: symlink refused, capped)."""
+    library, resolved = _library(root)[1] if prefixes else [], []
+    for prefix in prefixes:
+        if not isinstance(prefix, str) or not HEX_PREFIX.fullmatch(prefix):
+            raise ValueError(f"--source {prefix!r}: give 12-64 lowercase hex characters of a library sha256")
+        matches = {entry["sha256"]: entry["title"] for entry in library if entry["sha256"].startswith(prefix)}
+        if len(matches) != 1:
+            raise ValueError(f"--source {prefix}: " + ("matches no content/sources.json entry" if not matches
+                                                       else f"is ambiguous ({len(matches)} records match)"))
+        (sha, title), = matches.items()
+        if any(source["sha256"] == sha for source in resolved):
+            raise ValueError(f"--source {prefix}: names a record already cited by an earlier --source")
+        resolved.append({"sha256": sha, "title": title, "locator": EDIT + "page or section]"})
+    return resolved
+
+
+def new_draft(root, agency_id, title, source_prefixes, author=None, now=None):
+    """Write a new private/drafts/fnd_<12 hex>.json skeleton (0600, never overwrites); publishes nothing."""
+    title = _text("title", title, 200)
+    if not content.plain_text(title):
+        raise ValueError("--title must be plain text without angle brackets")
+    slug = _draft_slug(title)
+    if agency_id not in {agency["agency_id"] for agency in _known_agencies(root)}:
+        raise ValueError(f"--agency {agency_id!r} is not one of the campaign's agencies")
+    sources = _resolve_sources(root, list(source_prefixes or []))
+    author = EDIT + "who wrote this finding]" if author is None else _text("author", author, 120)
+    folders = (root / "private", root / "private" / "drafts")
+    for folder in folders:
+        _real_dir(folder)  # a symlink or a file refuses before anything is written
+    for folder in folders:
+        if not os.path.lexists(folder):
+            folder.mkdir(mode=0o700)
+            os.chmod(folder, 0o700)
+    draft = {"title": title, "slug": slug, "agency_id": agency_id, "state": "draft", "published_at": None,
+             "corrections": [], "author": author,
+             "classification": EDIT + "one of " + ", ".join(sorted(CLASSIFICATIONS)) + "]",
+             "confidence": EDIT + "one of " + ", ".join(content.CONFIDENCE) + "]",
+             "event_date": EDIT + "YYYY-MM-DD of the event the records show]",
+             "summary": EDIT + "one or two plain sentences stating what the records show]",
+             "body_md": EDIT + "the finding in full, citing each source by its locator]",
+             "limitations": [EDIT + "what these records cannot show]"],
+             "counterevidence": [EDIT + "records or statements that point the other way, or 'None found.']"],
+             "sources": sources}
+    for _ in range(DRAFT_ATTEMPTS):
+        draft["id"] = "fnd_" + secrets.token_hex(6)
+        path = folders[1] / (draft["id"] + ".json")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            if hasattr(os, "fchmod"):
+                os.fchmod(out.fileno(), 0o600)  # whatever the umask
+            out.write(json.dumps(dict(sorted(draft.items())), indent=2, ensure_ascii=False) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        return {"id": draft["id"], "written": str(path)}
+    raise ValueError(f"{folders[1]}: {DRAFT_ATTEMPTS} generated ids already exist; nothing written")
 
 
 def publish(root, draft_path, approved_by, now=None):

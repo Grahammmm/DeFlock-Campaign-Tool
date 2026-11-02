@@ -724,6 +724,11 @@ def main():
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
+    new_p = finding_cmds.add_parser("new", help="Write a private/drafts/fnd_<id>.json skeleton with [EDIT ME: ...] markers")
+    for flag in ("--directory", "--agency", "--title"):
+        new_p.add_argument(flag, required=True)
+    new_p.add_argument("--source", action="append", default=[], metavar="PREFIX", help="12-64 hex of a library sha256; repeatable")
+    new_p.add_argument("--author")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -804,6 +809,11 @@ def main():
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
+        elif args.command == "finding" and args.finding_command == "new":
+            from . import findings
+            read_config(root)
+            print(json.dumps(findings.new_draft(root, args.agency, args.title, args.source, author=args.author)))
+            print('Private draft only; replace every "[EDIT ME: ...]" before review. Nothing was published.')
         elif args.command == "finding":
             from . import findings
             read_config(root)

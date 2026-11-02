@@ -15,6 +15,31 @@ def content_hash(finding):
                                      allow_nan=False).encode()).hexdigest()
 
 
+EDIT_MARKER = re.compile(r"\[\s*EDIT\s+ME\s*:", re.IGNORECASE)  # "[EDIT ME: ...]" placeholders, any case/spacing
+
+
+def _marked(value):
+    if isinstance(value, str):
+        return bool(EDIT_MARKER.search(value))
+    if isinstance(value, dict):
+        return any(_marked(item) for item in value.values())
+    return isinstance(value, list) and any(_marked(item) for item in value)
+
+
+def edit_markers(finding):
+    """One 'edit_marker:<field>' per field still holding a placeholder; sources as 'sources[i].<key>'."""
+    found = []
+    for key, value in finding.items():
+        if key == "sources" and isinstance(value, list):
+            found.extend(f"edit_marker:sources[{index}]" + (f".{name}" if name is not None else "")
+                         for index, source in enumerate(value)
+                         for name, item in (source.items() if isinstance(source, dict) else [(None, source)])
+                         if _marked(item))
+        elif _marked(value):
+            found.append("edit_marker:" + str(key))
+    return found
+
+
 def _who(value):
     """Comparable identity: casefolded, whitespace collapsed; non-string or empty -> None."""
     return " ".join(value.split()).casefold() or None if isinstance(value, str) else None
@@ -30,6 +55,7 @@ def review_blockers(finding, receipts):
         receipts = [r for r in receipts if isinstance(r, dict)]
     if not isinstance(finding.get("classification"), str) or finding["classification"] not in CLASSIFICATIONS:
         blockers.append("unknown_classification")
+    blockers.extend(edit_markers(finding))
     for field in ("id", "author", "summary", "sources", "limitations", "counterevidence"):
         if field not in finding:
             blockers.append("missing_" + field)
