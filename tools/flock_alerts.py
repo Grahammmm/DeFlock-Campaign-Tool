@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Flock alerts (BF-df-overdue-alerts): provisional reminder alerts for the organizer, as stdout and flock-alerts-v1.
-  reminders --store DIR --date YYYY-MM-DD --receipt-days N [--json-out NEWFILE] [--prev OLD.json]
+  reminders --store DIR --date YYYY-MM-DD --receipt-days N [--json-out NEWFILE] [--prev OLD.json] [--agency SLUG]...
+--agency (repeatable, up to 20) keeps only those agencies' alerts and counts; the summary and file name them.
 One alert line per open request whose provisional reminder date is today, passed or within 7 days, and per open
 request with no receipt recorded N or more days after it was sent. N has no default: the organizer chooses it.
 Phrases come from flock_today.reminders; dates come from the us-ca law package and are not legal due dates.
@@ -32,6 +33,7 @@ DRAFT_NOTE = "law package is draft: dates unconfirmed"
 TAIL = "provisional; not a legal due date"
 PREV_MAX = 2 * 1024 * 1024
 SAFE_MIDDLE = re.compile(r"[a-z0-9-]{1,60}:[A-Za-z0-9._:-]{1,80}")
+AGENCY_SLUG = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 
 class Refused(Exception):
@@ -127,13 +129,24 @@ def phrase_of(kind, text):
     return text.partition(" (provisional); ")[0]
 
 
-def collect(store, date, n):
+def chosen_agencies(store, slugs):  # each STORE/agencies/<slug> must be a real folder, never a link
+    for s in slugs:
+        folder = store / "agencies" / s
+        if os.path.islink(folder) or not folder.is_dir():
+            raise Refused("unknown agency %s" % s)
+
+
+def collect(store, date, n, agencies=None):
     """(alerts, open count, waiting count) or raise on any store/load error; no partial list."""
     rows, errs = requests_tool.load(store)
     if errs:
         raise ValueError("REQUESTS.csv rows")
+    if agencies:
+        rows = [r for r in rows if requests_tool.slug(r["agency"]) in agencies]
     as_of, alerts, waiting = datetime.date.fromisoformat(date), [], 0
     for rank, kind, when, slug, rid, text in today_tool.reminders(store, date):
+        if agencies and slug not in agencies:
+            continue
         if kind == "receipt-unknown":
             if (as_of - datetime.date.fromisoformat(when)).days < n:
                 waiting += 1
@@ -152,8 +165,10 @@ def line(a, status, suffix=""):
     return out + (" | " + DRAFT_NOTE if status != "reviewed" else "") + suffix
 
 
-def document(alerts, date, status, since=None, cleared=None):
+def document(alerts, date, status, since=None, cleared=None, agencies=None):
     doc = {"schema": "flock-alerts-v1", "review_required": True, "as_of": date, "law_status": status}
+    if agencies:
+        doc["agencies"] = sorted(agencies)
     if status != "reviewed":
         doc["law_note"] = DRAFT_NOTE
     doc["alerts"] = [{k: v for k, v in a.items() if not k.startswith("_")} for a in alerts]
@@ -177,12 +192,16 @@ def reminders(a):
         store = Path(a.store).resolve()
         if inside_repo(store):
             raise Refused("store inside repository")
+        chosen = sorted(a.agency or [])
+        chosen_agencies(store, chosen)
         target = json_target(a.json_out) if a.json_out else None
         prev, since = load_prev(a.prev, a.date) if a.prev is not None else (None, None)
     except Refused as exc:
         return print("alert | refused | %s" % exc) or 1
+    if prev is not None and chosen:  # another agency's earlier alert is neither still nor cleared
+        prev = {i: k for i, k in prev.items() if i[len("remind:"):].partition(":")[0] in chosen}
     try:
-        alerts, opened, waiting = collect(store, a.date, a.receipt_days)
+        alerts, opened, waiting = collect(store, a.date, a.receipt_days, set(chosen))
     except today_tool.ERRORS:
         return print("alert | store-error | REQUESTS.csv") or 1
     status = law.package_status("us-ca")[0]
@@ -196,13 +215,13 @@ def reminders(a):
         cleared = [{"id": label(i, prev[i]), "kind": prev[i]} for i in sorted(set(prev) - now)]
         lines += ["alert | cleared | %s | %s" % (c["id"], c["kind"]) for c in cleared]
         extra = " new=%d cleared=%d since=%s" % (sum(x["new"] for x in alerts), len(cleared), since)
-    lines.append("alert | open=%d alerts=%d passed=%d today=%d week=%d receipt_unknown=%d waiting=%d law=%s%s | %s" % (
+    lines.append("alert | open=%d alerts=%d passed=%d today=%d week=%d receipt_unknown=%d waiting=%d%s law=%s%s | %s" % (
         opened, len(alerts), count["reminder-passed"], count["reminder-today"], count["reminder-week"],
-        count["receipt-unknown"], waiting, status, extra,
+        count["receipt-unknown"], waiting, " agencies=" + ",".join(chosen) if chosen else "", status, extra,
         "recorded fields only; not a legal status; the canonical ledger wins"))
     if target:
         try:
-            write_new(target, document(alerts, a.date, status, since, cleared))
+            write_new(target, document(alerts, a.date, status, since, cleared, chosen))
         except OSError as exc:
             return print("alert | refused | json-out not written (%s)" % type(exc).__name__) or 1
     print(*lines, sep="\n")
@@ -218,9 +237,13 @@ def main(argv=None):
     p.add_argument("--receipt-days", required=True, type=receipt_days, help="1..365, required, no default")
     p.add_argument("--json-out", metavar="NEWFILE")
     p.add_argument("--prev", metavar="OLD.json", help="earlier flock-alerts-v1 file: mark alerts new/still, list cleared")
+    p.add_argument("--agency", action="append", metavar="SLUG", help="only this agency (repeatable, up to 20)")
     a = parser.parse_args(argv)
     if requests_tool.day(a.date) is None:
         p.error("--date must be YYYY-MM-DD")
+    slugs = a.agency or []
+    if not all(AGENCY_SLUG.fullmatch(s) for s in slugs) or len(slugs) > 20 or len(set(slugs)) != len(slugs):
+        p.error("--agency must be up to 20 distinct slugs matching [a-z0-9]+(-[a-z0-9]+)*")
     return reminders(a)
 
 
