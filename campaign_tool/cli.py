@@ -548,8 +548,11 @@ def main():
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
         if name == "build":
-            cmd.add_argument("--check", action="store_true",
-                             help="Scan the generated public/ tree for private paths and credential patterns")
+            mode = cmd.add_mutually_exclusive_group()
+            mode.add_argument("--check", action="store_true",
+                              help="Scan the generated public/ tree for private paths and credential patterns")
+            mode.add_argument("--preview", action="store_true",
+                              help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
         if name == "doctor":
@@ -670,6 +673,12 @@ def main():
         publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
+    for flag in ("--directory", "--id"):
+        pack.add_argument(flag, required=True)
+    pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
+    pack.add_argument("--replace", action="store_true")
+    pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
@@ -693,6 +702,12 @@ def main():
             kit(args, root)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "build" and args.preview:
+            from .site import preview_site
+            report = preview_site(root)
+            print(json.dumps(report, indent=2))
+            print("Preview only; public/ was not changed.")
+            sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":
@@ -703,6 +718,10 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meeting-pack":
+            from .meeting_pack import build as pack_build
+            print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
+                                        replace=args.replace, allow_past=args.allow_past)))
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "sources" and args.sources_command == "add":
