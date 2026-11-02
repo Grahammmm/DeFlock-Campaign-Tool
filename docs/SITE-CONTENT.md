@@ -194,7 +194,12 @@ the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
 no footer link, and `build` notes the skip on stderr), `feed.xml` (Atom of
 findings), `findings/agency/<slug>.xml` (the same Atom entries for one agency,
 only for an agency with at least one published finding; linked as "Findings
-feed" from its `agencies.html` entry), `cameras.html` (only with a map: the no-JS list of mapped points, one section
+feed" from its `agencies.html` entry), `agencies/<slug>.html` (one page per agency with at least one
+published finding or `sources.json` entry: its card facts and official links, its findings, its source records
+with 12-character hash prefixes and `sources.html#<fragment>` links, that body's upcoming meetings by `agency_id`,
+its findings feed when it has findings; linked as "Agency page" from `agencies.html` and from each of its finding
+pages, listed in the sitemap; other agencies get no page and no link; a `public-assets/agencies/` file is refused),
+`cameras.html` (only with a map: the no-JS list of mapped points, one section
 per picker city by name, each point in the first city boundary holding it by the counts' half-open rule, then the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
@@ -253,7 +258,18 @@ parse is refused as `unreadable image`; re-export it. To clean one, run
 `python3 -m campaign_tool content strip-metadata content/public-assets/photos/council.jpg` (optional `--out PATH`): it writes
 `council.clean.jpg` beside it with those segments or chunks removed and every image byte kept (no re-encoding; colour
 profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
-inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
+inside a `public/` folder. Check the copy, then replace the original yourself. ICO files are not checked.
+
+PDFs and SVGs: `build` and `content-check` also refuse, naming file and kinds but never a script, URL or name
+(`public-assets/docs/agenda.pdf: PDF (JavaScript, more than one revision)`), a PDF with JavaScript, open/launch
+actions (`OpenAction`, `Launch`, `AA`), embedded files, an `Author` field or XMP creator, or more than one revision
+(an incremental update keeps the earlier text, so a redaction saved that way can still be read), names in compressed
+streams included (every `stream` keyword is swept, whatever `/Length` says, and read again with any PNG/TIFF
+`/DecodeParms` predictor undone); and an SVG with a `DOCTYPE`/entity, `script`, `foreignObject`, `on*` handlers or a link, `url()` or
+`@import` pointing anywhere but `#` in the file (`data:` too). Unparseable, or a PDF stream encoded other than plain
+Flate or an image codec (`LZWDecode`, `ASCII85Decode`, filter chains, an indirect `/DecodeParms`, another
+predictor, or a predictor followed by a string or comment before its stream): `unreadable PDF`/`SVG`. Fix: save the PDF
+flattened as a new single-revision file without author fields; export the SVG as plain shapes, or use a PNG.
 
 Images in text: in a finding, page, about, mission or comment-kit text, a line that is only `![Council chamber, 3 June](/photos/council.jpg)` shows `content/public-assets/photos/council.jpg` (PNG, JPEG or WebP) with that alt text (required, 1-200 characters), its own width and height and lazy loading; anything else (inline, in a list, another site, a missing file or SVG, empty alt) stays text, and `markdown_lite --lint` names it as `image`. The newsletter shows no images.
 
