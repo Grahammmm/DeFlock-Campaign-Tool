@@ -5,7 +5,7 @@ only, and the document is validated by ``content.load_meeting`` before it is wri
 """
 import json
 import os
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from .cli import read_config
@@ -14,6 +14,7 @@ from .kit import _kit_folder, _write_json
 from .meetings import _clean, comment_kit_md
 
 MAX_KIT_BYTES = 4 * 1024 * 1024
+MAX_CITED = 3  # comment_kit_md speaks at most three findings
 NOTE = "keyword lead from Legistar; verify the posted agenda before you build or publish"
 
 
@@ -48,7 +49,27 @@ def _find(meetings, meeting_id):
     raise MeetingStageError(f"no meeting {meeting_id} in kit/meetings.json; known: {', '.join(known) or 'none'}")
 
 
-def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None):
+def _default_findings(findings, agency_id):
+    """At most 3: the meeting agency's findings first, then the rest; each newest event_date first, ties by id."""
+    return sorted(findings, key=lambda f: (agency_id is not None and f.get("agency_id") != agency_id,
+                                           -date.fromisoformat(f["event_date"]).toordinal(), f["id"]))[:MAX_CITED]
+
+
+def _chosen_findings(findings, finding_ids):
+    """The organizer's --finding ids, in the order given; each must be a loaded (published) finding."""
+    if not 1 <= len(finding_ids) <= MAX_CITED:
+        raise MeetingStageError(f"--finding: give 1 to {MAX_CITED} ids (got {len(finding_ids)})")
+    published = {f["id"]: f for f in findings}
+    for index, finding_id in enumerate(finding_ids):
+        if finding_id in finding_ids[:index]:
+            raise MeetingStageError(f"--finding {finding_id}: given more than once")
+        if finding_id not in published:
+            raise MeetingStageError(f"--finding {finding_id}: not a published finding")
+    return [published[finding_id] for finding_id in finding_ids]
+
+
+def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None,
+          finding_ids=None):
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
     if meeting.get("status") == "cancelled":
@@ -62,7 +83,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     model = load_content(root)
     if model is None:
         raise MeetingStageError("content/ is required (the site reads content/meetings/); create content/site.json first")
-    findings = [f for f in model["findings"] if agency_id is None or f.get("agency_id") == agency_id]
+    findings = (_chosen_findings(model["findings"], list(finding_ids)) if finding_ids is not None
+                else _default_findings(model["findings"], agency_id))
     cited = [{**f, "path": f"/findings/{f['slug']}.html"} for f in findings]
     entry = {**meeting, "body": _clean(meeting.get("body")), "agenda_item": _clean(meeting.get("agenda_item"))}
     if participation is not None:  # organizer-verified JSON; validated before anything is written
@@ -115,7 +137,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     if replaced and not replace:
         raise MeetingStageError(f"content/meetings/{target.name} exists; pass --replace to overwrite")
     _write_json(target, document)
-    return {"written": f"content/meetings/{target.name}", "findings_cited": len(cited), "replaced": replaced,
+    return {"written": f"content/meetings/{target.name}", "findings_cited": len(cited),
+            "findings": [f["id"] for f in cited], "replaced": replaced,
             "note": NOTE}
 
 
