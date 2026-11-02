@@ -73,6 +73,10 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "fee_estimate needs --amount USD", "--amount is only for fee_estimate steps",
         "--amount must be US dollars like 245 or 245.50 (no sign, commas or exponent)", "--amount must be from 0 to 100000",
     ), "kit-response --amount message that already names the option and the rule; not in the table"),
+    **dict.fromkeys((
+        "--expected-on is for the determination or a later step that restates the date",
+        "--expected-on must be a real YYYY-MM-DD date", "stated date 5 is before the 5 on 5",
+    ), "kit-response --expected-on message that already names the option and the rule; not in the table"),
     "--as-of must be a real YYYY-MM-DD date": "kit-due message that already names the option and the format",
     "no sent request */5: no agency has a request recorded under that name":
         "kit-due --request message that already names the request; not in the table",
