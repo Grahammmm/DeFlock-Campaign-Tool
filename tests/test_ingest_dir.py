@@ -191,7 +191,7 @@ class IngestDirTests(unittest.TestCase):
                         "--source-id", "synthetic-bad", returncode=2)
         self.assertIn("not allowed with argument", both.stderr)
         neither = self.cli("ingest", "--source-id", "synthetic-bad", returncode=2)
-        self.assertIn("one of the arguments --file --dir --zip is required", neither.stderr)
+        self.assertIn("one of the arguments --file --dir --zip --eml is required", neither.stderr)
         self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
 
     def test_subfolder_swapped_for_symlink_after_listing_is_not_followed(self):
