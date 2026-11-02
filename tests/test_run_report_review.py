@@ -242,6 +242,12 @@ class RunReportReviewTests(unittest.TestCase):
         self.assertEqual([line for line in lines if " | AGE | " not in line], base)
         code, lines, err = self.summary(report, "--now", "2026-01-02 22:07")
         self.assertEqual((code, lines), (2, []))
+        self.assertIn("review | refused | --now must be", err)
+        # Shape-valid but calendar/time-invalid: refused with exit 2, no traceback, value not echoed.
+        for bad in ("2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z", "2026-01-02T25:00:00Z", "2026-01-02T22:61:00Z"):
+            code, lines, err = self.summary(report, "--now", bad)
+            self.assertEqual((code, lines), (2, []), bad)
+            self.assertEqual(err.strip(), "review | refused | --now is not a real UTC date and time", bad)
 
     # 9
     def test_interrupted_stage(self):

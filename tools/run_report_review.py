@@ -176,7 +176,10 @@ def main(argv=None):
             raise Refused("give exactly one of REPORT.json or --dir")
         if args.now is not None and not STAMP.match(args.now):
             raise Refused("--now must be YYYY-MM-DDTHH:MM:SSZ")
-        now = _parse(args.now) if args.now is not None else None
+        try:  # the shape check passes 2026-02-30 or 25:00:00; strptime rejects them
+            now = _parse(args.now) if args.now is not None else None
+        except ValueError:
+            raise Refused("--now is not a real UTC date and time") from None
         lines, status = (summarise_dir(list_dir(Path(args.dir)), now) if args.dir is not None
                          else summarise(*load(read_file(Path(args.report))), now))
     except (Refused, OSError) as exc:
