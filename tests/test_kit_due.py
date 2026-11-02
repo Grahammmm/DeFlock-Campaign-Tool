@@ -12,6 +12,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, kit_track, law  # noqa: E402
+from tests.test_kit_check import ready_drafts  # noqa: E402
 
 
 def run(*arguments):
@@ -45,6 +46,7 @@ class KitDueTests(unittest.TestCase):
         drafts = sorted((self.root / "kit" / "requests").glob("*.md"))
         self.assertGreaterEqual(len(drafts), 3)
         self.a, self.b, self.c = (path.stem for path in drafts[:3])
+        ready_drafts(self.root)  # kit-sent refuses unfilled placeholders and unverified recipients (DF1507-07)
         self.package = law.load_package("us-ca")
 
     def send(self, agency, on):

@@ -733,6 +733,10 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
+                                  "selected agency's draft (read-only; exit 3)")
+    check_p.add_argument("--directory", required=True)
+    check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -1024,6 +1028,9 @@ def main():
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-check":
+            from .kit_check import run_cli as kit_check_cli
+            kit_check_cli(root, as_json=args.as_json)
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))

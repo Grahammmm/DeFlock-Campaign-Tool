@@ -13,6 +13,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, kit_track, law  # noqa: E402
+from tests.test_kit_check import ready_drafts  # noqa: E402
 
 DONE = "Draft only. Nothing was sent.\n"
 ASKS = ("1. Tell us which exemption or other legal basis the agency relied on",
@@ -53,6 +54,7 @@ class KitDenialReplyTests(unittest.TestCase):
             code, _, err = run(command[0], "--directory", self.root, *command[1:])
             self.assertEqual(code, 0, err)
         self.a, self.b = sorted(p.stem for p in (self.root / "kit" / "requests").glob("*.md"))[:2]
+        ready_drafts(self.root)  # kit-sent refuses unfilled placeholders and unverified recipients (DF1507-07)
         self.folder = self.root / "kit" / "followups"
         self.sent_path = self.root / "kit" / "sent.json"
 
