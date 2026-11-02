@@ -16,6 +16,10 @@ review-required, not a legal conclusion.
 ## Redact
 - Human redaction and names review of each `text` (the pipeline's redaction gate; names are not machine-checked).
 
+## Before you approve
+- `python3 tools/flock_review_queue.py show STORE [--agency SLUG] --out NEWDIR` writes a private review queue.
+- Read each independent challenge, warning, citation and receipt; this report approves nothing.
+
 ## Approve
 - **NEEDS G**: G approves the exact texts (approve all / a subset / hold).
 - The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id).

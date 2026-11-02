@@ -136,6 +136,10 @@ problem row (finding slug, first 12 hex of the hash, code); `--check` exits 3 wh
 It never reads receipts or re-hashes objects (`status --check` does that). Invalid content stops
 with exit 1.
 
+A finding page shows a "Legal basis" section when the finding cites a rule or sets `rule_version`, `duty` or
+`exceptions`: those fields, then each cited rule's package `citation` (never other package text) and the label
+"draft, not legally reviewed" unless the package status is `reviewed` (then "reviewed on DATE").
+
 ## Corrections and withdrawal
 
 - `POST /findings/:id/correct` with `reason` and optional `replacement_finding_id` (which must
