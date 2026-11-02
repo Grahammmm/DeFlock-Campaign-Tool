@@ -212,6 +212,11 @@ the DeFlock community, which is the community source of these observations. A
 mapped point says a camera was observed, not which agency owns it. The
 controller labels points outside city boundaries without an operator tag as
 candidates with ownership unconfirmed; keep that label.
+At build time each picker city whose `profile.cameraCount` is empty gets `"N community-mapped points inside city
+limits; ownership unconfirmed"` (`1 ... point`, `0 ...` too): the `cameras.geojson` points inside the city boundary
+feature whose `BASENAME` or `NAME` equals the city name (Polygon or MultiPolygon, holes excluded; a point on a shared
+edge counts once). A typed `cameraCount` always wins. `build` prints `note: boundary <name> matches no city agency` and
+`note: city boundary feature <index>: <reason>` on stderr; notes never change the exit code.
 A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call). An answer with no points never
 replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
 through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).

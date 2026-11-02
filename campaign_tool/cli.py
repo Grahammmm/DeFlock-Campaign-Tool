@@ -402,7 +402,10 @@ def check_public_tree(public):
 def build(root, check=False):
     from .site import build_site
     public = root / "public"
-    written = build_site(root)
+    notes = []
+    written = build_site(root, notes=notes)
+    for note in notes:  # informational: the exit code is unchanged
+        print(f"note: {note}", file=sys.stderr)
     content_mode = (root / "content").is_dir()
     print(("Site" if content_mode else "Starter") + " written to " + str(public)
           + ". No private documents exported.")
