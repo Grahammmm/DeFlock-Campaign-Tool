@@ -18,6 +18,7 @@ from templates/records-request.md with a banner when it does not.
 """
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -40,6 +41,71 @@ NEXT_STEPS = [
     "Fill the date range and requester block in each kit/requests/*.md draft.",
     "Send nothing from this tool; sending happens only after an organizer approval outside it.",
 ]
+SETTINGS_NAME = "request-settings.json"
+SETTINGS_KEYS = ("schema_version", "requester", "fee_cap_usd", "date_from", "date_to")
+
+
+def _next_steps(filled):
+    """NEXT_STEPS without the fee/date/requester hand edits that request-settings.json already made."""
+    missing = [word for key, word in (("date_range", "date range"), ("requester_block", "requester block"))
+               if key not in filled]
+    fill = [f"Fill the {' and '.join(missing)} in each kit/requests/*.md draft."] if missing else []
+    return NEXT_STEPS[:2] + ([] if "fee_cap" in filled else NEXT_STEPS[2:3]) + fill + NEXT_STEPS[4:]
+
+
+def _bad_setting(key, reason):
+    return ValueError(f"kit/{SETTINGS_NAME}: {key}: {reason}")
+
+
+def _settings_day(value, key, today):
+    try:
+        day = date.fromisoformat(value) if isinstance(value, str) and DATE.fullmatch(value) else None
+    except ValueError:
+        day = None
+    if day is None or day > today:
+        raise _bad_setting(key, "must be a real YYYY-MM-DD date, not after today")
+    return day
+
+
+def load_request_settings(kit_dir, today=None):
+    """Render keywords from kit/request-settings.json; {} when absent. Errors name the key, never the value."""
+    path, today = Path(kit_dir) / SETTINGS_NAME, today or date.today()
+    if not os.path.lexists(path):
+        return {}
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+        raise _bad_setting("file", "must be a regular file (not a symlink) of at most 64 KiB")
+    try:
+        document = json.loads(path.read_bytes().decode("utf-8"))
+    except (ValueError, RecursionError) as exc:
+        reason = "must be UTF-8" if isinstance(exc, UnicodeDecodeError) else "must be valid JSON"
+        raise _bad_setting("file", reason) from None
+    if not isinstance(document, dict):
+        raise _bad_setting("file", "must be a JSON object")
+    for key in document:
+        if key not in SETTINGS_KEYS:
+            raise _bad_setting(key if re.fullmatch(r"[A-Za-z0-9_]{1,40}", key) else "(unnamed)", "unknown key")
+    if type(document.get("schema_version")) is not int or document["schema_version"] != 1:
+        raise _bad_setting("schema_version", "must be 1")
+    settings, lines, cap = {}, document.get("requester"), document.get("fee_cap_usd")
+    if "requester" in document:
+        if not isinstance(lines, list) or not 1 <= len(lines) <= 8 or not all(
+                isinstance(line, str) and 1 <= len(line) <= 120
+                and not any(ord(c) < 32 or 127 <= ord(c) < 160 for c in line) for line in lines):
+            raise _bad_setting("requester", "must be 1-8 lines of 1-120 characters without control characters")
+        settings["requester_block"] = "\n".join(lines)
+    if "fee_cap_usd" in document:
+        # Range first: math.isfinite() overflows on a huge JSON integer such as 10**400.
+        if type(cap) not in (int, float) or not 0 <= cap <= 10000 or not math.isfinite(cap):
+            raise _bad_setting("fee_cap_usd", "must be a number from 0 to 10000")
+        settings["fee_cap"] = "$" + format(cap, ",.2f")
+    if "date_to" in document and "date_from" not in document:
+        raise _bad_setting("date_to", "needs date_from")
+    if "date_from" in document:
+        start, end = _settings_day(document["date_from"], "date_from", today), document.get("date_to", "today")
+        if end != "today" and _settings_day(end, "date_to", today) < start:
+            raise _bad_setting("date_to", "must not be before date_from")
+        settings["date_range"] = f"{document['date_from']} through {end}"
+    return settings
 
 
 def _read_json(path):
@@ -185,11 +251,15 @@ def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
     return "\n".join(lines)
 
 
-def render_template_request(agency, template_path=TEMPLATE_PATH):
+def render_template_request(agency, template_path=TEMPLATE_PATH, requester_block=None, fee_cap=None,
+                            date_range=None):
     """Fallback draft from templates/records-request.md when no law package exists."""
     name = _clean_agency_name(agency["name"])
     template = Path(template_path).read_text(encoding="utf-8")
     body = template.replace("[agency]", name)
+    for slot, value in (("[date range]", date_range), ("[narrow date range]", date_range),
+                        ("[explicit approved cap]", fee_cap), ("[requester-approved contact details]", requester_block)):
+        body = body.replace(slot, value) if value is not None else body
     banner = [
         "# Draft records request: " + name,
         "",
@@ -239,6 +309,8 @@ plate readers. Every agency entry is a suggestion from the shared seed
 - `requests/` holds one draft per selected law-enforcement agency. Fill the
   date range, fee cap and requester block before anyone sends it. Re-running
   `kit` keeps drafts you edited and puts the fresh draft in `requests.suggested/`.
+- `request-settings.json` (optional, private) fills every draft, e.g. `{{"schema_version": 1, "requester":
+  ["A. Organizer", "a@example.org"], "fee_cap_usd": 50, "date_from": "2023-01-01", "date_to": "today"}}`.
 - `governing-bodies.json` lists boards, councils and district attorneys for
   meeting and oversight follow-up; they receive no records request draft.
 - `law.json` summarizes the jurisdiction law package (status: {package_status}).
@@ -272,6 +344,7 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
     requests_dir = kit_dir / "requests"
     suggested_dir = kit_dir / "requests.suggested"
     _kit_folder(kit_dir)
+    settings = load_request_settings(kit_dir)
     _kit_folder(requests_dir)
     _kit_folder(suggested_dir)
 
@@ -300,7 +373,8 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
 
     def render(entry, quiet=False):
         try:
-            return render_combined_request(package, entry) if package else render_template_request(entry)
+            return (render_combined_request(package, entry, **settings) if package
+                    else render_template_request(entry, **settings))
         except ValueError:
             if not quiet:
                 raise
@@ -379,7 +453,9 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
         "agencies_preserved": agencies_preserved,
         "suggestion_diff_count": diff_count,
         "include": list(include),
-        "next_steps": NEXT_STEPS,
+        "request_settings": {"requester": "requester_block" in settings, "fee_cap": "fee_cap" in settings,
+                             "date_range": "date_range" in settings},
+        "next_steps": _next_steps(settings),
     }
     _write_json(kit_dir / "summary.json", summary)
     _write_readme(kit_dir, location, package_status)

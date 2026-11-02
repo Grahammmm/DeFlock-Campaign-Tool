@@ -30,6 +30,25 @@ the verified Access JWT email, never a form field. Authors cannot review their o
 (403). Each receipt is bound to the content hash at submission time; the state is recomputed
 from all receipts after every submission.
 
+## Offline review receipts (CLI)
+
+    python3 -m campaign_tool finding review DRAFT --directory D --role factual|legal|privacy \
+        --decision approve|reject|changes_requested --reviewer NAME --rationale TEXT
+    python3 -m campaign_tool finding review-status DRAFT --directory D
+
+`finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
+file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
+concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
+are **self-asserted**: offline
+there is no identity check, unlike the hosted flow, where the identity is the Access JWT email.
+The tool only refuses a reviewer whose name matches the draft `author` (case and spacing
+ignored) and a duplicate receipt. Each receipt is bound to the hash of the draft without its
+publication fields (`state`, `published_at`, `updated_at`, `corrections`), so changing those
+keeps it bound, while any edit to a reviewed field (for example `summary`) unbinds every earlier
+receipt. `finding review-status` is read-only and prints the receipts for the current content,
+the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
+and privacy, with no reject or changes_requested on the current content).
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
