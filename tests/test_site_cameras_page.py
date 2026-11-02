@@ -128,13 +128,14 @@ class CamerasPageTests(unittest.TestCase):
         locs = [loc.text for loc in ET.fromstring(self.read("sitemap.xml")).iter(
             "{http://www.sitemaps.org/schemas/sitemap/0.9}loc")]
         self.assertEqual(locs, [BASE + p for p in ("/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html",
-                                                   "/meetings.html", "/about.html", "/findings/cedar-policy-posted.html")])
+                                                   "/meetings.html", "/about.html", "/findings/cedar-policy-posted.html",
+                                                   "/meetings/cedar-council-2026-10.html")])
 
     def test_with_map_linked_from_fallback_footer_and_sitemap(self):
         self.base_url(BASE)
         build_site(self.root)
-        self.assertIn('rel="noopener noreferrer">open the DeFlock source map</a> '
-                      'or <a href="/cameras.html">read the list of mapped points</a>.</p>', self.read("index.html"))
+        self.assertIn('rel="noopener noreferrer">open the DeFlock source map</a>. '
+                      '<a href="/cameras.html">Read the list of mapped points</a>.</p>', self.read("index.html"))
         for name in ("index.html", "about.html", "cameras.html", "404.html"):
             footer = self.read(name).split('<footer class="site-footer">', 1)[1]
             self.assertIn('<a href="/cameras.html">Mapped points</a>', footer, name)
@@ -158,6 +159,17 @@ class CamerasPageTests(unittest.TestCase):
         with self.assertRaisesRegex(ContentError, r"public-assets/cameras\.html: extension not allowed"):
             build_site(self.root)
         self.assertFalse(self.public.exists())
+
+    #    ... and a content page content/pages/cameras.json is refused with a map (never silently replaced), kept without
+    def test_content_page_named_cameras(self):
+        (self.content / "pages").mkdir(exist_ok=True)
+        self.write(self.content / "pages" / "cameras.json", {"title": "Our cameras", "description": "", "body_md": "Hi."})
+        with self.assertRaisesRegex(ContentError, r"content/pages/cameras\.json: collides with the generated cameras\.html"):
+            build_site(self.root)
+        self.assertFalse(self.public.exists())
+        shutil.rmtree(self.map)
+        build_site(self.root)
+        self.assertIn("<h2>Our cameras</h2>", self.read("cameras.html"))
 
     # 6. over 2 000 points: each section shows its full count and 500 rows, then "and N more on the map"
     def test_large_map_caps_rows_per_section(self):

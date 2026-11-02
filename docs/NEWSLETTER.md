@@ -34,9 +34,14 @@ The job inputs carry a manifest assembled from D1 by `newsletterManifest(repo)`:
 {"schema_version": 1,
  "campaign": {"name": "...", "base_url": "https://..." | null, "county_name": "..."},
  "since": "<ISO of the last campaign_sent event>" | null,
- "findings": [{"title", "summary", "classification", "confidence", "path", "published_at", "corrected"}],
+ "findings": [{"title", "summary", "classification", "confidence", "path", "published_at", "corrected",
+               "corrections"?: [{"date": "YYYY-MM-DD", "note"}]}],
  "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance"}]}
 ```
+
+`corrections` is optional: the Worker manifest omits it, `--from-content` sets it. When present
+it is a list of at most 50 objects with a `YYYY-MM-DD` `date` and a string `note`; anything else
+is refused naming `findings[i].corrections[j]`.
 
 Only published or corrected findings since the last send and upcoming meetings appear. No
 subscriber, correspondence, original or credential data is in the manifest.
@@ -54,9 +59,37 @@ Offline: `python3 -m campaign_tool.newsletter --directory D [--manifest FILE | -
 [--since YYYY-MM-DD]]` writes `kit/newsletter-draft.html`, `.txt` and `.json`. `--from-content`
 builds the manifest from `content/`: published findings (`/findings/<slug>.html`, corrected
 when they carry corrections) and meetings not `cancelled`; `--since` (UTC midnight) needs it.
-The window above still applies: a finding corrected after `--since` but published before it is
-left out. Without either flag it renders the empty template from `campaign.json`. The JSON
+The window above still applies, with one addition: a finding published before `--since` whose
+latest correction is dated on or after that day is listed under "Corrections" as
+`TITLE: corrected DATE — NOTE (link)` (note capped at 200 characters), is not counted as a new
+finding or in the subject, and is counted in the JSON's `corrections_listed` (present only when
+non-zero). A finding published and corrected after `--since` stays a new finding marked
+"(corrected)". Without either flag it renders the empty template from `campaign.json`. The JSON
 names its `source` (`content`, `manifest` or `template`). Nothing is sent.
+
+`--from-content` also lists, under **Decisions** (after New findings and Corrections, before Upcoming meetings),
+each meeting outcome an organizer recorded with `meetings-outcome` (see MEETINGS.md) on or after
+the `--since` day (all of them without `--since`), oldest first: body, date, result label, vote
+when given and an "Official record" link to the https source. Only recorded outcomes appear; a
+meeting without one is never described as decided. At most 8 lines, then "and N more on the
+site."; `counts.decisions` is present only when the section is. Worker manifests carry no
+`decisions` key and render exactly as before.
+
+### Offline sends
+
+The tool never sends. After sending `kit/newsletter-draft.html` (or `.txt`) by hand, record it
+with `python3 -m campaign_tool.newsletter --directory D --record-sent YYYY-MM-DD` (a flag form of
+`newsletter sent --date D`; it cannot be combined with `--manifest`, `--from-content` or `--since`).
+It appends `{"sent_on", "draft_sha256", "subject", "recorded_at"}` to the private
+`kit/newsletter-sent.json` (mode 0600, at most 1000 issues), where `draft_sha256` is the sha256 of
+`kit/newsletter-draft.json`, which holds the draft's subject, HTML and text. It refuses a date that
+is not a real day, after today or before 2000-01-01; a missing, linked or over-4 MiB draft; a
+draft already recorded (naming its date); and a date earlier than the last record, so records stay
+in date order. A linked, non-regular or malformed `kit/newsletter-sent.json` is refused
+(`kit/newsletter-sent.json unreadable: ...`) and never reset or rewritten. Afterwards
+`--from-content` without `--since` starts the day after the last recorded send (UTC midnight); an
+explicit `--since` wins. The draft JSON output names where the window came from in `since_from`:
+`"record"`, `"flag"` or `null`. This is the offline counterpart of the hosted `campaign_sent` event.
 
 ## Approve & send
 

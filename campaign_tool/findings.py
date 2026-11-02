@@ -8,6 +8,7 @@ import errno
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -24,13 +25,15 @@ except ImportError:  # Windows
 from . import content
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
-from .review import ROLES, _who, content_hash, review_blockers
+from .review import CLASSIFICATIONS, ROLES, _who, content_hash, review_blockers
+from .sources_cmd import PREFIX as HEX_PREFIX, _known_agencies, _library
 
 PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections")
 DECISIONS = ("approve", "reject", "changes_requested")
 MAX_DRAFT_BYTES = 1024 * 1024
 MAX_RECEIPTS_BYTES = 4 * 1024 * 1024
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 MAX_ROSTER_BYTES, MAX_REVIEWERS = 256 * 1024, 200
 ROSTER_KEYS, REVIEWER_KEYS = frozenset(("schema_version", "reviewers")), frozenset(("name", "roles", "added_on"))
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -50,49 +53,54 @@ def _no_constant(name):
     raise ValueError(name)
 
 
+class _PathError(ValueError):
+    """A refusal whose text is only a path and a fixed reason, never file content: `finding status` shows these
+    verbatim and withholds every other ValueError text (an unknown key, for one, quotes the file)."""
+
+
 def _read_json(path, limit, what, raw=False):
     """Parse one regular, non-symlink file (``raw``: return its UTF-8 text); errors name the path, never its content."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
         if os.path.islink(path):
-            raise ValueError(f"{path}: {what} is a symlink; refusing to follow it") from None
-        raise ValueError(f"{path}: cannot open {what} ({exc.strerror})") from None
+            raise _PathError(f"{path}: {what} is a symlink; refusing to follow it") from None
+        raise _PathError(f"{path}: cannot open {what} ({exc.strerror})") from None
     if not stat.S_ISREG(os.fstat(fd).st_mode):  # checked before fdopen, which refuses a directory itself
         os.close(fd)
-        raise ValueError(f"{path}: {what} is not a regular file")
+        raise _PathError(f"{path}: {what} is not a regular file")
     with os.fdopen(fd, "rb") as handle:
         data = handle.read(limit + 1)
     if len(data) > limit:
-        raise ValueError(f"{path}: {what} is larger than {limit} bytes")
+        raise _PathError(f"{path}: {what} is larger than {limit} bytes")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        raise ValueError(f"{path}: {what} is not UTF-8") from None
+        raise _PathError(f"{path}: {what} is not UTF-8") from None
     if raw:
         return text
     try:
         return json.loads(text, parse_constant=_no_constant)
     except (ValueError, RecursionError):
-        raise ValueError(f"{path}: {what} is not valid JSON") from None
+        raise _PathError(f"{path}: {what} is not valid JSON") from None
 
 
 def load_draft(path):
     draft = _read_json(path, MAX_DRAFT_BYTES, "draft")
     if not isinstance(draft, dict):
-        raise ValueError(f"{path}: draft must be a JSON object")
+        raise _PathError(f"{path}: draft must be a JSON object")
     unknown = sorted(set(draft) - FINDING_KEYS)
     if unknown:
         raise ValueError(f"{path}: unknown key {unknown[0]!r}")
     if not isinstance(draft.get("id"), str) or not _ID.fullmatch(draft["id"]):
-        raise ValueError(f"{path}: key 'id' must match [A-Za-z0-9_-]{{1,64}}")
+        raise _PathError(f"{path}: key 'id' must match [A-Za-z0-9_-]{{1,64}}")
     return draft
 
 
 def _receipts_path(root, draft):
     for folder in (root / "private", root / "private" / "reviews"):
         if os.path.lexists(folder) and (os.path.islink(folder) or not os.path.isdir(folder)):
-            raise ValueError(f"{folder}: must be a real directory, not a symlink or a file")
+            raise _PathError(f"{folder}: must be a real directory, not a symlink or a file")
     return root / "private" / "reviews" / (draft["id"] + ".json")
 
 
@@ -101,7 +109,7 @@ def _load_receipts(path):
         return []
     receipts = _read_json(path, MAX_RECEIPTS_BYTES, "receipt file")
     if not isinstance(receipts, list):
-        raise ValueError(f"{path}: receipt file must be a JSON list")
+        raise _PathError(f"{path}: receipt file must be a JSON list")
     return receipts
 
 
@@ -388,7 +396,7 @@ def list_reviewers(root):
 def _real_dir(path):
     """True for a real directory, False when absent; a symlink or a file refuses."""
     if os.path.lexists(path) and (os.path.islink(path) or not os.path.isdir(path)):
-        raise ValueError(f"{path}: must be a real directory, not a symlink or a file")
+        raise _PathError(f"{path}: must be a real directory, not a symlink or a file")
     return os.path.isdir(path)
 
 
@@ -425,6 +433,82 @@ def cited_problems(root, finding):
     return problems
 
 
+EDIT, DRAFT_ATTEMPTS = "[EDIT ME: ", 5
+
+
+def _draft_slug(title):
+    """Lowercase [a-z0-9-] slug from the title, cut to content.SLUG's 64 characters (within the 80 bound)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:64].strip("-")
+    if not content.SLUG.fullmatch(slug):
+        raise ValueError("--title must start its slug with a letter (a-z) so the finding can be published")
+    if slug in content.STARTER_SLUGS:
+        raise ValueError(f"--title gives the slug {slug!r}, which is reserved for a site page")
+    return slug
+
+
+def _resolve_sources(root, prefixes):
+    """Each prefix names exactly one library record (read with sources_cmd's reader: symlink refused, capped)."""
+    library, resolved = _library(root)[1] if prefixes else [], []
+    for prefix in prefixes:
+        if not isinstance(prefix, str) or not HEX_PREFIX.fullmatch(prefix):
+            raise ValueError(f"--source {prefix!r}: give 12-64 lowercase hex characters of a library sha256")
+        # Count entries, not distinct hashes: two entries sharing one sha256 (say, two fragments of one
+        # file) are as ambiguous as two files, so neither title is silently chosen.
+        matches = [entry for entry in library if entry["sha256"].startswith(prefix)]
+        if len(matches) != 1:
+            raise ValueError(f"--source {prefix}: " + ("matches no content/sources.json entry" if not matches
+                                                       else f"is ambiguous ({len(matches)} entries match)"))
+        sha, title = matches[0]["sha256"], matches[0]["title"]
+        if any(source["sha256"] == sha for source in resolved):
+            raise ValueError(f"--source {prefix}: names a record already cited by an earlier --source")
+        resolved.append({"sha256": sha, "title": title, "locator": EDIT + "page or section]"})
+    return resolved
+
+
+def new_draft(root, agency_id, title, source_prefixes, author=None, now=None):
+    """Write a new private/drafts/fnd_<12 hex>.json skeleton (0600, never overwrites); publishes nothing."""
+    title = _text("title", title, 200)
+    if not content.plain_text(title):
+        raise ValueError("--title must be plain text without angle brackets")
+    slug = _draft_slug(title)
+    if agency_id not in {agency["agency_id"] for agency in _known_agencies(root)}:
+        raise ValueError(f"--agency {agency_id!r} is not one of the campaign's agencies")
+    sources = _resolve_sources(root, list(source_prefixes or []))
+    author = EDIT + "who wrote this finding]" if author is None else _text("author", author, 120)
+    folders = (root / "private", root / "private" / "drafts")
+    for folder in folders:
+        _real_dir(folder)  # a symlink or a file refuses before anything is written
+    for folder in folders:
+        if not os.path.lexists(folder):
+            folder.mkdir(mode=0o700)
+            os.chmod(folder, 0o700)
+    draft = {"title": title, "slug": slug, "agency_id": agency_id, "state": "draft", "published_at": None,
+             "corrections": [], "author": author,
+             "classification": EDIT + "one of " + ", ".join(sorted(CLASSIFICATIONS)) + "]",
+             "confidence": EDIT + "one of " + ", ".join(content.CONFIDENCE) + "]",
+             "event_date": EDIT + "YYYY-MM-DD of the event the records show]",
+             "summary": EDIT + "one or two plain sentences stating what the records show]",
+             "body_md": EDIT + "the finding in full, citing each source by its locator]",
+             "limitations": [EDIT + "what these records cannot show]"],
+             "counterevidence": [EDIT + "records or statements that point the other way, or 'None found.']"],
+             "sources": sources}
+    for _ in range(DRAFT_ATTEMPTS):
+        draft["id"] = "fnd_" + secrets.token_hex(6)
+        path = folders[1] / (draft["id"] + ".json")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            if hasattr(os, "fchmod"):
+                os.fchmod(out.fileno(), 0o600)  # whatever the umask
+            out.write(json.dumps(dict(sorted(draft.items())), indent=2, ensure_ascii=False) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        return {"id": draft["id"], "written": str(path)}
+    raise ValueError(f"{folders[1]}: {DRAFT_ATTEMPTS} generated ids already exist; nothing written")
+
+
 def publish(root, draft_path, approved_by, now=None):
     """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
     draft = load_draft(draft_path)
@@ -458,21 +542,137 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
         raise ValueError(f"content/findings/{target.name} already exists; publish a new slug or use a correction")
     if finding["id"] in _taken(folder, "published finding")[0]:
         raise ValueError(f"id {finding['id']!r} is already published under another slug")
-    withdrawn_ids, withdrawn_slugs = _taken(root / "private" / "withdrawn", "withdrawn finding")
+    withdrawn_ids, withdrawn_slugs = withdrawn_names(root)
     if finding["id"] in withdrawn_ids or finding["slug"] in withdrawn_slugs:
         raise ValueError(f"id {finding['id']!r} or slug {finding['slug']!r} was withdrawn and stays taken")
     problems = cited_problems(root, finding)
     if problems:
         raise ValueError(f"cited records not registered and stored: {problems}")
+    entry = {"at": when, "action": "publish", "id": finding["id"], "slug": finding["slug"],
+             "content_sha256": reviewed_hash(draft), "approved_by": approved_by}
+    _write_logged(root, folder, target, document, entry)
+    return {"published": finding["slug"], "path": f"content/findings/{target.name}"}
+
+
+STATUS_ORDER = ("draft", "in_review", "blocked", "ready", "published", "corrected", "pending correction",
+                "unreadable", "withdrawn")
+_EMPTY_ROW = {"id": None, "slug": None, "state": "unreadable", "receipts_current": 0, "receipts_stale": 0,
+              "blockers": [], "published_at": None, "updated_at": None, "corrections": 0}
+
+
+def _identified(document, path, what):
+    if not isinstance(document, dict) or not isinstance(document.get("id"), str) or not _ID.fullmatch(document["id"]):
+        raise _PathError(f"{path}: {what} must be a JSON object whose 'id' matches [A-Za-z0-9_-]{{1,64}}")
+    return document
+
+
+def _status_row(root, document, state=None):
+    """Counts and blocker names only: never a reviewer name, rationale or correction note."""
+    receipts = _load_receipts(_receipts_path(root, document))
+    digest = reviewed_hash(document)
+    current = sum(isinstance(r, dict) and r.get("content_sha256") == digest for r in receipts)
+    blockers = [] if state else review_blockers(reviewed_view(document), receipts)
+    if state is None:  # docs/PUBLICATION.md "States" applied to the offline files
+        structural = set(blockers) - content.RECEIPT_BLOCKERS - {"unresolved_challenge"}
+        state = ("ready" if not blockers else "blocked" if "unresolved_challenge" in blockers
+                 or (structural and current) else "in_review" if current else "draft")
+    corrections = document.get("corrections")
+    text = {k: v if isinstance(v := document.get(k), str) else None for k in ("slug", "published_at", "updated_at")}
+    return dict(_EMPTY_ROW, id=document["id"], state=state, receipts_current=current,
+                receipts_stale=len(receipts) - current, blockers=blockers, **text,
+                corrections=len(corrections) if isinstance(corrections, list) else 0)
+
+
+def status_rows(root, extra_drafts=()):
+    """Read-only: one row per published or withdrawn finding and per draft (private/drafts/*.json, one level, plus
+    ``extra_drafts``). An unreadable file or folder is an ``unreadable`` row naming its path, never a crash or a skip."""
+    rows, found = [], {"published finding": [], "withdrawn finding": []}
+
+    def attempt(path, build, what="file"):
+        try:
+            return build()
+        except _PathError as exc:  # a path and a fixed reason only
+            rows.append(dict(_EMPTY_ROW, path=str(path), error=str(exc)))
+        except ValueError:  # other texts can quote the file (an unknown key, a field value): withheld
+            rows.append(dict(_EMPTY_ROW, path=str(path), error=f"{path}: {what} is not valid "
+                             "(reason withheld because it can quote the file; check the file itself)"))
+
+    def files(folder):
+        return attempt(folder, lambda: sorted(folder.glob("*.json")) if _real_dir(folder) else []) or []
+
+    for what, folder in (("published finding", root / "content" / "findings"),
+                         ("withdrawn finding", root / "private" / "withdrawn")):
+        for path in files(folder):
+            document = attempt(path, lambda: _identified(_read_json(path, MAX_DRAFT_BYTES, what), path, what), what)
+            if document is not None:
+                found[what].append((path, document))
+    withdrawn_ids, leftovers, live_ids = {d["id"] for _, d in found["withdrawn finding"]}, {}, set()
+    for path, document in found["published finding"]:
+        if document["id"] in withdrawn_ids:  # withdraw could not unlink it (DF2237-04): withdrawn wins
+            leftovers.setdefault(document["id"], []).append(f"content/findings/{path.name}")
+            continue
+        live_ids.add(document["id"])
+        state = "corrected" if isinstance(document.get("corrections"), list) and document["corrections"] else "published"
+        rows.extend(attempt(path, lambda: [_status_row(root, document, state)], "published finding") or [])
+    for path, document in found["withdrawn finding"]:
+        extra = {"leftover": leftovers.pop(document["id"])} if document["id"] in leftovers else {}
+        bare = {k: v for k, v in document.items() if k != "withdrawn"}  # receipts bind to the text without it
+        rows.extend(attempt(path, lambda: [dict(_status_row(root, bare, "withdrawn"), **extra)], "withdrawn finding")
+                    or [])
+    seen = set()
+    for path in files(root / "private" / "drafts") + list(extra_drafts):
+        if os.path.abspath(path) in seen:
+            continue
+        seen.add(os.path.abspath(path))
+
+        def draft_row():
+            row = _status_row(root, load_draft(path))
+            row["state"] = ("withdrawn" if row["id"] in withdrawn_ids else
+                            "pending correction" if row["id"] in live_ids else row["state"])
+            return [row]
+        rows.extend(attempt(path, draft_row, "draft") or [])
+    return sorted(rows, key=lambda r: (STATUS_ORDER.index(r["state"]), r["id"] or "", r.get("path", "")))
+
+
+def status_table(rows):
+    def cells(row):
+        notes = (row["blockers"] + [f"leftover {p}" for p in row.get("leftover", [])]
+                 + ([f"unreadable {row['path']}"] if "path" in row else []))
+        receipts = f"{row['receipts_current']}" + (f" (+{row['receipts_stale']} stale)" if row["receipts_stale"] else "")
+        return [row["id"] or "-", row["slug"] or "-", row["state"], receipts, ",".join(notes) or "-"]
+    table = [["ID", "SLUG", "STATE", "RECEIPTS", "BLOCKERS"]] + [cells(row) for row in rows]
+    widths = [max(len(line[i]) for line in table) for i in range(4)]
+    return "\n".join("  ".join(c.ljust(w) for c, w in zip(line, widths)) + "  " + line[4] for line in table)
+
+
+def withdrawn_names(root):
+    """(ids, slugs) kept taken by private/withdrawn/*.json; an unreadable or non-JSON file is named, never skipped."""
+    return _taken(root / "private" / "withdrawn", "withdrawn finding")
+
+
+def _open_log(root):
+    """Open (and check) private/publication-log.jsonl for appending before anything is written."""
     log = root / "private" / "publication-log.jsonl"
-    try:  # open (and check) the log before the finding is written, so a bad log never leaves an unlogged publish
+    try:
         log_fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
         raise ValueError(f"{log}: cannot open publication log ({exc.strerror})") from None
+    if not stat.S_ISREG(os.fstat(log_fd).st_mode):
+        os.close(log_fd)
+        raise ValueError(f"{log}: publication log is not a regular file")
+    os.chmod(log, 0o600)
+    return log_fd
+
+
+def _append(log_fd, entry):
+    os.write(log_fd, (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+    os.fsync(log_fd)
+
+
+def _write_logged(root, folder, target, document, entry):
+    """Atomically (re)write ``target`` and append ``entry`` to private/publication-log.jsonl (0600)."""
+    log_fd = _open_log(root)  # a bad log refuses before the finding is written, never leaving an unlogged publish
     try:
-        if not stat.S_ISREG(os.fstat(log_fd).st_mode):
-            raise ValueError(f"{log}: publication log is not a regular file")
-        os.chmod(log, 0o600)
         data = (json.dumps(document, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         fd, temporary = tempfile.mkstemp(dir=folder, prefix=".publish-", suffix=".tmp")
         try:
@@ -487,10 +687,123 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
         finally:
             if os.path.lexists(temporary):
                 os.unlink(temporary)
-        entry = {"at": when, "action": "publish", "id": finding["id"], "slug": finding["slug"],
-                 "content_sha256": reviewed_hash(draft), "approved_by": approved_by}
-        os.write(log_fd, (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
-        os.fsync(log_fd)
+        _append(log_fd, entry)
     finally:
         os.close(log_fd)
-    return {"published": finding["slug"], "path": f"content/findings/{target.name}"}
+
+
+def _check_date(date, moment, published_at, corrections):
+    if not isinstance(date, str) or not _DAY.fullmatch(date):
+        raise ValueError(f"--date must be YYYY-MM-DD, got {date!r}")
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"--date {date!r} is not a real calendar date") from None
+    if day > moment.date():
+        raise ValueError(f"--date {date} is in the future (today is {moment.date()} UTC)")
+    published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
+    if day < published_day:
+        raise ValueError(f"--date {date} is before the publication date {published_day}")
+    last = corrections[-1]["date"] if corrections else None
+    if last and day < datetime.strptime(last, "%Y-%m-%d").date():
+        raise ValueError(f"--date {date} is before the last correction date {last}")
+    return date
+
+
+def correct(root, finding_id, date, note, from_draft=None, now=None):
+    """Append one dated correction to the published finding with ``finding_id``; with ``from_draft``
+    its reviewed fields are replaced by the draft's, which must clear the same gate as publish.
+    id, slug and published_at never change; each correction is logged. Never builds or deploys."""
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    note = _text("note", note, 1000)
+    for folder in (root / "content", root / "private"):
+        if not _real_dir(folder):
+            raise ValueError(f"{folder}: no {folder.name}/ directory in this campaign")
+    with _locked(root / "private", ".publish.lock"):
+        return _correct_locked(root, finding_id, date, note, from_draft, moment)
+
+
+def _one_published(folder, finding_id):
+    """(path, document) of the single content/findings/*.json whose id is ``finding_id``; symlinks refuse."""
+    matches = []
+    for path in sorted(folder.glob("*.json")) if _real_dir(folder) else []:
+        document = _read_json(path, MAX_DRAFT_BYTES, "published finding")
+        if isinstance(document, dict) and document.get("id") == finding_id:
+            matches.append((path, document))
+    if len(matches) != 1:
+        raise ValueError(f"id {finding_id!r}: {len(matches)} published findings have it; need exactly one")
+    return matches[0]
+
+
+def _correct_locked(root, finding_id, date, note, from_draft, moment):
+    folder = root / "content" / "findings"
+    target, existing = _one_published(folder, finding_id)
+    current = content.load_finding(existing, f"content/findings/{target.name}")
+    date = _check_date(date, moment, current["published_at"], current["corrections"])
+    when = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    kept = {"state": existing["state"], "published_at": existing["published_at"], "updated_at": when,
+            "corrections": list(existing["corrections"]) + [{"date": date, "note": note}]}
+    if from_draft is None:
+        document = dict(reviewed_view(existing), **kept)
+    else:
+        draft = load_draft(from_draft)
+        if draft["id"] != finding_id or draft.get("slug") != current["slug"]:
+            raise ValueError(f"{from_draft}: draft id and slug must be {finding_id!r} and {current['slug']!r}")
+        blockers = review_blockers(reviewed_view(draft), _load_receipts(_receipts_path(root, draft)))
+        if blockers:
+            raise ValueError(f"review blockers: {blockers}")
+        document = dict(reviewed_view(draft), **kept)
+    finding = content.load_finding(document, f"content/findings/{target.name}")
+    if from_draft is not None:
+        problems = cited_problems(root, finding)
+        if problems:
+            raise ValueError(f"cited records not registered and stored: {problems}")
+    entry = {"at": when, "action": "correct", "id": finding_id, "slug": current["slug"], "date": date,
+             "content_sha256": reviewed_hash(document),
+             "text_changed": reviewed_hash(document) != reviewed_hash(existing)}
+    _write_logged(root, folder, target, document, entry)
+    return {"corrected": current["slug"], "corrections": len(kept["corrections"])}
+
+
+def withdraw(root, finding_id, reason, now=None):
+    """Move the published finding with ``finding_id`` to private/withdrawn/<slug>.json (dir 0700, file 0600) with
+    ``withdrawn: {at, reason}``; its id and slug stay taken. The log line omits the reason. No notice page, no build."""
+    reason = _text("reason", reason, 1000)
+    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for folder in (root / "content", root / "private"):
+        if not _real_dir(folder):
+            raise ValueError(f"{folder}: no {folder.name}/ directory in this campaign")
+    with _locked(root / "private", ".publish.lock"):
+        return _withdraw_locked(root, finding_id, reason, when)
+
+
+def _withdraw_locked(root, finding_id, reason, when):
+    source, document = _one_published(root / "content" / "findings", finding_id)
+    # The filename need not match the slug (load_content accepts both); the slug is what stays reserved.
+    slug = content.load_finding(document, f"content/findings/{source.name}")["slug"]
+    folder = root / "private" / "withdrawn"
+    if not _real_dir(folder):
+        folder.mkdir(mode=0o700)
+    os.chmod(folder, 0o700)
+    target = folder / f"{slug}.json"
+    if os.path.lexists(target):
+        raise ValueError(f"private/withdrawn/{target.name} already exists; nothing was moved")
+    log_fd = _open_log(root)  # a bad log refuses before anything is written
+    try:
+        _write_private(target, dict(document, withdrawn={"at": when, "reason": reason}), ".withdraw-")
+        if hasattr(os, "O_DIRECTORY"):  # POSIX: make the new entry durable before the content file goes
+            dir_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        try:
+            os.unlink(source)
+        except OSError as exc:  # never zero copies: keep both, delete nothing, name the leftover
+            raise ValueError(f"private/withdrawn/{target.name} was written but the leftover content/findings/"
+                             f"{source.name} could not be removed ({exc.strerror}); both copies remain and nothing "
+                             f"was deleted or logged. Remove content/findings/{source.name} by hand, then run build") from None
+        _append(log_fd, {"at": when, "action": "withdraw", "id": finding_id, "slug": slug})
+    finally:
+        os.close(log_fd)
+    return {"withdrawn": slug, "path": f"private/withdrawn/{target.name}"}

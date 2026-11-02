@@ -296,11 +296,27 @@ def load_finding(document, label):
     }
 
 
+def load_finding_preview(document, label, now=None):
+    """``load_finding`` for a draft preview (DF1822-02). A draft not yet at ``state: published`` is read as
+    ``finding publish`` would write it (publication fields replaced: published, ``published_at`` = the preview
+    time, no corrections), for validation and rendering only; every refusal is ``load_finding``'s own."""
+    if not isinstance(document, dict):
+        raise ContentError(f"{label}: expected an object")
+    if document.get("state") != "published":
+        when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        document = {key: value for key, value in document.items()
+                    if key not in ("state", "published_at", "updated_at", "corrections")}
+        document.update(state="published", published_at=when, corrections=[])
+    return load_finding(document, label)
+
+
 # --- meetings --------------------------------------------------------------
 
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation"}
+                "status", "participation", "outcome"}
 MEETING_STATUSES = ("scheduled", "cancelled")
+OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
+OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote"}
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
                       "verified_at"}
 
@@ -341,6 +357,29 @@ def load_participation(value, starts_at, label, today=None):
             **({"speaker_minutes": minutes} if minutes is not None else {})}
 
 
+def load_outcome(value, starts_at, status, label, today=None):
+    """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
+    if status == "cancelled":
+        raise ContentError(f"{label}: a cancelled meeting has no outcome")
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote"}, label)
+    if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
+        raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
+    held, now = starts_at[:10], (today or date.today()).isoformat()
+    for key, earliest in (("on", held), ("verified_at", value["on"])):
+        day = _timestamp(value[key], f"{label}.{key}", date_only=True)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or not earliest <= day <= now:
+            raise ContentError(f"{label}.{key}: must be a YYYY-MM-DD date from {earliest} to {now}")
+    for key in ("verified_by", "vote"):
+        text = value.get(key, "-")
+        if (not isinstance(text, str) or not plain_text(text) or not text.strip() or len(text) > 120
+                or "\n" in text or "\t" in text):
+            raise ContentError(f"{label}.{key}: must be 1 to 120 characters of plain text "
+                               "(no angle brackets or control characters)")
+    return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
+            "verified_by": value["verified_by"], "verified_at": value["verified_at"],
+            **({"vote": value["vote"]} if "vote" in value else {})}
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -364,6 +403,8 @@ def load_meeting(document, label, today=None):
         "status": status,
         "participation": (load_participation(document["participation"], starts_at, f"{label}.participation", today)
                           if document.get("participation") is not None else None),
+        "outcome": (load_outcome(document["outcome"], starts_at, status, f"{label}.outcome", today)
+                    if "outcome" in document else None),
     }
 
 
@@ -461,6 +502,26 @@ def _contract(value, label):
             "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
+ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
+
+
+def _alpr_policy(value, label):
+    """A posted ALPR usage policy an organizer found (``profile.alpr_policy``); linked only, never fetched or judged."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and not ALPR_POLICY_KEYS <= set(value):
+        raise ContentError(f"{label}: needs url, source_url and checked_on")
+    _require_keys(value, ALPR_POLICY_KEYS, ALPR_POLICY_KEYS, label)
+    try:
+        checked = _calendar_day(value["checked_on"], f"{label}.checked_on")
+    except ContentError:
+        checked = None
+    if checked is None or checked > date.today():
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    return {"url": _https(value["url"], f"{label}.url"),
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+
+
 def _flock_url(entry, item):
     """Transparency-portal link for an organizer-verified slug; built from the slug only, never fetched."""
     slug = entry.get("flock_transparency_slug")
@@ -497,7 +558,7 @@ def load_agencies(document, label):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract"}, set(), f"{item}.profile")  # county_profile stays without
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -517,6 +578,7 @@ def load_agencies(document, label):
             "verification": _verification(entry, item),
             "flock_transparency_url": _flock_url(entry, item),
             "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
+            "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),
@@ -687,6 +749,49 @@ def load_map(content_dir):
     }
 
 
+# --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
+PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
+RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
+                                       "agency-cards", "app", "data", "vendor", "meetings"}  # generated top-level names
+
+
+def _page_string(document, key, label, limit, required):
+    value = document.get(key, "")
+    if not isinstance(value, str) or len(value) > limit or (required and not value.strip()):
+        kind = "non-empty string" if required else "string"
+        raise ContentError(f"{label}.{key}: must be a {kind} of at most {limit} characters")
+    return value
+
+
+def load_pages(content_dir, finding_slugs):
+    """Pages sorted by slug, ``[]`` without the folder; non-``.json`` names ignored. Text is escaped at render."""
+    folder = Path(content_dir) / "pages"
+    if folder.is_symlink():
+        raise ContentError("pages: the folder must not be a symlink")
+    paths = sorted(path for path in folder.iterdir() if path.name.endswith(".json")) if folder.is_dir() else []
+    if len(paths) > MAX_PAGES:
+        raise ContentError(f"pages: at most {MAX_PAGES} page files")
+    pages = []
+    for path in paths:
+        label, slug = "pages/" + path.name, path.stem
+        if path.is_symlink() or not path.is_file():
+            raise ContentError(f"{label}: must be a regular file, not a symlink or folder")
+        if slug in RESERVED_PAGE_SLUGS or slug in finding_slugs:
+            raise ContentError(f"{label}: slug {slug} is reserved")
+        _slug(slug, f"{label} filename")
+        document = _read_json(path)
+        _require_keys(document, PAGE_KEYS, {"title", "body_md"}, label)
+        if not isinstance(document.get("nav", False), bool):
+            raise ContentError(f"{label}.nav: must be true or false")
+        pages.append({"slug": slug, "title": _page_string(document, "title", label, 120, True),
+                      "description": _page_string(document, "description", label, 300, False),
+                      "body_md": _page_string(document, "body_md", label, 200 * 1024, True),
+                      "nav": document.get("nav", False)})
+    if sum(page["nav"] for page in pages) > MAX_NAV_PAGES:
+        raise ContentError(f"pages: at most {MAX_NAV_PAGES} pages may set nav: true")
+    return pages
+
+
 # --- assembly ---------------------------------------------------------------
 
 def load_content(root):
@@ -714,10 +819,14 @@ def load_content(root):
         raise ContentError(law_problems[0])
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
 
-    meetings = []
+    meetings, meeting_ids = [], {}
     for path in sorted((content_dir / "meetings").glob("*.json")) if (content_dir / "meetings").is_dir() else []:
         meeting = load_meeting(_read_json(path), "meetings/" + path.name)
         meeting["id"] = meeting["id"] or _slug(path.stem, "meetings/" + path.name + " filename")
+        if meeting["id"] in meeting_ids:  # each id names one meetings/<id>.html page
+            raise ContentError(f"meetings/{path.name}: duplicate meeting id {meeting['id']!r} "
+                               f"(also meetings/{meeting_ids[meeting['id']]})")
+        meeting_ids[meeting["id"]] = path.name
         meetings.append(meeting)
     meetings.sort(key=lambda m: m["starts_at"])
 
@@ -752,9 +861,15 @@ def load_content(root):
             if path.is_file() and not path.is_symlink():
                 public_assets.append(path)
 
+    from .labels import DEFAULTS, MAX_LABELS_BYTES, load_labels  # local: labels imports this module
+    labels_path = content_dir / "labels.json"  # optional; a symlink is refused by _read_json
+    labels = (load_labels(_read_json(labels_path, MAX_LABELS_BYTES))
+              if labels_path.is_file() or labels_path.is_symlink() else dict(DEFAULTS))
+
     return {
         "site": site,
         "findings": findings,
+        "pages": load_pages(content_dir, slugs),
         "meetings": meetings,
         "sources": sources,
         "agencies": agencies,
@@ -762,4 +877,5 @@ def load_content(root):
         "vendor": vendor,
         "public_assets": public_assets,
         "assets_dir": assets_dir,
+        "labels": labels,
     }

@@ -119,6 +119,11 @@ key keeps that placeholder and its `next_steps` line, and `summary.json` reports
 Any other key or a bad value stops `kit` before a draft is written, naming the key but never the value.
 Edited drafts are still kept, with the fresh draft in `requests.suggested/`.
 
+`kit --scope agreements --scope policies` drafts only those law-package `request_scopes` (package order,
+duplicates ignored) and lists only the rules they cite; `summary.json` reports `scopes` (`"all"` without the flag).
+An unknown scope id, or `--scope` with no law package, stops `kit` before anything is written. Switching scopes
+refreshes unedited drafts; edited ones are kept, with the fresh draft in `requests.suggested/`.
+
 ## What organizers must verify before sending
 
 The kit is a starting point, not a mailing list. Before any request leaves:
@@ -190,6 +195,16 @@ cites the send date, channel, provisional determination date, the records law na
 package is `reviewed`, its status. It refuses a request never recorded, answered (`determination`, `produced`,
 `denied`), closed or not yet past due, and when there is no law package. An existing draft is kept unless `--replace`;
 symlinks are refused. Nothing is sent and `sent.json` is not changed: send it yourself after review.
+
+`kit-denial-reply --directory D --agency ID [--rule RULE_ID]... [--replace]` writes a private draft
+`kit/followups/<agency_id>-denial-<denied date>.md` (0600, folder 0700) for a request with a recorded `denied` step
+(the latest one when there are several). It asks which exemption the agency relied on, for the non-exempt parts with
+only the exempt portions redacted, and for a written explanation; fill in `[EDIT ME: what you asked for]` and `[name]`.
+The tool never picks an exemption. Each `--rule` you name must be a `rule_id` in the law package in force on the denial
+date; it is cited as `RULE_ID (law package status: draft): <the package's citation>`. Unknown, repeated or out-of-force
+ids, `--rule` without a law package, and a request without a `denied` step are refused and nothing is written. Without
+`--rule` the draft has no citations. An existing draft is kept unless `--replace`; symlinks are refused. Nothing is sent
+and `sent.json` is not changed. The draft is not legal advice.
 
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one

@@ -5,10 +5,13 @@ classification label, title, public finding URL and finding id, within
 ``SOCIAL_MAX_CHARS``. Nothing is posted and nothing goes under ``public/``. A draft
 the organizer edited is kept; the fresh draft goes to ``kit/social.suggested/``.
 Drafts for slugs that are no longer published are listed as stale, never deleted.
+``check_social(root)`` writes nothing: it names each published slug's draft state
+(ok, missing, outdated, edited, not_regular) with problem codes and the stale drafts.
 """
 import hashlib
 import json
 import os
+import stat
 
 from .content import load_content
 from .kit import _kit_folder, _write_json, _write_text
@@ -52,15 +55,77 @@ def _load_record(path):
     return {}
 
 
-def build_social(root):
-    """Write the drafts and return ``{written, kept_edited, suggested, stale, posted}``."""
+def _published(root):
     model = load_content(root)
     if model is None:
         raise ValueError("social drafts need a content/ directory")
     base_url = model["site"].get("base_url")
     if not base_url:
         raise ValueError("social drafts need content/site.json base_url")
-    drafts = {f["slug"]: _draft(f, base_url) for f in model["findings"]}
+    return model["findings"], base_url
+
+
+def _read_regular(path):
+    """Return the bytes of a regular file without following a symlink, or ``None``."""
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read() if stat.S_ISREG(os.fstat(handle.fileno()).st_mode) else None
+
+
+def _edit_problems(finding, data, base_url):
+    lines = data.decode("utf-8", errors="replace").split("\n")
+    if lines[0].lstrip().startswith("<!--") and lines[0].rstrip().endswith("-->"):
+        lines = lines[1:]
+    body = "\n".join(lines).strip()
+    latest = max((c["date"] for c in finding["corrections"]), default=None)
+    checks = {"over_cap": len(body) > SOCIAL_MAX_CHARS,
+              "no_link": f"{base_url.rstrip('/')}/findings/{finding['slug']}.html" not in body,
+              "no_id": f"finding {finding['id']}" not in body,
+              "missing_correction": latest is not None and f"Corrected {latest}" not in body}
+    return [code for code, failed in checks.items() if failed]
+
+
+def check_social(root):
+    """Compare ``kit/social/`` with the published findings; read-only, returns the report."""
+    findings, base_url = _published(root)
+    social_dir = root / "kit" / "social"
+    for folder in (root / "kit", social_dir):
+        if os.path.islink(folder):
+            raise ValueError(f"{folder.name}/ must not be a symlink")
+        if folder.exists() and not folder.is_dir():
+            raise ValueError(f"{folder.name}/ is not a folder")
+    record = _load_record(social_dir / ".written.json")
+    entries = []
+    for finding in sorted(findings, key=lambda f: f["slug"]):
+        slug, path = finding["slug"], social_dir / (finding["slug"] + ".md")
+        fresh = _draft(finding, base_url).encode("utf-8")
+        if not os.path.lexists(path):
+            state, problems = "missing", ["missing"]
+        elif (data := _read_regular(path)) is None:
+            state, problems = "not_regular", ["not_regular"]
+        elif data == fresh:
+            state, problems = "ok", []
+        elif _sha(data) == record.get(slug):
+            state, problems = "outdated", ["outdated"]
+        else:
+            state, problems = "edited", _edit_problems(finding, data, base_url)
+        entries.append({"slug": slug, "state": state, "problems": problems})
+    slugs = {f["slug"] for f in findings}
+    stale = sorted(p.stem for p in social_dir.glob("*.md") if p.stem not in slugs
+                   and (p.is_symlink() or stat.S_ISREG(p.lstat().st_mode)))
+    count = sum(len(e["problems"]) for e in entries) + len(stale)
+    return {"findings": len(findings), "drafts": entries, "stale": stale, "problems": count, "posted": False}
+
+
+def build_social(root):
+    """Write the drafts and return ``{written, kept_edited, suggested, stale, posted}``."""
+    findings, base_url = _published(root)
+    drafts = {f["slug"]: _draft(f, base_url) for f in findings}
     kit_dir = root / "kit"
     social_dir, suggested_dir = kit_dir / "social", kit_dir / "social.suggested"
     for folder in (kit_dir, social_dir):

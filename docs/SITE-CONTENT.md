@@ -118,6 +118,16 @@ stops the build naming `<file>[n].verification`. A verified agency shows
 link only and is never fetched. With `verified` not true the object is still
 validated but not shown, and the "Contact details unverified" hint stays.
 
+An agency's optional `profile.alpr_policy` links a posted ALPR usage policy an
+organizer found: `{"url": "https://…", "source_url": "https://…", "checked_on":
+"YYYY-MM-DD"}`, exactly these three keys. `url` is the policy itself and
+`source_url` the page where it was found (both https); `checked_on` is a real
+date not after the build date. A missing key, an extra key or a bad value stops
+the build naming `<file>[n].profile.alpr_policy` (and the field); `null` or
+absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
+<date>, where we found it)" on that agency's card only; neither URL is fetched.
+Linking a policy says only that it was posted; it is not a finding about compliance.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without
@@ -141,6 +151,27 @@ read-only). The new entry is appended, the whole list is validated by the same
 loader as `build`, `agency_id` must be one of the campaign's agencies, and the
 file is replaced atomically; on any refusal it is left untouched. `--public-url`
 is only recorded, never fetched or uploaded, and nothing is published.
+
+`sources add-batch --directory D --source-id ID --agency-id A --received-at T
+[--fragment F] [--dry-run]` registers every record received under one ingest
+`source_id` (read through `status --list`'s in-memory ledger copy) whose hash
+is not yet in the library, in one validated atomic write of at most 500 new
+entries. Each title is the original file name stem as plain text (at most 120
+characters) followed by `[EDIT ME: title]`; `public_url` and `pages` are null
+and the note says which batch added it. `--fragment` defaults to the agency's
+one existing fragment. It prints `{"added": [12-char prefixes],
+"already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
+second run adds nothing. Nothing is fetched or published.
+
+### Pages (`content/pages/<slug>.json`, optional)
+
+Each file becomes `/<slug>.html`: `{"title", "body_md", "description"?, "nav"?}`, nothing else. `title` is
+1-120 characters and `description` at most 300 (default: the title); both are escaped. `body_md` (non-empty) is
+rendered by `markdown_lite`, so raw HTML shows as text. The file stem is the slug; files not ending in `.json` are
+ignored, symlinks and folders are refused, at most 50 files. Slugs that are starter pages, generated names (`404`,
+`corrections`, `feed`, `sitemap`, `robots`, `style`, `site-data`, `agency-cards`, `app`, `data`, `vendor`) or a
+published finding slug are refused, as is a `public-assets/<slug>.html` entry. Every page is listed in
+`sitemap.xml`; `nav: true` (strictly a boolean, at most 3 pages) adds the title to the header nav after About.
 
 ## Generated pages and files
 
@@ -171,13 +202,30 @@ says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) an
 `sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
 `locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
 `duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
-nothing if any other key or a 40+ hex string would appear. `public/` is
+nothing if any other key or a 40+ hex string would appear. `data/sources.json`
+is the source library as open data (`schemas/sources-open-data.schema.json`),
+linked from `sources.html` and `about.html`, in `content/sources.json` order (an
+empty `sources` list without that file): per entry `sha256_prefix` (12 hex
+characters), `title`, `agency_id`, `agency_name` (null when the agency is not
+configured), `received_at`, `public_url` or null, `pages` or null and
+`cited_by` (ids of the published findings citing it, in site order; drafts
+never count). It never includes `note`, `fragment` or the full hash; the build
+refuses with `data/sources.json: ...` and writes nothing on any other key or a
+40+ hex string. The starter build (no `content/`) writes no `data/sources.json`.
+`public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
 over the output and fails on any hit. The command prints a manifest of every
 written file with its size. Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.
+Every meeting (upcoming, past or cancelled) also gets `meetings/<id>.html`: when,
+where, agenda item and link, and its comment kit shown open for linking and
+printing; a cancelled meeting is headed `Cancelled:` with a notice and keeps its
+kit. Home and `meetings.html` link it as "Meeting page", and `sitemap.xml` lists
+it. `content/public-assets/meetings/` is refused as a generated path, and two
+meeting files resolving to the same id (explicit `id` or filename) are refused
+before `public/` changes.
 
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
@@ -187,9 +235,39 @@ Not-found page: `404.html` is always generated (site shell, links to findings, a
 that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
 is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
 
+Photos: a phone or camera photo usually carries metadata, often including the GPS position where it was taken
+(an organizer's home, say). `build` and `content-check` therefore refuse a `.jpg`, `.jpeg`, `.png` or `.webp` in
+`content/public-assets/` that carries EXIF (`EXIF GPS` when it has a GPS block), XMP, IPTC, a JPEG comment, PNG text
+chunks or bytes after the image end, naming the file and the kinds but never a value
+(`public-assets/photos/council.jpg: image metadata (EXIF GPS); run content strip-metadata`). A file the checker cannot
+parse is refused as `unreadable image`; re-export it. To clean one, run
+`python3 -m campaign_tool content strip-metadata content/public-assets/photos/council.jpg` (optional `--out PATH`): it writes
+`council.clean.jpg` beside it with those segments or chunks removed and every image byte kept (no re-encoding; colour
+profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
+inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
+
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
 kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
+
+## Labels (`content/labels.json`, optional)
+Organizer-reviewed wording for the fixed UI strings of the HTML pages; the tool translates nothing. Without the file
+every page is byte-identical to the English defaults in `campaign_tool/labels.py` (`DEFAULTS`, one entry per key).
+```json
+{"schema_version": 1, "labels": {"nav.home": "Inicio", "heading.agencies": "Organismos públicos en {county}."}}
+```
+Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
+`intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
+`signup.*`, and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out keeps its English default.
+Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
+`<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
+`{state}`, `{count}`, `{date}` exist) or an unpaired brace; another top-level field, `schema_version` other than 1, a
+file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
+problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
+Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
+`data/findings.json`, all JavaScript (`site-data.js`, `agency-cards.js`, `app.js`, `findings/filter.js`, which
+rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
+(`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
 
 ## Phones
 At widths up to 850 px, content-page menus wrap with 44 px tap targets and a visible keyboard focus outline.

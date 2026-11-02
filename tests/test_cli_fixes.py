@@ -66,14 +66,25 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--record #5: name",  # wraps the resolve_hash refusal (not ingested / no ledger / 12 hex / ambiguous)
     ), "kit-response --record message that names the record number and the rule to change; not in the table"),
     "--as-of must be a real YYYY-MM-DD date": "kit-due message that already names the option and the format",
+    "--scope needs a law package; none found for 5": "kit message that already names the option and the missing law package",
     **dict.fromkeys((
         "--as-of 5 is in the future", "no hand-sent request recorded for 5", "request for 5 is closed",
         "request for 5 was answered (5 on 5); no follow-up drafted", "no law package: dates cannot be computed",
         "not past due: provisional determination date 5", "kit/followups/5 must not be a symlink",
         "kit/followups/5 already exists; use --replace to rewrite it",
     ), "kit-followup message that already names the option or the request state that stops the draft; not in the table"),
+    **dict.fromkeys((
+        "no recorded denial for 5", "no law package: --rule cannot be checked", "--rule 5 is given twice",
+        "--rule 5 is not in the law package", "--rule 5 is not in force on the denial date 5",
+    ), "kit-denial-reply message that already names the option or the missing denial; not in the table"),
     "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
     "must be 0-5": "argparse keep-count message; already names the range",
+    **dict.fromkeys((
+        "5: --out is a symlink; choose a real private folder outside public/ and content/",
+        "5: --out is inside 5/; choose a private folder outside public/ and content/",
+        "5: must be a real folder, not a symlink or a file", "finding preview needs content/ (run content init first)",
+        "5: slug 5 is already used by finding 5; build would refuse the duplicate", "draft 5; build would refuse it",
+    ), "finding preview message that already names the option or folder to change; not in the table"),
 }
 
 
