@@ -548,8 +548,11 @@ def main():
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
         if name == "build":
-            cmd.add_argument("--check", action="store_true",
-                             help="Scan the generated public/ tree for private paths and credential patterns")
+            mode = cmd.add_mutually_exclusive_group()
+            mode.add_argument("--check", action="store_true",
+                              help="Scan the generated public/ tree for private paths and credential patterns")
+            mode.add_argument("--preview", action="store_true",
+                              help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
         if name == "doctor":
@@ -665,6 +668,9 @@ def main():
         review_p.add_argument(flag, required=True)
     finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
                             ).add_argument("--directory", required=True)
+    publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
+    for flag in ("--directory", "--approved-by"):
+        publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
@@ -698,6 +704,12 @@ def main():
             kit(args, root)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "build" and args.preview:
+            from .site import preview_site
+            report = preview_site(root)
+            print(json.dumps(report, indent=2))
+            print("Preview only; public/ was not changed.")
+            sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":
@@ -735,6 +747,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "publish":
+                print(json.dumps(findings.publish(root, args.draft, args.approved_by)))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
             draft = findings.load_draft(args.draft)
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
