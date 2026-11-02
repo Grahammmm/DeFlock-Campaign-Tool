@@ -47,8 +47,8 @@ class ChecklistCLITests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         return result
 
-    def init(self, root=None):
-        self.cli("init", "--name", "Synthetic Campaign", "--county", "Synthetic County", "--state", "ca", root=root)
+    def init(self, root=None, county="Synthetic County"):
+        self.cli("init", "--name", "Synthetic Campaign", "--county", county, "--state", "ca", root=root)
 
     def agencies(self, entries):
         (self.root / "kit").mkdir(exist_ok=True)
@@ -136,7 +136,7 @@ class ChecklistCLITests(unittest.TestCase):
         self.assertEqual(shlex.split(rows["kit_built"]["next"].split("`")[1])[-1], given)
 
     def test_existing_list_with_all_deselected_names_kit_agency_select(self):
-        self.init()
+        self.init(county="San Luis Obispo")  # a seeded county, so `kit` writes a real agency list
         self.cli("kit")
         path = self.root / "kit" / "agencies.json"
         ids = [entry["agency_id"] for entry in json.loads(path.read_text())]
