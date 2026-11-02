@@ -206,7 +206,8 @@ Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descri
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
 `{state}`, `{count}`, `{date}` exist) or an unpaired brace; another top-level field, `schema_version` other than 1, a
-file over 64 KiB or a symlink. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
+file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
+problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
 `data/findings.json`, all JavaScript (`site-data.js`, `agency-cards.js`, `app.js`, `findings/filter.js`, which
 rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
