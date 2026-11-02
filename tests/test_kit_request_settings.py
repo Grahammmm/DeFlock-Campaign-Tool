@@ -136,7 +136,7 @@ class RequestSettingsTests(unittest.TestCase):
                           "date_range": "2023-01-01 through 2023-12-31"})
 
     def test_bad_fee_cap_stops_before_any_draft(self):
-        for raw in ("-1", "10000.01", "NaN", "Infinity", '"50"', "true", "null"):
+        for raw in ("-1", "10000.01", "NaN", "Infinity", '"50"', "true", "null", str(10 ** 400), str(-10 ** 400)):
             with self.subTest(fee=raw):
                 self.assert_refused("fee_cap_usd", raw='{"schema_version": 1, "fee_cap_usd": %s}' % raw)
         self.assertFalse(self.requests.exists())
@@ -153,6 +153,15 @@ class RequestSettingsTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         for secret in REQUESTER:
             self.assertNotIn(secret, result.stderr + result.stdout)
+        self.assertFalse(self.requests.exists())
+
+    def test_cli_huge_integer_fee_cap_stops_cleanly(self):
+        self.write(raw='{"schema_version": 1, "fee_cap_usd": %d}' % 10 ** 400)
+        result = cli("kit", "--directory", self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stderr.startswith("Stopped: kit/request-settings.json: fee_cap_usd: "), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("OverflowError", result.stderr)
         self.assertFalse(self.requests.exists())
 
     def test_bad_dates_are_refused_naming_the_key(self):

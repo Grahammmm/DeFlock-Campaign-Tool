@@ -94,7 +94,8 @@ def load_request_settings(kit_dir, today=None):
             raise _bad_setting("requester", "must be 1-8 lines of 1-120 characters without control characters")
         settings["requester_block"] = "\n".join(lines)
     if "fee_cap_usd" in document:
-        if type(cap) not in (int, float) or not math.isfinite(cap) or not 0 <= cap <= 10000:
+        # Range first: math.isfinite() overflows on a huge JSON integer such as 10**400.
+        if type(cap) not in (int, float) or not 0 <= cap <= 10000 or not math.isfinite(cap):
             raise _bad_setting("fee_cap_usd", "must be a number from 0 to 10000")
         settings["fee_cap"] = "$" + format(cap, ",.2f")
     if "date_to" in document and "date_from" not in document:
