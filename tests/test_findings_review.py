@@ -163,7 +163,7 @@ class FindingReviewTests(unittest.TestCase):
         link = self.base / "link.json"
         link.symlink_to(self.draft)
         cases = [(link, None), (bad, b"\xff\xfe{}"), (bad, b"[1, 2]"), (bad, b"{bad json"),
-                 (bad, json.dumps(draft(secret_note="hidden")).encode()),
+                 (bad, json.dumps(draft(stray_note="hidden")).encode()),
                  (bad, json.dumps(draft(id="../escape")).encode()), (bad, json.dumps(draft(id="x" * 65)).encode()),
                  (bad, json.dumps(draft(id=7)).encode()), (bad, b'{"id": "a", "summary": NaN}')]
         for path, data in cases:
@@ -174,8 +174,8 @@ class FindingReviewTests(unittest.TestCase):
                     stderr = command(path=path, returncode=1).stderr
                     self.assertIn(str(path), stderr)
                     self.assertNotIn("hidden", stderr)
-        bad.write_text(json.dumps(draft(secret_note="hidden")))
-        self.assertIn("'secret_note'", self.status(path=bad, returncode=1).stderr)
+        bad.write_text(json.dumps(draft(stray_note="hidden")))
+        self.assertIn("'stray_note'", self.status(path=bad, returncode=1).stderr)
         self.assertFalse(os.path.lexists(self.root / "private" / "reviews"))
 
     def test_modes_and_no_write_outside_private_reviews(self):
