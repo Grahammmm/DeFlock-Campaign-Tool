@@ -537,6 +537,9 @@ def main(argv=None):
     p.add_argument("--journal", required=True, help="path to outbox.sqlite (private directory)")
     p.add_argument("--fee-cap-cents", type=int, default=0, help="largest fee a draft may offer; 0 (default) blocks any fee")
     sub = p.add_subparsers(dest="command", required=True)
+    pb = sub.add_parser("payload-batch"); pb.add_argument("--out", required=True)
+    pb.add_argument("--agency", action="append")
+    ab = sub.add_parser("approve-batch"); ab.add_argument("--dir", required=True)
     pr = sub.add_parser("propose"); pr.add_argument("draft_json", help="file with RequestDraft fields")
     pl = sub.add_parser("payload", help="print the exact text to read and sign (ssh-keygen -Y sign -n deflock-approval)")
     pl.add_argument("key")
@@ -560,6 +563,21 @@ def main(argv=None):
             draft = RequestDraft(**json.loads(Path(args.draft_json).read_text(encoding="utf-8")))
             row = box.propose(draft)
             print(json.dumps({"idempotency_key": row["idempotency_key"], "state": row["state"]}))
+        elif args.command in ("payload-batch", "approve-batch"):
+            from campaign_tool import outbox_batch
+            try:
+                if args.command == "payload-batch":
+                    print(json.dumps(outbox_batch.export(box, args.out, args.agency)))
+                else:
+                    results = outbox_batch.approve_all(box, args.dir)
+                    for result in results:
+                        print(json.dumps(result))
+                    approved = sum(r["state"] == "approved" for r in results)
+                    print(json.dumps({"approved": approved, "skipped": len(results) - approved}))
+                    return 2 if approved != len(results) else 0
+            except OutboxError as exc:
+                print(json.dumps({"state": "refused", "reason": str(exc)}))
+                return 2
         elif args.command == "payload":
             if not box.row(args.key):
                 p.error("unknown key")
