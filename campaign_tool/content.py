@@ -881,6 +881,7 @@ def load_content(root):
     labels_path = content_dir / "labels.json"  # optional; a symlink is refused by _read_json
     labels = (load_labels(_read_json(labels_path, MAX_LABELS_BYTES))
               if labels_path.is_file() or labels_path.is_symlink() else dict(DEFAULTS))
+    redirects_path = content_dir / "redirects.json"
 
     return {
         "site": site,
@@ -894,4 +895,6 @@ def load_content(root):
         "public_assets": public_assets,
         "assets_dir": assets_dir,
         "labels": labels,
+        # content/redirects.json (DF2037-16), None without the file; site checks it against the pages it writes.
+        "redirects": _read_json(redirects_path) if redirects_path.is_file() or redirects_path.is_symlink() else None,
     }

@@ -280,6 +280,16 @@ Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml
 rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
 (`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
 
+## Redirects (`content/redirects.json`, optional)
+Old paths an organizer lists (a migrated campaign site, a renamed finding slug) become `public/_redirects`, one sorted
+`<from> <to> 301` line per row; 301 is the only status (no 302s, 200 rewrites, splats or placeholders). Format:
+`{"schema_version": 1, "redirects": [{"from": "/old/report", "to": "/findings/"}]}`; no file or no rows: no `_redirects`.
+Refused, naming the row, and the build writes nothing: more than 500 rows, a key other than `from`/`to`; a `from` that
+is not an ASCII path of at most 300 characters (`..`, `?`, `#`, `*`, `:`, spaces), is `/`, or is a path the build writes
+(a page, `/data/...`, `/sources.html`, a published finding); a `to` that is external or not a page the build writes; a
+repeated `from`, a chain or a loop; a withdrawn finding's path pointed at a different finding (`/findings/` and
+`/corrections.html` are fine). `content-check` lists the same refusals; the page rules run once the rest is clean.
+
 ## Phones
 At widths up to 850 px, content-page menus wrap with 44 px tap targets and a visible keyboard focus outline.
 Agency cards use a single column; long finding, agency and meeting text wraps, and wide finding tables scroll locally.
