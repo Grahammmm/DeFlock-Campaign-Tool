@@ -186,6 +186,38 @@ class ContentCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertEqual(result.stdout.splitlines()[0], "content/: 2 problem(s)")
 
+    def test_labels_json_named_with_build_text_beside_other_problems(self):
+        self.write("content/labels.json", {"schema_version": 1, "labels": {"nav.hom": "Inicio"}})
+        expected = "labels.json.labels.nav.hom: unknown label"
+        self.assertEqual(content_problems(self.root), [expected])
+        self.assertEqual(self.load_error(), expected)
+        result = self.cli()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["content/: 1 problem(s)", PACKAGE, expected])
+        sources = self.read("content/sources.json")
+        self.write("content/sources.json", "{}")  # a later file's problem is still named in the same pass
+        self.assertEqual(content_problems(self.root), [expected, "sources.json: must be a list of library entries"])
+        self.write("content/labels.json", {"schema_version": 1, "labels": {}, "_": "x" * 65536})
+        self.assertEqual(content_problems(self.root), ["labels.json: file too large",
+                                                       "sources.json: must be a list of library entries"])
+        outside = Path(self._tmp.name) / "labels.json"
+        outside.write_text(json.dumps({"schema_version": 1, "labels": {"nav.home": EMAIL}}))
+        (self.root / "content/labels.json").unlink()
+        os.symlink(outside, self.root / "content/labels.json")
+        self.assertEqual(content_problems(self.root), ["labels.json: symlinks are not read",
+                                                       "sources.json: must be a list of library entries"])
+        result = self.cli()
+        self.assertEqual(result.returncode, 3)
+        self.assertNotIn(EMAIL, result.stdout + result.stderr)
+        self.write("content/sources.json", sources)
+        (self.root / "content/labels.json").unlink()
+        os.symlink(Path(self._tmp.name) / "missing.json", self.root / "content/labels.json")  # dangling: named too
+        self.assertEqual(content_problems(self.root), ["labels.json: symlinks are not read"])
+        (self.root / "content/labels.json").unlink()
+        self.write("content/labels.json", {"schema_version": 1, "labels": {"nav.home": "Inicio"}})
+        self.assertEqual(content_problems(self.root), [])
+        self.assertIsNone(self.load_error())
+
     def test_parity_with_load_content_for_single_defects(self):
         def bad_json():
             self.write(FINDING, "{")
@@ -223,8 +255,20 @@ class ContentCheckTests(unittest.TestCase):
         def map_group_slug():
             self.write("content/map/map-config.json", {**self.read("content/map/map-config.json"), "group_slug": "B_"})
 
+        def unknown_label():
+            self.write("content/labels.json", {"schema_version": 1, "labels": {"nav.hom": "Inicio"}})
+
+        def oversized_labels():
+            self.write("content/labels.json", {"schema_version": 1, "labels": {}, "_": "x" * 65536})
+
+        def symlinked_labels():
+            outside = Path(self._tmp.name) / "labels.json"
+            outside.write_text(json.dumps({"schema_version": 1, "labels": {}}))
+            os.symlink(outside, self.root / "content/labels.json")
+
         defects = [bad_json, wrong_state, no_site, symlinked_meeting, sources_not_list, agency_kind,
-                   fallback_without_bounds, meeting_filename_slug, cameras_missing, map_group_slug]
+                   fallback_without_bounds, meeting_filename_slug, cameras_missing, map_group_slug, unknown_label,
+                   oversized_labels, symlinked_labels]
         for defect in [None, *defects]:
             with self.subTest(defect=getattr(defect, "__name__", "clean")):
                 shutil.rmtree(self.root)
