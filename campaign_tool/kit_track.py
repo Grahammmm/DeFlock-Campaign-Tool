@@ -6,12 +6,16 @@ import os
 import re
 import unicodedata
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from . import kit, kit_check, law
 
 CHANNELS = ("email", "portal", "mail")
-KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed")
+KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate")
+AMOUNT = re.compile(r"[0-9]{1,6}(\.[0-9]{1,2})?")  # plain USD: no sign, exponent, NaN or thousands separator
+AMOUNT_MAX_CENTS = 10_000_000  # $100,000.00
+OVER_CAP = "over your fee cap: decide before paying"
 NOTE_MAX = 200
 RECORDS_MAX, PREFIXES_MAX = 200, 50  # linked records per produced step; prefixes listed per request
 MAX_BYTES = 1 << 20
@@ -184,7 +188,27 @@ def _resolve_records(root, records, steps):  # every prefix is resolved before a
     return sorted(hashes)
 
 
-def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main"):
+def _amount_cents(amount):  # decimal string to whole cents with no float math; refused before anything is read
+    if not isinstance(amount, str) or not AMOUNT.fullmatch(amount):
+        raise ValueError("--amount must be US dollars like 245 or 245.50 (no sign, commas or exponent)")
+    cents = int(Decimal(amount) * 100)
+    if cents > AMOUNT_MAX_CENTS:
+        raise ValueError("--amount must be from 0 to 100000")
+    return cents
+
+
+def _amount_ok(step):  # amount_cents only on fee_estimate steps, always there, an int from 0 to 10,000,000
+    if step.get("kind") != "fee_estimate":
+        return "amount_cents" not in step
+    value = step.get("amount_cents")
+    return type(value) is int and 0 <= value <= AMOUNT_MAX_CENTS
+
+
+def _dollars(cents):
+    return f"${cents // 100:,}.{cents % 100:02d}"
+
+
+def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None):
     """Append one dated agency response step to a hand-sent request and return the updated entry."""
     root, request = Path(root), _request(request)
     if kind not in KINDS:
@@ -203,7 +227,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
     label = _label(agency_id, request)
     steps = entry["steps"]
-    if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on"))
+    if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
                and _step_records(s) == s.get("records", []) for s in steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
     day = _day(on)
@@ -228,8 +252,14 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"{kind} is allowed at most once")
     if kind == "closed" and not kinds:
         raise ValueError("closed needs at least one prior step")
+    if kind == "fee_estimate" and amount is None:
+        raise ValueError("fee_estimate needs --amount USD")
+    if kind != "fee_estimate" and amount is not None:
+        raise ValueError("--amount is only for fee_estimate steps")
+    cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
     hashes = _resolve_records(root, records, steps) if records else []
-    step = {"on": on, "kind": kind, **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
+    step = {"on": on, "kind": kind, **({"amount_cents": cents} if cents is not None else {}),
+            **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
     kit._write_json(root / "kit" / "sent.json",
@@ -252,13 +282,19 @@ def status(root, today=None, law_base=None, *, request=None):
         package_status = package["status"]
     except ValueError:
         package, package_status = None, "missing"
-    rows = []
+    rows, cap = [], ()  # cap: () until a request with an estimate needs kit/request-settings.json
     for (agency_id, name), entry in sorted(((_split(key), entry) for key, entry in requests.items()),
                                            key=lambda item: (item[1]["sent_on"], *item[0])):
         if request is not None and name != request:
             continue
         steps = [s for s in entry["steps"] if isinstance(s, dict)]
         kinds = [s.get("kind") for s in steps]
+        fees = [(s.get("on"), i, s) for i, s in enumerate(steps) if "amount_cents" in s or kinds[i] == "fee_estimate"]
+        if not all(_amount_ok(s) and _day(on) for on, _, s in fees):
+            raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
+        estimate = max(fees)[2]["amount_cents"] if fees else None  # latest date, then the later recorded step
+        if estimate is not None and cap == ():
+            cap = kit.fee_cap_cents(root / "kit", today)
         linked = sorted({digest for s in steps for digest in _step_records(s)})
         extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
         due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
@@ -270,7 +306,9 @@ def status(root, today=None, law_base=None, *, request=None):
                      "extended": "extension" in kinds, "closed": "closed" in kinds,
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
                      "records": len(linked), "record_prefixes": [h[:12] for h in linked[:PREFIXES_MAX]],
-                     **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {})})
+                     **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {}),
+                     "fee_estimate": None if estimate is None else _dollars(estimate),
+                     "over_fee_cap": None if estimate is None or cap is None else estimate > cap})
     return {"requests": rows, "law_package_status": package_status, "note": NOTE}
 
 

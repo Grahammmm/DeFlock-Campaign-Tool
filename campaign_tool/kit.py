@@ -108,6 +108,12 @@ def load_request_settings(kit_dir, today=None):
     return settings
 
 
+def fee_cap_cents(kit_dir, today=None):
+    """``fee_cap_usd`` in whole cents, as the drafts print it; None when no cap is set (same validation)."""
+    cap = load_request_settings(kit_dir, today).get("fee_cap")
+    return None if cap is None else int(cap.lstrip("$").replace(",", "").replace(".", ""))
+
+
 def _read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
