@@ -318,6 +318,17 @@ def due(root, as_of=None, *, today=None, law_base=None):
             "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE}
 
 
+def _followup_target(root, name, replace):  # private kit/followups/ (0700); symlinks and silent overwrites refused
+    folder = Path(root) / "kit" / "followups"
+    kit._kit_folder(folder, 0o700)
+    target = folder / name
+    if os.path.islink(target):
+        raise ValueError(f"kit/followups/{target.name} must not be a symlink")
+    if os.path.lexists(target) and not replace:
+        raise ValueError(f"kit/followups/{target.name} already exists; use --replace to rewrite it")
+    return target
+
+
 def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today=None):
     """Write a private, never-sent follow-up draft to kit/followups/ for a request past its provisional date."""
     from .cli import read_config  # local import: cli imports this module lazily
@@ -346,13 +357,7 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
         package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
     except ValueError:
         raise ValueError("no law package: dates cannot be computed") from None
-    folder = root / "kit" / "followups"
-    kit._kit_folder(folder, 0o700)
-    target = folder / f"{agency_id}-{day.isoformat()}.md"
-    if os.path.islink(target):
-        raise ValueError(f"kit/followups/{target.name} must not be a symlink")
-    if os.path.lexists(target) and not replace:
-        raise ValueError(f"kit/followups/{target.name} already exists; use --replace to rewrite it")
+    target = _followup_target(root, f"{agency_id}-{day.isoformat()}.md", replace)
     statute, name = package["records_law"], row["name"] or agency_id
     extended = " (extended, as the agency noted)" if any(s.get("kind") == "extension" for s in steps) else ""
     lines = [f"# Follow-up draft: {name}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
@@ -366,3 +371,65 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
         lines.append(f"Law package status: {package['status']} (not independently reviewed)")
     kit._write_text(target, "\n".join([*lines, law.HOLIDAY_NOTE]) + "\n")
     return {"written": f"kit/followups/{target.name}", "due": row["due"], "days_past": -row["days"], "note": NOTE}
+
+
+DENIAL_TEMPLATE = """# Denial reply draft: {name}
+
+DRAFT — NOT SENT. Review before sending it yourself.
+
+To: {name}, records custodian
+
+On {sent_on} we sent a records request by {channel} to {name}. On {denied_on} we recorded the agency's response
+as a denial. We asked for: [EDIT ME: what you asked for]
+
+Please:
+1. Tell us which exemption or other legal basis the agency relied on for each record or category withheld.
+2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.
+3. Explain the denial in writing.
+{citations}
+Thank you,
+
+[name]
+
+---
+Draft only. Not legal advice.
+law package: {status}
+"""
+
+
+def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
+    """Write a private, never-sent reply draft to kit/followups/ for a request with a recorded denied step."""
+    from .cli import read_config  # local import: cli imports this module lazily
+    root, rules = Path(root), list(rules or ())
+    entry = read_sent(root).get(agency_id) if kit.AGENCY_ID.fullmatch(agency_id) else None
+    denied = [s for s in (entry or {}).get("steps", []) if isinstance(s, dict) and s.get("kind") == "denied"
+              and _day(s.get("on"))]
+    if not denied:
+        raise ValueError(f"no recorded denial for {agency_id}")
+    denied_on = max(s["on"] for s in denied)  # ISO dates: the latest recorded denial
+    try:
+        package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
+    except ValueError:
+        package = None
+    if rules and package is None:
+        raise ValueError("no law package: --rule cannot be checked")
+    known = {r["rule_id"] for r in package["rules"]} if package else set()
+    in_force = {r["rule_id"]: r for r in law.rules_in_force(package, denied_on)} if package else {}
+    for number, rule_id in enumerate(rules, 1):
+        if rule_id in rules[:number - 1]:
+            raise ValueError(f"--rule {rule_id} is given twice")
+        if rule_id not in known:
+            raise ValueError(f"--rule {rule_id} is not in the law package")
+        if rule_id not in in_force:
+            raise ValueError(f"--rule {rule_id} is not in force on the denial date {denied_on}")
+    status = package["status"] if package else "missing"
+    citations = "".join(f"- {r} (law package status: {status}): {in_force[r]['citation']}\n" for r in rules)
+    path = root / "kit" / "agencies.json"
+    names = {e["agency_id"]: e["name"] for e in kit._load_existing(path)} \
+        if path.is_file() and not path.is_symlink() else {}
+    name = names.get(agency_id) or agency_id
+    target = _followup_target(root, f"{agency_id}-denial-{denied_on}.md", replace)
+    kit._write_text(target, DENIAL_TEMPLATE.format(
+        name=name, sent_on=entry["sent_on"], channel=entry["channel"], denied_on=denied_on, status=status,
+        citations=f"\nRules we noted for this reply:\n{citations}" if rules else ""))
+    return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}

@@ -703,6 +703,12 @@ def main():
         followup_p.add_argument(flag, required=True)
     followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
     followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
+    for flag in ("--directory", "--agency"):
+        denial_p.add_argument(flag, required=True)
+    denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
+                          help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
+    denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -952,6 +958,10 @@ def main():
         elif args.command == "kit-followup":
             from .kit_track import followup
             print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
+        elif args.command == "kit-denial-reply":
+            from .kit_track import denial_reply
+            print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
