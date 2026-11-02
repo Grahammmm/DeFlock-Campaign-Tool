@@ -134,7 +134,7 @@ class SocialCheckTests(unittest.TestCase):
         build_social(self.root)
         (self.social / f"{FIRST}.md").unlink()
         target = self.outside / "target.md"
-        target.write_text("outside secret\n", encoding="utf-8")
+        target.write_text("outside words\n", encoding="utf-8")
         (self.social / f"{SECOND}.md").unlink()
         os.symlink(target, self.social / f"{SECOND}.md")
         (self.social / "as-folder.md").unlink()
@@ -156,7 +156,7 @@ class SocialCheckTests(unittest.TestCase):
             FIRST: ("missing", ["missing"]), SECOND: ("not_regular", ["not_regular"]),
             "as-folder": ("not_regular", ["not_regular"]), "as-fifo": ("not_regular", ["not_regular"])})
         self.assertEqual((report["problems"], report["stale"]), (4, []))
-        self.assertNotIn("outside secret", json.dumps(report))
+        self.assertNotIn("outside words", json.dumps(report))
         self.assertEqual(self.check()["problems"], 4)
         self.assertTrue((self.social / f"{SECOND}.md").is_symlink())
         self.assertFalse((self.social / f"{FIRST}.md").exists())
