@@ -167,6 +167,21 @@ class IndexTests(unittest.TestCase):
             self.assertFalse(BANNED.search(out), out)
             self.assertNotRegex(out, r"@|planted|R-1|[0-9a-f]{64}")
 
+    def test_oldest_open_sent_uses_request_identity_not_masked_labels(self):
+        # two distinct ids that both display as (unsafe-label): the closed one must not supply the open one's sent date
+        self.agency("mask-city", "Mask City", [("overdue-old", "closed", {"sent": "2026-09-01"}),
+                                               ("late-new", "open", {"sent": "2026-10-01"})])
+        for extra in ((), ("--json",)):
+            code, out, err = self.run_index(*extra)
+            self.assertEqual(err, "")
+            if extra:
+                a = json.loads(out)["agencies"][0]
+                self.assertEqual((a["open"], a["oldest_open_sent"]), (1, "2026-10-01"))
+            else:
+                self.assertEqual(LINE.fullmatch(out.splitlines()[0]).groups()[2:4], ("1", "2026-10-01"))
+            self.assertFalse(BANNED.search(out), out)
+            self.assertNotRegex(out, r"-old|-new")
+
     def test_store_refusals_print_only_the_refusal(self):
         self.three()
         with mock.patch.object(MOD, "REPO", self.tmp):
