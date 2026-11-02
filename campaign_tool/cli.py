@@ -298,10 +298,12 @@ def _ingest_dir(args, root):
                       **({"dry_run": True} if dry else {})}, indent=2))
 
 
-def status(root, check=False):
+def status(root, check=False, fix=False):
     read_config(root)
-    from .store_check import check_store
-    result = check_store(root) if check else None
+    from .store_check import check_store, fix_modes
+    if fix:
+        print(json.dumps(fix_modes(root), indent=2))
+    result = check_store(root) if check or fix else None
     status_counts(root)
     if result is not None:
         print(json.dumps({"check": result}, indent=2))
@@ -552,6 +554,8 @@ def main():
                              help="Scan the generated public/ tree for private paths and credential patterns")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
+            cmd.add_argument("--fix-modes", action="store_true",
+                             help="chmod loose private dirs/files to 0700/0600, then run --check")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
@@ -754,7 +758,10 @@ def main():
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
         else:
-            status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
+            if args.command == "status":
+                status(root, check=args.check, fix=args.fix_modes)
+            else:
+                doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(1)

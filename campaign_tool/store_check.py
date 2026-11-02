@@ -77,4 +77,52 @@ def check_store(root):
         else:
             code = "unexpected_entry"
         problems.append({"name": name, "problem": code})
+    problems.extend(mode_problems(root))
     return {"checked_objects": len(rows), "problems": problems}
+
+
+def _lstat(path):
+    return os.stat(path, follow_symlinks=False)
+
+
+def _mode_entries(root):
+    """(path, file type, problem) for private dirs/files with a group or other bit; symlinks never followed."""
+    private = root / "private"
+    names = [".", "objects"] + ["ledger.sqlite" + suffix for suffix in ("", "-journal", "-wal", "-shm")]
+    objects = private / "objects"
+    if not private.is_symlink() and not objects.is_symlink() and objects.is_dir():
+        with os.scandir(objects) as listing:
+            names += sorted("objects/" + entry.name for entry in listing)
+    found = []
+    for name in names:
+        try:
+            info = _lstat(private / name)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        kind = stat.S_IFMT(info.st_mode)
+        if kind in (stat.S_IFDIR, stat.S_IFREG) and info.st_mode & 0o077:
+            shown = "objects/" + name[8:20] if name.startswith("objects/") else name
+            found.append((private / name, kind, {"name": shown, "problem": "loose_mode",
+                                                 "mode": "0o%o" % stat.S_IMODE(info.st_mode)}))
+    return found
+
+
+def mode_problems(root):
+    return [problem for _, _, problem in _mode_entries(root)]
+
+
+def fix_modes(root):
+    """chmod each loose_mode entry to 0700/0600 if a fresh lstat shows the same kind; nothing else."""
+    if (root / "private").is_symlink() or (root / "private" / "objects").is_symlink():
+        raise ValueError("private/objects must not be a symlink")
+    fixed, skipped = [], []
+    nofollow = {"follow_symlinks": False} if os.chmod in os.supports_follow_symlinks else {}
+    for path, kind, problem in _mode_entries(root):
+        try:
+            same = stat.S_IFMT(_lstat(path).st_mode) == kind
+        except OSError:
+            same = False
+        if same:
+            os.chmod(path, 0o700 if kind == stat.S_IFDIR else 0o600, **nofollow)
+        (fixed if same else skipped).append(problem["name"])
+    return {"fixed": fixed, "skipped": skipped}
