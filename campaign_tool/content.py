@@ -266,6 +266,11 @@ def load_finding(document, label):
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
         raise ContentError(f"{label}.agency_id: invalid agency identifier")
+    rule_ids = _text_list(document, "rule_ids", label)
+    if any(not item.strip() or len(item) > 120 for item in rule_ids):
+        raise ContentError(f"{label}.rule_ids: each rule id must be a non-empty string of at most 120 characters")
+    if len(set(rule_ids)) != len(rule_ids):
+        raise ContentError(f"{label}.rule_ids: duplicate rule id")
     return {
         "id": finding_id,
         "title": _text(document, "title", label, allow_empty=False),
@@ -283,6 +288,7 @@ def load_finding(document, label):
         "limitations": _text_list(document, "limitations", label),
         "counterevidence": _text_list(document, "counterevidence", label),
         "agency_id": agency_id,
+        "rule_ids": rule_ids,
         "rule_version": _text(document, "rule_version", label, required=False, default=None),
         "duty": _text(document, "duty", label, required=False, default=None),
         "exceptions": (_text_list(document, "exceptions", label) if isinstance(document.get("exceptions"), list)
@@ -402,6 +408,7 @@ def load_sources(document):
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
                "flock_transparency_slug", "muckrock_agency_id", "notes", "verification"}
+CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
 
@@ -425,6 +432,33 @@ def _verification(entry, item):
             or len(set(fields)) != len(fields)):
         raise ContentError(f"{label}.fields: list names from {list(VERIFIED_FIELDS)} only, each once")
     return {"source_url": source_url, "checked_on": checked_on, "fields": list(fields)}
+
+
+def _calendar_day(value, label):
+    day = datetime.strptime(_timestamp(value, label, date_only=True), "%Y-%m-%d").date()
+    if day.isoformat() != value:
+        raise ContentError(f"{label}: must be a YYYY-MM-DD date")
+    return day
+
+
+def _contract(value, label):
+    """An organizer-checked contract term (``profile.contract``) from its official source; never fetched."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and not {"source_url", "checked_on"} <= set(value):
+        raise ContentError(f"{label}: needs source_url and checked_on")
+    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note"}, label)
+    vendor, note = _text(value, "vendor", label, allow_empty=False), _text(value, "renewal_note", label)
+    for key, text, limit in (("vendor", vendor, 80), ("renewal_note", note, 200)):
+        if len(text) > limit:
+            raise ContentError(f"{label}.{key}: at most {limit} characters")
+    start, end = _calendar_day(value["start"], f"{label}.start"), _calendar_day(value["end"], f"{label}.end")
+    if end < start:
+        raise ContentError(f"{label}.end: must not be before start")
+    if _calendar_day(value["checked_on"], f"{label}.checked_on") > date.today():
+        raise ContentError(f"{label}.checked_on: must not be after the build date")
+    return {"vendor": vendor, "start": value["start"], "end": value["end"], "renewal_note": note,
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
 def _flock_url(entry, item):
@@ -463,7 +497,7 @@ def load_agencies(document, label):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS, set(), f"{item}.profile")
+        _require_keys(profile, PROFILE_KEYS | {"contract"}, set(), f"{item}.profile")  # county_profile stays without
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -482,6 +516,7 @@ def load_agencies(document, label):
             "verified": entry.get("verified") is True,
             "verification": _verification(entry, item),
             "flock_transparency_url": _flock_url(entry, item),
+            "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),
@@ -653,6 +688,10 @@ def load_content(root):
         slugs.add(finding["slug"])
         ids.add(finding["id"])
         findings.append(finding)
+    from .finding_law import check_findings  # local: finding_law imports this module
+    law_problems = check_findings(root, findings)
+    if law_problems:
+        raise ContentError(law_problems[0])
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
 
     meetings = []
