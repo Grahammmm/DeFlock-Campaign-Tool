@@ -29,4 +29,12 @@ nothing and stores nothing: there is no form, script, inbox or tracker.
    sender's address or message anywhere public.
 6. Keep request emails out of this repository and out of `public/`.
 
-Out of scope: a web form, response tracking, automatic retraction, legal obligations.
+## Logging requests
+
+Log each request privately with `correction-request add --finding ID --received D --summary T`
+and later `decide --id N accepted|declined --on D --note T`; only `private/correction-requests.json`
+(0600) is written. Record what was asked, never who asked: no names or contact details. `accepted`
+is refused until the finding has a correction dated on or after the request (`finding correct`);
+`doctor` names requests open over 14 days. Reply by hand; the tool sends and publishes nothing.
+
+Out of scope: a web form, automatic replies, automatic retraction, legal obligations.
