@@ -75,6 +75,14 @@ meeting without one is never described as decided. At most 8 lines, then "and N 
 site."; `counts.decisions` is present only when the section is. Worker manifests carry no
 `decisions` key and render exactly as before.
 
+Under each upcoming meeting `--from-content` adds one indented line. With participation facts an
+organizer verified (see MEETINGS.md) it reads `How to take part: In person: yes|no; Remote: HOW;
+Written comments: HOW, by DEADLINE; Speaker limit: N minutes (checked DAY) [Official details](URL)`,
+each part only when the source states it, the deadline in the meeting's own UTC offset. A deadline
+already passed when the draft is built is left out (`excluded.comment_deadlines_passed`); a `how`
+holding an email address or phone number is never copied ("see official details",
+`excluded.contact_text_withheld`). Without verified facts: "Check the posted agenda for how to comment."
+
 ### Offline sends
 
 The tool never sends. After sending `kit/newsletter-draft.html` (or `.txt`) by hand, record it
