@@ -801,13 +801,9 @@ def main():
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
-            if not args.list:
-                raise ValueError("--source-id/--since/--not-in-sources need --list")
-            if args.check or args.fix_modes:
-                raise ValueError("--list is read-only; run --check separately")
             read_config(root)
-            from .ledger_list import list_receipts
-            print(json.dumps(list_receipts(root, args.source_id, args.since, args.not_in_sources), indent=2))
+            from .ledger_list import run_cli as list_cli
+            print(json.dumps(list_cli(args, root), indent=2))
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
             print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,

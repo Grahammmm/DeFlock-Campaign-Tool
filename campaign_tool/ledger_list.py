@@ -42,6 +42,15 @@ def _registered(root):
     return {entry["sha256"] for entry in document}
 
 
+def run_cli(args, root):
+    """`status --list` flags: filters need --list, and --list never runs with --check/--fix-modes."""
+    if not args.list:
+        raise ValueError("--source-id/--since/--not-in-sources need --list")
+    if args.check or args.fix_modes:
+        raise ValueError("--list is read-only; run --check separately")
+    return list_receipts(root, args.source_id, args.since, args.not_in_sources)
+
+
 def list_receipts(root, source_id=None, since=None, not_in_sources=False):
     """Return {"receipts": [...], "count": n[, "more": k]} from private/ledger.sqlite opened read-only."""
     clauses, params = [], []
