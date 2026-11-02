@@ -196,6 +196,14 @@ class StaleCheckTest(unittest.TestCase):
         code, lines, _ = self.run_check()
         self.assertEqual((code, self.ids(lines)), (3, ['stale:extract', 'unparseable-report']))
 
+    def test_deeply_nested_report_is_unparseable_not_a_crash(self):
+        self.series(extract=('ok', 4, 0))
+        deep = '[' * 200000 + ']' * 200000  # 400 KB, under MAX_BYTES, too deep for json.loads
+        self.assertLess(len(deep), ssc.MAX_BYTES)
+        self.put(deep, 'zz.json')
+        code, lines, err = self.run_check()
+        self.assertEqual((code, self.ids(lines), err), (3, ['stale:extract', 'unparseable-report'], ''))
+
     def test_threshold_and_wording_bypass(self):
         self.series(extract=('ok', 4, 0))
         for bad in ('1', '0', '21', 'x', '2.5', '-3'):
@@ -227,12 +235,15 @@ class StaleCheckTest(unittest.TestCase):
         (self.tmp / 'exists.json').write_text('x')
         (self.tmp / 'real').mkdir()
         (self.tmp / 'link').symlink_to(self.tmp / 'real')
+        back_in = f'{ROOT.parent}/../{ROOT.parent.name}/{ROOT.name}/stale-out.json'  # lexically outside
         for target in (self.tmp / 'exists.json', ROOT / 'stale-out.json', self.tmp / 'link' / 'o.json',
-                       self.tmp / 'nodir' / 'o.json', 'relative.json'):
+                       self.tmp / 'nodir' / 'o.json', 'relative.json', back_in, f'{ROOT}/tools/../stale-out.json'):
             with self.subTest(target=str(target)):
                 self.assertEqual(self.run_check('--json-out', str(target))[0], 1)
         self.assertFalse(os.path.lexists(ROOT / 'stale-out.json'))
         self.assertEqual(sorted(p.name for p in (self.tmp / 'real').iterdir()), [])
+        self.assertEqual(self.run_check('--json-out', f'{self.tmp}/real/../dotdot.json')[0], 3)
+        self.assertTrue((self.tmp / 'dotdot.json').is_file())  # '..' outside the repo is still allowed
         out = self.tmp / 'alerts.json'
         self.assertEqual(self.run_check('--json-out', str(out))[0], 3)
         self.assertEqual(out.stat().st_mode & 0o777, 0o600)

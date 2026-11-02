@@ -57,7 +57,7 @@ def read_reports(directory):  # [(bytes, parsed-or-None)]; a missing directory g
         data = path.read_bytes()
         try:
             loaded.append((data, json.loads(data.decode("utf-8"))))
-        except ValueError:  # includes UnicodeDecodeError
+        except (ValueError, RecursionError):  # bad UTF-8/JSON, or nesting too deep to parse
             loaded.append((data, None))
     return loaded
 
@@ -153,9 +153,10 @@ def checked_out_path(text):
         raise Untrusted("--json-out must be a new absolute path")
     if any(part.is_symlink() for part in [path.parent, *path.parent.parents]) or not path.parent.is_dir():
         raise Untrusted("--json-out parent must exist and be link-free")
-    if path.parent == REPO or REPO in path.parent.parents:
+    parent = path.parent.resolve(strict=True)  # canonical: '..' cannot sneak back into the repo
+    if parent == REPO or REPO in parent.parents:
         raise Untrusted("--json-out must be outside the repository")
-    return path
+    return parent / path.name
 
 
 def write_json(path, payload):
