@@ -128,6 +128,7 @@ first with `kind: "flock-store"`, members 0600 uid/gid 0); local files only, no 
 python3 tools/flock_backup.py create STORE --out FILE.tar
 python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
+python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR --agency SLUG
 python3 tools/flock_backup.py diff FILE.tar --store STORE [--manifest-sha256 HEX]
 ```
 
@@ -139,6 +140,9 @@ re-hashes on disk. Their output is counts only; file names appear only in errors
 first (a bad one stops, exit 1, no diff), then prints JSON naming store files `added`, `removed` or
 `changed` (sha256 or size) since it, each capped at 200 (rest under `more`), plus `unchanged` and
 `store_skipped`; names only, nothing written. Exit 0 when `current`, 3 on drift (a new backup is due).
+`restore --agency SLUG` still verifies the whole archive first (a bad member anywhere refuses it), then extracts and
+re-hashes only `agencies/SLUG/` and prints `restored agency=SLUG files=N bytes=M`; an agency not in the archive exits 1
+and creates nothing. It never writes into a live store: copy the restored folder back by hand.
 
 ## Limits and cautions
 
