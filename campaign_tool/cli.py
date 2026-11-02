@@ -100,15 +100,32 @@ def _receipt_id(source_id, digest):
 
 
 def _ledger_lookup(root):
-    """Dry run: (known(digest, receipt_id) -> (object_known, receipt_known), close) over the mode=ro ledger and this run."""
+    """Dry run: (known(digest, receipt_id) -> (object_known, receipt_known), close) over the ledger and this run.
+
+    SQLite never opens the ledger file: even mode=ro creates -wal/-shm sidecars for a WAL-mode
+    database. The bytes are read once (no link followed) and queried from an in-memory copy.
+    A journal or WAL sidecar means the file alone may not hold the committed state: refused."""
     path, seen, db = root / "private" / "ledger.sqlite", set(), None
     if os.path.lexists(path) or path.parent.is_symlink():  # absent ledger: nothing stored yet
+        if any(os.path.lexists(f"{path}-{suffix}") for suffix in ("journal", "wal", "shm")):
+            raise ValueError("ledger has a journal or WAL file beside it; nothing was written")
         try:
-            if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
-                raise sqlite3.Error
-            db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+            if path.parent.is_symlink():
+                raise OSError
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError
+                with os.fdopen(os.dup(fd), "rb") as handle:
+                    data = bytearray(handle.read())
+            finally:
+                os.close(fd)
+            if data[:16] == b"SQLite format 3\0" and data[18:20] == b"\2\2":
+                data[18:20] = b"\1\1"  # WAL header, no -wal file: the file is complete; read it as rollback
+            db = sqlite3.connect(":memory:")
+            db.deserialize(bytes(data))
             db.execute("SELECT count(*) FROM objects JOIN receipts ON 0").fetchone()
-        except sqlite3.Error:
+        except (OSError, sqlite3.Error):
             db and db.close()
             raise ValueError("ledger is not readable; nothing was written") from None
 

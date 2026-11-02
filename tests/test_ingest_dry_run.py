@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -137,6 +138,37 @@ class IngestDryRunTests(unittest.TestCase):
                     result = self.dry(*arguments, "--source-id", "synthetic-1", returncode=1)
                     self.assertEqual(result.stdout, "")
                     self.assertIn("Stopped: ledger is not readable; nothing was written", result.stderr)
+
+    def test_wal_mode_ledger_is_read_without_creating_sidecars(self):
+        source = self.write("a.txt", b"Synthetic wal\n")
+        real = json.loads(self.cli("ingest", "--file", source, "--source-id", "synthetic-1").stdout)
+        private = self.root / "private"
+        ledger = private / "ledger.sqlite"
+        db = sqlite3.connect(ledger)
+        self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        db.close()
+        self.assertEqual(ledger.read_bytes()[18:20], b"\2\2")
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ["ledger.sqlite", "objects"])
+        same = self.dry_file(source, "synthetic-1")  # dry() asserts the tree is unchanged
+        self.assertEqual((same["outcome"], same["new_receipt"], same["receipt_id"]),
+                         ("present", False, real["receipt_id"]))
+        preview = json.loads(self.dry("--dir", self.folder, "--source-id", "synthetic-1").stdout)
+        self.assertEqual(preview["counts"]["present"], 1)
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ["ledger.sqlite", "objects"])
+
+    def test_ledger_sidecar_refused_without_writing(self):
+        source = self.write("a.txt", b"Synthetic sidecar\n")
+        self.cli("ingest", "--file", source, "--source-id", "synthetic-1")
+        for suffix in ("journal", "wal", "shm"):
+            sidecar = self.root / "private" / f"ledger.sqlite-{suffix}"
+            sidecar.write_bytes(b"")
+            for arguments in (("--file", source), ("--dir", self.folder)):
+                with self.subTest(sidecar=suffix, mode=arguments[0]):
+                    result = self.dry(*arguments, "--source-id", "synthetic-1", returncode=1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("Stopped: ledger has a journal or WAL file beside it; nothing was written",
+                                  result.stderr)
+            sidecar.unlink()
 
     def test_more_than_max_dir_files_refused_like_a_real_run(self):
         (self.root / "private").rmdir()
