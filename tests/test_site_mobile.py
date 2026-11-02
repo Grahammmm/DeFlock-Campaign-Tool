@@ -15,6 +15,8 @@ from tests.test_site_build import EXPECTED_CSP, PAGES
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/fictional-campaign"
 # Captured from main before this CSS-only change; not candidate-derived snapshots.
+# STARTER_SHA re-captured from main a9db9b0c: the only starter CSS change since the
+# mobile pin (5926dda5) is #620's .record-no and .provenance-note rules.
 PRINT_SHA = (
     "f7818cba38e2d518"  # pragma: allowlist secret
     "44cff79c0cfc3c58"  # pragma: allowlist secret
