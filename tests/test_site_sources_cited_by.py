@@ -99,7 +99,7 @@ class SourcesCitedByTests(unittest.TestCase):
         return [(href, text) for href, text in item["links"] if href.startswith("/findings/")]
 
     def item(self, items, title):
-        matches = [i for i in items if i["title"] == title]
+        matches = [i for i in items if f'From a document we hold: {title}, received ' in i["text"]]
         self.assertEqual(len(matches), 1, title)
         return matches[0]
 
@@ -159,7 +159,7 @@ class SourcesCitedByTests(unittest.TestCase):
         parser = SourceItems()
         parser.feed(page)
         entry = self.item(parser.items, "Synthetic Cedar Police vendor agreement excerpt")
-        self.assertNotIn("tags", entry)  # no element parsed out of content inside the list item
+        self.assertEqual(entry.get("tags"), ["p", "p"])  # only provenance layout, not injected content
         self.assertEqual(self.cited(entry), [("/findings/tricky-title.html", 'Raw <b>bold</b> & "q"')])
         self.assertNotIn("<b>", page)
         self.assertIn("Raw &lt;b&gt;bold&lt;/b&gt; &amp; &quot;q&quot;", page)

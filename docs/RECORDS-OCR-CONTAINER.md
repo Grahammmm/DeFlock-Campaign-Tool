@@ -33,7 +33,7 @@ Files in `container/flock-ocr/`:
 | ocrmypdf, python3-pikepdf, ghostscript | 14.0.1+dfsg1-1, 6.0.0+dfsg-1+b2, 10.0.0~dfsg-11+deb12u8 | Operator acceptance check only; the engine no longer calls OCRmyPDF |
 | python3-venv | 3.11.2-1+b1 | Isolated engine venv |
 | pypdf, openpyxl, et_xmlfile | `requirements.lock` (sha256) | Parser bundle; versions must equal `requirements-runner.txt` |
-| campaign_tool wheel | `pins.json` `engine.commit` 0ab680433b7fe9a1593c19ad64ae2ed27dd045f3 and `engine.manifest_sha256` 302d0f31...e59e | Built by `build_wheel.py` with setuptools==84.0.0 and wheel==0.48.0 (`requirements-build.txt`) |
+| campaign_tool wheel | `pins.json` `engine.commit` de3563f2854f9b5b7633356632774800684e38b9 and `engine.manifest_sha256` 42573a28...2932 | Built by `build_wheel.py` with setuptools==84.0.0 and wheel==0.48.0 (`requirements-build.txt`) |
 
 Apt versions were read from an existing bookworm OCR candidate's dpkg database
 and checked against packages.debian.org on 2026-10-19. poppler-utils deb12u3
@@ -45,12 +45,12 @@ Dockerfile together in a reviewed PR; never drop a pin. Installed pins are
 
 ### Wheel provenance
 
-The engine pin is main commit `0ab680433b7fe9a1593c19ad64ae2ed27dd045f3`
-(tree `7271fe67...`, merge of PR #136).
+The engine pin is main commit `de3563f2854f9b5b7633356632774800684e38b9`
+(tree `d9ab08a2...`, merge of PR #624).
 
 `engine.manifest_sha256` came from running
 `python3 -B -m campaign_tool.records version --json` in a clean detached
-checkout of that commit. That manifest binds the sha256 of all 173 package
+checkout of that commit. That manifest binds the sha256 of all 229 package
 files and of the dependency lock. `setup.py` embeds the same manifest in the
 wheel, and the installed `records version --json` re-verifies it on the target.
 
@@ -258,7 +258,7 @@ step fails, stop and take the rollback path named for that step.
    PyPI.
 
         python3 container/flock-ocr/preflight.py --base-image "$OLD_IMAGE_ID" \
-          --engine-commit 0ab680433b7fe9a1593c19ad64ae2ed27dd045f3 \
+          --engine-commit de3563f2854f9b5b7633356632774800684e38b9 \
           --wheel-sha256 "$WHEEL_SHA256" --tag "$NEW_TAG"
 
    Then run the `docker build --pull=false ...` command it prints. Without
