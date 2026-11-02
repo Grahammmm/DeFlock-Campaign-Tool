@@ -222,7 +222,7 @@ class LabelsTest(unittest.TestCase):
                     self.assertEqual(left, [], f"{name}: {path}")
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
-        absent = ["kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
+        absent = ["kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "officials.heading", "officials.listed", "officials.source"]
         self.assertEqual(sorted(set(DEFAULTS) - seen), absent)
 

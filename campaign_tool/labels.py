@@ -12,7 +12,8 @@ CLASSIFICATION_LABELS = {"documented_fact": "Documented fact", "apparent_conflic
                          "confirmed_conflict": "Confirmed conflict", "information_gap": "Information gap",
                          "redaction": "Redaction", "agency_assertion": "Agency assertion", "no_conflict": "No conflict found"}
 CONFIDENCE_LABELS = {"verified": "Verified against the record", "likely": "Likely; awaiting further records"}
-KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol", "district_attorney":
+KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol",
+               "campus_police": "Campus police", "district_attorney":
                "District attorney", "county_board": "County board", "city_council": "City council", "other": "Other public body"}
 DEFAULTS = {
     "nav.label": "Site", "nav.home": "Home", "nav.agencies": "Agencies", "nav.findings": "Findings",
