@@ -184,6 +184,13 @@ sorted by provisional `due` date (extended when recorded), with `days` left (neg
 `answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
 request is past due, else 0. These are reminders, not lateness conclusions.
 
+`kit-followup --directory D --agency ID [--as-of YYYY-MM-DD] [--replace]` (as-of not after today) writes a private
+draft `kit/followups/<agency_id>-<as_of>.md` (0600, folder 0700) for a request that `kit-due` lists as `past_due`. It
+cites the send date, channel, provisional determination date, the records law name and citation and, unless the law
+package is `reviewed`, its status. It refuses a request never recorded, answered (`determination`, `produced`,
+`denied`), closed or not yet past due, and when there is no law package. An existing draft is kept unless `--replace`;
+symlinks are refused. Nothing is sent and `sent.json` is not changed: send it yourself after review.
+
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
