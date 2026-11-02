@@ -309,7 +309,8 @@ def coverage(root):
     totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
               "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
               "with_records": sum(r["records"] > 0 for r in rows), "with_findings": sum(r["findings"] > 0 for r in rows),
-              "unselected_with_requests": sum(_split(key)[0] not in selected for key in requests)}
+              "unselected_with_requests": len({parts[0] for parts in map(_split, requests)
+                                               if parts and parts[0] not in selected})}
     note = ("Read-only counts from kit/ and content/." if model else
             "No content/ folder: sources and findings are 0.") + " Agencies with no sent request come first."
     return {"rows": rows, "totals": totals, "note": note}
