@@ -58,7 +58,7 @@ class SiteCorrectionsTests(unittest.TestCase):
     @staticmethod
     def pills(html, slug):
         start = html.index(f'<a href="/findings/{slug}.html">')
-        item = html[html.rindex("<li>", 0, start):html.index("</li>", start)]
+        item = html[html.rindex("<li", 0, start):html.index("</li>", start)]
         return PILL.findall(item)
 
     def test_all_corrections_newest_first_with_links(self):

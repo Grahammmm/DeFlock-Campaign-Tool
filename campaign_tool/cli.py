@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import fixes
+
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
 OUTCOMES = ("stored", "present", "symlink", "not_regular", "too_large", "hidden")
@@ -266,11 +268,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root):
-    print(json.dumps(doctor_report(root), indent=2))
+def doctor(root, contact_max_age_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
 
 
-def doctor_report(root):
+def doctor_report(root, contact_max_age_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -291,8 +293,11 @@ def doctor_report(root):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
-    from .kit import kit_status
+    from .kit import kit_status, stale_contacts
     report.update(kit_status(root))
+    if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
+        report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
+        report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
@@ -473,6 +478,8 @@ def main():
                              help="Scan the generated public/ tree for private paths and credential patterns")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
+        if name == "doctor":
+            cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -528,6 +535,20 @@ def main():
         verify_agency_p.add_argument(flag, required=True)
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    agency_cmds = commands.add_parser("kit-agency", help="Add, select or deselect agencies in kit/agencies.json; the next"
+                                      " kit run drafts requests for selected law-enforcement agencies"
+                                      ).add_subparsers(dest="agency_command", required=True)
+    for name, text in (("select", "Mark one agency selected"), ("deselect", "Mark one agency not selected"),
+                       ("add", "Append an organizer-added agency (selected, verified: false)")):
+        agency_p = agency_cmds.add_parser(name, help=text, description=text + "; the next kit run drafts requests for"
+                                          " selected law-enforcement agencies. Nothing is sent.")
+        agency_p.add_argument("--directory", required=True)
+        agency_p.add_argument("--id", required=True, dest="agency_id")
+        if name == "add":
+            agency_p.add_argument("--name", required=True)
+            agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
+                                  "district_attorney or other")
+            agency_p.add_argument("--note", default=None, help="Up to 300 characters")
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
@@ -535,6 +556,12 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
+    for flag in ("--directory", "--agency", "--date"):
+        response_p.add_argument(flag, required=True)
+    response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
+                                                               "produced", "denied", "closed"))
+    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -560,11 +587,13 @@ def main():
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
     ).add_argument("--directory", required=True)
     args = parser.parse_args()
+    if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
+        parser.error("--contact-max-age-days must be at least 1")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
         except (OSError, ValueError) as exc:
-            print("Stopped: " + str(exc), file=sys.stderr)
+            fixes.emit(exc)
             sys.exit(1)
         return
     root = Path(args.directory).expanduser().resolve()
@@ -619,6 +648,13 @@ def main():
             from .content_init import init_content
             print(json.dumps(init_content(root), indent=2))
             print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+        elif args.command == "kit-agency":
+            from . import kit_agencies
+            print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
+                             if args.agency_command == "add" else
+                             kit_agencies.set_selected(root, args.agency_id, args.agency_command == "select"),
+                             indent=2, ensure_ascii=False))
+            print("Nothing was sent.")
         elif args.command == "kit-sent":
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
@@ -626,8 +662,12 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-response":
+            from .kit_track import record_step
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
+            print("Recorded only. Nothing was sent.")
         else:
-            status(root, check=args.check) if args.command == "status" else doctor(root)
+            status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        print("Stopped: " + str(exc), file=sys.stderr)
+        fixes.emit(exc)
         sys.exit(1)

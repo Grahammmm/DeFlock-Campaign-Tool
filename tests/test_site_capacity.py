@@ -56,7 +56,7 @@ class SiteCapacityTests(unittest.TestCase):
         self.assertEqual((report["requests"], report["errors"], report["failed_paths"]), (24, 0, []))
         pages = {page["path"]: page for page in report["pages"]}
         for path in ("/index.html", "/findings/synthetic-finding-1.html", "/findings/synthetic-finding-2.html",
-                     "/meetings.html", "/sources.html", "/feed.xml", "/sitemap.xml", "/app.js", "/style.css"):
+                     "/meetings.html", "/sources.html", "/feed.xml", "/agency-cards.js", "/app.js", "/style.css"):
             self.assertIn(path, pages)
         self.assertEqual(list(pages), sorted(pages))
         for page in report["pages"]:
@@ -89,11 +89,11 @@ class SiteCapacityTests(unittest.TestCase):
         self.assertIn('"/feed.xml"', out.getvalue())
 
     def test_oversized_response_is_an_error_for_that_path_only(self):
-        double = recording_handler([], big_for="/sitemap.xml")
+        double = recording_handler([], big_for="/agency-cards.js")
         with mock.patch.object(benchmark_starter, "QuietHandler", double):
             report = benchmark(30, 2, site=True)
-        self.assertEqual(report["failed_paths"], ["/sitemap.xml"])
-        others = [page for page in report["pages"] if page["path"] != "/sitemap.xml"]
+        self.assertEqual(report["failed_paths"], ["/agency-cards.js"])
+        others = [page for page in report["pages"] if page["path"] != "/agency-cards.js"]
         self.assertEqual(sum(page["errors"] for page in others), 0)
 
     def test_bounds_refused_before_directory_or_server(self):
