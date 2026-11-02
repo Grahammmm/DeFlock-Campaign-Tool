@@ -73,6 +73,10 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "not past due: provisional determination date 5", "kit/followups/5 must not be a symlink",
         "kit/followups/5 already exists; use --replace to rewrite it",
     ), "kit-followup message that already names the option or the request state that stops the draft; not in the table"),
+    **dict.fromkeys((
+        "no recorded denial for 5", "no law package: --rule cannot be checked", "--rule 5 is given twice",
+        "--rule 5 is not in the law package", "--rule 5 is not in force on the denial date 5",
+    ), "kit-denial-reply message that already names the option or the missing denial; not in the table"),
     "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
     "must be 0-5": "argparse keep-count message; already names the range",
     **dict.fromkeys((
