@@ -27,6 +27,7 @@ from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LAB
 from .markdown_lite import render as markdown
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
+from .redirects import load_redirects
 from .review import ROLES
 
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
@@ -35,7 +36,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
-                       "methods.html"}
+                       "_redirects", "methods.html"}
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -1296,6 +1297,12 @@ def _plan_site(root, today=None, notes=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    if "redirects" in model:  # DF2037-16: any present file, even JSON null, is checked against every path written
+        from .findings import withdrawn_names  # local, as the other optional site steps
+        written = [*files, *(Path(relative).as_posix() for _, relative, _ in plan)]
+        files["_redirects"] = load_redirects(model["redirects"], written, withdrawn_names(root)[1])
+        if not files["_redirects"]:  # an empty list writes no file
+            del files["_redirects"]
     if isinstance(notes, list):
         notes.extend(site.camera_notes())
     return files, plan
