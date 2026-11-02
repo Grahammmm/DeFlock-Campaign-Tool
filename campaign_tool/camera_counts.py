@@ -2,15 +2,18 @@
 
 Coordinates are GeoJSON ``[lon, lat]``; problems name a feature index and reason, never coordinates or values.
 """
+import math
+
 from .agency_cards import text as plain_text
 
 
 def _number(n):
-    return isinstance(n, (int, float)) and not isinstance(n, bool)
+    """A finite int or float; NaN and +/-Infinity (which json.loads accepts) are rejected."""
+    return isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(n)
 
 
 def valid_ring(ring):
-    """A closed linear ring: a list of at least 4 numeric [x, y, ...] positions."""
+    """A closed linear ring: a list of at least 4 finite numeric [x, y, ...] positions."""
     return isinstance(ring, list) and len(ring) >= 4 and all(
         isinstance(p, list) and len(p) >= 2 and _number(p[0]) and _number(p[1]) for p in ring)
 
@@ -43,14 +46,17 @@ class _Ring:
     """Edges bucketed into horizontal bands, so a point tests only the edges that span its y."""
     def __init__(self, ring):
         edges, ys = _edges(ring), [p[1] for p in ring]
-        self.low, self.count = min(ys), max(1, int(len(edges) ** 0.5))
-        self.step = (max(ys) - self.low) / self.count or 1.0
+        span = max(ys) - min(ys)  # finite inputs can still overflow; one band then
+        self.low, self.count = min(ys), max(1, int(len(edges) ** 0.5)) if math.isfinite(span) else 1
+        self.step = span / self.count or 1.0
         self.bands = [[] for _ in range(self.count)]
         for edge in edges:
             for band in range(self._band(min(edge[1], edge[3])), self._band(max(edge[1], edge[3])) + 1):
                 self.bands[band].append(edge)
 
     def _band(self, y):
+        if self.count == 1:
+            return 0
         return min(self.count - 1, max(0, int((y - self.low) / self.step)))
 
     def contains(self, x, y):
@@ -73,7 +79,7 @@ def _polygons(geometry):
     polygons = [geometry.get("coordinates")] if kind == "Polygon" else geometry.get("coordinates")
     if not isinstance(polygons, list) or not polygons or any(
             not isinstance(rings, list) or not rings or not all(valid_ring(r) for r in rings) for rings in polygons):
-        return "invalid ring (needs 4 or more numeric positions)"
+        return "invalid ring (needs 4 or more finite numeric positions)"
     return polygons
 
 

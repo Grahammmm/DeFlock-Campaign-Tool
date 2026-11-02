@@ -86,6 +86,22 @@ class CountTests(unittest.TestCase):
         self.assertEqual(count_by_name(points((1.0, 1.0)), {"type": "FeatureCollection"}),
                          ({}, ["city boundary features: expected a list"]))
 
+    def test_non_finite_ring_skipped_with_indexed_problem_not_a_crash(self):
+        # json.loads accepts NaN/Infinity, so a boundary file can carry them; they must not reach the band index.
+        nan_ring = json.loads('[[0.5, 0.5], [1.5, NaN], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]]')
+        inf_ring = json.loads('[[0.5, 0.5], [Infinity, 0.5], [1.5, 1.5], [0.5, -Infinity], [0.5, 0.5]]')
+        features = [feature("Nan", "Polygon", [nan_ring]),
+                    feature("Inf", "MultiPolygon", [[square(0.1, 0.1, 0.3, 0.3)], [inf_ring]]),
+                    feature("Hole", "Polygon", [square(0.5, 0.5, 1.5, 1.5), inf_ring]),
+                    feature("Cedar", "Polygon", [square(0.5, 0.5, 1.5, 1.5)]),
+                    feature("Huge", "Polygon", [square(-1e308, -1e308, 1e308, 1e308)])]  # span overflows to inf
+        cameras = json.loads('{"features": [{"geometry": {"coordinates": [1.0, 1.0]}},'
+                             ' {"geometry": {"coordinates": [NaN, 1.0]}}, {"geometry": {"coordinates": [1.0, Infinity]}}]}')
+        counts, problems = count_by_name(cameras, collection(features))
+        self.assertEqual(counts, {"Cedar": 1, "Huge": 1})
+        self.assertEqual(problems, [f"city boundary feature {i}: invalid ring (needs 4 or more finite numeric positions)"
+                                    for i in (0, 1, 2)])
+
     def test_twenty_thousand_points_in_a_two_thousand_vertex_boundary_under_five_seconds(self):
         side = 500  # 4 x 500 = 2000 vertices on a square with subdivided sides
         ring = ([[0.1 + 1.8 * i / side, 0.1] for i in range(side)] + [[1.9, 0.1 + 1.8 * i / side] for i in range(side)]
