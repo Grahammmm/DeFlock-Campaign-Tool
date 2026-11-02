@@ -266,6 +266,11 @@ def load_finding(document, label):
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
         raise ContentError(f"{label}.agency_id: invalid agency identifier")
+    rule_ids = _text_list(document, "rule_ids", label)
+    if any(not item.strip() or len(item) > 120 for item in rule_ids):
+        raise ContentError(f"{label}.rule_ids: each rule id must be a non-empty string of at most 120 characters")
+    if len(set(rule_ids)) != len(rule_ids):
+        raise ContentError(f"{label}.rule_ids: duplicate rule id")
     return {
         "id": finding_id,
         "title": _text(document, "title", label, allow_empty=False),
@@ -283,6 +288,7 @@ def load_finding(document, label):
         "limitations": _text_list(document, "limitations", label),
         "counterevidence": _text_list(document, "counterevidence", label),
         "agency_id": agency_id,
+        "rule_ids": rule_ids,
         "rule_version": _text(document, "rule_version", label, required=False, default=None),
         "duty": _text(document, "duty", label, required=False, default=None),
         "exceptions": (_text_list(document, "exceptions", label) if isinstance(document.get("exceptions"), list)
@@ -673,6 +679,10 @@ def load_content(root):
         slugs.add(finding["slug"])
         ids.add(finding["id"])
         findings.append(finding)
+    from .finding_law import check_findings  # local: finding_law imports this module
+    law_problems = check_findings(root, findings)
+    if law_problems:
+        raise ContentError(law_problems[0])
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
 
     meetings = []
