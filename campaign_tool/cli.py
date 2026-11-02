@@ -426,9 +426,9 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root):
+def social_cmd(root, platforms=None):
     from .social import build_social
-    print(json.dumps(build_social(root), indent=2, ensure_ascii=False))
+    print(json.dumps(build_social(root, platforms), indent=2, ensure_ascii=False))
     print("Drafts written to kit/social. Nothing was posted.")
 
 
@@ -680,6 +680,8 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
+                          help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
     press_draft.add_argument("--directory", required=True)
@@ -924,6 +926,8 @@ def main():
         parser.error("--stale-days must be 1 to 3650")
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
+    if args.command == "social" and args.check and args.platform:
+        parser.error("--check reads kit/social only; it cannot be combined with --platform")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -953,7 +957,7 @@ def main():
             print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
-            social_cmd(root)
+            social_cmd(root, args.platform)
         elif args.command == "press":
             from .press import build_press
             print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))

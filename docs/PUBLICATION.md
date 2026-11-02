@@ -223,3 +223,14 @@ renders into memory and prints, as JSON, every `public/` file a rebuild would ad
 (path and byte delta; equality by SHA-256), then `Preview only; public/ was not changed.` It exits 3
 when anything differs and 0 when the rebuild would be identical. Symlinks inside `public/` are listed
 as `unreadable` and never followed. Nothing is written to the campaign folder.
+
+### Social drafts per platform (never posted)
+
+`social --directory D --platform P` (repeatable: `x`, `bluesky`, `mastodon`; duplicates collapsed,
+order kept) sizes each draft by that platform's own count into `kit/social/<P>/`: X 280 weighted
+(most non-Latin characters and emoji count 2, every link 23), Bluesky 300 code points with the full
+link, Mastodon 500 code points with 23-character links. Only the title is shortened. Every draft for
+every chosen platform is made before anything is written, so one that cannot fit stops the run with
+the platform named. Each folder keeps its own `.written.json`, kept edits go to
+`kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
+unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
