@@ -21,6 +21,7 @@ from xml.etree import ElementTree as ET
 from . import agency_cards, map_controller
 from .content import CITY_KINDS, ContentError, load_content, utc_moment
 from .corrections_policy import policy_html
+from .timeline import render_timeline, timeline_events
 from .markdown_lite import render as markdown
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
@@ -29,7 +30,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "timeline.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor"}
 CLASSIFICATION_LABELS = {
     "documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
@@ -177,6 +178,7 @@ class Site:
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
+        self.timeline = timeline_events(model, today or date.today())
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
         cutoff = (today or date.today()).isoformat()
@@ -213,7 +215,7 @@ class Site:
     def nav(self, current):
         items = [("/", "Home", "index"), ("/agencies.html", "Agencies", "agencies"),
                  ("/findings/", "Findings", "findings"), ("/sources.html", "Sources", "sources"),
-                 ("/meetings.html", "Meetings", "meetings"), ("/about.html", "About", "about")]
+                 ("/meetings.html", "Meetings", "meetings"), ("/about.html", "About", "about"), ("/timeline.html", "Timeline", "timeline")]
         links = "".join(
             f'<a href="{href}"' + (' aria-current="page"' if key == current else "") + f'>{label}</a>'
             for href, label, key in items)
@@ -384,6 +386,8 @@ class Site:
                 f'{form}</section>\n')
 
     # -- pages ---------------------------------------------------------------
+    def timeline_html(self):
+        return self.page("timeline", "Timeline", "Public campaign dates", "/timeline.html", render_timeline(self, self.timeline))
 
     def index_html(self):
         mission = markdown(self.site["mission_md"]) if self.site["mission_md"] else (
@@ -676,7 +680,7 @@ class Site:
                 "  Content-Security-Policy: " + self.csp() + "\n")
 
     def page_paths(self):
-        paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
+        paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html", "/timeline.html"]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         return paths
 
@@ -836,6 +840,7 @@ def build_site(root, today=None):
         "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
         "corrections.html": site.corrections_html(),
+        "timeline.html": site.timeline_html(),
     }
     for finding in model["findings"]:
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
