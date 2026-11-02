@@ -260,6 +260,12 @@ Not-found page: `404.html` is always generated (site shell, links to findings, a
 that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
 is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
 
+How to read our findings: `methods.html` is always generated and is not editable. It defines every classification
+and confidence label (`#classification-<code>`, `#confidence-<code>`), explains record numbers and the factual,
+legal and privacy review by two people other than the author. The definitions live in `campaign_tool/site.py` next to
+the label tables; each badge on finding pages and the findings index links to its definition. It is in the footer and
+`sitemap.xml`; the slug `methods` and `public-assets/methods.html` are refused. `feed.xml` and `data/findings.json` keep plain labels.
+
 Photos: a phone or camera photo usually carries metadata, often including the GPS position where it was taken
 (an organizer's home, say). `build` and `content-check` therefore refuse a `.jpg`, `.jpeg`, `.png` or `.webp` in
 `content/public-assets/` that carries EXIF (`EXIF GPS` when it has a GPS block), XMP, IPTC, a JPEG comment, PNG text
@@ -269,7 +275,18 @@ parse is refused as `unreadable image`; re-export it. To clean one, run
 `python3 -m campaign_tool content strip-metadata content/public-assets/photos/council.jpg` (optional `--out PATH`): it writes
 `council.clean.jpg` beside it with those segments or chunks removed and every image byte kept (no re-encoding; colour
 profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
-inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
+inside a `public/` folder. Check the copy, then replace the original yourself. ICO files are not checked.
+
+PDFs and SVGs: `build` and `content-check` also refuse, naming file and kinds but never a script, URL or name
+(`public-assets/docs/agenda.pdf: PDF (JavaScript, more than one revision)`), a PDF with JavaScript, open/launch
+actions (`OpenAction`, `Launch`, `AA`), embedded files, an `Author` field or XMP creator, or more than one revision
+(an incremental update keeps the earlier text, so a redaction saved that way can still be read), names in compressed
+streams included (every `stream` keyword is swept, whatever `/Length` says, and read again with any PNG/TIFF
+`/DecodeParms` predictor undone); and an SVG with a `DOCTYPE`/entity, `script`, `foreignObject`, `on*` handlers or a link, `url()` or
+`@import` pointing anywhere but `#` in the file (`data:` too). Unparseable, or a PDF stream encoded other than plain
+Flate or an image codec (`LZWDecode`, `ASCII85Decode`, filter chains, an indirect `/DecodeParms`, another
+predictor, or a predictor followed by a string or comment before its stream): `unreadable PDF`/`SVG`. Fix: save the PDF
+flattened as a new single-revision file without author fields; export the SVG as plain shapes, or use a PNG.
 
 Images in text: in a finding, page, about, mission or comment-kit text, a line that is only `![Council chamber, 3 June](/photos/council.jpg)` shows `content/public-assets/photos/council.jpg` (PNG, JPEG or WebP) with that alt text (required, 1-200 characters), its own width and height and lazy loading; anything else (inline, in a list, another site, a missing file or SVG, empty alt) stays text, and `markdown_lite --lint` names it as `image`. The newsletter shows no images.
 
