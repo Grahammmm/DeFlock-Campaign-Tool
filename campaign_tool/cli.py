@@ -723,6 +723,12 @@ def main():
         sources_edit.add_argument(flag, default=None)
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
+    batch = sources.add_parser("add-batch", help="Add every receipt of one ingest source_id not yet listed; "
+                               "titles marked [EDIT ME: title]; publishes nothing")
+    for flag in ("--directory", "--source-id", "--agency-id", "--received-at"):
+        batch.add_argument(flag, required=True)
+    batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
+    batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
     commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True).add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
@@ -850,6 +856,10 @@ def main():
         elif args.command == "sources" and args.sources_command == "list":
             from .sources_cmd import list_sources
             print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
+        elif args.command == "sources" and args.sources_command == "add-batch":
+            from .sources_cmd import add_batch
+            print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
+                                       dry_run=args.dry_run)))
         elif args.command == "sources":
             from .sources_cmd import edit_source, remove_source
             print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
