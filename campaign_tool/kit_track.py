@@ -8,7 +8,7 @@ import unicodedata
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import kit, law
+from . import kit, kit_check, law
 
 CHANNELS = ("email", "portal", "mail")
 KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed")
@@ -73,11 +73,16 @@ def record_sent(root, agency_id, sent_on, channel, *, replace=False, today=None)
     path = root / "kit" / "agencies.json"
     if not path.is_file() or path.is_symlink():
         raise ValueError("run kit first: kit/agencies.json is missing")
-    if agency_id not in {entry["agency_id"] for entry in kit._load_existing(path)}:
+    agency = next((entry for entry in kit._load_existing(path) if entry["agency_id"] == agency_id), None)
+    if agency is None:
         raise ValueError(f"agency_id {agency_id!r} is not in kit/agencies.json")
     digest = _draft(root, agency_id)
     if digest is None:
         raise ValueError(f"kit/requests/{agency_id}.md must be a regular file (not a symlink)")
+    check = kit_check.agency_report(root, agency)
+    if not check["ok"]:
+        raise ValueError(f"kit/requests/{agency_id}.md still has {check.get('placeholder_count', 0)} unfilled "
+                         "placeholder(s) or an unverified recipient; run kit-check")
     sent = _day(sent_on)
     if sent is None:
         raise ValueError("--date must be a real YYYY-MM-DD date")
