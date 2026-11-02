@@ -35,6 +35,8 @@ python3 -B -m runner --once --fake                                # exit 3 = idl
 Edit `../my-campaign/kit/agencies.json` to untick agencies; re-run `kit` and your edits persist.
 Add `content/` (see `docs/SITE-CONTENT.md` and `examples/fictional-campaign/content/`) to turn
 the starter into a real site.
+`python3 -m campaign_tool content init --directory ../my-campaign` writes a minimal valid `content/`
+with `[EDIT ME: ...]` placeholders to start from (it refuses an existing `content/`).
 
 ## Hosted path (what the wizard does)
 

@@ -20,6 +20,8 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 
 ## Content directory
 
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
 Finding citations and the source library lead with “From a document we hold”,
 the receipt date and agency when known, and public-copy or private-original status.
 Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps
