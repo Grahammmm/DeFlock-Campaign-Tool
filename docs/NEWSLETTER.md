@@ -75,6 +75,22 @@ meeting without one is never described as decided. At most 8 lines, then "and N 
 site."; `counts.decisions` is present only when the section is. Worker manifests carry no
 `decisions` key and render exactly as before.
 
+### Offline sends
+
+The tool never sends. After sending `kit/newsletter-draft.html` (or `.txt`) by hand, record it
+with `python3 -m campaign_tool.newsletter --directory D --record-sent YYYY-MM-DD` (a flag form of
+`newsletter sent --date D`; it cannot be combined with `--manifest`, `--from-content` or `--since`).
+It appends `{"sent_on", "draft_sha256", "subject", "recorded_at"}` to the private
+`kit/newsletter-sent.json` (mode 0600, at most 1000 issues), where `draft_sha256` is the sha256 of
+`kit/newsletter-draft.json`, which holds the draft's subject, HTML and text. It refuses a date that
+is not a real day, after today or before 2000-01-01; a missing, linked or over-4 MiB draft; a
+draft already recorded (naming its date); and a date earlier than the last record, so records stay
+in date order. A linked, non-regular or malformed `kit/newsletter-sent.json` is refused
+(`kit/newsletter-sent.json unreadable: ...`) and never reset or rewritten. Afterwards
+`--from-content` without `--since` starts the day after the last recorded send (UTC midnight); an
+explicit `--since` wins. The draft JSON output names where the window came from in `since_from`:
+`"record"`, `"flag"` or `null`. This is the offline counterpart of the hosted `campaign_sent` event.
+
 ## Approve & send
 
 Subscribers lists the draft jobs. Approve & send on a `done` draft creates a `send_newsletter`
