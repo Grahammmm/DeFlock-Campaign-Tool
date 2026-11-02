@@ -126,10 +126,13 @@ def record_sent(root, sent_on, today=None):
     record = {"sent_on": sent_on, "draft_sha256": digest, "subject": subject,
               "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat()}
     text = json.dumps({"schema_version": 1, "issues": issues + [record]}, indent=2, ensure_ascii=False) + "\n"
+    encoded = text.encode("utf-8")
+    if len(encoded) > MAX_SENT_BYTES:  # _load would refuse the result; keep the existing archive
+        raise ValueError(f"kit/{SENT_NAME} would exceed {MAX_SENT_BYTES} bytes; nothing recorded")
     fd, temp = tempfile.mkstemp(dir=kit, prefix="." + SENT_NAME + ".", suffix=".tmp")  # mode 0600
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
         os.replace(temp, kit / SENT_NAME)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):

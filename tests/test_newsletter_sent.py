@@ -176,6 +176,21 @@ class NewsletterSentTests(unittest.TestCase):
                 self.sent.rmdir() if name == "folder" else self.sent.unlink()
         self.assertEqual(target.read_text(), '{"schema_version": 1, "issues": []}\n')
 
+    def test_append_that_would_exceed_the_size_limit_is_refused_and_keeps_the_archive(self):
+        # A valid archive just under 1 MiB in UTF-8 bytes (2-byte characters, so bytes, not characters, count).
+        issue = {"sent_on": "2026-03-01", "draft_sha256": "ab" * 32, "subject": "", "recorded_at": "x"}
+        empty = len((json.dumps({"schema_version": 1, "issues": [issue]}, indent=2, ensure_ascii=False) + "\n").encode())
+        issue["subject"] = "\u00e9" * ((1024 * 1024 - 64 - empty) // 2)
+        self.sent.write_text(json.dumps({"schema_version": 1, "issues": [issue]}, indent=2, ensure_ascii=False) + "\n",
+                             encoding="utf-8")
+        before = self.snapshot()
+        self.assertLessEqual(self.sent.stat().st_size, 1024 * 1024)
+        self.assertEqual(last_sent(self.root), "2026-03-01")
+        self.refused("kit/newsletter-sent.json would exceed 1048576 bytes; nothing recorded", "--record-sent", "2026-03-05")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(sorted(p.name for p in self.kit.glob(".*.tmp")), [])
+        self.assertEqual(last_sent(self.root), "2026-03-01", "the archive still loads")
+
     def test_record_sent_cannot_be_combined_with_drafting(self):
         for extra in (("--manifest", str(self.tmp / "m.json")), ("--from-content",), ("--since", "2026-03-01")):
             with self.subTest(extra):
