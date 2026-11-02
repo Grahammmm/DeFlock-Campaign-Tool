@@ -256,3 +256,24 @@ through a symlinked folder); each is refused by name and nothing is written. A c
 a tab or a carriage return gets a leading `'` so a spreadsheet does not run it as a formula. Dates are provisional
 reminders; the period runs from the agency's receipt. Without `--csv` the JSON output is unchanged. The file stays on
 this computer: nothing is sent, uploaded or published.
+
+## Add many agencies from a spreadsheet
+
+`kit-agency import --directory D --csv FILE [--check]` adds every row of one CSV to `kit/agencies.json` with the
+same rules as `kit-agency add`, in one write. Export the sheet as UTF-8 CSV (a leading byte-order mark is fine). The
+first row must be exactly `agency_id,name,kind` or `agency_id,name,kind,note`; 1-500 data rows, blank lines ignored,
+at most 256 KiB. For example (fictional agencies):
+
+```csv
+agency_id,name,kind,note
+ca-fictional-north-police,Fictional North Police,police,
+ca-fictional-county-sheriff,Fictional County Sheriff,sheriff,Seen at a meeting
+ca-fictional-county-board,Fictional County Board,county_board,
+```
+
+Each row is checked like `add` (id pattern and state prefix, a 3-120 character plain-text name, a known kind, a note
+of at most 300 characters), and also refused when its id is already in `kit/agencies.json` or repeats an earlier
+line of the file. If any row is bad nothing is written and each bad row is named by its line number in the file (the
+header is line 1; the first 20 are listed, then a count). Otherwise all rows are appended in file order as selected,
+`verified: false`, `added_by: organizer`, and the next kit run drafts requests for the law-enforcement ones. `--check`
+runs every check and prints the same summary with `"written": false` without changing the file. Nothing is sent.

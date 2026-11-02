@@ -412,8 +412,11 @@ def _taken(folder, what):
     return ids, slugs
 
 
-def cited_problems(root, finding):
-    """Each cited sha256 must be in content/sources.json, the ledger and private/objects/ (12-hex prefix + code)."""
+def cited_problems(root, finding, stored=None):
+    """Each cited sha256 must be in content/sources.json, the ledger and private/objects/ (12-hex prefix + code).
+
+    ``stored``: the ledger's object hashes when the caller already holds an in-memory snapshot; the live ledger
+    is then not opened (SQLite mode=ro can still create -wal/-shm beside a WAL-mode file)."""
     private = root / "private"
     objects, ledger = private / "objects", private / "ledger.sqlite"
     if private.is_symlink() or objects.is_symlink() or ledger.is_symlink():
@@ -421,7 +424,8 @@ def cited_problems(root, finding):
     library = root / "content" / "sources.json"
     registered = ({entry["sha256"] for entry in content.load_sources(content._read_json(library))}
                   if library.is_file() else set())
-    stored = _ledger_hashes(ledger) if ledger.is_file() else set()
+    if stored is None:
+        stored = _ledger_hashes(ledger) if ledger.is_file() else set()
     problems = []
     for sha in sorted({source["sha256"] for source in finding["sources"]}):
         if sha not in registered:
