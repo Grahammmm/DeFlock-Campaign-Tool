@@ -48,6 +48,9 @@ ROWS = (
         f"Split the folder into batches of at most {m.group(1)} files and ingest each with its own --source-id.")),
     (ValueError, _msg(r"Stored object integrity mismatch; intake stopped"),
      f"Stop here: run `status --check` and {_BACKUP}; do not ingest over it."),
+    (ValueError, _msg(r"ledger (is not readable|has a journal or WAL file beside it); nothing was written\Z"),
+     "The dry run wrote nothing. Let any other run on this campaign finish, then run `status --check`; "
+     f"keep private/ as it is, and {_BACKUP} if it reports problems."),
     (ValueError, _msg(r"public tree check found (\d{1,6}) potential leak\(s\); fix content and rebuild\Z"), lambda m, exc: (
         f"Fix the {m.group(1)} item(s) listed above in the content, rebuild with `build --check`, "
         "and do not publish until it passes.")),

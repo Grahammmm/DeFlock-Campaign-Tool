@@ -322,6 +322,14 @@ failed, even though the exit code stays that of the work stages. Consumers
 should read the exit code or the work-stage statuses to judge the pipeline
 itself.
 
+Read-only review summary: `python3 tools/run_report_review.py summary
+REPORT.json` (or `summary --dir reports/`, oldest first) keeps three facts
+apart: `VALID` (machine-valid or not), `WORK` (stage outcomes; unknown is
+never shown as 0; notify kept apart) and `OWED` (counts still waiting on a
+human gate, each tagged with gate 1, 2 or 3 or the operator; unknown codes
+stay `unmapped`). It writes nothing, has no verb that marks anything
+reviewed, and always ends `REVIEWED | none by this tool`.
+
 Non-fatal notify
 
 `notify.py` sends one metadata-only message, built from the report's codes.
@@ -414,3 +422,13 @@ N = 60, B = 2640 (44 min). Worst case is 2640 + 17 + 62 = 2719 s.
 Tests: `python3 -B -m unittest tests.test_records_runtime -v`. They use a
 fake docker shim, the stub backend and a loopback fake Telegram, with no
 external network.
+
+## Stale-stage check
+
+`python3 tools/stage_stale_check.py check --reports reports/ --now <UTC>` reads the run
+reports only (no ledger, no clock) and alerts `stale:<stage>` when a stage was stuck (input,
+no output), failed or skipped/stubbed in each of the last `--runs` (default 3, minimum 2)
+scheduled runs; idle stages (no input) never alert. It also flags no scheduled report for
+36 h, an invalid or unparseable newest report and duplicate run ids. Exit 3 alerts, 0 none,
+1 untrusted. It complements `records health`. Scheduling it and delivering its alerts beyond
+stdout or `--json-out` are separate operator decisions; it installs and sends nothing.
