@@ -153,6 +153,16 @@ one existing fragment. It prints `{"added": [12-char prefixes],
 "already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
 second run adds nothing. Nothing is fetched or published.
 
+### Pages (`content/pages/<slug>.json`, optional)
+
+Each file becomes `/<slug>.html`: `{"title", "body_md", "description"?, "nav"?}`, nothing else. `title` is
+1-120 characters and `description` at most 300 (default: the title); both are escaped. `body_md` (non-empty) is
+rendered by `markdown_lite`, so raw HTML shows as text. The file stem is the slug; files not ending in `.json` are
+ignored, symlinks and folders are refused, at most 50 files. Slugs that are starter pages, generated names (`404`,
+`corrections`, `feed`, `sitemap`, `robots`, `style`, `site-data`, `agency-cards`, `app`, `data`, `vendor`) or a
+published finding slug are refused, as is a `public-assets/<slug>.html` entry. Every page is listed in
+`sitemap.xml`; `nav: true` (strictly a boolean, at most 3 pages) adds the title to the header nav after About.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
