@@ -1136,6 +1136,7 @@ def _copy(source, target, written, limit):
 
 def _asset_plan(model):
     from .image_meta import check_asset  # local: the only site.py change for the image-metadata gate
+    from .doc_assets import check_asset as check_doc_asset
     assets_dir, plan = model["assets_dir"], []
     page_files = {f'{page["slug"]}.html' for page in model.get("pages", [])}
     for source in model["public_assets"]:
@@ -1148,6 +1149,7 @@ def _asset_plan(model):
         if relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files:
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
         check_asset(source, relative, ASSET_MAX_BYTES)
+        check_doc_asset(source, relative, ASSET_MAX_BYTES)  # PDF/SVG: active content, revisions, author fields
         plan.append((source, relative))
     return plan
 

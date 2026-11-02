@@ -10,6 +10,7 @@ from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, 
                       _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
                       load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources, plain_text)
 from .finding_law import check_findings, jurisdiction, package_line
+from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
 from .labels import MAX_LABELS_BYTES, load_labels
 from .redirects import check_file as check_redirects
@@ -180,6 +181,7 @@ def content_problems(root, limit=LIMIT):
         if path.is_file() and not path.is_symlink():
             relative = path.relative_to(assets_dir)
             _attempt(problems, f"public-assets/{relative}", lambda: check_asset(path, relative))
+            _attempt(problems, f"public-assets/{relative}", lambda: check_doc_asset(path, relative))
     check_redirects(root, problems)  # DF2037-16: content/redirects.json with build's own refusal text
     return _cap(sorted(set(problems)), limit)
 
