@@ -723,6 +723,10 @@ def main():
     for flag in ("--directory", "--date", "--note"):
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
+    withdraw_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--reason"):
+        withdraw_p.add_argument(flag, required=True)
     roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
                                           ).add_subparsers(dest="reviewers_command", required=True)
     roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
@@ -818,6 +822,10 @@ def main():
             if args.finding_command == "correct":
                 print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
+            if args.finding_command == "withdraw":
+                print(json.dumps(findings.withdraw(root, args.id, args.reason)))
+                print("Run build to remove it from public/. Nothing was deployed.")
                 return
             if args.finding_command == "publish":
                 result = findings.publish(root, args.draft, args.approved_by)
