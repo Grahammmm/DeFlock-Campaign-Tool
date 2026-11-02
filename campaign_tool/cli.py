@@ -742,10 +742,15 @@ def main():
                                       " kit run drafts requests for selected law-enforcement agencies"
                                       ).add_subparsers(dest="agency_command", required=True)
     for name, text in (("select", "Mark one agency selected"), ("deselect", "Mark one agency not selected"),
-                       ("add", "Append an organizer-added agency (selected, verified: false)")):
+                       ("add", "Append an organizer-added agency (selected, verified: false)"),
+                       ("import", "Append many organizer-added agencies from one CSV, all or none")):
         agency_p = agency_cmds.add_parser(name, help=text, description=text + "; the next kit run drafts requests for"
                                           " selected law-enforcement agencies. Nothing is sent.")
         agency_p.add_argument("--directory", required=True)
+        if name == "import":
+            agency_p.add_argument("--csv", required=True, help="Header agency_id,name,kind[,note]; 1-500 rows")
+            agency_p.add_argument("--check", action="store_true", help="Validate only; write nothing")
+            continue
         agency_p.add_argument("--id", required=True, dest="agency_id")
         if name == "add":
             agency_p.add_argument("--name", required=True)
@@ -1117,6 +1122,8 @@ def main():
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
                              if args.agency_command == "add" else
+                             kit_agencies.import_csv(root, Path(args.csv).expanduser(), check=args.check)
+                             if args.agency_command == "import" else
                              kit_agencies.set_selected(root, args.agency_id, args.agency_command == "select"),
                              indent=2, ensure_ascii=False))
             print("Nothing was sent.")
