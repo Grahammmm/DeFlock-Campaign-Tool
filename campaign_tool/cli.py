@@ -752,6 +752,10 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
+                                  "selected agency's draft (read-only; exit 3)")
+    check_p.add_argument("--directory", required=True)
+    check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -804,6 +808,11 @@ def main():
         batch.add_argument(flag, required=True)
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
+    verify = sources.add_parser("verify-copy", help="Hash a copy you downloaded from an entry's public_url and record "
+                                "whether it is the same file; nothing is fetched")
+    for flag in ("--directory", "--sha256", "--file", "--checked-on"):
+        verify.add_argument(flag, required=True)
+    verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
     content_cmds.add_parser(
@@ -960,6 +969,13 @@ def main():
             from .sources_cmd import add_batch
             print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
                                        dry_run=args.dry_run)))
+        elif args.command == "sources" and args.sources_command == "verify-copy":
+            from .sources_cmd import verify_copy
+            try:
+                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because)))
+            except ValueError as exc:
+                print(f"Stopped: {exc}", file=sys.stderr)
+                sys.exit(3)
         elif args.command == "sources":
             from .sources_cmd import edit_source, remove_source
             print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
@@ -1047,6 +1063,9 @@ def main():
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-check":
+            from .kit_check import run_cli as kit_check_cli
+            kit_check_cli(root, as_json=args.as_json)
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))

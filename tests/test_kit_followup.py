@@ -14,6 +14,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, kit, kit_track, law  # noqa: E402
+from tests.test_kit_check import ready_drafts  # noqa: E402
 
 DONE = "Draft only. Nothing was sent.\n"
 
@@ -52,6 +53,7 @@ class KitFollowupTests(unittest.TestCase):
         self.ids = [path.stem for path in sorted((self.root / "kit" / "requests").glob("*.md"))]
         self.assertGreaterEqual(len(self.ids), 4)
         self.a, self.b = self.ids[:2]
+        ready_drafts(self.root)  # kit-sent refuses unfilled placeholders and unverified recipients (DF1507-07)
         self.package = law.load_package("us-ca")
         self.folder = self.root / "kit" / "followups"
 
