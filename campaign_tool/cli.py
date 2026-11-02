@@ -527,6 +527,11 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    setup_p = commands.add_parser("setup", help="Guided offline setup; nothing sent or published")
+    setup_p.add_argument("--directory", required=True)
+    for flag in ("--name", "--county", "--state", "--location"):
+        setup_p.add_argument(flag)
+    setup_p.add_argument("--yes", action="store_true", help="Use flags only; never prompt")
     for name in ("init", "ingest", "doctor", "status", "build"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--directory", required=True)
@@ -631,6 +636,8 @@ def main():
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed"))
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
+                            help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -682,6 +689,9 @@ def main():
     try:
         if args.command == "init":
             initialize(args, root)
+        elif args.command == "setup":
+            from .setup_cmd import run_cli
+            run_cli(args, root, parser, sys.stdin, sys.stdout)
         elif args.command == "ingest":
             ingest(args, root)
         elif args.command == "kit":
@@ -756,7 +766,8 @@ def main():
             print(json.dumps(kit_track_status(root), indent=2))
         elif args.command == "kit-response":
             from .kit_track import record_step
-            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
+                                         records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
