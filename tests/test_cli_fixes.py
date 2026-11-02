@@ -50,10 +50,14 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--channel must be one of name", "5 already recorded as sent on 5; use --replace to correct it",
         "5 has recorded steps; its entry sent on 5 cannot be replaced",
         "--note must be plain text without <, > or control characters",
+        "kit/requests/5.md still has 5 unfilled placeholder(s) or an unverified recipient; run kit-check",
+        "--request must be 1-40 characters a-z, 0-9 or -, starting with a letter or digit",
+        "kit/requests/5.md is another agency's draft; choose another --request name",
     ), "kit-sent message that already names the option to change; not in the table"),
     **dict.fromkeys((
         "--note must be 1-5 characters after collapsing whitespace", "--kind must be one of name",
         "no hand-sent request recorded for 5; run kit-sent first", "kit/sent.json unreadable: malformed steps for 5",
+        "no sent request 5/5; run kit-sent --request 5 first",
         "--date 5 is before the request was sent on 5", "--date 5 is before the previous step (5 on 5)",
         "--date 5 is in the future", "5 is closed; no step can follow closed",
         "acknowledged is allowed only as the first step, once", "extension is allowed only once",
@@ -66,6 +70,8 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--record #5: name",  # wraps the resolve_hash refusal (not ingested / no ledger / 12 hex / ambiguous)
     ), "kit-response --record message that names the record number and the rule to change; not in the table"),
     "--as-of must be a real YYYY-MM-DD date": "kit-due message that already names the option and the format",
+    "no sent request */5: no agency has a request recorded under that name":
+        "kit-due --request message that already names the request; not in the table",
     "--scope needs a law package; none found for 5": "kit message that already names the option and the missing law package",
     **dict.fromkeys((
         "--as-of 5 is in the future", "no hand-sent request recorded for 5", "request for 5 is closed",

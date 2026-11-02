@@ -53,13 +53,18 @@ it("upgrades the immutable baseline without losing job evidence and matches the 
   // The wizard's current schema and the complete migration chain must stay equivalent.
   await env.DB_SCHEMA.batch(env.TEST_SCHEMA.map(sql => env.DB_SCHEMA.prepare(sql)));
   const tables = (await env.DB_SCHEMA.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all<{ name: string }>()).results;
-  for (const { name } of tables) {
-    expect((await db.prepare(`PRAGMA table_info(${name})`).all()).results).toEqual((await env.DB_SCHEMA.prepare(`PRAGMA table_info(${name})`).all()).results);
-    const indexes = (await env.DB_SCHEMA.prepare(`PRAGMA index_list(${name})`).all<{ name: string }>()).results;
-    const migrated = (await db.prepare(`PRAGMA index_list(${name})`).all<{ name: string }>()).results;
-    expect(migrated.map(index => index.name).sort()).toEqual(indexes.map(index => index.name).sort());
-    for (const index of indexes) {
-      expect((await db.prepare(`PRAGMA index_info(${index.name})`).all()).results).toEqual((await env.DB_SCHEMA.prepare(`PRAGMA index_info(${index.name})`).all()).results);
-    }
+  // Batch introspection rather than spending hundreds of D1 round trips on schema parity.
+  const queries = tables.flatMap(({ name }) => [`PRAGMA table_info(${name})`, `PRAGMA index_list(${name})`]);
+  const migrated = await db.batch<{ name: string }>(queries.map(sql => db.prepare(sql)));
+  const fresh = await env.DB_SCHEMA.batch<{ name: string }>(queries.map(sql => env.DB_SCHEMA.prepare(sql)));
+  const indexQueries: string[] = [];
+  for (let i = 0; i < queries.length; i += 2) {
+    expect(migrated[i]!.results).toEqual(fresh[i]!.results);
+    const indexes = fresh[i + 1]!.results;
+    expect(migrated[i + 1]!.results.map(index => index.name).sort()).toEqual(indexes.map(index => index.name).sort());
+    indexQueries.push(...indexes.map(index => `PRAGMA index_info(${index.name})`));
   }
+  const migratedIndexes = await db.batch(indexQueries.map(sql => db.prepare(sql)));
+  const freshIndexes = await env.DB_SCHEMA.batch(indexQueries.map(sql => env.DB_SCHEMA.prepare(sql)));
+  expect(migratedIndexes.map(result => result.results)).toEqual(freshIndexes.map(result => result.results));
 });

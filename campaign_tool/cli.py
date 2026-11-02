@@ -53,6 +53,12 @@ def database(root):
             source_id TEXT NOT NULL, received_at TEXT NOT NULL,
             original_name TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS contains (
+            container_sha256 TEXT NOT NULL REFERENCES objects(sha256),
+            member_sha256 TEXT NOT NULL REFERENCES objects(sha256),
+            member_path TEXT NOT NULL,
+            PRIMARY KEY (container_sha256, member_path)
+        );
     """)
     return db
 
@@ -150,9 +156,15 @@ def _preview_one(known, path, source_id, dir_fd=None):
 
 def _ingest_one(db, root, path, source_id, dir_fd=None):
     """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome."""
-    data, digest = _read_checked(path, dir_fd)
+    return _store_bytes(db, root, _read_checked(path, dir_fd)[0], source_id, os.path.basename(path))
+
+
+def _store_bytes(db, root, data, source_id, name, contained_in=None):
+    """Store bytes under their hash with one receipt named `name` (and, for an archive member, its
+    `contains` row given as (container_sha256, member_path)) in one transaction."""
+    digest = hashlib.sha256(data).hexdigest()
     identity = _receipt_id(source_id, digest)
-    with db:  # one transaction per file; the object is written before its rows
+    with db:  # one transaction per object; the object is written before its rows
         objects = root / "private" / "objects"
         objects.mkdir(mode=0o700, exist_ok=True)
         target = objects / digest
@@ -175,7 +187,9 @@ def _ingest_one(db, root, path, source_id, dir_fd=None):
         new_object = db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
                                 (digest, len(data), now())).rowcount == 1
         cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
-                            (identity, digest, source_id, now(), os.path.basename(path)))
+                            (identity, digest, source_id, now(), name))
+        if contained_in is not None:
+            db.execute("INSERT OR IGNORE INTO contains VALUES (?, ?, ?)", (contained_in[0], digest, contained_in[1]))
     return {"sha256": digest, "receipt_id": identity, "new_receipt": cursor.rowcount == 1,
             "analysis_status": "not_started", "outcome": "stored" if new_object else "present"}
 
@@ -184,6 +198,9 @@ def ingest(args, root):
     read_config(root)
     if getattr(args, "dir", None) is not None:
         return _ingest_dir(args, root)
+    if getattr(args, "zip", None) is not None:
+        from .ingest_zip import ingest_zip
+        return ingest_zip(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -379,6 +396,13 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
+    from .correction_requests import open_overdue
+    try:
+        if (overdue := open_overdue(root, date.today())) is not None:
+            report["correction_requests_open_over_14_days"] = len(overdue)
+            report["next_actions"] += [f"Decide correction requests open over 14 days: id {', '.join(map(str, overdue))}"] * bool(overdue)
+    except ValueError as exc:
+        report["correction_requests_error"] = str(exc)
     from .content import ContentError, load_content
     try:
         model = load_content(root)
@@ -620,6 +644,8 @@ def main():
             source = cmd.add_mutually_exclusive_group(required=True)
             source.add_argument("--file")
             source.add_argument("--dir", help="One local production folder; symlinks are never followed")
+            source.add_argument("--zip", help="One production .zip: archive and regular members stored by hash, "
+                                "never extracted to disk; nested archives are stored, not opened")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
@@ -731,8 +757,21 @@ def main():
         sent_p.add_argument(flag, required=True)
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
-    commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
-                        ).add_argument("--directory", required=True)
+    sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
+                        "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
+    status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
+    check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
+                                  "selected agency's draft (read-only; exit 3)")
+    check_p.add_argument("--directory", required=True)
+    check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
+    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt or an unsent .eml; "
+                                 "sends nothing")
+    for flag in ("--directory", "--agency"):
+        copy_p.add_argument(flag, required=True)
+    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email"))
+    copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -740,6 +779,7 @@ def main():
     due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
+    due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -748,6 +788,7 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -785,6 +826,11 @@ def main():
         batch.add_argument(flag, required=True)
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
+    verify = sources.add_parser("verify-copy", help="Hash a copy you downloaded from an entry's public_url and record "
+                                "whether it is the same file; nothing is fetched")
+    for flag in ("--directory", "--sha256", "--file", "--checked-on"):
+        verify.add_argument(flag, required=True)
+    verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
     content_cmds.add_parser(
@@ -849,6 +895,20 @@ def main():
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
     diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
+    cr_cmds = commands.add_parser("correction-request", help="Private log of correction requests and their decisions "
+                                  "(nothing is sent or published)").add_subparsers(dest="cr_command", required=True)
+    cr_add, cr_decide = cr_cmds.add_parser("add"), cr_cmds.add_parser("decide")
+    for flag in ("--finding", "--received", "--summary", "--directory"):
+        cr_add.add_argument(flag, required=True)
+    cr_decide.add_argument("decision", choices=("accepted", "declined"))
+    cr_decide.add_argument("--id", type=int, required=True)
+    for flag in ("--on", "--note", "--directory"):
+        cr_decide.add_argument(flag, required=True)
+    cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
+    today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
+    today_p.add_argument("--directory", required=True)
+    today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
+    today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -937,6 +997,13 @@ def main():
             from .sources_cmd import add_batch
             print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
                                        dry_run=args.dry_run)))
+        elif args.command == "sources" and args.sources_command == "verify-copy":
+            from .sources_cmd import verify_copy
+            try:
+                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because)))
+            except ValueError as exc:
+                print(f"Stopped: {exc}", file=sys.stderr)
+                sys.exit(3)
         elif args.command == "sources":
             from .sources_cmd import edit_source, remove_source
             print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
@@ -994,6 +1061,17 @@ def main():
                 return
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
+        elif args.command == "correction-request":
+            from . import correction_requests as cr
+            read_config(root)
+            try:
+                result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
+                          cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
+                          else cr.list_requests(root))
+            except ValueError as exc:
+                fixes.emit(exc)
+                sys.exit(3)
+            print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root)
@@ -1022,25 +1100,36 @@ def main():
             print("Nothing was sent.")
         elif args.command == "kit-sent":
             from .kit_track import record_sent
-            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
+            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
+                                         replace=args.replace), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-check":
+            from .kit_check import run_cli as kit_check_cli
+            kit_check_cli(root, as_json=args.as_json)
+        elif args.command == "kit-copy":
+            from .kit_copy import run_cli as kit_copy_cli
+            kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
-            print(json.dumps(kit_track_status(root), indent=2))
+            print(json.dumps(kit_track_status(root, request=args.request), indent=2))
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
             print("Read-only. Nothing was sent.", file=sys.stderr)
+        elif args.command == "today":
+            from .today import run_cli as today_cli
+            read_config(root)  # not a campaign folder: Stopped, before any source is read
+            print(today_cli(root, args.as_of, args.as_json))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
-            report = kit_track_due(root, args.as_of)
+            report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
             if report["past_due"]:
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
-                                         records=args.record), indent=2))
+                                         records=args.record, request=args.request), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)

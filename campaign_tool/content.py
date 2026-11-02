@@ -411,7 +411,22 @@ def load_meeting(document, label, today=None):
 
 # --- sources.json ----------------------------------------------------------
 
-LIBRARY_KEYS = {"sha256", "title", "agency_id", "received_at", "public_url", "fragment", "pages", "note"}
+LIBRARY_KEYS = {"sha256", "title", "agency_id", "received_at", "public_url", "fragment", "pages", "note", "public_copy"}
+COPY_REASONS = ("redacted", "converted", "unknown")
+
+
+def _public_copy(entry, label):
+    """Optional organizer check of the linked public copy (DF2037-05): {matches, checked_on, reason iff differing}."""
+    value, label = entry["public_copy"], f"{label}.public_copy"
+    if entry["public_url"] is None:
+        raise ContentError(f"{label}: needs a public_url")
+    _require_keys(value, {"matches", "checked_on", "reason"}, {"matches", "checked_on"}, label)
+    if type(value["matches"]) is not bool:
+        raise ContentError(f"{label}.matches: must be true or false")
+    _timestamp(value["checked_on"], f"{label}.checked_on", date_only=True)
+    if value["matches"] == ("reason" in value) or value.get("reason", "redacted") not in COPY_REASONS:
+        raise ContentError(f"{label}.reason: one of {', '.join(COPY_REASONS)}, present only when matches is false")
+    return {key: value[key] for key in ("matches", "checked_on", "reason") if key in value}
 
 
 def load_sources(document):
@@ -441,6 +456,7 @@ def load_sources(document):
             "fragment": fragment,
             "pages": entry.get("pages") if type(entry.get("pages")) is int and entry.get("pages") >= 0 else None,
             "note": _text(entry, "note", label, default=""),
+            **({"public_copy": _public_copy(entry, label)} if "public_copy" in entry else {}),
         })
     return entries
 
@@ -503,6 +519,26 @@ def _contract(value, label):
             "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
+ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
+
+
+def _alpr_policy(value, label):
+    """A posted ALPR usage policy an organizer found (``profile.alpr_policy``); linked only, never fetched or judged."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and not ALPR_POLICY_KEYS <= set(value):
+        raise ContentError(f"{label}: needs url, source_url and checked_on")
+    _require_keys(value, ALPR_POLICY_KEYS, ALPR_POLICY_KEYS, label)
+    try:
+        checked = _calendar_day(value["checked_on"], f"{label}.checked_on")
+    except ContentError:
+        checked = None
+    if checked is None or checked > date.today():
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    return {"url": _https(value["url"], f"{label}.url"),
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+
+
 def _flock_url(entry, item):
     """Transparency-portal link for an organizer-verified slug; built from the slug only, never fetched."""
     slug = entry.get("flock_transparency_slug")
@@ -539,7 +575,7 @@ def load_agencies(document, label):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract"}, set(), f"{item}.profile")  # county_profile stays without
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -559,6 +595,7 @@ def load_agencies(document, label):
             "verification": _verification(entry, item),
             "flock_transparency_url": _flock_url(entry, item),
             "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
+            "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),

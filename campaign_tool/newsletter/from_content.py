@@ -6,7 +6,8 @@ are loaded by ``content.load_content``; cancelled meetings are left out here.
 The since/upcoming window is applied by ``build_draft``, not duplicated. Each
 finding carries its ``corrections`` (``[{"date": "YYYY-MM-DD", "note"}]``) so a
 finding published before ``since`` but corrected on or after it is listed by
-``build_draft`` under "Corrections", not as a new finding.
+``build_draft`` under "Corrections", not as a new finding. Each meeting carries
+``participation`` (``content.load_participation``'s dict, or None when unverified).
 """
 from ..content import load_content
 
@@ -22,7 +23,8 @@ def manifest_from_content(root, cfg, since=None):
                  "corrections": [{"date": c["date"], "note": c["note"]} for c in f["corrections"]]}
                 for f in model["findings"]]
     meetings = [{"body": m["body"], "starts_at": m["starts_at"], "agenda_item": m["agenda_item"],
-                 "agenda_url": m["agenda_url"], "relevance": None}
+                 "agenda_url": m["agenda_url"], "relevance": None,
+                 "participation": m.get("participation")}  # DF2037-15: verified facts, or None (check the agenda)
                 for m in model["meetings"] if m.get("status") != "cancelled"]
     # DF2237-12: only outcomes an organizer recorded (verified_at on or after the day of `since`);
     # a meeting without one is never listed as decided.

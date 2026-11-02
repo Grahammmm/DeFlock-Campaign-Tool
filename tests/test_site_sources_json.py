@@ -95,11 +95,12 @@ class SourcesJsonTests(unittest.TestCase):
             "sources": [
                 {"sha256_prefix": A[:12], "title": "Synthetic ALPR policy", "agency_id": "ca-cedar-police", "agency_name": police,
                  "received_at": "2026-01-20T16:30:00+00:00", "public_url": "https://example.invalid/fixtures/policy",
-                 "pages": 2, "cited_by": [F2, F1]},
+                 "pages": 2, "cited_by": [F2, F1], "public_copy": None},
                 {"sha256_prefix": B[:12], "title": "Synthetic audit log", "agency_id": "ca-cedar-police", "agency_name": police,
-                 "received_at": "2026-01-22T09:00:00+00:00", "public_url": None, "pages": None, "cited_by": [F2]},
+                 "received_at": "2026-01-22T09:00:00+00:00", "public_url": None, "pages": None, "cited_by": [F2], "public_copy": None},
                 {"sha256_prefix": C[:12], "title": "Synthetic vendor letter", "agency_id": "ca-unconfigured-agency",
-                 "agency_name": None, "received_at": "2026-01-25T10:00:00Z", "public_url": None, "pages": 0, "cited_by": []},
+                 "agency_name": None, "received_at": "2026-01-25T10:00:00Z", "public_url": None, "pages": 0, "cited_by": [],
+                 "public_copy": None},
             ]}
         self.assertEqual(doc, expected)
         self.assertEqual(set(doc), set(PUBLIC_LIBRARY_TOP_LEVEL))

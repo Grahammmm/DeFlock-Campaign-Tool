@@ -174,6 +174,19 @@ store's `CONTACT.csv`), writes nothing and fetches nothing. Without the option `
 
 ## Recording a hand-sent request
 
+Before sending, `kit-check --directory ../my-campaign [--json]` lists, for each selected law-enforcement agency, the
+draft's unfilled `[placeholders]` with line numbers, `fee cap missing`, `date range missing` and `recipient not
+verified` (no `verified: true`; see `kit-verify-agency`), then `N of M drafts need attention`. It writes nothing and
+exits 3 when any draft needs attention. A Markdown link `[text](url)` is not a placeholder. `kit-sent` runs the same
+check for its agency and refuses a draft that still fails it.
+
+To copy a draft out, `kit-copy --directory D --agency ID --for portal|email [--json]` writes only the sendable part,
+the Subject line and the request text after it, to `kit/outgoing/ID.txt` (with its `characters` count, to compare a
+portal's limit) or an unsent `kit/outgoing/ID.eml` addressed to the verified `records_email` (no From or Date; your
+mail client adds them). The banner, `To:`/`Agency:` lines, `Statutory context` and `Operator checklist` are left out:
+they are notes for you, not for the agency. Unfilled `[placeholders]` in that part, or (email) no verified address,
+stop with exit 3. Nothing is sent and `kit/sent.json` is untouched; record the send yourself with `kit-sent`.
+
 After you send a draft yourself, record it (nothing is sent by the tool):
 
     python3 -m campaign_tool kit-sent --directory ../my-campaign --agency ca-example-police --date 2026-10-01 --channel email
@@ -183,6 +196,17 @@ keeps the date, channel and SHA-256 of `requests/<agency_id>.md`. A second recor
 one with no steps. `kit-status --directory D` lists each request with `determination_due` and `with_extension` from
 the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
+
+### Several requests to one agency
+
+A second or narrowed request to an agency you already recorded gets its own name: draft it yourself in
+`kit/requests/<agency_id>--<name>.md`, then record it with `kit-sent ... --request <name>`. Names are 1-40 characters
+`a-z`, `0-9` or `-`, starting with a letter or digit; the first request is `main` (the default, drafted in
+`requests/<agency_id>.md`). Each request keeps its own date, channel, draft SHA-256 and steps, and `--replace` only
+touches the named one. In `kit/sent.json` a named request is keyed `<agency_id>#<name>`; files written before this
+change read unchanged, every entry being request `main` (a `#main` key is refused as malformed). `kit-status` and
+`kit-due` print `request` on every row and take `--request NAME` to list only that name; `kit-response --request NAME`
+records a step on it. A name with no recorded request is refused (`no sent request <agency>/<name>`).
 
 Record what the agency did, and when, with `kit-response --directory D --agency ID --date YYYY-MM-DD --kind K
 [--note TEXT]`. `K` is `acknowledged`, `extension`, `determination`, `produced`, `denied` or `closed`. Dates must
