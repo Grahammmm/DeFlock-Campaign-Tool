@@ -142,6 +142,17 @@ loader as `build`, `agency_id` must be one of the campaign's agencies, and the
 file is replaced atomically; on any refusal it is left untouched. `--public-url`
 is only recorded, never fetched or uploaded, and nothing is published.
 
+`sources add-batch --directory D --source-id ID --agency-id A --received-at T
+[--fragment F] [--dry-run]` registers every record received under one ingest
+`source_id` (read through `status --list`'s in-memory ledger copy) whose hash
+is not yet in the library, in one validated atomic write of at most 500 new
+entries. Each title is the original file name stem as plain text (at most 120
+characters) followed by `[EDIT ME: title]`; `public_url` and `pages` are null
+and the note says which batch added it. `--fragment` defaults to the agency's
+one existing fragment. It prints `{"added": [12-char prefixes],
+"already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
+second run adds nothing. Nothing is fetched or published.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
