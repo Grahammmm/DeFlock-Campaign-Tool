@@ -298,10 +298,12 @@ def _ingest_dir(args, root):
                       **({"dry_run": True} if dry else {})}, indent=2))
 
 
-def status(root, check=False):
+def status(root, check=False, fix=False):
     read_config(root)
-    from .store_check import check_store
-    result = check_store(root) if check else None
+    from .store_check import check_store, fix_modes
+    if fix:
+        print(json.dumps(fix_modes(root), indent=2))
+    result = check_store(root) if check or fix else None
     status_counts(root)
     if result is not None:
         print(json.dumps({"check": result}, indent=2))
@@ -555,6 +557,8 @@ def main():
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
+            cmd.add_argument("--fix-modes", action="store_true",
+                             help="chmod loose private dirs/files to 0700/0600, then run --check")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
@@ -635,6 +639,9 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
+    due_p.add_argument("--directory", required=True)
+    due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -786,6 +793,12 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-due":
+            from .kit_track import due as kit_track_due
+            report = kit_track_due(root, args.as_of)
+            print(json.dumps(report, indent=2))
+            if report["past_due"]:
+                sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
@@ -796,7 +809,10 @@ def main():
             print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,
                          agency_list_exists=(root / "kit" / "agencies.json").is_file()))
         else:
-            status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
+            if args.command == "status":
+                status(root, check=args.check, fix=args.fix_modes)
+            else:
+                doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(1)
