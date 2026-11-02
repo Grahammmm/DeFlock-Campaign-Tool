@@ -179,3 +179,34 @@ def status(root, today=None, law_base=None):
                      "extended": "extension" in kinds, "closed": "closed" in kinds,
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None})
     return {"requests": rows, "law_package_status": package_status, "note": NOTE}
+
+
+ANSWERED = {"determination", "produced", "denied"}
+
+
+def due(root, as_of=None, *, today=None, law_base=None):
+    """Open (unanswered, unclosed) requests with days to or past the provisional determination date (read-only)."""
+    day = _day(as_of) if as_of is not None else (today or date.today())
+    if day is None:
+        raise ValueError("--as-of must be a real YYYY-MM-DD date")
+    report = status(root, law_base=law_base)
+    kinds = {agency_id: {s.get("kind") for s in entry["steps"] if isinstance(s, dict)}
+             for agency_id, entry in read_sent(root).items()}
+    open_rows, answered = [], []
+    for row in report["requests"]:
+        if row["closed"]:
+            continue
+        base = {"agency_id": row["agency_id"], "name": row["name"], "sent_on": row["sent_on"]}
+        if kinds.get(row["agency_id"], set()) & ANSWERED:
+            answered.append({**base, "last_step": row["last_step"]})
+        elif row["determination_due"] is None:
+            open_rows.append({**base, "due": None, "days": None, "state": "no_law_package"})
+        else:
+            days = (date.fromisoformat(row["determination_due"]) - day).days
+            open_rows.append({**base, "due": row["determination_due"], "days": days,
+                              "state": "past_due" if days < 0 else "due_today" if days == 0 else "upcoming"})
+    open_rows.sort(key=lambda row: (row["due"] or "", row["agency_id"]))
+    missing = report["law_package_status"] == "missing"
+    return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
+            "answered": answered, "past_due": sum(row["state"] == "past_due" for row in open_rows),
+            "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE}

@@ -556,6 +556,9 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
+    due_p.add_argument("--directory", required=True)
+    due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -669,6 +672,12 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-due":
+            from .kit_track import due as kit_track_due
+            report = kit_track_due(root, args.as_of)
+            print(json.dumps(report, indent=2))
+            if report["past_due"]:
+                sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
