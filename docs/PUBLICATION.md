@@ -75,6 +75,13 @@ Preview before you approve: `finding preview DRAFT --directory D --out DIR` (DIR
 the page `build` would render, with a "Draft - not published" banner and `noindex`; it never touches `public/`, the feed or the sitemap.
 The draft is rendered alongside the published findings (cited-rule citations and law-package status as build shows them); a slug already used by another finding or a cited rule build would refuse stops the preview.
 
+Sending a packet to an outside reviewer (an attorney or a partner): `finding packet DRAFT --directory D --out DIR` makes a new
+private folder (0700, files 0600; DIR must not exist and must be outside `public/`, `content/` and `private/`) with
+`draft.json`, `preview.html`, each cited record as `records/<sha256>` (re-hashed first), `receipts.json` (its ledger
+receipt rows), `reviews.json`, `review-status.json`, `README.txt` and `MANIFEST.sha256` (`sha256sum -c MANIFEST.sha256`).
+A missing or altered record, a ledger with a journal/WAL file beside it, or records over 500 MiB stop it with nothing
+written. The tool never zips, uploads or sends it: hand it over yourself, privately, and treat it as confidential.
+
 Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
 `ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
 spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
