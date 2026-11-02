@@ -5,6 +5,7 @@ Run from the repository root: python3 -B -m unittest tests.test_today -v
 import contextlib
 import io
 import json
+import shlex
 import shutil
 import sys
 import tempfile
@@ -124,6 +125,28 @@ class TodayTests(unittest.TestCase):
         self.assertTrue(contact["command"].startswith(f"kit-verify-agency --directory {self.root} --agency-id {self.a} "))
         self.assertEqual(contact["due"], "2025-01-01")
         self.assertNotIn(self.b, json.dumps(items))  # checked 14 days ago: fresh
+
+    def test_finding_commands_name_the_file_read_not_its_id(self):
+        """A draft whose filename differs from its id gets its own path; a decoy named <id>.json is not used."""
+        self.build_tree()
+        drafts = self.root / "private" / "drafts"
+        notes, blocked_notes = drafts / "notes.json", drafts / "blocked notes.json"
+        (drafts / "td-ready.json").rename(notes)
+        (drafts / "td-block.json").rename(blocked_notes)
+        (drafts / "td-ready.json").write_text(json.dumps(draft(id="decoy", slug="decoy")), encoding="utf-8")
+        items = {i["kind"]: i for i in today.todo(self.root, AS_OF) if i["kind"].startswith("finding")}
+        self.assertEqual(set(items), {"finding_ready", "finding_blocked"})
+        ready, blocked = items["finding_ready"], items["finding_blocked"]
+        self.assertEqual(ready["command"],
+                         f"finding publish {notes} --directory {self.root} --approved-by NAME")
+        self.assertEqual(blocked["command"],
+                         f"finding review-status {shlex.quote(str(blocked_notes))} --directory {self.root}")
+        self.assertNotIn("DRAFT", json.dumps(list(items.values())))
+        status = json.loads(self.ok(*shlex.split(blocked["command"])))  # the listed command runs as printed
+        self.assertIn("missing_summary", json.dumps(status))  # td-block's own blocker: the renamed file was read
+        argv = shlex.split(ready["command"])  # the publish command parses to the renamed file
+        self.assertEqual(argv[:3], ["finding", "publish", str(notes)])
+        self.assertEqual(findings.load_draft(Path(argv[2]))["id"], "td-ready")
 
     def test_window_edges_and_due_today(self):
         self.build_tree()

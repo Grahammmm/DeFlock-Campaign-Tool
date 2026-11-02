@@ -63,17 +63,16 @@ def _requests(root, as_of, directory, law_base):
 
 def _findings(root, directory):
     items = []
-    for row in findings.status_rows(root):
+    for row in findings.status_rows(root, draft_paths=True):
         if row["state"] == "unreadable":
             items.append(_unreadable(row["path"], row["error"]))  # status_rows' own path and withheld-reason text
-        elif row["state"] in ("ready", "blocked"):
-            path = root / "private" / "drafts" / (row["id"] + ".json")
-            draft = shlex.quote(str(path)) if path.is_file() else "DRAFT"
+        elif row["state"] in ("ready", "blocked"):  # only drafts reach these states; name the file actually read
+            draft, key = shlex.quote(row["draft_path"]), f"{row['id']} {row['draft_path']}"
             items.append(_item("finding_ready", f"Finding {row['id']} is reviewed and ready to publish",
-                               f"finding publish {draft} --directory {directory} --approved-by NAME", key=row["id"])
+                               f"finding publish {draft} --directory {directory} --approved-by NAME", key=key)
                          if row["state"] == "ready" else
                          _item("finding_blocked", f"Finding {row['id']} is blocked: {', '.join(row['blockers'])}",
-                               f"finding review-status {draft} --directory {directory}", key=row["id"]))
+                               f"finding review-status {draft} --directory {directory}", key=key))
     return items
 
 
