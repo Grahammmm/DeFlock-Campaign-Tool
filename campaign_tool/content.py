@@ -295,7 +295,8 @@ def load_finding(document, label):
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
                 "status", "participation"}
 MEETING_STATUSES = ("scheduled", "cancelled")
-PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "source_url", "verified_by", "verified_at"}
+PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
+                      "verified_at"}
 
 
 def load_participation(value, starts_at, label, today=None):
@@ -321,13 +322,17 @@ def load_participation(value, starts_at, label, today=None):
     for key, part in (("remote", remote), ("written_comment", written)):
         if part and len(part["how"]) > 200:
             raise ContentError(f"{label}.{key}.how: at most 200 characters")
+    minutes = value.get("speaker_minutes")  # per-speaker limit from the same official source; never assumed
+    if minutes is not None and (type(minutes) is not int or not 1 <= minutes <= 10):
+        raise ContentError(f"{label}.speaker_minutes: must be a whole number of minutes from 1 to 10, or null")
     verified_at = _timestamp(value["verified_at"], f"{label}.verified_at", date_only=True)
     checked = datetime.strptime(verified_at, "%Y-%m-%d").date()
     if checked > (today or date.today()) or (starts.date() - checked).days > 30:
         raise ContentError(f"{label}.verified_at: must not be in the future or more than 30 days before the meeting")
     return {"in_person": in_person, "remote": remote, "written_comment": written,
             "source_url": _https(value["source_url"], f"{label}.source_url"),
-            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at}
+            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at,
+            **({"speaker_minutes": minutes} if minutes is not None else {})}
 
 
 def load_meeting(document, label, today=None):
