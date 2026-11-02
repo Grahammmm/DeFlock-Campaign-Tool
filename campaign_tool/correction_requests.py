@@ -69,6 +69,8 @@ def _load(path):
         document = json.loads(path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _unreadable(f"not valid JSON ({exc.__class__.__name__})") from None
+    except OSError as exc:
+        raise _unreadable(f"cannot read it ({exc.__class__.__name__})") from None
     if not isinstance(document, dict):
         raise _unreadable("top level is not an object")
     if unknown := [key for key in document if key not in ("schema_version", "requests")]:

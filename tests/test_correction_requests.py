@@ -10,6 +10,7 @@ import sys
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -178,6 +179,19 @@ class CorrectionRequestTests(unittest.TestCase):
             self.assertIn(needle, doctor_report(self.root)["correction_requests_error"])
         result = self.cli("correction-request", "list", "--directory", self.root, returncode=3)
         self.assertIn("unreadable", result.stderr)
+
+    def test_os_error_reading_the_log_is_reported_not_raised(self):
+        self.add()
+        real_read = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path.name == cr.NAME:
+                raise PermissionError(13, "Permission denied")
+            return real_read(path, *args, **kwargs)
+        with mock.patch.object(Path, "read_text", read_text):
+            self.refused("unreadable: cannot read it (PermissionError)", cr.list_requests, self.root)
+            self.refused("cannot read it (PermissionError)", self.add)
+            self.assertIn("cannot read it (PermissionError)", doctor_report(self.root)["correction_requests_error"])
 
     def test_build_output_ignores_the_log(self):
         def built():
