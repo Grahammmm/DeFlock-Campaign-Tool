@@ -665,6 +665,9 @@ def main():
         review_p.add_argument(flag, required=True)
     finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
                             ).add_argument("--directory", required=True)
+    publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
+    for flag in ("--directory", "--approved-by"):
+        publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
@@ -729,6 +732,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "publish":
+                print(json.dumps(findings.publish(root, args.draft, args.approved_by)))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
             draft = findings.load_draft(args.draft)
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))

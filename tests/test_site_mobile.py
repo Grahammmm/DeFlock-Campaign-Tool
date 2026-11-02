@@ -15,17 +15,21 @@ from tests.test_site_build import EXPECTED_CSP, PAGES
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/fictional-campaign"
 # Captured from main before this CSS-only change; not candidate-derived snapshots.
+# STARTER_SHA re-captured from main a9db9b0c: the only starter CSS change since the
+# mobile pin (5926dda5) is #620's .record-no and .provenance-note rules.
 PRINT_SHA = (
     "f7818cba38e2d518"  # pragma: allowlist secret
     "44cff79c0cfc3c58"  # pragma: allowlist secret
     "6d2514e54ef168aa"  # pragma: allowlist secret
     "64bda5cc2fd1c252"  # pragma: allowlist secret
 )
+# Re-pinned after 07edf7a4 (#620) deliberately appended .record-no and .provenance-note to
+# styles.css.tmpl for the plain-language provenance markup; previous pin b6701371...c7cc.
 STARTER_SHA = (
-    "b67013717d1d9601"  # pragma: allowlist secret
-    "5f0153fd7b0fac0d"  # pragma: allowlist secret
-    "27cac03515f8eb37"  # pragma: allowlist secret
-    "2c9d352bbbd9c7cc"  # pragma: allowlist secret
+    "a8499bf6ae152ec0"  # pragma: allowlist secret
+    "968e94a52033936c"  # pragma: allowlist secret
+    "dad6261d3fb17ac1"  # pragma: allowlist secret
+    "f4ae1255a2a0c1af"  # pragma: allowlist secret
 )
 
 
