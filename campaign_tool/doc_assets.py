@@ -6,8 +6,9 @@ memory stays bounded). Streams are found by sweeping every raw ``stream`` keywor
 string, ``/Length`` or stray ``endstream`` can hide one. Anything malformed or over a bound, and any ``/Filter`` other
 than Flate-only or image-only, is ``unreadable PDF`` / ``unreadable SVG`` and is refused too. A Flate stream is also
 read as a PDF reader sees it once a ``/DecodeParms`` PNG or TIFF predictor is undone (at most ``MAX_PREDICT_TOTAL``
-bytes in all); a ``/DecodeParms`` that is not direct, or any other predictor, is unreadable. Only kind names leave
-this module.
+bytes in all); a ``/DecodeParms`` that is not direct, any other predictor, or a predictor followed by anything but
+the rest of a stream dictionary (a string or comment could hold a decoy ``stream``) is unreadable. Only kind names
+leave this module.
 """
 import bisect
 import re
@@ -40,6 +41,11 @@ PDF_PARAM_INT = re.compile(rb"([+-]?\d+)(?![\d.])")
 PDF_PARAM_REF = re.compile(rb"\d+[\x00\t\n\x0c\r ]+\d+[\x00\t\n\x0c\r ]+R(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])")
 PDF_PARAM_OTHER = re.compile(rb"[+-]?\d*\.\d*|true\b|false\b|null\b|/[^\x00\t\n\x0c\r ()<>\[\]{}/%]*")
 MAX_PREDICT_TOTAL = MAX_INFLATE  # all predictor-undone bytes together (pure Python, so kept smaller than inflate)
+# what may lie between a predictor's /DecodeParms and the ``stream`` keyword it applies to: the rest of a stream
+# dictionary (names, numbers, references, booleans, null, arrays, dictionaries, hex strings), ending in ``>>``. A
+# literal string, comment or other token there could hold a decoy ``stream`` keyword, so it is not accepted.
+PDF_DICT_TAIL = re.compile(rb"(?:[\x00\t\n\x0c\r ]+|/[^\x00\t\n\x0c\r ()<>\[\]{}/%]+|[+-]?(?:\d+\.?\d*|\.\d+)"
+                           rb"|R|true|false|null|\[|\]|<<|>>|<[0-9A-Fa-f\x00\t\n\x0c\r ]*>)*+")  # possessive: linear
 FLATE = {b"FlateDecode", b"Fl"}
 IMAGE_FILTERS = {b"DCTDecode", b"DCT", b"JPXDecode", b"CCITTFaxDecode", b"CCF", b"JBIG2Decode"}  # carry no names
 SVG_DOCTYPE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
@@ -228,12 +234,20 @@ def _inflate(data, at):
     return bytes(out)
 
 
+def _dict_tail(data, end, keyword):
+    """True if only the rest of a stream dictionary, closed by ``>>``, lies between ``end`` and the ``stream``
+    keyword at ``keyword``: no string, comment or stray token in which a decoy keyword could be."""
+    tail = data[end:keyword]
+    return PDF_DICT_TAIL.fullmatch(tail) is not None and tail.rstrip(b"\x00\t\n\x0c\r ").endswith(b">>")
+
+
 def _inflated(data):
     """Yield the inflated bytes of every zlib stream after any raw ``stream`` keyword; raises ``Unreadable`` past a
     bound, on bad data, on a ``/Filter`` that is neither Flate-only nor image-only, or on a Flate ``/Filter`` whose
     next stream is not zlib. Nothing is lexed, so no comment, string or stream data can hide a stream from the sweep."""
     view = memoryview(data)
-    starts = [match.end() for match in PDF_STREAM.finditer(data)]
+    keywords = [match.span() for match in PDF_STREAM.finditer(data)]
+    starts = [end for _, end in keywords]
     predicted = {}  # stream start -> every predictor any /DecodeParms before it (and after the previous one) names
     for match in PDF_NAME.finditer(data):
         key = _unhex(match[1])
@@ -245,9 +259,13 @@ def _inflated(data):
                     raise Unreadable()
         elif key in DECODE_PARMS:
             found, end = _params_value(data, match.end())
+            found = {p for p in found if p[0] != 1}
             following = bisect.bisect_left(starts, end)
-            if following < len(starts):
-                predicted.setdefault(starts[following], set()).update(p for p in found if p[0] != 1)
+            if found and following < len(starts):
+                # checked once a stream: a later /DecodeParms' tail lies inside the earlier one, already checked
+                if starts[following] not in predicted and not _dict_tail(data, end, keywords[following][0]):
+                    raise Unreadable()  # a string, comment or other token before it: which stream is predicted?
+                predicted.setdefault(starts[following], set()).update(found)
     count = total = undone = 0
     for start in starts:
         if not _zlib_header(view, start):

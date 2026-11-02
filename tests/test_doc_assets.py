@@ -167,8 +167,15 @@ class PdfKindsTests(unittest.TestCase):
         # every /DecodeParms before a stream counts, so an earlier null one does not stop the predictor being undone
         decoy = flate(png_rows(hidden, 2, 1), b"/T (x) /DecodeParms null /DecodeParms << /Predictor 12 /Columns 2 >>")
         self.assertEqual(pdf_kinds(pdf(decoy)), found)
+        # a `stream` keyword in a string, comment or name after the predictor cannot take it from the real stream:
+        # which stream it applies to is then unclear, so the PDF is unreadable
+        for between in (b"/T (stream\n)", b"/T (>> stream\n)", b"%stream\n", b"/stream", b"/T <</X 1>> [stream\n]"):
+            hiding = flate(png_rows(hidden, 1, 0), b"/Type /ObjStm /N 1 /First 4 /DecodeParms << /Predictor 10 "
+                           b"/Columns 1 >> " + between)
+            self.assertEqual(pdf_kinds(pdf(hiding)), [PDF_UNREADABLE], between)
         # clean predicted streams (an xref stream, images with image-filter parameters) have no kinds
-        xref = flate(png_rows(bytes(range(40)), 5, 2), b"/Type /XRef /DecodeParms << /Columns 5 /Predictor 12 >>")
+        xref = flate(png_rows(bytes(range(40)), 5, 2), b"/Type /XRef /DecodeParms << /Columns 5 /Predictor 12 >> "
+                     b"/W [1 3 1] /Index [0 8] /Size 8 /Root 1 0 R /ID [<0aF1><0A f1>] /Prev 1.5 /X true /Y null")
         ccitt = (b"<< /Subtype /Image /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 8 /BlackIs1 true >> "
                  b"/Length 3 >>\nstream\nabc\nendstream")
         jbig2 = (b"<< /Subtype /Image /Filter /JBIG2Decode /DecodeParms << /JBIG2Globals 9 0 R /F 1.5 /N /x >> "
