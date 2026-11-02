@@ -21,11 +21,13 @@ PRINT_SHA = (
     "6d2514e54ef168aa"  # pragma: allowlist secret
     "64bda5cc2fd1c252"  # pragma: allowlist secret
 )
+# Starter re-pinned after #620 (merged after this test's capture) added only the
+# .record-no and .provenance-note rules to styles.css.tmpl; no other byte changed.
 STARTER_SHA = (
-    "b67013717d1d9601"  # pragma: allowlist secret
-    "5f0153fd7b0fac0d"  # pragma: allowlist secret
-    "27cac03515f8eb37"  # pragma: allowlist secret
-    "2c9d352bbbd9c7cc"  # pragma: allowlist secret
+    "a8499bf6ae152ec0"  # pragma: allowlist secret
+    "968e94a52033936c"  # pragma: allowlist secret
+    "dad6261d3fb17ac1"  # pragma: allowlist secret
+    "f4ae1255a2a0c1af"  # pragma: allowlist secret
 )
 
 
