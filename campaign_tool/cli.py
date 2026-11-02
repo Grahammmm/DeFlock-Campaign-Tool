@@ -676,9 +676,12 @@ def main():
     ).add_argument("--directory", required=True)
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
-    review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
+    review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
+    payload_p = finding_cmds.add_parser("review-payload", help="Print the receipt bytes to ssh-keygen -Y sign (read-only)")
     for flag in ("--directory", "--role", "--decision", "--reviewer", "--rationale"):
         review_p.add_argument(flag, required=True)
+        payload_p.add_argument(flag, required=True)
+    review_p.add_argument("--signature", metavar="SIG", help="SSH signature over the review-payload bytes")
     finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
                             ).add_argument("--directory", required=True)
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
@@ -691,6 +694,7 @@ def main():
     roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
     roster_add.add_argument("--name", required=True)
     roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
+    roster_add.add_argument("--ssh-key", metavar="FILE.pub", help="Set or replace this reviewer's signing key")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
@@ -765,19 +769,24 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
-            print(json.dumps(findings.add_reviewer(root, args.name, args.role) if add else findings.list_reviewers(root),
-                             indent=2, ensure_ascii=False))
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key) if add
+                             else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
         elif args.command == "finding":
             from . import findings
             read_config(root)
             if args.finding_command == "publish":
-                print(json.dumps(findings.publish(root, args.draft, args.approved_by)))
+                result = findings.publish(root, args.draft, args.approved_by)
+                print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
+                print(findings.trust_line(result["receipt_trust"]))
                 return
             draft = findings.load_draft(args.draft)
-            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
+            if args.finding_command == "review-payload":
+                sys.stdout.buffer.write(findings.review_payload(root, draft, args.role, args.decision, args.reviewer, args.rationale))
+                return
+            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
