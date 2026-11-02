@@ -242,3 +242,17 @@ exists (a regular file, not a symlink), sent date and channel, last response ste
 come first, then a totals line (selected, drafted, sent, answered, with records, with findings, and requests for
 agencies no longer selected). Without `content/` sources and findings are 0. `--csv` writes RFC 4180 CSV to stdout;
 cells starting with `=`, `+`, `-` or `@` get a leading `'`. It writes nothing and sends nothing.
+
+### Track requests in a spreadsheet
+
+`kit-status --directory D --csv FILE` writes the same requests as `kit-status`, in the same order, to a new private
+spreadsheet file and prints `{"written", "rows", "law_package_status", "note"}`. Columns: `agency_id, name, sent_on,
+channel, provisional_determination_due, provisional_with_extension, extended, closed, steps, last_step_on,
+last_step_kind, linked_records, draft_changed_since_sent`; `yes`/`no` for true/false and an empty cell for an unknown
+value (for example both due columns when there is no law package). Record hashes are not exported, only the count.
+The file is created with mode 0600 and is never overwritten: `FILE` must end in `.csv`, its folder must exist, and it
+must not exist yet (a symlink counts as existing) or be inside the campaign's `public/` or `content/` folder (also
+through a symlinked folder); each is refused by name and nothing is written. A cell starting with `=`, `+`, `-`, `@`,
+a tab or a carriage return gets a leading `'` so a spreadsheet does not run it as a formula. Dates are provisional
+reminders; the period runs from the agency's receipt. Without `--csv` the JSON output is unchanged. The file stays on
+this computer: nothing is sent, uploaded or published.
