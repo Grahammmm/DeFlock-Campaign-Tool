@@ -480,6 +480,8 @@ def main():
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
+            cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
+            cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -571,6 +573,8 @@ def main():
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
+    if getattr(args, "json", False) and not args.checklist:
+        parser.error("--json requires --checklist")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -637,6 +641,9 @@ def main():
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "doctor" and args.checklist:
+            from .doctor_checklist import render
+            print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json))
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:

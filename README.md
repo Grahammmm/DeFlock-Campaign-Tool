@@ -17,6 +17,7 @@ cd DeFlock-Campaign-Tool
 python3 -m campaign_tool init --directory ../my-campaign --county "Your County" --state CA --name "Your Campaign"
 python3 -m campaign_tool kit --directory ../my-campaign
 python3 -m campaign_tool doctor --directory ../my-campaign
+python3 -m campaign_tool doctor --directory ../my-campaign --checklist  # [ok]/[todo] rows; each todo names its next step and who takes it
 python3 -m campaign_tool build --directory ../my-campaign
 python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
 ```
