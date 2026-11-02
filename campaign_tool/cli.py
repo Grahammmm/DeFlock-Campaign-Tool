@@ -266,11 +266,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root):
-    print(json.dumps(doctor_report(root), indent=2))
+def doctor(root, contact_max_age_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
 
 
-def doctor_report(root):
+def doctor_report(root, contact_max_age_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -291,8 +291,11 @@ def doctor_report(root):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
-    from .kit import kit_status
+    from .kit import kit_status, stale_contacts
     report.update(kit_status(root))
+    if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
+        report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
+        report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
@@ -473,6 +476,8 @@ def main():
                              help="Scan the generated public/ tree for private paths and credential patterns")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
+        if name == "doctor":
+            cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -549,15 +554,29 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
-    sources_add = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
-                                      ).add_subparsers(dest="sources_command", required=True).add_parser(
+    sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
+                                  ).add_subparsers(dest="sources_command", required=True)
+    sources_add = sources.add_parser(
         "add", help="Register one ingested record by hash prefix; validates the whole list, publishes nothing")
     for flag in ("--directory", "--sha256", "--title", "--agency-id", "--received-at", "--fragment"):
         sources_add.add_argument(flag, required=True)
     sources_add.add_argument("--public-url", default=None, help="Recorded only; never fetched or uploaded")
     sources_add.add_argument("--pages", type=int, default=None)
     sources_add.add_argument("--note", default="")
+    sources.add_parser("list", help="Print every library entry and the published findings citing it (read-only)"
+                       ).add_argument("--directory", required=True)
+    sources_edit = sources.add_parser("edit", help="Change title, note, public_url or pages of one entry; publishes nothing")
+    sources_remove = sources.add_parser("remove", help="Delete one entry unless a published finding cites its record")
+    for sub in (sources_edit, sources_remove):  # entries chosen by >= 12 hex of the library hash (+ --fragment)
+        for flag, required in (("--directory", True), ("--sha256", True), ("--fragment", False)):
+            sub.add_argument(flag, required=required, default=None)
+    for flag in ("--title", "--note", "--public-url"):
+        sources_edit.add_argument(flag, default=None)
+    sources_edit.add_argument("--clear-public-url", action="store_true")
+    sources_edit.add_argument("--pages", type=int, default=None)
     args = parser.parse_args()
+    if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
+        parser.error("--contact-max-age-days must be at least 1")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -587,11 +606,20 @@ def main():
             meetings_cmd(args, root)
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
-        elif args.command == "sources":
+        elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
                                         received_at=args.received_at, fragment=args.fragment,
                                         public_url=args.public_url, pages=args.pages, note=args.note)))
+        elif args.command == "sources" and args.sources_command == "list":
+            from .sources_cmd import list_sources
+            print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
+        elif args.command == "sources":
+            from .sources_cmd import edit_source, remove_source
+            print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
+                             edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
+                                         public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
+            print("Nothing was published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root)
@@ -619,7 +647,7 @@ def main():
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
         else:
-            status(root, check=args.check) if args.command == "status" else doctor(root)
+            status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         sys.exit(1)

@@ -11,6 +11,7 @@ Content-Security-Policy that names only the hosts the content model declared.
 import json
 import re
 import shutil
+import sys
 import tempfile
 from datetime import date, datetime, timezone
 from html import escape
@@ -34,6 +35,14 @@ CLASSIFICATION_LABELS = {
     "redaction": "Redaction", "agency_assertion": "Agency assertion", "no_conflict": "No conflict found",
 }
 CONFIDENCE_LABELS = {"verified": "Verified against the record", "likely": "Likely; awaiting further records"}
+# data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
+PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
+                         "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
+                         "counterevidence", "corrections", "url")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id")
+PUBLIC_CORRECTION_FIELDS = ("date", "note")
+PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
+FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol",
                "district_attorney": "District attorney", "county_board": "County board",
                "city_council": "City council", "other": "Other public body"}
@@ -196,8 +205,8 @@ class Site:
         if self.map:
             parts.append(f'<p>{e(self.map["attribution"])}</p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
-        parts.append('<p><a href="/feed.xml">Findings feed</a> · <a href="/corrections.html">Corrections</a> · '
-                     '<a href="/sitemap.xml">Sitemap</a></p>')
+        sitemap = ' · <a href="/sitemap.xml">Sitemap</a>' if self.base else ""  # no sitemap without base_url
+        parts.append(f'<p><a href="/feed.xml">Findings feed</a> · <a href="/corrections.html">Corrections</a>{sitemap}</p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -376,7 +385,8 @@ class Site:
     def findings_index_html(self):
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Findings</p>'
                 '<h2>Everything we publish cites a record.</h2></div><p>Each finding names its classification, confidence, event date and the '
-                f'hashed source records behind it. <a href="/feed.xml">Atom feed</a>.</p></div>{self.findings_list(self.model["findings"])}'
+                'hashed source records behind it. <a href="/feed.xml">Atom feed</a> · '
+                f'<a href="/data/findings.json" type="application/json">Open data (JSON)</a>.</p></div>{self.findings_list(self.model["findings"])}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings", "Published, source-linked findings", "/findings/", main)
 
@@ -463,6 +473,8 @@ class Site:
                    if self.site["contact_email"] else "")
         main = ('    <section class="section finding-body" id="content"><p class="eyebrow">About</p>'
                 f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
+                '<p>Published findings are also available as open data: '
+                '<a href="/data/findings.json" type="application/json">data/findings.json</a>.</p>'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", "About", "About the campaign", "/about.html", main)
 
@@ -571,10 +583,16 @@ class Site:
         return paths
 
     def sitemap_xml(self):
+        """Only built with a base_url (absolute <loc>); lastmod = UTC day of each finding's latest change."""
         root = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+        days = {f'/findings/{f["slug"]}.html': utc_moment(finding_updated(f)).astimezone(timezone.utc).date().isoformat()
+                for f in self.model["findings"]}
+        days["/"] = days["/findings/"] = max(days.values(), default="")
         for path in self.page_paths():
             url = ET.SubElement(root, "url")
             ET.SubElement(url, "loc").text = self.base + path
+            if days.get(path):
+                ET.SubElement(url, "lastmod").text = days[path]
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
     def feed_xml(self):
@@ -620,6 +638,41 @@ class Site:
 
     def robots_txt(self):
         return "User-agent: *\nAllow: /\n" + (f"Sitemap: {self.base}/sitemap.xml\n" if self.base else "")
+
+    def _public_finding(self, finding):
+        """One published finding, copied key by key from the allowlists (never a dict copy)."""
+        value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS if key not in ("sources", "corrections", "url")}
+        value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
+        value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
+                             "rule_id": s["rule_id"]} for s in finding["sources"]]
+        value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
+        value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
+        return value
+
+    def findings_json(self):
+        """``data/findings.json``: published findings as open data; refuses any non-public key or full hash."""
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "findings": [self._public_finding(f) for f in self.model["findings"]]}
+        _assert_public(doc)
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _assert_public(doc):
+    """Raise ``ContentError`` if ``doc`` holds a key outside the public allowlists or a 40+ hex string."""
+    def walk(value, allowed, nested):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key not in allowed:
+                    raise ContentError(f"data/findings.json: non-public key {key}")
+                walk(item, *nested.get(key, ((), {})))
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, allowed, nested)
+        elif isinstance(value, str) and FULL_HASH.search(value):
+            raise ContentError("data/findings.json: a string holds a full hash; publish 12-character prefixes only")
+    finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
+    walk(doc, PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
 
 
 # --- file emission -----------------------------------------------------------
@@ -692,9 +745,9 @@ def build_site(root, today=None):
     files = {name: page["html"] for name, page in pages.items()}
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
-        "sitemap.xml": site.sitemap_xml(), "feed.xml": site.feed_xml(),
+        **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
-        "app.js": site.app_js(),
+        "app.js": site.app_js(), "data/findings.json": site.findings_json(),
     })
     files.update(site.agency_feeds())
     plan = []
@@ -727,4 +780,6 @@ def build_site(root, today=None):
             new.rename(public)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    if not site.base:
+        print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
     return [public / path.relative_to(new) for path in written]
