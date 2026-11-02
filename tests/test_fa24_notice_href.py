@@ -124,14 +124,26 @@ def run_inventory(queue, body, known_hosts=frozenset({HOST})):
                                    source_sha256=SOURCE, known_hosts=set(known_hosts))
 
 
-def repository_snapshot():
-    """Content hash of every retained repository file (fixtures included), minus .git/bytecode."""
+# Top-level directories .gitignore marks as scratch/build output. Parallel CI chunks
+# create and delete files there (e.g. build/outcome-factsheets sqlite WAL files)
+# while this module's snapshot walks the tree, so they are not retained content.
+SCRATCH_TOP_LEVEL = frozenset({"build", "dist", ".venv"})
+
+
+def repository_snapshot(root=REPO):
+    """Content hash of every retained repository file (fixtures included).
+
+    Skips .git, bytecode and the top-level ignored scratch dirs. Any other file
+    that is listed but unreadable still raises: tracked content is never skipped.
+    """
     hashes = {}
-    for directory, dirs, files in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+    for directory, dirs, files in os.walk(root):
+        at_root = Path(directory) == Path(root)
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "__pycache__") and not (at_root and d in SCRATCH_TOP_LEVEL)]
         for name in files:
             path = Path(directory) / name
-            hashes[str(path.relative_to(REPO))] = hashlib.sha256(path.read_bytes()).hexdigest()
+            hashes[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
     return hashes
 
 
@@ -317,6 +329,68 @@ class InventoryIntegrationTests(unittest.TestCase):
                     args.update(kwargs)
                     notice.inventory_notice(spy, **args)
         self.assertEqual(spy.calls, [])
+
+
+class RepositorySnapshotTests(unittest.TestCase):
+    """The A6 snapshot ignores parallel-chunk scratch output but still catches tracked writes."""
+
+    def make_tree(self):
+        root = Path(tempfile.mkdtemp(prefix="fa24-snapshot-"))
+        (root / "tests").mkdir()
+        (root / "tests" / "tracked.txt").write_bytes(b"original")
+        (root / "build" / "outcome-factsheets").mkdir(parents=True)
+        return root
+
+    def test_a6_build_scratch_churn_is_not_part_of_the_snapshot(self):
+        root = self.make_tree()
+        before = repository_snapshot(root)
+        wal = root / "build" / "outcome-factsheets" / "ledger.sqlite-wal"
+        wal.write_bytes(b"temporary")
+        self.assertEqual(repository_snapshot(root), before)
+        wal.unlink()
+        self.assertEqual(repository_snapshot(root), before)
+
+    def test_a6_vanishing_scratch_file_does_not_break_the_walk(self):
+        root = self.make_tree()
+        wal = root / "build" / "outcome-factsheets" / "ledger.sqlite-wal"
+        wal.write_bytes(b"temporary")
+        real_read_bytes = Path.read_bytes
+
+        def racing_read_bytes(path):
+            if path.name == "ledger.sqlite-wal":
+                raise FileNotFoundError(path)
+            return real_read_bytes(path)
+
+        with mock.patch.object(Path, "read_bytes", racing_read_bytes):
+            self.assertEqual(sorted(repository_snapshot(root)), [os.path.join("tests", "tracked.txt")])
+
+    def test_a6_tracked_write_is_still_detected(self):
+        root = self.make_tree()
+        before = repository_snapshot(root)
+        (root / "tests" / "tracked.txt").write_bytes(b"modified")
+        self.assertNotEqual(repository_snapshot(root), before)
+        (root / "tests" / "tracked.txt").write_bytes(b"original")
+        (root / "tests" / "new_file.txt").write_bytes(b"added")
+        self.assertNotEqual(repository_snapshot(root), before)
+
+    def test_a6_missing_non_scratch_file_is_not_swallowed(self):
+        root = self.make_tree()
+        real_read_bytes = Path.read_bytes
+
+        def racing_read_bytes(path):
+            if path.name == "tracked.txt":
+                raise FileNotFoundError(path)
+            return real_read_bytes(path)
+
+        with mock.patch.object(Path, "read_bytes", racing_read_bytes):
+            with self.assertRaises(FileNotFoundError):
+                repository_snapshot(root)
+
+    def test_a6_nested_build_directory_is_still_snapshotted(self):
+        root = self.make_tree()
+        (root / "tests" / "build").mkdir()
+        (root / "tests" / "build" / "fixture.txt").write_bytes(b"retained")
+        self.assertIn(os.path.join("tests", "build", "fixture.txt"), repository_snapshot(root))
 
 
 class WriteRootTests(unittest.TestCase):
