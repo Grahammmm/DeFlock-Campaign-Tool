@@ -64,6 +64,13 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Wording: a `title`, `summary` or `body_md` containing `violat*`, `illegal*`, `unlawful*`, `criminal*` or
+"broke the law" (any case; NFKC-normalised with zero-width and soft-hyphen characters removed) adds the blocker
+`legal_conclusion_wording_in_<field>` (the field name only, never the words), so `review-status` lists it and
+`publish` and `build` refuse. The one exception is a `confirmed_conflict` finding with a legal-role approve receipt
+on its current content. Quoting an agency is still flagged: rephrase as "the record shows ...", or classify it
+`confirmed_conflict` and get legal review. This is a wording gate, not legal validation.
+
 Preview before you approve: `finding preview DRAFT --directory D --out DIR` (DIR outside `public/` and `content/`) writes `DIR/findings/<slug>.html` and `DIR/style.css`,
 the page `build` would render, with a "Draft - not published" banner and `noindex`; it never touches `public/`, the feed or the sitemap.
 The draft is rendered alongside the published findings (cited-rule citations and law-package status as build shows them); a slug already used by another finding or a cited rule build would refuse stops the preview.

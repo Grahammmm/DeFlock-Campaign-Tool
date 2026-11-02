@@ -163,6 +163,15 @@ one existing fragment. It prints `{"added": [12-char prefixes],
 "already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
 second run adds nothing. Nothing is fetched or published.
 
+`sources verify-copy --directory D --sha256 PREFIX --file DOWNLOADED --checked-on YYYY-MM-DD
+[--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an entry's `public_url`
+(a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and records
+`public_copy: {"matches", "checked_on", "reason"?}` on every entry of that record that has a `public_url`. A differing
+copy needs `--differs-because`; a matching one refuses it. `checked_on` may not be in the future or before
+`received_at`. Refusals print `Stopped: <reason>`, exit 3 and write nothing. `sources.html`, the citing finding pages
+and `data/sources.json` then show "Public copy checked D: same file as this record number" or "differs (redacted
+copy)", with a short "How to check a copy" note. `sources edit --public-url`/`--clear-public-url` drops the check.
+
 ### Pages (`content/pages/<slug>.json`, optional)
 
 Each file becomes `/<slug>.html`: `{"title", "body_md", "description"?, "nav"?}`, nothing else. `title` is
@@ -246,6 +255,8 @@ parse is refused as `unreadable image`; re-export it. To clean one, run
 `council.clean.jpg` beside it with those segments or chunks removed and every image byte kept (no re-encoding; colour
 profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
 inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
+
+Images in text: in a finding, page, about, mission or comment-kit text, a line that is only `![Council chamber, 3 June](/photos/council.jpg)` shows `content/public-assets/photos/council.jpg` (PNG, JPEG or WebP) with that alt text (required, 1-200 characters), its own width and height and lazy loading; anything else (inline, in a list, another site, a missing file or SVG, empty alt) stays text, and `markdown_lite --lint` names it as `image`. The newsletter shows no images.
 
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment

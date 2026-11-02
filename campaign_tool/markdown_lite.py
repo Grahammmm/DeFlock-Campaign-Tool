@@ -5,7 +5,10 @@ Supported: paragraphs, ``## `` headings (rendered as ``<h3>``), ``**bold**``,
 (``<ol start="N">`` when the first number is not 1) and simple pipe tables (a
 ``|...|`` header, a ``|---|:---:|`` separator with the same 1-12 cells, then
 same-width rows; ``\\|`` is a literal pipe; colons add an ``align-*`` class).
-Everything else is plain text. All input is HTML-escaped first, so raw HTML never reaches the
+Everything else is plain text. A line that is exactly ``![alt](/path)`` (alt
+1-200 chars, ``/path`` a key of the ``images`` map the site passes, giving the
+file's width and height) renders as ``<p><img ... loading="lazy"></p>``; with
+``images=None`` (newsletter, CLI) nothing does. All input is HTML-escaped first, so raw HTML never reaches the
 page; links whose target is not an absolute ``https://`` URL, or whose host is
 not a public DNS name (2-10 labels of 1-63 letters/digits/inner hyphens, an
 alphabetic last label, at most 253 chars, no IP literal or single label, port
@@ -16,7 +19,8 @@ untrusted documents.
 ``lint(source)`` lists, read-only, every construct ``render`` would degrade
 (``link-dropped`` non-https links, ``link-host`` https links with a bad host,
 other heading levels, ``1) `` numbered lists, malformed ``|`` tables, unclosed ``**``, raw HTML, single
-``*x*``/``_x_`` emphasis) as sorted ``(line_no, code, detail)`` tuples; it
+``*x*``/``_x_`` emphasis, ``image`` for any ``![`` line render would not show as an image; with
+``images=None`` only the image syntax is checked) as sorted ``(line_no, code, detail)`` tuples; it
 never echoes link text or targets and never changes ``render``.
 ``python3 -m campaign_tool.markdown_lite --lint FILE...`` prints
 ``FILE:LINE: CODE: detail`` lines and ``files=N findings=M`` (exit 0 clean,
@@ -28,6 +32,7 @@ from html import escape, unescape
 
 MAX_BYTES = 200 * 1024
 _LINK = re.compile(r"\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)")
+_IMAGE = re.compile(r"!\[([^\]\n]{1,200})\]\((/[A-Za-z0-9._/-]{1,240})\)")
 _BOLD = re.compile(r"\*\*([^*\n]{1,500})\*\*")
 _HTTPS = re.compile(r"https://[A-Za-z0-9][A-Za-z0-9.-]*(?::\d{1,5})?(?:/[A-Za-z0-9._~:/?#@!$&*+,;=%-]*)?")
 _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
@@ -76,8 +81,18 @@ def inline(text):
     return _LINK.sub(_link, out)
 
 
-def render(source):
-    """Render a Markdown-subset string to an HTML fragment."""
+def _image_html(line, images):
+    """The ``<p><img ...></p>`` block for a line that is exactly ``![ALT](PATH)`` with PATH in ``images``, else None."""
+    match = _IMAGE.fullmatch(line)
+    if not images or not match or not match.group(1).strip() or match.group(2) not in images:
+        return None
+    width, height = images[match.group(2)]
+    return (f'<p><img src="{escape(match.group(2), quote=True)}" alt="{escape(match.group(1).strip(), quote=True)}" '
+            f'width="{int(width)}" height="{int(height)}" loading="lazy"></p>')
+
+
+def render(source, images=None):
+    """Render a Markdown-subset string to an HTML fragment; ``images`` maps ``/path`` -> (w, h) for image lines."""
     if not isinstance(source, str):
         raise ValueError("Markdown source must be a string")
     if len(source.encode("utf-8")) > MAX_BYTES:
@@ -110,6 +125,9 @@ def render(source):
             blocks.append(_table_html(*tables[index][1:]))
         elif not line:
             flush()
+        elif image := _image_html(line, images):
+            flush()
+            blocks.append(image)
         elif line.startswith("## "):
             flush()
             blocks.append("<h3>" + inline(line[3:].strip()) + "</h3>")
@@ -180,6 +198,7 @@ _DETAILS = {
     "bold-unclosed": "unclosed **",
     "raw-html": "raw HTML is shown escaped",
     "emphasis": "only **bold** renders",
+    "image": "images render only as their own line: ![alt 1-200 chars](/path-in-public-assets)",
 }
 
 
@@ -202,7 +221,9 @@ def _line_codes(line):
 def _inline_codes(body):
     codes = []
     marked = _BOLD.sub(lambda m: "<strong>" + m.group(1) + "</strong>", escape(body, quote=True))
-    codes += [code for m in _LINK.finditer(marked) if (code := _target_code(unescape(m.group(2))))]
+    # A "![...](...)" span is reported once as ``image`` by lint(), not again as a link.
+    codes += [code for m in _LINK.finditer(marked)
+              if marked[m.start() - 1:m.start()] != "!" and (code := _target_code(unescape(m.group(2))))]
     unbolded = _BOLD.sub(lambda m: m.group(1), body)
     if "**" in unbolded:
         codes.append("bold-unclosed")
@@ -213,7 +234,13 @@ def _inline_codes(body):
     return codes
 
 
-def lint(source):
+def _image_line(line, images):
+    """True if render shows ``line`` as an image; with ``images=None`` only the syntax is checked."""
+    match = _IMAGE.fullmatch(line)
+    return bool(match and match.group(1).strip() and (images is None or match.group(2) in images))
+
+
+def lint(source, images=None):
     """Return sorted (line_no, code, detail) for every construct render() degrades."""
     if not isinstance(source, str):
         raise ValueError("Markdown source must be a string")
@@ -227,10 +254,13 @@ def lint(source):
         cells.update((start + 2 + k, row) for k, row in enumerate(rows))
     found = [(index + 1, "table-malformed", detail) for index, detail in bad.items()]
     for index, line in enumerate(lines):
+        shown = _image_line(line, images)  # never a table line: those start with "|"
         if index in cells:
             codes = [code for cell in cells[index] for code in _inline_codes(cell)]
         else:
-            codes = _line_codes(line) if line else []
+            codes = _line_codes(line) if line and not shown else []
+        if "![" in line and not shown:
+            codes.append("image")
         found += [(index + 1, code, _DETAILS[code]) for code in codes]
     return sorted(found)
 

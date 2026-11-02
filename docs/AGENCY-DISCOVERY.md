@@ -165,6 +165,12 @@ store's `CONTACT.csv`), writes nothing and fetches nothing. Without the option `
 
 ## Recording a hand-sent request
 
+Before sending, `kit-check --directory ../my-campaign [--json]` lists, for each selected law-enforcement agency, the
+draft's unfilled `[placeholders]` with line numbers, `fee cap missing`, `date range missing` and `recipient not
+verified` (no `verified: true`; see `kit-verify-agency`), then `N of M drafts need attention`. It writes nothing and
+exits 3 when any draft needs attention. A Markdown link `[text](url)` is not a placeholder. `kit-sent` runs the same
+check for its agency and refuses a draft that still fails it.
+
 After you send a draft yourself, record it (nothing is sent by the tool):
 
     python3 -m campaign_tool kit-sent --directory ../my-campaign --agency ca-example-police --date 2026-10-01 --channel email

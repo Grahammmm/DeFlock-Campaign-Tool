@@ -14,6 +14,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, kit_track  # noqa: E402
+from tests.test_kit_check import ready_drafts  # noqa: E402
 
 SENT_ON = "2026-03-02"
 FULL_HEX = re.compile(r"[0-9a-f]{64}")
@@ -51,6 +52,7 @@ class KitResponseRecordsTests(unittest.TestCase):
             self.assertEqual(code, 0, err)
         self.sent = self.root / "kit" / "sent.json"
         self.agency = sorted((self.root / "kit" / "requests").glob("*.md"))[0].stem
+        ready_drafts(self.root)  # kit-sent refuses unfilled placeholders and unverified recipients (DF1507-07)
         code, _, err = run("kit-sent", "--directory", self.root, "--agency", self.agency, "--date", SENT_ON,
                            "--channel", "email")
         self.assertEqual(code, 0, err)
