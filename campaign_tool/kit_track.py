@@ -13,6 +13,7 @@ from . import kit, law
 CHANNELS = ("email", "portal", "mail")
 KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed")
 NOTE_MAX = 200
+RECORDS_MAX, PREFIXES_MAX = 200, 50  # linked records per produced step; prefixes listed per request
 MAX_BYTES = 1 << 20
 EARLIEST = date(2000, 1, 1)
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -109,18 +110,46 @@ def _clean_note(note):
     return text
 
 
-def record_step(root, agency_id, on, kind, *, note=None, today=None):
+def _step_records(step):  # the valid full record hashes linked on one stored step
+    value = step.get("records", []) if isinstance(step, dict) else []
+    return [h for h in value if isinstance(h, str) and SHA256.fullmatch(h)] if isinstance(value, list) else []
+
+
+def _resolve_records(root, records, steps):  # every prefix is resolved before anything is written
+    from .sources_cmd import resolve_hash
+    linked = {digest: s["on"] for s in steps for digest in _step_records(s)}
+    hashes = []
+    for number, prefix in enumerate(records, 1):
+        try:
+            digest = resolve_hash(root, prefix)
+        except ValueError as exc:
+            raise ValueError(f"--record #{number}: " + str(exc).removeprefix("--sha256: ")) from None
+        if digest in hashes:
+            raise ValueError(f"--record #{number}: the same record is given twice")
+        if digest in linked:
+            raise ValueError(f"--record #{number}: already linked on {linked[digest]}")
+        hashes.append(digest)
+    return sorted(hashes)
+
+
+def record_step(root, agency_id, on, kind, *, note=None, today=None, records=()):
     """Append one dated agency response step to a hand-sent request and return the updated entry."""
     root = Path(root)
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
+    records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
+    if records and kind != "produced":
+        raise ValueError("--record is only for produced steps")
+    if len(records) > RECORDS_MAX:
+        raise ValueError(f"--record: at most {RECORDS_MAX} records per step")
     note = _clean_note(note)
     requests = read_sent(root)
     entry = requests.get(agency_id)
     if entry is None:
         raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
     steps = entry["steps"]
-    if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) for s in steps):
+    if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on"))
+               and _step_records(s) == s.get("records", []) for s in steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {agency_id!r}")
     day = _day(on)
     if day is None:
@@ -144,12 +173,14 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None):
         raise ValueError(f"{kind} is allowed at most once")
     if kind == "closed" and not kinds:
         raise ValueError("closed needs at least one prior step")
-    step = {"on": on, "kind": kind, **({"note": note} if note else {}),
+    hashes = _resolve_records(root, records, steps) if records else []
+    step = {"on": on, "kind": kind, **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
     kit._write_json(root / "kit" / "sent.json",
                     {"schema_version": 1, "requests": dict(sorted(requests.items()))})
-    return {"agency_id": agency_id, **entry}
+    return {"agency_id": agency_id, **entry, "steps": [
+        {**s, "records": [h[:12] for h in s["records"]]} if "records" in s else s for s in entry["steps"]]}
 
 
 def status(root, today=None, law_base=None):
@@ -169,6 +200,7 @@ def status(root, today=None, law_base=None):
     for agency_id, entry in sorted(requests.items(), key=lambda item: (item[1]["sent_on"], item[0])):
         steps = [s for s in entry["steps"] if isinstance(s, dict)]
         kinds = [s.get("kind") for s in steps]
+        linked = sorted({digest for s in steps for digest in _step_records(s)})
         extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
         due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
             if package else None
@@ -177,5 +209,7 @@ def status(root, today=None, law_base=None):
                      "draft_changed_since_sent": _draft(root, agency_id) != entry["draft_sha256"],
                      "determination_due": due, "with_extension": extended, "steps": len(entry["steps"]),
                      "extended": "extension" in kinds, "closed": "closed" in kinds,
-                     "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None})
+                     "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
+                     "records": len(linked), "record_prefixes": [h[:12] for h in linked[:PREFIXES_MAX]],
+                     **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {})})
     return {"requests": rows, "law_package_status": package_status, "note": NOTE}

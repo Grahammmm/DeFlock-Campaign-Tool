@@ -30,6 +30,39 @@ the verified Access JWT email, never a form field. Authors cannot review their o
 (403). Each receipt is bound to the content hash at submission time; the state is recomputed
 from all receipts after every submission.
 
+## Offline review receipts (CLI)
+
+    python3 -m campaign_tool finding review DRAFT --directory D --role factual|legal|privacy \
+        --decision approve|reject|changes_requested --reviewer NAME --rationale TEXT
+    python3 -m campaign_tool finding review-status DRAFT --directory D
+
+`finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
+file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
+concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
+are **self-asserted**: offline
+there is no identity check, unlike the hosted flow, where the identity is the Access JWT email.
+The tool only refuses a reviewer whose name matches the draft `author` (case and spacing
+ignored) and a duplicate receipt. Each receipt is bound to the hash of the draft without its
+publication fields (`state`, `published_at`, `updated_at`, `corrections`), so changing those
+keeps it bound, while any edit to a reviewed field (for example `summary`) unbinds every earlier
+receipt. `finding review-status` is read-only and prints the receipts for the current content,
+the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
+and privacy, with no reject or changes_requested on the current content).
+
+    python3 -m campaign_tool finding publish DRAFT --directory D --approved-by NAME
+
+`finding publish` writes `D/content/findings/<slug>.json` with `state: "published"`, `published_at`
+(now, UTC) and empty `corrections` only when the full `review_blockers` (receipts included) is empty,
+`--approved-by` is not the author, `content.load_finding` accepts the document, the slug and id are
+new (not in `content/findings/` or `private/withdrawn/`), and every cited `sha256` is in
+`content/sources.json`, the ledger and `private/objects/` (refusals name a 12-hex prefix and
+`unregistered`, `not_ingested` or `object_missing`). A campaign-wide lock
+(`D/private/.publish.lock`) holds the uniqueness checks, write and log entry together, so of two
+concurrent publishes of the same slug or id only one succeeds. The write is atomic; one line
+`{at, action: "publish", id, slug, content_sha256, approved_by}` is appended to
+`D/private/publication-log.jsonl` (0600). It never builds, deploys or contacts anything: run
+`build` and review the site before any deploy.
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
