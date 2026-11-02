@@ -137,6 +137,17 @@ Each `sources.html` entry ends with `Cited by:` and links to every published
 finding that cites its `sha256` (model order, once each), or with
 `Not cited by a published finding`. Drafts never appear.
 
+`content/officials.json` (optional, never fetched) lists who decides for a body:
+`{"schema_version": 1, "bodies": [{"agency_id", "officials": [{"name", "role",
+"profile_url"?, "source_url", "checked_on"}]}]}`. Each `agency_id` is a loaded agency,
+listed once, with 1 to 30 officials (at most 100 bodies). `name` and `role` are plain
+text of at most 120 characters with no `@` and no phone-like run of 7 digits; there are
+no email or phone fields, and both URLs are https only. `checked_on` (the day you checked
+the body's official site) must not be after the build date or more than 365 days before
+it: re-check and update it. The body's agency page and each meeting page with its
+`agency_id` show a "Who decides" list (names linked to `profile_url` when given) with the
+newest `checked_on` and its source link. Labels: `officials.*`.
+
 ### Adding a source record
 
 ```

@@ -891,9 +891,57 @@ def load_pages(content_dir, finding_slugs):
     return pages
 
 
+OFFICIALS_KEYS = {"schema_version", "bodies"}
+OFFICIAL_KEYS = {"name", "role", "profile_url", "source_url", "checked_on"}
+CONTACT_LIKE = re.compile(r"@|\d(?:[\s().+-]*\d){6}")  # an address or a phone-like run of 7+ digits
+
+
+def load_officials(document, agencies, today):
+    """``content/officials.json`` (DF2237-13): organizer-checked decision makers per loaded agency, ``{agency_id: [..]}``.
+
+    No contact fields exist; each ``checked_on`` must fall within the 365 days up to ``today``. Never fetched."""
+    _require_keys(document, OFFICIALS_KEYS, OFFICIALS_KEYS, "officials.json")
+    if document["schema_version"] != 1:
+        raise ContentError("officials.json.schema_version: must be 1")
+    bodies = document["bodies"]
+    if not isinstance(bodies, list) or len(bodies) > 100:
+        raise ContentError("officials.json.bodies: must be a list of at most 100 bodies")
+    known, result = {agency["agency_id"] for agency in agencies}, {}
+    for index, body in enumerate(bodies):
+        label = f"officials.json.bodies[{index}]"
+        _require_keys(body, {"agency_id", "officials"}, {"agency_id", "officials"}, label)
+        if not isinstance(body["agency_id"], str) or body["agency_id"] not in known:
+            raise ContentError(f"{label}.agency_id: not a loaded agency")
+        if body["agency_id"] in result:
+            raise ContentError(f"{label}.agency_id: listed more than once")
+        people = body["officials"]
+        if not isinstance(people, list) or not 1 <= len(people) <= 30:
+            raise ContentError(f"{label}.officials: must list 1 to 30 officials")
+        result[body["agency_id"]] = []
+        for number, person in enumerate(people):
+            item = f"{label}.officials[{number}]"
+            _require_keys(person, OFFICIAL_KEYS, OFFICIAL_KEYS - {"profile_url"}, item)
+            for key in ("name", "role"):
+                text = _text(person, key, item, allow_empty=False)
+                if len(text) > 120:
+                    raise ContentError(f"{item}.{key}: at most 120 characters")
+                if CONTACT_LIKE.search(text):
+                    raise ContentError(f"{item}.{key}: no contact details in officials.json")
+            checked = _calendar_day(person["checked_on"], f"{item}.checked_on")
+            if checked > today:
+                raise ContentError(f"{item}.checked_on: must not be after the build date")
+            if (today - checked).days > 365:
+                raise ContentError(f"{item}.checked_on: older than 365 days; re-check on the official site")
+            result[body["agency_id"]].append({
+                "name": person["name"], "role": person["role"],
+                "profile_url": _https(person.get("profile_url"), f"{item}.profile_url", allow_none=True),
+                "source_url": _https(person["source_url"], f"{item}.source_url"), "checked_on": person["checked_on"]})
+    return result
+
+
 # --- assembly ---------------------------------------------------------------
 
-def load_content(root):
+def load_content(root, today=None):
     """Return the validated content model for ``root`` or None when no content/ exists."""
     root = Path(root)
     content_dir = root / "content"
@@ -965,6 +1013,9 @@ def load_content(root):
     labels = (load_labels(_read_json(labels_path, MAX_LABELS_BYTES))
               if labels_path.is_file() or labels_path.is_symlink() else dict(DEFAULTS))
     redirects_path = content_dir / "redirects.json"
+    officials_path = content_dir / "officials.json"  # optional; a symlink is refused by _read_json
+    officials = (load_officials(_read_json(officials_path), agencies, today or date.today())
+                 if officials_path.is_file() or officials_path.is_symlink() else {})
 
     return {
         "site": site,
@@ -980,4 +1031,5 @@ def load_content(root):
         "labels": labels,
         # content/redirects.json (DF2037-16), None without the file; site checks it against the pages it writes.
         "redirects": _read_json(redirects_path) if redirects_path.is_file() or redirects_path.is_symlink() else None,
+        "officials": officials,
     }
