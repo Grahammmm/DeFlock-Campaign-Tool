@@ -16,6 +16,7 @@ import tempfile
 from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
+from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, map_controller
@@ -136,6 +137,19 @@ def _one_line(text):
     return " ".join(str(text).split())
 
 
+def finding_path(finding):
+    """Existing root-relative route; the content loader validates the slug."""
+    return f'/findings/{finding["slug"]}.html'
+
+
+def _preview_origin(base):
+    """Only a validated root HTTPS origin can identify an absolute finding URL."""
+    parts = urlsplit(base)
+    return (parts.scheme == "https" and bool(parts.hostname)
+            and parts.netloc.lower() == parts.hostname and parts.path in ("", "/")
+            and not parts.query and not parts.fragment and "?" not in base and "#" not in base)
+
+
 def short_hash(sha256):
     return sha256[:12]
 
@@ -234,9 +248,11 @@ class Site:
 
     def share(self, title, description, path, kind, published, modified):
         """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
-        tags = [("property", "og:site_name", self.name), ("property", "og:title", e(_one_line(title))),
-                ("property", "og:description", e(_one_line(description))), ("property", "og:type", kind)]
-        if self.base:
+        tags = [("property", "og:site_name", self.name),
+                ("property", "og:title", e(title if kind == "article" else _one_line(title))),
+                ("property", "og:description", e(description if kind == "article" else _one_line(description))),
+                ("property", "og:type", kind)]
+        if self.base and (kind != "article" or _preview_origin(self.base)):
             tags.append(("property", "og:url", e(self.base + path)))
         tags += [("name", "twitter:card", "summary"), ("name", "twitter:title", e(_one_line(title))),
                  ("name", "twitter:description", e(_one_line(description)))]
@@ -278,7 +294,7 @@ class Site:
                  f' data-year="{e(finding["event_date"][:4])}"' if filter_attrs else "")
         return (f'<li{attrs}><div class="finding-meta"><span class="status-pill">{e(CLASSIFICATION_LABELS[finding["classification"]])}</span>'
                 f'<span>{e(CONFIDENCE_LABELS[finding["confidence"]])}</span><span>Event date {date_label(finding["event_date"])}</span>{corrected}</div>'
-                f'<h3><a href="/findings/{e(finding["slug"])}.html">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
+                f'<h3><a href="{e(finding_path(finding))}">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
 
     def findings_list(self, findings, empty="No findings have been published yet.", filter_attrs=False):
         if not findings:
@@ -490,13 +506,14 @@ class Site:
                 f'<span>Event date <time datetime="{e(finding["event_date"])}">{date_label(finding["event_date"])}</time></span>'
                 f'<span>Published {date_label(finding["published_at"])}{updated}</span></div>'
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
+                f'<p><a href="{e(finding_path(finding))}">Share this finding</a></p>'
                 + (markdown(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>Sources</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>' + related
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
                 + '<p><a href="/corrections.html">All corrections</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
-        return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main,
+        return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
 
     def corrections_html(self):
@@ -706,7 +723,7 @@ class Site:
             entry = ET.SubElement(feed, f"{{{ns}}}entry")
             ET.SubElement(entry, f"{{{ns}}}title").text = finding["title"]
             ET.SubElement(entry, f"{{{ns}}}id").text = "urn:deflock-finding:" + finding["id"]
-            ET.SubElement(entry, f"{{{ns}}}link", href=f'{self.base}/findings/{finding["slug"]}.html')
+            ET.SubElement(entry, f"{{{ns}}}link", href=self.base + finding_path(finding))
             ET.SubElement(entry, f"{{{ns}}}published").text = finding["published_at"]
             ET.SubElement(entry, f"{{{ns}}}updated").text = finding_updated(finding)
             corrected = max((_day(c["date"]) for c in finding["corrections"]), default=None)

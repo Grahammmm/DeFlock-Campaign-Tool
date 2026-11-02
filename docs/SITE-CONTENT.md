@@ -81,7 +81,19 @@ showing its latest correction date. The starter preview has no such page.
 
 Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
 (a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
-when `site.json.base_url` is set. There is no share image by design and nothing is fetched.
+when `site.json.base_url` is set on non-finding pages. A finding emits `og:url` only for a root HTTPS
+origin (for example `https://example.invalid`, optionally ending in `/`), without credentials, port,
+subpath, query or fragment. Configure that origin for a complete absolute preview; this build does
+not provision one. Accepted non-root base values keep their existing canonical behavior, but no
+finding `og:url` is invented. There is no share image by design and nothing is fetched.
+
+Each finding has a **Share this finding** link to `/findings/<slug>.html`; copy its target with normal
+browser behavior. No clipboard script, send endpoint, tracking or new approval is involved. Preview
+title and description are exactly the validated public title and summary, not private source text.
+A refused rebuild leaves the previous public tree intact: it does not retract an earlier page.
+Removing a finding and successfully rebuilding removes its generated page; slug changes provide no
+redirect or link-durability promise. External approval expiry/revocation and crawler caches remain
+the publication owner's responsibility; rendering neither verifies nor refreshes approval receipts.
 
 ### Agencies, cards and the picker
 
