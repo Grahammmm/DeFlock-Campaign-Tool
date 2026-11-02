@@ -64,6 +64,10 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Preview before you approve: `finding preview DRAFT --directory D --out DIR` (DIR outside `public/` and `content/`) writes `DIR/findings/<slug>.html` and `DIR/style.css`,
+the page `build` would render, with a "Draft - not published" banner and `noindex`; it never touches `public/`, the feed or the sitemap.
+The draft is rendered alongside the published findings (cited-rule citations and law-package status as build shows them); a slug already used by another finding or a cited rule build would refuse stops the preview.
+
 Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
 `ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
 spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
