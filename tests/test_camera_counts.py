@@ -191,6 +191,20 @@ class BuildTests(unittest.TestCase):
                                  "note: city boundary feature 2: unsupported geometry type (Polygon or MultiPolygon only)"])
         self.assertNotIn("0.123456", result.stderr + result.stdout)
 
+    def test_overflowing_json_boundary_number_with_no_cameras_is_a_note_and_the_build_succeeds(self):
+        self.write_map([feature("Cedar", "Polygon", [square(0.5, 0.5, 1.5, 1.5)]),
+                        feature("Elm", "Polygon", [[[0, 0], [1, 0], [1, 7.5], [0, 1], [0, 0]]])], points())
+        path = self.map_dir / "city-boundaries.geojson"
+        path.write_text(path.read_text().replace("7.5", "1e309"))  # standard JSON syntax; loads as infinity
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "build", "--directory", str(self.root)],
+                                cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        notes = [line for line in result.stderr.splitlines() if line.startswith("note: ")]
+        self.assertEqual(notes, ["note: city boundary feature 1: invalid ring (needs 4 or more finite numeric positions)"])
+        self.assertNotIn("1e309", result.stderr + result.stdout)
+        cities, _, _ = self.build()
+        self.assertEqual(cities["cedar"]["cameraCount"], "0 community-mapped points" + TAIL)
+
     def test_no_map_computes_nothing_and_site_data_is_unchanged(self):
         shutil.rmtree(self.map_dir)
         with mock.patch.object(camera_counts, "count_by_name", side_effect=AssertionError("computed")):
