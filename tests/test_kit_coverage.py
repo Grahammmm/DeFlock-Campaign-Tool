@@ -110,6 +110,14 @@ class KitCoverageTests(unittest.TestCase):
                                             "with_records": 1, "with_findings": 1, "unselected_with_requests": 1})
         self.assertNotIn("ca-e-dropped", json.dumps(report["rows"]))
 
+    def test_unselected_agency_with_several_requests_counts_once(self):
+        sent = json.loads((self.kit / "sent.json").read_text())
+        contract = {**request("ca-e-dropped", "2026-03-04", []), "draft": "requests/ca-e-dropped--contract.md"}
+        sent["requests"]["ca-e-dropped#contract"] = contract
+        sent["requests"]["ca-f-gone#contract"] = {**contract, "draft": "requests/ca-f-gone--contract.md"}
+        self.write(self.kit / "sent.json", sent)
+        self.assertEqual(kit_track.coverage(self.root)["totals"]["unselected_with_requests"], 2)
+
     def test_table_cuts_names_and_dashes_nulls(self):
         out = self.coverage()
         lines = out.splitlines()

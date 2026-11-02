@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 from campaign_tool.content import ContentError, load_pages
@@ -17,6 +18,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 FINDING_SLUG = "cedar-policy-posted"  # the example's one published finding
 BASE = "https://cedar-records.example.invalid"
+
+
+def _chunk(kind, body):
+    return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+
+
+# A well-formed PNG with no metadata chunks, so the public-assets metadata gate accepts it (DF1822-12).
+CLEAN_PNG = (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", bytes(13)) + _chunk(b"IDAT", b"\x78\x9c\x01\x02")
+             + _chunk(b"IEND", b""))
 
 
 class ContentPagesTests(unittest.TestCase):
@@ -203,7 +213,7 @@ class ContentPagesTests(unittest.TestCase):
         without = self.snapshot()
         top = {n for n in without if n.endswith(".html") and "/" not in n}
         self.assertEqual(top, {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html",
-                               "corrections.html", "404.html"})
+                               "corrections.html", "404.html", "cameras.html", "methods.html"})
         self.page("README.md", "Pages go here.")
         build_site(self.root)
         self.assertTrue(self.snapshot() == without, "an ignored file in pages/ changed the output")
@@ -216,7 +226,7 @@ class ContentPagesTests(unittest.TestCase):
     def test_public_asset_colliding_with_a_page_is_refused(self):
         folder = self.root / "content" / "public-assets" / "glossary.html"
         folder.mkdir(parents=True)
-        (folder / "logo.png").write_bytes(b"\x89PNG")
+        (folder / "logo.png").write_bytes(CLEAN_PNG)
         build_site(self.root)  # no glossary page yet: an ordinary asset folder
         self.assertTrue((self.public / "glossary.html" / "logo.png").is_file())
         before = self.snapshot()
@@ -225,7 +235,7 @@ class ContentPagesTests(unittest.TestCase):
         self.assertTrue(self.snapshot() == before)
         shutil.rmtree(folder)
         (self.root / "content" / "public-assets" / "404.html").mkdir()
-        (self.root / "content" / "public-assets" / "404.html" / "logo.png").write_bytes(b"\x89PNG")
+        (self.root / "content" / "public-assets" / "404.html" / "logo.png").write_bytes(CLEAN_PNG)
         self.assert_refused(r"^public-assets/404\.html/logo\.png: collides with a generated path$")
 
     # 8. labels.json overriding title.not_found is used by 404.html

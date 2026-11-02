@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import unicodedata
 
 ROLES = frozenset(("factual", "legal", "privacy"))
 CLASSIFICATIONS = frozenset(("documented_fact", "apparent_conflict",
@@ -40,6 +41,20 @@ def edit_markers(finding):
     return found
 
 
+LEGAL_TERMS = re.compile(r"\b(violat\w*|illegal\w*|unlawful\w*|broke\s+the\s+law|criminal\w*)\b", re.IGNORECASE)
+
+
+def _plain(text):
+    """NFKC with format characters (zero-width space, soft hyphen, ...) removed, so they cannot split a term."""
+    return "".join(ch for ch in unicodedata.normalize("NFKC", text) if unicodedata.category(ch) != "Cf")
+
+
+def legal_conclusion_fields(finding):
+    """Sorted text fields stating a legal conclusion; field names only, never the matched words."""
+    return [f for f in ("body_md", "summary", "title")
+            if isinstance(finding.get(f), str) and LEGAL_TERMS.search(_plain(finding[f]))]
+
+
 def _who(value):
     """Comparable identity: casefolded, whitespace collapsed; non-string or empty -> None."""
     return " ".join(value.split()).casefold() or None if isinstance(value, str) else None
@@ -49,6 +64,7 @@ def review_blockers(finding, receipts):
     """Caller must separately authenticate receipt issuers and validate artifacts."""
     if not isinstance(finding, dict):
         return ["invalid_finding"]
+    published_view = receipts == []  # content.load_finding: see the wording gate below
     receipts, blockers = (receipts, []) if isinstance(receipts, list) else ([], ["invalid_receipts"])
     if not all(isinstance(r, dict) for r in receipts):
         blockers.append("invalid_receipt")
@@ -86,6 +102,12 @@ def review_blockers(finding, receipts):
     if any(r.get("content_sha256") == digest and r.get("decision") in ("reject", "changes_requested")
            for r in receipts):
         blockers.append("unresolved_challenge")
+    # Wording gate, not legal validation. Allowed only in a confirmed_conflict with a current legal approve
+    # receipt, or with receipts == [] (content.load_finding on an already-published file, whose publish
+    # step required that receipt); a confirmed_conflict draft with no receipts still shows missing_legal_review.
+    if not (finding.get("classification") == "confirmed_conflict"
+            and (published_view or any(r.get("role") == "legal" for r in valid))):
+        blockers.extend("legal_conclusion_wording_in_" + field for field in legal_conclusion_fields(finding))
     roles = {r.get("role") for r in valid}
     blockers.extend("missing_" + role + "_review" for role in sorted(ROLES - roles))
     if len({_who(r["reviewer"]) for r in valid if r.get("role") in ROLES}) < 2:

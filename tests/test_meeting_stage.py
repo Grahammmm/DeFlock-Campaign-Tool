@@ -86,6 +86,7 @@ class MeetingStageTests(unittest.TestCase):
 
     def test_agency_filter_without_findings_says_none_published(self):
         self.kit_from_fixture()
+        (self.root / "content" / "findings" / "cedar-policy-posted.json").unlink()  # DF1822-06: no published finding
         result = self.stage_cli("--agency-id", "ca-nowhere-police", "--location", "Synthetic Hall")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["findings_cited"], 0)

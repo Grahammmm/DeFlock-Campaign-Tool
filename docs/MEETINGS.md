@@ -60,9 +60,19 @@ site never lists a cancelled meeting as upcoming: it stays under past meetings m
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
-`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--location TEXT] [--participation FILE] [--replace]`,
+`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--replace]`,
 which writes `content/meetings/<id>.json` with a comment kit that cites published findings only;
 nothing is fetched, and `--replace` regenerates an existing file.
+
+The organizer picks the cited findings with `--finding ID` (repeatable, 1 to 3 ids): the kit cites
+exactly those, in the order given, in both the two-minute comment and `## Sources`. An id that is not a
+published finding in `content/findings/` (unknown, or a private draft), a repeated id or a fourth id is
+refused before anything is written. Without `--finding` the kit cites at most 3 findings: those of the
+meeting's `--agency-id` first, then the others, each group newest `event_date` first (ties by id), so the
+choice never depends on file order. This replaced the earlier default of every published finding (only
+the agency's when `--agency-id` was given) in load order; `--agency-id` now orders the default choice and
+sets the meeting's `agency_id` but never filters `--finding` ids. The command prints the cited ids as
+`findings` next to the `findings_cited` count.
 
 ### Participation (organizer-verified)
 
@@ -84,6 +94,9 @@ stripped. The file must be a regular file (no symlink) of at most 64 KB, and it 
 anything is written. The kit adds `## How to take part` after the asks: one line per stated fact, then
 `Source: <url> (checked <date>)`. Without the flag the document has no `participation` and the section
 says only `Check the posted agenda for how and when to comment; participation details were not verified.`
+A stated deadline also shows on the meetings list, the home page and the meeting's own page as
+`Written comments due <weekday, month day, year, h:mm AM/PM (UTC±hh:mm)>` in the deadline's own offset, or as
+`Written comment period closed` when it is at or before the build date at 00:00 UTC; cancelled meetings show neither.
 
 `speaker_minutes` (optional, a whole number 1–10, or `null`) is the per-speaker time limit stated by the same
 `source_url`. When it is set the kit adds `## Spoken comment (<m> minutes, about <130 × m> words)` after the
@@ -91,6 +104,17 @@ two-minute comment: the same greeting and closing with as many whole finding bul
 minute (dropped from the end, never cut), then `Word count: <n> of <budget>.` If greeting and closing alone
 do not fit, it says to use the first sentence and one ask. The tool never assumes a limit: without the
 field there is no spoken section.
+
+When `written_comment` is set (it is only ever stored verified, with the fields above), the kit adds
+`## Written comment` after the asks: `Send by: <deadline as in How to take part>` (or `Send by: deadline not
+stated by the source` when it is `null`), `How: <how>`, then a short letter `To the <body>,` with `Re: <agenda
+item>` when there is one, a fixed paragraph, one bullet per cited finding (`- <title>: <summary> (<finding
+URL, absolute when base_url is set>; sources <12-character hash prefixes>)` plus `(corrected <date>)` when
+corrected), the three asks numbered, and `Sincerely,` `[name]` `[city]`. The letter is at most 400 words;
+whole finding bullets are dropped from the end, never cut. If the body, agenda item or campaign name alone
+would push it over 400 words, the section keeps `Send by:` and `How:` and says to write a short letter by
+hand instead. The tool never adds a recipient, email or postal
+address (any named in `how` appears only on the `How:` line) and never sends the letter.
 
 ## Workspace Meetings screen
 
@@ -132,6 +156,13 @@ Sources use 12-character record fingerprints; a fingerprint is not proof of auth
 Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage --id M --replace`.
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
+
+`meeting-pack --directory D --upcoming [--within-days N] [--replace]` builds the pack for every staged
+meeting that starts from now up to (not including) N days ahead (default 14, `1..90`), earliest first,
+through the same checks as `--id`. It prints `{window, built, skipped}`; each skipped meeting has the
+reason (cancelled, stale kit, pack exists, invalid id, symlinked or unreadable file). Meetings outside
+the window are not listed. Exit 0 when nothing was skipped, 3 when something needs attention.
+`--allow-past` is refused with `--upcoming`. Nothing is sent or published.
 
 ## Recording an outcome
 

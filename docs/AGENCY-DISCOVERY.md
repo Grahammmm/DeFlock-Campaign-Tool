@@ -165,6 +165,19 @@ store's `CONTACT.csv`), writes nothing and fetches nothing. Without the option `
 
 ## Recording a hand-sent request
 
+Before sending, `kit-check --directory ../my-campaign [--json]` lists, for each selected law-enforcement agency, the
+draft's unfilled `[placeholders]` with line numbers, `fee cap missing`, `date range missing` and `recipient not
+verified` (no `verified: true`; see `kit-verify-agency`), then `N of M drafts need attention`. It writes nothing and
+exits 3 when any draft needs attention. A Markdown link `[text](url)` is not a placeholder. `kit-sent` runs the same
+check for its agency and refuses a draft that still fails it.
+
+To copy a draft out, `kit-copy --directory D --agency ID --for portal|email [--json]` writes only the sendable part,
+the Subject line and the request text after it, to `kit/outgoing/ID.txt` (with its `characters` count, to compare a
+portal's limit) or an unsent `kit/outgoing/ID.eml` addressed to the verified `records_email` (no From or Date; your
+mail client adds them). The banner, `To:`/`Agency:` lines, `Statutory context` and `Operator checklist` are left out:
+they are notes for you, not for the agency. Unfilled `[placeholders]` in that part, or (email) no verified address,
+stop with exit 3. Nothing is sent and `kit/sent.json` is untouched; record the send yourself with `kit-sent`.
+
 After you send a draft yourself, record it (nothing is sent by the tool):
 
     python3 -m campaign_tool kit-sent --directory ../my-campaign --agency ca-example-police --date 2026-10-01 --channel email
@@ -175,6 +188,17 @@ one with no steps. `kit-status --directory D` lists each request with `determina
 the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
 
+### Several requests to one agency
+
+A second or narrowed request to an agency you already recorded gets its own name: draft it yourself in
+`kit/requests/<agency_id>--<name>.md`, then record it with `kit-sent ... --request <name>`. Names are 1-40 characters
+`a-z`, `0-9` or `-`, starting with a letter or digit; the first request is `main` (the default, drafted in
+`requests/<agency_id>.md`). Each request keeps its own date, channel, draft SHA-256 and steps, and `--replace` only
+touches the named one. In `kit/sent.json` a named request is keyed `<agency_id>#<name>`; files written before this
+change read unchanged, every entry being request `main` (a `#main` key is refused as malformed). `kit-status` and
+`kit-due` print `request` on every row and take `--request NAME` to list only that name; `kit-response --request NAME`
+records a step on it. A name with no recorded request is refused (`no sent request <agency>/<name>`).
+
 Record what the agency did, and when, with `kit-response --directory D --agency ID --date YYYY-MM-DD --kind K
 [--note TEXT]`. `K` is `acknowledged`, `extension`, `determination`, `produced`, `denied` or `closed`. Dates must
 not be before the send date or the previous step, or in the future. `acknowledged` is first and once only; `extension`
@@ -182,6 +206,14 @@ is once only and not after `determination`, `produced` or `denied`. `determinati
 `produced` may repeat. `closed` needs an earlier step, and nothing follows it. The note is plain text (no `<`, `>` or
 control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
 `closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
+
+When the agency quotes a fee, record it with `--kind fee_estimate --amount USD` (for example `245.50`: digits with
+at most two decimals, 0 to 100000; no sign, commas or exponent). `--amount` is required for `fee_estimate` and refused
+for any other kind; it is stored as whole `amount_cents`, and estimates may repeat. `kit-status` shows each request's
+latest estimate (latest date, then the later recorded step) as `fee_estimate`, and `over_fee_cap` compares it with
+`fee_cap_usd` in `kit/request-settings.json` (`null` without a cap or an estimate; equal is not over). An estimate over
+the cap also prints `<agency>: fee estimate $245.50 is over your fee cap: decide before paying` on stderr. The check is
+a reminder, not advice: the tool never pays, replies to or contacts the agency.
 
 `kit-due --directory D [--as-of YYYY-MM-DD]` (default today) lists requests still waiting on the agency under `open`,
 sorted by provisional `due` date (extended when recorded), with `days` left (negative once past) and `state`
@@ -196,6 +228,16 @@ package is `reviewed`, its status. It refuses a request never recorded, answered
 `denied`), closed or not yet past due, and when there is no law package. An existing draft is kept unless `--replace`;
 symlinks are refused. Nothing is sent and `sent.json` is not changed: send it yourself after review.
 
+`kit-denial-reply --directory D --agency ID [--rule RULE_ID]... [--replace]` writes a private draft
+`kit/followups/<agency_id>-denial-<denied date>.md` (0600, folder 0700) for a request with a recorded `denied` step
+(the latest one when there are several). It asks which exemption the agency relied on, for the non-exempt parts with
+only the exempt portions redacted, and for a written explanation; fill in `[EDIT ME: what you asked for]` and `[name]`.
+The tool never picks an exemption. Each `--rule` you name must be a `rule_id` in the law package in force on the denial
+date; it is cited as `RULE_ID (law package status: draft): <the package's citation>`. Unknown, repeated or out-of-force
+ids, `--rule` without a law package, and a request without a `denied` step are refused and nothing is written. Without
+`--rule` the draft has no citations. An existing draft is kept unless `--replace`; symlinks are refused. Nothing is sent
+and `sent.json` is not changed. The draft is not legal advice.
+
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
@@ -208,3 +250,38 @@ exists (a regular file, not a symlink), sent date and channel, last response ste
 come first, then a totals line (selected, drafted, sent, answered, with records, with findings, and requests for
 agencies no longer selected). Without `content/` sources and findings are 0. `--csv` writes RFC 4180 CSV to stdout;
 cells starting with `=`, `+`, `-` or `@` get a leading `'`. It writes nothing and sends nothing.
+
+### Track requests in a spreadsheet
+
+`kit-status --directory D --csv FILE` writes the same requests as `kit-status`, in the same order, to a new private
+spreadsheet file and prints `{"written", "rows", "law_package_status", "note"}`. Columns: `agency_id, name, sent_on,
+channel, provisional_determination_due, provisional_with_extension, extended, closed, steps, last_step_on,
+last_step_kind, linked_records, draft_changed_since_sent`; `yes`/`no` for true/false and an empty cell for an unknown
+value (for example both due columns when there is no law package). Record hashes are not exported, only the count.
+The file is created with mode 0600 and is never overwritten: `FILE` must end in `.csv`, its folder must exist, and it
+must not exist yet (a symlink counts as existing) or be inside the campaign's `public/` or `content/` folder (also
+through a symlinked folder); each is refused by name and nothing is written. A cell starting with `=`, `+`, `-`, `@`,
+a tab or a carriage return gets a leading `'` so a spreadsheet does not run it as a formula. Dates are provisional
+reminders; the period runs from the agency's receipt. Without `--csv` the JSON output is unchanged. The file stays on
+this computer: nothing is sent, uploaded or published.
+
+## Add many agencies from a spreadsheet
+
+`kit-agency import --directory D --csv FILE [--check]` adds every row of one CSV to `kit/agencies.json` with the
+same rules as `kit-agency add`, in one write. Export the sheet as UTF-8 CSV (a leading byte-order mark is fine). The
+first row must be exactly `agency_id,name,kind` or `agency_id,name,kind,note`; 1-500 data rows, blank lines ignored,
+at most 256 KiB. For example (fictional agencies):
+
+```csv
+agency_id,name,kind,note
+ca-fictional-north-police,Fictional North Police,police,
+ca-fictional-county-sheriff,Fictional County Sheriff,sheriff,Seen at a meeting
+ca-fictional-county-board,Fictional County Board,county_board,
+```
+
+Each row is checked like `add` (id pattern and state prefix, a 3-120 character plain-text name, a known kind, a note
+of at most 300 characters), and also refused when its id is already in `kit/agencies.json` or repeats an earlier
+line of the file. If any row is bad nothing is written and each bad row is named by its line number in the file (the
+header is line 1; the first 20 are listed, then a count). Otherwise all rows are appended in file order as selected,
+`verified: false`, `added_by: organizer`, and the next kit run drafts requests for the law-enforcement ones. `--check`
+runs every check and prints the same summary with `"written": false` without changing the file. Nothing is sent.

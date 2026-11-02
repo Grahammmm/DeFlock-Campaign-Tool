@@ -64,8 +64,8 @@ class AtomicSiteBuildTests(unittest.TestCase):
         return str(caught.exception)
 
     def with_model(self, change):
-        def patched(root):
-            model = load_content(root)
+        def patched(root, today=None):
+            model = load_content(root, today)
             change(model)
             return model
         return mock.patch.object(site_module, "load_content", patched)

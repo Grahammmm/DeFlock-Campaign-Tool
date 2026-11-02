@@ -7,10 +7,13 @@ the organizer edited is kept; the fresh draft goes to ``kit/social.suggested/``.
 Drafts for slugs that are no longer published are listed as stale, never deleted.
 ``check_social(root)`` writes nothing: it names each published slug's draft state
 (ok, missing, outdated, edited, not_regular) with problem codes and the stale drafts.
+``build_social(root, platforms=[...])`` sizes drafts by each platform's own count
+(``post_length``) into ``kit/social/<platform>/``; ``check_social`` reads ``kit/social/`` only.
 """
 import hashlib
 import json
 import os
+import re
 import stat
 
 from .content import load_content
@@ -18,16 +21,37 @@ from .kit import _kit_folder, _write_json, _write_text
 from .site import CLASSIFICATION_LABELS
 
 SOCIAL_MAX_CHARS = 280
+# platform: (limit, character rule, link length or None = the link's own length)
+PLATFORMS = {"x": (280, "weighted", 23), "bluesky": (300, "codepoints", None), "mastodon": (500, "codepoints", 23)}
+_LINK = re.compile(r"https?://\S+")
+_LIGHT = ((0, 4351), (8192, 8205), (8208, 8223), (8242, 8247))  # X weighs these code points 1, all others 2
 
 
-def post_text(finding, base_url):
-    """Return the post for ``finding``; only the title is shortened to fit the cap."""
+def post_length(text, platform):
+    """Length of ``text`` by ``platform``'s own count (links fixed or full; X weighted)."""
+    _, rule, link_length = PLATFORMS[platform]
+    links = _LINK.findall(text)
+    rest = "".join(_LINK.split(text))
+    weight = len(rest) if rule == "codepoints" else sum(
+        1 if any(low <= ord(c) <= high for low, high in _LIGHT) else 2 for c in rest)
+    return weight + sum(link_length or len(link) for link in links)
+
+
+def post_text(finding, base_url, platform=None):
+    """Return the post for ``finding``; only the title is shortened (``platform=None``: legacy ``len()`` cap)."""
     url = f"{base_url.rstrip('/')}/findings/{finding['slug']}.html"
     label = CLASSIFICATION_LABELS[finding["classification"]]
     tail = f" {url} (finding {finding['id']})"
     if finding["corrections"]:
         tail += f" Corrected {max(c['date'] for c in finding['corrections'])}."
     head = f"{label}: "
+    if platform is not None:
+        limit, title = PLATFORMS[platform][0], finding["title"]
+        for cut in range(len(title), -1, -1):
+            text = head + (title if cut == len(title) else title[:cut].rstrip() + "\u2026") + tail
+            if post_length(text, platform) <= limit:
+                return text
+        raise ValueError(f"finding {finding['id']}: post cannot fit {limit} characters on {platform}")
     room = SOCIAL_MAX_CHARS - len(head) - len(tail)
     if room < 1:
         raise ValueError(f"finding {finding['id']}: post cannot fit {SOCIAL_MAX_CHARS} characters")
@@ -37,8 +61,8 @@ def post_text(finding, base_url):
     return head + title + tail
 
 
-def _draft(finding, base_url):
-    return f"<!-- DRAFT: not posted. Review before any use. finding {finding['id']} -->\n\n{post_text(finding, base_url)}\n"
+def _draft(finding, base_url, platform=None):
+    return f"<!-- DRAFT: not posted. Review before any use. finding {finding['id']} -->\n\n{post_text(finding, base_url, platform)}\n"
 
 
 def _sha(data):
@@ -122,14 +146,34 @@ def check_social(root):
     return {"findings": len(findings), "drafts": entries, "stale": stale, "problems": count, "posted": False}
 
 
-def build_social(root):
-    """Write the drafts and return ``{written, kept_edited, suggested, stale, posted}``."""
+def build_social(root, platforms=None):
+    """Write the drafts and return ``{written, kept_edited, suggested, stale, posted}``, or with
+    ``platforms`` (all drafts made before any write) ``{"platforms": {p: <that dict>}}`` from ``kit/social/<p>/``."""
     findings, base_url = _published(root)
-    drafts = {f["slug"]: _draft(f, base_url) for f in findings}
     kit_dir = root / "kit"
-    social_dir, suggested_dir = kit_dir / "social", kit_dir / "social.suggested"
+    social_dir = kit_dir / "social"
+    if platforms is None:
+        drafts = {f["slug"]: _draft(f, base_url) for f in findings}
+        for folder in (kit_dir, social_dir):
+            _kit_folder(folder)
+        return _write_drafts(social_dir, kit_dir / "social.suggested", drafts)
+    platforms = list(dict.fromkeys(platforms))
+    unknown = [p for p in platforms if p not in PLATFORMS]
+    if unknown or not platforms:
+        raise ValueError(f"unknown platform: {', '.join(unknown) or 'none given'} (choose from {', '.join(PLATFORMS)})")
+    plan = {p: {f["slug"]: _draft(f, base_url, p) for f in findings} for p in platforms}
+    folders = [social_dir / name for p in platforms for name in (p, p + ".suggested")]
+    for folder in [kit_dir, social_dir] + folders:
+        if os.path.lexists(folder):
+            _kit_folder(folder)
     for folder in (kit_dir, social_dir):
         _kit_folder(folder)
+    return {"platforms": {p: _write_drafts(social_dir / p, social_dir / (p + ".suggested"), plan[p])
+                          for p in platforms}}
+
+
+def _write_drafts(social_dir, suggested_dir, drafts):
+    _kit_folder(social_dir)
     record_path = social_dir / ".written.json"
     record = _load_record(record_path)
     written, kept, new_record = [], [], {}

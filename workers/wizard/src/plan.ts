@@ -71,7 +71,7 @@ export function planNames(state: WizardState): PlanNames {
     kv: `${slug}-cache`,
     queue: `${slug}-jobs`,
     publicHostname: domain,
-    workspaceHostname: `workspace.${domain}`,
+    workspaceHostname: state.campaign.workspace_hostname || `workspace.${domain}`,
     mailAddress: `requests@${domain}`,
     accessAppName: `${state.campaign.name} workspace`,
   };

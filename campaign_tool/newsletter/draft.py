@@ -6,9 +6,15 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
      "campaign": {"name": "...", "base_url": "https://..." | null, "county_name": "..."},
      "since": "<ISO>" | null,
      "findings": [{"title", "summary", "classification", "confidence", "path",
-                   "published_at", "corrected": bool}],
-     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance"}],
+                   "published_at", "corrected": bool,
+                   "corrections"?: [{"date": "YYYY-MM-DD", "note"}]}],
+     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance",
+                   "participation"?: {...} | null}],  # --from-content: content.load_participation's dict
      "decisions": [{"body", "on", "result", "vote", "source_url", "meeting_path"}]}  # optional, --from-content
+
+``corrections`` is optional (``--from-content`` sets it; Worker manifests omit it).
+``participation`` likewise: an object adds a "How to take part" line, null the
+posted-agenda sentence, and a meeting without the key renders as before.
 
 HTML is rendered from a Markdown subset through ``markdown_lite`` so raw HTML
 never reaches the draft; the only additions are a wrapper and the provider's
@@ -19,7 +25,7 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -30,6 +36,8 @@ from ..markdown_lite import render
 UNSUBSCRIBE_PLACEHOLDER = "{{ unsubscribe }}"
 MAX_FINDINGS = 12
 MAX_MEETINGS = 8
+MAX_CORRECTIONS = 50
+NOTE_LIMIT = 200
 _PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}")
 _HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/?#&=%-]*)?")
 # Patterns that must never appear in a draft: emails and phone-like numbers
@@ -74,6 +82,39 @@ def _entries(items, label):
     return items
 
 
+def _day(value, label):
+    if not isinstance(value, str):
+        raise DraftError(f"{label}: YYYY-MM-DD day required")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.isoformat() != value:
+        raise DraftError(f"{label}: invalid day {value!r}, YYYY-MM-DD required")
+    return parsed
+
+
+def _corrections(finding, label):
+    """``[(day, index, note)]`` from a finding's optional ``corrections``; malformed ones are refused."""
+    if "corrections" not in finding:
+        return []
+    items, label = finding["corrections"], label + ".corrections"
+    if not isinstance(items, list) or len(items) > MAX_CORRECTIONS:
+        raise DraftError(f"{label}: a list of at most {MAX_CORRECTIONS} corrections required")
+    out = []
+    for index, item in enumerate(_entries(items, label)):
+        day = _day(item.get("date"), f"{label}[{index}].date")
+        if not isinstance(item.get("note"), str):
+            raise DraftError(f"{label}[{index}].note: string required")
+        out.append((day, index, item["note"]))
+    return out
+
+
+def _note(value):
+    value = " ".join(value.split())
+    return value if len(value) <= NOTE_LIMIT else value[:NOTE_LIMIT - 1] + "…"
+
+
 # Same wording as site.OUTCOME_LABELS (DF2237-11); kept local so the draft builder stays standalone.
 DECISION_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                    "amended": "Approved with amendments", "no_action": "No action taken",
@@ -106,6 +147,44 @@ def _decisions(items):
     return lines
 
 
+def _how(value, label, excluded):
+    """Organizer ``how`` text, or "see official details" when it holds an email or phone (DF2037-15)."""
+    if isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value)):
+        excluded["contact_text_withheld"] = excluded.get("contact_text_withheld", 0) + 1
+        return "see official details"
+    return _clean(value, label, 200)
+
+
+def _participation(facts, starts, now, label, excluded):
+    """The indented "How to take part" line for one meeting's verified participation facts (DF2037-15)."""
+    if facts is None:
+        return "  Check the posted agenda for how to comment."
+    if not isinstance(facts, dict):
+        raise DraftError(f"{label}: must be an object or null")
+    remote, written, minutes = facts.get("remote"), facts.get("written_comment"), facts.get("speaker_minutes")
+    parts = [f"In person: {'yes' if facts['in_person'] else 'no'}"] if isinstance(facts.get("in_person"), bool) else []
+    if isinstance(remote, dict) and remote.get("available") is False:
+        parts.append("Remote: not offered")
+    elif isinstance(remote, dict) and remote.get("available") is True:
+        parts.append("Remote: " + (_how(remote.get("how"), label + ".remote.how", excluded) or "available"))
+    if isinstance(written, dict):
+        due = _date(written["deadline"], label + ".written_comment.deadline") if written.get("deadline") else None
+        if due is not None and due <= now:
+            excluded["comment_deadlines_passed"] = excluded.get("comment_deadlines_passed", 0) + 1
+        else:
+            how = _how(written.get("how"), label + ".written_comment.how", excluded) or "see official details"
+            by = due.astimezone(starts.tzinfo).strftime(", by %a %b %d, %H:%M %Z").rstrip() if due else ""
+            parts.append(f"Written comments: {how}{by}")
+    if type(minutes) is int and 1 <= minutes <= 10:
+        parts.append(f"Speaker limit: {minutes} minute{'s' if minutes != 1 else ''}")
+    url = facts.get("source_url")
+    if not isinstance(url, str) or not _HTTPS.fullmatch(url):
+        raise DraftError(f"{label}.source_url: must be an https:// URL")
+    checked = _day(facts.get("verified_at"), label + ".verified_at").isoformat()
+    return (f"  How to take part: {'; '.join(parts) or 'see official details'}"
+            f" (checked {checked}) [Official details]({url})")
+
+
 def _link(base_url, path, label):
     if not isinstance(path, str) or not _PATH.fullmatch(path) or ".." in path.split("/"):
         raise DraftError(f"{label}: invalid public path")
@@ -132,6 +211,9 @@ def build_draft(manifest, now=None):
 
     Only findings published at or after ``since`` and meetings starting at or
     after ``now`` (soonest first) are listed; ``excluded`` counts the rest.
+    A finding published before ``since`` with a correction dated on or after
+    the since day is listed under "Corrections" (latest such correction) and
+    counted in ``corrections_listed``, present only when non-zero.
 
     ``campaign.consent_footer`` is the campaign's reviewed consent and sender
     wording (it must keep the sentence ``Unsubscribe at any time.`` for the
@@ -163,7 +245,19 @@ def build_draft(manifest, now=None):
               for i, m in enumerate(_entries(meetings, "meetings"))]
     kept_findings = [(i, findings[i]) for i, when in published if since is None or when >= since]
     kept_meetings = [(i, meetings[i], when) for when, i in sorted(s for s in starts if s[0] >= now)]
-    excluded = {"findings_before_since": len(findings) - len(kept_findings),
+    # A finding left out by the window whose latest correction is on or after the
+    # since day is listed once under "Corrections", never as new (DF1822-04).
+    kept_ids = {i for i, _ in kept_findings}
+    corrections = []
+    for i, finding in enumerate(findings):
+        recent = [c for c in _corrections(finding, f"findings[{i}]") if since and c[0] >= since.date()]
+        if recent and i not in kept_ids:
+            day, _, note = max(recent)
+            label = f"findings[{i}]"
+            corrections.append((day, _clean(finding.get("title") or finding.get("summary"), label + ".title", 200),
+                                _note(note), _link(base_url, finding.get("path"), label + ".path")))
+    corrections.sort(key=lambda c: (-c[0].toordinal(), c[1]))
+    excluded = {"findings_before_since": len(findings) - len(kept_findings) - len(corrections),
                 "meetings_past": len(meetings) - len(kept_meetings)}
     findings, meetings = kept_findings, kept_meetings
 
@@ -191,6 +285,13 @@ def build_draft(manifest, now=None):
         lines.append("No new findings were published in this period. Records requests are still open; "
                      "we publish only what independent reviewers have checked against the originals.")
     lines.append("")
+    if corrections:
+        lines.append("## Corrections")
+        for day, title, note, link in corrections:
+            entry = f"- **{title}**: corrected {day.isoformat()}" + (f" — {note}" if note else "")
+            entry += f" ([Read the finding]({link}))" if link.startswith("https://") else f" ({link})"
+            lines.append(entry)
+        lines.append("")
     if decisions:
         lines.append("## Decisions")
         lines += decisions[:MAX_MEETINGS]
@@ -211,6 +312,8 @@ def build_draft(manifest, now=None):
             if isinstance(url, str) and _HTTPS.fullmatch(url):
                 entry += f" [Agenda]({url})"
             lines.append(entry)
+            if "participation" in meeting:  # Worker manifests carry no such key and render as before
+                lines.append(_participation(meeting["participation"], starts, now, label + ".participation", excluded))
         lines.append("")
     if base_url:
         lines.append(f"Read everything, with source hashes, at [{base_url}]({base_url}).")
@@ -243,10 +346,13 @@ def build_draft(manifest, now=None):
             raise DraftError(f"{label}: contact details found; newsletters carry no personal data")
         if UNSUBSCRIBE_PLACEHOLDER not in blob:
             raise DraftError(f"{label}: unsubscribe placeholder missing")
-    return {"subject": subject[:200], "html": html, "text": text,
-            "counts": {"findings": len(findings), "meetings": len(meetings),
-                       **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
-            "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
+    result = {"subject": subject[:200], "html": html, "text": text,
+              "counts": {"findings": len(findings), "meetings": len(meetings),
+                         **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
+              "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
+    if corrections:  # absent otherwise, so drafts without listed corrections stay byte-identical
+        result["corrections_listed"] = len(corrections)
+    return result
 
 
 def _wrap(name, body):

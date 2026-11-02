@@ -128,4 +128,36 @@ describe("wizard flow (DRY_RUN=1)", () => {
     expect(reset.headers.get("set-cookie")).toContain("Max-Age=0");
     expect(await env.SESSIONS.get("session:" + cookie.split("=")[1])).toBeNull();
   });
+
+  it("stores a sibling workspace hostname and switches an existing mailbox off without retaining credentials", async () => {
+    cookie = "";
+    await req("/setup/1", { method: "POST", form: { query: "City of Morro Bay", state: "CA" } });
+    const campaign = { name: "Synthetic", domain: "tool.example.invalid", organizer_email: "organizer@example.invalid", schedule_cron: "0 7 * * *", workspace_hostname: "TOOL-Workspace.Example.Invalid" };
+    expect((await req("/setup/2", { method: "POST", form: campaign })).status).toBe(303);
+    await req("/setup/3", { method: "POST", form: {} });
+    await req("/setup/4", { method: "POST", form: {} });
+    const accounts = { cf_token: "cf-test-token-not-a-real-credential", cf_account_id: "a".repeat(32), cf_zone_id: "b".repeat(32), cf_access_team: "example-team" };
+    const imap = await req("/setup/5", { method: "POST", form: { ...accounts, mail_mode: "imap_smtp", imap_host: "mail.example.invalid", imap_user: "synthetic", imap_password: "synthetic-password" } }); // pragma: allowlist secret -- synthetic test credential only
+    expect(imap.status).toBe(303);
+    const off = await req("/setup/5", { method: "POST", form: { ...accounts, mail_mode: "none", smtp_password: "synthetic-stale" } }); // pragma: allowlist secret -- synthetic stale credential only
+    expect(off.status).toBe(303);
+    expect((await sessionState()).accounts?.mailbox).toEqual({ mode: "none", address: "" });
+    const html = await (await req("/setup/5")).text();
+    expect(html).toContain('value="none" selected');
+    const plan = await (await req("/setup/6/plan.json")).json() as { id: string; body: unknown }[];
+    expect(plan.some((p) => p.id.startsWith("email.") || /^secret\.(IMAP|SMTP)_/.test(p.id))).toBe(false);
+    expect(plan.find((p) => p.id === "access.app")!.body).toMatchObject({ domain: "tool-workspace.example.invalid" });
+    expect((await sessionState()).campaign?.workspace_hostname).toBe("tool-workspace.example.invalid");
+    for (const host of ["not/a/host", campaign.domain]) {
+      const bad = await req("/setup/2", { method: "POST", form: { ...campaign, workspace_hostname: host } });
+      expect(await bad.text()).toContain("workspace hostname must be");
+    }
+    const invalid = await req("/setup/5", { method: "POST", form: { ...accounts, mail_mode: "typo" } });
+    expect(await invalid.text()).toContain("invalid mail mode");
+    expect((await req("/setup/6", { method: "POST", form: { confirm: "yes" } })).status).toBe(303);
+    expect((await sessionState()).accounts).toBeNull();
+    const handoff = await (await req("/setup/7")).text();
+    expect(handoff).toContain("Mail is off");
+    expect(handoff).toContain("https://tool-workspace.example.invalid");
+  });
 });

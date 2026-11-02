@@ -53,6 +53,12 @@ def database(root):
             source_id TEXT NOT NULL, received_at TEXT NOT NULL,
             original_name TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS contains (
+            container_sha256 TEXT NOT NULL REFERENCES objects(sha256),
+            member_sha256 TEXT NOT NULL REFERENCES objects(sha256),
+            member_path TEXT NOT NULL,
+            PRIMARY KEY (container_sha256, member_path)
+        );
     """)
     return db
 
@@ -150,9 +156,15 @@ def _preview_one(known, path, source_id, dir_fd=None):
 
 def _ingest_one(db, root, path, source_id, dir_fd=None):
     """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome."""
-    data, digest = _read_checked(path, dir_fd)
+    return _store_bytes(db, root, _read_checked(path, dir_fd)[0], source_id, os.path.basename(path))
+
+
+def _store_bytes(db, root, data, source_id, name, contained_in=None):
+    """Store bytes under their hash with one receipt named `name` (and, for an archive member, its
+    `contains` row given as (container_sha256, member_path)) in one transaction."""
+    digest = hashlib.sha256(data).hexdigest()
     identity = _receipt_id(source_id, digest)
-    with db:  # one transaction per file; the object is written before its rows
+    with db:  # one transaction per object; the object is written before its rows
         objects = root / "private" / "objects"
         objects.mkdir(mode=0o700, exist_ok=True)
         target = objects / digest
@@ -175,7 +187,9 @@ def _ingest_one(db, root, path, source_id, dir_fd=None):
         new_object = db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?)",
                                 (digest, len(data), now())).rowcount == 1
         cursor = db.execute("INSERT OR IGNORE INTO receipts VALUES (?, ?, ?, ?, ?)",
-                            (identity, digest, source_id, now(), os.path.basename(path)))
+                            (identity, digest, source_id, now(), name))
+        if contained_in is not None:
+            db.execute("INSERT OR IGNORE INTO contains VALUES (?, ?, ?)", (contained_in[0], digest, contained_in[1]))
     return {"sha256": digest, "receipt_id": identity, "new_receipt": cursor.rowcount == 1,
             "analysis_status": "not_started", "outcome": "stored" if new_object else "present"}
 
@@ -184,6 +198,12 @@ def ingest(args, root):
     read_config(root)
     if getattr(args, "dir", None) is not None:
         return _ingest_dir(args, root)
+    if getattr(args, "zip", None) is not None:
+        from .ingest_zip import ingest_zip
+        return ingest_zip(args, root)
+    if getattr(args, "eml", None) is not None:
+        from .ingest_eml import ingest_eml
+        return ingest_eml(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -379,6 +399,13 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
+    from .correction_requests import open_overdue
+    try:
+        if (overdue := open_overdue(root, date.today())) is not None:
+            report["correction_requests_open_over_14_days"] = len(overdue)
+            report["next_actions"] += [f"Decide correction requests open over 14 days: id {', '.join(map(str, overdue))}"] * bool(overdue)
+    except ValueError as exc:
+        report["correction_requests_error"] = str(exc)
     from .content import ContentError, load_content
     try:
         model = load_content(root)
@@ -402,9 +429,9 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root):
+def social_cmd(root, platforms=None):
     from .social import build_social
-    print(json.dumps(build_social(root), indent=2, ensure_ascii=False))
+    print(json.dumps(build_social(root, platforms), indent=2, ensure_ascii=False))
     print("Drafts written to kit/social. Nothing was posted.")
 
 
@@ -543,8 +570,56 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation),
-                     indent=2))
+    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
+                           finding_ids=args.finding), indent=2))
+
+
+def finding_preview(root, draft_path, out, now=None):
+    """DF1822-02: one draft's finding page as build renders it (plus banner + noindex) written privately to
+    ``out``/findings/<slug>.html and ``out``/style.css. public/, feed, sitemap and data/ are never touched."""
+    import tempfile
+    from . import finding_law, findings
+    from .content import load_content, load_finding_preview
+    from .site import EXTRA_CSS, Site
+    out = Path(out).expanduser()
+    if out.is_symlink():
+        raise ValueError(f"{out}: --out is a symlink; choose a real private folder outside public/ and content/")
+    target = out.resolve()
+    for name in ("public", "content"):
+        protected = (root / name).resolve()
+        if target == protected or protected in target.parents:
+            raise ValueError(f"{out}: --out is inside {name}/; choose a private folder outside public/ and content/")
+    folder = target / "findings"
+    for path in (target, folder):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f"{path}: must be a real folder, not a symlink or a file")
+    finding = load_finding_preview(findings.load_draft(draft_path), str(draft_path), now=now)
+    model = load_content(root)
+    if model is None:
+        raise ValueError("finding preview needs content/ (run content init first)")
+    # Render with the draft in the model, as build will after `finding publish` (review t_608228c8): Site reads the
+    # law package's citations and status only when a model finding cites a rule. In memory only; content/ unchanged.
+    others = [f for f in model["findings"] if f["id"] != finding["id"]]  # a published copy of this draft is replaced
+    clash = next((f["id"] for f in others if f["slug"] == finding["slug"]), None)
+    if clash:
+        raise ValueError(f"{draft_path}: slug {finding['slug']} is already used by finding {clash}; build would refuse the duplicate")
+    problems = finding_law.check_findings(root, [finding])
+    if problems:
+        raise ValueError(f"draft {problems[0]}; build would refuse it")
+    model = dict(model, findings=sorted(others + [finding], key=lambda f: (f["published_at"], f["slug"]), reverse=True))
+    page = Site(root, read_config(root), model).finding_preview_html(finding)
+    if not target.exists():
+        target.mkdir(mode=0o700, parents=True)
+        os.chmod(target, 0o700)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    written = []
+    for path, text in ((folder / f"{finding['slug']}.html", page["html"]), (target / "style.css", page["css"] + EXTRA_CSS)):
+        fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)  # replaces a symlink entry itself, never writes through it
+        written.append(str(path))
+    return {"written": written, "slug": finding["slug"]}
 
 
 def main():
@@ -572,6 +647,10 @@ def main():
             source = cmd.add_mutually_exclusive_group(required=True)
             source.add_argument("--file")
             source.add_argument("--dir", help="One local production folder; symlinks are never followed")
+            source.add_argument("--zip", help="One production .zip: archive and regular members stored by hash, "
+                                "never extracted to disk; nested archives are stored, not opened")
+            source.add_argument("--eml", help="One emailed production .eml: message stored as is, each attachment "
+                                "stored and linked to it; headers never printed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
@@ -606,6 +685,8 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
+                          help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
     press_draft.add_argument("--directory", required=True)
@@ -643,7 +724,9 @@ def main():
     stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
     stage_p.add_argument("--directory", required=True)
     stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
-    stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
+    stage_p.add_argument("--agency-id", help="The meeting's agency; its published findings are cited first")
+    stage_p.add_argument("--finding", action="append", metavar="ID",
+                         help="Published finding id to cite (repeatable, max 3, in this order; default: 3 chosen)")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
@@ -666,10 +749,15 @@ def main():
                                       " kit run drafts requests for selected law-enforcement agencies"
                                       ).add_subparsers(dest="agency_command", required=True)
     for name, text in (("select", "Mark one agency selected"), ("deselect", "Mark one agency not selected"),
-                       ("add", "Append an organizer-added agency (selected, verified: false)")):
+                       ("add", "Append an organizer-added agency (selected, verified: false)"),
+                       ("import", "Append many organizer-added agencies from one CSV, all or none")):
         agency_p = agency_cmds.add_parser(name, help=text, description=text + "; the next kit run drafts requests for"
                                           " selected law-enforcement agencies. Nothing is sent.")
         agency_p.add_argument("--directory", required=True)
+        if name == "import":
+            agency_p.add_argument("--csv", required=True, help="Header agency_id,name,kind[,note]; 1-500 rows")
+            agency_p.add_argument("--check", action="store_true", help="Validate only; write nothing")
+            continue
         agency_p.add_argument("--id", required=True, dest="agency_id")
         if name == "add":
             agency_p.add_argument("--name", required=True)
@@ -681,8 +769,22 @@ def main():
         sent_p.add_argument(flag, required=True)
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
-    commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
-                        ).add_argument("--directory", required=True)
+    sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
+                        "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
+    status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
+    status_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv tracker (0600) outside public/ and content/")
+    check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
+                                  "selected agency's draft (read-only; exit 3)")
+    check_p.add_argument("--directory", required=True)
+    check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
+    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt or an unsent .eml; "
+                                 "sends nothing")
+    for flag in ("--directory", "--agency"):
+        copy_p.add_argument(flag, required=True)
+    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email"))
+    copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -690,19 +792,29 @@ def main():
     due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
+    due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
-                                                               "produced", "denied", "closed"))
+                                                               "produced", "denied", "closed", "fee_estimate"))
+    response_p.add_argument("--amount", metavar="USD", help="fee_estimate only: the agency's estimate, 0-100000 "
+                            "(e.g. 245.50); recorded only, nothing is paid")
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
     followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
     followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
+    for flag in ("--directory", "--agency"):
+        denial_p.add_argument(flag, required=True)
+    denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
+                          help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
+    denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -729,10 +841,23 @@ def main():
         batch.add_argument(flag, required=True)
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
-    content_init = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
-        dest="content_command", required=True).add_parser(
+    verify = sources.add_parser("verify-copy", help="Hash a copy you downloaded from an entry's public_url and record "
+                                "whether it is the same file; nothing is fetched")
+    for flag in ("--directory", "--sha256", "--file", "--checked-on"):
+        verify.add_argument(flag, required=True)
+    verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
+    content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+        dest="content_command", required=True)
+    content_init = content_cmds.add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
-    ); content_init.add_argument("--directory", required=True); content_init.add_argument("--from", dest="source_campaign")
+    )
+    content_init.add_argument("--directory", required=True)
+    content_init.add_argument("--from", dest="source_campaign")
+    strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
+                                      "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
+    strip_p.add_argument("file")
+    strip_p.add_argument("--out", default=None, help="Default <stem>.clean<suffix> beside FILE; never overwritten")
+    strip_p.set_defaults(directory=".")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -746,8 +871,21 @@ def main():
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
+                                        "(banner, noindex; never public/, feed or sitemap)")
+    for flag in ("--directory", "--out"):
+        preview_p.add_argument(flag, required=True)
+    packet_p = finding_cmds.add_parser("packet", help="Private packet for an outside reviewer in a new --out folder")
+    for flag in ("--directory", "--out"):
+        packet_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    status_p = finding_cmds.add_parser("status", help="Every draft, published and withdrawn finding with its state "
+                                       "and blockers by name (read-only)")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--draft", dest="extra_drafts", action="append", default=[], metavar="PATH",
+                          help="Also list this draft (private/drafts/*.json are always listed); repeatable")
+    status_p.add_argument("--json", dest="as_json", action="store_true", help="Print the rows as JSON")
     correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
     correct_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--date", "--note"):
@@ -777,13 +915,33 @@ def main():
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
     diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
+    cr_cmds = commands.add_parser("correction-request", help="Private log of correction requests and their decisions "
+                                  "(nothing is sent or published)").add_subparsers(dest="cr_command", required=True)
+    cr_add, cr_decide = cr_cmds.add_parser("add"), cr_cmds.add_parser("decide")
+    for flag in ("--finding", "--received", "--summary", "--directory"):
+        cr_add.add_argument(flag, required=True)
+    cr_decide.add_argument("decision", choices=("accepted", "declined"))
+    cr_decide.add_argument("--id", type=int, required=True)
+    for flag in ("--on", "--note", "--directory"):
+        cr_decide.add_argument(flag, required=True)
+    cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
+    today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
+    today_p.add_argument("--directory", required=True)
+    today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
+    today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
-    for flag in ("--directory", "--id"):
-        pack.add_argument(flag, required=True)
+    pack.add_argument("--directory", required=True)
+    pack_which = pack.add_mutually_exclusive_group(required=True)
+    pack_which.add_argument("--id")
+    pack_which.add_argument("--upcoming", action="store_true", help="Every staged meeting in the next --within-days")
+    pack.add_argument("--within-days", type=int, help="With --upcoming: 1..90 days (default 14)")
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
+    if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
+        if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
+            pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
@@ -792,6 +950,8 @@ def main():
         parser.error("--stale-days must be 1 to 3650")
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
+    if args.command == "social" and args.check and args.platform:
+        parser.error("--check reads kit/social only; it cannot be combined with --platform")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -821,7 +981,7 @@ def main():
             print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
-            social_cmd(root)
+            social_cmd(root, args.platform)
         elif args.command == "press":
             from .press import build_press
             print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
@@ -842,6 +1002,12 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meeting-pack" and args.upcoming:
+            from .meeting_pack import build_upcoming
+            report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
+                                    max_findings=args.max_findings, replace=args.replace)
+            print(json.dumps(report, indent=2))
+            sys.exit(3 if report["skipped"] else 0)
         elif args.command == "meeting-pack":
             from .meeting_pack import build as pack_build
             print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
@@ -865,6 +1031,13 @@ def main():
             from .sources_cmd import add_batch
             print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
                                        dry_run=args.dry_run)))
+        elif args.command == "sources" and args.sources_command == "verify-copy":
+            from .sources_cmd import verify_copy
+            try:
+                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because)))
+            except ValueError as exc:
+                print(f"Stopped: {exc}", file=sys.stderr)
+                sys.exit(3)
         elif args.command == "sources":
             from .sources_cmd import edit_source, remove_source
             print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
@@ -882,6 +1055,21 @@ def main():
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
+        elif args.command == "finding" and args.finding_command == "preview":
+            try:
+                result = finding_preview(root, args.draft, args.out)
+            except (OSError, ValueError) as exc:  # load_draft/load_finding refusals: exit 2, nothing written
+                fixes.emit(exc)
+                sys.exit(2)
+            print(json.dumps(result))
+            print("Private preview only; public/ was not changed and nothing was published.")
+        elif args.command == "finding" and args.finding_command == "packet":
+            from .finding_packet import build_packet
+            try:
+                print(json.dumps(build_packet(root, args.draft, args.out)))
+            except (OSError, ValueError) as exc:
+                sys.exit(fixes.emit(exc) or 2)
+            print("Private packet only; nothing was zipped, uploaded or sent.")
         elif args.command == "finding" and args.finding_command == "new":
             from . import findings
             read_config(root)
@@ -890,6 +1078,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "status":
+                rows = findings.status_rows(root, [Path(p).expanduser() for p in args.extra_drafts])
+                print(json.dumps(rows, indent=2, ensure_ascii=False) if args.as_json else findings.status_table(rows))
+                return
             if args.finding_command == "correct":
                 print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
@@ -910,6 +1102,17 @@ def main():
                 return
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
+        elif args.command == "correction-request":
+            from . import correction_requests as cr
+            read_config(root)
+            try:
+                result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
+                          cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
+                          else cr.list_requests(root))
+            except ValueError as exc:
+                fixes.emit(exc)
+                sys.exit(3)
+            print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root)
@@ -922,6 +1125,9 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content" and args.content_command == "strip-metadata":
+            from .image_meta import strip_file
+            print(json.dumps(strip_file(args.file, args.out), indent=2))
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
@@ -930,30 +1136,52 @@ def main():
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
                              if args.agency_command == "add" else
+                             kit_agencies.import_csv(root, Path(args.csv).expanduser(), check=args.check)
+                             if args.agency_command == "import" else
                              kit_agencies.set_selected(root, args.agency_id, args.agency_command == "select"),
                              indent=2, ensure_ascii=False))
             print("Nothing was sent.")
         elif args.command == "kit-sent":
             from .kit_track import record_sent
-            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, replace=args.replace), indent=2))
+            print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
+                                         replace=args.replace), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-check":
+            from .kit_check import run_cli as kit_check_cli
+            kit_check_cli(root, as_json=args.as_json)
+        elif args.command == "kit-copy":
+            from .kit_copy import run_cli as kit_copy_cli
+            kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
+        elif args.command == "kit-status" and args.csv:
+            from .kit_export import status_csv
+            print(json.dumps(status_csv(root, args.csv, request=args.request), indent=2))
+            print("Private file; nothing was sent or published.")
         elif args.command == "kit-status":
-            from .kit_track import status as kit_track_status
-            print(json.dumps(kit_track_status(root), indent=2))
+            from .kit_track import OVER_CAP, status as kit_track_status
+            report = kit_track_status(root, request=args.request)
+            print(json.dumps(report, indent=2))
+            for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
+                if row["over_fee_cap"]:
+                    label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
+                    print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
             print("Read-only. Nothing was sent.", file=sys.stderr)
+        elif args.command == "today":
+            from .today import run_cli as today_cli
+            read_config(root)  # not a campaign folder: Stopped, before any source is read
+            print(today_cli(root, args.as_of, args.as_json))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
-            report = kit_track_due(root, args.as_of)
+            report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
             if report["past_due"]:
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
-                                         records=args.record), indent=2))
+                                         records=args.record, request=args.request, amount=args.amount), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)
@@ -962,6 +1190,10 @@ def main():
         elif args.command == "kit-followup":
             from .kit_track import followup
             print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
+        elif args.command == "kit-denial-reply":
+            from .kit_track import denial_reply
+            print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
