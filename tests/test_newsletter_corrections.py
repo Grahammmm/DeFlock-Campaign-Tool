@@ -45,13 +45,14 @@ WORKER = manifest([finding("kept", "2026-09-20T00:00:00Z", corrected=True),
 NO_SINCE = manifest([finding("old", "2026-08-01T00:00:00Z", [("2026-09-05", "Fixed the count.")]),
                      finding("plain", "2026-08-02T00:00:00Z", [])], since=None)
 # sha256 of kit/newsletter-draft.{html,txt,json} produced by origin/main's draft.py (302710e1) for these manifests.
+# Each allowlist pragma below covers one SHA-256 of a synthetic generated draft, not a credential.
 GOLDEN = {
-    "worker": ("2efdf9124d8853459b4e3ea21686f4b18f107923a479e6f482510737c9299801",
-               "685370fbb08a904af047b314cd6e1b5c038e5e51b3b90297ffbc5e278929de21",
-               "337c69cdc1cab9d10f84f207c0236b7e8c5e8f913107ca89cedb8a43e1a2e206"),
-    "no_since": ("71c1fbe67d56d94ef0f701eb1b9f3cbb21647c8f5b73b5f47ba12716be88dc1c",
-                 "f0d338c2fc21235e58d3cd85c0f80e4e1f5b1d60353c9a33dda6f482b4c21f6a",
-                 "1870fc6727994c0d0d6c3d5fd029ffaf46572eec750f05b2b96337d2661aa19a"),
+    "worker": ("2efdf9124d8853459b4e3ea21686f4b18f107923a479e6f482510737c9299801",  # pragma: allowlist secret
+               "685370fbb08a904af047b314cd6e1b5c038e5e51b3b90297ffbc5e278929de21",  # pragma: allowlist secret
+               "337c69cdc1cab9d10f84f207c0236b7e8c5e8f913107ca89cedb8a43e1a2e206"),  # pragma: allowlist secret
+    "no_since": ("71c1fbe67d56d94ef0f701eb1b9f3cbb21647c8f5b73b5f47ba12716be88dc1c",  # pragma: allowlist secret
+                 "f0d338c2fc21235e58d3cd85c0f80e4e1f5b1d60353c9a33dda6f482b4c21f6a",  # pragma: allowlist secret
+                 "1870fc6727994c0d0d6c3d5fd029ffaf46572eec750f05b2b96337d2661aa19a"),  # pragma: allowlist secret
 }
 
 
