@@ -373,7 +373,13 @@ class Site:
                 f'<div><span class="county-map-region">Community-mapped points</span><strong>{self.county}</strong></div></div>'
                 f'<div class="county-map-legend"><span class="camera-dot"></span><span id="map-selection-count">{self.map["camera_count"]} mapped points</span></div>'
                 '<p class="county-map-hint">Points are community reports, not confirmed agency ownership.</p></div>'
-                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div></section>\n')
+                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div>'
+                f'<p class="map-date">{self.map_date_line()}</p></section>\n')
+
+    def map_date_line(self):
+        """The OpenStreetMap data day from map/snapshot.json; never the build date."""
+        day = self.map.get("snapshot_date")
+        return f"Map data as of {date_label(day)} (OpenStreetMap)" if day else "Map data date unknown (OpenStreetMap)"
 
     def signup_section(self):
         signup = self.site["signup"]
@@ -590,6 +596,7 @@ class Site:
                 f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
                 '<p>Published findings are also available as open data: '
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a>.</p>'
+                + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", "About", "About the campaign", "/about.html", main)
 

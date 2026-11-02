@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
-                      load_finding, load_map, load_meeting, load_site, load_sources, plain_text)
+                      load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources, plain_text)
 
 LIMIT = 200
 CAMERAS_MISSING = "map/cameras.geojson is missing; run tools/fetch_osm_alprs.py or supply reviewed data"
@@ -70,7 +70,7 @@ def _map(problems, content_dir):
         return config
     config_named = problems[-1].startswith("map/map-config.json")  # else load_map passed the config's head
     checks = {"cameras.geojson": lambda p, n: _validate_cameras(_read_json(p, MAX_GEOJSON_BYTES), "map/" + n),
-              "cities.json": _cities}
+              "cities.json": _cities, "snapshot.json": lambda p, _n: load_snapshot(p)}  # snapshot: optional
     missing = {"cameras.geojson": CAMERAS_MISSING}
     document = None
     try:
