@@ -157,6 +157,13 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+`meeting-pack --directory D --upcoming [--within-days N] [--replace]` builds the pack for every staged
+meeting that starts from now up to (not including) N days ahead (default 14, `1..90`), earliest first,
+through the same checks as `--id`. It prints `{window, built, skipped}`; each skipped meeting has the
+reason (cancelled, stale kit, pack exists, invalid id, symlinked or unreadable file). Meetings outside
+the window are not listed. Exit 0 when nothing was skipped, 3 when something needs attention.
+`--allow-past` is refused with `--upcoming`. Nothing is sent or published.
+
 ## Recording an outcome
 
 After a staged meeting has happened, an organizer who read the result on the agency's own record
