@@ -253,6 +253,9 @@ class Site:
         links = "".join(
             f'<a href="{href}"' + (' aria-current="page"' if key == current else "") + f'>{self.t("nav." + label)}</a>'
             for href, label, key in items)
+        links += "".join(  # content pages with nav: true (DF2237-07), after About, labelled by their own title
+            f'<a href="/{page["slug"]}.html"' + (' aria-current="page"' if current == "page:" + page["slug"] else "")
+            + f'>{e(page["title"])}</a>' for page in self.model.get("pages", []) if page["nav"])
         return f'<nav class="site-nav" aria-label="{self.t("nav.label")}">{links}</nav>'
 
     def header(self, current):
@@ -689,6 +692,13 @@ class Site:
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
 
+    def content_page_html(self, page):
+        """``/<slug>.html`` from ``content/pages/<slug>.json`` (DF2237-07); body_md through markdown_lite."""
+        main = (f'    <article class="section finding-body" id="content"><h2>{e(page["title"])}</h2>{markdown(page["body_md"])}'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
+        return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
+                         f'/{page["slug"]}.html', main)
+
     # -- scripts and data ----------------------------------------------------
 
     def county_profile(self):
@@ -810,6 +820,7 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
+        paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
         return paths
@@ -948,6 +959,7 @@ def _copy(source, target, written, limit):
 
 def _asset_plan(model):
     assets_dir, plan = model["assets_dir"], []
+    page_files = {f'{page["slug"]}.html' for page in model.get("pages", [])}
     for source in model["public_assets"]:
         relative = source.relative_to(assets_dir)
         if source.suffix.lower() not in ASSET_EXTENSIONS:
@@ -955,7 +967,7 @@ def _asset_plan(model):
                                f"({', '.join(sorted(ASSET_EXTENSIONS))})")
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}", part) for part in relative.parts):
             raise ContentError(f"public-assets/{relative}: use plain file and folder names")
-        if relative.parts[0] in GENERATED_TOP_LEVEL:
+        if relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files:
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
         plan.append((source, relative))
     return plan
@@ -983,6 +995,8 @@ def _plan_site(root, today=None, notes=None):
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
     for meeting in model["meetings"]:
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
+    for page in model["pages"]:
+        pages[f'{page["slug"]}.html'] = site.content_page_html(page)
     css = pages["index.html"]["css"] + EXTRA_CSS
     files = {name: page["html"] for name, page in pages.items()}
     files.update({

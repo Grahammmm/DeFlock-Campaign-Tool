@@ -105,6 +105,15 @@ corrections are kept. One `{at, action: "correct", id, slug, date, content_sha25
 and slug stay taken: a later `publish` of either is refused. The next `build` omits it; no notice page is made.
 If the content file cannot be removed both copies remain and the leftover is named. It never builds or deploys.
 
+    python3 -m campaign_tool finding status --directory D [--draft PATH ...] [--json]
+
+`finding status` is read-only (it opens nothing for writing) and prints one row per finding: every
+`D/private/drafts/*.json` (one level, symlinks not followed) and `--draft PATH`, every `content/findings/` file and every
+`private/withdrawn/` copy, with the states above applied to these files, current/stale receipt counts and blocker names
+(never reviewer names, rationales or notes). A draft whose id is published is a second `pending correction` row; a withdrawn
+id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
+(not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
