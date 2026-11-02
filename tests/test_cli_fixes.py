@@ -28,6 +28,7 @@ SAMPLES = (  # one exception per fix text, in table order
     ValueError("State must be a two-letter code"), ValueError("Alpha limit: 50 MiB per file; original was not imported"),
     ValueError("Input changed or is not a regular, non-symlink file: a.bin"), ValueError("/t: more than 4 files; split the folder"),
     ValueError("Stored object integrity mismatch; intake stopped"),
+    ValueError("ledger has a journal or WAL file beside it; nothing was written"),
     ValueError("public tree check found 4 potential leak(s); fix content and rebuild"),
     ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response"),
     ValueError("r.json exists; the drill never overwrites a receipt"), sqlite3.DatabaseError("file is not a database"),
@@ -48,9 +49,9 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--date must be a real YYYY-MM-DD date", "--date 5 must be between 2000-01-01 and today",
         "--channel must be one of name", "5 already recorded as sent on 5; use --replace to correct it",
         "5 has recorded steps; its entry sent on 5 cannot be replaced",
+        "--note must be plain text without <, > or control characters",
     ), "kit-sent message that already names the option to change; not in the table"),
     **dict.fromkeys((
-        "--note must be plain text without <, > or control characters",
         "--note must be 1-5 characters after collapsing whitespace", "--kind must be one of name",
         "no hand-sent request recorded for 5; run kit-sent first", "kit/sent.json unreadable: malformed steps for 5",
         "--date 5 is before the request was sent on 5", "--date 5 is before the previous step (5 on 5)",
@@ -58,7 +59,7 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "acknowledged is allowed only as the first step, once", "extension is allowed only once",
         "extension is not allowed after a determination, produced or denied step", "5 is allowed at most once",
         "closed needs at least one prior step",
-    ), "kit-response message that already names the option or the step-order rule; not in the table"),
+    ), "kit-response message that already names the option or the step order rule; not in the table"),
     "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
     "must be 0-5": "argparse keep-count message; already names the range",
 }
