@@ -15,7 +15,8 @@ def _stale_contacts_next(report, d):
     count = len(found) + int(report.get("stale_contacts_more") or 0)
     ids = ", ".join(str(entry.get("agency_id")) for entry in found[:3]) + (", …" if count > 3 else "")
     return (f"Re-check {count} contact(s): `{TOOL} kit-verify-agency --directory {d} --agency-id ID "
-            f"--source-url URL --checked-on YYYY-MM-DD` for {ids}")
+            f"--records-email EMAIL --source-url URL --checked-on YYYY-MM-DD` for {ids}; give the contact you "
+            f"checked: --records-email EMAIL, --records-url URL or --portal URL (at least one is required)")
 
 
 def _stale_kits_next(report, d):

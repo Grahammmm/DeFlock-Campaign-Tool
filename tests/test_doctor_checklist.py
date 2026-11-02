@@ -1,6 +1,7 @@
 """doctor --checklist: each unmet check names its fix and owner. Synthetic temp campaigns only."""
 
 import itertools
+from datetime import date
 import json
 from pathlib import Path
 import re
@@ -93,15 +94,36 @@ class ChecklistCLITests(unittest.TestCase):
     def test_stale_contacts_named_with_count_and_command(self):
         self.init()
         old = {"selected": True, "verified": True, "verification": {"checked_on": "2001-01-01"}}
-        fresh_unverified = {"agency_id": "c", "selected": True, "verified": False}
-        self.agencies([dict(old, agency_id="a"), dict(old, agency_id="b"), fresh_unverified])
+        fresh_unverified = {"agency_id": "ca-synthetic-c", "name": "C", "selected": True, "verified": False}
+        self.agencies([dict(old, agency_id="ca-synthetic-a", name="A"), dict(old, agency_id="ca-synthetic-b", name="B"),
+                       fresh_unverified])
         rows = by_key(json.loads(self.cli("doctor", "--contact-max-age-days", "30", "--checklist", "--json").stdout))
         row = rows["stale_contacts"]
         self.assertEqual(row["state"], "todo")
         self.assertIn("Re-check 2 contact(s)", row["next"])
         self.assertIn("kit-verify-agency --directory", row["next"])
-        self.assertIn("a, b", row["next"])
+        self.assertIn("ca-synthetic-a, ca-synthetic-b", row["next"])
         self.assertEqual(rows["agencies_selected"]["state"], "ok")
+        # The proposed command, with its placeholders filled, refreshes the check; without a contact it is refused.
+        command = shlex.split(row["next"].split("`")[1])
+        self.assertEqual(command[:4], ["python3", "-m", "campaign_tool", "kit-verify-agency"])
+        self.assertIn("--records-email", command)
+        values = {"ID": "ca-synthetic-a", "EMAIL": "records@agency.example", "URL": "https://agency.example/records",
+                  "YYYY-MM-DD": date.today().isoformat()}
+        filled = [values.get(token, token) for token in command[3:]]
+        self.assertTrue(set(values).isdisjoint(filled), filled)
+        run = [sys.executable, "-B", "-m", "campaign_tool"]
+        without_contact = [token for token in filled if token not in ("--records-email", "records@agency.example")]
+        refused = subprocess.run(run + without_contact, cwd=REPO_ROOT, capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("give at least one of records_email, records_url, portal", refused.stderr)
+        result = subprocess.run(run + filled, cwd=REPO_ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = by_key(json.loads(self.cli("doctor", "--contact-max-age-days", "30", "--checklist", "--json").stdout))
+        self.assertIn("Re-check 1 contact(s)", after["stale_contacts"]["next"])
+        self.assertIn("for ca-synthetic-b;", after["stale_contacts"]["next"])
+        for flag in ("--records-email EMAIL", "--records-url URL", "--portal URL"):
+            self.assertIn(flag, row["next"])
         without_flag = by_key(json.loads(self.cli("doctor", "--checklist", "--json").stdout))
         self.assertNotIn("stale_contacts", without_flag)
 
