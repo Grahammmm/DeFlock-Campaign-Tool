@@ -128,7 +128,7 @@ def content_problems(root, limit=LIMIT):
     if not site_path.is_file():
         problems.append("content/site.json is required when content/ exists")
     else:
-        _attempt(problems, "site.json", lambda: load_site(_read_json(site_path)))
+        _attempt(problems, "site.json", lambda: load_site(_read_json(site_path), content_dir / "public-assets"))
 
     slugs, ids, findings = set(), set(), []
     for path in _files(content_dir, "findings"):
