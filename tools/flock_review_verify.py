@@ -3,7 +3,7 @@
   plan FINDINGS.csv --seed N --size K --out PLAN.json
   check PLAN.json FINDINGS.csv VERIFY.csv [--not-posted ID ...] [--md VERIFY.md]
   counts FINDINGS.csv BUILD-REPORT.txt
-  agreement PLAN.json FINDINGS.csv VERIFY.csv --max-disagree PCT [--not-posted ID ...] [--md VERIFY.md]
+  agreement PLAN.json FINDINGS.csv VERIFY.csv --max-disagree PCT [--not-posted ID ...] [--md VERIFY.md] [--json-out NEWFILE]
 Priority = every contradicted / not met row; sample = random.Random(seed).sample of the met / cannot tell rows (file order).
 agreement (after a clean check) counts results per group and verdict; escalate=priority if a priority row is not agree,
 sample if over PCT percent of the sample is not agree; sample_rate = sample_rows / pool in percent. Exit 3 on any escalation.
@@ -22,6 +22,7 @@ CHECKS = ["findings freeze: FINDINGS.csv sha256 must equal the plan's; a changed
           "not-posted ids stay analysis-only and out of VERIFY.csv and VERIFY.md"]
 
 class PlanError(Exception): pass
+REPO = Path(__file__).resolve().parents[1]
 def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def table(path):
     with open(path, newline="", encoding="utf-8-sig") as handle: return list(csv.reader(handle))  # BOM is not header text; sha() hashes raw bytes
@@ -109,7 +110,29 @@ def check(args):
     print("\n".join(errs + [line]))
     return 1 if errs else 0
 
-def agreement(args):  # results per plan group and finding verdict; escalate= says which rule fired. Writes nothing.
+def _json_refusal(args):  # RF0450-9: --json-out is judged before any check; a fixed reason word, or None when it may be written
+    path = os.path.abspath(args.json_out)
+    real = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+    inputs = [p for p in (args.plan, args.findings, args.verify, args.md) if p is not None]
+    if any(os.path.abspath(p) == path or os.path.realpath(p) == real for p in inputs): return "is an input"
+    if os.path.lexists(path): return "exists"  # a dangling link exists too
+    if not os.path.isdir(os.path.dirname(path)): return "no folder"
+    if Path(real).is_relative_to(REPO): return "inside repository"
+    return None
+
+def _write_new(path, data):  # O_EXCL|O_NOFOLLOW, 0600, written whole; a failed write leaves no file
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        while data: data = data[os.write(fd, data):]
+    except BaseException:
+        os.unlink(path)
+        raise
+    finally:
+        os.close(fd)
+
+def agreement(args):  # results per plan group and finding verdict; escalate= says which rule fired. Writes only --json-out.
+    why = args.json_out and _json_refusal(args)
+    if why: return print("agreement: --json-out refused: %s" % why) or 1
     try: errs, results, _ = _check(args)
     except PlanError as exc: errs, results = [str(exc)], {}
     if errs: return print("\n".join(errs + ["agreement: check failed; run check first"])) or 1
@@ -118,15 +141,25 @@ def agreement(args):  # results per plan group and finding verdict; escalate= sa
     if type(pool) is not int or pool < len(smp): return print("agreement: plan pool_size is invalid") or 1
     tally = lambda ids: collections.Counter(results[i] for i in ids)  # noqa: E731
     line = lambda label, c: "agreement | %s | agree=%d disagree=%d needs_source=%d" % (label, c["agree"], c["disagree"], c["needs-source"])  # noqa: E731
+    by_verdict = {v: tally([i for i in results if verdict.get(i) == v]) for v in VERDICTS[:4]}
     out = [line("group priority", tally(pri)), line("group sample", tally(smp))]
-    out += [line("verdict " + v, tally([i for i in results if verdict.get(i) == v])) for v in VERDICTS[:4]]
+    out += [line("verdict " + v, by_verdict[v]) for v in VERDICTS[:4]]
     bad, s = [i for i in pri if results[i] != "agree"], tally(smp)
     over = bool(smp) and 100 * (s["disagree"] + s["needs-source"]) > args.max_disagree * len(smp)
     escalate = {(False, False): "none", (True, False): "priority", (False, True): "sample", (True, True): "both"}[(bool(bad), over)]
     rate = "%g" % round(100.0 * len(smp) / pool, 1) if pool else "0"
-    print("\n".join(out + ["agreement | disagree_ids=%s" % (",".join(bad) or "-"),
-                           "agreement | priority_rows=%d sample_rows=%d pool=%d sample_rate=%s escalate=%s | a verify pass is not acceptance"
-                           % (len(pri), len(smp), pool, rate, escalate)]))
+    tail = ["agreement | disagree_ids=%s" % (",".join(bad) or "-"),
+            "agreement | priority_rows=%d sample_rows=%d pool=%d sample_rate=%s escalate=%s | a verify pass is not acceptance"
+            % (len(pri), len(smp), pool, rate, escalate)]
+    if args.json_out:  # counts, ids and labels only: no reason, basis, page or quote text; written before anything is printed
+        trio = lambda c: {"agree": c["agree"], "disagree": c["disagree"], "needs_source": c["needs-source"]}  # noqa: E731
+        doc = {"schema": "flock-review-agreement-v1", "review_required": True, "plan_findings_sha256": spec["findings_sha256"],
+               "max_disagree": args.max_disagree, "groups": {"priority": trio(tally(pri)), "sample": trio(s)},
+               "verdicts": {v: trio(c) for v, c in by_verdict.items()}, "disagree_ids": bad, "priority_rows": len(pri),
+               "sample_rows": len(smp), "pool": pool, "sample_rate": rate, "escalate": escalate}
+        _write_new(os.path.abspath(args.json_out), (json.dumps(doc, sort_keys=True, indent=1, ensure_ascii=False) + "\n").encode("utf-8"))
+        tail.append("agreement | json=%s" % os.path.basename(os.path.abspath(args.json_out)))
+    print("\n".join(out + tail))
     return 0 if escalate == "none" else 3
 
 def counts(args):
@@ -157,6 +190,7 @@ def main(argv=None):
         p = sub.add_parser(name); [p.add_argument(n) for n in ("plan", "findings", "verify")]
         p.add_argument("--not-posted", nargs="*", default=[]); p.add_argument("--md")
     p.add_argument("--max-disagree", type=int, required=True)  # agreement only; no default: the organizer sets the bar
+    p.add_argument("--json-out")  # agreement only (RF0450-9): a new 0600 file outside the repository
     p = sub.add_parser("counts"); p.add_argument("findings"); p.add_argument("report")
     args = parser.parse_args(argv)
     if args.command == "plan" and args.size < 0: parser.error("plan: --size must be 0 or more")

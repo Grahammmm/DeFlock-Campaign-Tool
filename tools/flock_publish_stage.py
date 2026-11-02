@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """NB-DF-17 flock-publish stage: human-approved PUBLISH.json entries -> private site-finding staging files.
 Run as `flock_publish.py stage RUNDIR --copy COPY.json --out OUTDIR`. All-or-nothing: any refusal writes nothing.
+`--dry-run` instead of `--out` (RF0310-7) runs every check and plan and prints `would stage` lines; it writes nothing.
 Staged files carry `state: "staged"` and are review-required; this tool never builds, deploys or sets `published`.
 COPY.json is the organizer's human-written copy per approved finding_id; the tool writes no public text itself."""
 import contextlib, hashlib, importlib, importlib.util, io, json, os, re, sys
@@ -128,11 +129,13 @@ def write(out, files):  # dirs 0700, files 0600; on any failure every file and f
         for folder in reversed(made):
             with contextlib.suppress(OSError): folder.rmdir()  # noqa: E701
         raise
-def stage(run, copy, out, repo=REPO):
-    raw = Path(out)
-    out, copy = raw.resolve(), Path(copy).resolve()
-    errs = ["--%s is inside the repository" % k for k, p in (("out", out), ("copy", copy)) if inside(p, repo)]
-    if raw.is_symlink():
+def stage(run, copy, out, repo=REPO, dry_run=False):  # dry_run (out None): every check and plan below, nothing written
+    raw = None if dry_run else Path(out)
+    out, copy = None if dry_run else raw.resolve(), Path(copy).resolve()
+    errs = ["--%s is inside the repository" % k for k, p in (("out", out), ("copy", copy)) if p and inside(p, repo)]
+    if dry_run:
+        pass  # no --out, so its checks are skipped
+    elif raw.is_symlink():
         errs.append("--out is a symlink")
     elif inside(out, run):
         errs.append("--out is inside RUNDIR")
@@ -157,13 +160,17 @@ def stage(run, copy, out, repo=REPO):
     files, rows = [], []
     for fid, site in staged:
         data = (json.dumps(site, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        files.append((out / "content" / "findings" / (site["slug"] + ".json"), data))
+        files.append((("content", "findings", site["slug"] + ".json"), data))
         rows.append({"finding_id": fid, "slug": site["slug"], "sha256": hashlib.sha256(data).hexdigest()})
     refs = sorted({f["review"]["approval_ref"] for f in doc["findings"] if f["review"]["status"] == "approved"})
     manifest = {"schema_version": 1, "site_slug": doc["slug"], "run_date": doc["run_date"], "agency": doc["agency"],
                 "staged": rows, "skipped_pending": pending, "approval_refs": refs}
-    write(out, files + [(out / MANIFEST, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))])  # manifest last
-    print("".join("staged %s -> content/findings/%s.json\n" % (r["finding_id"], r["slug"]) for r in rows), end="")
-    print("stage | approved=%d staged=%d skipped_pending=%d | review-required; not built, not deployed; G decides any site use"
+    if not dry_run:
+        write(out, [(out.joinpath(*parts), data) for parts, data in files] +
+              [(out / MANIFEST, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))])  # manifest last
+    print("".join("%s %s -> content/findings/%s.json\n" % ("would stage" if dry_run else "staged", r["finding_id"], r["slug"])
+                  for r in rows), end="")
+    print(("stage (dry run) | approved=%d would_stage=%d skipped_pending=%d | nothing written" if dry_run else
+           "stage | approved=%d staged=%d skipped_pending=%d | review-required; not built, not deployed; G decides any site use")
           % (len(doc["findings"]) - pending, len(rows), pending))
     return 0

@@ -6,7 +6,7 @@ import json
 import os
 import re
 import tempfile
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 from .cli import read_config
@@ -148,3 +148,54 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
                 os.unlink(temporary)
     return {'written': [str((folder / name).relative_to(root)) for name in outputs],
             'findings': len(findings), 'truncated': truncated}
+
+
+def build_upcoming(root, within_days=14, today=None, *, max_findings=5, replace=False):
+    """Build every staged pack starting in [today, today + within_days); list each skip with its reason."""
+    if type(within_days) is not int or not 1 <= within_days <= 90:
+        raise ValueError("--within-days must be 1..90")
+    current = today or datetime.now(timezone.utc)
+    if isinstance(current, date) and not isinstance(current, datetime):
+        current = datetime.combine(current, time.min, tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("today needs a time zone")
+    end = current + timedelta(days=within_days)
+    root = Path(root).absolute()
+    content = root / 'content'
+    for path in (root, content, content / 'meetings'):
+        _unlinked(path)
+    if not content.is_dir():
+        raise ValueError("content/ missing; run init/content first")
+    skipped, kept = [], []
+    folder = content / 'meetings'
+    for path in sorted(folder.glob('*.json')) if folder.is_dir() else []:
+        meeting_id = path.stem
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", meeting_id) or meeting_id in ('.', '..'):
+            skipped.append({'id': meeting_id, 'reason': 'invalid meeting id'})
+            continue
+        if path.is_symlink():
+            skipped.append({'id': meeting_id, 'reason': 'symlink on meeting-pack path; use real directories and files'})
+            continue
+        try:
+            if not path.is_file():
+                raise ValueError('not a regular file')
+            meeting = load_meeting(_read_json(path), 'meeting pack')
+        except (OSError, ValueError):
+            skipped.append({'id': meeting_id, 'reason': 'unreadable meeting file'})
+            continue
+        starts = datetime.fromisoformat(meeting['starts_at'].replace('Z', '+00:00'))
+        if current <= starts < end:
+            kept.append((starts, meeting_id, meeting))
+    built = []
+    for starts, meeting_id, meeting in sorted(kept, key=lambda item: (item[0], item[1])):
+        if meeting['status'] == 'cancelled':
+            skipped.append({'id': meeting_id, 'reason': 'cancelled'})
+            continue
+        try:
+            report = build(root, meeting_id, max_findings, current, replace=replace)
+        except ValueError as exc:
+            skipped.append({'id': meeting_id, 'reason': str(exc)})
+            continue
+        built.append({'id': meeting_id, 'starts_at': meeting['starts_at'], **report})
+    return {'window': {'from': current.isoformat(), 'to': end.isoformat(), 'days': within_days},
+            'built': built, 'skipped': skipped}

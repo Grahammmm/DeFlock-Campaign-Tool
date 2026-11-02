@@ -8,7 +8,10 @@
     "records_email": null,
     "portal": {"vendor": "unknown", "url": null},
     "verified": false,
-    "profile": {"status": "Records requested", "summary": "Synthetic entry; no records received in this example."}
+    "profile": {"status": "Records requested", "summary": "Synthetic entry; no records received in this example.",
+                "alpr_policy": {"url": "https://example.org/cedar-county-sheriff/alpr-policy.pdf",
+                                "source_url": "https://example.org/cedar-county-sheriff/policies",
+                                "checked_on": "2026-10-30"}}
   },
   {
     "agency_id": "ca-cedar-police",

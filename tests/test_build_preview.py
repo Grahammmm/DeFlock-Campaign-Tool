@@ -116,7 +116,7 @@ class BuildPreviewTests(unittest.TestCase):
         second.unlink()
         asset = self.root / "content/public-assets/flyer.pdf"
         asset.parent.mkdir(parents=True)
-        asset.write_bytes(b"%PDF-1.4 synthetic flyer\n")
+        asset.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
         result, report = self.preview()
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("findings/cedar-second.html", [e["path"] for e in report["removed"]])

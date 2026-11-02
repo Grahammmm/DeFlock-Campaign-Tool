@@ -2,6 +2,7 @@
 """Flock region: draft a county region config from the engine agency seed, check it, and scaffold the private store.
   new --county-fips FIPS --region SLUG --out PATH [--jurisdiction us-ca] [--seed-dir DIR]
   --check CONFIG [--seed-dir DIR]  |  init CONFIG --store DIR [--seed-dir DIR] [--dry-run]  |  coverage CONFIG [--seed-dir DIR]
+  [--json | --json-out NEWFILE]  (a flock-region-coverage-v1 document, review_required; same exit codes)
 init writes agencies/<slug>/ (yes|hold) and regions/<region>/WATCHLIST.csv (F7), ROSTER.csv (F10), PLAN.md; with --dry-run it
 runs the same checks and prints what it would create, write or drop, writing nothing. coverage (read-only) names each seed
 sheriff/police agency of the county that no config agency points at and exits 3 if there is one. No network;
@@ -217,27 +218,60 @@ def cmd_init(args):
 def clean(name):  # seed names are public agency names; control/format characters dropped, cut at 120 chars
     return "".join(c for c in name if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp"))[:120]
 
-def cmd_coverage(args):  # reads only the config and the seed; writes nothing
+def json_target(value):  # flock_alerts rules: absolute, new, parent an existing link-free folder, outside the repository
+    path = Path(value)
+    why = ("must be an absolute path" if not path.is_absolute() else "already exists" if os.path.lexists(path) else
+           "parent is a symlink" if any(os.path.islink(p) for p in [path.parent, *path.parent.parents]) else
+           "parent is not a folder" if not path.parent.is_dir() else
+           "inside repository" if monitor.REPO in (path.parent.resolve() / path.name).parents else "")
+    if why: raise Fail("coverage refused: json-out " + why)
+    return path
+
+def write_new(path, data):  # O_EXCL|O_NOFOLLOW, 0600; a failed write leaves no file behind
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        while data: data = data[os.write(fd, data):]
+        os.close(fd)
+    except BaseException:
+        with contextlib.suppress(OSError): os.close(fd)
+        os.unlink(path)
+        raise
+
+def cmd_coverage(args):  # reads only the config and the seed; writes only a new --json-out file
+    target = json_target(args.json_out) if args.json_out is not None else None  # checked before any read
     cfg = load_config(args.config)
     errs, _ = check(cfg, args.seed_dir)
     if errs:
         print("\n".join(errs + ["coverage: config has %d error(s); run --check first" % len(errs)]))
         return 1
-    county = county_of(cfg["jurisdiction"], cfg["county_fips"], args.seed_dir)[1]
+    doc = coverage_result(cfg, args.seed_dir)
+    data = json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    print(data, end="") if args.json else print(coverage_text(doc), flush=True)
+    if target: write_new(target, data.encode("utf-8"))  # once, after the text is printed
+    return 0 if doc["complete"] else 3
+
+def coverage_result(cfg, seed_dir):  # the flock-region-coverage-v1 document of a config that passed check()
+    county = county_of(cfg["jurisdiction"], cfg["county_fips"], seed_dir)[1]
     listed = {a.get("seed_agency_id") for a in cfg["agencies"]} - {None}  # no/hold are decisions: still listed
     lines, other = [], {}
     for e in county["agencies"]:
         if e["agency_id"] in listed:
             continue
         if e["kind"] in NEW_KINDS:
-            lines.append("unlisted %s %s %s" % (e["agency_id"], e["kind"], clean(e["name"])))
+            lines.append({"agency_id": e["agency_id"], "kind": e["kind"], "name": clean(e["name"])})
         else:
             other[e["kind"]] = other.get(e["kind"], 0) + 1
     hand = sum(1 for a in cfg["agencies"] if a.get("seed_agency_id") is None)
-    print("\n".join(lines + ["seed_agencies=%d listed=%d unlisted=%d other_unlisted=%s hand_added=%d" % (
-        len(county["agencies"]), len(listed), len(lines), ",".join("%s:%d" % kv for kv in sorted(other.items())) or "0",
-        hand)]))
-    return 3 if lines else 0
+    return {"schema": "flock-region-coverage-v1", "review_required": True, "region": cfg["region"],
+            "jurisdiction": cfg["jurisdiction"], "county_fips": cfg["county_fips"], "seed_agencies": len(county["agencies"]),
+            "listed": len(listed), "unlisted": lines, "other_unlisted": dict(sorted(other.items())), "hand_added": hand,
+            "complete": not lines}
+
+def coverage_text(doc):  # today's text lines, byte for byte
+    lines = ["unlisted %s %s %s" % (u["agency_id"], u["kind"], u["name"]) for u in doc["unlisted"]]
+    return "\n".join(lines + ["seed_agencies=%d listed=%d unlisted=%d other_unlisted=%s hand_added=%d" % (
+        doc["seed_agencies"], doc["listed"], len(lines), ",".join("%s:%d" % kv for kv in doc["other_unlisted"].items())
+        or "0", doc["hand_added"])])
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -247,6 +281,8 @@ def main(argv=None):
         p.add_argument(flag)
     p.add_argument("--jurisdiction", default="us-ca")
     p.add_argument("--dry-run", action="store_true", help="init only: print what init would change; write nothing")
+    p.add_argument("--json", action="store_true", help="coverage only: print only the flock-region-coverage-v1 document")
+    p.add_argument("--json-out", help="coverage only: print the text and also write the document to this new file")
     a = p.parse_args(argv)
     need = {None: (a.check,), "new": (a.county_fips, a.region, a.out), "init": (a.config, a.store), "coverage": (a.config,)}
     if (a.check is None) == (a.command is None) or not all(need[a.command]) or (
@@ -254,6 +290,8 @@ def main(argv=None):
         p.error("use exactly one of: new, --check CONFIG, init CONFIG, coverage CONFIG")
     if a.dry_run and (a.check or a.command != "init"):
         p.error("--dry-run is valid only with init")
+    if (a.json or a.json_out is not None) and (a.check or a.command != "coverage" or a.json and a.json_out is not None):
+        p.error("use at most one of --json, --json-out, and only with coverage")
     try:
         return (cmd_check(a) if a.check else cmd_new(a) if a.command == "new" else
                 cmd_coverage(a) if a.command == "coverage" else cmd_init(a))
