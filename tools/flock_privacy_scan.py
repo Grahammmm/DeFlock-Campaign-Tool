@@ -14,8 +14,11 @@ if any sha256 differs. A write error removes the file, prints `NEWFILE: not writ
   skipped (binary)  not UTF-8 text, or a NUL byte in the first 8 KiB
   skipped (special) not a regular file;  skipped (allow): the --allow file itself
 --allow FILE: one exact value per line (`#` comment lines); emails match case-insensitively. Allowed matches are only counted.
+  python3 tools/flock_privacy_scan.py PATH... --category plate [--category phone] [--by-category]
+--category NAME (email, phone or plate; repeatable) checks only those kinds and ends the totals line ` categories=a,b`;
+--by-category appends ` <kind>=N` per checked kind. A narrowed scan is not a full privacy check.
 Exit 0 no findings, 3 findings, 1 any missing PATH or unreadable file (findings still printed), 2 usage."""
-import argparse, contextlib, hashlib, importlib.util, json, os, stat, sys
+import argparse, collections, contextlib, hashlib, importlib.util, json, os, stat, sys
 from pathlib import Path
 sys.dont_write_bytecode = True  # read-only: loading the sibling must not leave a __pycache__ behind
 _spec = importlib.util.spec_from_file_location("_scan_flock_privacy", Path(__file__).resolve().parent / "flock_privacy.py")
@@ -27,7 +30,8 @@ def show(path):
     return os.fsencode(path).decode("utf-8", "replace")
 
 class Scan:
-    def __init__(self, allow, max_bytes, allow_id):
+    def __init__(self, allow, max_bytes, allow_id, patterns=privacy.PATTERNS):
+        self.patterns, self.by_kind = patterns, collections.Counter()  # chosen (name, rx) pairs in PATTERNS order
         self.allow, self.allow_lower = set(allow), {v.lower() for v in allow}
         self.max_bytes, self.allow_id, self.failed = max_bytes, allow_id, False
         self.files = self.scanned = self.skipped = self.findings = self.allowed = 0
@@ -68,12 +72,13 @@ class Scan:
         self.scanned += 1
         self.note(name, "scanned", sha=hashlib.sha256(data).hexdigest())
         for number, line in enumerate(text.split("\n"), 1):
-            for category, rx in privacy.PATTERNS:
+            for category, rx in self.patterns:
                 hits = [m[0] for m in rx.finditer(line)]
                 kept = [h for h in hits if not (h in self.allow or (category == "email" and h.lower() in self.allow_lower))]
                 self.allowed += len(hits) - len(kept)
                 if kept:
                     self.findings += 1
+                    self.by_kind[category] += 1
                     self.records[-1]["findings"].append({"line": number, "category": category})
                     print(f"{show(name)}:{number}: {category}")
 
@@ -128,7 +133,11 @@ def main(argv=None):
     ap.add_argument("--allow", metavar="FILE")
     ap.add_argument("--max-bytes", type=int, default=2_000_000, metavar="N")
     ap.add_argument("--json-out", metavar="NEWFILE")
+    ap.add_argument("--category", action="append", choices=[n for n, _ in privacy.PATTERNS])
+    ap.add_argument("--by-category", action="store_true")
     args = ap.parse_args(argv)
+    if args.category and len(set(args.category)) != len(args.category):
+        ap.error("--category NAME given twice")
     if args.max_bytes < 0:
         ap.error("--max-bytes must be 0 or more")
     if args.json_out is not None and (problem := out_problem(args.json_out, args.paths)):
@@ -143,15 +152,20 @@ def main(argv=None):
             print(f"{show(args.allow)}: unreadable (allow)")
             return 1
         allow_id = (st.st_dev, st.st_ino)
-    scan = Scan(allow, args.max_bytes, allow_id)
+    scan = Scan(allow, args.max_bytes, allow_id, [p for p in privacy.PATTERNS if not args.category or p[0] in args.category])
     for arg in args.paths:
         scan.path(arg)
-    print(f"files={scan.files} scanned={scan.scanned} skipped={scan.skipped} findings={scan.findings} allowed={scan.allowed}")
+    kinds = [n for n, _ in scan.patterns]
+    print(f"files={scan.files} scanned={scan.scanned} skipped={scan.skipped} findings={scan.findings} allowed={scan.allowed}"
+          + (f" categories={','.join(kinds)}" if args.category else "")
+          + "".join(f" {n}={scan.by_kind[n]}" for n in kinds if args.by_category))
+    # without either flag the receipt stays byte-identical to RF0250-8
+    extra = {"categories": kinds, "by_category": {n: scan.by_kind[n] for n in kinds}} if args.category or args.by_category else {}
     if args.json_out is not None and not write_receipt(args.json_out, {
             "schema": "flock-privacy-scan-v1", "review_required": True, "note": "patterns only; a clean scan is not a privacy review",
             "max_bytes": args.max_bytes, "allow_file_used": bool(args.allow), "files": scan.records,
             "totals": {"files": scan.files, "scanned": scan.scanned, "skipped": scan.skipped, "findings": scan.findings,
-                       "allowed": scan.allowed, "failed": scan.failed}}):
+                       "allowed": scan.allowed, "failed": scan.failed}, **extra}):
         return 1
     return 1 if scan.failed else 3 if scan.findings else 0
 
