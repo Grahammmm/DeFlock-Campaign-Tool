@@ -123,8 +123,15 @@ edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts f
 longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
 under `public/`; posting stays an organizer decision outside this tool.
 
+## Reviewer roster (role assignment, not authentication)
+
+`finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges
+roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list` prints it. With a
+roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
+`unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
+
 ## Not done
 
-No reviewer directory or role assignment beyond the Access policy; no diff view between
+No reviewer signatures or identity check (roster names are self-asserted); no diff view between
 content versions; no automatic notification to reviewers. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
