@@ -91,6 +91,9 @@ DEFAULTS = {
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",
     "agency.upcoming": "Upcoming meetings", "agency.no_upcoming": "No upcoming meetings are listed for this body.",
+    "officials.heading": "Who decides", "officials.source": "source",
+    "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
+                         "Contact officials only through the channels on that site."),
     "map.picker_label": "Choose an area", "map.region_label": "Community-mapped ALPR points",
     "map.unavailable": "Interactive map unavailable: the campaign has not self-hosted the MapLibre library yet.",
     "map.loading": "Loading the interactive map.", "map.still_choose": "You can still choose an area below or",

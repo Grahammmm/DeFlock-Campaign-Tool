@@ -426,9 +426,9 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root):
+def social_cmd(root, platforms=None):
     from .social import build_social
-    print(json.dumps(build_social(root), indent=2, ensure_ascii=False))
+    print(json.dumps(build_social(root, platforms), indent=2, ensure_ascii=False))
     print("Drafts written to kit/social. Nothing was posted.")
 
 
@@ -680,6 +680,8 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
+                          help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
     press_draft.add_argument("--directory", required=True)
@@ -789,7 +791,9 @@ def main():
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
-                                                               "produced", "denied", "closed"))
+                                                               "produced", "denied", "closed", "fee_estimate"))
+    response_p.add_argument("--amount", metavar="USD", help="fee_estimate only: the agency's estimate, 0-100000 "
+                            "(e.g. 245.50); recorded only, nothing is paid")
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
@@ -938,6 +942,8 @@ def main():
         parser.error("--stale-days must be 1 to 3650")
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
+    if args.command == "social" and args.check and args.platform:
+        parser.error("--check reads kit/social only; it cannot be combined with --platform")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -967,7 +973,7 @@ def main():
             print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
-            social_cmd(root)
+            social_cmd(root, args.platform)
         elif args.command == "press":
             from .press import build_press
             print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
@@ -1139,8 +1145,13 @@ def main():
             from .kit_copy import run_cli as kit_copy_cli
             kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
         elif args.command == "kit-status":
-            from .kit_track import status as kit_track_status
-            print(json.dumps(kit_track_status(root, request=args.request), indent=2))
+            from .kit_track import OVER_CAP, status as kit_track_status
+            report = kit_track_status(root, request=args.request)
+            print(json.dumps(report, indent=2))
+            for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
+                if row["over_fee_cap"]:
+                    label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
+                    print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
@@ -1158,7 +1169,7 @@ def main():
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
-                                         records=args.record, request=args.request), indent=2))
+                                         records=args.record, request=args.request, amount=args.amount), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)

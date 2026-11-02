@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Flock today (NB-DF-11): one ranked, read-only organizer to-do list for one date.
-  --store DIR --watchlist CSV --roster CSV --date YYYY-MM-DD [--findings SLUG=CSV ...]
+  --store DIR --watchlist CSV --roster CSV --date YYYY-MM-DD [--findings SLUG=CSV ...] [--json]
+--json (RF0140-8) prints one flock-today-v1 object (same items, source errors, totals; review_required) instead of the
+lines, on stdout only; a store refusal stays its one plain line, exit 1.
 Ranks: 1 reminder-passed/reminder-today, 2 reminder-week (1-7 days out), 3 stale-cited (needs --findings for that
 slug), 4 lead-new (LEADS.csv state new), 5 review-wait (sweep stage ready-verify, verify-open, compare-open,
 family-refused), 6 facts-unreviewed (per slug count), 7 receipt-unknown; inside a rank by date, slug, id.
@@ -8,7 +10,7 @@ Each line ends with that tool's own next command or step; never a value, quote, 
 Writes nothing, never runs a model, kanban or hermes. Reminders are provisional, not a legal status.
 A source that fails to load is one rank-0 source-error line and the others still run.
 Exit 0 ok, 1 any source-error or a store inside the repository, 2 usage."""
-import argparse, contextlib, csv, datetime, importlib.util, io, re, shlex, sys
+import argparse, contextlib, csv, datetime, importlib.util, io, json, re, shlex, sys
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -117,6 +119,7 @@ def main(argv=None):
     for name in ("--store", "--watchlist", "--roster", "--date"):
         parser.add_argument(name, required=True)
     parser.add_argument("--findings", action="append", metavar="SLUG=CSV")
+    parser.add_argument("--json", action="store_true", help="one flock-today-v1 JSON object instead of the lines")
     a = parser.parse_args(argv)
     if not facts_tool.valid_date(a.date):
         parser.error("--date must be YYYY-MM-DD")
@@ -135,11 +138,21 @@ def main(argv=None):
         try:
             items += load()
         except ERRORS as exc:
-            errors.append("today | 0 | source-error | %s | %s" % (name, type(exc).__name__))
+            errors.append((name, type(exc).__name__))
     items.sort(key=lambda i: (i[0], i[2], i[3], i[4]))  # stable: equal keys keep each tool's own order
-    lines = errors + ["today | %d | %s | %s | %s | %s" % (i[0], i[1], i[3], i[4], i[5]) for i in items]
     count = {key: sum(i[1] in kinds for i in items) for key, kinds in TOTALS}
     count["stale"] = count["stale"] if findings else "-"
+    if a.json:  # the same items, errors and counts as the lines below; no new data
+        keys = ("rank", "kind", "date", "slug", "item", "next")
+        print(json.dumps({"schema": "flock-today-v1", "review_required": True, "date": a.date,
+                          "note": "provisional; not a legal status",
+                          "items": [dict(zip(keys, (i[0], i[1], i[2] or None) + tuple(i[3:6]))) for i in items],
+                          "source_errors": [{"source": n, "error": e} for n, e in errors],
+                          "totals": dict([("items", len(items))] + [(k, None if count[k] == "-" else count[k])
+                                                                     for k, _ in TOTALS])}, ensure_ascii=True))
+        return 1 if errors else 0
+    lines = ["today | 0 | source-error | %s | %s" % e for e in errors]
+    lines += ["today | %d | %s | %s | %s | %s" % (i[0], i[1], i[3], i[4], i[5]) for i in items]
     print(*lines, sep="\n") if lines else None
     print("today | date=%s items=%d " % (a.date, len(items)) + " ".join("%s=%s" % (k, count[k]) for k, _ in TOTALS)
           + " | provisional; not a legal status")

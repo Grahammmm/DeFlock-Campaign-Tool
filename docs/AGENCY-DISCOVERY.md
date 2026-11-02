@@ -216,6 +216,14 @@ is once only and not after `determination`, `produced` or `denied`. `determinati
 control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
 `closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
 
+When the agency quotes a fee, record it with `--kind fee_estimate --amount USD` (for example `245.50`: digits with
+at most two decimals, 0 to 100000; no sign, commas or exponent). `--amount` is required for `fee_estimate` and refused
+for any other kind; it is stored as whole `amount_cents`, and estimates may repeat. `kit-status` shows each request's
+latest estimate (latest date, then the later recorded step) as `fee_estimate`, and `over_fee_cap` compares it with
+`fee_cap_usd` in `kit/request-settings.json` (`null` without a cap or an estimate; equal is not over). An estimate over
+the cap also prints `<agency>: fee estimate $245.50 is over your fee cap: decide before paying` on stderr. The check is
+a reminder, not advice: the tool never pays, replies to or contacts the agency.
+
 `kit-due --directory D [--as-of YYYY-MM-DD]` (default today) lists requests still waiting on the agency under `open`,
 sorted by provisional `due` date (extended when recorded), with `days` left (negative once past) and `state`
 `past_due`, `due_today` or `upcoming`. Requests with a `determination`, `produced` or `denied` step appear under

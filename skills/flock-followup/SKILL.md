@@ -46,6 +46,7 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   or with no receipt N+ days after sending. There is no default for --receipt-days; not a legal due date. Exit 3 on any
   action alert, 1 with only a store-error line. An alert clears only when the row changes (record a step); nothing is
   sent, acknowledged or snoozed. `--json-out` writes a new 0600 `flock-alerts-v1` file outside the repository.
+  `--prev OLD.json` (an earlier `--json-out` file) ends each line `| new` or `| still`, lists `alert | cleared | <id>` lines.
 
 ## Summary
 

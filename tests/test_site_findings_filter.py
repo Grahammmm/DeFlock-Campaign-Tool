@@ -130,8 +130,8 @@ class FindingsFilterTests(unittest.TestCase):
         hostile, name = 'ca-x"><script>alert(1)</script>', 'Sheriff <b>"quoted"</b>'
         real = site_module.load_content
 
-        def hostile_model(root):
-            model = real(root)
+        def hostile_model(root, today=None):
+            model = real(root, today)
             for agency in model["agencies"]:
                 if agency["agency_id"] == SHERIFF:
                     agency.update(agency_id=hostile, name=name)

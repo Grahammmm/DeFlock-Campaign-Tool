@@ -633,6 +633,22 @@ class Site:
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
 
+    def who_decides(self, agency_id):
+        """DF2237-13: the body's organizer-checked officials, or "" when ``content/officials.json`` lists none."""
+        people = self.model.get("officials", {}).get(agency_id)
+        if not people:
+            return ""
+
+        def name(p):
+            return (f'<a href="{e(p["profile_url"])}" rel="noopener noreferrer">{e(p["name"])}</a>'
+                    if p["profile_url"] else e(p["name"]))
+        items = "".join(f'<li>{name(p)}, {e(p["role"])}</li>' for p in people)
+        newest = max(people, key=lambda p: p["checked_on"])  # first listed wins a tie
+        source = f'<a href="{e(newest["source_url"])}">{self.t("officials.source")}</a>'
+        return (f'<section class="who-decides"><h3>{self.t("officials.heading")}</h3><ul>{items}</ul><p>'
+                + self.t("officials.listed", source=source, date=f'<time>{e(newest["checked_on"])}</time>')
+                + '</p></section>')
+
     def agency_html(self, agency):
         """``agencies/<slug>.html`` (DF2237-08): one agency's card facts, findings, source records and upcoming meetings."""
         aid, profile = agency["agency_id"], agency["profile"]
@@ -652,7 +668,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "")
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.who_decides(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -846,6 +862,7 @@ class Site:
                 f'<p><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time></p>'
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
+                + self.who_decides(meeting.get("agency_id"))
                 + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
@@ -1230,7 +1247,7 @@ def _plan_site(root, today=None, notes=None):
     cfg = read_config(root)
     if (root / "public").is_symlink():
         raise ContentError("public/ must not be a symlink")
-    model = load_content(root)
+    model = load_content(root, today)
     if model is None:
         return None
     site = Site(root, cfg, model, today=today or date.today())
