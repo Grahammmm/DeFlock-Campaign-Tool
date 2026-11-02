@@ -606,6 +606,11 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    press = commands.add_parser("press", help="Draft private press material; sends nothing")
+    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_draft.add_argument("--directory", required=True)
+    press_draft.add_argument("--finding", action="append", default=[])
+    press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -718,6 +723,12 @@ def main():
         sources_edit.add_argument(flag, default=None)
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
+    batch = sources.add_parser("add-batch", help="Add every receipt of one ingest source_id not yet listed; "
+                               "titles marked [EDIT ME: title]; publishes nothing")
+    for flag in ("--directory", "--source-id", "--agency-id", "--received-at"):
+        batch.add_argument(flag, required=True)
+    batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
+    batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
     commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True).add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
@@ -742,6 +753,10 @@ def main():
     for flag in ("--directory", "--date", "--note"):
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
+    withdraw_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--reason"):
+        withdraw_p.add_argument(flag, required=True)
     roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
                                           ).add_subparsers(dest="reviewers_command", required=True)
     roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
@@ -802,6 +817,10 @@ def main():
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "press":
+            from .press import build_press
+            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+            print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build" and args.preview:
             from .site import preview_site
             report = preview_site(root)
@@ -837,6 +856,10 @@ def main():
         elif args.command == "sources" and args.sources_command == "list":
             from .sources_cmd import list_sources
             print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
+        elif args.command == "sources" and args.sources_command == "add-batch":
+            from .sources_cmd import add_batch
+            print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
+                                       dry_run=args.dry_run)))
         elif args.command == "sources":
             from .sources_cmd import edit_source, remove_source
             print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
@@ -860,6 +883,10 @@ def main():
             if args.finding_command == "correct":
                 print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
+            if args.finding_command == "withdraw":
+                print(json.dumps(findings.withdraw(root, args.id, args.reason)))
+                print("Run build to remove it from public/. Nothing was deployed.")
                 return
             if args.finding_command == "publish":
                 result = findings.publish(root, args.draft, args.approved_by)
