@@ -18,7 +18,7 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages", "cited_by"],
+      "required": ["sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages", "cited_by", "public_copy"],
       "properties": {
         "sha256_prefix": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
         "title": {"type": "string", "minLength": 1},
@@ -27,7 +27,18 @@
         "received_at": {"type": "string"},
         "public_url": {"type": ["string", "null"]},
         "pages": {"type": ["integer", "null"], "minimum": 0},
-        "cited_by": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}}
+        "cited_by": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}},
+        "public_copy": {
+          "description": "Organizer check of the linked public copy against the record hash; null when none was recorded.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["matches", "checked_on"],
+          "properties": {
+            "matches": {"type": "boolean"},
+            "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            "reason": {"enum": ["redacted", "converted", "unknown"]}
+          }
+        }
       }
     }
   }

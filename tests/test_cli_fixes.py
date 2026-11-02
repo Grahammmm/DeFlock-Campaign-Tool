@@ -50,6 +50,7 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--channel must be one of name", "5 already recorded as sent on 5; use --replace to correct it",
         "5 has recorded steps; its entry sent on 5 cannot be replaced",
         "--note must be plain text without <, > or control characters",
+        "kit/requests/5.md still has 5 unfilled placeholder(s) or an unverified recipient; run kit-check",
     ), "kit-sent message that already names the option to change; not in the table"),
     **dict.fromkeys((
         "--note must be 1-5 characters after collapsing whitespace", "--kind must be one of name",
