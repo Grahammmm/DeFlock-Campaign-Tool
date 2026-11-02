@@ -714,6 +714,49 @@ def load_map(content_dir):
     }
 
 
+# --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
+PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
+RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
+                                       "agency-cards", "app", "data", "vendor", "meetings"}  # generated top-level names
+
+
+def _page_string(document, key, label, limit, required):
+    value = document.get(key, "")
+    if not isinstance(value, str) or len(value) > limit or (required and not value.strip()):
+        kind = "non-empty string" if required else "string"
+        raise ContentError(f"{label}.{key}: must be a {kind} of at most {limit} characters")
+    return value
+
+
+def load_pages(content_dir, finding_slugs):
+    """Pages sorted by slug, ``[]`` without the folder; non-``.json`` names ignored. Text is escaped at render."""
+    folder = Path(content_dir) / "pages"
+    if folder.is_symlink():
+        raise ContentError("pages: the folder must not be a symlink")
+    paths = sorted(path for path in folder.iterdir() if path.name.endswith(".json")) if folder.is_dir() else []
+    if len(paths) > MAX_PAGES:
+        raise ContentError(f"pages: at most {MAX_PAGES} page files")
+    pages = []
+    for path in paths:
+        label, slug = "pages/" + path.name, path.stem
+        if path.is_symlink() or not path.is_file():
+            raise ContentError(f"{label}: must be a regular file, not a symlink or folder")
+        if slug in RESERVED_PAGE_SLUGS or slug in finding_slugs:
+            raise ContentError(f"{label}: slug {slug} is reserved")
+        _slug(slug, f"{label} filename")
+        document = _read_json(path)
+        _require_keys(document, PAGE_KEYS, {"title", "body_md"}, label)
+        if not isinstance(document.get("nav", False), bool):
+            raise ContentError(f"{label}.nav: must be true or false")
+        pages.append({"slug": slug, "title": _page_string(document, "title", label, 120, True),
+                      "description": _page_string(document, "description", label, 300, False),
+                      "body_md": _page_string(document, "body_md", label, 200 * 1024, True),
+                      "nav": document.get("nav", False)})
+    if sum(page["nav"] for page in pages) > MAX_NAV_PAGES:
+        raise ContentError(f"pages: at most {MAX_NAV_PAGES} pages may set nav: true")
+    return pages
+
+
 # --- assembly ---------------------------------------------------------------
 
 def load_content(root):
@@ -791,6 +834,7 @@ def load_content(root):
     return {
         "site": site,
         "findings": findings,
+        "pages": load_pages(content_dir, slugs),
         "meetings": meetings,
         "sources": sources,
         "agencies": agencies,
