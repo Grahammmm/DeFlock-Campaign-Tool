@@ -139,13 +139,17 @@ class TodayTests(unittest.TestCase):
         self.build_tree()
         (self.root / "kit" / "sent.json").write_text("{not json", encoding="utf-8")
         (self.root / "content" / "meetings" / "zz-broken.json").write_text("[1, 2", encoding="utf-8")
+        (self.root / "private" / "drafts" / "zz-bad.json").write_text("not json", encoding="utf-8")
         items = today.todo(self.root, AS_OF)
         self.assertEqual(self.kinds(items), ["comment_deadline", "finding_ready", "finding_blocked", "stale_comment_kit",
-                                             "stale_contact", "unreadable", "unreadable"], items)
-        broken = [item for item in items if item["kind"] == "unreadable"]
-        self.assertEqual(broken[0]["what"], "fix content/meetings/zz-broken.json: " + broken[0]["what"].split(": ", 1)[1])
-        self.assertEqual(broken[1]["what"], "fix kit/sent.json: kit/sent.json unreadable: not JSON")
-        self.assertTrue(all(len(item["what"].split(": ", 1)[1]) <= today.ERROR_CHARS for item in broken))
+                                             "stale_contact"] + ["unreadable"] * 3, items)
+        bad_draft, broken, sent = [item for item in items if item["kind"] == "unreadable"]  # sorted by file label
+        self.assertTrue(bad_draft["what"].startswith(f"fix {self.root / 'private' / 'drafts' / 'zz-bad.json'}: "))
+        self.assertTrue(broken["what"].startswith("fix content/meetings/zz-broken.json: "), broken)
+        self.assertEqual(sent["what"], "fix kit/sent.json: kit/sent.json unreadable: not JSON")
+        self.assertEqual(sent["command"], "open kit/sent.json and fix it")
+        for item in (bad_draft, broken, sent):
+            self.assertLessEqual(len(item["what"].split(": ", 1)[1]), today.ERROR_CHARS)
 
     def test_empty_campaign_nothing_due(self):
         self.assertEqual(run("today", "--directory", self.root, "--as-of", "2026-03-15"),

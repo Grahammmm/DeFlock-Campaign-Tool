@@ -65,18 +65,14 @@ def _findings(root, directory):
     items = []
     for row in findings.status_rows(root):
         if row["state"] == "unreadable":
-            items.append(_item("unreadable", f"fix {row['path']}: {row['error'][:ERROR_CHARS]}",
-                               f"open {row['path']} and fix it", key=row["path"]))
-            continue
-        if row["state"] not in ("ready", "blocked"):
-            continue
-        path = root / "private" / "drafts" / (row["id"] + ".json")
-        draft = shlex.quote(str(path)) if path.is_file() else "DRAFT"
-        if row["state"] == "ready":
+            items.append(_unreadable(row["path"], row["error"]))  # status_rows' own path and withheld-reason text
+        elif row["state"] in ("ready", "blocked"):
+            path = root / "private" / "drafts" / (row["id"] + ".json")
+            draft = shlex.quote(str(path)) if path.is_file() else "DRAFT"
             items.append(_item("finding_ready", f"Finding {row['id']} is reviewed and ready to publish",
-                               f"finding publish {draft} --directory {directory} --approved-by NAME", key=row["id"]))
-        else:
-            items.append(_item("finding_blocked", f"Finding {row['id']} is blocked: {', '.join(row['blockers'])}",
+                               f"finding publish {draft} --directory {directory} --approved-by NAME", key=row["id"])
+                         if row["state"] == "ready" else
+                         _item("finding_blocked", f"Finding {row['id']} is blocked: {', '.join(row['blockers'])}",
                                f"finding review-status {draft} --directory {directory}", key=row["id"]))
     return items
 
