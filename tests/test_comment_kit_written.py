@@ -109,6 +109,20 @@ class WrittenCommentLetterTests(unittest.TestCase):
         short = letter(kit_for([finding(f"s{n}", summary="Short.") for n in range(5)]))
         self.assertEqual(len([line for line in short if line.startswith("- ")]), 5)
 
+    def test_scaffold_alone_over_400_words_gives_a_note_not_an_oversized_letter(self):
+        meeting = dict(MEETING, agenda_item=" ".join(f"a{i}" for i in range(401)))  # agenda_item is free text
+        for findings in ([], [finding("policy")]):
+            lines = letter(kit_for(findings, meeting=meeting))
+            self.assertLessEqual(sum(len(line.split()) for line in lines), 400)
+            self.assertEqual(lines, ["Send by: 2026-10-14 12:00 (UTC-07:00)",
+                                     "How: Email clerk@example.invalid or mail 1 Main St",
+                                     "The letter would be over 400 words for this meeting; write a short one by "
+                                     "hand from the three asks above."])
+        at_cap = letter(kit_for([], meeting=dict(MEETING, agenda_item="a " * 286)))  # exactly 400 words: kept
+        self.assertEqual((sum(len(line.split()) for line in at_cap), at_cap[-3:]), (400, ["Sincerely,", "[name]",
+                                                                                         "[city]"]))
+        self.assertEqual(len(letter(kit_for([], meeting=dict(MEETING, agenda_item="a " * 287)))), 3)
+
     def test_link_relative_without_base_url_and_no_double_slash_with_it(self):
         rel = letter(kit_for([finding("policy")], base=None))
         self.assertIn("(/findings/policy.html; sources abababababab)", "\n".join(rel))

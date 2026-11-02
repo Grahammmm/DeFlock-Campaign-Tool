@@ -111,7 +111,9 @@ stated by the source` when it is `null`), `How: <how>`, then a short letter `To 
 item>` when there is one, a fixed paragraph, one bullet per cited finding (`- <title>: <summary> (<finding
 URL, absolute when base_url is set>; sources <12-character hash prefixes>)` plus `(corrected <date>)` when
 corrected), the three asks numbered, and `Sincerely,` `[name]` `[city]`. The letter is at most 400 words;
-whole finding bullets are dropped from the end, never cut. The tool never adds a recipient, email or postal
+whole finding bullets are dropped from the end, never cut. If the body, agenda item or campaign name alone
+would push it over 400 words, the section keeps `Send by:` and `How:` and says to write a short letter by
+hand instead. The tool never adds a recipient, email or postal
 address (any named in `how` appears only on the `How:` line) and never sends the letter.
 
 ## Workspace Meetings screen

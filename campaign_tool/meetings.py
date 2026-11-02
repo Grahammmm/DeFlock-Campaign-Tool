@@ -358,6 +358,9 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
         words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
         while words(letter) > 400 and any(row.startswith("- ") for row in letter):  # whole bullets, from the end
             del letter[max(i for i, row in enumerate(letter) if row.startswith("- "))]
+        if words(letter) > 400:  # body, agenda item or campaign name alone over the cap: no letter, say so
+            letter = letter[:2] + ["The letter would be over 400 words for this meeting; write a short one by "
+                                   "hand from the three asks above."]
         lines.extend(["## Written comment"] + letter + [""])
     lines.append("## How to take part")
     part = meeting.get("participation")
