@@ -155,6 +155,14 @@ def time_tag(value):
     return f'<time datetime="{e(value)}">{e(value)}</time>'
 
 
+def policy_line(policy):  # links a posted ALPR usage policy an organizer found; fixed wording only
+    if not policy:
+        return ""
+    return (f'<p class="policy-link"><a href="{e(policy["url"])}" rel="noopener noreferrer">Posted ALPR usage policy</a> '
+            f'(checked {date_label(policy["checked_on"])}, <a href="{e(policy["source_url"])}" '
+            'rel="noopener noreferrer">where we found it</a>)</p>')
+
+
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                   "amended": "Approved with amendments", "no_action": "No action taken",
                   "informational": "Informational item only"}
@@ -515,7 +523,8 @@ class Site:
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
-                    + (f'<p>{" · ".join(links)}</p>' if links else "") + self.contract_line(agency["contract"])
+                    + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
+                    + self.contract_line(agency["contract"])
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
