@@ -66,6 +66,7 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--record #5: name",  # wraps the resolve_hash refusal (not ingested / no ledger / 12 hex / ambiguous)
     ), "kit-response --record message that names the record number and the rule to change; not in the table"),
     "--as-of must be a real YYYY-MM-DD date": "kit-due message that already names the option and the format",
+    "--scope needs a law package; none found for 5": "kit message that already names the option and the missing law package",
     **dict.fromkeys((
         "--as-of 5 is in the future", "no hand-sent request recorded for 5", "request for 5 is closed",
         "request for 5 was answered (5 on 5); no follow-up drafted", "no law package: dates cannot be computed",
