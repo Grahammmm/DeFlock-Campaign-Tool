@@ -104,6 +104,21 @@ Under `<campaign>/kit/`:
 
 `doctor` reports `agencies_selected` and `kit_built`.
 
+### Request settings
+
+To fill every draft at once, write a private `kit/request-settings.json` (never commit it):
+
+    {"schema_version": 1, "requester": ["A. Organizer", "a@example.org"], "fee_cap_usd": 50,
+     "date_from": "2023-01-01", "date_to": "today"}
+
+`requester` is 1–8 lines of 1–120 characters (no control characters); `fee_cap_usd` is a number from 0 to
+10000 and prints as `$50.00` (`$0.00` means no fees authorized); `date_from` is a real `YYYY-MM-DD` date
+not after today, and `date_to` is such a date not before it or `"today"` (default `"today"`; `date_to`
+alone is refused). The next `kit` run puts them into every law-package and template draft; a missing
+key keeps that placeholder and its `next_steps` line, and `summary.json` reports `request_settings`.
+Any other key or a bad value stops `kit` before a draft is written, naming the key but never the value.
+Edited drafts are still kept, with the fresh draft in `requests.suggested/`.
+
 ## What organizers must verify before sending
 
 The kit is a starting point, not a mailing list. Before any request leaves:
