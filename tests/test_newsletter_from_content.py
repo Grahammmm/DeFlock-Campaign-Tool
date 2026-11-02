@@ -12,7 +12,7 @@ from campaign_tool.newsletter.from_content import manifest_from_content  # noqa:
 
 SITE = {"schema_version": 1, "tagline": "Synthetic records.", "about_md": "Synthetic campaign.",
         "base_url": "https://synthetic.example.invalid"}
-KEYS = {"subject", "counts", "excluded", "written", "sent", "source"}
+KEYS = {"subject", "counts", "excluded", "written", "sent", "source", "since_from"}
 
 
 def finding(slug, published_at, corrections=(), summary=None):
