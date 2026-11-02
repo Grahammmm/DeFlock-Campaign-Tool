@@ -17,7 +17,7 @@ SPEC.loader.exec_module(monitor)
 TODAY = "2026-11-02"
 A, B, C, D, E = ("M-%012x" % n for n in (0xA1, 0xB2, 0xC3, 0xD4, 0xE5))
 FIVE = [[A, "Sample City", "2026-10-30", "new", "2026-10-30", "digest"],
-        [B, "Zed Town", "2026-10-20", "requested", "2026-10-25", "Organizer Secretname"],
+        [B, "Zed Town", "2026-10-20", "requested", "2026-10-25", "Organizer Quietname"],
         [C, "Sample City", "2026-10-20", "ignored", "2026-10-21", "Organizer Hiddenby"],
         [D, "Zed Town", "2026-11-02", "new", "2026-11-02", "digest"],
         [E, "Sample City", "2026-10-25", "new", "2026-10-25", "digest"]]
@@ -146,12 +146,12 @@ class LeadsListTests(unittest.TestCase):
         with open(self.store / "MONITOR.csv", "w", encoding="utf-8", newline="") as out:
             writer = csv.writer(out, lineterminator="\n")
             writer.writerow(monitor.MONITOR_HEADER)
-            writer.writerow([A, "Sample City", "agenda", "https://www.city.example/secret-agenda.pdf",
+            writer.writerow([A, "Sample City", "agenda", "https://www.city.example/hidden-agenda.pdf",
                              "Flock camera contract renewal", "0" * 64, "2026-10-30", "public", "unreviewed"])
         code, out = self.run_main()
         self.assertEqual(code, 0)
         text = "\n".join(out)
-        for absent in ("Secretname", "Hiddenby", "Organizer", "digest", "2026-10-21", "https://", "city.example",
+        for absent in ("Quietname", "Hiddenby", "Organizer", "digest", "2026-10-21", "https://", "city.example",
                        "Flock camera", "agenda", "Sample City", "Zed Town"):
             self.assertNotIn(absent, text)
 
