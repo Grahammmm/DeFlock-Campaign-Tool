@@ -47,7 +47,10 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 Every text field must pass the same rule as `agency_cards.text`: a string
 without `<` or `>`. Markdown fields (`*_md`) are rendered by
 `campaign_tool/markdown_lite.py`, which supports paragraphs, `## ` headings,
-`**bold**`, `- ` lists and `[text](https://...)` links only. Raw HTML is
+`**bold**`, `- ` lists, `1. ` ordered lists (`1) ` stays plain text), simple
+pipe tables (a `| a | b |` header row, a `|---|:---:|` separator row with the
+same 1-12 cells, then rows of that width; `\|` is a literal pipe) and
+`[text](https://...)` links only. Raw HTML is
 escaped and any link that is not an absolute `https://` URL is rendered as its
 text. There are no third-party dependencies.
 
