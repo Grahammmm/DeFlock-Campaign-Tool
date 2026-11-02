@@ -20,6 +20,8 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 
 ## Content directory
 
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
 Finding citations and the source library lead with “From a document we hold”,
 the receipt date and agency when known, and public-copy or private-original status.
 Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps
@@ -45,7 +47,10 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 Every text field must pass the same rule as `agency_cards.text`: a string
 without `<` or `>`. Markdown fields (`*_md`) are rendered by
 `campaign_tool/markdown_lite.py`, which supports paragraphs, `## ` headings,
-`**bold**`, `- ` lists and `[text](https://...)` links only. Raw HTML is
+`**bold**`, `- ` lists, `1. ` ordered lists (`1) ` stays plain text), simple
+pipe tables (a `| a | b |` header row, a `|---|:---:|` separator row with the
+same 1-12 cells, then rows of that width; `\|` is a literal pipe) and
+`[text](https://...)` links only. Raw HTML is
 escaped and any link that is not an absolute `https://` URL is rendered as its
 text. There are no third-party dependencies.
 
@@ -73,6 +78,10 @@ structural blocker (classification, `id`/`author`/`summary`/`sources`/
 Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
+
+Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) and every non-null `sources[].rule_id` must be a
+rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
+`content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
 
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
@@ -176,6 +185,10 @@ before `public/` changes.
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
 files above.
+
+Not-found page: `404.html` is always generated (site shell, links to findings, agencies, meetings and home, a note
+that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
+is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
 
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment

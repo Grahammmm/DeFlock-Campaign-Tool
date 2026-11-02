@@ -23,7 +23,7 @@ SEVERAL = "[a](http://x) and *b*"
 RENDERED = {
     CLEAN: '<h3>Heading</h3>\n<p><strong>bold</strong></p>\n<ul><li>item</li><li>item</li></ul>\n'
            '<p><a href="https://example.invalid/a" rel="noopener noreferrer">x</a></p>',
-    EACH: "<p>a b # Top ### Sub 1. one 2) two a **b &lt;b&gt;x&lt;/b&gt; *it* _it_</p>",
+    EACH: "<p>a b # Top ### Sub</p>\n<ol><li>one</li></ol>\n<p>2) two a **b &lt;b&gt;x&lt;/b&gt; *it* _it_</p>",
     NO_ECHO: "<p>SECRET-TEXT)</p>",
     NOT_FALSE: "<p>2 * 3 = 6 snake_case_name a &lt; b <strong>bold</strong> and <strong>more</strong></p>\n"
                "<h3>A <strong>bold</strong> heading</h3>\n"
@@ -45,12 +45,12 @@ class LintTests(unittest.TestCase):
     def test_each_code_once_in_line_order(self):
         self.assertEqual(codes(EACH), [
             (1, "link-dropped"), (2, "link-dropped"), (3, "heading-level"), (4, "heading-level"),
-            (5, "numbered-list"), (6, "numbered-list"), (7, "bold-unclosed"), (8, "raw-html"),
+            (6, "numbered-list"), (7, "bold-unclosed"), (8, "raw-html"),
             (9, "emphasis"), (10, "emphasis")])
         details = {code: detail for _, code, detail in lint(EACH)}
         self.assertEqual(details["link-dropped"], "link target is not absolute https")
         self.assertEqual(details["heading-level"], 'only "## " headings render')
-        self.assertEqual(details["numbered-list"], "numbered lists render as plain text")
+        self.assertEqual(details["numbered-list"], 'only "1. " numbered lists render')
         self.assertEqual(details["bold-unclosed"], "unclosed **")
         self.assertEqual(details["raw-html"], "raw HTML is shown escaped")
         self.assertEqual(details["emphasis"], "only **bold** renders")

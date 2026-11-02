@@ -15,7 +15,7 @@ import re
 import shutil
 import sys
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -31,7 +31,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "404.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings"}
 CLASSIFICATION_LABELS = {
     "documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
@@ -158,6 +158,10 @@ def date_label(value):
     return e(value[:10])
 
 
+def time_tag(value):
+    return f'<time datetime="{e(value)}">{e(value)}</time>'
+
+
 def _day(value):
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
@@ -179,6 +183,7 @@ class Site:
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
+        self.today = today or date.today()  # build date: contract terms
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
         cutoff = (today or date.today()).isoformat()
@@ -260,24 +265,27 @@ class Site:
                 tags.append(("property", "article:modified_time", e(_one_line(modified))))
         return "".join(f'  <meta {attr}="{key}" content="{value}">\n' for attr, key, value in tags)
 
-    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None):
-        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base else ""
+    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None,
+             index=True):
+        """``index=False``: a robots noindex tag instead of the share tags, and no canonical link."""
+        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base and index else ""
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
-                + self.share(title, description, path, kind, published, modified)
+                + (self.share(title, description, path, kind, published, modified) if index
+                   else '  <meta name="robots" content="noindex">\n')
                 + f'  <title>{e(title)} | {self.name}</title>\n'
                 '  <link rel="stylesheet" href="/style.css">\n'
                 '  <link rel="alternate" type="application/atom+xml" title="Findings" href="/feed.xml">\n'
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
-             kind="website", published=None, modified=None):
+             kind="website", published=None, modified=None, index=True):
         return render({
             "schema_version": 1,
             "language": self.site["language"],
-            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified),
+            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified, index),
                      "header": self.header(current), "main": main, "footer": self.footer()},
             "styles": {"font_family": self.site["font_family"], "font_faces": ""},
         })
@@ -370,7 +378,13 @@ class Site:
                 f'<div><span class="county-map-region">Community-mapped points</span><strong>{self.county}</strong></div></div>'
                 f'<div class="county-map-legend"><span class="camera-dot"></span><span id="map-selection-count">{self.map["camera_count"]} mapped points</span></div>'
                 '<p class="county-map-hint">Points are community reports, not confirmed agency ownership.</p></div>'
-                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div></section>\n')
+                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div>'
+                f'<p class="map-date">{self.map_date_line()}</p></section>\n')
+
+    def map_date_line(self):
+        """The OpenStreetMap data day from map/snapshot.json; never the build date."""
+        day = self.map.get("snapshot_date")
+        return f"Map data as of {date_label(day)} (OpenStreetMap)" if day else "Map data date unknown (OpenStreetMap)"
 
     def signup_section(self):
         signup = self.site["signup"]
@@ -384,6 +398,24 @@ class Site:
             form = '<p>No email addresses are collected by this site. Follow meetings and findings here or by feed.</p>'
         return ('    <section class="section movement-section" id="participate"><h2>Participate with evidence.</h2>'
                 f'{form}</section>\n')
+
+    def contract_line(self, contract):
+        if not contract:
+            return ""
+        return (f'<p class="contract-term">Contract with {e(contract["vendor"])}, {time_tag(contract["start"])} – '
+                f'{time_tag(contract["end"])}' + (", ended" if contract["end"] < self.today.isoformat() else "")
+                + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
+                + f' (checked {date_label(contract["checked_on"])} on <a href="{e(contract["source_url"])}" '
+                  'rel="noopener noreferrer">the source</a>).</p>')
+
+    def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
+        first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
+        soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
+                      key=lambda a: (a["contract"]["end"], a["name"]))
+        items = "".join(f'<li><a href="/agencies.html#{e(a["slug"])}">{e(a["name"])}</a>: contract with '
+                        f'{e(a["contract"]["vendor"])} ends {time_tag(a["contract"]["end"])}</li>' for a in soon)
+        return ('    <section class="section" id="contracts"><div class="section-heading"><div><p class="eyebrow">Contracts</p>'
+                f'<h2>Contracts ending soon</h2></div></div><ul class="contract-list">{items}</ul></section>\n') if soon else ""
 
     # -- pages ---------------------------------------------------------------
 
@@ -402,7 +434,7 @@ class Site:
         meetings = ('    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">Meetings</p><h2>Show up informed.</h2></div>'
                     '<p><a href="/meetings.html">All meetings and comment kits</a></p></div><div class="meeting-list">'
                     + ("".join(self.meeting_item(m) for m in self.upcoming[:3]) or empty) + '</div></section>\n')
-        main = (self.map_section() + cards
+        main = (self.map_section() + cards + self.contracts_section()
                 + '    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">Evidence before conclusions</p>'
                   f'<h2>{e(self.site["tagline"])}</h2></div></div>{mission}</section>\n'
                 + '    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">Latest findings</p><h2>Published with sources.</h2></div>'
@@ -434,7 +466,7 @@ class Site:
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
                     + (f'<p>{len(findings)} published finding(s): ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else '<p>No published findings.</p>')
-                    + (f'<p>{" · ".join(links)}</p>' if links else "")
+                    + (f'<p>{" · ".join(links)}</p>' if links else "") + self.contract_line(agency["contract"])
                     + (f'<p class="contact-provenance">Contact checked {date_label(agency["verification"]["checked_on"])} on '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">the official source</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -531,6 +563,18 @@ class Site:
                 + (f'<ul>{items}</ul>' if items else '<p>No corrections have been issued.</p>') + '</section>\n')
         return self.page("findings", "Corrections", "Every correction issued on a published finding", "/corrections.html", main)
 
+    def not_found_html(self):
+        """``404.html`` for unknown paths: site shell, noindex, no canonical/share tags; never in sitemap or feeds."""
+        links = "".join(f'<li><a href="{href}">{label}</a></li>' for href, label in (
+            ("/findings/", "Findings"), ("/agencies.html", "Agencies"), ("/meetings.html", "Meetings"), ("/", "Home page")))
+        main = ('    <section class="section" id="content"><div class="section-heading"><div><h2>Page not found</h2></div>'
+                '<p>This page does not exist on this site. Findings are never silently removed: corrections and '
+                'withdrawals are listed on <a href="/corrections.html">Corrections</a>.</p></div>'
+                f'<ul>{links}</ul></section>\n')
+        # "not-found" matches no nav key, so no nav item is marked as the current page.
+        return self.page("not-found", "Page not found", "This page does not exist on this site.", "/404.html", main,
+                         index=False)
+
     def sources_html(self):
         groups = {}
         for source in self.model["sources"]:
@@ -593,6 +637,7 @@ class Site:
                 f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
                 '<p>Published findings are also available as open data: '
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a>.</p>'
+                + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", "About", "About the campaign", "/about.html", main)
 
@@ -847,7 +892,7 @@ def _plan_site(root, today=None):
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
         "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
-        "corrections.html": site.corrections_html(),
+        "corrections.html": site.corrections_html(), "404.html": site.not_found_html(),
     }
     for finding in model["findings"]:
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
