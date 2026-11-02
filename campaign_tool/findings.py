@@ -605,11 +605,13 @@ def withdraw(root, finding_id, reason, now=None):
 
 def _withdraw_locked(root, finding_id, reason, when):
     source, document = _one_published(root / "content" / "findings", finding_id)
+    # The filename need not match the slug (load_content accepts both); the slug is what stays reserved.
+    slug = content.load_finding(document, f"content/findings/{source.name}")["slug"]
     folder = root / "private" / "withdrawn"
     if not _real_dir(folder):
         folder.mkdir(mode=0o700)
     os.chmod(folder, 0o700)
-    target = folder / source.name
+    target = folder / f"{slug}.json"
     if os.path.lexists(target):
         raise ValueError(f"private/withdrawn/{target.name} already exists; nothing was moved")
     log_fd = _open_log(root)  # a bad log refuses before anything is written
@@ -627,7 +629,7 @@ def _withdraw_locked(root, finding_id, reason, when):
             raise ValueError(f"private/withdrawn/{target.name} was written but the leftover content/findings/"
                              f"{source.name} could not be removed ({exc.strerror}); both copies remain and nothing "
                              f"was deleted or logged. Remove content/findings/{source.name} by hand, then run build") from None
-        _append(log_fd, {"at": when, "action": "withdraw", "id": finding_id, "slug": source.stem})
+        _append(log_fd, {"at": when, "action": "withdraw", "id": finding_id, "slug": slug})
     finally:
         os.close(log_fd)
-    return {"withdrawn": source.stem, "path": f"private/withdrawn/{target.name}"}
+    return {"withdrawn": slug, "path": f"private/withdrawn/{target.name}"}

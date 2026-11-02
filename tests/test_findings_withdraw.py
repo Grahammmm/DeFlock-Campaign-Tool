@@ -144,6 +144,22 @@ class FindingWithdrawTests(unittest.TestCase):
         self.refused("private/withdrawn/synthetic-title.json already exists")
         self.assertFalse(os.path.exists(self.base / "nowhere.json"))
 
+    def test_filename_differing_from_slug_uses_the_slug(self):
+        renamed = self.content / "findings" / "editorial-record.json"
+        os.replace(self.path, renamed)  # load_content accepts a filename that is not the slug
+        self.assertEqual([f["slug"] for f in load_content(self.root)["findings"]], ["synthetic-title"])
+        self.path = renamed
+        self.withdrawn.mkdir(mode=0o700)
+        self.copy.write_text('{"id": "older"}', encoding="utf-8")  # an existing copy under the slug refuses
+        self.refused("private/withdrawn/synthetic-title.json already exists")
+        self.copy.unlink()
+        self.assertEqual(self.withdraw(), {"withdrawn": "synthetic-title",
+                                           "path": "private/withdrawn/synthetic-title.json"})
+        self.assertFalse(os.path.lexists(renamed))
+        self.assertEqual([p.name for p in self.withdrawn.iterdir()], ["synthetic-title.json"])
+        self.assertEqual(json.loads(self.log_lines()[-1])["slug"], "synthetic-title")
+        self.assertEqual(findings.withdrawn_names(self.root), ({"syn-pub-1"}, {"synthetic-title"}))
+
     def test_bad_publication_log_refuses_before_anything_is_written(self):
         outside = self.base / "outside-log.jsonl"
         outside.write_bytes(self.log.read_bytes())
