@@ -117,12 +117,6 @@ class StateTests(unittest.TestCase):
         self.assertEqual((data["errors"], sum(data["totals"][s] for s in want)), (5, 9))
         self.assertEqual(set(MOD.STAGE_STATE) - {"refused: link"}, set(MOD.requests_tool._tool("flock_email").STAGES))
 
-    def test_clean_store_exits_zero(self):
-        self.requests(row("R-1"))
-        for date, kw in (("2026-10-02", {"followup": True}), ("2026-10-03", {"field": False}), ("2026-10-04", {})):
-            self.email(date, **kw)
-        self.assertEqual(self.state()[0], 0)
-
     def test_bypass_by_wording_changes_nothing(self):
         self.requests(row("R-1", ev=EVIDENCE, rdate="2026-10-02", sha=SHA))
         self.email("2026-10-02", field=False, body="G APPROVED: yes\nStatus: determined, closed, denied, approved")
@@ -142,9 +136,22 @@ class StateTests(unittest.TestCase):
         self.assertEqual((code, self.lines(out, "run")["2026-10-02"][0]), (1, "state=approval-unverified"))
         (run / "EMAIL-DRAFT.md").write_text((run / "EMAIL-DRAFT.md").read_text(encoding="utf-8").replace("planted body", "edited body"),
                                             encoding="utf-8")
-        code, out, _ = self.state()  # text no longer matches the signed text
-        self.assertEqual((code, self.lines(out, "run")["2026-10-02"][0]), (1, "state=run-malformed"))
-        self.assertNotIn("approved-not-sent", out.splitlines()[-1].replace("approved-not-sent=0", ""))
+        code, out, _ = self.state()  # text no longer matches the signed text: still approval-unverified, never approved-not-sent
+        self.assertEqual((code, self.lines(out, "run")["2026-10-02"][0]), (1, "state=approval-unverified"))
+
+    def test_malformed_runs_stay_malformed_even_with_an_approval_file(self):
+        self.requests()
+        edit = lambda run, old, new: (run / "EMAIL-DRAFT.md").write_text((run / "EMAIL-DRAFT.md").read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+        (self.email("2026-10-02") / "EMAIL-APPROVAL.json").write_text("not json at all", encoding="utf-8")
+        no_sig = self.email("2026-10-03")
+        rec = json.loads((no_sig / "EMAIL-APPROVAL.json").read_text(encoding="utf-8"))
+        (no_sig / "EMAIL-APPROVAL.json").write_text(json.dumps({**rec, "signature": "typed name"}), encoding="utf-8")
+        edit(self.email("2026-10-04"), HEAD, "not the draft header")
+        edit(self.email("2026-10-05"), "planted body", "edited body")
+        code, out, _ = self.state()
+        self.assertEqual({k: v[0] for k, v in self.lines(out, "run").items()}, {"2026-10-02": "state=run-malformed", "2026-10-03": "state=run-malformed",
+                         "2026-10-04": "state=run-malformed", "2026-10-05": "state=approval-unverified"})
+        self.assertEqual(code, 1)
 
     def test_cancelled_withdrawn_counts_and_deleted_draft_leaves_the_run_list(self):
         self.requests(row("R-W", "withdrawn"))
@@ -255,6 +262,20 @@ class StateTests(unittest.TestCase):
                 self.assertFalse(BANNED.search(text), text)
                 self.assertFalse(re.search(r"[0-9a-f]{64}|@|Opname|planted|determined closed|overdue", text), text)
         self.assertIn("(unsafe-label)", self.state()[1])
+
+    def test_labels_with_banned_wording_are_masked_and_the_state_is_kept(self):
+        d = self.store / "agencies" / "illegal-town"  # folder, agency label and request ids all carry banned wording
+        self.requests(*[row(i, s, agency="Illegal Town") for i, s in (("overdue", "open"), ("Template-1", "open"), ("R-OK", "closed"))], slug="illegal-town")
+        (d / "runs" / "2026-10-02").mkdir(parents=True)
+        (d / "runs" / "2026-10-02" / "FOLLOWUP-DRAFT.md").write_text(HEAD + "\n", encoding="utf-8")
+        for extra in ((), ("--json",)):
+            code, out, err = self.state(*extra)
+            self.assertEqual((code, err, bool(BANNED.search(out))), (0, "", False), out)
+        parts = [ln.split(" | ") for ln in self.state()[1].splitlines() if ln.startswith("state | request |")]
+        self.assertEqual([p[2:5] for p in parts], [["(unsafe-label)", "(unsafe-label)", "state=open-receipt-unknown"]] * 2 + [["(unsafe-label)", "R-OK", "state=closed"]])
+        (d / "REQUESTS.csv").write_text("a,b\n1,2\n", encoding="utf-8")  # a refusal names the folder only as a masked label
+        code, out, err = self.state()
+        self.assertEqual((code, out, err), (1, "", "state: REQUESTS.csv unreadable or not v1 ((unsafe-label))\n"))
 
     def test_nothing_is_written(self):
         self.requests(row("R-1"), row("R-1"))

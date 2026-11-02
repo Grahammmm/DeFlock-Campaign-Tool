@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Flock state (BF-df-status-fields): one explicit state per request and per email run, from recorded fields only.
   flock_state.py state STORE [--json]    STORE is a private folder outside the repository
-Request states come from REQUESTS.csv cells (flock_requests.load decides what is an error); run states come from
-flock_email's stage with flock_approve's signature check. Free text (receipt_evidence, a draft body, a `Sent by:` sentence)
-never changes a state. Prints and reads only: no file, no network, no send, no approval. Fields only; not a legal status.
-Exit 0 clean; 1 on any record-error, run-malformed, run-inconsistent, approval-unverified, sent-unverified, link-refused,
-unmapped stage or store refusal (flock_email status's fail-closed convention; an edited-after-approval draft is run-malformed);
-2 usage. The canonical ledger wins over this report. JSON schema flock-state-v1 is always review_required."""
+Request states come from REQUESTS.csv cells (flock_requests.load decides what is an error); run states come from flock_email's
+stage with flock_approve's signature check. Free text (evidence, a draft body, a `Sent by:` sentence) never changes a state.
+Prints and reads only. Fields only; not a legal status; the canonical ledger wins. JSON schema flock-state-v1 is review_required.
+Exit 0 clean; 1 on any record-error, run-malformed, run-inconsistent, approval-unverified (also an approved draft edited
+afterwards), sent-unverified, link-refused, unmapped stage or store refusal (flock_email status's fail-closed convention); 2 usage."""
 import csv
 import collections
 import importlib.util
@@ -27,13 +26,13 @@ STAGE_STATE = {"follow-up drafted": "follow-up-drafted", "email drafted": "email
                "sent unverified": "sent-unverified", "refused: link": "link-refused"}
 FAILING = {"record-error", "run-malformed", "run-inconsistent", "approval-unverified", "sent-unverified", "link-refused"}
 SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
+BANNED = re.compile(r"late|overdue|violat|unlawful|illegal|non-complian|breach", re.I)  # no output line may carry these
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 NOTE = "recorded fields only; not a legal status; the canonical ledger wins"
 USAGE = "usage: flock_state.py state STORE [--json]  (one state per request and email run; prints only, writes nothing)"
 
 
-class Refuse(Exception):
-    pass
+class Refuse(Exception): pass
 
 
 def _tool(name):  # siblings are loaded by file path, never copied
@@ -44,12 +43,11 @@ def _tool(name):  # siblings are loaded by file path, never copied
 requests_tool = _tool("flock_requests")
 
 
-def stage_fn():  # flock_requests' own _stage: flock_email.stage wrapped with flock_approve.verified
-    return requests_tool._stage()
+def stage_fn(): return requests_tool._stage()  # flock_requests' own _stage: flock_email.stage wrapped with flock_approve.verified
 
 
-def label(text):  # an id or folder name is shown only when it is a plain label (no address, no 64-hex, no free text)
-    return text if SAFE.fullmatch(text) else "-" if not text else "(unsafe-label)"
+def label(text):  # an id or folder name is shown only when it is a plain label (no address, no 64-hex, no free text, no banned word)
+    return text if SAFE.fullmatch(text) and not BANNED.search(text) else "-" if not text else "(unsafe-label)"
 
 
 def request_state(r):
@@ -90,6 +88,17 @@ def folder_requests(folder):
     return out + [("row %d" % n, "record-error", sorted(fields)) for n, fields in sorted(bad.items())]  # rows with no id
 
 
+def stale_approval(run):  # a draft stage() calls malformed that is itself well formed and holds a signed approval record
+    email = requests_tool._tool("flock_email")
+    try:
+        lines, rec = (run / "EMAIL-DRAFT.md").read_text(encoding="utf-8").splitlines(), json.loads((run / email.APPROVAL).read_text(encoding="utf-8"))
+        email.approved_text(run)  # ValueError unless the draft ends with its one Sent by: line
+        return lines[:1] == [email.HEAD] and len(email.marks(lines)) == 1 and isinstance(rec, dict) and set(rec) == email.KEYS \
+            and rec["state"] == "approved" and "BEGIN SSH SIGNATURE" in str(rec["signature"])
+    except (OSError, ValueError):
+        return False
+
+
 def folder_runs(folder, stage):
     """[(run date label, state, mapped)] for one agency folder; links are named and never entered."""
     runs = folder / "runs"
@@ -105,6 +114,7 @@ def folder_runs(folder, stage):
             got = stage(run)
         except OSError:
             got = "malformed"
+        got = "approval unverified" if got == "malformed" and stale_approval(run) else got  # edited after approval
         if got is not None:
             out.append((run.name, STAGE_STATE.get(got, "run-malformed"), got in STAGE_STATE))
     return out
