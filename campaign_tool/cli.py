@@ -905,12 +905,20 @@ def main():
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
-    for flag in ("--directory", "--id"):
-        pack.add_argument(flag, required=True)
+    pack.add_argument("--directory", required=True)
+    pack_which = pack.add_mutually_exclusive_group(required=True)
+    pack_which.add_argument("--id")
+    pack_which.add_argument("--upcoming", action="store_true", help="Every staged meeting in the next --within-days")
+    pack.add_argument("--within-days", type=int, help="With --upcoming: 1..90 days (default 14)")
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
+    if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
+        if not args.upcoming or args.allow_past:
+            pack.error("--within-days needs --upcoming; --allow-past is only for --id")
+        if args.within_days is not None and not 1 <= args.within_days <= 90:
+            pack.error("--within-days must be 1..90")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
@@ -969,6 +977,12 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meeting-pack" and args.upcoming:
+            from .meeting_pack import build_upcoming
+            report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
+                                    max_findings=args.max_findings, replace=args.replace)
+            print(json.dumps(report, indent=2))
+            sys.exit(3 if report["skipped"] else 0)
         elif args.command == "meeting-pack":
             from .meeting_pack import build as pack_build
             print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
