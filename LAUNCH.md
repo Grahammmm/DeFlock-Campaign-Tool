@@ -41,6 +41,11 @@ the starter into a real site.
 `python3 -m campaign_tool content init --directory ../my-campaign` writes a minimal valid `content/`
 with `[EDIT ME: ...]` placeholders to start from (it refuses an existing `content/`).
 
+**Daily use:** `python3 -m campaign_tool today --directory ../my-campaign [--as-of YYYY-MM-DD] [--json]` prints one
+ranked to-do list: written-comment deadlines in the next 7 days, past-due and due-today hand-sent requests, findings
+ready or blocked, stale comment kits and contacts checked over 180 days ago, each with the command to run. A broken
+input file becomes its own "fix <file>" item. It only reads; nothing is sent, filed or published.
+
 ## Hosted path (what the wizard does)
 
 1. Organizer opens the wizard, enters a county or city, confirms the agency list and request
