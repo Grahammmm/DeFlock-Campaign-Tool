@@ -12,6 +12,13 @@ one object and two retained receipts must result. Original bytes are compared.
 Public hashes are reported without temporary/private paths; the two starter
 index hashes must differ. Temporary fixtures are removed on completion.
 
+Each locality then gets the fixed synthetic `content/` (two published findings,
+one meeting, one agency) and a second checked build. Every public file of that
+site must hold none of the synthetic source bytes, no `private/objects/` text
+and no temporary-root path (`content_private_bytes_in_public`); each finding
+page, `sources.html` and `feed.xml` must exist (`content_build_missing_page`).
+Readiness holds are re-checked and the two content index hashes must differ.
+
 Every campaign must retain draft law-package status, unverified jurisdiction,
 disabled automatic sends and false production readiness. No model, portal,
 mailbox, owner accounts, live settings, local policy or private corpus is used.
