@@ -769,6 +769,7 @@ def main():
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
+    status_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv tracker (0600) outside public/ and content/")
     check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
@@ -1144,6 +1145,10 @@ def main():
         elif args.command == "kit-copy":
             from .kit_copy import run_cli as kit_copy_cli
             kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
+        elif args.command == "kit-status" and args.csv:
+            from .kit_export import status_csv
+            print(json.dumps(status_csv(root, args.csv, request=args.request), indent=2))
+            print("Private file; nothing was sent or published.")
         elif args.command == "kit-status":
             from .kit_track import OVER_CAP, status as kit_track_status
             report = kit_track_status(root, request=args.request)
