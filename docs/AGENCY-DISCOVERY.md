@@ -177,3 +177,9 @@ is once only and not after `determination`, `produced` or `denied`. `determinati
 `produced` may repeat. `closed` needs an earlier step, and nothing follows it. The note is plain text (no `<`, `>` or
 control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
 `closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
+
+On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
+at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
+ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
+private `kit/sent.json`; `kit-response` and `kit-status` print 12-character prefixes only (`records`,
+`record_prefixes`, at most 50 then `more`). Which records an agency produced is never published.
