@@ -157,6 +157,10 @@ class SiteRedirectTests(unittest.TestCase):
     def test_document_shape_refused(self):
         self.assertEqual(self.refused(extra=1), [
             'redirects.json: expected exactly {"schema_version": 1, "redirects": [...]} (unknown keys are refused)'])
+        for text in ("null", "[]"):  # a present file parsed to null or a list is refused, never read as absent
+            self.path.write_text(text, encoding="utf-8")
+            self.assertEqual(self.refused(), [
+                'redirects.json: expected exactly {"schema_version": 1, "redirects": [...]} (unknown keys are refused)'])
         self.assertEqual(self.refused(schema_version=2), ["redirects.json: schema_version must be 1"])
         self.assertEqual(self.refused(*[(f"/old/{n}", "/about.html") for n in range(501)]), [
             "redirects.json: redirects must be a list of at most 500 rows"])

@@ -1297,7 +1297,7 @@ def _plan_site(root, today=None, notes=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
-    if model.get("redirects") is not None:  # DF2037-16: checked against every path this build writes
+    if "redirects" in model:  # DF2037-16: any present file, even JSON null, is checked against every path written
         from .findings import withdrawn_names  # local, as the other optional site steps
         written = [*files, *(Path(relative).as_posix() for _, relative, _ in plan)]
         files["_redirects"] = load_redirects(model["redirects"], written, withdrawn_names(root)[1])

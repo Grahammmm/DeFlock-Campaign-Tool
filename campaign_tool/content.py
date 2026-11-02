@@ -1017,7 +1017,7 @@ def load_content(root, today=None):
     officials = (load_officials(_read_json(officials_path), agencies, today or date.today())
                  if officials_path.is_file() or officials_path.is_symlink() else {})
 
-    return {
+    model = {
         "site": site,
         "findings": findings,
         "pages": load_pages(content_dir, slugs),
@@ -1029,7 +1029,10 @@ def load_content(root, today=None):
         "public_assets": public_assets,
         "assets_dir": assets_dir,
         "labels": labels,
-        # content/redirects.json (DF2037-16), None without the file; site checks it against the pages it writes.
-        "redirects": _read_json(redirects_path) if redirects_path.is_file() or redirects_path.is_symlink() else None,
         "officials": officials,
     }
+    # content/redirects.json (DF2037-16): the key is present exactly when the file is, so a parsed JSON null is still
+    # checked (and refused) by site against the pages it writes; without the file there is no key.
+    if redirects_path.is_file() or redirects_path.is_symlink():
+        model["redirects"] = _read_json(redirects_path)
+    return model
