@@ -222,7 +222,7 @@ class LabelsTest(unittest.TestCase):
                     self.assertEqual(left, [], f"{name}: {path}")
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         absent = ["classification.apparent_conflict", "classification.confirmed_conflict", "classification.no_conflict",
-                  "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other"]
+                  "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other"]
         self.assertEqual(sorted(set(DEFAULTS) - seen), absent)
 
     def test_non_page_outputs_and_starter_ignore_labels(self):
