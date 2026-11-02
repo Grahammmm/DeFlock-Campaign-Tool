@@ -686,6 +686,14 @@ def main():
         publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
+                                          ).add_subparsers(dest="reviewers_command", required=True)
+    roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
+    roster_add.add_argument("--name", required=True)
+    roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
+    roster_cmds.add_parser("list", help="Print the roster (read-only)")
+    for sub in roster_cmds.choices.values():
+        sub.add_argument("--directory", required=True)
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -753,6 +761,14 @@ def main():
                              edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
                                          public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
             print("Nothing was published.")
+        elif args.command == "finding" and args.finding_command == "reviewers":
+            from . import findings
+            read_config(root)
+            add = args.reviewers_command == "add"
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role) if add else findings.list_reviewers(root),
+                             indent=2, ensure_ascii=False))
+            if add:
+                print("Private roster updated; nothing was published.")
         elif args.command == "finding":
             from . import findings
             read_config(root)
