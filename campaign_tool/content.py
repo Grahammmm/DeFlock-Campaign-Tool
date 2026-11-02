@@ -797,6 +797,11 @@ def load_content(root):
             if path.is_file() and not path.is_symlink():
                 public_assets.append(path)
 
+    from .labels import DEFAULTS, MAX_LABELS_BYTES, load_labels  # local: labels imports this module
+    labels_path = content_dir / "labels.json"  # optional; a symlink is refused by _read_json
+    labels = (load_labels(_read_json(labels_path, MAX_LABELS_BYTES))
+              if labels_path.is_file() or labels_path.is_symlink() else dict(DEFAULTS))
+
     return {
         "site": site,
         "findings": findings,
@@ -807,4 +812,5 @@ def load_content(root):
         "vendor": vendor,
         "public_assets": public_assets,
         "assets_dir": assets_dir,
+        "labels": labels,
     }
