@@ -78,8 +78,8 @@ def initialize(args, root):
     print("Campaign initialized. No accounts created, messages sent, or laws verified.")
 
 
-def _ingest_one(db, root, path, source_id, dir_fd=None):
-    """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome.
+def _read_checked(path, dir_fd=None):
+    """Read one regular file (no link followed) within the alpha limit; returns (data, sha256 hex).
 
     With dir_fd, `path` is a bare name opened relative to that verified directory descriptor."""
     try:
@@ -94,9 +94,64 @@ def _ingest_one(db, root, path, source_id, dir_fd=None):
         data = incoming.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
-    digest = hashlib.sha256(data).hexdigest()
-    identity = hashlib.sha256(json.dumps(
-        [source_id, digest], separators=(",", ":")).encode()).hexdigest()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def _receipt_id(source_id, digest):
+    return hashlib.sha256(json.dumps([source_id, digest], separators=(",", ":")).encode()).hexdigest()
+
+
+def _ledger_lookup(root):
+    """Dry run: (known(digest, receipt_id) -> (object_known, receipt_known), close) over the ledger and this run.
+
+    SQLite never opens the ledger file: even mode=ro creates -wal/-shm sidecars for a WAL-mode
+    database. The bytes are read once (no link followed) and queried from an in-memory copy.
+    A journal or WAL sidecar means the file alone may not hold the committed state: refused."""
+    path, seen, db = root / "private" / "ledger.sqlite", set(), None
+    if os.path.lexists(path) or path.parent.is_symlink():  # absent ledger: nothing stored yet
+        if any(os.path.lexists(f"{path}-{suffix}") for suffix in ("journal", "wal", "shm")):
+            raise ValueError("ledger has a journal or WAL file beside it; nothing was written")
+        try:
+            if path.parent.is_symlink():
+                raise OSError
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError
+                with os.fdopen(os.dup(fd), "rb") as handle:
+                    data = bytearray(handle.read())
+            finally:
+                os.close(fd)
+            if data[:16] == b"SQLite format 3\0" and data[18:20] == b"\2\2":
+                data[18:20] = b"\1\1"  # WAL header, no -wal file: the file is complete; read it as rollback
+            db = sqlite3.connect(":memory:")
+            db.deserialize(bytes(data))
+            db.execute("SELECT count(*) FROM objects JOIN receipts ON 0").fetchone()
+        except (OSError, sqlite3.Error):
+            db and db.close()
+            raise ValueError("ledger is not readable; nothing was written") from None
+
+    def known(digest, identity):
+        hits = tuple(key in seen or (db is not None and db.execute(query, (key,)).fetchone() is not None)
+                     for key, query in ((digest, "SELECT 1 FROM objects WHERE sha256 = ?"),
+                                        (identity, "SELECT 1 FROM receipts WHERE receipt_id = ?")))
+        seen.update((digest, identity))
+        return hits
+    return known, (db.close if db is not None else lambda: None)
+
+
+def _preview_one(known, path, source_id, dir_fd=None):
+    """Dry run of _ingest_one: same read and hashing, outcome would_store/present, nothing written."""
+    digest = _read_checked(path, dir_fd)[1]
+    object_known, receipt_known = known(digest, identity := _receipt_id(source_id, digest))
+    return {"sha256": digest, "receipt_id": identity, "new_receipt": not receipt_known,
+            "analysis_status": "not_started", "outcome": "present" if object_known else "would_store"}
+
+
+def _ingest_one(db, root, path, source_id, dir_fd=None):
+    """Store one regular file (no link followed) in its own transaction; returns the --file JSON plus outcome."""
+    data, digest = _read_checked(path, dir_fd)
+    identity = _receipt_id(source_id, digest)
     with db:  # one transaction per file; the object is written before its rows
         objects = root / "private" / "objects"
         objects.mkdir(mode=0o700, exist_ok=True)
@@ -134,6 +189,14 @@ def ingest(args, root):
         raise ValueError("Input must be a regular, non-symlink file")
     if source.stat().st_size > MAX_BYTES:
         raise ValueError("Alpha limit: 50 MiB per file; original was not imported")
+    if getattr(args, "dry_run", False):
+        known, close = _ledger_lookup(root)
+        try:
+            print(json.dumps({**_preview_one(known, source, args.source_id), "dry_run": True}, indent=2))
+        finally:
+            close()
+        print("Dry run: nothing was written.")
+        return
     db = database(root)
     try:
         result = _ingest_one(db, root, source, args.source_id)
@@ -206,7 +269,9 @@ def _ingest_dir(args, root):
                             raise ValueError(f"{args.dir}: more than {MAX_DIR_FILES} files; split the folder")
             finally:
                 os.close(folder_fd)
-        files, db = [], database(root)
+        dry = getattr(args, "dry_run", False)
+        files, (known, close) = [], _ledger_lookup(root) if dry else (None, None)
+        db = None if dry else database(root)
         try:
             for rel, parts, name, code in sorted(entries):
                 try:
@@ -215,7 +280,8 @@ def _ingest_dir(args, root):
                     else:
                         folder_fd = _open_dir(top_fd, parts)
                         try:
-                            result = _ingest_one(db, root, name, args.source_id, dir_fd=folder_fd)
+                            result = (_preview_one(known, name, args.source_id, dir_fd=folder_fd) if dry else
+                                      _ingest_one(db, root, name, args.source_id, dir_fd=folder_fd))
                         finally:
                             os.close(folder_fd)
                 except ValueError as exc:
@@ -223,11 +289,13 @@ def _ingest_dir(args, root):
                 files.append({"path": rel, "sha256": result["sha256"] and result["sha256"][:12],
                               "outcome": code or result["outcome"], "new_receipt": result["new_receipt"]})
         finally:
-            db.close()
+            close() if dry else db.close()
     finally:
         os.close(top_fd)
     print(json.dumps({"dir": os.path.basename(os.path.abspath(args.dir)), "files": files,
-                      "counts": {k: sum(f["outcome"] == k for f in files) for k in OUTCOMES}}, indent=2))
+                      "counts": {k: sum(f["outcome"] == k for f in files)
+                                 for k in (("would_store",) + OUTCOMES[1:] if dry else OUTCOMES)},
+                      **({"dry_run": True} if dry else {})}, indent=2))
 
 
 def status(root, check=False):
@@ -473,6 +541,7 @@ def main():
             source.add_argument("--dir", help="One local production folder; symlinks are never followed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
+            cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
         if name == "build":
             cmd.add_argument("--check", action="store_true",
                              help="Scan the generated public/ tree for private paths and credential patterns")
