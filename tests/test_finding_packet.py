@@ -220,6 +220,22 @@ class FindingPacketTests(unittest.TestCase):
         self.assertEqual(self.ledger.read_bytes(), ledger)
         self.assertFalse(os.path.lexists(self.out))
 
+    def test_checkpointed_wal_ledger_without_sidecars_read_from_snapshot_private_tree_unchanged(self):
+        db = sqlite3.connect(self.ledger)
+        self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        db.close()  # last connection checkpoints and removes -wal/-shm; the header still says WAL
+        self.assertEqual(self.ledger.read_bytes()[18:20], b"\2\2")
+        self.assertEqual(sorted(p.name for p in self.ledger.parent.glob("ledger.sqlite*")), ["ledger.sqlite"])
+        before = trees(self.root)
+        finding_packet.build_packet(self.root, self.draft, self.out)
+        self.assertEqual(sorted(p.name for p in self.ledger.parent.glob("ledger.sqlite*")), ["ledger.sqlite"])
+        self.assertEqual(trees(self.root), before)  # no -wal/-shm created in private/, no byte changed
+        self.assertEqual(self.read("receipts.json")[sha(RECORDS[1])][0]["source_id"], "synthetic-a")
+        shutil.rmtree(self.out)
+        before = trees(self.root)
+        self.packet()  # the CLI path too
+        self.assertEqual(trees(self.root), before)
+
     def test_no_network_imports(self):
         tree = ast.parse((REPO_ROOT / "campaign_tool" / "finding_packet.py").read_text(encoding="utf-8"))
         names = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}

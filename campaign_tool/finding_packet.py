@@ -114,7 +114,8 @@ def build_packet(root, draft_path, out):
     ledger = root / "private" / "ledger.sqlite"
     db = _snapshot(ledger) if os.path.lexists(ledger) else None  # a journal or WAL sidecar refuses first
     try:
-        problems = findings.cited_problems(root, finding)
+        stored = {row[0] for row in db.execute("SELECT sha256 FROM objects")} if db else set()
+        problems = findings.cited_problems(root, finding, stored)  # the snapshot, never the live ledger
         if problems:
             raise ValueError(f"cited record {problems[0]}; nothing was written")
         shas = sorted({source["sha256"] for source in finding["sources"]})
