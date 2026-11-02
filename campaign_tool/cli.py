@@ -606,6 +606,11 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    press = commands.add_parser("press", help="Draft private press material; sends nothing")
+    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_draft.add_argument("--directory", required=True)
+    press_draft.add_argument("--finding", action="append", default=[])
+    press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -642,6 +647,11 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
+    for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
+        outcome_p.add_argument(flag, required=True)
+    outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
+    outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
                         ).add_argument("--directory", required=True)
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
@@ -751,6 +761,12 @@ def main():
         new_p.add_argument(flag, required=True)
     new_p.add_argument("--source", action="append", default=[], metavar="PREFIX", help="12-64 hex of a library sha256; repeatable")
     new_p.add_argument("--author")
+    diff_p = finding_cmds.add_parser("diff", help="Field-level diff of public fields: ID --from DRAFT, or OLD NEW "
+                                     "(read-only; exit 3 when they differ)")
+    diff_p.add_argument("inputs", nargs="+", metavar="ID | OLD NEW")
+    diff_p.add_argument("--directory", required=True)
+    diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
+    diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -758,6 +774,8 @@ def main():
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
+    if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
+        diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -794,6 +812,10 @@ def main():
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "press":
+            from .press import build_press
+            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+            print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build" and args.preview:
             from .site import preview_site
             report = preview_site(root)
@@ -816,6 +838,11 @@ def main():
                                         replace=args.replace, allow_past=args.allow_past)))
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "meetings-outcome":
+            from .meeting_outcome import record_outcome
+            print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
+                                            args.vote, args.replace), indent=2))
+            print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -830,6 +857,9 @@ def main():
                              edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
                                          public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
             print("Nothing was published.")
+        elif args.command == "finding" and args.finding_command == "diff":
+            from .finding_diff import run_cli as diff_cli
+            sys.exit(diff_cli(root, args.inputs, args.from_draft, args.as_json))
         elif args.command == "finding" and args.finding_command == "reviewers":
             from . import findings
             read_config(root)

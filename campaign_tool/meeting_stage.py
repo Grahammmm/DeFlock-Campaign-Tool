@@ -92,6 +92,12 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     if location is not None:
         document["location"] = location
     document.update({"participation": entry["participation"]} if participation is not None else {})
+    kept = root / "content" / "meetings" / f"{meeting_id}.json"  # an organizer-verified outcome survives --replace
+    try:
+        old = _read_json(kept) if replace and kept.is_file() and not os.path.islink(kept) else {}
+    except ValueError:
+        old = {}  # unreadable: overwritten as before
+    document.update({"outcome": old["outcome"]} if isinstance(old, dict) and "outcome" in old else {})
     load_meeting(document, f"meetings/{meeting_id}.json", today=today)
 
     folder = root / "content" / "meetings"
