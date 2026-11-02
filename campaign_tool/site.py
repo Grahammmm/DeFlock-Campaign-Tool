@@ -75,11 +75,21 @@ EXTRA_CSS = """
 .finding-body{max-width:760px}.finding-body h3{margin-top:2rem}
 .source-table{list-style:none;padding:0;margin:0}.source-table li{padding:.9rem 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.source-table code{font-size:.85rem;background:var(--paper);padding:.1rem .3rem}
 .notice{border-left:3px solid var(--coral);background:var(--paper);padding:1rem 1.25rem;margin:1.5rem 0}
-.agency-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}.agency-list article{background:#fff;padding:1.4rem;border-top:3px solid var(--coral)}.agency-list h3{margin:.4rem 0}.agency-list a{color:var(--ink)}
+.agency-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr));gap:1rem}.agency-list article{background:#fff;padding:1.4rem;border-top:3px solid var(--coral)}.agency-list h3{margin:.4rem 0}.agency-list a{color:var(--ink)}
 .meeting-list article{padding:1.4rem 0;border-bottom:1px solid var(--line)}.meeting-list time{font-weight:700}
 .signup-form{max-width:480px}.signup-row{display:flex;gap:.5rem}.signup-row input{flex:1;padding:.75rem;font:inherit;border:1px solid var(--line)}.signup-row button{font:inherit;font-weight:700;background:var(--coral);color:#fff;border:0;padding:.75rem 1.1rem;cursor:pointer}
 .city-panel-static{position:relative}.city-panel-static .city-picker{position:static;margin-bottom:1.5rem;box-shadow:none;padding:0}
 .finding-filter{display:flex;gap:1rem;flex-wrap:wrap;align-items:end;margin:0 0 1.5rem}.finding-filter[hidden]{display:none}.finding-filter label{display:block;font-size:.8rem;color:var(--muted)}.finding-filter select{font:inherit;padding:.4rem}.filter-count{flex-basis:100%;margin:0;font-size:.9rem}
+.site-nav a:focus-visible{outline:3px solid var(--mint);outline-offset:2px}
+@media(max-width:850px){
+.campaign-banner .site-nav{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.5rem}
+.campaign-banner .site-nav a{display:inline-flex;align-items:center;min-height:44px;padding:0 .7rem;font-size:1rem}
+.campaign-banner .site-nav a[aria-current=page]{background:#ffffff1f}
+.agency-list{grid-template-columns:minmax(0,1fr)}
+.finding-body,.agency-list article,.meeting-list article,.finding-list li{overflow-wrap:anywhere}
+.finding-filter select,.signup-row input,.signup-row button{min-height:44px}
+.finding-body img,.finding-body table{max-width:100%}.finding-body table{display:block;overflow-x:auto}
+}
 .site-footer p{margin:0}.site-footer a{color:inherit}
 @media print{
 /* Print: chrome removed, black on white, external link addresses after the text */
