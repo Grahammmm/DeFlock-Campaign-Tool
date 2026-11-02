@@ -178,7 +178,17 @@ says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) an
 `sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
 `locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
 `duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
-nothing if any other key or a 40+ hex string would appear. `public/` is
+nothing if any other key or a 40+ hex string would appear. `data/sources.json`
+is the source library as open data (`schemas/sources-open-data.schema.json`),
+linked from `sources.html` and `about.html`, in `content/sources.json` order (an
+empty `sources` list without that file): per entry `sha256_prefix` (12 hex
+characters), `title`, `agency_id`, `agency_name` (null when the agency is not
+configured), `received_at`, `public_url` or null, `pages` or null and
+`cited_by` (ids of the published findings citing it, in site order; drafts
+never count). It never includes `note`, `fragment` or the full hash; the build
+refuses with `data/sources.json: ...` and writes nothing on any other key or a
+40+ hex string. The starter build (no `content/`) writes no `data/sources.json`.
+`public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
 over the output and fails on any hit. The command prints a manifest of every
