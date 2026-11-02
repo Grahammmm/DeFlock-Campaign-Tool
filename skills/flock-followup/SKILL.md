@@ -97,6 +97,7 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
 
 - Before handing any draft folder to G, run `python3 tools/flock_privacy_scan.py <folder>` on the folder first; it prints
   `path:line: category` only and exits 3 on an email/phone/plate. Fix or list each in `--allow FILE`, then rerun.
+  Use `--json-out NEWFILE` (absolute, outside the repo and the folder) for the handoff receipt; re-scan if any sha256 differs.
 
 ## Outputs
 
