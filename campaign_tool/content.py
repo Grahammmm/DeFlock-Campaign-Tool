@@ -592,6 +592,24 @@ def _validate_cameras(document, label):
     return len(document["features"])
 
 
+SNAPSHOT_KEYS = {"schema_version", "osm_base", "source"}
+OSM_BASE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def load_snapshot(path):
+    """map/snapshot.json from tools/fetch_osm_alprs.py -> the OSM data day "YYYY-MM-DD", or None for a null osm_base."""
+    document = _read_json(path, 4096)
+    _require_keys(document, SNAPSHOT_KEYS, SNAPSHOT_KEYS, "map/snapshot.json")
+    version, base = document["schema_version"], document["osm_base"]
+    if type(version) is not int or version != 1:
+        raise ContentError("map/snapshot.json.schema_version: must be 1")
+    if base is not None and not (isinstance(base, str) and OSM_BASE.fullmatch(base)):
+        raise ContentError("map/snapshot.json.osm_base: must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ or null")
+    if document["source"] not in ("overpass", "saved_file"):
+        raise ContentError("map/snapshot.json.source: must be 'overpass' or 'saved_file'")
+    return base[:10] if base else None
+
+
 def load_map(content_dir):
     map_dir = Path(content_dir) / "map"
     config_path = map_dir / "map-config.json"
@@ -650,6 +668,7 @@ def load_map(content_dir):
     for slug in controller["bounding_box_fallbacks"]:
         if slug not in cities:
             raise ContentError(f"map/map-config.json.bounding_box_fallbacks: {slug!r} has no bounds in map/cities.json")
+    snapshot_path = map_dir / "snapshot.json"  # optional: a map fetched before DF1507-09 has none
     return {
         "controller": controller,
         "county_bounds": _bounds(document["county_bounds"], "map/map-config.json.county_bounds"),
@@ -664,6 +683,7 @@ def load_map(content_dir):
         "boundary_path": boundary_file,
         "county_boundary_path": county_boundary if county_boundary.is_file() else None,
         "cities": cities,
+        "snapshot_date": load_snapshot(snapshot_path) if snapshot_path.is_file() else None,
     }
 
 
@@ -694,10 +714,14 @@ def load_content(root):
         raise ContentError(law_problems[0])
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
 
-    meetings = []
+    meetings, meeting_ids = [], {}
     for path in sorted((content_dir / "meetings").glob("*.json")) if (content_dir / "meetings").is_dir() else []:
         meeting = load_meeting(_read_json(path), "meetings/" + path.name)
         meeting["id"] = meeting["id"] or _slug(path.stem, "meetings/" + path.name + " filename")
+        if meeting["id"] in meeting_ids:  # each id names one meetings/<id>.html page
+            raise ContentError(f"meetings/{path.name}: duplicate meeting id {meeting['id']!r} "
+                               f"(also meetings/{meeting_ids[meeting['id']]})")
+        meeting_ids[meeting["id"]] = path.name
         meetings.append(meeting)
     meetings.sort(key=lambda m: m["starts_at"])
 

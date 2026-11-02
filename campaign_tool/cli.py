@@ -391,7 +391,7 @@ def doctor_report(root, contact_max_age_days=None):
 
 def kit(args, root):
     from .kit import build_kit
-    summary = build_kit(root, online=args.online, include=args.include)
+    summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
@@ -417,7 +417,10 @@ def check_public_tree(public):
 def build(root, check=False):
     from .site import build_site
     public = root / "public"
-    written = build_site(root)
+    notes = []
+    written = build_site(root, notes=notes)
+    for note in notes:  # informational: the exit code is unchanged
+        print(f"note: {note}", file=sys.stderr)
     content_mode = (root / "content").is_dir()
     print(("Site" if content_mode else "Starter") + " written to " + str(public)
           + ". No private documents exported.")
@@ -576,6 +579,11 @@ def main():
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
                              help="chmod loose private dirs/files to 0700/0600, then run --check")
+            cmd.add_argument("--list", action="store_true", help="List ingested receipts with 12-char hash prefixes")
+            cmd.add_argument("--source-id", help="With --list: only receipts with this exact source_id")
+            cmd.add_argument("--since", help="With --list: received on/after YYYY-MM-DD or an ISO timestamp with offset")
+            cmd.add_argument("--not-in-sources", action="store_true",
+                             help="With --list: only objects not registered in content/sources.json")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
@@ -587,6 +595,7 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
+    kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
@@ -716,6 +725,11 @@ def main():
         publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
+    correct_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--date", "--note"):
+        correct_p.add_argument(flag, required=True)
+    correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
     roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
                                           ).add_subparsers(dest="reviewers_command", required=True)
     roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
@@ -813,6 +827,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "correct":
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
             if args.finding_command == "publish":
                 result = findings.publish(root, args.draft, args.approved_by)
                 print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
@@ -870,6 +888,10 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
+            read_config(root)
+            from .ledger_list import run_cli as list_cli
+            print(json.dumps(list_cli(args, root), indent=2))
         elif args.command == "kit-followup":
             from .kit_track import followup
             print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))

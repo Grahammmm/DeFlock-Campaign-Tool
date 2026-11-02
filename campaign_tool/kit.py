@@ -192,9 +192,11 @@ def _clean_agency_name(name):
 
 
 def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
-                            fee_cap=DEFAULT_FEE_CAP, date_range="[date range, e.g. 2023-01-01 through today]"):
-    """One draft covering every request scope in the law package."""
+                            fee_cap=DEFAULT_FEE_CAP, date_range="[date range, e.g. 2023-01-01 through today]",
+                            scopes=None):
+    """One draft covering every request scope in the law package, or only ``scopes`` (package order)."""
     name = _clean_agency_name(agency["name"])
+    chosen = [scope for scope in package["request_scopes"] if scopes is None or scope["scope_id"] in scopes]
     custodian = agency.get("records_email") or "[official records custodian - verify on the agency's website]"
     law_info = package["records_law"]
     rules = {rule["rule_id"]: rule for rule in package["rules"]}
@@ -213,7 +215,7 @@ def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
         "records, if any, concerning the following. If your agency holds no responsive",
         "records for a section, please say so for that section.",
     ]
-    for scope in package["request_scopes"]:
+    for scope in chosen:
         lines += ["", f"## {scope['title']}", ""]
         lines += [f"- {item}" for item in scope["items"]]
     lines += [
@@ -236,7 +238,7 @@ def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
         "Rules the scopes relate to:",
     ]
     cited = []
-    for scope in package["request_scopes"]:
+    for scope in chosen:
         for rule_id in scope["rule_ids"]:
             if rule_id in rules and rule_id not in cited:
                 cited.append(rule_id)
@@ -292,9 +294,10 @@ def _load_existing(path):
     return existing
 
 
-def _write_readme(kit_dir, location, package_status):
+def _write_readme(kit_dir, location, package_status, scopes=None):
     where = (f"{location.place_name} ({location.county_name} County)" if location.match_kind == "city"
              else f"{location.county_name} County")
+    chosen = f"\n- Drafts cover only the request scopes chosen with `--scope`: {', '.join(scopes)}." if scopes else ""
     text = f"""# Organizer kit for {where}
 
 Generated offline by `campaign_tool kit`. Nothing in this folder has been sent
@@ -308,7 +311,7 @@ plate readers. Every agency entry is a suggestion from the shared seed
   fresh suggestions to `agencies.suggested.json`.
 - `requests/` holds one draft per selected law-enforcement agency. Fill the
   date range, fee cap and requester block before anyone sends it. Re-running
-  `kit` keeps drafts you edited and puts the fresh draft in `requests.suggested/`.
+  `kit` keeps drafts you edited and puts the fresh draft in `requests.suggested/`.{chosen}
 - `request-settings.json` (optional, private) fills every draft, e.g. `{{"schema_version": 1, "requester":
   ["A. Organizer", "a@example.org"], "fee_cap_usd": 50, "date_from": "2023-01-01", "date_to": "today"}}`.
 - `governing-bodies.json` lists boards, councils and district attorneys for
@@ -322,7 +325,7 @@ this tool. See docs/AGENCY-DISCOVERY.md.
     _write_text(kit_dir / "README.md", text)
 
 
-def build_kit(root, online=False, include=None, seed=None, law_base=None):
+def build_kit(root, online=False, include=None, seed=None, law_base=None, scopes=None):
     """Build ``<root>/kit``; returns the summary dict. Raises ValueError on bad input."""
     from .cli import read_config  # local import: cli imports this module lazily too
     root = Path(root)
@@ -339,6 +342,11 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
     except ValueError as exc:
         package, package_status = None, "missing"
         package_error = str(exc)
+    if scopes:  # validated before any write; package order, deduped
+        if package is None:
+            raise ValueError(f"--scope needs a law package; none found for {jurisdiction}")
+        wanted = {law.request_scope(package, scope_id)["scope_id"] for scope_id in scopes}
+        scopes = [s["scope_id"] for s in package["request_scopes"] if s["scope_id"] in wanted]
 
     kit_dir = root / "kit"
     requests_dir = kit_dir / "requests"
@@ -373,7 +381,7 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
 
     def render(entry, quiet=False):
         try:
-            return (render_combined_request(package, entry, **settings) if package
+            return (render_combined_request(package, entry, scopes=scopes or None, **settings) if package
                     else render_template_request(entry, **settings))
         except ValueError:
             if not quiet:
@@ -453,12 +461,13 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
         "agencies_preserved": agencies_preserved,
         "suggestion_diff_count": diff_count,
         "include": list(include),
+        "scopes": scopes or "all",
         "request_settings": {"requester": "requester_block" in settings, "fee_cap": "fee_cap" in settings,
                              "date_range": "date_range" in settings},
         "next_steps": _next_steps(settings),
     }
     _write_json(kit_dir / "summary.json", summary)
-    _write_readme(kit_dir, location, package_status)
+    _write_readme(kit_dir, location, package_status, scopes)
 
     cfg["location"] = {"county_fips": location.county_fips, "county_name": location.county_name,
                        "place_fips": location.place_fips, "place_name": location.place_name,
