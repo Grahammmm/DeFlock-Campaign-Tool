@@ -221,6 +221,17 @@ Not-found page: `404.html` is always generated (site shell, links to findings, a
 that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
 is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
 
+Photos: a phone or camera photo usually carries metadata, often including the GPS position where it was taken
+(an organizer's home, say). `build` and `content-check` therefore refuse a `.jpg`, `.jpeg`, `.png` or `.webp` in
+`content/public-assets/` that carries EXIF (`EXIF GPS` when it has a GPS block), XMP, IPTC, a JPEG comment, PNG text
+chunks or bytes after the image end, naming the file and the kinds but never a value
+(`public-assets/photos/council.jpg: image metadata (EXIF GPS); run content strip-metadata`). A file the checker cannot
+parse is refused as `unreadable image`; re-export it. To clean one, run
+`python3 -m campaign_tool content strip-metadata content/public-assets/photos/council.jpg` (optional `--out PATH`): it writes
+`council.clean.jpg` beside it with those segments or chunks removed and every image byte kept (no re-encoding; colour
+profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
+inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
+
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
 kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
