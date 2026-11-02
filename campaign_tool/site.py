@@ -22,6 +22,7 @@ from . import agency_cards, map_controller
 from .content import CITY_KINDS, ContentError, load_content, utc_moment
 from .markdown_lite import render as markdown
 from .shell import render
+from .provenance_text import EXPLAINER, source_line
 
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
@@ -465,9 +466,12 @@ class Site:
         sources = []
         for source in finding["sources"]:
             fragment = self.fragment_for_sha.get(source["sha256"])
-            title = (f'<a href="/sources.html#{e(fragment)}">{e(source["title"])}</a>' if fragment else e(source["title"]))
-            rule = f' · rule {e(source["rule_id"])}' if source["rule_id"] else ""
-            sources.append(f'<li>{title} · <code>sha256 {e(short_hash(source["sha256"]))}</code> · {e(source["locator"])}{rule}</li>')
+            entry = next((s for s in self.model["sources"] if s["sha256"] == source["sha256"]), None)
+            owner = self.agencies_by_id.get(entry["agency_id"], {}) if entry else {}
+            sentence, record = source_line(entry, source, owner.get("name"))
+            number = f'Record no. <code>{record}</code>'
+            number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
+            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or '<li>No corrections have been issued.</li>')
         agency = self.agencies_by_id.get(finding["agency_id"])
@@ -492,6 +496,7 @@ class Site:
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
                 + (markdown(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>Sources</h3><ul class="source-table">{"".join(sources)}</ul>'
+                + f'<p class="provenance-note">{e(EXPLAINER)}</p>'
                 + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>' + related
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
                 + '<p><a href="/corrections.html">All corrections</a></p>'
@@ -528,11 +533,11 @@ class Site:
                 citing = self.cited_by.get(source["sha256"], [])
                 cited = (' · Cited by: ' + ", ".join(f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in citing)
                          if citing else ' · Not cited by a published finding')
-                items.append(f'<li><strong>{e(source["title"])}</strong> · <code>sha256 {e(short_hash(source["sha256"]))}</code> · '
-                             f'received {date_label(source["received_at"])}{pages} · {link}{note}{cited}</li>')
+                sentence, record = source_line(source, source, self.agencies_by_id.get(source["agency_id"], {}).get("name"))
+                items.append(f'<li><p>{sentence}</p><p class="record-no">Record no. <code>{record}</code>{pages} · {link}{note}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
         main = ('    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">Source library</p>'
-                '<h2>Every record we cite, by hash.</h2></div><p>Each entry lists the SHA-256 prefix of the original bytes as received. '
+                '<h2>Every document we cite, and where it came from.</h2></div><p class="provenance-note">' + e(EXPLAINER) + ' '
                 'Originals stay in the private archive unless a public copy is linked. '
                 'Each entry names the published findings that cite it.</p></div>'
                 + ("".join(sections) or '<p>No source records have been catalogued yet.</p>') + '</section>\n')

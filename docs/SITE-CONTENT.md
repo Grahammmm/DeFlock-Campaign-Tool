@@ -20,6 +20,12 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 
 ## Content directory
 
+Finding citations and the source library lead with “From a document we hold”,
+the receipt date and agency when known, and public-copy or private-original status.
+Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps
+the 12-character SHA-256 prefix and existing library links. The on-page explainer
+distinguishes unchanged bytes from authorship or truth; it is not authentication.
+
 | Path | Required | Purpose |
 | --- | --- | --- |
 | `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice` |
