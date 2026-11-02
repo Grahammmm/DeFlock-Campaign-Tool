@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -261,6 +263,51 @@ class FindingPublishTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
         self.assertEqual(json.loads(path.read_text())["published_at"], "2026-03-04T05:06:07Z")
         self.assertEqual(stat.S_IMODE(self.log.stat().st_mode), 0o600)
+
+    def race(self, first, second):
+        """Publish two drafts at once with the check-to-write window widened; return the one error."""
+        barrier, outcomes = threading.Barrier(2), {}
+        real = findings.cited_problems
+
+        def slow_check(root, finding):
+            time.sleep(0.3)  # without the lock both threads are past the uniqueness checks here
+            return real(root, finding)
+
+        def run(name, path):
+            barrier.wait()
+            try:
+                outcomes[name] = findings.publish(self.root, path, "Pat Organizer", now=NOW)
+            except ValueError as exc:
+                outcomes[name] = exc
+
+        with mock.patch("campaign_tool.findings.cited_problems", side_effect=slow_check):
+            threads = [threading.Thread(target=run, args=item) for item in (("a", first), ("b", second))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        self.assertEqual(len(outcomes), 2)
+        errors = [str(value) for value in outcomes.values() if isinstance(value, ValueError)]
+        self.assertEqual(len(errors), 1, outcomes)
+        self.assertEqual(len(self.log_lines()), 1)
+        return errors[0]
+
+    def test_concurrent_publish_of_same_slug_lets_only_one_succeed(self):
+        self.approve_all()
+        error = self.race(self.draft, self.draft)
+        self.assertIn("synthetic-title.json already exists", error)
+        self.assertEqual(self.published(), ["synthetic-title.json"])
+
+    def test_concurrent_publish_of_same_id_under_two_slugs_lets_only_one_succeed(self):
+        self.approve_all()
+        other = self.base / "draft-other.json"
+        other_document = draft(slug="other-slug")
+        other.write_text(json.dumps(other_document), encoding="utf-8")
+        self.approve_all(document=other_document)
+        error = self.race(self.draft, other)
+        self.assertIn("already published under another slug", error)
+        self.assertEqual(len(self.published()), 1)
+        self.assertEqual([f["id"] for f in (load_content(self.root) or {})["findings"]], ["syn-pub-1"])
 
 
 if __name__ == "__main__":

@@ -56,7 +56,9 @@ and privacy, with no reject or changes_requested on the current content).
 `--approved-by` is not the author, `content.load_finding` accepts the document, the slug and id are
 new (not in `content/findings/` or `private/withdrawn/`), and every cited `sha256` is in
 `content/sources.json`, the ledger and `private/objects/` (refusals name a 12-hex prefix and
-`unregistered`, `not_ingested` or `object_missing`). The write is atomic; one line
+`unregistered`, `not_ingested` or `object_missing`). A campaign-wide lock
+(`D/private/.publish.lock`) holds the uniqueness checks, write and log entry together, so of two
+concurrent publishes of the same slug or id only one succeeds. The write is atomic; one line
 `{at, action: "publish", id, slug, content_sha256, approved_by}` is appended to
 `D/private/publication-log.jsonl` (0600). It never builds, deploys or contacts anything: run
 `build` and review the site before any deploy.

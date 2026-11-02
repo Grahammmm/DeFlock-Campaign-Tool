@@ -95,10 +95,11 @@ def _load_receipts(path):
 
 
 @contextlib.contextmanager
-def _locked(folder):
-    """Hold an exclusive lock on the stable private/reviews/.lock file (never replaced, so every
-    writer locks the same inode) for the whole read/check/append/replace transaction."""
-    path = folder / ".lock"
+def _locked(folder, name=".lock"):
+    """Hold an exclusive lock on a stable lock file (private/reviews/.lock for receipts,
+    private/.publish.lock for publication; never replaced, so every writer locks the same inode)
+    for the whole read/check/append/replace transaction."""
+    path = folder / name
     try:
         fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
@@ -234,6 +235,15 @@ def publish(root, draft_path, approved_by, now=None):
     finding = content.load_finding(document, str(draft_path))
     if not _real_dir(root / "content"):
         raise ValueError(f"{root / 'content'}: no content/ directory in this campaign")
+    if not _real_dir(root / "private"):
+        raise ValueError(f"{root / 'private'}: no private/ directory in this campaign")
+    # One campaign-wide lock covers the uniqueness checks, the write and the log entry, so two
+    # concurrent publishes cannot both pass the checks before either writes.
+    with _locked(root / "private", ".publish.lock"):
+        return _publish_locked(root, draft, finding, document, approved_by, when)
+
+
+def _publish_locked(root, draft, finding, document, approved_by, when):
     folder = root / "content" / "findings"
     if not _real_dir(folder):
         folder.mkdir()
