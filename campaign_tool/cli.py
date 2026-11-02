@@ -338,11 +338,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root, contact_max_age_days=None):
-    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
+def doctor(root, contact_max_age_days=None, stale_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days, stale_days), indent=2))
 
 
-def doctor_report(root, contact_max_age_days=None):
+def doctor_report(root, contact_max_age_days=None, stale_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -368,6 +368,12 @@ def doctor_report(root, contact_max_age_days=None):
     if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
         report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
         report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
+    if stale_days is not None:
+        from .freshness import stale_inputs
+        found = stale_inputs(root, cfg, stale_days)
+        report.update(stale_inputs=found[:100], **({"stale_inputs_more": len(found) - 100} if found[100:] else {}))
+        if names := sorted({e["input"] for e in found if e["status"] != "absent"}):
+            report["next_actions"].append("Refresh stale inputs: " + ", ".join(names))
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
@@ -586,6 +592,7 @@ def main():
                              help="With --list: only objects not registered in content/sources.json")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
+            cmd.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
             cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
@@ -747,6 +754,8 @@ def main():
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
+    if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
+        parser.error("--stale-days must be 1 to 3650")
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
     if args.command in ("verify", "backup-drill", "backup-list"):
@@ -892,13 +901,13 @@ def main():
             print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
-            print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,
+            print(render(doctor_report(root, args.contact_max_age_days, args.stale_days), args.directory, as_json=args.json,
                          agency_list_exists=(root / "kit" / "agencies.json").is_file()))
         else:
             if args.command == "status":
                 status(root, check=args.check, fix=args.fix_modes)
             else:
-                doctor(root, args.contact_max_age_days)
+                doctor(root, args.contact_max_age_days, args.stale_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(1)
