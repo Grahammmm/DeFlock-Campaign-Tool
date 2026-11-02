@@ -22,6 +22,12 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 
 `python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
 
+Finding citations and the source library lead with “From a document we hold”,
+the receipt date and agency when known, and public-copy or private-original status.
+Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps
+the 12-character SHA-256 prefix and existing library links. The on-page explainer
+distinguishes unchanged bytes from authorship or truth; it is not authentication.
+
 | Path | Required | Purpose |
 | --- | --- | --- |
 | `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice` |
@@ -169,6 +175,11 @@ files above.
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
 kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
+
+## Phones
+At widths up to 850 px, content-page menus wrap with 44 px tap targets and a visible keyboard focus outline.
+Agency cards use a single column; long finding, agency and meeting text wraps, and wide finding tables scroll locally.
+Filter and signup controls have 44 px minimum heights. Starter and print layouts and the CSP are unchanged.
 
 ## Content-Security-Policy
 

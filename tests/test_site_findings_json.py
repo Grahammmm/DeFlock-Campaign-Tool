@@ -89,7 +89,7 @@ class FindingsJsonTests(unittest.TestCase):
             self.assertEqual(set(source), set(PUBLIC_SOURCE_FIELDS))
             self.assertRegex(source["sha256_prefix"], r"^[0-9a-f]{12}$")
             self.assertEqual(source["sha256_prefix"], short_hash(original["sha256"]))
-            self.assertIn(f"sha256 {source['sha256_prefix']}", page)
+            self.assertIn(f"Record no. <code>{source['sha256_prefix']}</code>", page)
         text = self.read("data/findings.json")
         self.assertIsNone(re.search(r"[0-9a-fA-F]{40,}", text))
         self.assertNotIn("synthetic-author", text)

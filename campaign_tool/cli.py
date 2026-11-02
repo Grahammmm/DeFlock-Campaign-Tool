@@ -527,6 +527,11 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    setup_p = commands.add_parser("setup", help="Guided offline setup; nothing sent or published")
+    setup_p.add_argument("--directory", required=True)
+    for flag in ("--name", "--county", "--state", "--location"):
+        setup_p.add_argument(flag)
+    setup_p.add_argument("--yes", action="store_true", help="Use flags only; never prompt")
     for name in ("init", "ingest", "doctor", "status", "build"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--directory", required=True)
@@ -543,8 +548,11 @@ def main():
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
         if name == "build":
-            cmd.add_argument("--check", action="store_true",
-                             help="Scan the generated public/ tree for private paths and credential patterns")
+            mode = cmd.add_mutually_exclusive_group()
+            mode.add_argument("--check", action="store_true",
+                              help="Scan the generated public/ tree for private paths and credential patterns")
+            mode.add_argument("--preview", action="store_true",
+                              help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
         if name == "doctor":
@@ -631,6 +639,8 @@ def main():
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed"))
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
+                            help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -662,8 +672,17 @@ def main():
         review_p.add_argument(flag, required=True)
     finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
                             ).add_argument("--directory", required=True)
+    publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
+    for flag in ("--directory", "--approved-by"):
+        publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
+    for flag in ("--directory", "--id"):
+        pack.add_argument(flag, required=True)
+    pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
+    pack.add_argument("--replace", action="store_true")
+    pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
@@ -678,12 +697,21 @@ def main():
     try:
         if args.command == "init":
             initialize(args, root)
+        elif args.command == "setup":
+            from .setup_cmd import run_cli
+            run_cli(args, root, parser, sys.stdin, sys.stdout)
         elif args.command == "ingest":
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "build" and args.preview:
+            from .site import preview_site
+            report = preview_site(root)
+            print(json.dumps(report, indent=2))
+            print("Preview only; public/ was not changed.")
+            sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":
@@ -694,6 +722,10 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meeting-pack":
+            from .meeting_pack import build as pack_build
+            print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
+                                        replace=args.replace, allow_past=args.allow_past)))
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "sources" and args.sources_command == "add":
@@ -713,6 +745,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "publish":
+                print(json.dumps(findings.publish(root, args.draft, args.approved_by)))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
             draft = findings.load_draft(args.draft)
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
@@ -748,7 +784,8 @@ def main():
             print(json.dumps(kit_track_status(root), indent=2))
         elif args.command == "kit-response":
             from .kit_track import record_step
-            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
+                                         records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
