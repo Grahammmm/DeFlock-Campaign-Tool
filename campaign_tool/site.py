@@ -136,6 +136,7 @@ body,.topbar,.campaign-banner,.site-footer,.finding-list li,.notice,.source-tabl
 .section{padding:0 0 1rem;max-width:none}a{color:#000}
 a[href^="http"]::after{content:" (" attr(href) ")";font-size:.85em;overflow-wrap:anywhere}
 .finding-body h3,.source-table li,.meeting-list article,.agency-document-group{break-inside:avoid}h2,h3{break-after:avoid}
+.packet-finding{break-inside:avoid-page}.packet-finding+.packet-finding{break-before:auto}
 details::details-content{content-visibility:visible;display:block}details>summary{list-style:none}
 }
 """
@@ -688,12 +689,43 @@ class Site:
                  if form else "")
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.findings")}</h2></div><p>{self.t("intro.findings")} <a href="/feed.xml">{self.t("intro.atom_feed")}</a> · '
-                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a>.</p>'
+                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
                 '<p><a href="/methods.html">How to read our findings</a> defines each classification and confidence label.</p></div>'
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", self.labels["title.findings"], self.labels["title.findings_description"], "/findings/", main,
                          ["/findings/filter.js"] if form else [])
+
+    def packet_html(self):
+        findings = self.model["findings"]
+        contents = ''.join(f'<li><a href="#f-{e(f["slug"])}">{e(f["title"])}</a></li>' for f in findings)
+        articles = []
+        for f in findings:
+            sources = []
+            for source in f["sources"]:
+                fragment = self.fragment_for_sha.get(source["sha256"])
+                title = e(source["title"])
+                if fragment:
+                    title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
+                rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
+                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}</li>')
+            agency = self.agencies_by_id.get(f["agency_id"])
+            agency_line = (f'<p>Agency: <a href="{e(self.agency_pages().get(agency["agency_id"], "/agencies.html#" + agency["slug"]))}">{e(agency["name"])}</a></p>' if agency else '')
+            limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
+            corrections = ''.join(f'<li>{time_tag(c["date"])}: {e(c["note"])}</li>' for c in sorted(f["corrections"], key=lambda c: c["date"]))
+            corrections = f'<ul>{corrections}</ul>' if corrections else '<p>No corrections have been issued.</p>'
+            updated = f' · Updated {date_label(f["updated_at"])}' if f["updated_at"] else ''
+            url = self.base + f'/findings/{f["slug"]}.html'
+            articles.append(f'<article class="packet-finding" id="f-{e(f["slug"])}"><h3>{e(f["title"])}</h3>'
+                f'<p>{self.pill(f["classification"])} · {self.confidence_link(f["confidence"])} · {time_tag(f["event_date"])} · '
+                f'Published {date_label(f["published_at"])}{updated}</p><p>{e(f["summary"])}</p>{agency_line}'
+                f'<h4>Sources</h4><ul>{"".join(sources)}</ul><h4>Limitations</h4><ul>{limits}</ul>'
+                f'<h4>Corrections</h4>{corrections}<p>Finding {e(f["id"])} · <a href="{e(url)}">{e(url)}</a></p></article>')
+        main = (f'<section class="section" id="content"><h2>Findings packet</h2><p>As of {e(self.today.isoformat())} · '
+                f'{len(findings)} published findings · print or save as PDF</p>'
+                + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else '<p>No findings have been published yet.</p>')
+                + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
 
     def related_findings(self, finding, limit=5):
         """Up to `limit` other published findings with the same (non-empty) agency_id or a shared cited sha256, as
@@ -1079,7 +1111,7 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
-                 "/methods.html"]
+                 "/methods.html", "/findings/packet-all.html"]
         paths += ["/cameras.html"] if self.map else []
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += list(self.agency_pages().values())
@@ -1092,7 +1124,7 @@ class Site:
         root = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
         days = {f'/findings/{f["slug"]}.html': utc_moment(finding_updated(f)).astimezone(timezone.utc).date().isoformat()
                 for f in self.model["findings"]}
-        days["/"] = days["/findings/"] = max(days.values(), default="")
+        days["/"] = days["/findings/"] = days["/findings/packet-all.html"] = max(days.values(), default="")
         for path in self.page_paths():
             url = ET.SubElement(root, "url")
             ET.SubElement(url, "loc").text = self.base + path
@@ -1255,12 +1287,11 @@ def _plan_site(root, today=None, notes=None):
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
-        "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
+        "findings/index.html": site.findings_index_html(), "findings/packet-all.html": site.packet_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
         "corrections.html": site.corrections_html(), "404.html": site.not_found_html(), "methods.html": site.methods_html(),
     }
-    for finding in model["findings"]:
-        pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
+
     for meeting in model["meetings"]:
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     for page in model["pages"]:
@@ -1272,6 +1303,11 @@ def _plan_site(root, today=None, notes=None):
         if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
             raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
         pages["cameras.html"] = site.cameras_html()
+    for finding in model["findings"]:
+        path = f'findings/{finding["slug"]}.html'
+        if path in pages:
+            raise ContentError(f'published finding {finding["id"]} ({path}): collides with generated page {path}')
+        pages[path] = site.finding_html(finding)
     brand = model["site"].get("brand", {})  # site.json brand: one appended rule per set part, nothing without it
     colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
