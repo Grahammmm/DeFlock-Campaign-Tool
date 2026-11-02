@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
 show STORE --agency SLUG --request ID reads one request's row, REQUEST-STEPS.csv steps, FEES.csv rows and reminder.
-draft RUNDIR writes FOLLOWUP-DRAFT.md and due --ics OUT a new private calendar; both must lie outside the repository."""
+draft RUNDIR writes FOLLOWUP-DRAFT.md and due --ics OUT a new private calendar; both must lie outside the repository.
+due PATH --agency SLUG (repeatable, up to 20) lists and totals only those agencies' reminders."""
 import csv
 import hashlib
 import importlib.util
@@ -108,11 +109,12 @@ def reminder(pkg, r):
     return law.deadline(pkg, r["receipt_date"], extension=ext), basis
 
 
-def due(rows, as_of=None):
+def due(rows, as_of=None, agencies=None):
     """as_of (a date) adds a provisional distance cell per line and upcoming_7d/passed totals; reminder arithmetic only."""
     pkg = law.load_package("us-ca")
     items, unknown, upcoming, passed = [], 0, 0, 0
     cell = f" | as of {as_of}: "
+    rows = [r for r in rows if slug(r["agency"]) in agencies] if agencies else rows
     for r in (r for r in rows if r["status"] == "open"):
         head = f"provisional reminder | {r['request_id']} | {r['agency']} | "
         if not r["receipt_evidence"]:
@@ -133,6 +135,7 @@ def due(rows, as_of=None):
         items.append((0, when.isoformat(), r["request_id"], line))
     lines = [i[3] for i in sorted(items, key=lambda i: i[:3])]
     extra = f" upcoming_7d={upcoming} passed={passed} as_of={as_of}" if as_of else ""
+    extra += f" agencies={','.join(sorted(agencies))}" if agencies else ""
     lines.append(f"provisional reminder | open={len(items)} receipt_unknown={unknown}{extra} | " + law.HOLIDAY_NOTE)
     return lines
 
@@ -753,7 +756,21 @@ def reconcile(rows, data):
     return lines, 3 if n["disagreements"] + n["unmatched"] + n["report_only"] else 0
 
 
-USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] [--ics OUT [--today YYYY-MM-DD]] | "
+def _due_args(rest):
+    """(as_of, agencies) for plain due's flags after PATH in any order, or None (usage); as_of False = malformed date."""
+    as_of, agencies = None, []
+    for key, value in zip(rest[::2], rest[1::2]):
+        if key == "--as-of" and as_of is None:
+            as_of = day(value) or False
+        elif key == "--agency" and re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", value) and value not in agencies:
+            agencies.append(value)
+        else:
+            return None
+    return None if len(rest) % 2 or len(agencies) > 20 else (as_of, agencies or None)
+
+
+USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] [--agency SLUG ...] | "
+         "due PATH [--as-of YYYY-MM-DD] [--ics OUT [--today YYYY-MM-DD]] | "
          "summary PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
          "summary PATH [--inventory CSV] adds document counts; record STORE --agency SLUG --request ID "
          "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]; "
@@ -815,13 +832,14 @@ def main(argv):
             return print("\n".join(errs) or f"due: {why}", file=sys.stderr) or (2 if why else 1)
         lines, _, events, unknown = got
         return print("\n".join(lines + [f"ics | events={events} receipt_unknown={unknown} | {Path(o['--ics']).name}"])) or 0
-    as_of = inv = None
+    as_of = inv = agencies = None
     if len(argv) == 4 and argv[0] == "summary" and argv[2] == "--inventory":
         inv, argv = argv[3], argv[:2]
-    if len(argv) == 4 and argv[0] == "due" and argv[2] == "--as-of":
-        as_of, argv = day(argv[3]), argv[:2]
-        if as_of is None:
-            return print("due: --as-of must be YYYY-MM-DD", file=sys.stderr) or 2
+    if len(argv) > 2 and argv[0] == "due":  # --as-of and repeatable --agency in any order after PATH
+        got = _due_args(argv[2:])
+        if got is None or got[0] is False:
+            return print(USAGE if got is None else "due: --as-of must be YYYY-MM-DD", file=sys.stderr) or 2
+        (as_of, agencies), argv = got, argv[:2]
     if len(argv) != 2 or argv[0] not in ("--check", "due", "summary"):
         print(USAGE, file=sys.stderr)
         return 2
@@ -840,8 +858,11 @@ def main(argv):
             return print(f"summary: {why}", file=sys.stderr) or 1
         print("\n".join(summary(rows, table)))
         return 0
+    missing = sorted(set(agencies or ()) - {slug(r["agency"]) for r in rows})
+    if missing:  # any status counts: an agency whose requests are all closed still exists
+        return print(f"due: no request for agency {missing[0]}", file=sys.stderr) or 1
     try:
-        lines = due(rows, as_of)
+        lines = due(rows, as_of, agencies)
     except ValueError as exc:
         print(f"due: {exc}", file=sys.stderr)
         return 1
