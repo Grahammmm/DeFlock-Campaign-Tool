@@ -60,6 +60,11 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "extension is not allowed after a determination, produced or denied step", "5 is allowed at most once",
         "closed needs at least one prior step",
     ), "kit-response message that already names the option or the step order rule; not in the table"),
+    **dict.fromkeys((
+        "--record is only for produced steps", "--record: at most 5 records per step",
+        "--record #5: the same record is given twice", "--record #5: already linked on 5",
+        "--record #5: name",  # wraps the resolve_hash refusal (not ingested / no ledger / 12 hex / ambiguous)
+    ), "kit-response --record message that names the record number and the rule to change; not in the table"),
     "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
     "must be 0-5": "argparse keep-count message; already names the range",
 }
