@@ -18,6 +18,13 @@ errors including HTTP failures and transport exceptions, concurrency and scope.
 Timing is machine-dependent evidence, not a release threshold. Nonzero errors
 produce a nonzero CLI exit. Record interpreter and source revision with results.
 
+`python3 -B -m tools.benchmark_starter --site --requests 60 --concurrency 2`
+first writes a fixed synthetic content/ (`tools/synthetic_content.py`: two
+findings, one meeting, one agency) and builds the whole site with the same leak
+check. Requests go round-robin over every built .html/.xml/.js/.css path
+(sorted, at most 64). The `synthetic-site-capacity-v1` report adds `pages`
+(path, bytes, requests, errors, p50, p95) and `failed_paths` (any non-200).
+
 This measures the generated first-party static starter and Python fixture server.
 It does not measure Cloudflare Worker/D1 throughput, authenticated APIs, extraction,
 model services, external providers, mobile rendering or production capacity.

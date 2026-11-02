@@ -389,6 +389,13 @@ def backup_drill_cmd(args):
         sys.exit(3)
 
 
+def backup_list_cmd(args):
+    from .backup import list_archives
+    report = list_archives(args.dir, args.keep_daily, args.keep_weekly)
+    print(json.dumps(report, indent=2) + "\nReport only; nothing was deleted.")
+    sys.exit(3 if any(item["verify"] == "failed" for item in report["archives"]) else 0)
+
+
 def backup_diff_cmd(args, root):
     from .backup import diff
     report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256)
@@ -492,6 +499,11 @@ def main():
     drill_p.add_argument("--file", required=True)
     drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
     drill_p.add_argument("--receipt", help="Also write the receipt JSON here (must not exist)")
+    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar in a folder; report what a keep rule keeps (deletes nothing)")
+    list_p.add_argument("--dir", required=True)
+    from .backup import KEEP_LIMITS, keep_count
+    for flag, key, period in (("--keep-daily", "keep_daily", "UTC day"), ("--keep-weekly", "keep_weekly", "ISO week")):
+        list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
@@ -544,9 +556,9 @@ def main():
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
     args = parser.parse_args()
-    if args.command in ("verify", "backup-drill"):
+    if args.command in ("verify", "backup-drill", "backup-list"):
         try:
-            verify_cmd(args) if args.command == "verify" else backup_drill_cmd(args)
+            {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
         except (OSError, ValueError) as exc:
             print("Stopped: " + str(exc), file=sys.stderr)
             sys.exit(1)

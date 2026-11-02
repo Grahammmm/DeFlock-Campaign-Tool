@@ -90,6 +90,11 @@ with exit 1.
 Both require an authenticated identity and a non-empty reason; both are visible in the
 Approvals list as the rebuild they trigger.
 
+In `feed.xml` (and each per-agency feed) a corrected finding's entry `updated` is the latest of
+`published_at`, `updated_at` and its correction dates (a date counts as midnight UTC) and its summary
+starts `Corrected YYYY-MM-DD.` with the newest correction date, so feed readers show it again. The build
+refuses a correction dated before the calendar date of `published_at` and an `updated_at` earlier than it.
+
 ## Social drafts (never posted)
 
 `python3 -m campaign_tool social --directory D` writes one private draft per published finding
