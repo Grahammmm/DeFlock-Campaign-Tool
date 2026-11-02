@@ -173,6 +173,7 @@ No canonical ledger, host packages, schedule or production site is changed.
 ## Listing ingested receipts
 
 `status --directory D --list` prints each ledger receipt (hash prefix, bytes, source_id, original name,
-received_at) from the ledger opened read-only; `--source-id S`, `--since YYYY-MM-DD` (or an ISO timestamp with
+received_at) from an in-memory copy of the ledger (no `-wal`/`-shm` file is created; a ledger with a journal or
+WAL file beside it is refused); `--source-id S`, `--since YYYY-MM-DD` (or an ISO timestamp with
 offset) and `--not-in-sources` (ingested but not yet in `content/sources.json`) narrow it. Nothing is written.
 Prefixes are 12 chars; give `sources add` more characters if it reports an ambiguous prefix.

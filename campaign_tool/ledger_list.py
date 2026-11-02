@@ -1,12 +1,14 @@
 """`status --list`: ingested ledger receipts with 12-char hash prefixes, read-only.
 
-The ledger is opened `mode=ro` and only queried with bound parameters; nothing is written, fetched or published.
+The ledger bytes are read once into an in-memory SQLite copy (SQLite never opens the file, so no -wal/-shm
+sidecar is created) and only queried with bound parameters; nothing is written, fetched or published.
 Only the public 12-character prefix of each hash is printed; give `sources add` more characters if it reports an
 ambiguous prefix.
 """
 import os
 import re
 import sqlite3
+import stat
 from datetime import date, datetime, timezone
 
 from .content import load_sources
@@ -17,6 +19,8 @@ MAX_ROWS = 5000
 CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 SINCE_ERROR = "--since: use YYYY-MM-DD or an ISO timestamp with offset"
+SIDECARS = ("journal", "wal", "shm")
+SIDECAR_ERROR = "private/ledger.sqlite has a journal or WAL file beside it; list again when no ingest is running"
 
 
 def _since(value):
@@ -42,6 +46,38 @@ def _registered(root):
     return {entry["sha256"] for entry in document}
 
 
+def _snapshot(path):
+    """In-memory copy of the ledger; SQLite never opens the file itself.
+
+    Even mode=ro creates -wal/-shm sidecars beside a WAL-mode database, so the bytes are read once (no link
+    followed) and deserialized. A journal or WAL sidecar means the file alone may not hold the committed state:
+    refused. A WAL header with no sidecar is a complete, checkpointed file and is read as a rollback database."""
+    if any(os.path.lexists(f"{path}-{suffix}") for suffix in SIDECARS):
+        raise ValueError(SIDECAR_ERROR)
+    db = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError
+            with os.fdopen(os.dup(fd), "rb") as handle:
+                data = bytearray(handle.read())
+        finally:
+            os.close(fd)
+        if any(os.path.lexists(f"{path}-{suffix}") for suffix in SIDECARS):
+            raise ValueError(SIDECAR_ERROR)  # a writer started while the bytes were read
+        if data[:16] == b"SQLite format 3\0" and data[18:20] == b"\2\2":
+            data[18:20] = b"\1\1"
+        db = sqlite3.connect(":memory:")
+        db.deserialize(bytes(data))
+        db.execute("SELECT count(*) FROM objects JOIN receipts ON 0").fetchone()
+    except (OSError, sqlite3.Error):
+        if db is not None:
+            db.close()
+        raise ValueError("private/ledger.sqlite is not a readable ledger") from None
+    return db
+
+
 def run_cli(args, root):
     """`status --list` flags: filters need --list, and --list never runs with --check/--fix-modes."""
     if not args.list:
@@ -52,7 +88,7 @@ def run_cli(args, root):
 
 
 def list_receipts(root, source_id=None, since=None, not_in_sources=False):
-    """Return {"receipts": [...], "count": n[, "more": k]} from private/ledger.sqlite opened read-only."""
+    """Return {"receipts": [...], "count": n[, "more": k]} from an in-memory copy of private/ledger.sqlite."""
     clauses, params = [], []
     if source_id is not None:
         if not 1 <= len(source_id) <= 200:
@@ -68,7 +104,7 @@ def list_receipts(root, source_id=None, since=None, not_in_sources=False):
         return {"receipts": [], "count": 0}
     if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
         raise ValueError("private/ledger.sqlite must be a regular file, not a symlink")
-    db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    db = _snapshot(path)
     try:
         rows = db.execute(
             "SELECT r.object_sha256, o.byte_count, r.source_id, r.original_name, r.received_at FROM receipts r "

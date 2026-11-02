@@ -148,6 +148,34 @@ class StatusListTests(unittest.TestCase):
         for suffix in ("-wal", "-journal", "-shm"):
             self.assertFalse(os.path.lexists(str(self.ledger) + suffix), suffix)
 
+    def test_checkpointed_wal_ledger_listed_without_creating_sidecars(self):
+        self.populate()
+        db = sqlite3.connect(self.ledger)
+        self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        db.close()  # last connection closed: WAL checkpointed and its -wal/-shm files removed
+        self.assertEqual(self.ledger.read_bytes()[18:20], b"\2\2")
+        before = (self.ledger.read_bytes(), self.ledger.stat().st_mtime_ns, sorted(os.listdir(self.ledger.parent)))
+        self.assertFalse(any(name.startswith("ledger.sqlite-") for name in before[2]), before[2])
+        self.assertEqual(self.listing()["count"], 3)
+        self.assertEqual(self.listing("--source-id", "source-two")["count"], 1)
+        after = (self.ledger.read_bytes(), self.ledger.stat().st_mtime_ns, sorted(os.listdir(self.ledger.parent)))
+        self.assertEqual(before, after)
+
+    def test_journal_or_wal_sidecar_refused_and_left_alone(self):
+        self.populate()
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar = Path(str(self.ledger) + suffix)
+            sidecar.write_bytes(b"")
+            before = sorted(os.listdir(self.ledger.parent)), self.ledger.read_bytes()
+            self.assertStopped("--list", message=ledger_list.SIDECAR_ERROR)
+            self.assertEqual((sorted(os.listdir(self.ledger.parent)), self.ledger.read_bytes()), before)
+            sidecar.unlink()
+
+    def test_unreadable_ledger_refused(self):
+        self.ledger.parent.mkdir(exist_ok=True)
+        self.ledger.write_bytes(b"not a synthetic sqlite database")
+        self.assertStopped("--list", message="private/ledger.sqlite is not a readable ledger")
+
     def test_filters_need_list_and_list_refuses_check(self):
         self.populate()
         for args in (("--source-id", "source-one"), ("--since", "2000-01-01"), ("--not-in-sources",)):
