@@ -148,8 +148,18 @@ archive, restores it into a fresh `deflock-drill-*/campaign` temp directory, run
 (archive basename, manifest digest, per-step result; no paths or file digests); `--receipt` also
 writes it with mode 0600 and never overwrites. Exit 0 pass, 3 fail, 1 when the archive is missing.
 
+## Archive inventory and keep rule
+
+`python3 -m campaign_tool backup-list --dir DIR [--keep-daily N] [--keep-weekly M]` re-verifies every
+`*.tar` directly in `DIR` (symlinks are listed under `skipped` and never opened; other files and
+subfolders are ignored) and prints each archive's `created_at`, size, manifest digest and verify
+result, newest first, failed ones last. With a keep rule it also names, among verified archives,
+the newest per UTC day for the `N` most recent days and the newest per ISO week for the `M` most
+recent weeks (`keep`), the rest (`would_not_keep`) and the failed ones (`failed_never_kept`). It is a
+report only: nothing is deleted, renamed or written. Exit 0, 3 when any archive failed, 1 for a bad folder.
+
 ## Not done
 
 Encryption inside the tool, incremental or scheduled backups from cron, restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
-script is straightforward but not written), and retention policy.
+script is straightforward but not written), and retention deletion (`backup-list` only reports).

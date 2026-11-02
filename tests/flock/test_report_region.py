@@ -102,6 +102,18 @@ class FlockReportRegionTest(unittest.TestCase):
         self.assertEqual([f.split(".superseded-")[0] for f in kept], sorted(NAMES))
         self.assertEqual(sorted((out / f).read_bytes() for f in kept), sorted(before.values()))
 
+    def test_text_state_label_survives_into_region_sources(self):  # DOC-3: agency A labelled, agency B has no text-state file
+        ts = self.tmp / "text-state.json"
+        ts.write_text((base.RFIX / "text-state.json").read_text())
+        ag, matrix, out = self.two(review__text_state_file=str(ts))
+        self.assertEqual(self.run_region(ag, matrix, out), (0, HAPPY, ""))
+        text, sources = self.outputs(out)
+        label = "Request REQ-101, document 1001 (Sample retention schedule), page 3, 4, 5 (OCR text, not visually reviewed)"
+        self.assertEqual([(e["n"], e["agency"], e["label"]) for e in sources if "OCR" in e["label"]], [(3, A, label)])
+        self.assertIn("[3] %s: %s" % (A_NAME, label), text.splitlines())
+        self.assertEqual(sources[0]["label"], "Request REQ-101, document 2002 (North records index), page 3, 4, 5")
+        self.assertEqual(text.count("OCR text"), 1)
+
     def test_stale_agency_excluded(self):
         ag, matrix, out = self.two()
         draft = ag[A][1]["CO"] / "report" / "REPORT-DRAFT.md"

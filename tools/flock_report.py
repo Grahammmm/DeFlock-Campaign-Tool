@@ -2,6 +2,10 @@
 """Flock report: one agency's FINDINGS.csv + its independent VERIFY.csv -> REPORT-DRAFT.md + SOURCES.json (numbered cites).
   build CONFIG [--out DIR]    (G1 config; default DIR is <compare.out>/report, refused inside the repository)
   check CONFIG [--out DIR]    (read-only: are REPORT-DRAFT.md + SOURCES.json byte-equal to a fresh build? last line state=)
+  Optional config review.text_state_file: absolute path (outside the repository, regular file, no link, <= 64 MiB) to a
+      records-text-state-v1 JSON. Each cited record not text_reviewed in it is labelled on its bullet, its Sources line and
+      as SOURCES.json text_state, e.g. "(OCR text, not visually reviewed)"; a record it does not list says "(text state not
+      recorded)". Inclusion is unchanged. Without the key a report makes no claim about text state; bad file: config error.
   region --matrix DIR --agency SLUG=CONFIG ... --out DIR [--replace]   (private REGION-REPORT-DRAFT.md + SOURCES.json from
       COMPARE-MATRIX.csv; one --agency per matrix column; an agency whose report is stale or missing is excluded, counted only)
   region --check --matrix DIR --agency SLUG=CONFIG ... --out DIR   (read-only: both region files vs a fresh build, each
@@ -71,7 +75,32 @@ def context(config, out):
     if not ((co / "VERIFY.csv").is_file() and (co / "VERIFY-PLAN.json").is_file()):
         raise Fail("verify: missing (run the G2 verify first)")
     return {"FO": store.parent, "RO": ro, "CO": co, "slug": slug, "agency": squash(agency), "out": out,
-            "deny": [s for d in deny for s in d or ()]}
+            "deny": [s for d in deny for s in d or ()], "ts": text_state(rv["text_state_file"]) if "text_state_file" in rv else None}
+TEXT_STATES, TS_MAX = ("text_reviewed", "ocr_unreviewed", "awaiting_ocr", "could_not_be_read", "waiting", "unknown_state"), 64 << 20
+def text_state(value):  # DOC-2 text-state file -> {sha256: label suffix, "" when reviewed}; any doubt fails closed
+    why, raw = "config: review.text_state_file %s", os.path.expanduser(value) if isinstance(value, str) else ""
+    if not os.path.isabs(raw):
+        raise Fail(why % "must be an absolute path")
+    if under(Path(raw).resolve(), REPO):
+        raise Fail(why % "is inside the repository")
+    try:
+        with os.fdopen(os.open(raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise Fail(why % "is not a regular file")
+            data = handle.read(TS_MAX + 1)
+        if len(data) > TS_MAX:
+            raise Fail(why % "is larger than 64 MiB")
+        doc = json.loads(data.decode("utf-8"))
+    except OSError as exc:
+        raise Fail(why % ("is a link (refused)" if exc.errno == errno.ELOOP else "cannot be read (%s)" % type(exc).__name__)) from None
+    except ValueError:
+        raise Fail(why % "is not valid JSON") from None
+    recs = doc.get("records") if isinstance(doc, dict) and doc.get("schema") == "records-text-state-v1" else None
+    if not isinstance(recs, list) or not all(isinstance(r, dict) and isinstance(r.get("sha256"), str) and isinstance(r.get("words"), str)
+                                             and r.get("state") in TEXT_STATES for r in recs) or len({r["sha256"] for r in recs}) != len(recs):
+        raise Fail(why % "is not a records-text-state-v1 file (schema; records of unique sha256 with state and words)")
+    return {r["sha256"]: "" if r["state"] == "text_reviewed" else "OCR text, not visually reviewed" if r["state"] == "ocr_unreviewed"
+            else "text state: " + (clean(r["words"]) or r["state"].replace("_", " ")) for r in recs}
 def load(c):
     raw = (c["CO"] / "FINDINGS.csv").read_bytes()
     plan = json.loads((c["CO"] / "VERIFY-PLAN.json").read_text(encoding="utf-8"))
@@ -107,7 +136,7 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
     def source(key, **entry):
         return sources.setdefault(key, dict(entry, n=len(sources) + 1, pages=[], sections=[]))
     def bullet(f):
-        fid, items = f["finding_id"], {}
+        fid, items, notes = f["finding_id"], {}, []
         for fact_id in compare.ids(f["fact_ids"]):
             fact = facts.get(fact_id)
             inv = by_sha.get(fact["source_sha256"].strip(), []) if fact else []
@@ -117,8 +146,10 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
                 continue
             doc, page = inv[0], fact["page"].strip()
             e = source(("record", doc["sha256"]), kind="record", request=doc["request"], document_id=doc["doc_id"], sha256=doc["sha256"],
-                       base="%sdocument %s (%s)" % ("Request %s, " % doc["request"] if doc["request"] else "", doc["doc_id"], stem(doc)))
+                       base="%sdocument %s (%s)" % ("Request %s, " % doc["request"] if doc["request"] else "", doc["doc_id"], stem(doc)),
+                       ts="" if c["ts"] is None else c["ts"].get(doc["sha256"], "text state not recorded"))
             e["pages"] += [page] * (page not in e["pages"])
+            notes.append(e["ts"])
             items.setdefault(e["n"], []).append("p." + clean(page))
         req = reqs.get(f["req_id"]) if f["req_id"] else None
         if f["req_id"] and not req:
@@ -132,7 +163,8 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
         errs.extend("row %s: %s" % (fid, why) for why, bad in (("bullet has no cite", not items),
                                                                ("verdict has no report phrase", f["verdict"] not in PHRASE)) if bad)
         cite = "[%s]" % ", ".join("%d %s" % (k, " and ".join(dict.fromkeys(v))) for k, v in items.items())
-        return squash("- **%s** - %s. %s %s" % (squash(f["requirement"]), PHRASE.get(f["verdict"], ""), squash(f["basis"]), cite))
+        return squash("- **%s** - %s. %s %s" % (squash(f["requirement"]), PHRASE.get(f["verdict"], ""), squash(f["basis"]), cite)
+                      + "".join(" (%s)" % t for t in dict.fromkeys(notes) if t))  # the text-state label follows the cite
     lines = [LINE1, "", "# %s license-plate reader records review - findings draft" % c["agency"], "", "## What this covers", "",
              "Rows reviewed: %d. Rows from records not posted publicly: %d (withheld, counted only). Rows the independent check "
              "disputed or could not source: %d (withheld). Rows not independently checked: %d (counted only, not described). Rows "
@@ -153,8 +185,9 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
     for e in sorted(sources.values(), key=lambda e: e["n"]):
         e["pages"].sort(key=lambda v: (not v.isdigit(), int(v) if v.isdigit() else 0, v))
         extra = (", section " + "; ".join(e["sections"]) if e["sections"] else "") + (", page " + ", ".join(e["pages"]) if e["pages"] else "")
-        entries.append({"n": e["n"], "kind": e["kind"], "label": squash(e["base"] + extra), "request": e["request"],
-                        "document_id": e["document_id"], "sha256": e["sha256"], "pages": e["pages"]})
+        ts = {"text_state": e["ts"]} if e.get("ts") else {}  # record sources only; a rule source never has one
+        entries.append({"n": e["n"], "kind": e["kind"], "label": squash(e["base"] + extra) + (" (%s)" % e["ts"] if ts else ""),
+                        "request": e["request"], "document_id": e["document_id"], "sha256": e["sha256"], "pages": e["pages"], **ts})
     lines += ["", "## Sources", ""] + ["[%d] %s" % (e["n"], e["label"]) for e in entries]
     n["sources"] = len(entries)
     return "\n".join(lines) + "\n", json.dumps(entries, indent=1, ensure_ascii=False) + "\n", marks, body_end, entries, n

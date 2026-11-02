@@ -18,7 +18,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, map_controller
-from .content import CITY_KINDS, ContentError, load_content
+from .content import CITY_KINDS, ContentError, load_content, utc_moment
 from .markdown_lite import render as markdown
 from .shell import render
 
@@ -34,6 +34,14 @@ CLASSIFICATION_LABELS = {
     "redaction": "Redaction", "agency_assertion": "Agency assertion", "no_conflict": "No conflict found",
 }
 CONFIDENCE_LABELS = {"verified": "Verified against the record", "likely": "Likely; awaiting further records"}
+# data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
+PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
+                         "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
+                         "counterevidence", "corrections", "url")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id")
+PUBLIC_CORRECTION_FIELDS = ("date", "note")
+PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
+FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol",
                "district_attorney": "District attorney", "county_board": "County board",
                "city_council": "City council", "other": "Other public body"}
@@ -110,6 +118,18 @@ def short_hash(sha256):
 
 def date_label(value):
     return e(value[:10])
+
+
+def _day(value):
+    return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+
+
+def finding_updated(finding):
+    """Latest of updated_at, published_at and each correction date (a date read as midnight UTC), as the winner's
+    own string; a tie keeps that order."""
+    candidates = [finding["updated_at"], finding["published_at"]]
+    candidates += [_day(c["date"]) + "T00:00:00+00:00" for c in finding["corrections"]]
+    return max((value for value in candidates if value), key=utc_moment)
 
 
 def js_json(value):
@@ -364,7 +384,8 @@ class Site:
     def findings_index_html(self):
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Findings</p>'
                 '<h2>Everything we publish cites a record.</h2></div><p>Each finding names its classification, confidence, event date and the '
-                f'hashed source records behind it. <a href="/feed.xml">Atom feed</a>.</p></div>{self.findings_list(self.model["findings"])}'
+                'hashed source records behind it. <a href="/feed.xml">Atom feed</a> · '
+                f'<a href="/data/findings.json" type="application/json">Open data (JSON)</a>.</p></div>{self.findings_list(self.model["findings"])}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings", "Published, source-linked findings", "/findings/", main)
 
@@ -451,6 +472,8 @@ class Site:
                    if self.site["contact_email"] else "")
         main = ('    <section class="section finding-body" id="content"><p class="eyebrow">About</p>'
                 f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
+                '<p>Published findings are also available as open data: '
+                '<a href="/data/findings.json" type="application/json">data/findings.json</a>.</p>'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", "About", "About the campaign", "/about.html", main)
 
@@ -589,7 +612,7 @@ class Site:
         ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + self_path) if self.base else campaign_urn + urn_suffix
         ET.SubElement(feed, f"{{{ns}}}link", href=self.base + self_path, rel="self")
         ET.SubElement(feed, f"{{{ns}}}link", href=self.base + alternate_path)
-        latest = max((f["updated_at"] or f["published_at"] for f in findings), default=None)
+        latest = max((finding_updated(f) for f in findings), key=utc_moment, default=None)
         ET.SubElement(feed, f"{{{ns}}}updated").text = latest or datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
         ET.SubElement(ET.SubElement(feed, f"{{{ns}}}author"), f"{{{ns}}}name").text = self.cfg["name"]
         for finding in findings:
@@ -598,8 +621,9 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}id").text = "urn:deflock-finding:" + finding["id"]
             ET.SubElement(entry, f"{{{ns}}}link", href=f'{self.base}/findings/{finding["slug"]}.html')
             ET.SubElement(entry, f"{{{ns}}}published").text = finding["published_at"]
-            ET.SubElement(entry, f"{{{ns}}}updated").text = finding["updated_at"] or finding["published_at"]
-            ET.SubElement(entry, f"{{{ns}}}summary").text = (
+            ET.SubElement(entry, f"{{{ns}}}updated").text = finding_updated(finding)
+            corrected = max((_day(c["date"]) for c in finding["corrections"]), default=None)
+            ET.SubElement(entry, f"{{{ns}}}summary").text = (f"Corrected {corrected}. " if corrected else "") + (
                 f'[{CLASSIFICATION_LABELS[finding["classification"]]}; {CONFIDENCE_LABELS[finding["confidence"]]}; '
                 f'event date {finding["event_date"]}] {finding["summary"]}')
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
@@ -607,6 +631,41 @@ class Site:
 
     def robots_txt(self):
         return "User-agent: *\nAllow: /\n" + (f"Sitemap: {self.base}/sitemap.xml\n" if self.base else "")
+
+    def _public_finding(self, finding):
+        """One published finding, copied key by key from the allowlists (never a dict copy)."""
+        value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS if key not in ("sources", "corrections", "url")}
+        value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
+        value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
+                             "rule_id": s["rule_id"]} for s in finding["sources"]]
+        value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
+        value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
+        return value
+
+    def findings_json(self):
+        """``data/findings.json``: published findings as open data; refuses any non-public key or full hash."""
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "findings": [self._public_finding(f) for f in self.model["findings"]]}
+        _assert_public(doc)
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _assert_public(doc):
+    """Raise ``ContentError`` if ``doc`` holds a key outside the public allowlists or a 40+ hex string."""
+    def walk(value, allowed, nested):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key not in allowed:
+                    raise ContentError(f"data/findings.json: non-public key {key}")
+                walk(item, *nested.get(key, ((), {})))
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, allowed, nested)
+        elif isinstance(value, str) and FULL_HASH.search(value):
+            raise ContentError("data/findings.json: a string holds a full hash; publish 12-character prefixes only")
+    finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
+    walk(doc, PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
 
 
 # --- file emission -----------------------------------------------------------
@@ -681,7 +740,7 @@ def build_site(root, today=None):
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         "sitemap.xml": site.sitemap_xml(), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
-        "app.js": site.app_js(),
+        "app.js": site.app_js(), "data/findings.json": site.findings_json(),
     })
     files.update(site.agency_feeds())
     plan = []
