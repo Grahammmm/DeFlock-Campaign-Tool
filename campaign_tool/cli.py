@@ -535,6 +535,20 @@ def main():
         verify_agency_p.add_argument(flag, required=True)
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    agency_cmds = commands.add_parser("kit-agency", help="Add, select or deselect agencies in kit/agencies.json; the next"
+                                      " kit run drafts requests for selected law-enforcement agencies"
+                                      ).add_subparsers(dest="agency_command", required=True)
+    for name, text in (("select", "Mark one agency selected"), ("deselect", "Mark one agency not selected"),
+                       ("add", "Append an organizer-added agency (selected, verified: false)")):
+        agency_p = agency_cmds.add_parser(name, help=text, description=text + "; the next kit run drafts requests for"
+                                          " selected law-enforcement agencies. Nothing is sent.")
+        agency_p.add_argument("--directory", required=True)
+        agency_p.add_argument("--id", required=True, dest="agency_id")
+        if name == "add":
+            agency_p.add_argument("--name", required=True)
+            agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
+                                  "district_attorney or other")
+            agency_p.add_argument("--note", default=None, help="Up to 300 characters")
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
@@ -625,6 +639,13 @@ def main():
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
+            print("Nothing was sent.")
+        elif args.command == "kit-agency":
+            from . import kit_agencies
+            print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
+                             if args.agency_command == "add" else
+                             kit_agencies.set_selected(root, args.agency_id, args.agency_command == "select"),
+                             indent=2, ensure_ascii=False))
             print("Nothing was sent.")
         elif args.command == "kit-sent":
             from .kit_track import record_sent
