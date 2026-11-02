@@ -2,6 +2,8 @@
 
 A receipt is bound to the hash of the draft without its publication fields, so moving a draft
 through states keeps it bound while any edit to the reviewed fields makes it stale."""
+import contextlib
+import errno
 import json
 import os
 import re
@@ -9,6 +11,12 @@ import stat
 import tempfile
 import unicodedata
 from datetime import datetime, timezone
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
 
 from .content import FINDING_KEYS
 from .review import ROLES, _who, content_hash, review_blockers
@@ -84,6 +92,35 @@ def _load_receipts(path):
     return receipts
 
 
+@contextlib.contextmanager
+def _locked(folder):
+    """Hold an exclusive lock on the stable private/reviews/.lock file (never replaced, so every
+    writer locks the same inode) for the whole read/check/append/replace transaction."""
+    path = folder / ".lock"
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        if os.path.islink(path):
+            raise ValueError(f"{path}: lock file is a symlink; refusing to follow it") from None
+        raise ValueError(f"{path}: cannot open lock file ({exc.strerror})") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"{path}: lock file is not a regular file")
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:  # Windows: msvcrt.LK_LOCK gives up after about 10 s of contention, so keep retrying
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno != errno.EDEADLOCK:
+                        raise
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases either lock kind
+
+
 def _text(name, value, limit):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"--{name} must not be empty")
@@ -105,28 +142,29 @@ def add_receipt(root, draft, role, decision, reviewer, rationale, now=None):
         raise ValueError("the author cannot review their own finding")
     digest = reviewed_hash(draft)
     path = _receipts_path(root, draft)
-    receipts = _load_receipts(path)
-    if any(isinstance(r, dict) and r.get("content_sha256") == digest and r.get("role") == role
-           and r.get("decision") == decision and _who(r.get("reviewer")) == _who(reviewer) for r in receipts):
-        raise ValueError(f"{path}: this receipt is already recorded for the current content")
-    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    receipt = {"content_sha256": digest, "role": role, "decision": decision, "reviewer": reviewer,
-               "rationale": rationale, "reviewed_at": when}
     for folder in (root / "private", path.parent):
         folder.mkdir(mode=0o700, exist_ok=True)
         os.chmod(folder, 0o700)
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".review-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as out:
-            json.dump(receipts + [receipt], out, indent=2, ensure_ascii=False)
-            out.write("\n")
-            out.flush()
-            os.fsync(out.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    with _locked(path.parent):
+        receipts = _load_receipts(path)
+        if any(isinstance(r, dict) and r.get("content_sha256") == digest and r.get("role") == role
+               and r.get("decision") == decision and _who(r.get("reviewer")) == _who(reviewer) for r in receipts):
+            raise ValueError(f"{path}: this receipt is already recorded for the current content")
+        when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        receipt = {"content_sha256": digest, "role": role, "decision": decision, "reviewer": reviewer,
+                   "rationale": rationale, "reviewed_at": when}
+        fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".review-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                json.dump(receipts + [receipt], out, indent=2, ensure_ascii=False)
+                out.write("\n")
+                out.flush()
+                os.fsync(out.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return dict(receipt, id=draft["id"], written=str(path))
 
 

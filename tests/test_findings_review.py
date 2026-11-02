@@ -8,7 +8,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REVIEW_BLOCKERS = {"missing_factual_review", "missing_legal_review", "missing_privacy_review",
@@ -152,6 +155,7 @@ class FindingReviewTests(unittest.TestCase):
                 self.assertIn(str(self.receipts), self.review(returncode=1).stderr)
                 self.assertEqual(self.receipts.read_text(), text)
         self.receipts.unlink()
+        (self.receipts.parent / ".lock").unlink()
         self.receipts.parent.rmdir()
         self.receipts.parent.symlink_to(self.base)
         for command in (self.review, self.status):
@@ -188,9 +192,10 @@ class FindingReviewTests(unittest.TestCase):
         self.approve_all()
         after = self.tree()
         changed = {k for k in set(before) | set(after) if before.get(k, 0) != after.get(k, 0)}
-        self.assertEqual(changed, {"private/reviews", "private/reviews/syn-finding-1.json"})
+        self.assertEqual(changed, {"private/reviews", "private/reviews/.lock", "private/reviews/syn-finding-1.json"})
         self.assertEqual(self.draft.read_bytes(), draft_bytes)
         self.assertEqual(self.receipts.stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.receipts.parent / ".lock").stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.receipts.parent.stat().st_mode & 0o777, 0o700)
 
     def test_review_status_never_writes(self):
@@ -201,6 +206,39 @@ class FindingReviewTests(unittest.TestCase):
         before = (self.receipts.read_bytes(), self.receipts.stat().st_mtime_ns)
         self.status()
         self.assertEqual((self.receipts.read_bytes(), self.receipts.stat().st_mtime_ns), before)
+
+    def test_concurrent_reject_and_approve_both_survive(self):
+        from campaign_tool import findings
+        self.approve_all()
+        document = json.loads(self.draft.read_text())
+        original = findings._load_receipts
+
+        def slow_load(path):  # widen the read-to-replace window so unserialized writers would collide
+            receipts = original(path)
+            time.sleep(0.5)
+            return receipts
+
+        errors = []
+
+        def write(role, decision, reviewer):
+            try:
+                findings.add_receipt(self.root, document, role, decision, reviewer, "Concurrent synthetic check.")
+            except Exception as exc:  # surfaced below
+                errors.append(exc)
+
+        with mock.patch.object(findings, "_load_receipts", slow_load):
+            threads = [threading.Thread(target=write, args=("legal", "reject", "Rev Three")),
+                       threading.Thread(target=write, args=("privacy", "approve", "Rev Four"))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+        self.assertEqual(errors, [])
+        receipts = json.loads(self.receipts.read_text())
+        self.assertEqual(len(receipts), 5)
+        self.assertEqual({(r["reviewer"], r["decision"]) for r in receipts[3:]},
+                         {("Rev Three", "reject"), ("Rev Four", "approve")})
+        self.assertEqual(self.status()["review_blockers"], ["unresolved_challenge"])
 
     def test_requires_a_campaign_directory(self):
         self.assertIn("campaign.json", self.cli("finding", "review-status", self.draft, "--directory",

@@ -37,7 +37,9 @@ from all receipts after every submission.
     python3 -m campaign_tool finding review-status DRAFT --directory D
 
 `finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
-file 0600, atomic write) and writes nothing else. Reviewer names are **self-asserted**: offline
+file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
+concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
+are **self-asserted**: offline
 there is no identity check, unlike the hosted flow, where the identity is the Access JWT email.
 The tool only refuses a reviewer whose name matches the draft `author` (case and spacing
 ignored) and a duplicate receipt. Each receipt is bound to the hash of the draft without its
