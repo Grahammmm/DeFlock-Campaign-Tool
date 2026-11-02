@@ -32,7 +32,7 @@ ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
-                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor"}
+                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings"}
 CLASSIFICATION_LABELS = {
     "documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
     "confirmed_conflict": "Confirmed conflict", "information_gap": "Information gap",
@@ -327,7 +327,7 @@ class Site:
 
     def meeting_item(self, meeting):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a>'
-                  if meeting["agenda_url"] else "")
+                  if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">Meeting page</a>'
         item = f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = "Cancelled: " if meeting.get("status") == "cancelled" else ""
@@ -568,6 +568,24 @@ class Site:
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
         return self.page("meetings", "Meetings", "Public meetings and comment kits", "/meetings.html", main)
 
+    def meeting_html(self, meeting):
+        """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
+        cancelled = meeting.get("status") == "cancelled"
+        agenda = (f'<p><a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a></p>'
+                  if meeting["agenda_url"] else "")
+        kit = (markdown(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
+               else '<p>No comment kit has been staged for this meeting.</p>')
+        main = ('    <article class="section finding-body" id="content"><p class="eyebrow">Meeting</p>'
+                f'<h2>{"Cancelled: " if cancelled else ""}{e(meeting["body"])}</h2>'
+                f'<p><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time></p>'
+                + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
+                + (f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
+                + ('<p class="notice">This meeting was cancelled. The comment kit is kept for the record.</p>' if cancelled else "")
+                + f'<h3>Public comment kit</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
+                '<p><a href="/meetings.html">All meetings</a></p></article>\n')
+        return self.page("meetings", f'{meeting["body"]}, {meeting["starts_at"][:10]}',
+                         meeting["agenda_item"] or "Public meeting and comment kit", f'/meetings/{meeting["id"]}.html', main)
+
     def about_html(self):
         contact = (f'<p>Contact: <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
                    if self.site["contact_email"] else "")
@@ -680,6 +698,7 @@ class Site:
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
+        paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
         return paths
 
     def sitemap_xml(self):
@@ -832,6 +851,8 @@ def _plan_site(root, today=None):
     }
     for finding in model["findings"]:
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
+    for meeting in model["meetings"]:
+        pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     css = pages["index.html"]["css"] + EXTRA_CSS
     files = {name: page["html"] for name, page in pages.items()}
     files.update({

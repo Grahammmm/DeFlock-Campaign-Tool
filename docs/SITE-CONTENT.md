@@ -165,6 +165,11 @@ over the output and fails on any hit. The command prints a manifest of every
 written file with its size. Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.
+Every meeting (upcoming, past or cancelled) also gets `meetings/<id>.html`: when,
+where, agenda item and link, and its comment kit shown open for linking and
+printing; a cancelled meeting is headed `Cancelled:` with a notice and keeps its
+kit. Home and `meetings.html` link it as "Meeting page", and `sitemap.xml` lists
+it. `content/public-assets/meetings/` is refused as a generated path.
 
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
