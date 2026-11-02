@@ -1,5 +1,19 @@
 # M0b: portable intake v3.2
 
+## Importing records you already have
+
+Run `python3 -m campaign_tool import-existing --directory ../my-campaign --from ../records --label first-batch`.
+Use an initialized campaign and a folder outside it; the label is 1–40 lowercase letters,
+digits or hyphens, starting with a letter or digit. Each top-level subfolder gets a
+separate source label; these labels are not verified agency identities.
+Original bytes are stored by hash, never parsed or OCR'd. Repeating a batch is safe:
+existing objects and source receipts are reused. Hidden entries, links, non-regular
+and oversized files are skipped. Ordinary file errors are recorded and processing
+continues; a stored-object integrity mismatch stops intake. Exit 3 means errors or a stop.
+The JSON summary names a private `private/imports/` receipt listing each attempted
+path, outcome and extension-only kind hint. Keep these receipts private; successful
+preservation is not substantive review, redaction, publication or authenticity verification.
+
 This is the second M0 code-port slice, independent of the gate PR. It brings the
 existing intake, preservation, extraction, quarantine and repair implementation
 into the public engine. It does not activate a live campaign or scan a corpus.
@@ -155,3 +169,11 @@ The updated intake manifest pin binds this reviewed engine revision.
 Current main's site shell, map controller and agency cards are preserved. Its
 shell CI installs optional records test dependencies only on disposable runners.
 No canonical ledger, host packages, schedule or production site is changed.
+
+## Listing ingested receipts
+
+`status --directory D --list` prints each ledger receipt (hash prefix, bytes, source_id, original name,
+received_at) from an in-memory copy of the ledger (no `-wal`/`-shm` file is created; a ledger with a journal or
+WAL file beside it is refused); `--source-id S`, `--since YYYY-MM-DD` (or an ISO timestamp with
+offset) and `--not-in-sources` (ingested but not yet in `content/sources.json`) narrow it. Nothing is written.
+Prefixes are 12 chars; give `sources add` more characters if it reports an ambiguous prefix.

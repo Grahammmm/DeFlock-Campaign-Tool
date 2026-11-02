@@ -8,18 +8,20 @@ configured, the MapLibre controller. All generated JavaScript is self-hosted;
 pages contain no inline scripts, and the emitted ``_headers`` file carries a
 Content-Security-Policy that names only the hosts the content model declared.
 """
+import hashlib
 import json
+import os
 import re
 import shutil
 import sys
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, map_controller
-from .content import CITY_KINDS, ContentError, load_content, utc_moment
+from . import agency_cards, camera_counts, map_controller
+from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .markdown_lite import render as markdown
 from .shell import render
@@ -29,8 +31,8 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
-                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor"}
+                       "404.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings"}
 CLASSIFICATION_LABELS = {
     "documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
     "confirmed_conflict": "Confirmed conflict", "information_gap": "Information gap",
@@ -156,6 +158,10 @@ def date_label(value):
     return e(value[:10])
 
 
+def time_tag(value):
+    return f'<time datetime="{e(value)}">{e(value)}</time>'
+
+
 def _day(value):
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
@@ -177,6 +183,7 @@ class Site:
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
+        self.today = today or date.today()  # build date: contract terms
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
         cutoff = (today or date.today()).isoformat()
@@ -258,24 +265,27 @@ class Site:
                 tags.append(("property", "article:modified_time", e(_one_line(modified))))
         return "".join(f'  <meta {attr}="{key}" content="{value}">\n' for attr, key, value in tags)
 
-    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None):
-        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base else ""
+    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None,
+             index=True):
+        """``index=False``: a robots noindex tag instead of the share tags, and no canonical link."""
+        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base and index else ""
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
-                + self.share(title, description, path, kind, published, modified)
+                + (self.share(title, description, path, kind, published, modified) if index
+                   else '  <meta name="robots" content="noindex">\n')
                 + f'  <title>{e(title)} | {self.name}</title>\n'
                 '  <link rel="stylesheet" href="/style.css">\n'
                 '  <link rel="alternate" type="application/atom+xml" title="Findings" href="/feed.xml">\n'
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
-             kind="website", published=None, modified=None):
+             kind="website", published=None, modified=None, index=True):
         return render({
             "schema_version": 1,
             "language": self.site["language"],
-            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified),
+            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified, index),
                      "header": self.header(current), "main": main, "footer": self.footer()},
             "styles": {"font_family": self.site["font_family"], "font_faces": ""},
         })
@@ -325,7 +335,7 @@ class Site:
 
     def meeting_item(self, meeting):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a>'
-                  if meeting["agenda_url"] else "")
+                  if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">Meeting page</a>'
         item = f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = "Cancelled: " if meeting.get("status") == "cancelled" else ""
@@ -368,7 +378,13 @@ class Site:
                 f'<div><span class="county-map-region">Community-mapped points</span><strong>{self.county}</strong></div></div>'
                 f'<div class="county-map-legend"><span class="camera-dot"></span><span id="map-selection-count">{self.map["camera_count"]} mapped points</span></div>'
                 '<p class="county-map-hint">Points are community reports, not confirmed agency ownership.</p></div>'
-                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div></section>\n')
+                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div>'
+                f'<p class="map-date">{self.map_date_line()}</p></section>\n')
+
+    def map_date_line(self):
+        """The OpenStreetMap data day from map/snapshot.json; never the build date."""
+        day = self.map.get("snapshot_date")
+        return f"Map data as of {date_label(day)} (OpenStreetMap)" if day else "Map data date unknown (OpenStreetMap)"
 
     def signup_section(self):
         signup = self.site["signup"]
@@ -382,6 +398,24 @@ class Site:
             form = '<p>No email addresses are collected by this site. Follow meetings and findings here or by feed.</p>'
         return ('    <section class="section movement-section" id="participate"><h2>Participate with evidence.</h2>'
                 f'{form}</section>\n')
+
+    def contract_line(self, contract):
+        if not contract:
+            return ""
+        return (f'<p class="contract-term">Contract with {e(contract["vendor"])}, {time_tag(contract["start"])} – '
+                f'{time_tag(contract["end"])}' + (", ended" if contract["end"] < self.today.isoformat() else "")
+                + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
+                + f' (checked {date_label(contract["checked_on"])} on <a href="{e(contract["source_url"])}" '
+                  'rel="noopener noreferrer">the source</a>).</p>')
+
+    def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
+        first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
+        soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
+                      key=lambda a: (a["contract"]["end"], a["name"]))
+        items = "".join(f'<li><a href="/agencies.html#{e(a["slug"])}">{e(a["name"])}</a>: contract with '
+                        f'{e(a["contract"]["vendor"])} ends {time_tag(a["contract"]["end"])}</li>' for a in soon)
+        return ('    <section class="section" id="contracts"><div class="section-heading"><div><p class="eyebrow">Contracts</p>'
+                f'<h2>Contracts ending soon</h2></div></div><ul class="contract-list">{items}</ul></section>\n') if soon else ""
 
     # -- pages ---------------------------------------------------------------
 
@@ -400,7 +434,7 @@ class Site:
         meetings = ('    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">Meetings</p><h2>Show up informed.</h2></div>'
                     '<p><a href="/meetings.html">All meetings and comment kits</a></p></div><div class="meeting-list">'
                     + ("".join(self.meeting_item(m) for m in self.upcoming[:3]) or empty) + '</div></section>\n')
-        main = (self.map_section() + cards
+        main = (self.map_section() + cards + self.contracts_section()
                 + '    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">Evidence before conclusions</p>'
                   f'<h2>{e(self.site["tagline"])}</h2></div></div>{mission}</section>\n'
                 + '    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">Latest findings</p><h2>Published with sources.</h2></div>'
@@ -432,7 +466,7 @@ class Site:
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
                     + (f'<p>{len(findings)} published finding(s): ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else '<p>No published findings.</p>')
-                    + (f'<p>{" · ".join(links)}</p>' if links else "")
+                    + (f'<p>{" · ".join(links)}</p>' if links else "") + self.contract_line(agency["contract"])
                     + (f'<p class="contact-provenance">Contact checked {date_label(agency["verification"]["checked_on"])} on '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">the official source</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -529,6 +563,18 @@ class Site:
                 + (f'<ul>{items}</ul>' if items else '<p>No corrections have been issued.</p>') + '</section>\n')
         return self.page("findings", "Corrections", "Every correction issued on a published finding", "/corrections.html", main)
 
+    def not_found_html(self):
+        """``404.html`` for unknown paths: site shell, noindex, no canonical/share tags; never in sitemap or feeds."""
+        links = "".join(f'<li><a href="{href}">{label}</a></li>' for href, label in (
+            ("/findings/", "Findings"), ("/agencies.html", "Agencies"), ("/meetings.html", "Meetings"), ("/", "Home page")))
+        main = ('    <section class="section" id="content"><div class="section-heading"><div><h2>Page not found</h2></div>'
+                '<p>This page does not exist on this site. Findings are never silently removed: corrections and '
+                'withdrawals are listed on <a href="/corrections.html">Corrections</a>.</p></div>'
+                f'<ul>{links}</ul></section>\n')
+        # "not-found" matches no nav key, so no nav item is marked as the current page.
+        return self.page("not-found", "Page not found", "This page does not exist on this site.", "/404.html", main,
+                         index=False)
+
     def sources_html(self):
         groups = {}
         for source in self.model["sources"]:
@@ -566,6 +612,24 @@ class Site:
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
         return self.page("meetings", "Meetings", "Public meetings and comment kits", "/meetings.html", main)
 
+    def meeting_html(self, meeting):
+        """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
+        cancelled = meeting.get("status") == "cancelled"
+        agenda = (f'<p><a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a></p>'
+                  if meeting["agenda_url"] else "")
+        kit = (markdown(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
+               else '<p>No comment kit has been staged for this meeting.</p>')
+        main = ('    <article class="section finding-body" id="content"><p class="eyebrow">Meeting</p>'
+                f'<h2>{"Cancelled: " if cancelled else ""}{e(meeting["body"])}</h2>'
+                f'<p><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time></p>'
+                + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
+                + (f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
+                + ('<p class="notice">This meeting was cancelled. The comment kit is kept for the record.</p>' if cancelled else "")
+                + f'<h3>Public comment kit</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
+                '<p><a href="/meetings.html">All meetings</a></p></article>\n')
+        return self.page("meetings", f'{meeting["body"]}, {meeting["starts_at"][:10]}',
+                         meeting["agenda_item"] or "Public meeting and comment kit", f'/meetings/{meeting["id"]}.html', main)
+
     def about_html(self):
         contact = (f'<p>Contact: <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
                    if self.site["contact_email"] else "")
@@ -573,6 +637,7 @@ class Site:
                 f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
                 '<p>Published findings are also available as open data: '
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a>.</p>'
+                + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", "About", "About the campaign", "/about.html", main)
 
@@ -597,8 +662,25 @@ class Site:
                 "default_fragment": "library", "source_aliases": aliases,
                 "source_link_label": self.site["source_link_label"]}
 
+    def mapped_counts(self):
+        """``({boundary name: points inside}, problems)``, computed once from the map files; empty without a map."""
+        if not hasattr(self, "_mapped_counts"):
+            docs = []
+            for key in ("cameras_path", "boundary_path") if self.map else ():  # the copy's own checks, then the loader caps
+                _check_copy(self.map[key], MAX_GEOJSON_BYTES)
+                docs.append(_read_json(self.map[key], MAX_GEOJSON_BYTES))
+            self._mapped_counts = camera_counts.count_by_name(*docs) if docs else ({}, [])
+        return self._mapped_counts
+
+    def camera_notes(self):  # boundary names matching no picker city, then every boundary problem
+        counts, problems = self.mapped_counts()
+        picker = {agency["slug"] for agency in self.picker_cities()}
+        names = {entry["name"] for slug, entry in self.cities().items() if slug in picker}
+        return [f"boundary {name} matches no city agency" for name in counts if name not in names] + problems
+
     def cities(self):
         cities = {}
+        counts = self.mapped_counts()[0] if self.map else {}
         for agency in self.picker_cities():
             entry = {"name": agency["jurisdiction_name"] or agency["name"], "displayName": agency["name"]}
             if self.map:
@@ -607,6 +689,9 @@ class Site:
                 if city["name"]:
                     entry["name"] = city["name"]
             entry.update(agency["profile"], **({"flockTransparencyUrl": agency["flock_transparency_url"]} if agency["flock_transparency_url"] else {}))
+            if entry["cameraCount"] == "" and entry["name"] in counts:  # an organizer-typed value always wins
+                n = counts[entry["name"]]
+                entry["cameraCount"] = f"{n} community-mapped point{'' if n == 1 else 's'} inside city limits; ownership unconfirmed"
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
@@ -678,6 +763,7 @@ class Site:
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
+        paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
         return paths
 
     def sitemap_xml(self):
@@ -810,35 +896,28 @@ def _asset_plan(model):
     return plan
 
 
-def build_site(root, today=None):
-    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
-
-    ``today`` (a ``datetime.date``, default the build date) splits meetings into
-    upcoming (on or after it) and past.
-
-    Falls back to the neutral starter when ``content/`` does not exist.
-    Raises ``ContentError``/``ValueError`` and writes nothing when content is
-    not publishable.
-    """
+def _plan_site(root, today=None, notes=None):
+    """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
     root = Path(root)
     cfg = read_config(root)
-    public = root / "public"
-    if public.is_symlink():
+    if (root / "public").is_symlink():
         raise ContentError("public/ must not be a symlink")
     model = load_content(root)
     if model is None:
-        return build_starter(cfg, public)
+        return None
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
         "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
-        "corrections.html": site.corrections_html(),
+        "corrections.html": site.corrections_html(), "404.html": site.not_found_html(),
     }
     for finding in model["findings"]:
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
+    for meeting in model["meetings"]:
+        pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     css = pages["index.html"]["css"] + EXTRA_CSS
     files = {name: page["html"] for name, page in pages.items()}
     files.update({
@@ -860,6 +939,29 @@ def build_site(root, today=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    if isinstance(notes, list):
+        notes.extend(site.camera_notes())
+    return files, plan
+
+
+def build_site(root, today=None, notes=None):
+    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
+
+    ``today`` (a ``datetime.date``, default the build date) splits meetings into
+    upcoming (on or after it) and past. ``notes``, when a list, receives
+    boundary names that match no city agency and boundary feature problems.
+
+    Falls back to the neutral starter when ``content/`` does not exist.
+    Raises ``ContentError``/``ValueError`` and writes nothing when content is
+    not publishable.
+    """
+    from .cli import read_config
+    root = Path(root)
+    public = root / "public"
+    planned = _plan_site(root, today, notes)
+    if planned is None:
+        return build_starter(read_config(root), public)
+    files, plan = planned
     staging = Path(tempfile.mkdtemp(dir=root, prefix=".public.new-"))  # swapped in only when complete
     new, written = staging / "public", []
     try:
@@ -880,6 +982,37 @@ def build_site(root, today=None):
             new.rename(public)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    if not site.base:
+    if "sitemap.xml" not in files:  # planned exactly when content/site.json has a base_url
         print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
     return [public / path.relative_to(new) for path in written]
+
+
+def preview_site(root, today=None):
+    """Compare a fresh render with the current ``public/`` by path, size and SHA-256; writes nothing."""
+    public = Path(root) / "public"
+    planned = _plan_site(root, today)
+    if planned is None:
+        raise ValueError("build --preview needs content/; the starter has nothing to compare")
+    files, plan = planned
+
+    def sized(data):
+        return len(data), hashlib.sha256(data).hexdigest()
+    new = {name: sized(text.encode("utf-8")) for name, text in files.items()}
+    new.update({Path(relative).as_posix(): sized(Path(source).read_bytes()) for source, relative, _ in plan})
+    old, unreadable = {}, []
+    if public.is_dir():
+        for folder, dirs, names in os.walk(public, followlinks=False):
+            for name in names + [d for d in dirs if (Path(folder) / d).is_symlink()]:
+                path = Path(folder) / name
+                relative = path.relative_to(public).as_posix()
+                if path.is_symlink() or not path.is_file():  # never followed or opened
+                    unreadable.append(relative)
+                else:
+                    old[relative] = sized(path.read_bytes())
+    both = sorted(new.keys() & old.keys())
+    changed = [{"path": p, "bytes_before": old[p][0], "bytes_after": new[p][0], "delta": new[p][0] - old[p][0]}
+               for p in both if old[p] != new[p]]
+    return {"public_exists": public.exists(),
+            "added": [{"path": p, "bytes": new[p][0]} for p in sorted(new.keys() - old.keys())],
+            "removed": [{"path": p, "bytes": old[p][0]} for p in sorted(old.keys() - new.keys())],
+            "changed": changed, "unchanged": len(both) - len(changed), "unreadable": sorted(unreadable)}

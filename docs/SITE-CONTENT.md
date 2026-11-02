@@ -20,6 +20,8 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 
 ## Content directory
 
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
 Finding citations and the source library lead with “From a document we hold”,
 the receipt date and agency when known, and public-copy or private-original status.
 Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps
@@ -45,7 +47,10 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 Every text field must pass the same rule as `agency_cards.text`: a string
 without `<` or `>`. Markdown fields (`*_md`) are rendered by
 `campaign_tool/markdown_lite.py`, which supports paragraphs, `## ` headings,
-`**bold**`, `- ` lists and `[text](https://...)` links only. Raw HTML is
+`**bold**`, `- ` lists, `1. ` ordered lists (`1) ` stays plain text), simple
+pipe tables (a `| a | b |` header row, a `|---|:---:|` separator row with the
+same 1-12 cells, then rows of that width; `\|` is a literal pipe) and
+`[text](https://...)` links only. Raw HTML is
 escaped and any link that is not an absolute `https://` URL is rendered as its
 text. There are no third-party dependencies.
 
@@ -73,6 +78,10 @@ structural blocker (classification, `id`/`author`/`summary`/`sources`/
 Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
+
+Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) and every non-null `sources[].rule_id` must be a
+rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
+`content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
 
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
@@ -165,10 +174,21 @@ over the output and fails on any hit. The command prints a manifest of every
 written file with its size. Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.
+Every meeting (upcoming, past or cancelled) also gets `meetings/<id>.html`: when,
+where, agenda item and link, and its comment kit shown open for linking and
+printing; a cancelled meeting is headed `Cancelled:` with a notice and keeps its
+kit. Home and `meetings.html` link it as "Meeting page", and `sitemap.xml` lists
+it. `content/public-assets/meetings/` is refused as a generated path, and two
+meeting files resolving to the same id (explicit `id` or filename) are refused
+before `public/` changes.
 
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted
 files above.
+
+Not-found page: `404.html` is always generated (site shell, links to findings, agencies, meetings and home, a note
+that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
+is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
 
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
@@ -212,6 +232,11 @@ the DeFlock community, which is the community source of these observations. A
 mapped point says a camera was observed, not which agency owns it. The
 controller labels points outside city boundaries without an operator tag as
 candidates with ownership unconfirmed; keep that label.
+At build time each picker city whose `profile.cameraCount` is empty gets `"N community-mapped points inside city
+limits; ownership unconfirmed"` (`1 ... point`, `0 ...` too): the `cameras.geojson` points inside the city boundary
+feature whose `BASENAME` or `NAME` equals the city name (Polygon or MultiPolygon, holes excluded; a point on a shared
+edge counts once). A typed `cameraCount` always wins. `build` prints `note: boundary <name> matches no city agency` and
+`note: city boundary feature <index>: <reason>` on stderr; notes never change the exit code.
 A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call). An answer with no points never
 replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
 through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).

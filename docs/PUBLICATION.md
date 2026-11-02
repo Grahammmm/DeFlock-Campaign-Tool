@@ -56,6 +56,15 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
+`ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
+spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
+them with `ssh-keygen -Y sign -n deflock-finding-review -f KEY payload` and pass `--signature payload.sig`.
+The tool verifies before writing; `review-status` reports `signed`, `self_asserted` and `bad_signatures`
+(re-verified each time), and `publish` prints the same counts. This trust root is the organizer-held
+campaign file, **weaker than** the root-owned `/etc/deflock` approval file; `approval.verify` and
+`/etc/deflock` are not used or changed. Without `ssh-keygen` (OpenSSH 8.2+) only unsigned review works.
+
     python3 -m campaign_tool finding publish DRAFT --directory D --approved-by NAME
 
 `finding publish` writes `D/content/findings/<slug>.json` with `state: "published"`, `published_at`
@@ -69,6 +78,16 @@ concurrent publishes of the same slug or id only one succeeds. The write is atom
 `{at, action: "publish", id, slug, content_sha256, approved_by}` is appended to
 `D/private/publication-log.jsonl` (0600). It never builds, deploys or contacts anything: run
 `build` and review the site before any deploy.
+
+    python3 -m campaign_tool finding correct ID --directory D --date YYYY-MM-DD --note TEXT [--from DRAFT]
+
+`finding correct` appends one `{date, note}` to the published finding whose `id` is ID (exactly one
+file in `content/findings/`, never a symlink) and sets `updated_at` (now, UTC). The date must be a real
+`YYYY-MM-DD`, not after today (UTC), not before the `published_at` date and not before the last
+correction's date (equal is fine); the note is non-empty, at most 1000 characters, no control characters.
+With `--from DRAFT` the reviewed fields are replaced by the draft's (same id and slug), which must clear
+the same review blockers and cited-record check as `publish`; `id`, `slug`, `published_at` and earlier
+corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
 
 ## Propose, approve, execute
 
@@ -144,8 +163,22 @@ edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts f
 longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
 under `public/`; posting stays an organizer decision outside this tool.
 
+## Reviewer roster (role assignment, not authentication)
+
+`finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges
+roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list` prints it. With a
+roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
+`unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
+
 ## Not done
 
-No reviewer directory or role assignment beyond the Access policy; no diff view between
-content versions; no automatic notification to reviewers. The runner that executes
+No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
+no reviewer directory or role assignment beyond the Access policy and no diff view between content
+versions; no automatic notification to reviewers. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
+
+The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`
+renders into memory and prints, as JSON, every `public/` file a rebuild would add, remove or change
+(path and byte delta; equality by SHA-256), then `Preview only; public/ was not changed.` It exits 3
+when anything differs and 0 when the rebuild would be identical. Symlinks inside `public/` are listed
+as `unreadable` and never followed. Nothing is written to the campaign folder.
