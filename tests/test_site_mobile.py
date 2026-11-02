@@ -23,13 +23,13 @@ PRINT_SHA = (
     "6d2514e54ef168aa"  # pragma: allowlist secret
     "64bda5cc2fd1c252"  # pragma: allowlist secret
 )
-# Re-pinned after 07edf7a4 (#620) deliberately appended .record-no and .provenance-note to
-# styles.css.tmpl for the plain-language provenance markup; previous pin b6701371...c7cc.
+# Re-pinned after DF1822-08 added only .comment-deadline{font-weight:700} to styles.css.tmpl;
+# previous pin a8499bf6...c1af (after #620's .record-no and .provenance-note).
 STARTER_SHA = (
-    "a8499bf6ae152ec0"  # pragma: allowlist secret
-    "968e94a52033936c"  # pragma: allowlist secret
-    "dad6261d3fb17ac1"  # pragma: allowlist secret
-    "f4ae1255a2a0c1af"  # pragma: allowlist secret
+    "565079ca7824e359"  # pragma: allowlist secret
+    "ffd2c1a7633317cb"  # pragma: allowlist secret
+    "124e4ef068998fe7"  # pragma: allowlist secret
+    "7a22a46f26ee2100"  # pragma: allowlist secret
 )
 
 
@@ -170,11 +170,12 @@ class SiteMobileTests(unittest.TestCase):
         for root in self.roots:
             pages = {p.relative_to(root / "public").as_posix(): Page(p.read_text())
                      for p in (root / "public").rglob("*.html")}
-            self.assertEqual(set(pages), set(PAGES))
+            # 404.html (RF1510-5) is a generated page outside PAGES; it marks no nav item current by design.
+            self.assertEqual(set(pages), set(PAGES) | {"404.html"})
             for name, page in pages.items():
                 self.assertEqual(page.viewport, 1, name)
                 self.assertEqual(len(page.navs), 1, name)
-                self.assertEqual(len(page.current), 1, name)
+                self.assertEqual(len(page.current), 0 if name == "404.html" else 1, name)
                 self.assertTrue(all(inside for _, inside in page.current), name)
                 self.assertFalse(page.inline, name)
 

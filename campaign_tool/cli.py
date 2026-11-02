@@ -8,7 +8,7 @@ import re
 import sqlite3
 import stat
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import fixes
@@ -298,10 +298,12 @@ def _ingest_dir(args, root):
                       **({"dry_run": True} if dry else {})}, indent=2))
 
 
-def status(root, check=False):
+def status(root, check=False, fix=False):
     read_config(root)
-    from .store_check import check_store
-    result = check_store(root) if check else None
+    from .store_check import check_store, fix_modes
+    if fix:
+        print(json.dumps(fix_modes(root), indent=2))
+    result = check_store(root) if check or fix else None
     status_counts(root)
     if result is not None:
         print(json.dumps({"check": result}, indent=2))
@@ -336,11 +338,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root, contact_max_age_days=None):
-    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
+def doctor(root, contact_max_age_days=None, stale_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days, stale_days), indent=2))
 
 
-def doctor_report(root, contact_max_age_days=None):
+def doctor_report(root, contact_max_age_days=None, stale_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -366,17 +368,36 @@ def doctor_report(root, contact_max_age_days=None):
     if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
         report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
         report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
+    if stale_days is not None:
+        from .freshness import stale_inputs
+        found = stale_inputs(root, cfg, stale_days)
+        report.update(stale_inputs=found[:100], **({"stale_inputs_more": len(found) - 100} if found[100:] else {}))
+        if names := sorted({e["input"] for e in found if e["status"] != "absent"}):
+            report["next_actions"].append("Refresh stale inputs: " + ", ".join(names))
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
+    from .content import ContentError, load_content
+    try:
+        model = load_content(root)
+    except (ContentError, OSError):
+        model = None  # build/content-check name the problem; doctor stays as before
+    if model is not None:
+        ending = report["contracts_ending"] = [
+            {"agency_id": a["agency_id"], "end": a["contract"]["end"], "days": days}
+            for a in sorted((a for a in model["agencies"] if a["contract"]), key=lambda a: a["contract"]["end"])
+            if 0 <= (days := (date.fromisoformat(a["contract"]["end"]) - date.today()).days) <= 90]
+        if ending:
+            report["next_actions"].append("Contract terms ending within 90 days: "
+                                          + ", ".join(f'{c["agency_id"]} ({c["end"]})' for c in ending))
     return report
 
 
 def kit(args, root):
     from .kit import build_kit
-    summary = build_kit(root, online=args.online, include=args.include)
+    summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
@@ -402,7 +423,10 @@ def check_public_tree(public):
 def build(root, check=False):
     from .site import build_site
     public = root / "public"
-    written = build_site(root)
+    notes = []
+    written = build_site(root, notes=notes)
+    for note in notes:  # informational: the exit code is unchanged
+        print(f"note: {note}", file=sys.stderr)
     content_mode = (root / "content").is_dir()
     print(("Site" if content_mode else "Starter") + " written to " + str(public)
           + ". No private documents exported.")
@@ -519,8 +543,56 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation),
-                     indent=2))
+    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
+                           finding_ids=args.finding), indent=2))
+
+
+def finding_preview(root, draft_path, out, now=None):
+    """DF1822-02: one draft's finding page as build renders it (plus banner + noindex) written privately to
+    ``out``/findings/<slug>.html and ``out``/style.css. public/, feed, sitemap and data/ are never touched."""
+    import tempfile
+    from . import finding_law, findings
+    from .content import load_content, load_finding_preview
+    from .site import EXTRA_CSS, Site
+    out = Path(out).expanduser()
+    if out.is_symlink():
+        raise ValueError(f"{out}: --out is a symlink; choose a real private folder outside public/ and content/")
+    target = out.resolve()
+    for name in ("public", "content"):
+        protected = (root / name).resolve()
+        if target == protected or protected in target.parents:
+            raise ValueError(f"{out}: --out is inside {name}/; choose a private folder outside public/ and content/")
+    folder = target / "findings"
+    for path in (target, folder):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f"{path}: must be a real folder, not a symlink or a file")
+    finding = load_finding_preview(findings.load_draft(draft_path), str(draft_path), now=now)
+    model = load_content(root)
+    if model is None:
+        raise ValueError("finding preview needs content/ (run content init first)")
+    # Render with the draft in the model, as build will after `finding publish` (review t_608228c8): Site reads the
+    # law package's citations and status only when a model finding cites a rule. In memory only; content/ unchanged.
+    others = [f for f in model["findings"] if f["id"] != finding["id"]]  # a published copy of this draft is replaced
+    clash = next((f["id"] for f in others if f["slug"] == finding["slug"]), None)
+    if clash:
+        raise ValueError(f"{draft_path}: slug {finding['slug']} is already used by finding {clash}; build would refuse the duplicate")
+    problems = finding_law.check_findings(root, [finding])
+    if problems:
+        raise ValueError(f"draft {problems[0]}; build would refuse it")
+    model = dict(model, findings=sorted(others + [finding], key=lambda f: (f["published_at"], f["slug"]), reverse=True))
+    page = Site(root, read_config(root), model).finding_preview_html(finding)
+    if not target.exists():
+        target.mkdir(mode=0o700, parents=True)
+        os.chmod(target, 0o700)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    written = []
+    for path, text in ((folder / f"{finding['slug']}.html", page["html"]), (target / "style.css", page["css"] + EXTRA_CSS)):
+        fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)  # replaces a symlink entry itself, never writes through it
+        written.append(str(path))
+    return {"written": written, "slug": finding["slug"]}
 
 
 def main():
@@ -532,6 +604,10 @@ def main():
     for flag in ("--name", "--county", "--state", "--location"):
         setup_p.add_argument(flag)
     setup_p.add_argument("--yes", action="store_true", help="Use flags only; never prompt")
+    import_p = commands.add_parser("import-existing", help="Preserve a local folder with private receipts; no parsing")
+    for flag in ("--directory", "--label"):
+        import_p.add_argument(flag, required=True)
+    import_p.add_argument("--from", dest="folder", required=True)
     for name in ("init", "ingest", "doctor", "status", "build"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--directory", required=True)
@@ -555,8 +631,18 @@ def main():
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
+            cmd.add_argument("--fix-modes", action="store_true",
+                             help="chmod loose private dirs/files to 0700/0600, then run --check")
+            cmd.add_argument("--list", action="store_true", help="List ingested receipts with 12-char hash prefixes")
+            cmd.add_argument("--source-id", help="With --list: only receipts with this exact source_id")
+            cmd.add_argument("--since", help="With --list: received on/after YYYY-MM-DD or an ISO timestamp with offset")
+            cmd.add_argument("--not-in-sources", action="store_true",
+                             help="With --list: only objects not registered in content/sources.json")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
+            cmd.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
+            cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
+            cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -564,8 +650,15 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
-    commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
-                        ).add_argument("--directory", required=True)
+    kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
+    social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
+    social_p.add_argument("--directory", required=True)
+    social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    press = commands.add_parser("press", help="Draft private press material; sends nothing")
+    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_draft.add_argument("--directory", required=True)
+    press_draft.add_argument("--finding", action="append", default=[])
+    press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
@@ -598,10 +691,17 @@ def main():
     stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
     stage_p.add_argument("--directory", required=True)
     stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
-    stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
+    stage_p.add_argument("--agency-id", help="The meeting's agency; its published findings are cited first")
+    stage_p.add_argument("--finding", action="append", metavar="ID",
+                         help="Published finding id to cite (repeatable, max 3, in this order; default: 3 chosen)")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
+    for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
+        outcome_p.add_argument(flag, required=True)
+    outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
+    outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
                         ).add_argument("--directory", required=True)
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
@@ -633,6 +733,13 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
+                                     "records, sources, findings (read-only)")
+    coverage_p.add_argument("--directory", required=True)
+    coverage_p.add_argument("--csv", action="store_true", help="RFC 4180 CSV on stdout instead of a table")
+    due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
+    due_p.add_argument("--directory", required=True)
+    due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -641,6 +748,17 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
+    for flag in ("--directory", "--agency"):
+        followup_p.add_argument(flag, required=True)
+    followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
+    followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
+    for flag in ("--directory", "--agency"):
+        denial_p.add_argument(flag, required=True)
+    denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
+                          help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
+    denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -661,21 +779,91 @@ def main():
         sources_edit.add_argument(flag, default=None)
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
+    batch = sources.add_parser("add-batch", help="Add every receipt of one ingest source_id not yet listed; "
+                               "titles marked [EDIT ME: title]; publishes nothing")
+    for flag in ("--directory", "--source-id", "--agency-id", "--received-at"):
+        batch.add_argument(flag, required=True)
+    batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
+    batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
+    content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+        dest="content_command", required=True)
+    content_cmds.add_parser(
+        "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
+    ).add_argument("--directory", required=True)
+    strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
+                                      "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
+    strip_p.add_argument("file")
+    strip_p.add_argument("--out", default=None, help="Default <stem>.clean<suffix> beside FILE; never overwritten")
+    strip_p.set_defaults(directory=".")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
-    review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
+    review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
+    payload_p = finding_cmds.add_parser("review-payload", help="Print the receipt bytes to ssh-keygen -Y sign (read-only)")
     for flag in ("--directory", "--role", "--decision", "--reviewer", "--rationale"):
         review_p.add_argument(flag, required=True)
+        payload_p.add_argument(flag, required=True)
+    review_p.add_argument("--signature", metavar="SIG", help="SSH signature over the review-payload bytes")
     finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
                             ).add_argument("--directory", required=True)
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
+                                        "(banner, noindex; never public/, feed or sitemap)")
+    for flag in ("--directory", "--out"):
+        preview_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    status_p = finding_cmds.add_parser("status", help="Every draft, published and withdrawn finding with its state "
+                                       "and blockers by name (read-only)")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--draft", dest="extra_drafts", action="append", default=[], metavar="PATH",
+                          help="Also list this draft (private/drafts/*.json are always listed); repeatable")
+    status_p.add_argument("--json", dest="as_json", action="store_true", help="Print the rows as JSON")
+    correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
+    correct_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--date", "--note"):
+        correct_p.add_argument(flag, required=True)
+    correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
+    withdraw_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--reason"):
+        withdraw_p.add_argument(flag, required=True)
+    roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
+                                          ).add_subparsers(dest="reviewers_command", required=True)
+    roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
+    roster_add.add_argument("--name", required=True)
+    roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
+    roster_add.add_argument("--ssh-key", metavar="FILE.pub", help="Set or replace this reviewer's signing key")
+    roster_cmds.add_parser("list", help="Print the roster (read-only)")
+    for sub in roster_cmds.choices.values():
+        sub.add_argument("--directory", required=True)
+    new_p = finding_cmds.add_parser("new", help="Write a private/drafts/fnd_<id>.json skeleton with [EDIT ME: ...] markers")
+    for flag in ("--directory", "--agency", "--title"):
+        new_p.add_argument(flag, required=True)
+    new_p.add_argument("--source", action="append", default=[], metavar="PREFIX", help="12-64 hex of a library sha256; repeatable")
+    new_p.add_argument("--author")
+    diff_p = finding_cmds.add_parser("diff", help="Field-level diff of public fields: ID --from DRAFT, or OLD NEW "
+                                     "(read-only; exit 3 when they differ)")
+    diff_p.add_argument("inputs", nargs="+", metavar="ID | OLD NEW")
+    diff_p.add_argument("--directory", required=True)
+    diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
+    diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
+    pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
+    for flag in ("--directory", "--id"):
+        pack.add_argument(flag, required=True)
+    pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
+    pack.add_argument("--replace", action="store_true")
+    pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
+    if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
+        diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
+    if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
+        parser.error("--stale-days must be 1 to 3650")
+    if getattr(args, "json", False) and not args.checklist:
+        parser.error("--json requires --checklist")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -690,12 +878,26 @@ def main():
         elif args.command == "setup":
             from .setup_cmd import run_cli
             run_cli(args, root, parser, sys.stdin, sys.stdout)
+        elif args.command == "import-existing":
+            from .import_existing import run
+            report = run(root, args.folder, args.label)
+            print(json.dumps(report, indent=2))
+            sys.exit(3 if report["stopped"] or report["counts"]["error"] else 0)
         elif args.command == "ingest":
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
+        elif args.command == "social" and args.check:
+            from .social import check_social
+            report = check_social(root)
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "press":
+            from .press import build_press
+            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+            print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build" and args.preview:
             from .site import preview_site
             report = preview_site(root)
@@ -712,8 +914,17 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meeting-pack":
+            from .meeting_pack import build as pack_build
+            print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
+                                        replace=args.replace, allow_past=args.allow_past)))
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "meetings-outcome":
+            from .meeting_outcome import record_outcome
+            print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
+                                            args.vote, args.replace), indent=2))
+            print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -722,21 +933,66 @@ def main():
         elif args.command == "sources" and args.sources_command == "list":
             from .sources_cmd import list_sources
             print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
+        elif args.command == "sources" and args.sources_command == "add-batch":
+            from .sources_cmd import add_batch
+            print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
+                                       dry_run=args.dry_run)))
         elif args.command == "sources":
             from .sources_cmd import edit_source, remove_source
             print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else
                              edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
                                          public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
             print("Nothing was published.")
+        elif args.command == "finding" and args.finding_command == "diff":
+            from .finding_diff import run_cli as diff_cli
+            sys.exit(diff_cli(root, args.inputs, args.from_draft, args.as_json))
+        elif args.command == "finding" and args.finding_command == "reviewers":
+            from . import findings
+            read_config(root)
+            add = args.reviewers_command == "add"
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key) if add
+                             else findings.list_reviewers(root), indent=2, ensure_ascii=False))
+            if add:
+                print("Private roster updated; nothing was published.")
+        elif args.command == "finding" and args.finding_command == "preview":
+            try:
+                result = finding_preview(root, args.draft, args.out)
+            except (OSError, ValueError) as exc:  # load_draft/load_finding refusals: exit 2, nothing written
+                fixes.emit(exc)
+                sys.exit(2)
+            print(json.dumps(result))
+            print("Private preview only; public/ was not changed and nothing was published.")
+        elif args.command == "finding" and args.finding_command == "new":
+            from . import findings
+            read_config(root)
+            print(json.dumps(findings.new_draft(root, args.agency, args.title, args.source, author=args.author)))
+            print('Private draft only; replace every "[EDIT ME: ...]" before review. Nothing was published.')
         elif args.command == "finding":
             from . import findings
             read_config(root)
-            if args.finding_command == "publish":
-                print(json.dumps(findings.publish(root, args.draft, args.approved_by)))
+            if args.finding_command == "status":
+                rows = findings.status_rows(root, [Path(p).expanduser() for p in args.extra_drafts])
+                print(json.dumps(rows, indent=2, ensure_ascii=False) if args.as_json else findings.status_table(rows))
+                return
+            if args.finding_command == "correct":
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
+            if args.finding_command == "withdraw":
+                print(json.dumps(findings.withdraw(root, args.id, args.reason)))
+                print("Run build to remove it from public/. Nothing was deployed.")
+                return
+            if args.finding_command == "publish":
+                result = findings.publish(root, args.draft, args.approved_by)
+                print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                print(findings.trust_line(result["receipt_trust"]))
+                return
             draft = findings.load_draft(args.draft)
-            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
+            if args.finding_command == "review-payload":
+                sys.stdout.buffer.write(findings.review_payload(root, draft, args.role, args.decision, args.reviewer, args.rationale))
+                return
+            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
@@ -750,6 +1006,13 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content" and args.content_command == "strip-metadata":
+            from .image_meta import strip_file
+            print(json.dumps(strip_file(args.file, args.out), indent=2))
+        elif args.command == "content":
+            from .content_init import init_content
+            print(json.dumps(init_content(root), indent=2))
+            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
@@ -764,13 +1027,42 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-coverage":
+            from .kit_track import coverage, format_coverage
+            sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
+        elif args.command == "kit-due":
+            from .kit_track import due as kit_track_due
+            report = kit_track_due(root, args.as_of)
+            print(json.dumps(report, indent=2))
+            if report["past_due"]:
+                sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
+            read_config(root)
+            from .ledger_list import run_cli as list_cli
+            print(json.dumps(list_cli(args, root), indent=2))
+        elif args.command == "kit-followup":
+            from .kit_track import followup
+            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
+        elif args.command == "kit-denial-reply":
+            from .kit_track import denial_reply
+            print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
+        elif args.command == "doctor" and args.checklist:
+            from .doctor_checklist import render
+            print(render(doctor_report(root, args.contact_max_age_days, args.stale_days), args.directory, as_json=args.json,
+                         agency_list_exists=(root / "kit" / "agencies.json").is_file()))
         else:
-            status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
+            if args.command == "status":
+                status(root, check=args.check, fix=args.fix_modes)
+            else:
+                doctor(root, args.contact_max_age_days, args.stale_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(1)

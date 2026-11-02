@@ -15,10 +15,13 @@ extension prerequisites are not established by this arithmetic. The CLI's
 ``deadline`` reminders are provisional too; see ``HOLIDAY_NOTE``.
 """
 import argparse
+import copy
 import csv
+import io
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from datetime import date, timedelta
@@ -399,6 +402,8 @@ def _command_output(args, package):
     head = {"jurisdiction": package["jurisdiction"], "status": package["status"]}
     if args.command == "review-sheet":
         return _review_sheet_output(args, package)
+    if args.command == "apply-sheet":
+        return _apply_sheet_output(args, package)
     if args.command == "rules":
         rules = [r for r in rules_in_force(package, parse_date(args.on, "--on"))
                  if args.review is None or r["review"] == args.review]
@@ -414,6 +419,8 @@ def _command_output(args, package):
 SHEET_COLUMNS = tuple("rule_id citation actor activity duty exceptions remedy effective_from effective_to "
                       "current_review source_titles source_urls oldest_access source_age_days "
                       "reviewer_conclusion reviewer_notes reviewer_name reviewed_on".split())
+REVIEW_LABELS = ("verified", "likely", "needs_attorney_review")
+SHEET_MAX_BYTES = 2 * 1024 * 1024
 
 
 def review_sheet(package, as_of, stale_days=180):
@@ -437,24 +444,120 @@ def review_sheet(package, as_of, stale_days=180):
     return rows, stale
 
 
-def write_review_sheet(out, rows):
-    """Plain CSV, mode 0600, written atomically; never overwrites and never inside the repository."""
+def _write_private(out, write, prefix):
+    """Mode 0600, written atomically; never overwrites and never inside the repository."""
     target = Path(out).resolve()
     if target == REPO_ROOT or REPO_ROOT in target.parents:
         raise ValueError(f"--out must be outside the repository: {out}")
     if os.path.lexists(out):
         raise ValueError(f"--out already exists, not overwriting: {out}")
-    handle, temporary = tempfile.mkstemp(prefix=".review-sheet-", dir=target.parent)  # mode 0600
+    handle, temporary = tempfile.mkstemp(prefix=prefix, dir=target.parent)  # mode 0600
     try:
         with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=SHEET_COLUMNS)
-            writer.writeheader()
-            writer.writerows(rows)
+            write(stream)
         os.link(temporary, target)  # refuses, never replaces, a target that appeared meanwhile
     except FileExistsError:
         raise ValueError(f"--out already exists, not overwriting: {out}") from None
     finally:
         os.unlink(temporary)
+
+
+def write_review_sheet(out, rows):
+    """Plain CSV, mode 0600, written atomically; never overwrites and never inside the repository."""
+    def write(stream):
+        writer = csv.DictWriter(stream, fieldnames=SHEET_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    _write_private(out, write, ".review-sheet-")
+
+
+def read_sheet(path, package):
+    """Rows of a filled worksheet: regular UTF-8 file of at most 2 MiB, exact header, known unique rule ids."""
+    if not stat.S_ISREG(os.lstat(path).st_mode):  # lstat: a symlink is not regular
+        raise ValueError(f"--sheet must be a regular file, not a symlink: {path}")
+    with open(path, "rb") as stream:
+        data = stream.read(SHEET_MAX_BYTES + 1)
+    if len(data) > SHEET_MAX_BYTES:
+        raise ValueError(f"--sheet is larger than {SHEET_MAX_BYTES} bytes: {path}")
+    try:
+        reader = csv.DictReader(io.StringIO(data.decode("utf-8-sig"), newline=""))
+        header, rows = tuple(reader.fieldnames or ()), list(reader)
+    except UnicodeDecodeError:
+        raise ValueError(f"--sheet is not UTF-8 text: {path}") from None
+    except csv.Error as exc:
+        raise ValueError(f"--sheet is not a readable CSV: {exc}") from None
+    if header != SHEET_COLUMNS:
+        raise ValueError(f"--sheet header must equal the review-sheet columns in order; missing "
+                         f"{[c for c in SHEET_COLUMNS if c not in header]}, unexpected "
+                         f"{[c for c in header if c not in SHEET_COLUMNS]}")
+    known, seen = {"records_law"} | {rule["rule_id"] for rule in package["rules"]}, set()
+    for number, row in enumerate(rows, 1):
+        if None in row or None in row.values():
+            raise ValueError(f"row {number}: expected {len(SHEET_COLUMNS)} cells")
+        rule_id = row["rule_id"].strip()
+        if rule_id in seen or rule_id not in known:
+            raise ValueError(f"row {number}: {'duplicate' if rule_id in seen else 'unknown'} rule_id {rule_id!r}")
+        seen.add(rule_id)
+    return rows
+
+
+def apply_sheet(package, rows, today=None):
+    """Transcription, not a review: a deep copy with only rules[].review set; edited text is listed, not applied."""
+    today = today or date.today()
+    proposed = copy.deepcopy(package)
+    rules = {rule["rule_id"]: rule for rule in proposed["rules"]}
+    written = {row["rule_id"]: row for row in review_sheet(package, today)[0]}
+    report = {"changed": [], "confirmed": [], "skipped": 0, "text_edited": [], "refused": [], "reviewers": set()}
+    for number, row in enumerate(rows, 1):
+        cell = {key: value.replace("\r\n", "\n").strip() for key, value in row.items()}
+        rule_id, conclusion, name = cell["rule_id"], cell["reviewer_conclusion"], cell["reviewer_name"]
+        if any(cell[c] != written[rule_id][c].replace("\r\n", "\n").strip() for c in ("duty", "exceptions", "remedy")):
+            report["text_edited"].append(rule_id)
+        if not conclusion:
+            report["skipped"] += 1
+            continue
+        reason = None
+        if rule_id == "records_law":
+            reason = "records_law has no review label"
+        elif conclusion not in REVIEW_LABELS:
+            reason = "conclusion must be verified, likely or needs_attorney_review"
+        elif not name:
+            reason = "reviewer_name is blank"
+        else:
+            try:
+                if parse_date(cell["reviewed_on"], "reviewed_on") > today:
+                    reason = "reviewed_on is after today"
+            except ValueError as exc:
+                reason = str(exc)
+        if reason:
+            report["refused"].append({"row": number, "rule_id": rule_id, "reason": reason})
+            continue
+        rule = rules[rule_id]
+        if rule["review"] == conclusion:
+            report["confirmed"].append(rule_id)
+        else:
+            report["changed"].append({"rule_id": rule_id, "from": rule["review"], "to": conclusion})
+            rule["review"] = conclusion
+        report["reviewers"].add(name)
+    validate(proposed, load_schema())
+    _semantic_checks(proposed, proposed["jurisdiction"])
+    return proposed, report
+
+
+def _apply_sheet_output(args, package):
+    proposed, report = apply_sheet(package, read_sheet(args.sheet, package))
+    if report["refused"]:
+        first = report["refused"][0]
+        raise ValueError(f"row {first['row']} ({first['rule_id']}): {first['reason']}; "
+                         f"{len(report['refused'])} row(s) refused, nothing written")
+    text = json.dumps(proposed, indent=2, ensure_ascii=False) + "\n"
+    _write_private(args.out, lambda stream: stream.write(text), ".proposed-package-")
+    return {"jurisdiction": package["jurisdiction"], "status": package["status"], "out": args.out,
+            **{key: report[key] for key in ("changed", "confirmed", "skipped", "text_edited")},
+            "reviewers_named": sorted(report["reviewers"]),
+            "note": ("Transcription of a human reviewer's worksheet, not a review. The package stays "
+                     f"{package['status']}; a human must record reviewed_by and reviewed_at through "
+                     "docs/LAW-PACKAGES.md. Edited text in text_edited was not applied.")}
 
 
 def _stale_days(text):
@@ -487,7 +590,10 @@ def main(argv=None):
     sheet.add_argument("--out", required=True, help="New CSV path outside the repository")
     sheet.add_argument("--as-of", required=True, help="Date ages are counted to, YYYY-MM-DD")
     sheet.add_argument("--stale-days", type=_stale_days, default=180, help="1..3650 (default 180)")
-    for sub in (show, rules, remind, sheet):
+    apply = commands.add_parser("apply-sheet", help="Write a private proposed package from a filled worksheet")
+    apply.add_argument("--sheet", required=True, help="Worksheet CSV filled in by a human reviewer")
+    apply.add_argument("--out", required=True, help="New JSON path outside the repository")
+    for sub in (show, rules, remind, sheet, apply):
         sub.add_argument("jurisdiction")
         sub.add_argument("--base", help="Alternate jurisdictions directory")
     args = parser.parse_args(argv)

@@ -6,8 +6,12 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
      "campaign": {"name": "...", "base_url": "https://..." | null, "county_name": "..."},
      "since": "<ISO>" | null,
      "findings": [{"title", "summary", "classification", "confidence", "path",
-                   "published_at", "corrected": bool}],
-     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance"}]}
+                   "published_at", "corrected": bool,
+                   "corrections"?: [{"date": "YYYY-MM-DD", "note"}]}],
+     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance"}],
+     "decisions": [{"body", "on", "result", "vote", "source_url", "meeting_path"}]}  # optional, --from-content
+
+``corrections`` is optional (``--from-content`` sets it; Worker manifests omit it).
 
 HTML is rendered from a Markdown subset through ``markdown_lite`` so raw HTML
 never reaches the draft; the only additions are a wrapper and the provider's
@@ -18,7 +22,7 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -29,6 +33,8 @@ from ..markdown_lite import render
 UNSUBSCRIBE_PLACEHOLDER = "{{ unsubscribe }}"
 MAX_FINDINGS = 12
 MAX_MEETINGS = 8
+MAX_CORRECTIONS = 50
+NOTE_LIMIT = 200
 _PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}")
 _HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/?#&=%-]*)?")
 # Patterns that must never appear in a draft: emails and phone-like numbers
@@ -73,6 +79,71 @@ def _entries(items, label):
     return items
 
 
+def _day(value, label):
+    if not isinstance(value, str):
+        raise DraftError(f"{label}: YYYY-MM-DD day required")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.isoformat() != value:
+        raise DraftError(f"{label}: invalid day {value!r}, YYYY-MM-DD required")
+    return parsed
+
+
+def _corrections(finding, label):
+    """``[(day, index, note)]`` from a finding's optional ``corrections``; malformed ones are refused."""
+    if "corrections" not in finding:
+        return []
+    items, label = finding["corrections"], label + ".corrections"
+    if not isinstance(items, list) or len(items) > MAX_CORRECTIONS:
+        raise DraftError(f"{label}: a list of at most {MAX_CORRECTIONS} corrections required")
+    out = []
+    for index, item in enumerate(_entries(items, label)):
+        day = _day(item.get("date"), f"{label}[{index}].date")
+        if not isinstance(item.get("note"), str):
+            raise DraftError(f"{label}[{index}].note: string required")
+        out.append((day, index, item["note"]))
+    return out
+
+
+def _note(value):
+    value = " ".join(value.split())
+    return value if len(value) <= NOTE_LIMIT else value[:NOTE_LIMIT - 1] + "…"
+
+
+# Same wording as site.OUTCOME_LABELS (DF2237-11); kept local so the draft builder stays standalone.
+DECISION_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
+                   "amended": "Approved with amendments", "no_action": "No action taken",
+                   "informational": "Informational item only"}
+
+
+def _decisions(items):
+    """Lines for ``decisions`` (DF2237-12): organizer-recorded outcomes only; nothing is inferred."""
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise DraftError("decisions must be a list")
+    lines = []
+    for index, item in enumerate(_entries(items, "decisions")):
+        label = f"decisions[{index}]"
+        result, on, url = item.get("result"), item.get("on"), item.get("source_url")
+        if not isinstance(result, str) or result not in DECISION_LABELS:
+            raise DraftError(f"{label}.result: must be one of {', '.join(DECISION_LABELS)}")
+        if not isinstance(on, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", on):
+            raise DraftError(f"{label}.on: YYYY-MM-DD date required")
+        day = _date(on + "T00:00:00+00:00", label + ".on")
+        if not isinstance(url, str) or not _HTTPS.fullmatch(url):
+            raise DraftError(f"{label}.source_url: must be an https:// URL")
+        body = _clean(item.get("body"), label + ".body", 200)
+        if not body:
+            raise DraftError(f"{label}.body: required")
+        vote = _clean(item.get("vote"), label + ".vote", 40)
+        entry = f"- **{body}**, {day.strftime('%b %d, %Y')}: {DECISION_LABELS[result]}"
+        lines.append(entry + (f" (vote {vote})" if vote else "") + f" [Official record]({url})")
+    return lines
+
+
 def _link(base_url, path, label):
     if not isinstance(path, str) or not _PATH.fullmatch(path) or ".." in path.split("/"):
         raise DraftError(f"{label}: invalid public path")
@@ -99,6 +170,9 @@ def build_draft(manifest, now=None):
 
     Only findings published at or after ``since`` and meetings starting at or
     after ``now`` (soonest first) are listed; ``excluded`` counts the rest.
+    A finding published before ``since`` with a correction dated on or after
+    the since day is listed under "Corrections" (latest such correction) and
+    counted in ``corrections_listed``, present only when non-zero.
 
     ``campaign.consent_footer`` is the campaign's reviewed consent and sender
     wording (it must keep the sentence ``Unsubscribe at any time.`` for the
@@ -120,6 +194,7 @@ def build_draft(manifest, now=None):
     meetings = manifest.get("meetings") or []
     if not isinstance(findings, list) or not isinstance(meetings, list):
         raise DraftError("findings and meetings must be lists")
+    decisions = _decisions(manifest.get("decisions"))
     # The engine applies the documented window itself: findings published since the
     # last send, meetings that have not started yet (soonest first). Labels keep the
     # manifest index so a bad entry is named where the organizer can find it.
@@ -129,7 +204,19 @@ def build_draft(manifest, now=None):
               for i, m in enumerate(_entries(meetings, "meetings"))]
     kept_findings = [(i, findings[i]) for i, when in published if since is None or when >= since]
     kept_meetings = [(i, meetings[i], when) for when, i in sorted(s for s in starts if s[0] >= now)]
-    excluded = {"findings_before_since": len(findings) - len(kept_findings),
+    # A finding left out by the window whose latest correction is on or after the
+    # since day is listed once under "Corrections", never as new (DF1822-04).
+    kept_ids = {i for i, _ in kept_findings}
+    corrections = []
+    for i, finding in enumerate(findings):
+        recent = [c for c in _corrections(finding, f"findings[{i}]") if since and c[0] >= since.date()]
+        if recent and i not in kept_ids:
+            day, _, note = max(recent)
+            label = f"findings[{i}]"
+            corrections.append((day, _clean(finding.get("title") or finding.get("summary"), label + ".title", 200),
+                                _note(note), _link(base_url, finding.get("path"), label + ".path")))
+    corrections.sort(key=lambda c: (-c[0].toordinal(), c[1]))
+    excluded = {"findings_before_since": len(findings) - len(kept_findings) - len(corrections),
                 "meetings_past": len(meetings) - len(kept_meetings)}
     findings, meetings = kept_findings, kept_meetings
 
@@ -157,6 +244,19 @@ def build_draft(manifest, now=None):
         lines.append("No new findings were published in this period. Records requests are still open; "
                      "we publish only what independent reviewers have checked against the originals.")
     lines.append("")
+    if corrections:
+        lines.append("## Corrections")
+        for day, title, note, link in corrections:
+            entry = f"- **{title}**: corrected {day.isoformat()}" + (f" — {note}" if note else "")
+            entry += f" ([Read the finding]({link}))" if link.startswith("https://") else f" ({link})"
+            lines.append(entry)
+        lines.append("")
+    if decisions:
+        lines.append("## Decisions")
+        lines += decisions[:MAX_MEETINGS]
+        if len(decisions) > MAX_MEETINGS:
+            lines.append(f"- and {len(decisions) - MAX_MEETINGS} more on the site.")
+        lines.append("")
     if meetings:
         lines.append("## Upcoming meetings")
         for index, meeting, starts in meetings[:MAX_MEETINGS]:
@@ -203,9 +303,13 @@ def build_draft(manifest, now=None):
             raise DraftError(f"{label}: contact details found; newsletters carry no personal data")
         if UNSUBSCRIBE_PLACEHOLDER not in blob:
             raise DraftError(f"{label}: unsubscribe placeholder missing")
-    return {"subject": subject[:200], "html": html, "text": text,
-            "counts": {"findings": len(findings), "meetings": len(meetings)}, "excluded": excluded,
-            "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
+    result = {"subject": subject[:200], "html": html, "text": text,
+              "counts": {"findings": len(findings), "meetings": len(meetings),
+                         **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
+              "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
+    if corrections:  # absent otherwise, so drafts without listed corrections stay byte-identical
+        result["corrections_listed"] = len(corrections)
+    return result
 
 
 def _wrap(name, body):
