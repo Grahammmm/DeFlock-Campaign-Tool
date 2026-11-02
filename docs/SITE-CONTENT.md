@@ -30,7 +30,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice` |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `brand` (below) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id` |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
@@ -279,6 +279,18 @@ Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml
 `data/findings.json`, all JavaScript (`site-data.js`, `agency-cards.js`, `app.js`, `findings/filter.js`, which
 rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
 (`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
+
+## Brand (`site.json.brand`, optional)
+Example: `{"logo": "logo.png", "logo_alt": "Cedar Valley Watch", "accent": "#b83d2c", "ink": "#092b2d", "favicon": "favicon.ico"}`.
+Every key is optional. `logo` (a PNG or WebP in `content/public-assets/`, plain names, no symlink, no image metadata,
+1-2000 px each side) shows inside the header's brand link with its own width and height; `logo_alt` (1-120 characters
+of plain text) is required with it. `favicon` (`.ico` or a metadata-free `.png`) adds `<link rel="icon">` to every
+page. `accent` and `ink` (`#rrggbb`, stored lowercase) append one `:root{--coral:…;--ink:…}` rule to `style.css` for
+the keys set. The build checks WCAG 2.x contrast of at least 4.5:1 for `ink` on cream (`#fff8ec`) and paper
+(`#f3eee4`) and `accent` on cream, and refuses with the field, the pair and the ratio. SVG logos and favicons are
+refused until the SVG safety check exists. A missing, misnamed, oversize or unreadable file, an unknown key or a bad
+colour is refused by field name (the value is never printed); `content-check` lists the same lines. Without `brand`
+every built file is byte-identical.
 
 ## Phones
 At widths up to 850 px, content-page menus wrap with 44 px tap targets and a visible keyboard focus outline.

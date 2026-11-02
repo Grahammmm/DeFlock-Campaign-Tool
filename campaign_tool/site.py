@@ -304,9 +304,12 @@ class Site:
         cta = ('<a class="banner-signup-link" href="/#participate">' + e(self.site["signup"]["label"]) + '</a>'
                if self.site["signup"]["mode"] != "none" else
                f'<a class="banner-signup-link" href="/meetings.html">{self.t("header.attend")}</a>')
+        brand = self.site.get("brand", {})
+        logo = (f'<img class="brand-logo" src="/{e(brand["logo"])}" alt="{e(brand["logo_alt"])}" '
+                f'width="{brand["logo_size"][0]}" height="{brand["logo_size"][1]}">' if "logo" in brand else "")
         return (f'  <a class="skip-link" href="#content">{self.t("header.skip")}</a>\n'
                 '  <header class="topbar campaign-banner"><div class="banner-intro">'
-                f'<a class="brand" href="/">{self.name}</a><h1>{e(self.site["tagline"])}</h1>'
+                f'<a class="brand" href="/">{logo}{self.name}</a><h1>{e(self.site["tagline"])}</h1>'
                 f'<p>{self.county}, {self.state}</p>{self.nav(current)}</div>{cta}</header>\n')
 
     def footer(self):
@@ -345,13 +348,15 @@ class Site:
         canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base and index else ""
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
+        favicon = self.site.get("brand", {}).get("favicon")
+        icon = f'  <link rel="icon" href="/{e(favicon)}">\n' if favicon else ""
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
                 + (self.share(title, description, path, kind, published, modified) if index
                    else '  <meta name="robots" content="noindex">\n')
                 + f'  <title>{e(title)} | {self.name}</title>\n'
-                '  <link rel="stylesheet" href="/style.css">\n'
-                f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.feed")}" href="/feed.xml">\n'
+                '  <link rel="stylesheet" href="/style.css">\n' + icon
+                + f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.feed")}" href="/feed.xml">\n'
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
@@ -1129,7 +1134,10 @@ def _plan_site(root, today=None, notes=None):
         if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
             raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
         pages["cameras.html"] = site.cameras_html()
-    css = pages["index.html"]["css"] + EXTRA_CSS
+    brand = model["site"].get("brand", {})  # site.json brand: one appended rule per set part, nothing without it
+    colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
+    css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
+           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else ""))
     files = {name: page["html"] for name, page in pages.items()}
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
