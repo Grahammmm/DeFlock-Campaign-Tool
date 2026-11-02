@@ -459,7 +459,7 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
         raise ValueError(f"content/findings/{target.name} already exists; publish a new slug or use a correction")
     if finding["id"] in _taken(folder, "published finding")[0]:
         raise ValueError(f"id {finding['id']!r} is already published under another slug")
-    withdrawn_ids, withdrawn_slugs = _taken(root / "private" / "withdrawn", "withdrawn finding")
+    withdrawn_ids, withdrawn_slugs = withdrawn_names(root)
     if finding["id"] in withdrawn_ids or finding["slug"] in withdrawn_slugs:
         raise ValueError(f"id {finding['id']!r} or slug {finding['slug']!r} was withdrawn and stays taken")
     problems = cited_problems(root, finding)
@@ -471,17 +471,34 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
     return {"published": finding["slug"], "path": f"content/findings/{target.name}"}
 
 
-def _write_logged(root, folder, target, document, entry):
-    """Atomically (re)write ``target`` and append ``entry`` to private/publication-log.jsonl (0600)."""
+def withdrawn_names(root):
+    """(ids, slugs) kept taken by private/withdrawn/*.json; an unreadable or non-JSON file is named, never skipped."""
+    return _taken(root / "private" / "withdrawn", "withdrawn finding")
+
+
+def _open_log(root):
+    """Open (and check) private/publication-log.jsonl for appending before anything is written."""
     log = root / "private" / "publication-log.jsonl"
-    try:  # open (and check) the log before the finding is written, so a bad log never leaves an unlogged publish
+    try:
         log_fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
         raise ValueError(f"{log}: cannot open publication log ({exc.strerror})") from None
+    if not stat.S_ISREG(os.fstat(log_fd).st_mode):
+        os.close(log_fd)
+        raise ValueError(f"{log}: publication log is not a regular file")
+    os.chmod(log, 0o600)
+    return log_fd
+
+
+def _append(log_fd, entry):
+    os.write(log_fd, (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+    os.fsync(log_fd)
+
+
+def _write_logged(root, folder, target, document, entry):
+    """Atomically (re)write ``target`` and append ``entry`` to private/publication-log.jsonl (0600)."""
+    log_fd = _open_log(root)  # a bad log refuses before the finding is written, never leaving an unlogged publish
     try:
-        if not stat.S_ISREG(os.fstat(log_fd).st_mode):
-            raise ValueError(f"{log}: publication log is not a regular file")
-        os.chmod(log, 0o600)
         data = (json.dumps(document, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         fd, temporary = tempfile.mkstemp(dir=folder, prefix=".publish-", suffix=".tmp")
         try:
@@ -496,8 +513,7 @@ def _write_logged(root, folder, target, document, entry):
         finally:
             if os.path.lexists(temporary):
                 os.unlink(temporary)
-        os.write(log_fd, (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
-        os.fsync(log_fd)
+        _append(log_fd, entry)
     finally:
         os.close(log_fd)
 
@@ -533,8 +549,8 @@ def correct(root, finding_id, date, note, from_draft=None, now=None):
         return _correct_locked(root, finding_id, date, note, from_draft, moment)
 
 
-def _correct_locked(root, finding_id, date, note, from_draft, moment):
-    folder = root / "content" / "findings"
+def _one_published(folder, finding_id):
+    """(path, document) of the single content/findings/*.json whose id is ``finding_id``; symlinks refuse."""
     matches = []
     for path in sorted(folder.glob("*.json")) if _real_dir(folder) else []:
         document = _read_json(path, MAX_DRAFT_BYTES, "published finding")
@@ -542,7 +558,12 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment):
             matches.append((path, document))
     if len(matches) != 1:
         raise ValueError(f"id {finding_id!r}: {len(matches)} published findings have it; need exactly one")
-    target, existing = matches[0]
+    return matches[0]
+
+
+def _correct_locked(root, finding_id, date, note, from_draft, moment):
+    folder = root / "content" / "findings"
+    target, existing = _one_published(folder, finding_id)
     current = content.load_finding(existing, f"content/findings/{target.name}")
     date = _check_date(date, moment, current["published_at"], current["corrections"])
     when = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -568,3 +589,47 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment):
              "text_changed": reviewed_hash(document) != reviewed_hash(existing)}
     _write_logged(root, folder, target, document, entry)
     return {"corrected": current["slug"], "corrections": len(kept["corrections"])}
+
+
+def withdraw(root, finding_id, reason, now=None):
+    """Move the published finding with ``finding_id`` to private/withdrawn/<slug>.json (dir 0700, file 0600) with
+    ``withdrawn: {at, reason}``; its id and slug stay taken. The log line omits the reason. No notice page, no build."""
+    reason = _text("reason", reason, 1000)
+    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for folder in (root / "content", root / "private"):
+        if not _real_dir(folder):
+            raise ValueError(f"{folder}: no {folder.name}/ directory in this campaign")
+    with _locked(root / "private", ".publish.lock"):
+        return _withdraw_locked(root, finding_id, reason, when)
+
+
+def _withdraw_locked(root, finding_id, reason, when):
+    source, document = _one_published(root / "content" / "findings", finding_id)
+    # The filename need not match the slug (load_content accepts both); the slug is what stays reserved.
+    slug = content.load_finding(document, f"content/findings/{source.name}")["slug"]
+    folder = root / "private" / "withdrawn"
+    if not _real_dir(folder):
+        folder.mkdir(mode=0o700)
+    os.chmod(folder, 0o700)
+    target = folder / f"{slug}.json"
+    if os.path.lexists(target):
+        raise ValueError(f"private/withdrawn/{target.name} already exists; nothing was moved")
+    log_fd = _open_log(root)  # a bad log refuses before anything is written
+    try:
+        _write_private(target, dict(document, withdrawn={"at": when, "reason": reason}), ".withdraw-")
+        if hasattr(os, "O_DIRECTORY"):  # POSIX: make the new entry durable before the content file goes
+            dir_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        try:
+            os.unlink(source)
+        except OSError as exc:  # never zero copies: keep both, delete nothing, name the leftover
+            raise ValueError(f"private/withdrawn/{target.name} was written but the leftover content/findings/"
+                             f"{source.name} could not be removed ({exc.strerror}); both copies remain and nothing "
+                             f"was deleted or logged. Remove content/findings/{source.name} by hand, then run build") from None
+        _append(log_fd, {"at": when, "action": "withdraw", "id": finding_id, "slug": slug})
+    finally:
+        os.close(log_fd)
+    return {"withdrawn": slug, "path": f"private/withdrawn/{target.name}"}

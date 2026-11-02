@@ -89,6 +89,14 @@ With `--from DRAFT` the reviewed fields are replaced by the draft's (same id and
 the same review blockers and cited-record check as `publish`; `id`, `slug`, `published_at` and earlier
 corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
 
+    python3 -m campaign_tool finding withdraw ID --directory D --reason TEXT
+
+`finding withdraw` moves the one published finding whose `id` is ID from `content/findings/<slug>.json` to
+`D/private/withdrawn/<slug>.json` (folder 0700, file 0600) with `withdrawn: {at, reason}` added, and logs
+`{at, action: "withdraw", id, slug}` (the reason stays in the private copy only). The copy is kept and its id
+and slug stay taken: a later `publish` of either is refused. The next `build` omits it; no notice page is made.
+If the content file cannot be removed both copies remain and the leftover is named. It never builds or deploys.
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
