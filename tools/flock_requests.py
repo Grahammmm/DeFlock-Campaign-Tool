@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
+show STORE --agency SLUG --request ID reads one request's row, REQUEST-STEPS.csv steps, FEES.csv rows and reminder.
 draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
 import csv
 import hashlib
@@ -321,25 +322,33 @@ def read_log(path):  # (text or None when missing, csv table, refusal); O_NOFOLL
         return None, [], None if isinstance(exc, FileNotFoundError) else f"{path.name} unreadable ({type(exc).__name__})"
 
 
-def locate(store, s, rid, when, ev, sha, today, name):
-    """Shared record/fees refusals: (refusal or None, agency folder, rows, row, date, folder / name)."""
-    root, d = Path(store).resolve(), day(when)
+def _find(store, s, rid, names, more=lambda: None):
+    """Shared one-request refusals: (refusal or None, agency folder, rows, row). names: files beside REQUESTS.csv that
+    must not be symlinks; more() adds the caller's flag checks before REQUESTS.csv is read."""
+    root = Path(store).resolve()
     folder = root / "agencies" / s
-    req, log = folder / "REQUESTS.csv", folder / name
-    link = next((p.name for p in (folder, req, log) if p.is_symlink()), None)
+    req = folder / "REQUESTS.csv"
+    link = next((p.name for p in (folder, req, *(folder / n for n in names)) if p.is_symlink()), None)
     why = ("store is inside the repository" if root == REPO or REPO in root.parents
            else "--agency must be a folder slug" if not s or slug(s) != s
            else f"{link} must not be a symlink" if link
            else f"agency folder {s} not found" if not folder.is_dir()
-           else f"agency folder {s} has no REQUESTS.csv" if not req.is_file()
-           else "--date must be YYYY-MM-DD" if d is None else "--date is after --today" if d > today
-           else "--evidence must be 1-120 characters on one line" if not ev.strip() or len(ev) > 120 or re.search(r"[\r\n]", ev)
-           else "--sha256 must be 64 lowercase hex" if not re.fullmatch(r"[0-9a-f]{64}", sha) else None)
+           else f"agency folder {s} has no REQUESTS.csv" if not req.is_file() else more())
     rows, errs = load(req, s) if why is None else ([], [])
     why = why or (f"REQUESTS.csv fails --check ({errs[0]})" if errs else None)
     row = next((r for r in rows if r["request_id"] == rid), None)
     why = why or (None if row else f"request {rid} not found in {s}/REQUESTS.csv")
-    return why, folder, rows, row, d, log
+    return why, folder, rows, row
+
+
+def locate(store, s, rid, when, ev, sha, today, name):
+    """Shared record/fees refusals: (refusal or None, agency folder, rows, row, date, folder / name)."""
+    d = day(when)
+    why, folder, rows, row = _find(store, s, rid, (name,), lambda: (
+        "--date must be YYYY-MM-DD" if d is None else "--date is after --today" if d > today
+        else "--evidence must be 1-120 characters on one line" if not ev.strip() or len(ev) > 120 or re.search(r"[\r\n]", ev)
+        else "--sha256 must be 64 lowercase hex" if not re.fullmatch(r"[0-9a-f]{64}", sha) else None))
+    return why, folder, rows, row, d, folder / name
 
 
 def record(store, o, today):
@@ -461,6 +470,52 @@ def fee_check(store, cap):
         return print("\n".join(errs), file=sys.stderr) or 1
     lines.append(f"fees | requests={len(lines)} over_cap={over} cap_cents={cap} | not a payment decision; G decides any spending")
     return print("\n".join(lines)) or (3 if over else 0)
+
+
+def show(store, s, rid, as_of):
+    """One request: row, logged steps (date order), fees and the provisional reminder; names log/row disagreements.
+    Reads only. Exit 3 on a mismatch; unlogged row dates (filled by hand before record existed) are informational."""
+    why, folder, rows, row = _find(store, s, rid, ("REQUEST-STEPS.csv", "FEES.csv"))
+    (slog, steps, sbad), (flog, fees, fbad) = ((None, [], None),) * 2 if why else map(read_log, (
+        folder / "REQUEST-STEPS.csv", folder / "FEES.csv"))
+    sfine = slog is None or steps[:1] == [STEP_HEADER] and all(len(c) == 6 for c in steps[1:] if c)
+    ffine = flog is None or fees[:1] == [FEE_HEADER]
+    errs = fee_errors(fees, {r["request_id"]: r for r in rows}) if flog is not None and ffine else []
+    why = why or ("REQUEST-STEPS.csv unreadable" if sbad or not sfine else "FEES.csv unreadable" if fbad or not ffine
+                  else f"FEES.csv fails fees check ({errs[0]})" if errs else None)
+    reminder = []
+    try:
+        reminder = due([row], as_of)[:-1] if not why else []
+    except ValueError as exc:
+        why = str(exc)
+    if why:
+        return print(f"show: {why}", file=sys.stderr) or 1
+    src = lambda v: v[:12] if re.fullmatch(r"[0-9a-f]{64}", v) else "-"  # noqa: E731
+    lines = [f"request | {s} | {rid} | status={row['status']} sent={row['sent']} " + " ".join(
+        f"{k}={row[k + '_date'] or '-'}" for k in ("receipt", "determination", "extension_notice"))
+        + f" source={src(row['source_sha256'])}"]
+    mine = sorted((c for c in steps[1:] if c and c[0] == rid), key=lambda c: c[2])  # stable: ties keep file order
+    lines += [f"step | {rid} | {c[1] if c[1] in STEPS or c[1] == 'opened' else 'other'} | {c[2] if day(c[2]) else '-'}"
+              f" | source={src(c[4])} | recorded {c[5] if day(c[5]) else '-'}" for c in mine]
+    paid = sorted((c for c in fees[1:] if c and c[0] == rid), key=lambda c: c[3])
+    by = {k: [c[2] for c in paid if c[1] == k] for k in KINDS}
+    lines += [f"fee | {rid} | {c[1]} | {c[2]} | {c[3]}" for c in paid]
+    lines.append(f"fees | {rid} | " + (f"estimate={(by['estimate'] or ['-'])[-1]} invoice={(by['invoice'] or ['-'])[-1]} "
+                                      f"paid={sum(map(int, by['paid']))}" if paid else "none"))
+    lines += reminder
+    bad, logged, top = {}, set(), ORDER.index(row["status"])
+    for c in (c for c in mine if c[1] in STEPS):
+        field = (STEPS[c[1]] or (None,))[0]
+        logged.add(field)
+        if field and row[field] != c[2]:
+            bad.setdefault(("row_differs" if row[field] else "step_not_on_row", field))
+        if ORDER.index(STEP_STATUS.get(c[1], "open")) > top:
+            bad.setdefault(("status_behind", "status"))
+    unlogged = [f for f in ("receipt_date", "extension_notice_date", "determination_date") if row[f] and f not in logged]
+    lines += [f"mismatch | {rid} | {code} | {field}" for code, field in bad]
+    lines += [f"unlogged | {rid} | {field}" for field in unlogged]
+    lines.append(f"show | log_mismatch={len(bad)} unlogged={len(unlogged)} | read-only")
+    return print("\n".join(lines)) or (3 if bad else 0)
 
 
 def _tool(name):  # siblings are loaded by file path, never copied
@@ -651,11 +706,18 @@ USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] 
          "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]; "
          "fees record STORE --agency SLUG --request ID --kind estimate|invoice|paid --amount-cents N --date D "
          "--evidence TEXT --sha256 HEX [--today D]; fees check STORE --cap-cents N (required; there is no default cap); "
-         "reconcile STORE --report REPORT.json; open --from-email RUNDIR --request-id ID [--today D]")
+         "reconcile STORE --report REPORT.json; open --from-email RUNDIR --request-id ID [--today D]; "
+         "show STORE --agency SLUG --request ID [--as-of YYYY-MM-DD]")
 
 def main(argv):
     if argv in (["--help"], ["-h"]):
         print(USAGE); return 0  # noqa: E702
+    if argv[:1] == ["show"]:  # read-only: one request's row, steps, fees and reminder
+        keys, o = argv[2::2], dict(zip(argv[2::2], argv[3::2]))
+        as_of = day(o.get("--as-of", "")) if "--as-of" in o else None
+        ok = (len(argv) % 2 == 0 and len(set(keys)) == len(keys) and set(o) - {"--as-of"} == {"--agency", "--request"}
+              and ("--as-of" not in o or as_of))
+        return show(argv[1], o["--agency"], o["--request"], as_of) if ok else print(USAGE, file=sys.stderr) or 2
     if argv[:1] == ["open"]:  # ID is the organizer's own label; the tool never invents one
         keys, o = argv[1::2], dict(zip(argv[1::2], argv[2::2]))
         today = day(o.pop("--today", date.today().isoformat()))

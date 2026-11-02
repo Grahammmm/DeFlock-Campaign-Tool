@@ -189,8 +189,22 @@ sorted by provisional `due` date (extended when recorded), with `days` left (neg
 `answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
 request is past due, else 0. These are reminders, not lateness conclusions.
 
+`kit-followup --directory D --agency ID [--as-of YYYY-MM-DD] [--replace]` (as-of not after today) writes a private
+draft `kit/followups/<agency_id>-<as_of>.md` (0600, folder 0700) for a request that `kit-due` lists as `past_due`. It
+cites the send date, channel, provisional determination date, the records law name and citation and, unless the law
+package is `reviewed`, its status. It refuses a request never recorded, answered (`determination`, `produced`,
+`denied`), closed or not yet past due, and when there is no law package. An existing draft is kept unless `--replace`;
+symlinks are refused. Nothing is sent and `sent.json` is not changed: send it yourself after review.
+
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
 private `kit/sent.json`; `kit-response` and `kit-status` print 12-character prefixes only (`records`,
 `record_prefixes`, at most 50 then `more`). Which records an agency produced is never published.
+
+`kit-coverage --directory D [--csv]` prints one row per selected agency in `kit/agencies.json`: whether its draft
+exists (a regular file, not a symlink), sent date and channel, last response step, distinct records linked on
+`produced` steps, `content/sources.json` entries and published findings for the agency. Agencies with no sent request
+come first, then a totals line (selected, drafted, sent, answered, with records, with findings, and requests for
+agencies no longer selected). Without `content/` sources and findings are 0. `--csv` writes RFC 4180 CSV to stdout;
+cells starting with `=`, `+`, `-` or `@` get a leading `'`. It writes nothing and sends nothing.

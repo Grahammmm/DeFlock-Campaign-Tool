@@ -16,6 +16,11 @@ boundary relation id), and writes:
     <directory>/content/map/cameras.geojson   Point features with properties
                                               manufacturer, operator, url
     <directory>/content/map/attribution.txt   the required attribution text
+    <directory>/content/map/snapshot.json     the OpenStreetMap data time (osm_base) or null
+
+snapshot.json keeps the answer's osm3s.timestamp_osm_base, which the site shows as "Map data as of
+DATE (OpenStreetMap)"; without a valid one it holds null and the site says "date unknown". The saved
+file's time and the fetch or build time are never used.
 
 Data: (c) OpenStreetMap contributors, Open Database License (ODbL) 1.0,
 https://www.openstreetmap.org/copyright. Most ALPR nodes are added by the
@@ -50,6 +55,7 @@ MAX_ANSWER_BYTES = 50 * 1024 * 1024
 NOT_CAMPAIGN = "fetch_osm_alprs: --directory is not a campaign directory (no campaign.json)"
 EMPTY_KEPT = "fetch_osm_alprs: answer has no points; current map kept (use --allow-empty to replace)"
 NODE_URL = re.compile(r"https://www\.openstreetmap\.org/node/[1-9][0-9]{0,18}")
+OSM_BASE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 CHANGE_KINDS = ("added", "removed", "moved", "retagged")
 LIST_LIMIT = 20
 
@@ -95,7 +101,7 @@ def _refuse_constant(name):
 
 
 def load_saved(path):
-    """Return the saved answer's elements list, or None when the file is not valid Overpass JSON."""
+    """Return the whole saved answer dict (callers take ["elements"]), or None when it is not valid Overpass JSON."""
     try:
         with open(path, "rb") as handle:
             raw = handle.read(MAX_ANSWER_BYTES + 1)
@@ -105,7 +111,14 @@ def load_saved(path):
         return None
     if not isinstance(answer, dict) or not isinstance(answer.get("elements"), list):
         return None
-    return answer["elements"]
+    return answer
+
+
+def osm_base(answer):
+    """The answer's osm3s.timestamp_osm_base when it is a UTC timestamp, else None (never a file time or "now")."""
+    meta = answer.get("osm3s") if isinstance(answer, dict) else None
+    value = meta.get("timestamp_osm_base") if isinstance(meta, dict) else None
+    return value if isinstance(value, str) and OSM_BASE.fullmatch(value) else None
 
 
 def _coordinate(value, limit):
@@ -185,8 +198,8 @@ def _write_atomic(final, text, after=""):
         raise WriteRefused(f"fetch_osm_alprs: could not write {final.name}; it was left unchanged{after}") from None
 
 
-def write_map(campaign, collection, allow_empty):
-    """Create content/ then content/map one level at a time (never a symlink); write cameras, then attribution."""
+def write_map(campaign, collection, allow_empty, snapshot=None):
+    """Create content/ then content/map one level at a time (never a symlink); write cameras, attribution, snapshot."""
     map_dir = campaign
     for name in ("content", "map"):
         map_dir = map_dir / name
@@ -208,6 +221,9 @@ def write_map(campaign, collection, allow_empty):
             raise WriteRefused(EMPTY_KEPT)
     _write_atomic(cameras, json.dumps(collection, indent=1) + "\n")
     _write_atomic(map_dir / "attribution.txt", ATTRIBUTION + "\n", " (the new cameras.geojson was written)")
+    if snapshot is not None:
+        _write_atomic(map_dir / "snapshot.json", json.dumps(snapshot, indent=1) + "\n",
+                      " (the new cameras.geojson was written)")
     return map_dir
 
 
@@ -307,17 +323,19 @@ def main(argv=None):
             print(NOT_CAMPAIGN, file=sys.stderr)
             return 2
     if args.from_file:
-        elements = load_saved(args.from_file)
-        if elements is None:
+        answer, source = load_saved(args.from_file), "saved_file"
+        if answer is None:
             print("fetch_osm_alprs: saved answer is not valid Overpass JSON", file=sys.stderr)
             return 2
     else:
-        elements = fetch(query_for(args)).get("elements", [])
+        answer, source = fetch(query_for(args)), "overpass"
+    elements = answer.get("elements", [])
     collection, skipped = to_geojson(elements if isinstance(elements, list) else [])
     if args.check:
         return print_check(diff(current, collection, 10.0 if args.move_metres is None else args.move_metres))
+    snapshot = {"schema_version": 1, "osm_base": osm_base(answer), "source": source}
     try:
-        map_dir = write_map(Path(args.directory), collection, args.allow_empty)
+        map_dir = write_map(Path(args.directory), collection, args.allow_empty, snapshot=snapshot)
     except WriteRefused as exc:
         print(exc, file=sys.stderr)
         return 3 if str(exc) == EMPTY_KEPT else 2
@@ -327,6 +345,7 @@ def main(argv=None):
         print(f"skipped {reason}={skipped[reason]}")
     print("ATTRIBUTION REQUIRED: " + ATTRIBUTION)
     print("Review the points before building. A mapped camera is not evidence of agency ownership.")
+    print(f"snapshot osm_base={snapshot['osm_base'] or 'unknown'}")
     return 0
 
 

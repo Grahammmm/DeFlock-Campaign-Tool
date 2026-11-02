@@ -47,7 +47,10 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 Every text field must pass the same rule as `agency_cards.text`: a string
 without `<` or `>`. Markdown fields (`*_md`) are rendered by
 `campaign_tool/markdown_lite.py`, which supports paragraphs, `## ` headings,
-`**bold**`, `- ` lists and `[text](https://...)` links only. Raw HTML is
+`**bold**`, `- ` lists, `1. ` ordered lists (`1) ` stays plain text), simple
+pipe tables (a `| a | b |` header row, a `|---|:---:|` separator row with the
+same 1-12 cells, then rows of that width; `\|` is a literal pipe) and
+`[text](https://...)` links only. Raw HTML is
 escaped and any link that is not an absolute `https://` URL is rendered as its
 text. There are no third-party dependencies.
 
@@ -75,6 +78,10 @@ structural blocker (classification, `id`/`author`/`summary`/`sources`/
 Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
+
+Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) and every non-null `sources[].rule_id` must be a
+rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
+`content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
 
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
