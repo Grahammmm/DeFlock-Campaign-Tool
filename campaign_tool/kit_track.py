@@ -4,12 +4,15 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import kit, law
 
 CHANNELS = ("email", "portal", "mail")
+KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed")
+NOTE_MAX = 200
 MAX_BYTES = 1 << 20
 EARLIEST = date(2000, 1, 1)
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -95,6 +98,60 @@ def record_sent(root, agency_id, sent_on, channel, *, replace=False, today=None)
     return {"agency_id": agency_id, **entry}
 
 
+def _clean_note(note):
+    if note is None:
+        return None
+    if not isinstance(note, str) or any(c in "<>" or unicodedata.category(c).startswith("C") for c in note):
+        raise ValueError("--note must be plain text without <, > or control characters")
+    text = " ".join(note.split())
+    if not text or len(text) > NOTE_MAX:
+        raise ValueError(f"--note must be 1-{NOTE_MAX} characters after collapsing whitespace")
+    return text
+
+
+def record_step(root, agency_id, on, kind, *, note=None, today=None):
+    """Append one dated agency response step to a hand-sent request and return the updated entry."""
+    root = Path(root)
+    if kind not in KINDS:
+        raise ValueError("--kind must be one of " + ", ".join(KINDS))
+    note = _clean_note(note)
+    requests = read_sent(root)
+    entry = requests.get(agency_id)
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
+    steps = entry["steps"]
+    if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) for s in steps):
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {agency_id!r}")
+    day = _day(on)
+    if day is None:
+        raise ValueError("--date must be a real YYYY-MM-DD date")
+    if day < _day(entry["sent_on"]):
+        raise ValueError(f"--date {on} is before the request was sent on {entry['sent_on']}")
+    if steps and day < _day(steps[-1]["on"]):
+        raise ValueError(f"--date {on} is before the previous step ({steps[-1]['kind']} on {steps[-1]['on']})")
+    if day > (today or date.today()):
+        raise ValueError(f"--date {on} is in the future")
+    kinds = [s["kind"] for s in steps]
+    if "closed" in kinds:
+        raise ValueError(f"{agency_id} is closed; no step can follow closed")
+    if kind == "acknowledged" and kinds:
+        raise ValueError("acknowledged is allowed only as the first step, once")
+    if kind == "extension" and "extension" in kinds:
+        raise ValueError("extension is allowed only once")
+    if kind == "extension" and {"determination", "produced", "denied"} & set(kinds):
+        raise ValueError("extension is not allowed after a determination, produced or denied step")
+    if kind in ("determination", "denied") and kind in kinds:
+        raise ValueError(f"{kind} is allowed at most once")
+    if kind == "closed" and not kinds:
+        raise ValueError("closed needs at least one prior step")
+    step = {"on": on, "kind": kind, **({"note": note} if note else {}),
+            "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    entry["steps"] = [*steps, step]
+    kit._write_json(root / "kit" / "sent.json",
+                    {"schema_version": 1, "requests": dict(sorted(requests.items()))})
+    return {"agency_id": agency_id, **entry}
+
+
 def status(root, today=None, law_base=None):
     """Every recorded request with its provisional determination dates (read-only)."""
     from .cli import read_config  # local import: cli imports this module lazily
@@ -110,10 +167,15 @@ def status(root, today=None, law_base=None):
         package, package_status = None, "missing"
     rows = []
     for agency_id, entry in sorted(requests.items(), key=lambda item: (item[1]["sent_on"], item[0])):
-        due = law.deadline(package, entry["sent_on"]).isoformat() if package else None
+        steps = [s for s in entry["steps"] if isinstance(s, dict)]
+        kinds = [s.get("kind") for s in steps]
         extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
+        due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
+            if package else None
         rows.append({"agency_id": agency_id, "name": names.get(agency_id), "sent_on": entry["sent_on"],
                      "channel": entry["channel"],
                      "draft_changed_since_sent": _draft(root, agency_id) != entry["draft_sha256"],
-                     "determination_due": due, "with_extension": extended, "steps": len(entry["steps"])})
+                     "determination_due": due, "with_extension": extended, "steps": len(entry["steps"]),
+                     "extended": "extension" in kinds, "closed": "closed" in kinds,
+                     "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None})
     return {"requests": rows, "law_package_status": package_status, "note": NOTE}

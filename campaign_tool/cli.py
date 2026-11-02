@@ -542,6 +542,12 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
+    for flag in ("--directory", "--agency", "--date"):
+        response_p.add_argument(flag, required=True)
+    response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
+                                                               "produced", "denied", "closed"))
+    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -627,6 +633,10 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-response":
+            from .kit_track import record_step
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
+            print("Recorded only. Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
