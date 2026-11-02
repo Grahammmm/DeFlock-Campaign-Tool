@@ -148,3 +148,11 @@ keeps the date, channel and SHA-256 of `requests/<agency_id>.md`. A second recor
 one with no steps. `kit-status --directory D` lists each request with `determination_due` and `with_extension` from
 the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
+
+Record what the agency did, and when, with `kit-response --directory D --agency ID --date YYYY-MM-DD --kind K
+[--note TEXT]`. `K` is `acknowledged`, `extension`, `determination`, `produced`, `denied` or `closed`. Dates must
+not be before the send date or the previous step, or in the future. `acknowledged` is first and once only; `extension`
+is once only and not after `determination`, `produced` or `denied`. `determination` and `denied` are once each;
+`produced` may repeat. `closed` needs an earlier step, and nothing follows it. The note is plain text (no `<`, `>` or
+control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
+`closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
