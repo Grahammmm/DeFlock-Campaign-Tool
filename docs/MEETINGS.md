@@ -84,6 +84,9 @@ stripped. The file must be a regular file (no symlink) of at most 64 KB, and it 
 anything is written. The kit adds `## How to take part` after the asks: one line per stated fact, then
 `Source: <url> (checked <date>)`. Without the flag the document has no `participation` and the section
 says only `Check the posted agenda for how and when to comment; participation details were not verified.`
+A stated deadline also shows on the meetings list, the home page and the meeting's own page as
+`Written comments due <weekday, month day, year, h:mm AM/PM (UTC±hh:mm)>` in the deadline's own offset, or as
+`Written comment period closed` when it is at or before the build date at 00:00 UTC; cancelled meetings show neither.
 
 `speaker_minutes` (optional, a whole number 1–10, or `null`) is the per-speaker time limit stated by the same
 `source_url`. When it is set the kit adds `## Spoken comment (<m> minutes, about <130 × m> words)` after the
