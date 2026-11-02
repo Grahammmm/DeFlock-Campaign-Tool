@@ -20,6 +20,7 @@ from xml.etree import ElementTree as ET
 
 from . import agency_cards, map_controller
 from .content import CITY_KINDS, ContentError, load_content, utc_moment
+from .corrections_policy import policy_html
 from .markdown_lite import render as markdown
 from .shell import render
 
@@ -495,6 +496,7 @@ class Site:
                 + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>' + related
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
                 + '<p><a href="/corrections.html">All corrections</a></p>'
+                + '<p><a href="/corrections.html#request">Ask for a correction</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main,
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
@@ -508,6 +510,7 @@ class Site:
                         for f, c, _ in rows)
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Findings</p>'
                 '<h2>Corrections</h2></div><p>Every correction issued on a published finding, newest first.</p></div>'
+                + policy_html(self.site["contact_email"])
                 + (f'<ul>{items}</ul>' if items else '<p>No corrections have been issued.</p>') + '</section>\n')
         return self.page("findings", "Corrections", "Every correction issued on a published finding", "/corrections.html", main)
 
