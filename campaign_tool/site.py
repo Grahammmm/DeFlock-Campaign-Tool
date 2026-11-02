@@ -18,6 +18,7 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
@@ -95,7 +96,7 @@ window.findingFilter={apply:apply};})();
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
                          "counterevidence", "corrections", "url")
-PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
 # data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
@@ -217,6 +218,16 @@ COPY_HOWTO = ('<p class="copy-howto" id="check-a-copy"><strong>How to check a co
               'compute its SHA-256 with <code>sha256sum FILE</code> (Linux), <code>shasum -a 256 FILE</code> (macOS) or '
               '<code>Get-FileHash FILE</code> (Windows PowerShell). If the result starts with the record number, it is '
               'the same file.</p>')
+
+
+def page_link(entry, page):
+    """DF2037-04: 'Open page N of the public copy' (``#page=N`` on a PDF path without a fragment); "" without page."""
+    if page is None or not entry or not entry.get("public_url"):
+        return ""
+    url, parts = entry["public_url"], urlsplit(entry["public_url"])
+    if parts.path.lower().endswith(".pdf") and not parts.fragment and "#" not in url:
+        return f'<p class="record-page"><a href="{e(f"{url}#page={page}")}" rel="noopener noreferrer">Open page {page} of the public copy</a></p>'
+    return f'<p class="record-page"><a href="{e(url)}" rel="noopener noreferrer">Open the public copy (page {page})</a></p>'
 
 
 def copy_status(source):
@@ -742,7 +753,8 @@ class Site:
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
             number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
-            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}{copy_status(entry)}</p></li>')
+            sources.append(f'<li><p>{sentence}</p>{page_link(entry, source.get("page"))}'
+                           f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
         agency = self.agencies_by_id.get(finding["agency_id"])
@@ -1149,7 +1161,8 @@ class Site:
         value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS if key not in ("sources", "corrections", "url")}
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
         value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
-                             "rule_id": s["rule_id"]} for s in finding["sources"]]
+                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {})}
+                            for s in finding["sources"]]
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
         return value
