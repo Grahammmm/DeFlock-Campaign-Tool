@@ -203,6 +203,20 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn('flock-store-facts | action | count=2', text)
         self.assertIn('flock-store-slugs-failed', text)
 
+    def test_private_alert_key_not_exposed_in_json(self):
+        root = self.base / 'records'
+        root.mkdir()
+        target = self.base / 'output.json'
+        status = {'ledger': True, 'drifted_proposals': [], 'review_retirement_pending': [],
+                  'blocked': [], 'alerts': [{'key': 'private-synthetic-message'},
+                                            {'key': 'extract:' + 'a' * 64 + ':resolved'}]}
+        with mock.patch.object(tool.records_run, 'status', return_value=status):
+            self.assertEqual(self.check('--records-root', root, '--json-out', target)[0], 3)
+        text = target.read_text()
+        self.assertNotIn('private-synthetic-message', text)
+        self.assertNotIn('a' * 64, text)
+        self.assertEqual(json.loads(text)['alerts'][0]['keys'], ['extract:' + 'a' * 12])
+
     def test_json_output_and_refusals(self):
         self.ingest('one', b'synthetic')
         target = self.base / 'alerts.json'

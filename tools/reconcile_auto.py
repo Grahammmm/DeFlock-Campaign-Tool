@@ -77,10 +77,20 @@ def records(root):
         names = sorted({x['stage'] for x in result['blocked'] if x['stage'] in stages.STAGES})
         out.append(alert('records', 'stage-blocked', count=len(result['blocked']), stages=names))
     if result['alerts']:
-        # Only strictly identifier-like prefixes are emitted; arbitrary keys can contain private text.
-        keys = sorted({key[:24] for x in result['alerts'] if isinstance((key := x.get('key')), str)
-                       and re.fullmatch(r'[a-z0-9_-]{1,24}', key[:24])})
-        out.append(alert('records', 'ledger-alert-open', 'info', len(result['alerts']), keys=keys))
+        # Only known structured keys can be exposed: arbitrary keys may contain private text.
+        keys = set()
+        for item in result['alerts']:
+            key = item.get('key')
+            if not isinstance(key, str):
+                continue
+            match = re.fullmatch(r'(extract:)([0-9a-f]{64}):[a-z0-9_,-]+', key)
+            if match:
+                keys.add(match.group(1) + match.group(2)[:12])
+                continue
+            match = re.fullmatch(r'(run:lease_recovered:)([0-9a-f]{64}):([a-z_]+)', key)
+            if match and match.group(3) in stages.STAGES:
+                keys.add((match.group(1) + match.group(2)[:12])[:24])
+        out.append(alert('records', 'ledger-alert-open', 'info', len(result['alerts']), keys=sorted(keys)))
     return out
 
 
