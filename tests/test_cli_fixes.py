@@ -75,6 +75,11 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
     ), "kit-followup message that already names the option or the request state that stops the draft; not in the table"),
     "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
     "must be 0-5": "argparse keep-count message; already names the range",
+    **dict.fromkeys((
+        "5: --out is a symlink; choose a real private folder outside public/ and content/",
+        "5: --out is inside 5/; choose a private folder outside public/ and content/",
+        "5: must be a real folder, not a symlink or a file", "finding preview needs content/ (run content init first)",
+    ), "finding preview message that already names the option or folder to change; not in the table"),
 }
 
 
