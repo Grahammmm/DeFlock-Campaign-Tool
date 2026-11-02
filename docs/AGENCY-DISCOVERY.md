@@ -119,6 +119,11 @@ key keeps that placeholder and its `next_steps` line, and `summary.json` reports
 Any other key or a bad value stops `kit` before a draft is written, naming the key but never the value.
 Edited drafts are still kept, with the fresh draft in `requests.suggested/`.
 
+`kit --scope agreements --scope policies` drafts only those law-package `request_scopes` (package order,
+duplicates ignored) and lists only the rules they cite; `summary.json` reports `scopes` (`"all"` without the flag).
+An unknown scope id, or `--scope` with no law package, stops `kit` before anything is written. Switching scopes
+refreshes unedited drafts; edited ones are kept, with the fresh draft in `requests.suggested/`.
+
 ## What organizers must verify before sending
 
 The kit is a starting point, not a mailing list. Before any request leaves:

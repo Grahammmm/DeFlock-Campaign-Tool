@@ -338,11 +338,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root, contact_max_age_days=None):
-    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
+def doctor(root, contact_max_age_days=None, stale_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days, stale_days), indent=2))
 
 
-def doctor_report(root, contact_max_age_days=None):
+def doctor_report(root, contact_max_age_days=None, stale_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -368,6 +368,12 @@ def doctor_report(root, contact_max_age_days=None):
     if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
         report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
         report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
+    if stale_days is not None:
+        from .freshness import stale_inputs
+        found = stale_inputs(root, cfg, stale_days)
+        report.update(stale_inputs=found[:100], **({"stale_inputs_more": len(found) - 100} if found[100:] else {}))
+        if names := sorted({e["input"] for e in found if e["status"] != "absent"}):
+            report["next_actions"].append("Refresh stale inputs: " + ", ".join(names))
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
@@ -391,7 +397,7 @@ def doctor_report(root, contact_max_age_days=None):
 
 def kit(args, root):
     from .kit import build_kit
-    summary = build_kit(root, online=args.online, include=args.include)
+    summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
@@ -579,8 +585,14 @@ def main():
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
                              help="chmod loose private dirs/files to 0700/0600, then run --check")
+            cmd.add_argument("--list", action="store_true", help="List ingested receipts with 12-char hash prefixes")
+            cmd.add_argument("--source-id", help="With --list: only receipts with this exact source_id")
+            cmd.add_argument("--since", help="With --list: received on/after YYYY-MM-DD or an ISO timestamp with offset")
+            cmd.add_argument("--not-in-sources", action="store_true",
+                             help="With --list: only objects not registered in content/sources.json")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
+            cmd.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
             cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
@@ -590,6 +602,7 @@ def main():
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
+    kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
                         ).add_argument("--directory", required=True)
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
@@ -745,6 +758,8 @@ def main():
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
+    if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
+        parser.error("--stale-days must be 1 to 3650")
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
     if args.command in ("verify", "backup-drill", "backup-list"):
@@ -884,19 +899,23 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
+            read_config(root)
+            from .ledger_list import run_cli as list_cli
+            print(json.dumps(list_cli(args, root), indent=2))
         elif args.command == "kit-followup":
             from .kit_track import followup
             print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
-            print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,
+            print(render(doctor_report(root, args.contact_max_age_days, args.stale_days), args.directory, as_json=args.json,
                          agency_list_exists=(root / "kit" / "agencies.json").is_file()))
         else:
             if args.command == "status":
                 status(root, check=args.check, fix=args.fix_modes)
             else:
-                doctor(root, args.contact_max_age_days)
+                doctor(root, args.contact_max_age_days, args.stale_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(1)
