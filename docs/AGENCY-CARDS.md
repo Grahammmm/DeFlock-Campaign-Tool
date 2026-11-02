@@ -17,6 +17,8 @@ The county profile uses the existing name/vendor/status/summary/cameraCount/fact
 open/flags fields. Source destinations must be local HTML filenames and safe
 fragment slugs. Explicit alias mappings handle a group's differently named source
 section without hard-coding a jurisdiction in the engine.
+A city's empty `cameraCount` is filled by the site build with a computed "N community-mapped points inside city
+limits; ownership unconfirmed" label when the campaign has a map (docs/SITE-CONTENT.md); a typed value is kept.
 `agency_cards.problems(config)` lists every problem at once (sorted, dotted field names such as `county_profile.vendor`, never a value); `render` raises them joined by `; `.
 
 **Check a config.** `python3 -m campaign_tool.agency_cards --check cards.json` (≤ 2 MB UTF-8 JSON object;
