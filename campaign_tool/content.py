@@ -1012,11 +1012,12 @@ def load_content(root, today=None):
     labels_path = content_dir / "labels.json"  # optional; a symlink is refused by _read_json
     labels = (load_labels(_read_json(labels_path, MAX_LABELS_BYTES))
               if labels_path.is_file() or labels_path.is_symlink() else dict(DEFAULTS))
+    redirects_path = content_dir / "redirects.json"
     officials_path = content_dir / "officials.json"  # optional; a symlink is refused by _read_json
     officials = (load_officials(_read_json(officials_path), agencies, today or date.today())
                  if officials_path.is_file() or officials_path.is_symlink() else {})
 
-    return {
+    model = {
         "site": site,
         "findings": findings,
         "pages": load_pages(content_dir, slugs),
@@ -1030,3 +1031,8 @@ def load_content(root, today=None):
         "labels": labels,
         "officials": officials,
     }
+    # content/redirects.json (DF2037-16): the key is present exactly when the file is, so a parsed JSON null is still
+    # checked (and refused) by site against the pages it writes; without the file there is no key.
+    if redirects_path.is_file() or redirects_path.is_symlink():
+        model["redirects"] = _read_json(redirects_path)
+    return model
