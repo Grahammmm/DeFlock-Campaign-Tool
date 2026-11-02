@@ -379,6 +379,13 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
+    from .correction_requests import open_overdue
+    try:
+        if (overdue := open_overdue(root, date.today())) is not None:
+            report["correction_requests_open_over_14_days"] = len(overdue)
+            report["next_actions"] += [f"Decide correction requests open over 14 days: id {', '.join(map(str, overdue))}"] * bool(overdue)
+    except ValueError as exc:
+        report["correction_requests_error"] = str(exc)
     from .content import ContentError, load_content
     try:
         model = load_content(root)
@@ -737,6 +744,12 @@ def main():
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
     check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
+    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt or an unsent .eml; "
+                                 "sends nothing")
+    for flag in ("--directory", "--agency"):
+        copy_p.add_argument(flag, required=True)
+    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email"))
+    copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -858,6 +871,16 @@ def main():
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
     diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
+    cr_cmds = commands.add_parser("correction-request", help="Private log of correction requests and their decisions "
+                                  "(nothing is sent or published)").add_subparsers(dest="cr_command", required=True)
+    cr_add, cr_decide = cr_cmds.add_parser("add"), cr_cmds.add_parser("decide")
+    for flag in ("--finding", "--received", "--summary", "--directory"):
+        cr_add.add_argument(flag, required=True)
+    cr_decide.add_argument("decision", choices=("accepted", "declined"))
+    cr_decide.add_argument("--id", type=int, required=True)
+    for flag in ("--on", "--note", "--directory"):
+        cr_decide.add_argument(flag, required=True)
+    cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1014,6 +1037,17 @@ def main():
                 return
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
+        elif args.command == "correction-request":
+            from . import correction_requests as cr
+            read_config(root)
+            try:
+                result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
+                          cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
+                          else cr.list_requests(root))
+            except ValueError as exc:
+                fixes.emit(exc)
+                sys.exit(3)
+            print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root)
@@ -1047,6 +1081,9 @@ def main():
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
+        elif args.command == "kit-copy":
+            from .kit_copy import run_cli as kit_copy_cli
+            kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))

@@ -171,6 +171,13 @@ verified` (no `verified: true`; see `kit-verify-agency`), then `N of M drafts ne
 exits 3 when any draft needs attention. A Markdown link `[text](url)` is not a placeholder. `kit-sent` runs the same
 check for its agency and refuses a draft that still fails it.
 
+To copy a draft out, `kit-copy --directory D --agency ID --for portal|email [--json]` writes only the sendable part,
+the Subject line and the request text after it, to `kit/outgoing/ID.txt` (with its `characters` count, to compare a
+portal's limit) or an unsent `kit/outgoing/ID.eml` addressed to the verified `records_email` (no From or Date; your
+mail client adds them). The banner, `To:`/`Agency:` lines, `Statutory context` and `Operator checklist` are left out:
+they are notes for you, not for the agency. Unfilled `[placeholders]` in that part, or (email) no verified address,
+stop with exit 3. Nothing is sent and `kit/sent.json` is untouched; record the send yourself with `kit-sent`.
+
 After you send a draft yourself, record it (nothing is sent by the tool):
 
     python3 -m campaign_tool kit-sent --directory ../my-campaign --agency ca-example-police --date 2026-10-01 --channel email
