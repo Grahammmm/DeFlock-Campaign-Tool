@@ -155,6 +155,22 @@ def time_tag(value):
     return f'<time datetime="{e(value)}">{e(value)}</time>'
 
 
+OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
+                  "amended": "Approved with amendments", "no_action": "No action taken",
+                  "informational": "Informational item only"}
+
+
+def meeting_outcome_html(meeting):
+    """The organizer-verified outcome line (DF2237-11); "" when none was recorded."""
+    outcome = meeting.get("outcome")
+    if not outcome:
+        return ""
+    vote = f' ({e(outcome["vote"])})' if outcome.get("vote") else ""
+    return (f'<p class="meeting-outcome">Outcome: {e(OUTCOME_LABELS[outcome["result"]])} on {time_tag(outcome["on"])}{vote}'
+            f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">Official record</a>'
+            f' · verified by {e(outcome["verified_by"])}</p>')
+
+
 def _day(value):
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
@@ -344,6 +360,7 @@ class Site:
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
+        item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
         kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
@@ -648,6 +665,7 @@ class Site:
                 f'<p><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time></p>'
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
+                + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')

@@ -642,6 +642,11 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
+    for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
+        outcome_p.add_argument(flag, required=True)
+    outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
+    outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
                         ).add_argument("--directory", required=True)
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
@@ -746,6 +751,12 @@ def main():
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
+    diff_p = finding_cmds.add_parser("diff", help="Field-level diff of public fields: ID --from DRAFT, or OLD NEW "
+                                     "(read-only; exit 3 when they differ)")
+    diff_p.add_argument("inputs", nargs="+", metavar="ID | OLD NEW")
+    diff_p.add_argument("--directory", required=True)
+    diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
+    diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -753,6 +764,8 @@ def main():
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
+    if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
+        diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -811,6 +824,11 @@ def main():
                                         replace=args.replace, allow_past=args.allow_past)))
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "meetings-outcome":
+            from .meeting_outcome import record_outcome
+            print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
+                                            args.vote, args.replace), indent=2))
+            print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -825,6 +843,9 @@ def main():
                              edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
                                          public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
             print("Nothing was published.")
+        elif args.command == "finding" and args.finding_command == "diff":
+            from .finding_diff import run_cli as diff_cli
+            sys.exit(diff_cli(root, args.inputs, args.from_draft, args.as_json))
         elif args.command == "finding" and args.finding_command == "reviewers":
             from . import findings
             read_config(root)
