@@ -138,12 +138,94 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice"}
+             "font_family", "not_legal_advice", "brand"}
+BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
+HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
+ASSET_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")  # site._asset_plan's plain-name rule
+TEXT_BACKGROUNDS = {"cream": "#fff8ec", "paper": "#f3eee4"}  # styles.css.tmpl --cream / --paper
+BRAND_CONTRAST = (("ink", ("cream", "paper")), ("accent", ("cream",)))  # the text pairs the stylesheet uses
+MIN_CONTRAST, LOGO_MAX_SIDE = 4.5, 2000
+NO_SVG = "SVG files need the SVG safety check (DF2037-03), which this build does not have; use PNG or WebP"
 PROFILE_KEYS = {"vendor", "status", "summary", "cameraCount", "facts", "open", "flags"}
 SIGNUP_KEYS = {"mode", "form_html_allowlisted_url", "label", "note"}
 
 
-def load_site(document):
+def _luminance(colour):
+    channels = [int(colour[at:at + 2], 16) / 255 for at in (1, 3, 5)]
+    red, green, blue = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def contrast(first, second):
+    """WCAG 2.x contrast ratio of two ``#rrggbb`` colours (1.0 to 21.0)."""
+    light, dark = sorted((_luminance(first), _luminance(second)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def _brand_asset(value, assets_dir, label, suffixes):
+    """(width, height) of a PNG/WebP public asset (None for .ico or without ``assets_dir``); the value is never shown."""
+    from . import image_meta  # local: image_meta imports this module
+    parts = value.split("/") if isinstance(value, str) else []
+    if not parts or len(parts) > 8 or any(not ASSET_PART.fullmatch(part) for part in parts):
+        raise ContentError(f"{label}: use a plain file name inside content/public-assets/")
+    suffix = Path(value).suffix.lower()
+    if suffix == ".svg":
+        raise ContentError(f"{label}: {NO_SVG}")
+    if suffix not in suffixes:
+        raise ContentError(f"{label}: use a {' or '.join(suffixes)} file")
+    if assets_dir is None:  # callers that render no page (meeting packs) check everything but the file
+        return None
+    chain = [Path(assets_dir).joinpath(*parts[:depth]) for depth in range(len(parts) + 1)]
+    if any(step.is_symlink() for step in chain):
+        raise ContentError(f"{label}: is or sits under a symlink; use a regular file in content/public-assets/")
+    path = chain[-1]
+    if not path.is_file() or path.stat().st_size > image_meta.MAX_BYTES:
+        raise ContentError(f"{label}: file not found in content/public-assets/ or over 5 MiB")
+    if suffix not in image_meta.FORMATS:
+        return None
+    data = path.read_bytes()
+    kinds, size = image_meta.metadata_kinds(data, suffix), image_meta.image_size(data, suffix)
+    if kinds and kinds != [image_meta.UNREADABLE]:
+        raise ContentError(f"{label}: image metadata ({', '.join(kinds)}); run content strip-metadata")
+    if kinds or size is None:
+        raise ContentError(f"{label}: {image_meta.UNREADABLE} (no readable width and height)")
+    return size
+
+
+def load_brand(value, assets_dir=None):
+    """site.json.brand: optional logo (+ required logo_alt), accent/ink colours and favicon; refusals name the field."""
+    label = "site.json.brand"
+    _require_keys(value, BRAND_KEYS, set(), label)
+    brand = {}
+    for key in ("accent", "ink"):
+        if key in value:
+            if not isinstance(value[key], str) or not HEX_COLOUR.fullmatch(value[key]):
+                raise ContentError(f"{label}.{key}: use a #rrggbb hex colour")
+            brand[key] = value[key].lower()
+    for key, backgrounds in BRAND_CONTRAST:
+        for name in backgrounds if key in brand else ():
+            ratio = contrast(brand[key], TEXT_BACKGROUNDS[name])
+            if ratio < MIN_CONTRAST:  # shown rounded down, so a refused ratio never prints as 4.50
+                raise ContentError(f"{label}.{key}: contrast {int(ratio * 100) / 100:.2f}:1 against {name} "
+                                   f"({TEXT_BACKGROUNDS[name]}); needs {MIN_CONTRAST}:1")
+    if "logo_alt" in value and "logo" not in value:
+        raise ContentError(f"{label}.logo_alt: set only together with logo")
+    if "logo" in value:
+        alt = value.get("logo_alt")
+        if not plain_text(alt) or not alt.strip() or len(alt) > 120:
+            raise ContentError(f"{label}.logo_alt: required with logo, 1-120 characters of plain text")
+        size = _brand_asset(value["logo"], assets_dir, f"{label}.logo", (".png", ".webp"))
+        if size and not all(1 <= side <= LOGO_MAX_SIDE for side in size):
+            raise ContentError(f"{label}.logo: {size[0]}x{size[1]} px; each side must be 1-{LOGO_MAX_SIDE} px")
+        brand.update(logo=value["logo"], logo_alt=alt, logo_size=size)
+    if "favicon" in value:
+        _brand_asset(value["favicon"], assets_dir, f"{label}.favicon", (".ico", ".png"))
+        brand["favicon"] = value["favicon"]
+    return brand
+
+
+def load_site(document, assets_dir=None):
+    """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ContentError("site.json: unsupported schema_version")
@@ -205,6 +287,7 @@ def load_site(document):
                                   default="This is not legal advice. Findings describe records and "
                                           "published rules as of the event date; consult counsel "
                                           "before relying on them."),
+        **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
     }
 
 
@@ -769,7 +852,7 @@ def load_map(content_dir):
 # --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
-                                       "agency-cards", "app", "data", "vendor", "meetings"}  # generated top-level names
+                                       "agency-cards", "app", "data", "vendor", "meetings", "methods"}  # generated top-level names
 
 
 def _page_string(document, key, label, limit, required):
@@ -820,7 +903,7 @@ def load_content(root):
     site_path = content_dir / "site.json"
     if not site_path.is_file():
         raise ContentError("content/site.json is required when content/ exists")
-    site = load_site(_read_json(site_path))
+    site = load_site(_read_json(site_path), content_dir / "public-assets")
 
     findings, slugs, ids = [], set(), set()
     for path in sorted((content_dir / "findings").glob("*.json")) if (content_dir / "findings").is_dir() else []:

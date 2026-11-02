@@ -59,6 +59,10 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
 - One explicit state per request and email run: `python3 tools/flock_state.py state <store dir> [--json]` prints
   `state | request|run | <slug> | <id or date> | state=<s> | basis=<fields>` lines, then totals. Fields only; never a legal
   status: free text (evidence, a draft body, a `Sent by:` sentence) never changes a state. Exit 1 on any record or run problem.
+- What moved since a saved snapshot: `python3 tools/flock_state.py diff <old.json> <new.json> [--json]` reads two saved
+  `state --json` outputs and prints `diff | request|run | <slug> | <id or date> | <old> -> <new>` (or `new: <s>` / `gone (was <s>)`),
+  then `changed= new= gone= unmatched=` and the totals that moved. Masked labels are counted, never paired; a basis change alone
+  is not a change. Exit 0 nothing changed, 3 something changed, 1 a snapshot is not flock-state-v1 (names side and field only).
 
 ## Open
 

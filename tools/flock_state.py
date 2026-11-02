@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 """Flock state (BF-df-status-fields): one explicit state per request and per email run, from recorded fields only.
   flock_state.py state STORE [--json]    STORE is a private folder outside the repository
+  flock_state.py diff OLD.json NEW.json [--json]    two saved `state --json` snapshots: what is new, gone or moved
 Request states come from REQUESTS.csv cells (flock_requests.load decides what is an error); run states come from flock_email's
 stage with flock_approve's signature check. Free text (evidence, a draft body, a `Sent by:` sentence) never changes a state.
 Prints and reads only. Fields only; not a legal status; the canonical ledger wins. JSON schema flock-state-v1 is review_required.
 Exit 0 clean; 1 on any record-error, run-malformed, run-inconsistent, approval-unverified (also an approved draft edited
-afterwards), sent-unverified, link-refused, unmapped stage or store refusal (flock_email status's fail-closed convention); 2 usage."""
+afterwards), sent-unverified, link-refused, unmapped stage or store refusal (flock_email status's fail-closed convention); 2 usage.
+diff checks both snapshots against the v1 shape and vocabularies (the first failure names its side and field path, never a
+value) and prints one line per request or run that is new, gone or changed state, then a totals delta. Rows masked as
+(unsafe-label) or `row N`, and requests with no id (-), cannot be matched and are only counted (unmatched=K). A basis change
+with the same state is not a change. JSON schema flock-state-diff-v1 is review_required. Exit 0 nothing changed; 3 something
+changed (a change line or a totals delta); 1 unusable snapshot."""
 import csv
 import collections
 import importlib.util
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -29,7 +37,13 @@ SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 BANNED = re.compile(r"late|overdue|violat|unlawful|illegal|non-complian|breach", re.I)  # no output line may carry these
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 NOTE = "recorded fields only; not a legal status; the canonical ledger wins"
-USAGE = "usage: flock_state.py state STORE [--json]  (one state per request and email run; prints only, writes nothing)"
+USAGE = ("usage: flock_state.py state STORE [--json] | diff OLD.json NEW.json [--json]  (one state per request and email run; "
+         "prints only, writes nothing)")
+SNAP_MAX = 5 * 1024 * 1024
+SNAP_KEYS = {"schema", "review_required", "requests", "runs", "totals", "errors"}
+SNAP_ROWS = (("requests", "request", "request_id", REQUEST_STATES, {"agency", "request_id", "state", "basis"}),
+             ("runs", "run", "run", RUN_STATES, {"agency", "run", "state"}))
+ROW_N = re.compile(r"row [0-9]+")
 
 
 class Refuse(Exception): pass
@@ -154,9 +168,88 @@ def render(reqs, runs, as_json):
     return 1 if errors else 0
 
 
+def load_snapshot(path, side):
+    """[(kind, agency, id, state, matchable)] from one saved `state --json` document; refusals name a field path, never a value."""
+    try:
+        if Path(path).is_symlink():
+            raise Refuse("snapshot must not be a link (%s)" % side)
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                raise Refuse("snapshot is not a file (%s)" % side)
+            raw = fh.read(SNAP_MAX + 1)
+        if len(raw) > SNAP_MAX:
+            raise Refuse("snapshot is over 5 MiB (%s)" % side)
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        raise Refuse("snapshot unreadable (%s)" % side) from None
+    bad = lambda where, what: Refuse("%s %s (%s)" % (where, what, side))
+    if not isinstance(data, dict) or set(data) != SNAP_KEYS:
+        raise bad("snapshot", "keys are not flock-state-v1")
+    if data["schema"] != "flock-state-v1":
+        raise bad("schema", "is not flock-state-v1")
+    if data["review_required"] is not True:
+        raise bad("review_required", "is not true")
+    out, seen = [], set()
+    for field, kind, key, vocab, keys in SNAP_ROWS:
+        if not isinstance(data[field], list):
+            raise bad(field, "is not a list")
+        for n, r in enumerate(data[field]):
+            at = "%s[%d]" % (field, n)
+            if not isinstance(r, dict) or set(r) != keys:
+                raise bad(at, "keys are not v1")
+            if not isinstance(r["state"], str) or r["state"] not in vocab:
+                raise bad(at + ".state", "is not in the vocabulary")
+            if kind == "request" and not (isinstance(r["basis"], list) and all(isinstance(b, str) for b in r["basis"])):
+                raise bad(at + ".basis", "is not a list of field names")
+            for k in ("agency", key):  # exactly what label() prints, or one of the masks state itself writes
+                if not (isinstance(r[k], str) and (label(r[k]) == r[k] or r[k] == "-" or ROW_N.fullmatch(r[k]))):
+                    raise bad(at + "." + k, "is not a plain label")
+            ident = (kind, r["agency"], r[key])
+            matchable = "(unsafe-label)" not in ident and not ROW_N.fullmatch(r[key]) and ident[::2] != ("request", "-")  # no id
+            if matchable and ident in seen:
+                raise bad(at, "repeats an (agency, %s) pair" % key)
+            seen.add(ident)
+            out.append(ident + (r["state"], matchable))
+    return out
+
+
+def diff(old, new):
+    """(changes [(kind, agency, id, old state|None, new state|None)], totals delta {state: (old, new)}, unmatched count)."""
+    a, b = ({r[:3]: r[3] for r in rows if r[4]} for rows in (old, new))
+    changes = [k + (a.get(k), b.get(k)) for k in sorted(a.keys() | b.keys()) if a.get(k) != b.get(k)]
+    count = [collections.Counter(r[3] for r in rows) for rows in (old, new)]
+    delta = {s: (count[0][s], count[1][s]) for s in REQUEST_STATES + RUN_STATES if count[0][s] != count[1][s]}
+    return changes, delta, sum(not r[4] for r in old + new)
+
+
+def render_diff(old, new, as_json):
+    changes, delta, unmatched = diff(old, new)
+    if as_json:
+        print(json.dumps({"schema": "flock-state-diff-v1", "review_required": True,
+                          "changes": [{"kind": k, "agency": a, "id": i, "old": o, "new": n} for k, a, i, o, n in changes],
+                          "totals_delta": {s: {"old": o, "new": n} for s, (o, n) in delta.items()}, "unmatched": unmatched},
+                         ensure_ascii=True))
+    else:
+        what = lambda o, n: "new: " + n if o is None else "gone (was %s)" % o if n is None else "%s -> %s" % (o, n)
+        lines = ["diff | %s | %s | %s | %s" % (k, a, i, what(o, n)) for k, a, i, o, n in changes]
+        moved = (sum(o is not None and n is not None for *_, o, n in changes), sum(o is None for *_, o, n in changes),
+                 sum(n is None for *_, o, n in changes), unmatched)
+        lines.append("diff | changed=%d new=%d gone=%d unmatched=%d | totals: %s | recorded fields only; not a legal status" % (
+            moved + (" ".join("%s=%d->%d" % (s, o, n) for s, (o, n) in delta.items()) or "none",)))
+        print("\n".join(lines))
+    return 3 if changes or delta else 0
+
+
 def main(argv):
     if argv in (["--help"], ["-h"]):
         return print(USAGE) or 0
+    if argv[:1] == ["diff"]:
+        if not (len(argv) in (3, 4) and argv[3:] in ([], ["--json"]) and not any(p.startswith("-") for p in argv[1:3])):
+            return print(USAGE, file=sys.stderr) or 2
+        try:
+            return render_diff(load_snapshot(argv[1], "OLD"), load_snapshot(argv[2], "NEW"), argv[3:] == ["--json"])
+        except Refuse as exc:
+            return print("diff: " + str(exc), file=sys.stderr) or 1
     if not (len(argv) in (2, 3) and argv[0] == "state" and argv[2:] in ([], ["--json"])):
         return print(USAGE, file=sys.stderr) or 2
     try:
