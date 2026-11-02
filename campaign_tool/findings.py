@@ -51,49 +51,54 @@ def _no_constant(name):
     raise ValueError(name)
 
 
+class _PathError(ValueError):
+    """A refusal whose text is only a path and a fixed reason, never file content: `finding status` shows these
+    verbatim and withholds every other ValueError text (an unknown key, for one, quotes the file)."""
+
+
 def _read_json(path, limit, what, raw=False):
     """Parse one regular, non-symlink file (``raw``: return its UTF-8 text); errors name the path, never its content."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
         if os.path.islink(path):
-            raise ValueError(f"{path}: {what} is a symlink; refusing to follow it") from None
-        raise ValueError(f"{path}: cannot open {what} ({exc.strerror})") from None
+            raise _PathError(f"{path}: {what} is a symlink; refusing to follow it") from None
+        raise _PathError(f"{path}: cannot open {what} ({exc.strerror})") from None
     if not stat.S_ISREG(os.fstat(fd).st_mode):  # checked before fdopen, which refuses a directory itself
         os.close(fd)
-        raise ValueError(f"{path}: {what} is not a regular file")
+        raise _PathError(f"{path}: {what} is not a regular file")
     with os.fdopen(fd, "rb") as handle:
         data = handle.read(limit + 1)
     if len(data) > limit:
-        raise ValueError(f"{path}: {what} is larger than {limit} bytes")
+        raise _PathError(f"{path}: {what} is larger than {limit} bytes")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        raise ValueError(f"{path}: {what} is not UTF-8") from None
+        raise _PathError(f"{path}: {what} is not UTF-8") from None
     if raw:
         return text
     try:
         return json.loads(text, parse_constant=_no_constant)
     except (ValueError, RecursionError):
-        raise ValueError(f"{path}: {what} is not valid JSON") from None
+        raise _PathError(f"{path}: {what} is not valid JSON") from None
 
 
 def load_draft(path):
     draft = _read_json(path, MAX_DRAFT_BYTES, "draft")
     if not isinstance(draft, dict):
-        raise ValueError(f"{path}: draft must be a JSON object")
+        raise _PathError(f"{path}: draft must be a JSON object")
     unknown = sorted(set(draft) - FINDING_KEYS)
     if unknown:
         raise ValueError(f"{path}: unknown key {unknown[0]!r}")
     if not isinstance(draft.get("id"), str) or not _ID.fullmatch(draft["id"]):
-        raise ValueError(f"{path}: key 'id' must match [A-Za-z0-9_-]{{1,64}}")
+        raise _PathError(f"{path}: key 'id' must match [A-Za-z0-9_-]{{1,64}}")
     return draft
 
 
 def _receipts_path(root, draft):
     for folder in (root / "private", root / "private" / "reviews"):
         if os.path.lexists(folder) and (os.path.islink(folder) or not os.path.isdir(folder)):
-            raise ValueError(f"{folder}: must be a real directory, not a symlink or a file")
+            raise _PathError(f"{folder}: must be a real directory, not a symlink or a file")
     return root / "private" / "reviews" / (draft["id"] + ".json")
 
 
@@ -102,7 +107,7 @@ def _load_receipts(path):
         return []
     receipts = _read_json(path, MAX_RECEIPTS_BYTES, "receipt file")
     if not isinstance(receipts, list):
-        raise ValueError(f"{path}: receipt file must be a JSON list")
+        raise _PathError(f"{path}: receipt file must be a JSON list")
     return receipts
 
 
@@ -389,7 +394,7 @@ def list_reviewers(root):
 def _real_dir(path):
     """True for a real directory, False when absent; a symlink or a file refuses."""
     if os.path.lexists(path) and (os.path.islink(path) or not os.path.isdir(path)):
-        raise ValueError(f"{path}: must be a real directory, not a symlink or a file")
+        raise _PathError(f"{path}: must be a real directory, not a symlink or a file")
     return os.path.isdir(path)
 
 
@@ -479,7 +484,7 @@ _EMPTY_ROW = {"id": None, "slug": None, "state": "unreadable", "receipts_current
 
 def _identified(document, path, what):
     if not isinstance(document, dict) or not isinstance(document.get("id"), str) or not _ID.fullmatch(document["id"]):
-        raise ValueError(f"{path}: {what} must be a JSON object whose 'id' matches [A-Za-z0-9_-]{{1,64}}")
+        raise _PathError(f"{path}: {what} must be a JSON object whose 'id' matches [A-Za-z0-9_-]{{1,64}}")
     return document
 
 
@@ -505,11 +510,14 @@ def status_rows(root, extra_drafts=()):
     ``extra_drafts``). An unreadable file or folder is an ``unreadable`` row naming its path, never a crash or a skip."""
     rows, found = [], {"published finding": [], "withdrawn finding": []}
 
-    def attempt(path, build):
+    def attempt(path, build, what="file"):
         try:
             return build()
-        except ValueError as exc:
+        except _PathError as exc:  # a path and a fixed reason only
             rows.append(dict(_EMPTY_ROW, path=str(path), error=str(exc)))
+        except ValueError:  # other texts can quote the file (an unknown key, a field value): withheld
+            rows.append(dict(_EMPTY_ROW, path=str(path), error=f"{path}: {what} is not valid "
+                             "(reason withheld because it can quote the file; check the file itself)"))
 
     def files(folder):
         return attempt(folder, lambda: sorted(folder.glob("*.json")) if _real_dir(folder) else []) or []
@@ -517,7 +525,7 @@ def status_rows(root, extra_drafts=()):
     for what, folder in (("published finding", root / "content" / "findings"),
                          ("withdrawn finding", root / "private" / "withdrawn")):
         for path in files(folder):
-            document = attempt(path, lambda: _identified(_read_json(path, MAX_DRAFT_BYTES, what), path, what))
+            document = attempt(path, lambda: _identified(_read_json(path, MAX_DRAFT_BYTES, what), path, what), what)
             if document is not None:
                 found[what].append((path, document))
     withdrawn_ids, leftovers, live_ids = {d["id"] for _, d in found["withdrawn finding"]}, {}, set()
@@ -527,11 +535,12 @@ def status_rows(root, extra_drafts=()):
             continue
         live_ids.add(document["id"])
         state = "corrected" if isinstance(document.get("corrections"), list) and document["corrections"] else "published"
-        rows.extend(attempt(path, lambda: [_status_row(root, document, state)]) or [])
+        rows.extend(attempt(path, lambda: [_status_row(root, document, state)], "published finding") or [])
     for path, document in found["withdrawn finding"]:
         extra = {"leftover": leftovers.pop(document["id"])} if document["id"] in leftovers else {}
         bare = {k: v for k, v in document.items() if k != "withdrawn"}  # receipts bind to the text without it
-        rows.extend(attempt(path, lambda: [dict(_status_row(root, bare, "withdrawn"), **extra)]) or [])
+        rows.extend(attempt(path, lambda: [dict(_status_row(root, bare, "withdrawn"), **extra)], "withdrawn finding")
+                    or [])
     seen = set()
     for path in files(root / "private" / "drafts") + list(extra_drafts):
         if os.path.abspath(path) in seen:
@@ -543,7 +552,7 @@ def status_rows(root, extra_drafts=()):
             row["state"] = ("withdrawn" if row["id"] in withdrawn_ids else
                             "pending correction" if row["id"] in live_ids else row["state"])
             return [row]
-        rows.extend(attempt(path, draft_row) or [])
+        rows.extend(attempt(path, draft_row, "draft") or [])
     return sorted(rows, key=lambda r: (STATUS_ORDER.index(r["state"]), r["id"] or "", r.get("path", "")))
 
 

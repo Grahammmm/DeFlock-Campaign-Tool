@@ -149,6 +149,23 @@ class FindingStatusTests(unittest.TestCase):
                          [r for r in baseline if r["id"] != "st-ready"])
         self.assertIn("unreadable " + str(self.drafts / "broken.json"), self.status())  # exit 0 checked by cli()
 
+    def test_unknown_key_text_is_withheld_not_quoted(self):
+        secret = "Private reviewer note: Rev Three doubts page four"
+        document = dict(draft(id="st-leak", slug="st-leak"), **{secret: "Unpublished rationale text."})
+        (self.drafts / "st-leak.json").write_text(json.dumps(document), encoding="utf-8")
+        baseline = self.rows()
+        [bad] = [r for r in baseline if r["state"] == "unreadable"]
+        path = str(self.drafts / "st-leak.json")
+        self.assertEqual(bad["path"], path)
+        self.assertEqual(bad["error"], path + ": draft is not valid (reason withheld because it can quote the file; "
+                                              "check the file itself)")
+        with self.assertRaisesRegex(ValueError, "unknown key"):
+            findings.load_draft(self.drafts / "st-leak.json")  # the withheld reason is real
+        for text in (self.status("--json"), self.status()):
+            for hidden in (secret, "Rev Three", "page four", "Unpublished rationale"):
+                self.assertNotIn(hidden, text)
+        self.assertEqual({r["id"]: (r["state"], r["blockers"]) for r in baseline if r["id"]}, EXPECTED)
+
     def test_symlinked_drafts_folder_is_one_unreadable_row(self):
         os.rename(self.drafts, self.base / "real-drafts")
         self.drafts.symlink_to(self.base / "real-drafts", target_is_directory=True)

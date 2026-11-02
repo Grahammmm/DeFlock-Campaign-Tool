@@ -103,7 +103,8 @@ If the content file cannot be removed both copies remain and the leftover is nam
 `D/private/drafts/*.json` (one level, symlinks not followed) and `--draft PATH`, every `content/findings/` file and every
 `private/withdrawn/` copy, with the states above applied to these files, current/stale receipt counts and blocker names
 (never reviewer names, rationales or notes). A draft whose id is published is a second `pending correction` row; a withdrawn
-id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path. Exit 0.
+id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
+(not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
 
 ## Propose, approve, execute
 
