@@ -20,7 +20,7 @@ from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, camera_counts, finding_law, law, map_controller
+from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
 from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
@@ -65,7 +65,8 @@ PUBLIC_CORRECTION_FIELDS = ("date", "note")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
 # data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
 PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages",
-                         "cited_by")
+                         "cited_by", "public_copy")
+PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
@@ -176,6 +177,23 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augus
           "November", "December")
 
 
+COPY_DIFFERS = {"redacted": "redacted copy", "converted": "converted copy", "unknown": "reason unknown"}
+COPY_HOWTO = ('<p class="copy-howto" id="check-a-copy"><strong>How to check a copy:</strong> download the public copy and '
+              'compute its SHA-256 with <code>sha256sum FILE</code> (Linux), <code>shasum -a 256 FILE</code> (macOS) or '
+              '<code>Get-FileHash FILE</code> (Windows PowerShell). If the result starts with the record number, it is '
+              'the same file.</p>')
+
+
+def copy_status(source):
+    """' · Public copy checked D: same file as this record number' (DF2037-05); "" when no check is recorded."""
+    check = (source or {}).get("public_copy")
+    if not check or not source.get("public_url"):
+        return ""
+    verdict = ("same file as this record number" if check["matches"]
+               else f'differs ({COPY_DIFFERS[check["reason"]]})')
+    return f' · <span class="copy-check">Public copy checked {time_tag(check["checked_on"])}: {verdict}</span>'
+
+
 def meeting_outcome_html(meeting):
     """The organizer-verified outcome line (DF2237-11); "" when none was recorded."""
     outcome = meeting.get("outcome")
@@ -234,6 +252,14 @@ class Site:
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
         self.labels = model.get("labels") or DEFAULTS  # content/labels.json merged over the English defaults
+        # DF1822-13: "/<relative>" -> (width, height) of each readable PNG/JPEG/WebP public asset, for markdown images.
+        self.image_sizes = {}
+        for source in model.get("public_assets", ()):
+            if (source.suffix.lower() in image_meta.FORMATS and not source.is_symlink() and source.is_file()
+                    and source.stat().st_size <= ASSET_MAX_BYTES):
+                size = image_meta.image_size(source.read_bytes(), source.suffix)
+                if size:
+                    self.image_sizes["/" + source.relative_to(model["assets_dir"]).as_posix()] = size
         # Legal basis (DF1507-02): the package is read once, only when a finding cites a rule.
         self.rule_citations, self.law_status = {}, None
         if any(finding_law.cited(f) for f in model["findings"]):
@@ -250,6 +276,10 @@ class Site:
     def t(self, key, **values):
         """Label ``key`` escaped once; ``values`` are HTML the page already escaped (a name, a <time> tag, a count)."""
         return html_text(self.labels[key]).format(**values)
+
+    def md(self, text):
+        """``markdown_lite`` with this site's public-asset image sizes (own-line ``![alt](/path)`` images render)."""
+        return markdown(text, images=self.image_sizes) if self.image_sizes else markdown(text)
 
     # -- shared frame ------------------------------------------------------
 
@@ -402,7 +432,7 @@ class Site:
         item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
-        kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
+        kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + self.md(meeting["comment_kit_md"]) + '</details>'
                if meeting["comment_kit_md"] else "")
         return (f'<article id="meeting-{e(meeting["id"])}"><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time>'
                 f'{where}{agenda}<h3>{cancelled}{e(meeting["body"])}</h3>{item}{kit}</article>')
@@ -483,7 +513,7 @@ class Site:
     # -- pages ---------------------------------------------------------------
 
     def index_html(self):
-        mission = markdown(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
+        mission = self.md(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
             f'<article><span>0{n}</span><h3>{self.t(f"intro.step{n}_title")}</h3><p>{self.t(f"intro.step{n}")}</p></article>'
             for n in (1, 2, 3)) + '</div>')
         cards = (f'    <section class="section cities-section" id="agencies"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
@@ -600,7 +630,7 @@ class Site:
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
             number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
-            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}</p></li>')
+            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
         agency = self.agencies_by_id.get(finding["agency_id"])
@@ -624,7 +654,7 @@ class Site:
                 f'<span>{self.t("finding.event_date", date=when(finding))}</span>'
                 f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}{updated}</span></div>'
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
-                + (markdown(finding["body_md"]) if finding["body_md"] else "")
+                + (self.md(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
                 + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>' + related
@@ -688,11 +718,13 @@ class Site:
                 cited = (f' · {self.t("sources.cited_by")} ' + ", ".join(f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in citing)
                          if citing else f' · {self.t("sources.not_cited")}')
                 sentence, record = source_line(source, source, self.agencies_by_id.get(source["agency_id"], {}).get("name"))
-                items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}{note}{cited}</p></li>')
+                items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}'
+                             f'{copy_status(source)}{note}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
+        howto = COPY_HOWTO if any(copy_status(s) for s in self.model["sources"]) else ""  # unchanged page without checks
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
                 f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
-                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p></div>'
+                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p>{howto}</div>'
                 + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
@@ -711,7 +743,7 @@ class Site:
         cancelled = meeting.get("status") == "cancelled"
         agenda = (f'<p><a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a></p>'
                   if meeting["agenda_url"] else "")
-        kit = (markdown(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
+        kit = (self.md(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
                else f'<p>{self.t("notice.no_kit")}</p>')
         main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.meeting")}</p>'
                 f'<h2>{self.t("meeting.cancelled") + " " if cancelled else ""}{e(meeting["body"])}</h2>'
@@ -730,7 +762,7 @@ class Site:
         contact = (f'<p>{self.t("footer.contact")} <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
                    if self.site["contact_email"] else "")
         main = (f'    <section class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.about")}</p>'
-                f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
+                f'<h2>{self.name}</h2>{self.md(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
                 '<a href="/data/sources.json" type="application/json">data/sources.json</a>.</p>'
@@ -740,7 +772,7 @@ class Site:
 
     def content_page_html(self, page):
         """``/<slug>.html`` from ``content/pages/<slug>.json`` (DF2237-07); body_md through markdown_lite."""
-        main = (f'    <article class="section finding-body" id="content"><h2>{e(page["title"])}</h2>{markdown(page["body_md"])}'
+        main = (f'    <article class="section finding-body" id="content"><h2>{e(page["title"])}</h2>{self.md(page["body_md"])}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
                          f'/{page["slug"]}.html', main)
@@ -999,14 +1031,16 @@ class Site:
         return {"sha256_prefix": short_hash(source["sha256"]), "title": source["title"], "agency_id": source["agency_id"],
                 "agency_name": agency["name"] if agency else None, "received_at": source["received_at"],
                 "public_url": source["public_url"] or None, "pages": source["pages"],
-                "cited_by": [f["id"] for f in self.cited_by.get(source["sha256"], [])]}
+                "cited_by": [f["id"] for f in self.cited_by.get(source["sha256"], [])],
+                "public_copy": source.get("public_copy") if source["public_url"] else None}
 
     def sources_json(self):
         """``data/sources.json``: the source library as open data; refuses any non-public key or full hash."""
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
-        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL, {"sources": (PUBLIC_LIBRARY_FIELDS, {})})
+        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL,
+                       {"sources": (PUBLIC_LIBRARY_FIELDS, {"public_copy": (PUBLIC_COPY_FIELDS, {})})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 

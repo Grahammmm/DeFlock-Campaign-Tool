@@ -410,7 +410,22 @@ def load_meeting(document, label, today=None):
 
 # --- sources.json ----------------------------------------------------------
 
-LIBRARY_KEYS = {"sha256", "title", "agency_id", "received_at", "public_url", "fragment", "pages", "note"}
+LIBRARY_KEYS = {"sha256", "title", "agency_id", "received_at", "public_url", "fragment", "pages", "note", "public_copy"}
+COPY_REASONS = ("redacted", "converted", "unknown")
+
+
+def _public_copy(entry, label):
+    """Optional organizer check of the linked public copy (DF2037-05): {matches, checked_on, reason iff differing}."""
+    value, label = entry["public_copy"], f"{label}.public_copy"
+    if entry["public_url"] is None:
+        raise ContentError(f"{label}: needs a public_url")
+    _require_keys(value, {"matches", "checked_on", "reason"}, {"matches", "checked_on"}, label)
+    if type(value["matches"]) is not bool:
+        raise ContentError(f"{label}.matches: must be true or false")
+    _timestamp(value["checked_on"], f"{label}.checked_on", date_only=True)
+    if value["matches"] == ("reason" in value) or value.get("reason", "redacted") not in COPY_REASONS:
+        raise ContentError(f"{label}.reason: one of {', '.join(COPY_REASONS)}, present only when matches is false")
+    return {key: value[key] for key in ("matches", "checked_on", "reason") if key in value}
 
 
 def load_sources(document):
@@ -440,6 +455,7 @@ def load_sources(document):
             "fragment": fragment,
             "pages": entry.get("pages") if type(entry.get("pages")) is int and entry.get("pages") >= 0 else None,
             "note": _text(entry, "note", label, default=""),
+            **({"public_copy": _public_copy(entry, label)} if "public_copy" in entry else {}),
         })
     return entries
 

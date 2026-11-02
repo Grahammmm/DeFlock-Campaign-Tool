@@ -154,6 +154,54 @@ def strip(data, suffix):
     return bytes(out)
 
 
+MAX_SIDE = 20_000
+_NOT_SOF = (0xC4, 0xC8, 0xCC)  # DHT, JPG, DAC share the 0xC0-0xCF range but carry no frame size
+
+
+def _size(data, image):
+    if image == "png":
+        start, end = _png(data)[1][1:]
+        _need(data[start + 4:start + 8] == b"IHDR" and end - start == 25)
+        return struct.unpack(">II", data[start + 8:start + 16])
+    if image == "jpeg":
+        for kind, start, end in _jpeg(data)[1:]:
+            if kind == "trailing data":  # bytes after EOI are not the image
+                break
+            pos = start
+            while data[pos] == 0xFF:
+                pos += 1
+            if 0xC0 <= data[pos] <= 0xCF and data[pos] not in _NOT_SOF:
+                _need(end >= pos + 8)
+                height, width = struct.unpack(">HH", data[pos + 4:pos + 8])
+                return width, height
+        raise Unreadable()
+    parts = _webp(data)
+    _need(len(parts) > 1)
+    start, end = parts[1][1:]
+    fourcc, body = data[start:start + 4], data[start + 8:end]
+    if fourcc == b"VP8 ":
+        _need(len(body) >= 10 and body[3:6] == b"\x9d\x01\x2a")
+        return int.from_bytes(body[6:8], "little") & 0x3FFF, int.from_bytes(body[8:10], "little") & 0x3FFF
+    if fourcc == b"VP8L":
+        _need(len(body) >= 5 and body[0] == 0x2F)
+        bits = int.from_bytes(body[1:5], "little")
+        return 1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)
+    _need(fourcc == b"VP8X" and len(body) >= 10)
+    return 1 + int.from_bytes(body[4:7], "little"), 1 + int.from_bytes(body[7:10], "little")
+
+
+def image_size(data, suffix):
+    """``(width, height)`` of a PNG/JPEG/WebP, else ``None`` (other suffix, malformed, 0 or over ``MAX_SIDE`` px)."""
+    image = FORMATS.get(suffix.lower())
+    if image is None or len(data) > MAX_BYTES:
+        return None
+    try:
+        width, height = _size(data, image)
+    except (Unreadable, IndexError, struct.error):
+        return None
+    return (width, height) if 0 < width <= MAX_SIDE and 0 < height <= MAX_SIDE else None
+
+
 def check_asset(path, relative, limit=MAX_BYTES):
     """Refuse a public asset carrying image metadata; symlinks and oversized files are left to the copy check."""
     if path.suffix.lower() not in FORMATS or path.is_symlink() or path.stat().st_size > limit:
