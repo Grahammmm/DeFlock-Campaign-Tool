@@ -10,8 +10,9 @@
 
 A signature verifies only against the root-owned trust file in campaign_tool.approval; a typed name cannot approve.
 `verified` is the check flock_email.stage accepts as its verifier; flock_requests open and --check use it too.
+--signature must be a regular, non-link file of at most approval.MAX_SIGNATURE bytes of UTF-8 SSH-armored text.
 """
-import hashlib, importlib.util, json, os, sys, tempfile
+import errno, hashlib, importlib.util, json, os, stat, sys, tempfile
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -29,6 +30,30 @@ def _run(rundir):
     if run.is_symlink() or not (len(run.parents) >= 4 and run.parent.name == "runs" and run.parents[2].name == "agencies"):
         raise ValueError("RUNDIR must be <store>/agencies/<slug>/runs/<date>")
     return run
+
+
+def read_signature(path):
+    """The --signature text, read without following a link or blocking; ValueError names the rule it breaks."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:  # O_NOFOLLOW fails with ELOOP on a link
+        raise (ValueError("signature file is a link") if exc.errno == errno.ELOOP else exc) from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("signature file is not a regular file")
+        raw = os.read(fd, approval.MAX_SIGNATURE + 1)  # a regular file returns all it has up to the limit
+    finally:
+        os.close(fd)
+    if len(raw) > approval.MAX_SIGNATURE:
+        raise ValueError("signature file is too large")
+    try:  # newlines translated as Path.read_text did, so the stored signature is unchanged
+        lines = (text := raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")).split("\n")
+    except UnicodeDecodeError:
+        raise ValueError("signature file is not UTF-8 text") from None
+    begin = "-----BEGIN SSH SIGNATURE-----"
+    if begin not in lines or "-----END SSH SIGNATURE-----" not in lines[lines.index(begin) + 1:]:
+        raise ValueError("signature file is not an SSH signature")
+    return text
 
 
 def _payload(email, run):
@@ -56,7 +81,7 @@ def main(argv):
         if len(argv) == 4 and argv[0] == "approve" and argv[2] == "--signature":
             run = _run(argv[1])
             data, subject, body = _payload(email, run)
-            sig = Path(argv[3]).read_text(encoding="utf-8")
+            sig = read_signature(argv[3])
             who = approval.verify(data, sig)
             rec = {"v": 1, "state": "approved", "scope": "flock-email", "subject": subject, "approved_by": who,
                    "content_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(), "signature": sig}
