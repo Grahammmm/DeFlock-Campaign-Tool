@@ -184,9 +184,9 @@ class FindingStatusTests(unittest.TestCase):
     def test_no_reviewer_names_rationale_or_note_text_in_output(self):
         self.put("st-pub", summary="Newer synthetic summary.")
         for text in (self.status("--json"), self.status()):
-            for secret in ("Rev One", "Rev Two", "Checked synthetic pages.", NOTE, REASON, "Pat Organizer",
+            for hidden in ("Rev One", "Rev Two", "Checked synthetic pages.", NOTE, REASON, "Pat Organizer",
                            "Ada", "misdated", "wrong agency"):
-                self.assertNotIn(secret, text)
+                self.assertNotIn(hidden, text)
 
 
 if __name__ == "__main__":
