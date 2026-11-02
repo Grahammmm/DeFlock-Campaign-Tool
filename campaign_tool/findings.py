@@ -1,13 +1,16 @@
-"""Offline review receipts for finding drafts (self-asserted reviewer names; no identity check).
+"""Offline review receipts for finding drafts (self-asserted reviewer names unless SSH-signed).
 
 A receipt is bound to the hash of the draft without its publication fields, so moving a draft
-through states keeps it bound while any edit to the reviewed fields makes it stale."""
+through states keeps it bound while any edit to the reviewed fields makes it stale. Signed receipts
+verify against the organizer-held private/reviewers.allowed_signers (never approval.py or /etc/deflock)."""
 import contextlib
 import errno
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import tempfile
 import unicodedata
 from datetime import date, datetime, timezone
@@ -32,6 +35,8 @@ _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 MAX_ROSTER_BYTES, MAX_REVIEWERS = 256 * 1024, 200
 ROSTER_KEYS, REVIEWER_KEYS = frozenset(("schema_version", "reviewers")), frozenset(("name", "roles", "added_on"))
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+SIGN_NAMESPACE, MAX_KEY_BYTES, MAX_SIGNATURE_BYTES = "deflock-finding-review", 1024, 8192
+_KEY, _PRINCIPAL = re.compile(r"(ssh-ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/]+={0,3}"), re.compile(r"[A-Za-z0-9._-]+")
 
 
 def reviewed_view(draft):
@@ -46,8 +51,8 @@ def _no_constant(name):
     raise ValueError(name)
 
 
-def _read_json(path, limit, what):
-    """Parse one regular, non-symlink file; errors name the path, never its content."""
+def _read_json(path, limit, what, raw=False):
+    """Parse one regular, non-symlink file (``raw``: return its UTF-8 text); errors name the path, never its content."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
@@ -65,6 +70,8 @@ def _read_json(path, limit, what):
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise ValueError(f"{path}: {what} is not UTF-8") from None
+    if raw:
+        return text
     try:
         return json.loads(text, parse_constant=_no_constant)
     except (ValueError, RecursionError):
@@ -139,7 +146,14 @@ def _text(name, value, limit):
     return value.strip()
 
 
-def add_receipt(root, draft, role, decision, reviewer, rationale, now=None):
+def receipt_payload(id_, content_sha256, role, decision, reviewer, rationale):
+    """The exact bytes a reviewer signs: canonical JSON, no timestamp (signable before reviewed_at exists)."""
+    return json.dumps({"id": id_, "content_sha256": content_sha256, "role": role, "decision": decision,
+                       "reviewer": reviewer, "rationale": rationale, "namespace": SIGN_NAMESPACE},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def _checked(root, draft, role, decision, reviewer, rationale):
     if role not in ROLES:
         raise ValueError(f"--role must be one of {sorted(ROLES)}")
     if decision not in DECISIONS:
@@ -153,7 +167,25 @@ def add_receipt(root, draft, role, decision, reviewer, rationale, now=None):
     if roster is not None and (entry is None or role not in entry["roles"]):
         raise ValueError(f"{reviewer} is not " + ("on the reviewer roster" if entry is None
                                                   else f"assigned the {role} role"))
-    digest = reviewed_hash(draft)
+    return reviewer, rationale, entry
+
+
+def review_payload(root, draft, role, decision, reviewer, rationale):
+    reviewer, rationale, _ = _checked(root, draft, role, decision, reviewer, rationale)  # read-only
+    return receipt_payload(draft["id"], reviewed_hash(draft), role, decision, reviewer, rationale)
+
+
+def add_receipt(root, draft, role, decision, reviewer, rationale, now=None, signature=None):
+    reviewer, rationale, entry = _checked(root, draft, role, decision, reviewer, rationale)
+    digest, signed = reviewed_hash(draft), {}
+    if signature is not None:  # verified before any directory or file is written
+        if not entry or "ssh_public_key" not in entry:
+            raise ValueError(f"{reviewer} has no ssh_public_key on the roster (finding reviewers add --ssh-key)")
+        signed = {"signature": _read_json(signature, MAX_SIGNATURE_BYTES, "signature", raw=True),
+                  "signed_by": principal(entry["name"])}
+        if not _verifies(root, signed["signed_by"], signed["signature"],
+                         receipt_payload(draft["id"], digest, role, decision, reviewer, rationale)):
+            raise ValueError(f"{signature}: bad signature for {signed['signed_by']} over this receipt; nothing written")
     path = _receipts_path(root, draft)
     for folder in (root / "private", path.parent):
         folder.mkdir(mode=0o700, exist_ok=True)
@@ -165,16 +197,71 @@ def add_receipt(root, draft, role, decision, reviewer, rationale, now=None):
             raise ValueError(f"{path}: this receipt is already recorded for the current content")
         when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         receipt = {"content_sha256": digest, "role": role, "decision": decision, "reviewer": reviewer,
-                   "rationale": rationale, "reviewed_at": when}
+                   "rationale": rationale, "reviewed_at": when, **signed}
         _write_private(path, receipts + [receipt], ".review-")
     return dict(receipt, id=draft["id"], written=str(path))
 
 
-def _write_private(path, document, prefix):
+def principal(name):
+    """SSH principal for a roster name: whitespace runs become '_'; only [A-Za-z0-9._-] allowed."""
+    value = "_".join(name.split())
+    if not _PRINCIPAL.fullmatch(value):
+        raise ValueError(f"reviewer name {name!r} cannot be an SSH principal (use letters, digits, '.', '_', '-')")
+    return value
+
+
+def _verifies(root, who, signature, payload):
+    """ssh-keygen -Y verify against the campaign allowed-signers file (never the /etc/deflock approval file)."""
+    keygen, path = shutil.which("ssh-keygen"), _signers_path(root)
+    if keygen is None:
+        raise ValueError("ssh-keygen not found; signed receipts need OpenSSH 8.2+")
+    if not isinstance(signature, str) or "-----BEGIN SSH SIGNATURE-----" not in signature:
+        return False
+    with tempfile.TemporaryDirectory(prefix="deflock-review-") as tmp:
+        sig = os.path.join(tmp, "receipt.sig")
+        with open(sig, "w", encoding="utf-8") as out:
+            out.write(signature)
+        try:
+            return subprocess.run([keygen, "-Y", "verify", "-f", str(path), "-I", who, "-n", SIGN_NAMESPACE, "-s", sig],
+                                  input=payload, capture_output=True, timeout=30, check=False).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+
+def receipt_trust(root, draft, receipts):
+    """Current-hash receipts: signed only when the signature re-verifies now; all others count as self-asserted."""
+    digest, roster, _ = reviewed_hash(draft), _load_roster(root), _signers_path(root)  # a symlink refuses
+    trust = {"signed": 0, "self_asserted": 0, "bad_signatures": []}
+    for r in (r for r in receipts if isinstance(r, dict) and r.get("content_sha256") == digest):
+        good, entry = False, roster and _rostered(roster, r.get("reviewer"))
+        with contextlib.suppress(ValueError):  # no usable principal or no ssh-keygen: cannot verify
+            good = ("signed_by" in r and bool(entry) and r["signed_by"] == principal(entry["name"])
+                    and _verifies(root, r["signed_by"], r.get("signature"), receipt_payload(
+                        draft["id"], digest, r.get("role"), r.get("decision"), r.get("reviewer"), r.get("rationale"))))
+        if not good and ("signature" in r or "signed_by" in r):
+            trust["bad_signatures"].append({k: r.get(k) for k in ("reviewer", "role", "decision", "reviewed_at")})
+        trust["signed" if good else "self_asserted"] += 1
+    return trust
+
+
+def trust_line(trust):
+    bad = len(trust["bad_signatures"])
+    return (f"Review receipts: {trust['signed']} signed, {trust['self_asserted']} self-asserted"
+            + (f", {bad} with a signature that does not verify." if bad else "."))
+
+
+def _signers_path(root):
+    path = root / "private" / "reviewers.allowed_signers"
+    if os.path.islink(path) or (os.path.lexists(path) and not os.path.isfile(path)):
+        raise ValueError(f"{path}: allowed-signers file must be a regular file, not a symlink")
+    return path
+
+
+def _write_private(path, document, prefix, text=None):
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=prefix)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as out:
-            out.write(json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+            out.write(json.dumps(document, indent=2, ensure_ascii=False) + "\n" if text is None else text)
             out.flush()
             os.fsync(out.fileno())
         os.chmod(temporary, 0o600)
@@ -191,7 +278,7 @@ def review_status(root, draft):
     receipts = _load_receipts(_receipts_path(root, draft))
     current = sum(isinstance(r, dict) and r.get("content_sha256") == digest for r in receipts)
     return {"id": draft["id"], "content_sha256": digest, "receipts_for_this_content": current,
-            "stale_receipts": len(receipts) - current,
+            "stale_receipts": len(receipts) - current, **receipt_trust(root, draft, receipts),
             "review_blockers": review_blockers(reviewed_view(draft), receipts),
             **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)})}
 
@@ -215,11 +302,19 @@ def _unrostered(roster, receipts):
             and ((e := _rostered(roster, p["reviewer"])) is None or p["role"] not in e["roles"])]
 
 
-def _object(where, document, expected):
+def _object(where, document, expected, optional=frozenset()):
     if not isinstance(document, dict):
         raise ValueError(f"{where}: must be a JSON object")
-    for key in sorted(set(document) ^ expected):
+    for key in sorted((set(document) - optional) ^ expected):
         raise ValueError(f"{where}: {'unknown' if key in document else 'missing'} key {key!r}")
+
+
+def _public_key(value, where):
+    if (not isinstance(value, str) or len(value.encode("utf-8")) > MAX_KEY_BYTES
+            or any(unicodedata.category(ch) == "Cc" for ch in value.rstrip("\n"))
+            or not _KEY.fullmatch(" ".join(value.split()[:2]))):
+        raise ValueError(f"{where} must be one ssh-ed25519 or ecdsa-sha2-nistp256 key line of <= {MAX_KEY_BYTES} bytes")
+    return " ".join(value.split()[:2])  # the comment is dropped
 
 
 def _load_roster(root):
@@ -233,14 +328,19 @@ def _load_roster(root):
         raise ValueError(f"{path}: key 'schema_version' must be 1")
     if not isinstance(roster["reviewers"], list) or len(roster["reviewers"]) > MAX_REVIEWERS:
         raise ValueError(f"{path}: key 'reviewers' must be a list of at most {MAX_REVIEWERS} entries")
-    seen = set()
+    seen, principals = set(), set()
     for index, entry in enumerate(roster["reviewers"]):
         where = f"{path}: reviewers[{index}]"
-        _object(where, entry, REVIEWER_KEYS)
+        _object(where, entry, REVIEWER_KEYS, frozenset(("ssh_public_key",)))
         who, roles, added = _who(entry["name"]), entry["roles"], entry["added_on"]
         if who is None or who in seen:
             raise ValueError(f"{where}.name is empty or duplicates an earlier reviewer")
         seen.add(who)
+        if "ssh_public_key" in entry:
+            if _public_key(entry["ssh_public_key"], f"{where}.ssh_public_key") != entry["ssh_public_key"] \
+                    or principal(entry["name"]) in principals:
+                raise ValueError(f"{where}.ssh_public_key must be a bare key line under a unique principal")
+            principals.add(principal(entry["name"]))
         if not isinstance(roles, list) or not roles or not all(isinstance(r, str) and r in ROLES for r in roles):
             raise ValueError(f"{where}.roles must be a non-empty list of {sorted(ROLES)}")
         try:
@@ -250,12 +350,13 @@ def _load_roster(root):
     return roster
 
 
-def add_reviewer(root, name, roles, today=None):
+def add_reviewer(root, name, roles, today=None, ssh_key=None):
     """Add a reviewer or merge roles into an existing one (roles are never removed; added_on is kept)."""
     name = _text("name", name, 120)
     if not roles or any(role not in ROLES for role in roles):
         raise ValueError(f"--role must be one of {sorted(ROLES)}")
-    path = _roster_path(root)
+    key = None if ssh_key is None else _public_key(_read_json(ssh_key, MAX_KEY_BYTES, "SSH key", raw=True), ssh_key)
+    path, signers = _roster_path(root), _signers_path(root)
     _load_roster(root)  # refuse a bad roster before any write
     path.parent.mkdir(mode=0o700, exist_ok=True)
     os.chmod(path.parent, 0o700)
@@ -268,7 +369,15 @@ def add_reviewer(root, name, roles, today=None):
             entry = {"name": name, "roles": [], "added_on": str(today or date.today())}
             roster["reviewers"].append(entry)
         entry["roles"] = sorted(set(entry["roles"]) | set(roles))
+        if key is not None:
+            who = principal(entry["name"])  # before any write
+            if any(e is not entry and "ssh_public_key" in e and principal(e["name"]) == who for e in roster["reviewers"]):
+                raise ValueError(f"principal {who} already has a key under another roster name")
+            entry["ssh_public_key"] = key
         _write_private(path, roster, ".reviewers-")
+        _write_private(signers, None, ".signers-", "".join(
+            f'{principal(e["name"])} namespaces="{SIGN_NAMESPACE}" {e["ssh_public_key"]}\n'
+            for e in roster["reviewers"] if "ssh_public_key" in e))
     return dict(entry, written=str(path))
 
 
@@ -320,9 +429,11 @@ def cited_problems(root, finding):
 def publish(root, draft_path, approved_by, now=None):
     """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
     draft = load_draft(draft_path)
-    blockers = review_blockers(reviewed_view(draft), _load_receipts(_receipts_path(root, draft)))
+    receipts = _load_receipts(_receipts_path(root, draft))
+    blockers = review_blockers(reviewed_view(draft), receipts)
     if blockers:
         raise ValueError(f"review blockers: {blockers}")
+    trust = receipt_trust(root, draft, receipts)
     approved_by = _text("approved-by", approved_by, 120)
     if _who(approved_by) == _who(draft.get("author")):
         raise ValueError("the author cannot approve publication of their own finding")
@@ -336,7 +447,7 @@ def publish(root, draft_path, approved_by, now=None):
     # One campaign-wide lock covers the uniqueness checks, the write and the log entry, so two
     # concurrent publishes cannot both pass the checks before either writes.
     with _locked(root / "private", ".publish.lock"):
-        return _publish_locked(root, draft, finding, document, approved_by, when)
+        return dict(_publish_locked(root, draft, finding, document, approved_by, when), receipt_trust=trust)
 
 
 def _publish_locked(root, draft, finding, document, approved_by, when):

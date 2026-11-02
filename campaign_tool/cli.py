@@ -8,7 +8,7 @@ import re
 import sqlite3
 import stat
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import fixes
@@ -373,6 +373,19 @@ def doctor_report(root, contact_max_age_days=None):
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
+    from .content import ContentError, load_content
+    try:
+        model = load_content(root)
+    except (ContentError, OSError):
+        model = None  # build/content-check name the problem; doctor stays as before
+    if model is not None:
+        ending = report["contracts_ending"] = [
+            {"agency_id": a["agency_id"], "end": a["contract"]["end"], "days": days}
+            for a in sorted((a for a in model["agencies"] if a["contract"]), key=lambda a: a["contract"]["end"])
+            if 0 <= (days := (date.fromisoformat(a["contract"]["end"]) - date.today()).days) <= 90]
+        if ending:
+            report["next_actions"].append("Contract terms ending within 90 days: "
+                                          + ", ".join(f'{c["agency_id"]} ({c["end"]})' for c in ending))
     return report
 
 
@@ -643,6 +656,10 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
+                                     "records, sources, findings (read-only)")
+    coverage_p.add_argument("--directory", required=True)
+    coverage_p.add_argument("--csv", action="store_true", help="RFC 4180 CSV on stdout instead of a table")
     due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
@@ -654,6 +671,11 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
+    for flag in ("--directory", "--agency"):
+        followup_p.add_argument(flag, required=True)
+    followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
+    followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -680,9 +702,12 @@ def main():
     ).add_argument("--directory", required=True)
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
-    review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
+    review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
+    payload_p = finding_cmds.add_parser("review-payload", help="Print the receipt bytes to ssh-keygen -Y sign (read-only)")
     for flag in ("--directory", "--role", "--decision", "--reviewer", "--rationale"):
         review_p.add_argument(flag, required=True)
+        payload_p.add_argument(flag, required=True)
+    review_p.add_argument("--signature", metavar="SIG", help="SSH signature over the review-payload bytes")
     finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
                             ).add_argument("--directory", required=True)
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
@@ -700,6 +725,7 @@ def main():
     roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
     roster_add.add_argument("--name", required=True)
     roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
+    roster_add.add_argument("--ssh-key", metavar="FILE.pub", help="Set or replace this reviewer's signing key")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
@@ -779,21 +805,28 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
-            print(json.dumps(findings.add_reviewer(root, args.name, args.role) if add else findings.list_reviewers(root),
-                             indent=2, ensure_ascii=False))
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key) if add
+                             else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
         elif args.command == "finding":
             from . import findings
             read_config(root)
-            if args.finding_command in ("publish", "correct"):
-                print(json.dumps(findings.publish(root, args.draft, args.approved_by)
-                                 if args.finding_command == "publish" else
-                                 findings.correct(root, args.id, args.date, args.note, args.from_draft)))
+            if args.finding_command == "correct":
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
+            if args.finding_command == "publish":
+                result = findings.publish(root, args.draft, args.approved_by)
+                print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                print(findings.trust_line(result["receipt_trust"]))
+                return
             draft = findings.load_draft(args.draft)
-            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale)
+            if args.finding_command == "review-payload":
+                sys.stdout.buffer.write(findings.review_payload(root, draft, args.role, args.decision, args.reviewer, args.rationale))
+                return
+            print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
                              if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
@@ -825,6 +858,10 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-coverage":
+            from .kit_track import coverage, format_coverage
+            sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of)
@@ -836,6 +873,10 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-followup":
+            from .kit_track import followup
+            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
             print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,
