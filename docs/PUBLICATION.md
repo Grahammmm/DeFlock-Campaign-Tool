@@ -1,5 +1,12 @@
 # Publication workflow
 
+## Press drafts
+
+`python3 -m campaign_tool press draft --directory D --finding ID [--finding ID] [--date YYYY-MM-DD]`
+creates one private `kit/press/` Markdown draft from published findings only. Review its facts,
+limitations, corrections, links and contact before any use. It sends and publishes nothing.
+Edited drafts are kept; the fresh version goes to `kit/press.suggested/`.
+
 How a finding goes from draft to the public site in the workspace Worker, and how it is
 corrected or withdrawn afterwards. Code: `workers/workspace/src/review_state.ts`,
 `publication.ts`, `manifest.ts`, `executors/publish_finding.ts`, `executors/deploy_site.ts`.
@@ -81,6 +88,14 @@ correction's date (equal is fine); the note is non-empty, at most 1000 character
 With `--from DRAFT` the reviewed fields are replaced by the draft's (same id and slug), which must clear
 the same review blockers and cited-record check as `publish`; `id`, `slug`, `published_at` and earlier
 corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
+
+    python3 -m campaign_tool finding withdraw ID --directory D --reason TEXT
+
+`finding withdraw` moves the one published finding whose `id` is ID from `content/findings/<slug>.json` to
+`D/private/withdrawn/<slug>.json` (folder 0700, file 0600) with `withdrawn: {at, reason}` added, and logs
+`{at, action: "withdraw", id, slug}` (the reason stays in the private copy only). The copy is kept and its id
+and slug stay taken: a later `publish` of either is refused. The next `build` omits it; no notice page is made.
+If the content file cannot be removed both copies remain and the leftover is named. It never builds or deploys.
 
 ## Propose, approve, execute
 
@@ -170,8 +185,9 @@ roster, `finding review` refuses an unlisted name or unassigned role and `review
 ## Not done
 
 No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
-no reviewer directory or role assignment beyond the Access policy and no diff view between content
-versions; no automatic notification to reviewers. The runner that executes
+no reviewer directory or role assignment beyond the Access policy; no automatic notification to
+reviewers. `finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
+diff of the public fields before a correction; exit 3 when they differ. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
 
 The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`
