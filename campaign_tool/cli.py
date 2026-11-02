@@ -658,6 +658,11 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
+    for flag in ("--directory", "--agency"):
+        followup_p.add_argument(flag, required=True)
+    followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
+    followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -846,6 +851,10 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-followup":
+            from .kit_track import followup
+            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
             print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,

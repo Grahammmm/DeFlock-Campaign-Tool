@@ -316,3 +316,53 @@ def due(root, as_of=None, *, today=None, law_base=None):
     return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
             "answered": answered, "past_due": sum(row["state"] == "past_due" for row in open_rows),
             "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE}
+
+
+def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today=None):
+    """Write a private, never-sent follow-up draft to kit/followups/ for a request past its provisional date."""
+    from .cli import read_config  # local import: cli imports this module lazily
+    root, today = Path(root), today or date.today()
+    day = _day(as_of) if as_of is not None else today
+    if day is None:
+        raise ValueError("--as-of must be a real YYYY-MM-DD date")
+    if day > today:
+        raise ValueError(f"--as-of {day.isoformat()} is in the future")
+    entry = read_sent(root).get(agency_id)
+    if entry is None or not kit.AGENCY_ID.fullmatch(agency_id):
+        raise ValueError(f"no hand-sent request recorded for {agency_id}")
+    steps = [s for s in entry["steps"] if isinstance(s, dict)]
+    if any(s.get("kind") == "closed" for s in steps):
+        raise ValueError(f"request for {agency_id} is closed")
+    answer = next((s for s in steps if s.get("kind") in ANSWERED), None)
+    if answer:
+        raise ValueError(f"request for {agency_id} was answered ({answer['kind']} on {answer.get('on')}); "
+                         "no follow-up drafted")
+    row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"] if r["agency_id"] == agency_id), None)
+    if row is None or row["state"] == "no_law_package":
+        raise ValueError("no law package: dates cannot be computed")
+    if row["state"] != "past_due":
+        raise ValueError(f"not past due: provisional determination date {row['due']}")
+    try:
+        package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
+    except ValueError:
+        raise ValueError("no law package: dates cannot be computed") from None
+    folder = root / "kit" / "followups"
+    kit._kit_folder(folder, 0o700)
+    target = folder / f"{agency_id}-{day.isoformat()}.md"
+    if os.path.islink(target):
+        raise ValueError(f"kit/followups/{target.name} must not be a symlink")
+    if os.path.lexists(target) and not replace:
+        raise ValueError(f"kit/followups/{target.name} already exists; use --replace to rewrite it")
+    statute, name = package["records_law"], row["name"] or agency_id
+    extended = " (extended, as the agency noted)" if any(s.get("kind") == "extension" for s in steps) else ""
+    lines = [f"# Follow-up draft: {name}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
+             f"To: {name}, records custodian", "",
+             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. Its provisional "
+             f"determination date{extended} was {row['due']}; the period runs from the agency's receipt of the "
+             f"request. As of {day.isoformat()} we have no record of a determination, records produced or a denial.",
+             "", f"Please tell us the status of the request under the {statute['name']}, {statute['citation']}, "
+             "and when you expect to respond.", "", kit.DEFAULT_REQUESTER, "", "---", ""]
+    if package["status"] != "reviewed":
+        lines.append(f"Law package status: {package['status']} (not independently reviewed)")
+    kit._write_text(target, "\n".join([*lines, law.HOLIDAY_NOTE]) + "\n")
+    return {"written": f"kit/followups/{target.name}", "due": row["due"], "days_past": -row["days"], "note": NOTE}
