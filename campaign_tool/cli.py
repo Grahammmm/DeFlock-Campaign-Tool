@@ -547,6 +547,44 @@ def meeting_stage_cmd(args, root):
                      indent=2))
 
 
+def finding_preview(root, draft_path, out, now=None):
+    """DF1822-02: one draft's finding page as build renders it (plus banner + noindex) written privately to
+    ``out``/findings/<slug>.html and ``out``/style.css. public/, feed, sitemap and data/ are never touched."""
+    import tempfile
+    from . import findings
+    from .content import load_content, load_finding_preview
+    from .site import EXTRA_CSS, Site
+    out = Path(out).expanduser()
+    if out.is_symlink():
+        raise ValueError(f"{out}: --out is a symlink; choose a real private folder outside public/ and content/")
+    target = out.resolve()
+    for name in ("public", "content"):
+        protected = (root / name).resolve()
+        if target == protected or protected in target.parents:
+            raise ValueError(f"{out}: --out is inside {name}/; choose a private folder outside public/ and content/")
+    folder = target / "findings"
+    for path in (target, folder):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f"{path}: must be a real folder, not a symlink or a file")
+    finding = load_finding_preview(findings.load_draft(draft_path), str(draft_path), now=now)
+    model = load_content(root)
+    if model is None:
+        raise ValueError("finding preview needs content/ (run content init first)")
+    page = Site(root, read_config(root), model).finding_preview_html(finding)
+    if not target.exists():
+        target.mkdir(mode=0o700, parents=True)
+        os.chmod(target, 0o700)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    written = []
+    for path, text in ((folder / f"{finding['slug']}.html", page["html"]), (target / "style.css", page["css"] + EXTRA_CSS)):
+        fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)  # replaces a symlink entry itself, never writes through it
+        written.append(str(path))
+    return {"written": written, "slug": finding["slug"]}
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -730,6 +768,10 @@ def main():
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
+                                        "(banner, noindex; never public/, feed or sitemap)")
+    for flag in ("--directory", "--out"):
+        preview_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
@@ -833,6 +875,14 @@ def main():
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
+        elif args.command == "finding" and args.finding_command == "preview":
+            try:
+                result = finding_preview(root, args.draft, args.out)
+            except (OSError, ValueError) as exc:  # load_draft/load_finding refusals: exit 2, nothing written
+                fixes.emit(exc)
+                sys.exit(2)
+            print(json.dumps(result))
+            print("Private preview only; public/ was not changed and nothing was published.")
         elif args.command == "finding":
             from . import findings
             read_config(root)

@@ -550,6 +550,17 @@ class Site:
         return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main,
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
 
+    def finding_preview_html(self, finding):
+        """``finding_html`` for a private draft preview (DF1822-02) plus exactly two lines: a robots noindex meta
+        and a "Draft - not published" banner at the top of ``<main>``. Never part of build output."""
+        page = self.finding_html(finding)
+        html, title, main = page["html"], "  <title>", '  <main id="top">\n'
+        if html.count(title) != 1 or html.count(main) != 1:
+            raise ValueError("finding preview: the page shell changed; refusing to place the draft banner")
+        html = html.replace(title, '  <meta name="robots" content="noindex">\n' + title)
+        html = html.replace(main, main + '    <p class="draft-banner" role="note">Draft - not published</p>\n')
+        return dict(page, html=html)
+
     def corrections_html(self):
         rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
         rows.sort(key=lambda row: (row[0]["slug"], row[2]))

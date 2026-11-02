@@ -296,6 +296,20 @@ def load_finding(document, label):
     }
 
 
+def load_finding_preview(document, label, now=None):
+    """``load_finding`` for a draft preview (DF1822-02). A draft not yet at ``state: published`` is read as
+    ``finding publish`` would write it (publication fields replaced: published, ``published_at`` = the preview
+    time, no corrections), for validation and rendering only; every refusal is ``load_finding``'s own."""
+    if not isinstance(document, dict):
+        raise ContentError(f"{label}: expected an object")
+    if document.get("state") != "published":
+        when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        document = {key: value for key, value in document.items()
+                    if key not in ("state", "published_at", "updated_at", "corrections")}
+        document.update(state="published", published_at=when, corrections=[])
+    return load_finding(document, label)
+
+
 # --- meetings --------------------------------------------------------------
 
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
