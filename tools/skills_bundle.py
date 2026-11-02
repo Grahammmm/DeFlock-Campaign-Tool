@@ -96,6 +96,8 @@ def skill_files(root, skill):
             if not path.is_file():
                 raise Refuse('symlink', f'{path.relative_to(root)} is not a regular file')
             found.append(path.relative_to(base).as_posix())
+    if 'SKILL.md' not in found:
+        raise Refuse('missing_skill', f'{skill}: no SKILL.md')
     return sorted(found)
 
 

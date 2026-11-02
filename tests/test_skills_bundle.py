@@ -118,6 +118,15 @@ class Synthetic(unittest.TestCase):
         os.unlink(self.repo / 'NOTICE')
         self.refused('missing_license')
 
+    def test_skill_without_entrypoint_refused(self):
+        skill_dir = self.repo / 'skills/records-capture'
+        os.rename(skill_dir / 'SKILL.md', skill_dir / 'skill.md')
+        self.refused('missing_skill')  # wrong-case entrypoint only
+        os.unlink(skill_dir / 'skill.md')
+        self.refused('missing_skill')  # empty directory
+        (skill_dir / 'SKILL.md').mkdir()  # entrypoint is a directory
+        self.refused('missing_skill')
+
     def test_link_outside_repo_refused(self):
         self.skill('records-capture', 'See [x](../../../elsewhere.md).\n')
         self.refused('link_outside_repo')
