@@ -58,15 +58,17 @@ def build(store, agency_filter):
     agencies = store / 'agencies'
     if agencies.is_symlink() or not agencies.is_dir():
         raise ValueError('store agencies unavailable')
+    built = datetime.date.today().isoformat()
     lines = ['Private review queue. Built %s. Approving is a human decision recorded in PUBLISH.json; this file changes nothing.'
-             % datetime.date.today().isoformat(), '']
-    rows, counts = [], collections.Counter()
+             % built, '']
+    rows, counts, waiting, blocked = [], collections.Counter(), [], []
     for agency in sorted(agencies.iterdir()):
         if agency_filter and agency.name != agency_filter:
             continue
         runs = agency / 'runs'
         if agency.is_symlink() or runs.is_symlink():
             counts['not_reviewable'] += 1
+            blocked.append({'agency': safe_name(agency.name), 'run': None, 'reason': 'link-refused'})
             lines += ['## NOT REVIEWABLE: link-refused — fix with flock_publish recheck before approving', '']
             continue
         if not runs.is_dir():
@@ -75,6 +77,7 @@ def build(store, agency_filter):
             target = run / 'PUBLISH.json'
             if run.is_symlink() or target.is_symlink():
                 counts['not_reviewable'] += 1
+                blocked.append({'agency': safe_name(agency.name), 'run': safe_name(run.name), 'reason': 'link-refused'})
                 lines += ['## NOT REVIEWABLE: link-refused — fix with flock_publish recheck before approving', '']
                 continue
             if not run.is_dir() or not target.is_file():
@@ -82,6 +85,7 @@ def build(store, agency_filter):
             stage, _ = publish.stage(run)  # check and re-derive before displaying any entry
             if stage in ('invalid', 'drifted', 'no-export'):
                 counts['not_reviewable'] += 1
+                blocked.append({'agency': safe_name(agency.name), 'run': safe_name(run.name), 'reason': stage})
                 lines += ['## NOT REVIEWABLE: %s — fix with flock_publish recheck before approving' % stage, '']
                 continue
             doc = json.loads(target.read_text(encoding='utf-8'))
@@ -97,26 +101,34 @@ def build(store, agency_filter):
                     continue
                 fid = entry['finding_id']
                 challenge = challenges.get(fid)
-                warnings = []
+                warnings, codes = [], []
                 if not challenge:
                     warnings.append('VERIFY row missing')
+                    codes.append('verify-row-missing')
                 if verify.family(run):
                     warnings.append('verifier family is not independent')
+                    codes.append('verifier-not-independent')
                 if challenge:
                     reason = challenge['reason']
                     if len(reason) < 20:
                         warnings.append('challenge reason under 20 characters')
+                        codes.append('reason-under-20')
                     if challenge['verdict'] != 'confirm':
                         warnings.append('verdict is not confirm')
+                        codes.append('verdict-not-confirm')
                     if reasons[reason] >= 3:
                         warnings.append('identical challenge text on %d findings' % reasons[reason])
+                        codes.append('identical-reason')
                 counts['waiting'] += 1
                 counts['needs_review'] += review['status'] == 'needs-review'
                 counts['warnings'] += len(warnings)
                 verdict = challenge['verdict'] if challenge else 'missing'
+                verdict = verdict if verdict in ('confirm', 'downgrade', 'reject') else 'missing'
+                waiting.append({'agency': safe_name(agency.name), 'run': safe_name(run.name), 'finding_id': safe_name(fid),
+                                'status': review['status'], 'verdict': verdict, 'warnings': codes})
                 rows.append('queue | %s | %s | %s | %s | verdict=%s | warnings=%d' %
                             (safe_name(agency.name), safe_name(run.name), safe_name(fid), review['status'],
-                             verdict if verdict in ('confirm', 'downgrade', 'reject') else 'missing', len(warnings)))
+                             verdict, len(warnings)))
                 lines += ['## finding %s · %s · run %s' % (safe_name(fid), safe_name(agency.name), safe_name(run.name)),
                           '', '**Claim**', fenced(entry['text']), 'Rating: %s; claim_class: %s' %
                           (entry['rating'], entry['claim_class']), '', '**Independent challenge**',
@@ -146,19 +158,27 @@ def build(store, agency_filter):
     lines += ['Approved entries (counted only): %d' % counts['approved'], '']
     rows.append('queue | waiting=%d needs_review=%d not_reviewable=%d warnings=%d | review-required; only a human approves' %
                 (counts['waiting'], counts['needs_review'], counts['not_reviewable'], counts['warnings']))
-    return '\n'.join(lines), rows, bool(counts['not_reviewable'] or counts['warnings'])
+    data = {'schema': 'flock-review-queue-v1', 'review_required': True, 'built': built,
+            'note': 'only a human approves; this file changes nothing', 'agency_filter': agency_filter or None,
+            'waiting': waiting, 'not_reviewable': blocked,
+            'counts': {k: counts[k] for k in ('waiting', 'needs_review', 'approved', 'not_reviewable', 'warnings')}}
+    return '\n'.join(lines), rows, bool(counts['not_reviewable'] or counts['warnings']), data
 
 
-def write(out, text):
+def write(out, text, data=None):
     out.mkdir(mode=0o700)
-    target = out / 'review-queue.md'
+    files = {'review-queue.md': text}
+    if data is not None:
+        files['review-queue.json'] = json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + '\n'
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'wb') as handle:
-            handle.write(text.encode('utf-8'))
+        for name, body in files.items():
+            fd = os.open(out / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'wb') as handle:
+                handle.write(body.encode('utf-8'))
     except BaseException:
         with contextlib.suppress(OSError):
-            target.unlink(missing_ok=True)
+            for name in files:
+                (out / name).unlink(missing_ok=True)
             out.rmdir()
         raise
 
@@ -169,6 +189,7 @@ def main(argv=None):
     parser.add_argument('store')
     parser.add_argument('--agency')
     parser.add_argument('--out', required=True)
+    parser.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
     try:
         store = Path(args.store).resolve()
@@ -177,8 +198,8 @@ def main(argv=None):
         if args.agency and not publish.SLUG.fullmatch(args.agency):
             raise ValueError('invalid agency')
         out = output_path(args.out, store)
-        text, rows, failed = build(store, args.agency)
-        write(out, text)
+        text, rows, failed, data = build(store, args.agency)
+        write(out, text, data if args.json else None)
     except (OSError, ValueError, KeyError, TypeError):
         print('queue refused: invalid input or output')
         return 1
