@@ -153,19 +153,20 @@ class OCRTests(unittest.TestCase):
             self.call(FakeRunner(), pages=(1,))
         blob.unlink()
         blob.write_bytes(self.raw)
-        self.output.mkdir()
+        self.output.mkdir(mode=0o700)  # owner-only like the tool's own dirs, so CI umask 022 cannot mask the symlink check
         (self.output / self.sha).symlink_to(self.root, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlink_or_nondirectory_rejected"):
             self.call(FakeRunner(), pages=(1,))
 
     def test_page_and_final_directory_symlinks_rejected(self):
-        (self.output / self.sha).mkdir(parents=True)
+        self.output.mkdir(mode=0o700)  # owner-only: the refusal under test is the symlink, not a umask-022 mode
+        (self.output / self.sha).mkdir(mode=0o700)
         page = self.output / self.sha / "page-000001"
         page.symlink_to(self.root, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlink_or_nondirectory_rejected"):
             self.call(FakeRunner(), pages=(1,))
         page.unlink()
-        page.mkdir()
+        page.mkdir(mode=0o700)
         identity = {"source_sha256": self.sha, "page": 1, "version": ocr.VERSION,
                     "tool_signature": "stub-v1", "attempt_id": "initial", "language": "eng",
                     "low_confidence": 80.0,
