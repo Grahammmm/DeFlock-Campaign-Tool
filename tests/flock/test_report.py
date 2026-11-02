@@ -131,5 +131,99 @@ class FlockReportTest(unittest.TestCase):
         self.assertIn("| setting | 0 | 0 | 0 | 1 | 0 | 1 |", text)
 
 
+OCR, TS = "OCR text, not visually reviewed", RFIX / "text-state.json"
+B64 = "b" * 64
+
+
+class FlockReportTextStateTest(unittest.TestCase):  # DOC-3: review.text_state_file labels cited records, never relaxes a gate
+    setUp, stage, outputs = FlockReportTest.setUp, FlockReportTest.stage, FlockReportTest.outputs
+
+    def ts(self, edit=None, raw=None):  # -> a text-state file outside the repository (a copy of the fixture, edited)
+        doc = json.loads(TS.read_text())
+        for r in doc["records"]:
+            r.update((edit or {}).get(r["sha256"][0], {}))
+        path = self.tmp / ("ts-%d.json" % len(list(self.tmp.glob("ts-*.json"))))
+        path.write_text(raw if raw is not None else json.dumps(doc))
+        return path
+
+    def labelled(self, path):
+        config, p = self.stage(review__text_state_file=str(path))
+        self.assertEqual(build(config), (0, HAPPY))  # same inclusion and counts as without the file
+        return (config,) + self.outputs(p)
+
+    def test_ocr_unreviewed_travels_to_bullet_sources_and_json(self):
+        _, text, sources, _ = self.labelled(self.ts())
+        bullets = [line for line in text.splitlines() if line.startswith("- ")]
+        self.assertEqual(len(bullets), 3)
+        self.assertTrue(all(line.endswith("] (%s)" % OCR) and line.count(OCR) == 1 for line in bullets), bullets)
+        self.assertIn("- **Plate reads are deleted after 30 days** - the records show the opposite. %s [1 p.5, 2 section 4.2 page 2] (%s)"
+                      % (BASIS, OCR), text.splitlines())
+        record = next(e for e in sources if e["kind"] == "record")
+        self.assertEqual(record["label"], "Request REQ-101, document 1001 (Sample retention schedule), page 3, 4, 5 (%s)" % OCR)
+        self.assertEqual(record["text_state"], OCR)
+        self.assertIn("[%d] %s" % (record["n"], record["label"]), text.splitlines())
+        for rule in (e for e in sources if e["kind"] == "rule"):  # a rule source is never suffixed
+            self.assertNotIn("text_state", rule)
+            self.assertNotIn("text state", rule["label"])
+            self.assertNotIn("OCR", rule["label"])
+        self.assertEqual(text.count(OCR), 4)  # 3 bullets + 1 Sources line: the uncited unreviewed record adds nothing
+        for absent in ("c" * 64, "d" * 64, "waiting for OCR", "Users complete annual system training", "date and plate only"):
+            self.assertNotIn(absent, text + json.dumps(sources))
+
+    def test_reviewed_is_unlabelled_and_byte_equal(self):
+        config, p = self.stage()
+        self.assertEqual(build(config), (0, HAPPY))
+        plain = {f.name: f.read_bytes() for f in (p["CO"] / "report").iterdir()}
+        _, text, sources, report = self.labelled(self.ts({"b": {"state": "text_reviewed"}}))
+        self.assertEqual({f.name: f.read_bytes() for f in report.iterdir()}, plain)
+        self.assertFalse([e for e in sources if "text_state" in e])
+
+    def test_not_recorded_and_words_cleaned(self):
+        cases = [({"b": {"sha256": "e" * 64}}, "text state not recorded"),
+                 ({"b": {"state": "awaiting_ocr", "words": "A scan with no text yet; waiting for OCR."}},
+                  "text state: A scan with no text yet; waiting for OCR."),
+                 ({"b": {"state": "could_not_be_read", "words": "Could not be read: the [file], looks damaged."}},
+                  "text state: Could not be read: the file looks damaged."),
+                 ({"b": {"state": "unknown_state", "words": "[,]"}}, "text state: unknown state")]
+        for edit, want in cases:
+            with self.subTest(want=want):
+                _, text, sources, _ = self.labelled(self.ts(edit))
+                record = next(e for e in sources if e["kind"] == "record")
+                self.assertEqual((record["text_state"], record["label"].endswith(" (%s)" % want)), (want, True))
+                self.assertEqual(text.count("(%s)" % want), 4)
+                self.assertNotIn(OCR, text)
+
+    def test_bad_file_fails_closed(self):
+        link, folder, big = self.tmp / "link.json", self.tmp / "folder", self.tmp / "big.json"
+        link.symlink_to(self.ts())
+        folder.mkdir()
+        with open(big, "wb") as handle:
+            handle.truncate((64 << 20) + 1)
+        cases = [str(self.tmp / "missing.json"), str(link), str(folder), str(big), "relative/ts.json", str(TS), None,
+                 str(self.ts(raw="{not json")), str(self.ts(raw=json.dumps({"schema": "records-text-state-v2", "records": []}))),
+                 str(self.ts({"b": {"state": "reviewed"}})), str(self.ts({"b": {"state": "Text_Reviewed"}})),
+                 str(self.ts({"b": {"words": None}})), str(self.ts({"c": {"sha256": B64}}))]
+        for value in cases:
+            with self.subTest(value=value):
+                config, p = self.stage(review__text_state_file=value)
+                code, out = build(config)
+                self.assertEqual(code, 1, out)
+                self.assertTrue(out.startswith("config: review.text_state_file "), out)
+                self.assertTrue(out.endswith(" errors=1\n"), out)
+                self.assertFalse((p["CO"] / "report").exists())
+
+    def test_check_current_then_stale_when_the_label_changes(self):
+        path = self.ts()
+        config, _, _, _ = self.labelled(path)
+        check = lambda: subprocess.run([sys.executable, "-B", str(TOOL), "check", str(config)],  # noqa: E731
+                                       capture_output=True, text=True, check=False)
+        done = check()
+        self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (0, HAPPY.strip() + " state=current"))
+        path.write_text(self.ts({"b": {"state": "text_reviewed"}}).read_text())  # same path, label removed
+        done = check()
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertTrue(done.stdout.splitlines()[-1].endswith(" state=stale"), done.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
