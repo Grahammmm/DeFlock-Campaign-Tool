@@ -313,8 +313,10 @@ def load_finding_preview(document, label, now=None):
 # --- meetings --------------------------------------------------------------
 
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation"}
+                "status", "participation", "outcome"}
 MEETING_STATUSES = ("scheduled", "cancelled")
+OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
+OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote"}
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
                       "verified_at"}
 
@@ -355,6 +357,29 @@ def load_participation(value, starts_at, label, today=None):
             **({"speaker_minutes": minutes} if minutes is not None else {})}
 
 
+def load_outcome(value, starts_at, status, label, today=None):
+    """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
+    if status == "cancelled":
+        raise ContentError(f"{label}: a cancelled meeting has no outcome")
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote"}, label)
+    if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
+        raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
+    held, now = starts_at[:10], (today or date.today()).isoformat()
+    for key, earliest in (("on", held), ("verified_at", value["on"])):
+        day = _timestamp(value[key], f"{label}.{key}", date_only=True)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or not earliest <= day <= now:
+            raise ContentError(f"{label}.{key}: must be a YYYY-MM-DD date from {earliest} to {now}")
+    for key in ("verified_by", "vote"):
+        text = value.get(key, "-")
+        if (not isinstance(text, str) or not plain_text(text) or not text.strip() or len(text) > 120
+                or "\n" in text or "\t" in text):
+            raise ContentError(f"{label}.{key}: must be 1 to 120 characters of plain text "
+                               "(no angle brackets or control characters)")
+    return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
+            "verified_by": value["verified_by"], "verified_at": value["verified_at"],
+            **({"vote": value["vote"]} if "vote" in value else {})}
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -378,6 +403,8 @@ def load_meeting(document, label, today=None):
         "status": status,
         "participation": (load_participation(document["participation"], starts_at, f"{label}.participation", today)
                           if document.get("participation") is not None else None),
+        "outcome": (load_outcome(document["outcome"], starts_at, status, f"{label}.outcome", today)
+                    if "outcome" in document else None),
     }
 
 

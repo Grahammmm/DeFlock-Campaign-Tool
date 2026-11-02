@@ -20,7 +20,7 @@ from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, camera_counts, map_controller
+from . import agency_cards, camera_counts, finding_law, law, map_controller
 from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .markdown_lite import render as markdown
@@ -162,6 +162,22 @@ def time_tag(value):
     return f'<time datetime="{e(value)}">{e(value)}</time>'
 
 
+OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
+                  "amended": "Approved with amendments", "no_action": "No action taken",
+                  "informational": "Informational item only"}
+
+
+def meeting_outcome_html(meeting):
+    """The organizer-verified outcome line (DF2237-11); "" when none was recorded."""
+    outcome = meeting.get("outcome")
+    if not outcome:
+        return ""
+    vote = f' ({e(outcome["vote"])})' if outcome.get("vote") else ""
+    return (f'<p class="meeting-outcome">Outcome: {e(OUTCOME_LABELS[outcome["result"]])} on {time_tag(outcome["on"])}{vote}'
+            f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">Official record</a>'
+            f' · verified by {e(outcome["verified_by"])}</p>')
+
+
 def _day(value):
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
@@ -208,6 +224,18 @@ class Site:
         self.city_agencies = [a for a in model["agencies"] if a["kind"] in CITY_KINDS]
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
+        # Legal basis (DF1507-02): the package is read once, only when a finding cites a rule.
+        self.rule_citations, self.law_status = {}, None
+        if any(finding_law.cited(f) for f in model["findings"]):
+            name = finding_law.jurisdiction(self.root)
+            try:
+                package = law.load_package(name) if name else None
+            except (OSError, ValueError):
+                package = None
+            if package is not None:
+                self.rule_citations = {rule["rule_id"]: rule["citation"] for rule in package["rules"]}
+                self.law_status = ("reviewed on " + package["reviewed_at"] if package["status"] == "reviewed"
+                                   else "draft, not legally reviewed")
 
     # -- shared frame ------------------------------------------------------
 
@@ -337,6 +365,7 @@ class Site:
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">Meeting page</a>'
         item = f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
+        item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = "Cancelled: " if meeting.get("status") == "cancelled" else ""
         kit = ('<details><summary>Public comment kit</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
@@ -507,6 +536,29 @@ class Site:
         related.sort(key=lambda r: (-r[1], not r[2], -utc_moment(r[0]["published_at"]).timestamp(), r[0]["slug"]))
         return related[:limit]
 
+    def legal_basis(self, finding):
+        """The finding's own rule_version/duty/exceptions and each cited rule's package citation; "" when none."""
+        cited = finding_law.cited(finding)
+        version, duty, exceptions = (finding.get(key) for key in ("rule_version", "duty", "exceptions"))
+        if not cited and not version and not duty and not exceptions:
+            return ""
+        parts = ['<section class="legal-basis"><h3 id="legal-basis">Legal basis</h3>']
+        if version:
+            parts.append(f'<p>Rule version: {e(version)}</p>')
+        if duty:
+            parts.append(f'<p>Duty: {e(duty)}</p>')
+        if isinstance(exceptions, list) and exceptions:
+            parts.append("<p>Exceptions:</p><ul>" + "".join(f"<li>{e(item)}</li>" for item in exceptions) + "</ul>")
+        elif exceptions and not isinstance(exceptions, list):
+            parts.append(f"<p>Exceptions: {e(exceptions)}</p>")
+        if cited:
+            parts.append("<ul>" + "".join(
+                f"<li><code>{e(rule_id)}</code> — {e(self.rule_citations.get(rule_id, 'citation unavailable'))}</li>"
+                for rule_id in cited) + "</ul>")
+            if self.law_status:
+                parts.append(f'<p class="notice">Law package status: {e(self.law_status)}.</p>')
+        return "".join(parts) + "</section>"
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -541,7 +593,7 @@ class Site:
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
                 + (markdown(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>Sources</h3><ul class="source-table">{"".join(sources)}</ul>'
-                + f'<p class="provenance-note">{e(EXPLAINER)}</p>'
+                + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
                 + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>' + related
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
                 + '<p><a href="/corrections.html">All corrections</a></p>'
@@ -635,6 +687,7 @@ class Site:
                 f'<p><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time></p>'
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
+                + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + ('<p class="notice">This meeting was cancelled. The comment kit is kept for the record.</p>' if cancelled else "")
                 + f'<h3>Public comment kit</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 '<p><a href="/meetings.html">All meetings</a></p></article>\n')

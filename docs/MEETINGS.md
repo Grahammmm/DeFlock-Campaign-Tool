@@ -133,6 +133,20 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+## Recording an outcome
+
+After a staged meeting has happened, an organizer who read the result on the agency's own record
+(minutes, vote page or video) records it with
+`python3 -m campaign_tool meetings-outcome --directory D --id <meeting id> --result approved|denied|continued|amended|no_action|informational --on YYYY-MM-DD --source <https URL> --verified-by NAME [--vote TEXT] [--replace]`.
+It adds `outcome` to `content/meetings/<id>.json` with `verified_at` set to today, prints it and
+`Recorded only. Nothing was published.` It refuses a meeting that has not happened yet, a cancelled
+meeting, a symlinked file, an `--on` date before the meeting or after today, a non-https source,
+an empty `--verified-by`, and a `--vote` or name over 120 characters or with angle brackets or
+control characters; an existing outcome is kept unless `--replace`. `meetings-stage --replace` keeps
+the outcome. The site shows `Outcome: <label> on <date> (<vote>) · Official record · verified by <name>`
+on past meetings and the meeting page, never on upcoming ones. The tool fetches no minutes and
+says nothing about what an outcome means legally.
+
 ## Not done
 
 No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is
