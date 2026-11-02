@@ -22,7 +22,7 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/cedar-policy-posted.html",
          "sources.html", "meetings.html", "about.html", "corrections.html", "meetings/cedar-council-2026-10.html",
          "agencies/cedar.html"]  # DF2237-08: Cedar Police has a finding and sources
-FILES = PAGES + ["404.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+FILES = PAGES + ["404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                  "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
                  "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/sources.json"]
 EXPECTED_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
