@@ -4,7 +4,9 @@ Stdlib only and bounded: input <= ``MAX_BYTES``; at most ``MAX_STREAMS`` zlib st
 ``MAX_INFLATE`` bytes and all to at most ``MAX_INFLATE_TOTAL`` (``decompressobj().decompress(data, max_length)``, so
 memory stays bounded). Streams are found by sweeping every raw ``stream`` keyword, not by parsing, so no comment,
 string, ``/Length`` or stray ``endstream`` can hide one. Anything malformed or over a bound, and any ``/Filter`` other
-than Flate-only or image-only, is ``unreadable PDF`` / ``unreadable SVG`` and is refused too. Only kind names leave
+than Flate-only or image-only, is ``unreadable PDF`` / ``unreadable SVG`` and is refused too. A Flate stream is also
+read as a PDF reader sees it once a ``/DecodeParms`` PNG or TIFF predictor is undone (at most ``MAX_PREDICT_TOTAL``
+bytes in all); a ``/DecodeParms`` that is not direct, or any other predictor, is unreadable. Only kind names leave
 this module.
 """
 import bisect
@@ -31,6 +33,13 @@ PDF_GAP = re.compile(rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*(?=[\r\n]|\Z))*")
 # found wherever it is - in a comment, string or other stream's data too - so no parsing can be led astray
 PDF_STREAM = re.compile(rb"(?<![^\x00\t\n\x0c\r ()<>\[\]{}/%])stream[\x00\t\x0c ]*(?:\r\n|\n|\r)?")
 INFLATE_CHUNK = 64 * 1024
+# a Flate stream's /DecodeParms (/DP, as some readers also accept) predictor is undone before its names are read
+DECODE_PARMS = {b"DecodeParms", b"DP"}
+PREDICTOR_KEYS = (b"Predictor", b"Colors", b"BitsPerComponent", b"Columns")
+PDF_PARAM_INT = re.compile(rb"([+-]?\d+)(?![\d.])")
+PDF_PARAM_REF = re.compile(rb"\d+[\x00\t\n\x0c\r ]+\d+[\x00\t\n\x0c\r ]+R(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])")
+PDF_PARAM_OTHER = re.compile(rb"[+-]?\d*\.\d*|true\b|false\b|null\b|/[^\x00\t\n\x0c\r ()<>\[\]{}/%]*")
+MAX_PREDICT_TOTAL = MAX_INFLATE  # all predictor-undone bytes together (pure Python, so kept smaller than inflate)
 FLATE = {b"FlateDecode", b"Fl"}
 IMAGE_FILTERS = {b"DCTDecode", b"DCT", b"JPXDecode", b"CCITTFaxDecode", b"CCF", b"JBIG2Decode"}  # carry no names
 SVG_DOCTYPE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
@@ -84,6 +93,114 @@ def _is_flate(names):
     return False
 
 
+def _params_value(data, at):
+    """The ``/DecodeParms`` value at ``at`` as (list of predictor tuples, end); ``Unreadable`` unless it is ``null``,
+    a direct dictionary or an array of those. A tuple is (Predictor, Colors, BitsPerComponent, Columns)."""
+    at = PDF_GAP.match(data, at).end()
+    if data.startswith(b"null", at):
+        return [], at + 4
+    if data.startswith(b"<<", at):
+        params, at = _params_dict(data, at + 2)
+        return [params], at
+    if data[at:at + 1] != b"[":
+        raise Unreadable()  # an indirect reference or a malformed value: cannot tell how the stream is predicted
+    found, at = [], at + 1
+    while True:
+        at = PDF_GAP.match(data, at).end()
+        if data[at:at + 1] == b"]":
+            return found, at + 1
+        if data.startswith(b"null", at):
+            at += 4
+        elif data.startswith(b"<<", at):
+            params, at = _params_dict(data, at + 2)
+            found.append(params)
+        else:
+            raise Unreadable()
+
+
+def _params_dict(data, at):
+    """A direct decode-parameters dictionary from just after ``<<``: the predictor keys must be direct integers, each
+    key at most once; other keys (image filters' /K, /JBIG2Globals ...) may be a number, name, boolean or reference."""
+    seen = {}
+    while True:
+        at = PDF_GAP.match(data, at).end()
+        if data.startswith(b">>", at):
+            break
+        key = PDF_NAME.match(data, at)
+        if not key:
+            raise Unreadable()
+        name, at = _unhex(key[1]), PDF_GAP.match(data, key.end()).end()
+        if name in seen:
+            raise Unreadable()
+        reference = PDF_PARAM_REF.match(data, at)
+        value = None if reference else PDF_PARAM_INT.match(data, at)
+        if value:
+            seen[name], at = int(value[1]), value.end()
+        elif name in PREDICTOR_KEYS:
+            raise Unreadable()  # a reference, real or other value: cannot tell how the stream is predicted
+        else:
+            other = reference or PDF_PARAM_OTHER.match(data, at)
+            if not other:
+                raise Unreadable()
+            seen[name], at = None, other.end()
+    defaults = (1, 1, 8, 1)
+    return tuple(seen.get(k, d) for k, d in zip(PREDICTOR_KEYS, defaults)), at + 2
+
+
+def _unpredict(data, params):
+    """``data`` with a PNG (10-15) or TIFF (2, 8-bit) predictor undone as a reader would, ``None`` for predictor 1;
+    ``Unreadable`` for any other predictor or parameter out of range."""
+    predictor, colors, bits, columns = params
+    if predictor == 1:
+        return None
+    if not (1 <= colors <= 32 and bits in (1, 2, 4, 8, 16) and 1 <= columns <= MAX_INFLATE):
+        raise Unreadable()
+    pixel, row = max(1, (colors * bits + 7) // 8), (columns * colors * bits + 7) // 8
+    if row > MAX_INFLATE:
+        raise Unreadable()
+    out = bytearray()
+    if predictor == 2:
+        if bits != 8:
+            raise Unreadable()
+        for start in range(0, len(data), row):
+            line = bytearray(data[start:start + row])
+            for i in range(colors, len(line)):
+                line[i] = (line[i] + line[i - colors]) & 0xFF
+            out += line
+        return bytes(out)
+    if not 10 <= predictor <= 15:
+        raise Unreadable()
+    prior = bytes(row)
+    for start in range(0, len(data), row + 1):
+        kind, line = data[start], bytearray(data[start + 1:start + 1 + row])
+        if kind == 1:
+            for i in range(pixel, len(line)):
+                line[i] = (line[i] + line[i - pixel]) & 0xFF
+        elif kind == 2:
+            for i in range(len(line)):
+                line[i] = (line[i] + prior[i]) & 0xFF
+        elif kind == 3:
+            for i in range(len(line)):
+                left = line[i - pixel] if i >= pixel else 0
+                line[i] = (line[i] + ((left + prior[i]) >> 1)) & 0xFF
+        elif kind == 4:
+            for i in range(len(line)):
+                left = line[i - pixel] if i >= pixel else 0
+                up, corner = prior[i], prior[i - pixel] if i >= pixel else 0
+                guess = left + up - corner
+                near_left, near_up, near_corner = abs(guess - left), abs(guess - up), abs(guess - corner)
+                if near_left <= near_up and near_left <= near_corner:
+                    best = left
+                else:
+                    best = up if near_up <= near_corner else corner
+                line[i] = (line[i] + best) & 0xFF
+        elif kind != 0:
+            raise Unreadable()
+        out += line
+        prior = bytes(line) + bytes(row - len(line))
+    return bytes(out)
+
+
 def _zlib_header(view, at):
     """True if a zlib header (deflate, no preset dictionary, valid check bits) starts at ``at``."""
     head = view[at:at + 2]
@@ -117,14 +234,21 @@ def _inflated(data):
     next stream is not zlib. Nothing is lexed, so no comment, string or stream data can hide a stream from the sweep."""
     view = memoryview(data)
     starts = [match.end() for match in PDF_STREAM.finditer(data)]
+    predicted = {}  # stream start -> every predictor any /DecodeParms before it (and after the previous one) names
     for match in PDF_NAME.finditer(data):
-        if _unhex(match[1]) == b"Filter":
+        key = _unhex(match[1])
+        if key == b"Filter":
             names, end = _filter_value(data, match.end())
             if _is_flate(names):
                 following = bisect.bisect_left(starts, end)
                 if following == len(starts) or not _zlib_header(view, starts[following]):
                     raise Unreadable()
-    count = total = 0
+        elif key in DECODE_PARMS:
+            found, end = _params_value(data, match.end())
+            following = bisect.bisect_left(starts, end)
+            if following < len(starts):
+                predicted.setdefault(starts[following], set()).update(p for p in found if p[0] != 1)
+    count = total = undone = 0
     for start in starts:
         if not _zlib_header(view, start):
             continue  # unfiltered or image data: carries no compressed names
@@ -136,6 +260,11 @@ def _inflated(data):
         if total > MAX_INFLATE_TOTAL:
             raise Unreadable()
         yield out
+        for params in sorted(predicted.get(start, ())):  # also as a reader sees it once the predictor is undone
+            undone += len(out)
+            if undone > MAX_PREDICT_TOTAL:
+                raise Unreadable()
+            yield _unpredict(out, params)
 
 
 def pdf_kinds(data):

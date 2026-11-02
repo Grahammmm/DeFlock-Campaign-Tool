@@ -255,9 +255,11 @@ PDFs and SVGs: `build` and `content-check` also refuse, naming file and kinds bu
 (`public-assets/docs/agenda.pdf: PDF (JavaScript, more than one revision)`), a PDF with JavaScript, open/launch
 actions (`OpenAction`, `Launch`, `AA`), embedded files, an `Author` field or XMP creator, or more than one revision
 (an incremental update keeps the earlier text, so a redaction saved that way can still be read), names in compressed
-streams included (every `stream` keyword is swept, whatever `/Length` says); and an SVG with a `DOCTYPE`/entity, `script`, `foreignObject`, `on*` handlers or a link, `url()` or
+streams included (every `stream` keyword is swept, whatever `/Length` says, and read again with any PNG/TIFF
+`/DecodeParms` predictor undone); and an SVG with a `DOCTYPE`/entity, `script`, `foreignObject`, `on*` handlers or a link, `url()` or
 `@import` pointing anywhere but `#` in the file (`data:` too). Unparseable, or a PDF stream encoded other than plain
-Flate or an image codec (`LZWDecode`, `ASCII85Decode`, filter chains): `unreadable PDF`/`SVG`. Fix: save the PDF
+Flate or an image codec (`LZWDecode`, `ASCII85Decode`, filter chains, an indirect `/DecodeParms` or another
+predictor): `unreadable PDF`/`SVG`. Fix: save the PDF
 flattened as a new single-revision file without author fields; export the SVG as plain shapes, or use a PNG.
 
 Images in text: in a finding, page, about, mission or comment-kit text, a line that is only `![Council chamber, 3 June](/photos/council.jpg)` shows `content/public-assets/photos/council.jpg` (PNG, JPEG or WebP) with that alt text (required, 1-200 characters), its own width and height and lazy loading; anything else (inline, in a list, another site, a missing file or SVG, empty alt) stays text, and `markdown_lite --lint` names it as `image`. The newsletter shows no images.

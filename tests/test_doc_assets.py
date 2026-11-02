@@ -51,6 +51,32 @@ def flate(payload, dictionary=b"/Type /ObjStm /N 1 /First 4"):
     return b"<< %s /Filter /FlateDecode /Length %d >>\nstream\n%s\nendstream" % (dictionary, len(packed), packed)
 
 
+def png_rows(payload, width, kind, pixel=1):
+    """``payload`` PNG-predicted with row type ``kind`` (0-4) on rows of ``width`` bytes, ``pixel`` bytes a pixel."""
+    out, prior = bytearray(), bytes(width)
+    for start in range(0, len(payload), width):
+        row = payload[start:start + width]
+        coded = bytearray()
+        for i, byte in enumerate(row):
+            left, up = row[i - pixel] if i >= pixel else 0, prior[i]
+            corner = prior[i - pixel] if i >= pixel else 0
+            guess = left + up - corner
+            paeth = min((abs(guess - left), 0, left), (abs(guess - up), 1, up), (abs(guess - corner), 2, corner))[2]
+            coded.append((byte - (0, left, up, (left + up) // 2, paeth)[kind]) & 0xFF)
+        out += bytes([kind]) + coded
+        prior = row + bytes(width - len(row))
+    return bytes(out)
+
+
+def tiff_rows(payload, colors, columns):
+    """``payload`` TIFF-predicted (8-bit samples): each sample less the same colour's sample to its left."""
+    width, out = colors * columns, bytearray()
+    for start in range(0, len(payload), width):
+        row = payload[start:start + width]
+        out += bytes((row[i] - (row[i - colors] if i >= colors else 0)) & 0xFF for i in range(len(row)))
+    return bytes(out)
+
+
 def svg(body, attrs=b""):
     return b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"%s>%s</svg>' % (
         attrs, body)
@@ -115,6 +141,56 @@ class PdfKindsTests(unittest.TestCase):
                       b"5 0 R", b"/RunLengthDecode", b"[/FlateDecode", b"<< /FlateDecode 1 >>"):
             other = b"<< /Filter %s /Length 3 >>\nstream\nabc\nendstream" % value
             self.assertEqual(pdf_kinds(pdf(other)), [PDF_UNREADABLE], value)
+
+    # 3c. a /DecodeParms predictor cannot hide names: PNG (every row type) and TIFF predictors are undone first
+    def test_predictors(self):
+        hidden = b"5 0 << /S /JavaScript /JS (%s) /Author (%s) >>" % (JS_TEXT, AUTHOR)
+        found = ["JavaScript", "author metadata"]
+        # the reported case: /Predictor 10 /Columns 1 puts a zero row-type byte before every character
+        spaced = flate(png_rows(hidden, 1, 0), b"/Type /ObjStm /N 1 /First 4 /DecodeParms <</Predictor 10/Columns 1>>")
+        self.assertNotIn(b"JS", zlib.decompress(spaced[spaced.index(b"stream\n") + 7:spaced.rindex(b"\nendstream")]))
+        self.assertEqual(pdf_kinds(pdf(spaced)), found)
+        for kind in range(5):
+            for colors, columns in ((1, 7), (3, 4)):
+                params = b"<< /Predictor %d /Colors %d /Columns %d /BitsPerComponent 8 >>" % (
+                    11 + kind, colors, columns)
+                for value in (params, b"[%s]" % params, b"[ null %% c\n %s ]" % params):
+                    encoded = flate(png_rows(hidden, colors * columns, kind, colors), b"/DecodeParms " + value)
+                    self.assertEqual(pdf_kinds(pdf(encoded)), found, (kind, colors, value))
+        escaped = flate(png_rows(hidden, 3, 1), b"/Decode#50arms << /Pred#69ctor 15 /Columns 3 >>")
+        self.assertEqual(pdf_kinds(pdf(escaped)), found)
+        abbreviated = flate(png_rows(hidden, 3, 2), b"/DP << /Predictor 12 /Columns 3 >>")
+        self.assertEqual(pdf_kinds(pdf(abbreviated)), found)
+        tiff = flate(tiff_rows(hidden, 2, 5), b"/DecodeParms << /Predictor 2 /Colors 2 /Columns 5 >>")
+        self.assertNotIn(b"JS", zlib.decompress(tiff[tiff.index(b"stream\n") + 7:tiff.rindex(b"\nendstream")]))
+        self.assertEqual(pdf_kinds(pdf(tiff)), found)
+        # every /DecodeParms before a stream counts, so an earlier null one does not stop the predictor being undone
+        decoy = flate(png_rows(hidden, 2, 1), b"/T (x) /DecodeParms null /DecodeParms << /Predictor 12 /Columns 2 >>")
+        self.assertEqual(pdf_kinds(pdf(decoy)), found)
+        # clean predicted streams (an xref stream, images with image-filter parameters) have no kinds
+        xref = flate(png_rows(bytes(range(40)), 5, 2), b"/Type /XRef /DecodeParms << /Columns 5 /Predictor 12 >>")
+        ccitt = (b"<< /Subtype /Image /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 8 /BlackIs1 true >> "
+                 b"/Length 3 >>\nstream\nabc\nendstream")
+        jbig2 = (b"<< /Subtype /Image /Filter /JBIG2Decode /DecodeParms << /JBIG2Globals 9 0 R /F 1.5 /N /x >> "
+                 b"/Length 3 >>\nstream\nabc\nendstream")
+        identity = flate(b"<< /Type /Font >>", b"/DecodeParms << /Predictor 1 /Columns 3 >>")
+        self.assertEqual(pdf_kinds(pdf(xref, ccitt, jbig2, identity)), [])
+        # parameters that cannot be read, or a predictor no reader undoes this way: unreadable
+        for value in (b"9 0 R", b"<< /Predictor 9 0 R /Columns 3 >>", b"<< /Predictor 12 /Columns 3 0 R >>",
+                      b"<< /Predictor 3 >>", b"<< /Predictor 16 >>", b"<< /Predictor 12.0 >>", b"[9 0 R]",
+                      b"<< /Predictor 12 /Predictor 1 >>", b"<< /Predictor 12 /BitsPerComponent 3 >>",
+                      b"<< /Predictor 2 /BitsPerComponent 16 >>", b"<< /Predictor 12 /Columns 0 >>",
+                      b"<< /Predictor 12 /Colors 33 >>", b"<< /Predictor 12 /Columns (3) >>",
+                      b"<< /Predictor 12 /Columns [3] >>", b"(text)"):
+            other = flate(png_rows(hidden, 3, 0), b"/DecodeParms " + value)
+            self.assertEqual(pdf_kinds(pdf(other)), [PDF_UNREADABLE], value)
+        bad_row = flate(b"\x05abc\x00def", b"/DecodeParms << /Predictor 12 /Columns 3 >>")
+        self.assertEqual(pdf_kinds(pdf(bad_row)), [PDF_UNREADABLE])
+        large = [flate(png_rows(bytes(1000), 10, 0), b"/DecodeParms << /Predictor 10 /Columns 10 >>")] * 3
+        with mock.patch.object(doc_assets, "MAX_PREDICT_TOTAL", 3299):  # 3 x 1100 predicted bytes, bounded together
+            self.assertEqual(pdf_kinds(pdf(*large)), [PDF_UNREADABLE])
+        with mock.patch.object(doc_assets, "MAX_PREDICT_TOTAL", 3300):
+            self.assertEqual(pdf_kinds(pdf(*large)), [])
 
     # 4. incremental updates are revisions; a linearized file may have exactly two %%EOF
     def test_revisions(self):
