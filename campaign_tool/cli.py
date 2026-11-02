@@ -673,6 +673,11 @@ def main():
         publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
+    correct_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--date", "--note"):
+        correct_p.add_argument(flag, required=True)
+    correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -741,8 +746,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
-            if args.finding_command == "publish":
-                print(json.dumps(findings.publish(root, args.draft, args.approved_by)))
+            if args.finding_command in ("publish", "correct"):
+                print(json.dumps(findings.publish(root, args.draft, args.approved_by)
+                                 if args.finding_command == "publish" else
+                                 findings.correct(root, args.id, args.date, args.note, args.from_draft)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
             draft = findings.load_draft(args.draft)

@@ -28,6 +28,7 @@ DECISIONS = ("approve", "reject", "changes_requested")
 MAX_DRAFT_BYTES = 1024 * 1024
 MAX_RECEIPTS_BYTES = 4 * 1024 * 1024
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def reviewed_view(draft):
@@ -258,6 +259,14 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
     problems = cited_problems(root, finding)
     if problems:
         raise ValueError(f"cited records not registered and stored: {problems}")
+    entry = {"at": when, "action": "publish", "id": finding["id"], "slug": finding["slug"],
+             "content_sha256": reviewed_hash(draft), "approved_by": approved_by}
+    _write_logged(root, folder, target, document, entry)
+    return {"published": finding["slug"], "path": f"content/findings/{target.name}"}
+
+
+def _write_logged(root, folder, target, document, entry):
+    """Atomically (re)write ``target`` and append ``entry`` to private/publication-log.jsonl (0600)."""
     log = root / "private" / "publication-log.jsonl"
     try:  # open (and check) the log before the finding is written, so a bad log never leaves an unlogged publish
         log_fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -281,10 +290,75 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
         finally:
             if os.path.lexists(temporary):
                 os.unlink(temporary)
-        entry = {"at": when, "action": "publish", "id": finding["id"], "slug": finding["slug"],
-                 "content_sha256": reviewed_hash(draft), "approved_by": approved_by}
         os.write(log_fd, (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
         os.fsync(log_fd)
     finally:
         os.close(log_fd)
-    return {"published": finding["slug"], "path": f"content/findings/{target.name}"}
+
+
+def _check_date(date, moment, published_at, corrections):
+    if not isinstance(date, str) or not _DAY.fullmatch(date):
+        raise ValueError(f"--date must be YYYY-MM-DD, got {date!r}")
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"--date {date!r} is not a real calendar date") from None
+    if day > moment.date():
+        raise ValueError(f"--date {date} is in the future (today is {moment.date()} UTC)")
+    published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
+    if day < published_day:
+        raise ValueError(f"--date {date} is before the publication date {published_day}")
+    last = corrections[-1]["date"] if corrections else None
+    if last and day < datetime.strptime(last, "%Y-%m-%d").date():
+        raise ValueError(f"--date {date} is before the last correction date {last}")
+    return date
+
+
+def correct(root, finding_id, date, note, from_draft=None, now=None):
+    """Append one dated correction to the published finding with ``finding_id``; with ``from_draft``
+    its reviewed fields are replaced by the draft's, which must clear the same gate as publish.
+    id, slug and published_at never change; each correction is logged. Never builds or deploys."""
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    note = _text("note", note, 1000)
+    for folder in (root / "content", root / "private"):
+        if not _real_dir(folder):
+            raise ValueError(f"{folder}: no {folder.name}/ directory in this campaign")
+    with _locked(root / "private", ".publish.lock"):
+        return _correct_locked(root, finding_id, date, note, from_draft, moment)
+
+
+def _correct_locked(root, finding_id, date, note, from_draft, moment):
+    folder = root / "content" / "findings"
+    matches = []
+    for path in sorted(folder.glob("*.json")) if _real_dir(folder) else []:
+        document = _read_json(path, MAX_DRAFT_BYTES, "published finding")
+        if isinstance(document, dict) and document.get("id") == finding_id:
+            matches.append((path, document))
+    if len(matches) != 1:
+        raise ValueError(f"id {finding_id!r}: {len(matches)} published findings have it; need exactly one")
+    target, existing = matches[0]
+    current = content.load_finding(existing, f"content/findings/{target.name}")
+    date = _check_date(date, moment, current["published_at"], current["corrections"])
+    when = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    kept = {"state": existing["state"], "published_at": existing["published_at"], "updated_at": when,
+            "corrections": list(existing["corrections"]) + [{"date": date, "note": note}]}
+    if from_draft is None:
+        document = dict(reviewed_view(existing), **kept)
+    else:
+        draft = load_draft(from_draft)
+        if draft["id"] != finding_id or draft.get("slug") != current["slug"]:
+            raise ValueError(f"{from_draft}: draft id and slug must be {finding_id!r} and {current['slug']!r}")
+        blockers = review_blockers(reviewed_view(draft), _load_receipts(_receipts_path(root, draft)))
+        if blockers:
+            raise ValueError(f"review blockers: {blockers}")
+        document = dict(reviewed_view(draft), **kept)
+    finding = content.load_finding(document, f"content/findings/{target.name}")
+    if from_draft is not None:
+        problems = cited_problems(root, finding)
+        if problems:
+            raise ValueError(f"cited records not registered and stored: {problems}")
+    entry = {"at": when, "action": "correct", "id": finding_id, "slug": current["slug"], "date": date,
+             "content_sha256": reviewed_hash(document),
+             "text_changed": reviewed_hash(document) != reviewed_hash(existing)}
+    _write_logged(root, folder, target, document, entry)
+    return {"corrected": current["slug"], "corrections": len(kept["corrections"])}

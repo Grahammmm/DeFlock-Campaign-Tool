@@ -63,6 +63,16 @@ concurrent publishes of the same slug or id only one succeeds. The write is atom
 `D/private/publication-log.jsonl` (0600). It never builds, deploys or contacts anything: run
 `build` and review the site before any deploy.
 
+    python3 -m campaign_tool finding correct ID --directory D --date YYYY-MM-DD --note TEXT [--from DRAFT]
+
+`finding correct` appends one `{date, note}` to the published finding whose `id` is ID (exactly one
+file in `content/findings/`, never a symlink) and sets `updated_at` (now, UTC). The date must be a real
+`YYYY-MM-DD`, not after today (UTC), not before the `published_at` date and not before the last
+correction's date (equal is fine); the note is non-empty, at most 1000 characters, no control characters.
+With `--from DRAFT` the reviewed fields are replaced by the draft's (same id and slug), which must clear
+the same review blockers and cited-record check as `publish`; `id`, `slug`, `published_at` and earlier
+corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
