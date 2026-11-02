@@ -322,6 +322,14 @@ failed, even though the exit code stays that of the work stages. Consumers
 should read the exit code or the work-stage statuses to judge the pipeline
 itself.
 
+Read-only review summary: `python3 tools/run_report_review.py summary
+REPORT.json` (or `summary --dir reports/`, oldest first) keeps three facts
+apart: `VALID` (machine-valid or not), `WORK` (stage outcomes; unknown is
+never shown as 0; notify kept apart) and `OWED` (counts still waiting on a
+human gate, each tagged with gate 1, 2 or 3 or the operator; unknown codes
+stay `unmapped`). It writes nothing, has no verb that marks anything
+reviewed, and always ends `REVIEWED | none by this tool`.
+
 Non-fatal notify
 
 `notify.py` sends one metadata-only message, built from the report's codes.
