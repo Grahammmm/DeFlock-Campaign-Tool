@@ -166,8 +166,9 @@ roster, `finding review` refuses an unlisted name or unassigned role and `review
 ## Not done
 
 No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
-no reviewer directory or role assignment beyond the Access policy and no diff view between content
-versions; no automatic notification to reviewers. The runner that executes
+no reviewer directory or role assignment beyond the Access policy; no automatic notification to
+reviewers. `finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
+diff of the public fields before a correction; exit 3 when they differ. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
 
 The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`

@@ -732,6 +732,12 @@ def main():
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
+    diff_p = finding_cmds.add_parser("diff", help="Field-level diff of public fields: ID --from DRAFT, or OLD NEW "
+                                     "(read-only; exit 3 when they differ)")
+    diff_p.add_argument("inputs", nargs="+", metavar="ID | OLD NEW")
+    diff_p.add_argument("--directory", required=True)
+    diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
+    diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -739,6 +745,8 @@ def main():
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
+    if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
+        diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "json", False) and not args.checklist:
@@ -804,6 +812,9 @@ def main():
                              edit_source(root, args.sha256, args.fragment, title=args.title, note=args.note,
                                          public_url=args.public_url, pages=args.pages, clear_public_url=args.clear_public_url)))
             print("Nothing was published.")
+        elif args.command == "finding" and args.finding_command == "diff":
+            from .finding_diff import run_cli as diff_cli
+            sys.exit(diff_cli(root, args.inputs, args.from_draft, args.as_json))
         elif args.command == "finding" and args.finding_command == "reviewers":
             from . import findings
             read_config(root)
