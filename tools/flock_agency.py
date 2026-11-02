@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Flock agency timeline (BF-df-agency-timeline): one agency's history in date order, from the private store's recorded fields.
   flock_agency.py timeline STORE --agency SLUG [--as-of YYYY-MM-DD] [--inventory CSV] [--json]
+  flock_agency.py index STORE [--as-of YYYY-MM-DD] [--json]
+index (RF2330-7) prints one status line per agency folder (request and open counts, oldest open sent date, last recorded
+event, next provisional reminder, failing email runs, source errors per file) from timeline() itself, then a totals line.
 Requests sent, receipts, extension notices, determinations, productions, closures and withdrawals (REQUESTS.csv and
 REQUEST-STEPS.csv), fee rows (FEES.csv), email-run states (flock_state) and received-document counts (an inventory CSV),
 oldest first, then a "still open" block with each open request's state and provisional reminder date. Ids, counts, enum words
@@ -22,7 +25,8 @@ STEP_KIND = {"receipt": "receipt", "extension": "extension-notice", "determinati
              "closed": "closed"}
 SLUG = re.compile(r"[a-z0-9-]{1,60}")
 USAGE = ("usage: flock_agency.py timeline STORE --agency SLUG [--as-of YYYY-MM-DD] [--inventory CSV] [--json]"
-         "  (one agency's recorded history, oldest first; prints only, writes nothing)")
+         "  (one agency's recorded history, oldest first; prints only, writes nothing)\n"
+         "       flock_agency.py index STORE [--as-of YYYY-MM-DD] [--json]  (one status line per agency; prints only)")
 
 
 class Refuse(Exception): pass
@@ -141,13 +145,18 @@ def still_open(good, as_of):
     return out
 
 
-def timeline(store, slug, as_of, inventory):
+def store_base(store):  # the store checks timeline and index share -> the agencies folder
     given, root = Path(store), Path(store).resolve()
     if root == REPO or REPO in root.parents:
         raise Refuse("store is inside the repository")
-    base, folder = root / "agencies", root / "agencies" / slug
+    base = root / "agencies"
     if given.is_symlink() or not root.is_dir() or base.is_symlink() or not base.is_dir():
         raise Refuse("store is not a folder with an agencies folder")
+    return base
+
+
+def timeline(store, slug, as_of, inventory):
+    folder = store_base(store) / slug
     if folder.is_symlink() or not folder.is_dir():
         raise Refuse("agency folder is missing or a link")
     errors = []
@@ -174,9 +183,78 @@ def render(slug, as_of, events, opened, errors, failing, as_json):
     return 1 if errors or failing else 0
 
 
+def shown(name):  # flock_store_check.shown(): a folder name is printed only when it looks like a slug; banned words masked
+    name = name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else "?"
+    return "(unsafe-label)" if state.BANNED.search(name) else name
+
+
+def agency_row(store, slug, as_of):
+    row = {"agency": shown(slug), "requests": 0, "open": 0, "oldest_open_sent": "-", "last_event": None, "next_reminder": "-",
+           "failing_runs": 0, "errors": {}}
+    try:
+        events, opened, errors, failing = timeline(store, slug, as_of, None)
+    except Exception:  # noqa: BLE001 - one agency that cannot be read is its own error; the others still run
+        return row | {"errors": {"agency": 1}}
+    ids = {o["request"] for o in opened}
+    sent = [e["date"] for e in events if e["kind"] == "sent" and e["request"] in ids and e["date"] != "undated"]
+    dated = [e for e in events if e["date"] != "undated" and e["date"] <= str(as_of)]
+    due = [d for d in (rq.day(o["reminder"].split()[1]) for o in opened) if d]
+    return row | {"requests": sum(e["kind"] == "sent" for e in events), "open": len(opened),
+                  "oldest_open_sent": min(sent, default="-"),
+                  "last_event": {"date": dated[-1]["date"], "kind": dated[-1]["kind"]} if dated else None,
+                  "next_reminder": str(min(due)) if due else "-", "failing_runs": failing,
+                  "errors": dict(collections.Counter(e["file"] for e in errors))}
+
+
+def index(store, as_of):
+    """(rows, skipped): timeline() per real slug folder of STORE/agencies (no inventory); links and other names never read."""
+    rows, skipped = [], []
+    for child in sorted(store_base(store).iterdir(), key=lambda p: p.name):
+        if child.is_symlink() or child.is_dir() and not SLUG.fullmatch(child.name):
+            skipped.append({"name": shown(child.name), "reason": "link" if child.is_symlink() else "not a slug"})
+        elif child.is_dir():
+            rows.append(agency_row(store, child.name, as_of))
+    return rows, skipped
+
+
+def render_index(as_of, rows, skipped, as_json):
+    if as_json:
+        print(json.dumps({"schema": "flock-agency-index-v1", "review_required": True, "as_of": str(as_of), "note": state.NOTE,
+                          "agencies": rows, "skipped": skipped}, ensure_ascii=True))
+    else:
+        last = lambda e: "last %s %s" % (e["date"], e["kind"]) if e else "last -"  # noqa: E731
+        lines = ["index | %s | requests=%d open=%d | oldest open sent %s | %s | next reminder %s (provisional) | failing_runs=%d"
+                 " | errors=%d" % (r["agency"], r["requests"], r["open"], r["oldest_open_sent"], last(r["last_event"]),
+                                   r["next_reminder"], r["failing_runs"], sum(r["errors"].values())) for r in rows]
+        lines += ["skipped | %s | %s" % (s["name"], s["reason"]) for s in skipped]
+        lines.append("index | agencies=%d open=%d failing_runs=%d errors=%d skipped=%d | %s" % (
+            len(rows), sum(r["open"] for r in rows), sum(r["failing_runs"] for r in rows),
+            sum(sum(r["errors"].values()) for r in rows), len(skipped), state.NOTE))
+        print("\n".join(lines))
+    return 1 if any(r["errors"] or r["failing_runs"] for r in rows) else 0
+
+
+def index_main(argv):
+    as_json, rest = "--json" in argv, [a for a in argv if a != "--json"]
+    opts = dict(zip(rest[2::2], rest[3::2]))
+    if len(rest) not in (2, 4) or argv.count("--json") > 1 or set(opts) - {"--as-of"}:
+        return print(USAGE, file=sys.stderr) or 2
+    as_of = rq.day(opts.get("--as-of", date.today().isoformat()))
+    if as_of is None:
+        return print("index: --as-of must be a real YYYY-MM-DD date", file=sys.stderr) or 2
+    try:
+        found = index(rest[1], as_of)
+    except (Refuse, OSError) as exc:
+        return print("index: " + (str(exc) if isinstance(exc, Refuse) else "store unreadable (%s)" % type(exc).__name__),
+                     file=sys.stderr) or 1
+    return render_index(as_of, *found, as_json)
+
+
 def main(argv):
     if argv in (["--help"], ["-h"]):
         return print(USAGE) or 0
+    if argv[:1] == ["index"]:
+        return index_main(argv)
     as_json, rest = "--json" in argv, [a for a in argv if a != "--json"]
     keys, opts = rest[2::2], dict(zip(rest[2::2], rest[3::2]))
     ok = (len(rest) >= 4 and len(rest) % 2 == 0 and rest[0] == "timeline" and argv.count("--json") <= 1
