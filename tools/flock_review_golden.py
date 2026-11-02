@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Flock review golden: recompute one agency's counts from a finished flock_review run and compare them to a counts-only JSON.
-  flock_review_golden.py CONFIG --expect FILE | --write FILE
+  flock_review_golden.py CONFIG --expect FILE [--json] | --write FILE
+--json (only with --expect) prints one flock-review-golden-check-v1 document: match, keys, differences [{key, expected, got}], slug.
 Counts (facts by kind, requirements, findings by kind x verdict, analysis-only rows, F3 findings and check errors) come from the
 stage output files, never from logs. Needs every stage through counts done or skip. Never runs a stage or a model; no network.
 --expect refuses another agency's or a non-schema-1 golden in one line; nested count differences print one line per leaf (a.b.c).
@@ -72,7 +73,7 @@ def leaves(prefix, expected, actual):  # (dotted path, expected, actual) per dif
         yield from leaves(prefix + "." + name if prefix else name, expected.get(key, MISSING), actual.get(key, MISSING))
 
 
-def compare(actual, path):
+def _compare(actual, path):  # the --expect refusals, then (dotted key, expected, got) per differing leaf, and the golden's key count
     try:
         expected = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -83,11 +84,24 @@ def compare(actual, path):
         raise fr.Fail("golden: --expect file is not a schema 1 golden")
     if expected.get("slug", MISSING) != actual["slug"]:
         raise fr.Fail("golden: --expect file is for agency %s, not %s" % (safe(expected.get("slug", MISSING)), safe(actual["slug"])))
-    bad = list(leaves("", expected, actual))
+    return list(leaves("", expected, actual)), len(expected)
+
+
+def compare(actual, path):
+    bad, keys = _compare(actual, path)
     for key, want, got in bad:
         print("golden: %s expected %s got %s" % (key, safe(want), safe(got)))
     if not bad:
-        print("golden ok keys=%d" % len(expected))
+        print("golden ok keys=%d" % keys)
+    return 1 if bad else 0
+
+
+def compare_json(actual, path):  # the same leaves as `compare`, each value by safe()'s rule: parsed, or "invalid"/"missing"
+    bad, keys = _compare(actual, path)
+    value = lambda v: s if (s := safe(v)) in ("invalid", "missing") else json.loads(s)  # noqa: E731
+    found = [{"key": k, "expected": value(w), "got": value(g)} for k, w, g in sorted(bad, key=lambda d: d[0])]
+    print(json.dumps({"schema": "flock-review-golden-check-v1", "review_required": True, "match": not bad, "keys": keys,
+                      "differences": found, "slug": value(actual["slug"])}, indent=1, sort_keys=True))
     return 1 if bad else 0
 
 
@@ -116,10 +130,15 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--expect", metavar="FILE")
     group.add_argument("--write", metavar="FILE")
+    parser.add_argument("--json", action="store_true", help="with --expect: one flock-review-golden-check-v1 document")
     args = parser.parse_args(argv)
+    if args.json and not args.expect:
+        parser.error("--json needs --expect")
     try:
         actual = counts(fr.context(args.config))
-        return compare(actual, args.expect) if args.expect else write(actual, args.write)
+        if args.expect:
+            return (compare_json if args.json else compare)(actual, args.expect)
+        return write(actual, args.write)
     except fr.Fail as exc:
         return print(exc) or 1
     except OSError as exc:
