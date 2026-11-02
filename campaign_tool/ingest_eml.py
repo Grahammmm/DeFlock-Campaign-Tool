@@ -64,12 +64,16 @@ def sanitize(raw, number):
 
 
 def _unique(name, taken):
-    """`scan.pdf`, then `scan-2.pdf`, `scan-3.pdf`, ... for later parts with the same name."""
+    """`scan.pdf`, then `scan-2.pdf`, `scan-3.pdf`, ... for later parts with the same name; the stem is
+    shortened so a suffixed name still fits in 120 characters."""
     stem, ext = os.path.splitext(name)
+    if len(ext) > 16:
+        stem, ext = name, ""
     candidate, n = name, 1
     while candidate in taken:
         n += 1
-        candidate = f"{stem}-{n}{ext}"
+        suffix = f"-{n}{ext}"
+        candidate = stem[:MAX_NAME - len(suffix)] + suffix
     taken.add(candidate)
     return candidate
 
@@ -83,7 +87,7 @@ def _attachments(message):
             yield part.get_filename(), part
         elif part.is_multipart():
             stack.extend(reversed(part.get_payload()))
-        elif part is not message and part.get_filename() is not None:
+        elif part.get_filename() is not None:
             yield part.get_filename(), part
 
 

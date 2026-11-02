@@ -142,6 +142,30 @@ class IngestEmlTests(unittest.TestCase):
             | {item["sha256"] for item in report["attachments"]}]))
         self.assertEqual(sorted(r[0] for r in self.rows("SELECT member_path FROM contains")), sorted(self.names(report)))
 
+    def test_long_duplicate_names_stay_unique_and_within_120_characters(self):
+        long_name = "s" * 150 + ".pdf"
+        parts = "".join(f"--B\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; "
+                        f"filename=\"{long_name}\"\r\n\r\npart {n}\r\n" for n in range(11))
+        report = self.ingest(self.write(raw('Content-Type: multipart/mixed; boundary="B"', parts + "--B--\r\n")))
+        names = self.names(report)
+        self.assertEqual(len(set(names)), 11)
+        self.assertTrue(all(len(name) <= 120 and name.endswith(".pdf") for name in names), names)
+        self.assertEqual((names[0], names[1], names[10]),
+                         ("s" * 116 + ".pdf", "s" * 114 + "-2.pdf", "s" * 113 + "-11.pdf"))
+        self.assertEqual(sorted(r[0] for r in self.rows("SELECT member_path FROM contains")), sorted(names))
+
+    def test_single_part_message_with_filename_is_its_own_attachment(self):
+        head = 'Content-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\n' \
+               'Content-Disposition: attachment; filename="single.pdf"'
+        path = self.write(raw(head, "AP8BAgM=\r\n"))
+        report = self.ingest(path)
+        whole, sa = hashlib.sha256(path.read_bytes()).hexdigest(), hashlib.sha256(b"\x00\xff\x01\x02\x03").hexdigest()
+        self.assertEqual(report["attachments"], [{"name": "single.pdf", "sha256": sa, "outcome": "stored"}])
+        self.assertEqual((self.root / "private" / "objects" / sa).read_bytes(), b"\x00\xff\x01\x02\x03")
+        self.assertEqual(self.rows("SELECT * FROM contains"), [(whole, sa, "single.pdf")])
+        self.assertEqual(sorted(r[0] for r in self.rows("SELECT original_name FROM receipts")),
+                         ["m.eml", "m.eml/single.pdf"])
+
     def test_inline_image_without_filename_is_not_stored_or_listed(self):
         msg = message(html=True)
         msg.get_payload()[1].add_related(b"\x89PNG synthetic", maintype="image", subtype="png", cid="<logo@example.org>")
