@@ -142,11 +142,11 @@ def still_open(good, as_of):
 
 
 def timeline(store, slug, as_of, inventory):
-    root = Path(store).resolve()
+    given, root = Path(store), Path(store).resolve()
     if root == REPO or REPO in root.parents:
         raise Refuse("store is inside the repository")
     base, folder = root / "agencies", root / "agencies" / slug
-    if not root.is_dir() or base.is_symlink() or not base.is_dir():
+    if given.is_symlink() or not root.is_dir() or base.is_symlink() or not base.is_dir():
         raise Refuse("store is not a folder with an agencies folder")
     if folder.is_symlink() or not folder.is_dir():
         raise Refuse("agency folder is missing or a link")

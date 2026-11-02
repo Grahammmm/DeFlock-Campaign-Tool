@@ -182,6 +182,8 @@ class TimelineTests(unittest.TestCase):
         (self.tmp / "s2").mkdir()
         (self.tmp / "s2" / "agencies").symlink_to(self.store / "agencies", target_is_directory=True)
         self.assertEqual(self.run_tool(store=self.tmp / "s2"), (1, "", "timeline: store is not a folder with an agencies folder\n"))
+        (self.tmp / "s3").symlink_to(self.store, target_is_directory=True)
+        self.assertEqual(self.run_tool(store=self.tmp / "s3"), (1, "", "timeline: store is not a folder with an agencies folder\n"))
 
     def test_json_and_text_agree_and_bad_dates_are_usage(self):
         self.full_store()
