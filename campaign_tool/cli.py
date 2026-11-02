@@ -548,8 +548,11 @@ def main():
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
         if name == "build":
-            cmd.add_argument("--check", action="store_true",
-                             help="Scan the generated public/ tree for private paths and credential patterns")
+            mode = cmd.add_mutually_exclusive_group()
+            mode.add_argument("--check", action="store_true",
+                              help="Scan the generated public/ tree for private paths and credential patterns")
+            mode.add_argument("--preview", action="store_true",
+                              help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
         if name == "doctor":
@@ -688,6 +691,12 @@ def main():
             kit(args, root)
         elif args.command == "social":
             social_cmd(root)
+        elif args.command == "build" and args.preview:
+            from .site import preview_site
+            report = preview_site(root)
+            print(json.dumps(report, indent=2))
+            print("Preview only; public/ was not changed.")
+            sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
             build(root, check=args.check)
         elif args.command == "backup":

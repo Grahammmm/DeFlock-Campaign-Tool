@@ -8,7 +8,9 @@ configured, the MapLibre controller. All generated JavaScript is self-hosted;
 pages contain no inline scripts, and the emitted ``_headers`` file carries a
 Content-Security-Policy that names only the hosts the content model declared.
 """
+import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -802,25 +804,16 @@ def _asset_plan(model):
     return plan
 
 
-def build_site(root, today=None):
-    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
-
-    ``today`` (a ``datetime.date``, default the build date) splits meetings into
-    upcoming (on or after it) and past.
-
-    Falls back to the neutral starter when ``content/`` does not exist.
-    Raises ``ContentError``/``ValueError`` and writes nothing when content is
-    not publishable.
-    """
+def _plan_site(root, today=None):
+    """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
     root = Path(root)
     cfg = read_config(root)
-    public = root / "public"
-    if public.is_symlink():
+    if (root / "public").is_symlink():
         raise ContentError("public/ must not be a symlink")
     model = load_content(root)
     if model is None:
-        return build_starter(cfg, public)
+        return None
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
@@ -852,6 +845,26 @@ def build_site(root, today=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    return files, plan
+
+
+def build_site(root, today=None):
+    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
+
+    ``today`` (a ``datetime.date``, default the build date) splits meetings into
+    upcoming (on or after it) and past.
+
+    Falls back to the neutral starter when ``content/`` does not exist.
+    Raises ``ContentError``/``ValueError`` and writes nothing when content is
+    not publishable.
+    """
+    from .cli import read_config
+    root = Path(root)
+    public = root / "public"
+    planned = _plan_site(root, today)
+    if planned is None:
+        return build_starter(read_config(root), public)
+    files, plan = planned
     staging = Path(tempfile.mkdtemp(dir=root, prefix=".public.new-"))  # swapped in only when complete
     new, written = staging / "public", []
     try:
@@ -872,6 +885,37 @@ def build_site(root, today=None):
             new.rename(public)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    if not site.base:
+    if "sitemap.xml" not in files:  # planned exactly when content/site.json has a base_url
         print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
     return [public / path.relative_to(new) for path in written]
+
+
+def preview_site(root, today=None):
+    """Compare a fresh render with the current ``public/`` by path, size and SHA-256; writes nothing."""
+    public = Path(root) / "public"
+    planned = _plan_site(root, today)
+    if planned is None:
+        raise ValueError("build --preview needs content/; the starter has nothing to compare")
+    files, plan = planned
+
+    def sized(data):
+        return len(data), hashlib.sha256(data).hexdigest()
+    new = {name: sized(text.encode("utf-8")) for name, text in files.items()}
+    new.update({Path(relative).as_posix(): sized(Path(source).read_bytes()) for source, relative, _ in plan})
+    old, unreadable = {}, []
+    if public.is_dir():
+        for folder, dirs, names in os.walk(public, followlinks=False):
+            for name in names + [d for d in dirs if (Path(folder) / d).is_symlink()]:
+                path = Path(folder) / name
+                relative = path.relative_to(public).as_posix()
+                if path.is_symlink() or not path.is_file():  # never followed or opened
+                    unreadable.append(relative)
+                else:
+                    old[relative] = sized(path.read_bytes())
+    both = sorted(new.keys() & old.keys())
+    changed = [{"path": p, "bytes_before": old[p][0], "bytes_after": new[p][0], "delta": new[p][0] - old[p][0]}
+               for p in both if old[p] != new[p]]
+    return {"public_exists": public.exists(),
+            "added": [{"path": p, "bytes": new[p][0]} for p in sorted(new.keys() - old.keys())],
+            "removed": [{"path": p, "bytes": old[p][0]} for p in sorted(old.keys() - new.keys())],
+            "changed": changed, "unchanged": len(both) - len(changed), "unreadable": sorted(unreadable)}
