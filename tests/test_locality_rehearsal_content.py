@@ -77,8 +77,10 @@ class ContentRehearsalTests(unittest.TestCase):
         self.assertEqual([r["county"] for r in self.report["localities"]], ["San Luis Obispo", "Alameda"])
         for locality in self.report["localities"]:
             self.assertEqual(locality["content_findings"], 2)
-            for page in PAGES + ("index.html", "sitemap.xml", "site-data.js", "agency-cards.js"):
+            for page in PAGES + ("index.html", "data/findings.json", "site-data.js", "agency-cards.js"):
                 self.assertRegex(locality["content_public_files"].get(page, ""), "^[0-9a-f]{64}$", page)
+            # Synthetic sites set no base_url, so RF2030-2 writes no sitemap.xml.
+            self.assertNotIn("sitemap.xml", locality["content_public_files"])
 
     def test_source_bytes_private_paths_and_temp_root_in_a_finding_are_refused(self):
         leaks = {
