@@ -389,6 +389,21 @@ class Site:
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings", "Published, source-linked findings", "/findings/", main)
 
+    def related_findings(self, finding, limit=5):
+        """Up to `limit` other published findings with the same (non-empty) agency_id or a shared cited sha256, as
+        (other, shared_count, same_agency): most shared records, then same agency, then newest published_at, then slug."""
+        own = {source["sha256"] for source in finding["sources"]}
+        related = []
+        for other in self.model["findings"]:
+            if other["id"] == finding["id"]:
+                continue
+            shared = len(own & {source["sha256"] for source in other["sources"]})
+            same_agency = bool(finding["agency_id"]) and other["agency_id"] == finding["agency_id"]
+            if shared or same_agency:
+                related.append((other, shared, same_agency))
+        related.sort(key=lambda r: (-r[1], not r[2], -utc_moment(r[0]["published_at"]).timestamp(), r[0]["slug"]))
+        return related[:limit]
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -403,6 +418,15 @@ class Site:
         limits = ("".join(f'<li>{e(item)}</li>' for item in finding["limitations"]) or "<li>None stated.</li>")
         counter = ("".join(f'<li>{e(item)}</li>' for item in finding["counterevidence"]) or "<li>None identified at publication.</li>")
         updated = f' · Updated {date_label(finding["updated_at"])}' if finding["updated_at"] else ""
+        rows = []
+        for other, shared, same_agency in self.related_findings(finding):
+            why = (["Same agency"] if same_agency else []) + ([f'Shares {shared} source record{"" if shared == 1 else "s"}']
+                                                               if shared else [])
+            rows.append(f'<li><a href="/findings/{e(other["slug"])}.html">{e(other["title"])}</a> · '
+                        f'<span class="status-pill">{e(CLASSIFICATION_LABELS[other["classification"]])}</span> · '
+                        f'Event date <time datetime="{e(other["event_date"])}">{date_label(other["event_date"])}</time> · '
+                        f'<span class="related-why">{e(" · ".join(why))}</span></li>')
+        related = f'<h3 id="related">Related findings</h3><ul>{"".join(rows)}</ul>' if rows else ""
         main = ('    <article class="section finding-body" id="content">'
                 f'<div class="finding-meta"><span class="status-pill">{e(CLASSIFICATION_LABELS[finding["classification"]])}</span>'
                 f'<span>Confidence: {e(CONFIDENCE_LABELS[finding["confidence"]])}</span>'
@@ -411,7 +435,7 @@ class Site:
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
                 + (markdown(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>Sources</h3><ul class="source-table">{"".join(sources)}</ul>'
-                + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>'
+                + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>' + related
                 + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
                 + '<p><a href="/corrections.html">All corrections</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
