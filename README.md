@@ -38,9 +38,12 @@ Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, no
 python3 -m campaign_tool ingest --directory ../my-campaign --file examples/synthetic-county/policy.txt --source-id demo-production-001
 python3 -m campaign_tool ingest --directory ../my-campaign --dir ../production-001 --source-id demo-production-001  # whole folder; per-file stored/present/skipped, no links followed
 python3 -m campaign_tool ingest --directory ../my-campaign --dir ../production-001 --source-id demo-production-001 --dry-run  # preview: would_store/present/skipped; writes nothing
+python3 -m campaign_tool ingest --directory ../my-campaign --zip ../production-002.zip --source-id demo-production-002  # archive and members by hash, never extracted; --dry-run works too
 python3 -m campaign_tool status --directory ../my-campaign
 python3 -m campaign_tool status --directory ../my-campaign --check
 ```
+
+`ingest --zip` stores the archive itself, then each regular member read from it in memory (nothing is extracted to disk), each with its own receipt named `archive.zip/member/path` and a ledger `contains` row linking member to archive. Archives over 200 MiB, files that are not a zip archive and archives with more than 2000 entries are refused before anything is written. Members that are not stored are listed by skip code and the archive is still stored: `directory`; `unsafe_name` (absolute, drive-letter, `..`, empty or NUL name, backslashes counted as separators, or a receipt name over 255 characters); `duplicate_name`; `encrypted`; `symlink`; `too_large` (over 50 MiB, read capped at 50 MiB + 1 byte whatever the header claims); `ratio` (more than 100× its compressed size); `unreadable` (corrupt data, CRC or size not matching the header, or an unsupported method). Nested archives (`.zip`, `.7z`, `.tar.gz`, ...) are stored as ordinary members and never opened.
 
 `status --check` re-hashes every file in `private/objects` against the ledger and names missing, altered, orphaned, leftover `.intake-*` or unexpected entries by hash or file name only. It never writes, moves or deletes; exit 3 means problems were found, 0 a clean store.
 
