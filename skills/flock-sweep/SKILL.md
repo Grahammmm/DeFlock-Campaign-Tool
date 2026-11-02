@@ -45,6 +45,10 @@ calls kanban or hermes and never writes into the store. Each model run stays its
   reminders, stale-cited findings, new leads, review waits, unreviewed facts and receipt-unknown requests, each with its next
   command, then counts. Read-only; reminders are provisional, not legal status. A bad source is one `source-error` line (exit 1).
 
+## Dashboard
+- `python3 tools/flock_dashboard.py build --store S --date D --out NEWDIR` writes a private, static snapshot.
+- Rebuild before use; source failures are NOT CURRENT. Sent date and next step are NOT RECORDED until the state contract supplies them.
+
 ## Report
 - Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
   `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).
