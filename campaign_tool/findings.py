@@ -10,7 +10,7 @@ import re
 import stat
 import tempfile
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 try:
     import fcntl
@@ -26,6 +26,9 @@ DECISIONS = ("approve", "reject", "changes_requested")
 MAX_DRAFT_BYTES = 1024 * 1024
 MAX_RECEIPTS_BYTES = 4 * 1024 * 1024
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+MAX_ROSTER_BYTES, MAX_REVIEWERS = 256 * 1024, 200
+ROSTER_KEYS, REVIEWER_KEYS = frozenset(("schema_version", "reviewers")), frozenset(("name", "roles", "added_on"))
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def reviewed_view(draft):
@@ -48,9 +51,10 @@ def _read_json(path, limit, what):
         if os.path.islink(path):
             raise ValueError(f"{path}: {what} is a symlink; refusing to follow it") from None
         raise ValueError(f"{path}: cannot open {what} ({exc.strerror})") from None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):  # checked before fdopen, which refuses a directory itself
+        os.close(fd)
+        raise ValueError(f"{path}: {what} is not a regular file")
     with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError(f"{path}: {what} is not a regular file")
         data = handle.read(limit + 1)
     if len(data) > limit:
         raise ValueError(f"{path}: {what} is larger than {limit} bytes")
@@ -140,6 +144,11 @@ def add_receipt(root, draft, role, decision, reviewer, rationale, now=None):
     rationale = _text("rationale", rationale, 2000)
     if _who(reviewer) == _who(draft.get("author")):
         raise ValueError("the author cannot review their own finding")
+    roster = _load_roster(root)
+    entry = roster and _rostered(roster, reviewer)
+    if roster is not None and (entry is None or role not in entry["roles"]):
+        raise ValueError(f"{reviewer} is not " + ("on the reviewer roster" if entry is None
+                                                  else f"assigned the {role} role"))
     digest = reviewed_hash(draft)
     path = _receipts_path(root, draft)
     for folder in (root / "private", path.parent):
@@ -153,26 +162,112 @@ def add_receipt(root, draft, role, decision, reviewer, rationale, now=None):
         when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         receipt = {"content_sha256": digest, "role": role, "decision": decision, "reviewer": reviewer,
                    "rationale": rationale, "reviewed_at": when}
-        fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".review-")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as out:
-                json.dump(receipts + [receipt], out, indent=2, ensure_ascii=False)
-                out.write("\n")
-                out.flush()
-                os.fsync(out.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        _write_private(path, receipts + [receipt], ".review-")
     return dict(receipt, id=draft["id"], written=str(path))
+
+
+def _write_private(path, document, prefix):
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=prefix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def review_status(root, draft):
     """Read-only: current-content receipts, stale ones, and the review_blockers list."""
     digest = reviewed_hash(draft)
+    roster = _load_roster(root)
     receipts = _load_receipts(_receipts_path(root, draft))
     current = sum(isinstance(r, dict) and r.get("content_sha256") == digest for r in receipts)
     return {"id": draft["id"], "content_sha256": digest, "receipts_for_this_content": current,
             "stale_receipts": len(receipts) - current,
-            "review_blockers": review_blockers(reviewed_view(draft), receipts)}
+            "review_blockers": review_blockers(reviewed_view(draft), receipts),
+            **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)})}
+
+
+def _roster_path(root):
+    folder = root / "private"
+    if os.path.lexists(folder) and (os.path.islink(folder) or not os.path.isdir(folder)):
+        raise ValueError(f"{folder}: must be a real directory, not a symlink or a file")
+    return folder / "reviewers.json"
+
+
+def _rostered(roster, name):
+    who = _who(name)
+    return next((e for e in roster["reviewers"] if who is not None and _who(e["name"]) == who), None)
+
+
+def _unrostered(roster, receipts):
+    """Distinct (reviewer, role) pairs of receipts, current or stale, not rostered for that role."""
+    pairs = [{"reviewer": r.get("reviewer"), "role": r.get("role")} for r in receipts if isinstance(r, dict)]
+    return [p for i, p in enumerate(pairs) if p not in pairs[:i]
+            and ((e := _rostered(roster, p["reviewer"])) is None or p["role"] not in e["roles"])]
+
+
+def _object(where, document, expected):
+    if not isinstance(document, dict):
+        raise ValueError(f"{where}: must be a JSON object")
+    for key in sorted(set(document) ^ expected):
+        raise ValueError(f"{where}: {'unknown' if key in document else 'missing'} key {key!r}")
+
+
+def _load_roster(root):
+    """None when private/reviewers.json does not exist; otherwise the validated roster."""
+    path = _roster_path(root)
+    if not os.path.lexists(path):
+        return None
+    roster = _read_json(path, MAX_ROSTER_BYTES, "reviewer roster")
+    _object(path, roster, ROSTER_KEYS)
+    if type(roster["schema_version"]) is not int or roster["schema_version"] != 1:
+        raise ValueError(f"{path}: key 'schema_version' must be 1")
+    if not isinstance(roster["reviewers"], list) or len(roster["reviewers"]) > MAX_REVIEWERS:
+        raise ValueError(f"{path}: key 'reviewers' must be a list of at most {MAX_REVIEWERS} entries")
+    seen = set()
+    for index, entry in enumerate(roster["reviewers"]):
+        where = f"{path}: reviewers[{index}]"
+        _object(where, entry, REVIEWER_KEYS)
+        who, roles, added = _who(entry["name"]), entry["roles"], entry["added_on"]
+        if who is None or who in seen:
+            raise ValueError(f"{where}.name is empty or duplicates an earlier reviewer")
+        seen.add(who)
+        if not isinstance(roles, list) or not roles or not all(isinstance(r, str) and r in ROLES for r in roles):
+            raise ValueError(f"{where}.roles must be a non-empty list of {sorted(ROLES)}")
+        try:
+            date.fromisoformat(added if isinstance(added, str) and _DATE.fullmatch(added) else "")
+        except ValueError:
+            raise ValueError(f"{where}.added_on must be a YYYY-MM-DD date") from None
+    return roster
+
+
+def add_reviewer(root, name, roles, today=None):
+    """Add a reviewer or merge roles into an existing one (roles are never removed; added_on is kept)."""
+    name = _text("name", name, 120)
+    if not roles or any(role not in ROLES for role in roles):
+        raise ValueError(f"--role must be one of {sorted(ROLES)}")
+    path = _roster_path(root)
+    _load_roster(root)  # refuse a bad roster before any write
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    with _locked(path.parent):
+        roster = _load_roster(root) or {"schema_version": 1, "reviewers": []}
+        entry = _rostered(roster, name)
+        if entry is None and len(roster["reviewers"]) >= MAX_REVIEWERS:
+            raise ValueError(f"{path}: the roster already has {MAX_REVIEWERS} reviewers")
+        if entry is None:
+            entry = {"name": name, "roles": [], "added_on": str(today or date.today())}
+            roster["reviewers"].append(entry)
+        entry["roles"] = sorted(set(entry["roles"]) | set(roles))
+        _write_private(path, roster, ".reviewers-")
+    return dict(entry, written=str(path))
+
+
+def list_reviewers(root):
+    roster = _load_roster(root)  # read-only
+    return {"roster": "absent" if roster is None else "present", "reviewers": roster["reviewers"] if roster else []}
