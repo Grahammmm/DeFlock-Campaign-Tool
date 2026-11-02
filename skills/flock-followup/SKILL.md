@@ -39,6 +39,14 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   row, soonest first, unknown receipts last. With any error it prints nothing and exits 1.
   Relate it to a day: `python3 tools/flock_requests.py due <file or store dir> --as-of YYYY-MM-DD`.
 
+## Alerts
+
+- Alerts for one day: `python3 tools/flock_alerts.py reminders --store <store dir> --date YYYY-MM-DD --receipt-days N
+  [--json-out NEWFILE]`. One `alert | ...` line per open request whose reminder date is today, passed or within 7 days,
+  or with no receipt N+ days after sending. There is no default for --receipt-days; not a legal due date. Exit 3 on any
+  action alert, 1 with only a store-error line. An alert clears only when the row changes (record a step); nothing is
+  sent, acknowledged or snoozed. `--json-out` writes a new 0600 `flock-alerts-v1` file outside the repository.
+
 ## Summary
 
 - See where each agency stands: `python3 tools/flock_requests.py summary <file or store dir>`. One line per
