@@ -177,3 +177,9 @@ is once only and not after `determination`, `produced` or `denied`. `determinati
 `produced` may repeat. `closed` needs an earlier step, and nothing follows it. The note is plain text (no `<`, `>` or
 control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
 `closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
+
+`kit-due --directory D [--as-of YYYY-MM-DD]` (default today) lists requests still waiting on the agency under `open`,
+sorted by provisional `due` date (extended when recorded), with `days` left (negative once past) and `state`
+`past_due`, `due_today` or `upcoming`. Requests with a `determination`, `produced` or `denied` step appear under
+`answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
+request is past due, else 0. These are reminders, not lateness conclusions.
