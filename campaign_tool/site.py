@@ -27,7 +27,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "404.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor"}
 CLASSIFICATION_LABELS = {
     "documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
@@ -223,24 +223,27 @@ class Site:
                 tags.append(("property", "article:modified_time", e(_one_line(modified))))
         return "".join(f'  <meta {attr}="{key}" content="{value}">\n' for attr, key, value in tags)
 
-    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None):
-        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base else ""
+    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None,
+             index=True):
+        """``index=False``: a robots noindex tag instead of the share tags, and no canonical link."""
+        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base and index else ""
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
-                + self.share(title, description, path, kind, published, modified)
+                + (self.share(title, description, path, kind, published, modified) if index
+                   else '  <meta name="robots" content="noindex">\n')
                 + f'  <title>{e(title)} | {self.name}</title>\n'
                 '  <link rel="stylesheet" href="/style.css">\n'
                 '  <link rel="alternate" type="application/atom+xml" title="Findings" href="/feed.xml">\n'
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
-             kind="website", published=None, modified=None):
+             kind="website", published=None, modified=None, index=True):
         return render({
             "schema_version": 1,
             "language": self.site["language"],
-            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified),
+            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified, index),
                      "header": self.header(current), "main": main, "footer": self.footer()},
             "styles": {"font_family": self.site["font_family"], "font_faces": ""},
         })
@@ -430,6 +433,18 @@ class Site:
                 '<h2>Corrections</h2></div><p>Every correction issued on a published finding, newest first.</p></div>'
                 + (f'<ul>{items}</ul>' if items else '<p>No corrections have been issued.</p>') + '</section>\n')
         return self.page("findings", "Corrections", "Every correction issued on a published finding", "/corrections.html", main)
+
+    def not_found_html(self):
+        """``404.html`` for unknown paths: site shell, noindex, no canonical/share tags; never in sitemap or feeds."""
+        links = "".join(f'<li><a href="{href}">{label}</a></li>' for href, label in (
+            ("/findings/", "Findings"), ("/agencies.html", "Agencies"), ("/meetings.html", "Meetings"), ("/", "Home page")))
+        main = ('    <section class="section" id="content"><div class="section-heading"><div><h2>Page not found</h2></div>'
+                '<p>This page does not exist on this site. Findings are never silently removed: corrections and '
+                'withdrawals are listed on <a href="/corrections.html">Corrections</a>.</p></div>'
+                f'<ul>{links}</ul></section>\n')
+        # "not-found" matches no nav key, so no nav item is marked as the current page.
+        return self.page("not-found", "Page not found", "This page does not exist on this site.", "/404.html", main,
+                         index=False)
 
     def sources_html(self):
         groups = {}
@@ -737,7 +752,7 @@ def build_site(root, today=None):
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
         "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
-        "corrections.html": site.corrections_html(),
+        "corrections.html": site.corrections_html(), "404.html": site.not_found_html(),
     }
     for finding in model["findings"]:
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
