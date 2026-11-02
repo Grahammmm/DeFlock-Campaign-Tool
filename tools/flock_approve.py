@@ -56,6 +56,17 @@ def read_signature(path):
     return text
 
 
+def _ready(email, run):
+    """The run's email stage (no verifier) allows payload/approve: a drafted email, or an existing approval (approve then
+    fails with `already exists`). A send recorded without approval, or any draft that is not ready, raises ValueError."""
+    st = email.stage(run)
+    if st == email.STAGES[5]:
+        raise ValueError("email already recorded as sent")
+    if st not in ("email drafted", email.STAGES[6], email.STAGES[7]):
+        raise ValueError("email draft is not ready for approval")
+    return run
+
+
 def _payload(email, run):
     subject, body = email.approved_text(run)
     return approval.payload("flock-email", subject, body), subject, body
@@ -76,10 +87,10 @@ def main(argv):
     email = _email()
     try:
         if len(argv) == 2 and argv[0] == "payload":
-            sys.stdout.write(_payload(email, _run(argv[1]))[0].decode("utf-8"))
+            sys.stdout.write(_payload(email, _ready(email, _run(argv[1])))[0].decode("utf-8"))
             return 0
         if len(argv) == 4 and argv[0] == "approve" and argv[2] == "--signature":
-            run = _run(argv[1])
+            run = _ready(email, _run(argv[1]))
             data, subject, body = _payload(email, run)
             sig = read_signature(argv[3])
             who = approval.verify(data, sig)

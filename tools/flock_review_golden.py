@@ -3,6 +3,7 @@
   flock_review_golden.py CONFIG --expect FILE | --write FILE
 Counts (facts by kind, requirements, findings by kind x verdict, analysis-only rows, F3 findings and check errors) come from the
 stage output files, never from logs. Needs every stage through counts done or skip. Never runs a stage or a model; no network.
+--expect refuses another agency's or a non-schema-1 golden in one line; nested count differences print one line per leaf (a.b.c).
 --write refuses a path inside the repository or an existing file. Prints keys and counts only.
 Exit 0 match/written, 1 mismatch/not done/IO, 2 usage."""
 import argparse, csv, importlib.util, json, os, re, sys, tempfile
@@ -59,6 +60,18 @@ def safe(value):  # counts, slugs and key names only: anything else is never ech
     return json.dumps(value, sort_keys=True) if ok(value) else "invalid"
 
 
+def leaves(prefix, expected, actual):  # (dotted path, expected, actual) per differing leaf
+    present = [v for v in (expected, actual) if v is not MISSING]  # recurse: both dicts, or a non-empty dict vs missing
+    if not all(isinstance(v, dict) and (v or len(present) == 2) for v in present):
+        if expected != actual:  # a dict vs a non-dict (or an empty dict vs missing) is one whole-key line
+            yield prefix, expected, actual
+        return
+    expected, actual = ({} if v is MISSING else v for v in (expected, actual))
+    for key in sorted(set(expected) | set(actual)):
+        name = key if isinstance(key, str) and NAME.fullmatch(key) else "<key>"
+        yield from leaves(prefix + "." + name if prefix else name, expected.get(key, MISSING), actual.get(key, MISSING))
+
+
 def compare(actual, path):
     try:
         expected = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -66,10 +79,13 @@ def compare(actual, path):
         raise fr.Fail("golden: --expect file cannot be read as JSON") from None
     if not isinstance(expected, dict):
         raise fr.Fail("golden: --expect file is not a JSON object")
-    bad = [k for k in sorted(set(expected) | set(actual)) if expected.get(k, MISSING) != actual.get(k, MISSING)]
-    for key in bad:
-        print("golden: %s expected %s got %s" % (key if NAME.fullmatch(key) else "<key>", safe(expected.get(key, MISSING)),
-                                                 safe(actual.get(key, MISSING))))
+    if type(expected.get("schema")) is not int or expected["schema"] != 1:  # true / 1.0 are not schema 1 either
+        raise fr.Fail("golden: --expect file is not a schema 1 golden")
+    if expected.get("slug", MISSING) != actual["slug"]:
+        raise fr.Fail("golden: --expect file is for agency %s, not %s" % (safe(expected.get("slug", MISSING)), safe(actual["slug"])))
+    bad = list(leaves("", expected, actual))
+    for key, want, got in bad:
+        print("golden: %s expected %s got %s" % (key, safe(want), safe(got)))
     if not bad:
         print("golden ok keys=%d" % len(expected))
     return 1 if bad else 0
