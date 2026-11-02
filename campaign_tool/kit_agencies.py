@@ -75,6 +75,10 @@ def add_agency(root, agency_id, name, kind, note=None, today=None):
         raise ValueError(f"agency_id {agency_id} already exists in kit/agencies.json")
     if not isinstance(name, str) or not 3 <= len(name.strip()) <= 120 or _has_control(name):
         raise ValueError("name must be 3-120 characters with no control characters")
+    try:  # same plain-text rule the request renderer applies, so the next kit run can draft this agency
+        kit._clean_agency_name(name)
+    except ValueError:
+        raise ValueError("name must be plain text without angle brackets ('<' or '>')") from None
     if kind not in KINDS:
         raise ValueError("kind must be one of " + ", ".join(KINDS))
     if note is not None and (not isinstance(note, str) or len(note) > 300):

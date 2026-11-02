@@ -121,12 +121,25 @@ class KitAgencyTests(unittest.TestCase):
                  (self.add("ca-fictional-two", "Fictional Two", "constable"), ("kind",)),
                  (self.add("ca-fictional-two", "Fx"), ("name",)),
                  (self.add("ca-fictional-two", "Fictional\nTwo"), ("name", "control")),
+                 (self.add("ca-fictional-two", "Fictional <County> Two"), ("name", "angle brackets")),
+                 (self.add("ca-fictional-two", "Fictional Two >"), ("name", "angle brackets")),
                  (self.add("ca-fictional-two", "Fictional Two", "police", "--note", "x" * 301), ("note", "300"))]
         for result, words in cases:
             with self.subTest(words=words):
                 self.assert_refused(result, *words)
         self.assertEqual(self.path.read_bytes(), before)
         self.assert_ok(self.add("ca-fictional-two", "Fictional Two", "police", "--note", "x" * 300))
+
+    def test_angle_bracket_name_refused_so_next_kit_run_still_drafts(self):
+        sheriff = "ca-example-sheriff"
+        before = self.path.read_bytes()
+        self.assert_refused(self.add(sheriff, "Example <County> Sheriff", "sheriff"), "name", "angle brackets")
+        self.assertEqual(self.path.read_bytes(), before)
+        self.build()  # would stop on the renderer's plain-text check had the name been saved
+        self.assertFalse((self.kit / "requests" / (sheriff + ".md")).exists())
+        self.assert_ok(self.add(sheriff, "Example County Sheriff", "sheriff"))
+        self.build()
+        self.assertIn("Example County Sheriff", (self.kit / "requests" / (sheriff + ".md")).read_text())
 
     def test_unknown_duplicate_and_non_boolean_selected_refused(self):
         self.assert_refused(self.agency("select", "--id", "ca-nowhere-police"), "ca-nowhere-police", "found 0")
