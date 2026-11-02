@@ -162,6 +162,15 @@ class FindingLawTests(unittest.TestCase):
         self.assertEqual(self.parity(), ([], None))
         self.assertTrue(build_site(self.root))
 
+    def test_unreadable_package_is_missing_and_content_check_still_reports(self):
+        expected = "findings/citing: cites rule ca-open but there is no usable us-ca law package"
+        with mock.patch.object(law, "load_package", side_effect=PermissionError("denied")):
+            self.finding()
+            self.assertEqual(self.check_cli(), (0, ["content/: 0 problem(s)", "law package us-ca: missing"]))
+            self.finding(slug="citing", fid="fnd_citing", rule_ids=["ca-open"])
+            self.assertEqual(self.parity(), ([expected], expected))
+            self.assertEqual(self.check_cli(), (3, ["content/: 1 problem(s)", "law package us-ca: missing", expected]))
+
     def test_no_rule_cited_never_reads_the_package(self):
         self.finding()
         with mock.patch.object(law, "load_package", side_effect=AssertionError("package read")) as loader:

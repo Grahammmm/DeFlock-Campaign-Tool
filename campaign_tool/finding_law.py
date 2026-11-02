@@ -63,5 +63,9 @@ def check_findings(root, findings):
 
 
 def package_line(jurisdiction):
-    """Informational ``law package <jur>: draft|reviewed|missing`` line (never a problem)."""
-    return f"law package {jurisdiction}: {law.package_status(jurisdiction)[0]}"
+    """Informational ``law package <jur>: draft|reviewed|missing`` line (never a problem; unreadable is missing)."""
+    try:
+        status = law.package_status(jurisdiction)[0]
+    except OSError:
+        status = "missing"
+    return f"law package {jurisdiction}: {status}"
