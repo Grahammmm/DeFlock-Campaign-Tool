@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Render an already-produced private correspondence report; no source access."""
+"""Render an already-produced private correspondence report; no source access.
+
+--agency ID (repeatable, exact agencies[].id) writes only those agencies' requests, follow-up proposals and
+request-bound gaps; an unknown or repeated id is refused before any folder is made.
+"""
 import argparse
 from collections import defaultdict
 from datetime import datetime
@@ -113,8 +117,31 @@ def thread_lines(request, report):
     return result
 
 
-def render(report):
+def select(report, chosen):
+    """Keep only the chosen agencies' requests, their proposals and gaps naming nothing or something chosen."""
+    requests = [r for r in report.get('requests', []) if r['agency_id'] in chosen]
+    rids = {r['id'] for r in requests}
+
+    def kept(gap):
+        named = [gap['request_id']] if gap.get('request_id') is not None else []
+        named += list(gap.get('request_ids') or [])
+        agency = gap.get('agency_id')
+        if not named and agency is None:
+            return True
+        return any(r in rids for r in named) or agency in chosen
+
+    return {**report, 'agencies': [a for a in report.get('agencies', []) if a['id'] in chosen],
+            'requests': requests,
+            'reminder_proposals': [m for m in report.get('reminder_proposals', []) if m.get('request_id') in rids],
+            'gaps': [g for g in report.get('gaps', []) if kept(g)]}
+
+
+def render(report, agencies=None):
     lines = ["# Private correspondence", ""]
+    if agencies is not None:
+        total = len(report.get("agencies", []))
+        report = select(report, agencies)
+        lines += [text(f"Shown: {len(agencies)} of {total} agencies (filtered with --agency)."), ""]
     requests = report.get("requests", [])
     if not requests:
         lines += ["No requests are recorded.", ""]
@@ -209,12 +236,21 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', required=True)
     parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--agency', action='append', metavar='ID',
+                        help='exact agencies[].id to include (repeatable); other agencies are left out')
     args = parser.parse_args(argv)
     try:
         source, output = absolute(args.report), absolute(args.output_dir)
         report = load_report(source)
+        chosen = None if args.agency is None else set(args.agency)
         try:
-            content = render(report)
+            if chosen is not None:
+                if not chosen <= {a['id'] for a in report.get('agencies', [])}:
+                    raise Refusal('agency_unknown')
+                if len(chosen) != len(args.agency):
+                    raise Refusal('agency_repeated')
+            content = render(report, chosen)
+            written = report if chosen is None else select(report, chosen)
         except (KeyError, TypeError, AttributeError, ValueError, RecursionError):
             raise Refusal('report_not_json') from None
         try:
@@ -240,8 +276,11 @@ def main(argv=None):
     except (Refusal, OSError) as error:
         print(json.dumps({'error': str(error) if isinstance(error, Refusal) else 'output_parent_unsafe'}))
         return 2
-    print(json.dumps({'ok': True, 'agencies': len(report.get('agencies', [])),
-                      'requests': len(report.get('requests', [])), 'gaps': len(report.get('gaps', []))}))
+    summary = {'ok': True, 'agencies': len(written.get('agencies', [])),
+               'requests': len(written.get('requests', [])), 'gaps': len(written.get('gaps', []))}
+    if chosen is not None:
+        summary['shown_agencies'] = len(chosen)
+    print(json.dumps(summary))
     return 0
 
 
