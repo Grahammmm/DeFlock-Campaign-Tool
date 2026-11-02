@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """DF1537-12 flock-publish brief: one agency's human-approved PUBLISH.json entries -> one private Markdown draft.
 Run as `flock_publish.py brief STORE --agency SLUG --out FILE.md` (or this file with the same arguments).
+`--against FILE.md` instead of `--out` re-derives the draft read-only: exit 0 current, 3 drifted (finding ids only), 1 refused.
 Fixed template only: no model text and no new prose about the agency. The draft is never sent, posted or built;
 any send needs G's approval. Stdout carries counts only, never entry text or cite labels."""
-import contextlib, importlib.util, io, json, os, re, sys
+import collections, contextlib, errno, importlib.util, io, json, os, re, stat, sys
 from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("_flock_publish", TOOLS / "flock_publish.py")
@@ -99,5 +100,69 @@ def brief(store, agency, out, repo):
     link(raw.resolve(), body.encode("utf-8"))
     print("brief | agency=%s runs=%d approved=%d skipped_runs=%d written=%s" % (agency, used, len(entries), skipped, raw.name))
     return 0
+MAX_AGAINST = 2 * 1024 * 1024
+def read_against(raw):  # -> (reason, None) or (None, bytes); a link is never followed and a FIFO never waited on
+    try:
+        fd = os.open(raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return "missing", None
+        if exc.errno == errno.ELOOP:
+            return "is a link", None
+        raise
+    if not stat.S_ISREG(os.fstat(fd).st_mode):  # checked before fdopen, which refuses a directory itself
+        os.close(fd)
+        return "not a regular file", None
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read(MAX_AGAINST + 1)
+    if len(data) > MAX_AGAINST:
+        return "too large", None
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return "not UTF-8", None
+    return None, data
+def sections(text):  # -> (preamble + last line, {key: [section, ...]}); a section starts at a line beginning "## "
+    lines = re.split(r"(?<=\n)", text)
+    tail = lines.pop() or (lines.pop() if lines else "")  # the closing line (normally LAST)
+    head, keyed, current = [], {}, None
+    for line in lines:
+        if line.startswith("## "):
+            token = (line[3:].split() or [""])[0]
+            current = keyed.setdefault(token if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", token) else "?", [])
+            current.append("")
+        if current is None:
+            head.append(line)
+        else:
+            current[-1] += line
+    return ("".join(head), tail), keyed
+def against(store, agency, raw, repo):  # RF0450-10: re-derive the draft and compare it with FILE; nothing is written
+    if not publish.SLUG.fullmatch(agency):
+        return refuse(["--agency is not a slug"])
+    why, data = read_against(raw)
+    if why:
+        return refuse(["--against " + why])
+    folder = store / "agencies" / agency
+    if (store / "agencies").is_symlink() or folder.is_symlink() or (folder / "runs").is_symlink():
+        return refuse(["agency folder is a link"])
+    if not (folder / "runs").is_dir():
+        return refuse(["agency has no runs folder"])
+    entries, lines, _, _ = collect(folder / "runs")
+    print("".join(line + "\n" for line in lines), end="")
+    if not entries:
+        return refuse(["nothing approved"])
+    body = render(agency, entries)
+    if publish.privacy.EMAIL.search(body) or publish.privacy.PHONE.search(body):
+        return refuse(["an approved entry carries an email or phone pattern"])
+    label = name(Path(raw))
+    if data == body.encode("utf-8"):
+        return print("brief | against=%s state=current approved=%d" % (label, len(entries))) or 0
+    (new_head, new), (old_head, old) = sections(body), sections(data.decode("utf-8"))
+    drift = {k: "added" if k not in old else "removed" if k not in new else "changed" for k in new.keys() | old.keys() if new.get(k) != old.get(k)}
+    print("brief | drift | header | changed\n" * (new_head != old_head), end="")
+    print("".join("brief | drift | %s | %s\n" % (k, drift[k]) for k in sorted(drift)), end="")
+    counts = collections.Counter(drift.values())
+    print("brief | against=%s state=drifted added=%d removed=%d changed=%d" % (label, counts["added"], counts["removed"], counts["changed"]))
+    return 3
 if __name__ == "__main__":
     sys.exit(publish.main(["brief", *sys.argv[1:]]))
