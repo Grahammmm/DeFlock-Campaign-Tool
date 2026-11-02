@@ -35,6 +35,7 @@ mail or publishes anything.
 | Flock store check | Read-only run of every flock checker over one private store, agency slugs found in one place but not the others, and the newest backup's age. | `tools/flock_store_check.py` |
 | Offline records pipeline | `records run` preserves intake and advances extract, catalog, detect, review with an independent challenge, compare and privacy in one ledger. This command does not publish or send; approval and publication are separate commands. | `campaign_tool/records/run.py` |
 | Local OCR helper | Bounded local OCR for preserved PDF pages; extracted text remains unreviewed and requires visual review. This shipped helper does not establish live OCR wiring. | `campaign_tool/records/extract/ocr.py`, [RECORDS-OCR.md](RECORDS-OCR.md) |
+| Run report review summary | Read-only summary of a records run report (or a reports directory): machine-valid, stage work (unknown never 0) and human review still owed per gate, kept apart; marks nothing reviewed. | `tools/run_report_review.py`, `deploy/records-runtime/README.md` |
 | Offline starter CLI | Agency discovery, request kit, static site build, newsletter drafts, Legistar import, backup/verify/restore. | `README.md`, [LAUNCH.md](../LAUNCH.md) |
 
 ## Offline-only, frozen (G 2026-10-31)
