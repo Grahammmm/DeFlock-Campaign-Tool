@@ -63,6 +63,10 @@ PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classific
 PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
+# data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
+PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages",
+                         "cited_by")
+PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
 /* Content-model pages */
@@ -158,6 +162,10 @@ def time_tag(value):
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                   "amended": "Approved with amendments", "no_action": "No action taken",
                   "informational": "Informational item only"}
+# English names, independent of the host locale (DF1822-08 deadline line).
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December")
 
 
 def meeting_outcome_html(meeting):
@@ -359,11 +367,31 @@ class Site:
         return (f'<form class="finding-filter" id="finding-filter" aria-label="{self.t("finding.filter_label")}" hidden>{fields}'
                 f'<p class="filter-count" id="filter-count" aria-live="polite">{self.t("finding.filter_count", count=len(findings))}</p></form>')
 
+    def _written_deadline(self, meeting):
+        """DF1822-08: the verified written-comment deadline line, in the deadline's own offset; "" when none or cancelled.
+
+        Closed when the deadline is at or before the build instant, which is the build date (``self.today``) at
+        00:00 UTC: the builder carries a date, not a clock time.
+        """
+        written = (meeting.get("participation") or {}).get("written_comment") or {}
+        if meeting.get("status") == "cancelled" or not written.get("deadline"):
+            return ""
+        due = datetime.fromisoformat(written["deadline"].replace("Z", "+00:00"))
+        if due <= datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc):
+            text = "Written comment period closed"
+        else:
+            offset = int(due.utcoffset().total_seconds()) // 60
+            text = (f'Written comments due {WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
+                    f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
+                    f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+        return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
+
     def meeting_item(self, meeting):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
+        item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
         kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
@@ -653,7 +681,8 @@ class Site:
                 items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}{note}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
-                f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")}</p></div>'
+                f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
+                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p></div>'
                 + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
@@ -680,6 +709,7 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
@@ -692,7 +722,8 @@ class Site:
         main = (f'    <section class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.about")}</p>'
                 f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
-                '<a href="/data/findings.json" type="application/json">data/findings.json</a>.</p>'
+                '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
+                '<a href="/data/sources.json" type="application/json">data/sources.json</a>.</p>'
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
@@ -902,25 +933,42 @@ class Site:
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
-        _assert_public(doc)
+        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
+        _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def _public_library_entry(self, source):
+        """One library entry, copied key by key (never ``note``, ``fragment`` or the full sha256)."""
+        agency = self.agencies_by_id.get(source["agency_id"])
+        return {"sha256_prefix": short_hash(source["sha256"]), "title": source["title"], "agency_id": source["agency_id"],
+                "agency_name": agency["name"] if agency else None, "received_at": source["received_at"],
+                "public_url": source["public_url"] or None, "pages": source["pages"],
+                "cited_by": [f["id"] for f in self.cited_by.get(source["sha256"], [])]}
+
+    def sources_json(self):
+        """``data/sources.json``: the source library as open data; refuses any non-public key or full hash."""
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
+        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL, {"sources": (PUBLIC_LIBRARY_FIELDS, {})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
-def _assert_public(doc):
-    """Raise ``ContentError`` if ``doc`` holds a key outside the public allowlists or a 40+ hex string."""
+def _assert_public(doc, name, top, nested):
+    """Raise ``ContentError`` naming ``name`` if ``doc`` holds a key outside the public allowlists (``top`` at the top
+    level, ``nested`` maps a key to its ``(allowed, nested)`` pair) or a 40+ hex string."""
     def walk(value, allowed, nested):
         if isinstance(value, dict):
             for key, item in value.items():
                 if key not in allowed:
-                    raise ContentError(f"data/findings.json: non-public key {key}")
+                    raise ContentError(f"{name}: non-public key {key}")
                 walk(item, *nested.get(key, ((), {})))
         elif isinstance(value, list):
             for item in value:
                 walk(item, allowed, nested)
         elif isinstance(value, str) and FULL_HASH.search(value):
-            raise ContentError("data/findings.json: a string holds a full hash; publish 12-character prefixes only")
-    finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
-    walk(doc, PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
+            raise ContentError(f"{name}: a string holds a full hash; publish 12-character prefixes only")
+    walk(doc, top, nested)
 
 
 # --- file emission -----------------------------------------------------------
@@ -946,6 +994,7 @@ def _copy(source, target, written, limit):
 
 
 def _asset_plan(model):
+    from .image_meta import check_asset  # local: the only site.py change for the image-metadata gate
     assets_dir, plan = model["assets_dir"], []
     page_files = {f'{page["slug"]}.html' for page in model.get("pages", [])}
     for source in model["public_assets"]:
@@ -957,6 +1006,7 @@ def _asset_plan(model):
             raise ContentError(f"public-assets/{relative}: use plain file and folder names")
         if relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files:
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
+        check_asset(source, relative, ASSET_MAX_BYTES)
         plan.append((source, relative))
     return plan
 
@@ -992,6 +1042,7 @@ def _plan_site(root, today=None, notes=None):
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(),
+        "data/sources.json": site.sources_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = FILTER_JS
