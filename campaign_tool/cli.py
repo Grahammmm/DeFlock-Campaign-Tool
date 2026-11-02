@@ -849,6 +849,10 @@ def main():
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Draft to compare with the published ID")
     diff_p.add_argument("--json", dest="as_json", action="store_true", help="Print the change list as JSON")
+    today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
+    today_p.add_argument("--directory", required=True)
+    today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
+    today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     for flag in ("--directory", "--id"):
         pack.add_argument(flag, required=True)
@@ -1031,6 +1035,10 @@ def main():
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
             print("Read-only. Nothing was sent.", file=sys.stderr)
+        elif args.command == "today":
+            from .today import run_cli as today_cli
+            read_config(root)  # not a campaign folder: Stopped, before any source is read
+            print(today_cli(root, args.as_of, args.as_json))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of)
