@@ -543,8 +543,56 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation),
-                     indent=2))
+    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
+                           finding_ids=args.finding), indent=2))
+
+
+def finding_preview(root, draft_path, out, now=None):
+    """DF1822-02: one draft's finding page as build renders it (plus banner + noindex) written privately to
+    ``out``/findings/<slug>.html and ``out``/style.css. public/, feed, sitemap and data/ are never touched."""
+    import tempfile
+    from . import finding_law, findings
+    from .content import load_content, load_finding_preview
+    from .site import EXTRA_CSS, Site
+    out = Path(out).expanduser()
+    if out.is_symlink():
+        raise ValueError(f"{out}: --out is a symlink; choose a real private folder outside public/ and content/")
+    target = out.resolve()
+    for name in ("public", "content"):
+        protected = (root / name).resolve()
+        if target == protected or protected in target.parents:
+            raise ValueError(f"{out}: --out is inside {name}/; choose a private folder outside public/ and content/")
+    folder = target / "findings"
+    for path in (target, folder):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f"{path}: must be a real folder, not a symlink or a file")
+    finding = load_finding_preview(findings.load_draft(draft_path), str(draft_path), now=now)
+    model = load_content(root)
+    if model is None:
+        raise ValueError("finding preview needs content/ (run content init first)")
+    # Render with the draft in the model, as build will after `finding publish` (review t_608228c8): Site reads the
+    # law package's citations and status only when a model finding cites a rule. In memory only; content/ unchanged.
+    others = [f for f in model["findings"] if f["id"] != finding["id"]]  # a published copy of this draft is replaced
+    clash = next((f["id"] for f in others if f["slug"] == finding["slug"]), None)
+    if clash:
+        raise ValueError(f"{draft_path}: slug {finding['slug']} is already used by finding {clash}; build would refuse the duplicate")
+    problems = finding_law.check_findings(root, [finding])
+    if problems:
+        raise ValueError(f"draft {problems[0]}; build would refuse it")
+    model = dict(model, findings=sorted(others + [finding], key=lambda f: (f["published_at"], f["slug"]), reverse=True))
+    page = Site(root, read_config(root), model).finding_preview_html(finding)
+    if not target.exists():
+        target.mkdir(mode=0o700, parents=True)
+        os.chmod(target, 0o700)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    written = []
+    for path, text in ((folder / f"{finding['slug']}.html", page["html"]), (target / "style.css", page["css"] + EXTRA_CSS)):
+        fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)  # replaces a symlink entry itself, never writes through it
+        written.append(str(path))
+    return {"written": written, "slug": finding["slug"]}
 
 
 def main():
@@ -643,7 +691,9 @@ def main():
     stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
     stage_p.add_argument("--directory", required=True)
     stage_p.add_argument("--id", required=True, help="Meeting id from kit/meetings.json")
-    stage_p.add_argument("--agency-id", help="Cite only published findings for this agency")
+    stage_p.add_argument("--agency-id", help="The meeting's agency; its published findings are cited first")
+    stage_p.add_argument("--finding", action="append", metavar="ID",
+                         help="Published finding id to cite (repeatable, max 3, in this order; default: 3 chosen)")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
@@ -703,6 +753,12 @@ def main():
         followup_p.add_argument(flag, required=True)
     followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
     followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
+    for flag in ("--directory", "--agency"):
+        denial_p.add_argument(flag, required=True)
+    denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
+                          help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
+    denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -729,10 +785,16 @@ def main():
         batch.add_argument(flag, required=True)
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
-    commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
-        dest="content_command", required=True).add_parser(
+    content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+        dest="content_command", required=True)
+    content_cmds.add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
     ).add_argument("--directory", required=True)
+    strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
+                                      "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
+    strip_p.add_argument("file")
+    strip_p.add_argument("--out", default=None, help="Default <stem>.clean<suffix> beside FILE; never overwritten")
+    strip_p.set_defaults(directory=".")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -746,6 +808,10 @@ def main():
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
+                                        "(banner, noindex; never public/, feed or sitemap)")
+    for flag in ("--directory", "--out"):
+        preview_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
     status_p = finding_cmds.add_parser("status", help="Every draft, published and withdrawn finding with its state "
@@ -888,6 +954,14 @@ def main():
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
+        elif args.command == "finding" and args.finding_command == "preview":
+            try:
+                result = finding_preview(root, args.draft, args.out)
+            except (OSError, ValueError) as exc:  # load_draft/load_finding refusals: exit 2, nothing written
+                fixes.emit(exc)
+                sys.exit(2)
+            print(json.dumps(result))
+            print("Private preview only; public/ was not changed and nothing was published.")
         elif args.command == "finding" and args.finding_command == "new":
             from . import findings
             read_config(root)
@@ -932,6 +1006,9 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content" and args.content_command == "strip-metadata":
+            from .image_meta import strip_file
+            print(json.dumps(strip_file(args.file, args.out), indent=2))
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root), indent=2))
@@ -972,6 +1049,10 @@ def main():
         elif args.command == "kit-followup":
             from .kit_track import followup
             print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
+        elif args.command == "kit-denial-reply":
+            from .kit_track import denial_reply
+            print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render

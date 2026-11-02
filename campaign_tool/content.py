@@ -296,6 +296,20 @@ def load_finding(document, label):
     }
 
 
+def load_finding_preview(document, label, now=None):
+    """``load_finding`` for a draft preview (DF1822-02). A draft not yet at ``state: published`` is read as
+    ``finding publish`` would write it (publication fields replaced: published, ``published_at`` = the preview
+    time, no corrections), for validation and rendering only; every refusal is ``load_finding``'s own."""
+    if not isinstance(document, dict):
+        raise ContentError(f"{label}: expected an object")
+    if document.get("state") != "published":
+        when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        document = {key: value for key, value in document.items()
+                    if key not in ("state", "published_at", "updated_at", "corrections")}
+        document.update(state="published", published_at=when, corrections=[])
+    return load_finding(document, label)
+
+
 # --- meetings --------------------------------------------------------------
 
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
@@ -488,6 +502,26 @@ def _contract(value, label):
             "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
+ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
+
+
+def _alpr_policy(value, label):
+    """A posted ALPR usage policy an organizer found (``profile.alpr_policy``); linked only, never fetched or judged."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and not ALPR_POLICY_KEYS <= set(value):
+        raise ContentError(f"{label}: needs url, source_url and checked_on")
+    _require_keys(value, ALPR_POLICY_KEYS, ALPR_POLICY_KEYS, label)
+    try:
+        checked = _calendar_day(value["checked_on"], f"{label}.checked_on")
+    except ContentError:
+        checked = None
+    if checked is None or checked > date.today():
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    return {"url": _https(value["url"], f"{label}.url"),
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+
+
 def _flock_url(entry, item):
     """Transparency-portal link for an organizer-verified slug; built from the slug only, never fetched."""
     slug = entry.get("flock_transparency_slug")
@@ -524,7 +558,7 @@ def load_agencies(document, label):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract"}, set(), f"{item}.profile")  # county_profile stays without
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -544,6 +578,7 @@ def load_agencies(document, label):
             "verification": _verification(entry, item),
             "flock_transparency_url": _flock_url(entry, item),
             "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
+            "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),

@@ -118,6 +118,16 @@ stops the build naming `<file>[n].verification`. A verified agency shows
 link only and is never fetched. With `verified` not true the object is still
 validated but not shown, and the "Contact details unverified" hint stays.
 
+An agency's optional `profile.alpr_policy` links a posted ALPR usage policy an
+organizer found: `{"url": "https://…", "source_url": "https://…", "checked_on":
+"YYYY-MM-DD"}`, exactly these three keys. `url` is the policy itself and
+`source_url` the page where it was found (both https); `checked_on` is a real
+date not after the build date. A missing key, an extra key or a bad value stops
+the build naming `<file>[n].profile.alpr_policy` (and the field); `null` or
+absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
+<date>, where we found it)" on that agency's card only; neither URL is fetched.
+Linking a policy says only that it was posted; it is not a finding about compliance.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without
@@ -188,7 +198,17 @@ says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) an
 `sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
 `locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
 `duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
-nothing if any other key or a 40+ hex string would appear. `public/` is
+nothing if any other key or a 40+ hex string would appear. `data/sources.json`
+is the source library as open data (`schemas/sources-open-data.schema.json`),
+linked from `sources.html` and `about.html`, in `content/sources.json` order (an
+empty `sources` list without that file): per entry `sha256_prefix` (12 hex
+characters), `title`, `agency_id`, `agency_name` (null when the agency is not
+configured), `received_at`, `public_url` or null, `pages` or null and
+`cited_by` (ids of the published findings citing it, in site order; drafts
+never count). It never includes `note`, `fragment` or the full hash; the build
+refuses with `data/sources.json: ...` and writes nothing on any other key or a
+40+ hex string. The starter build (no `content/`) writes no `data/sources.json`.
+`public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
 over the output and fails on any hit. The command prints a manifest of every
@@ -210,6 +230,17 @@ files above.
 Not-found page: `404.html` is always generated (site shell, links to findings, agencies, meetings and home, a note
 that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
 is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
+
+Photos: a phone or camera photo usually carries metadata, often including the GPS position where it was taken
+(an organizer's home, say). `build` and `content-check` therefore refuse a `.jpg`, `.jpeg`, `.png` or `.webp` in
+`content/public-assets/` that carries EXIF (`EXIF GPS` when it has a GPS block), XMP, IPTC, a JPEG comment, PNG text
+chunks or bytes after the image end, naming the file and the kinds but never a value
+(`public-assets/photos/council.jpg: image metadata (EXIF GPS); run content strip-metadata`). A file the checker cannot
+parse is refused as `unreadable image`; re-export it. To clean one, run
+`python3 -m campaign_tool content strip-metadata content/public-assets/photos/council.jpg` (optional `--out PATH`): it writes
+`council.clean.jpg` beside it with those segments or chunks removed and every image byte kept (no re-encoding; colour
+profiles stay), prints `{"removed": [...], "written": ...}`, and refuses a symlink, an existing target or a target
+inside a `public/` folder. Check the copy, then replace the original yourself. SVG, ICO and PDF are not checked.
 
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment

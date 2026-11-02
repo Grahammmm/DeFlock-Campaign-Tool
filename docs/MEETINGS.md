@@ -60,9 +60,19 @@ site never lists a cancelled meeting as upcoming: it stays under past meetings m
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
-`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--location TEXT] [--participation FILE] [--replace]`,
+`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--replace]`,
 which writes `content/meetings/<id>.json` with a comment kit that cites published findings only;
 nothing is fetched, and `--replace` regenerates an existing file.
+
+The organizer picks the cited findings with `--finding ID` (repeatable, 1 to 3 ids): the kit cites
+exactly those, in the order given, in both the two-minute comment and `## Sources`. An id that is not a
+published finding in `content/findings/` (unknown, or a private draft), a repeated id or a fourth id is
+refused before anything is written. Without `--finding` the kit cites at most 3 findings: those of the
+meeting's `--agency-id` first, then the others, each group newest `event_date` first (ties by id), so the
+choice never depends on file order. This replaced the earlier default of every published finding (only
+the agency's when `--agency-id` was given) in load order; `--agency-id` now orders the default choice and
+sets the meeting's `agency_id` but never filters `--finding` ids. The command prints the cited ids as
+`findings` next to the `findings_cited` count.
 
 ### Participation (organizer-verified)
 
@@ -84,6 +94,9 @@ stripped. The file must be a regular file (no symlink) of at most 64 KB, and it 
 anything is written. The kit adds `## How to take part` after the asks: one line per stated fact, then
 `Source: <url> (checked <date>)`. Without the flag the document has no `participation` and the section
 says only `Check the posted agenda for how and when to comment; participation details were not verified.`
+A stated deadline also shows on the meetings list, the home page and the meeting's own page as
+`Written comments due <weekday, month day, year, h:mm AM/PM (UTC±hh:mm)>` in the deadline's own offset, or as
+`Written comment period closed` when it is at or before the build date at 00:00 UTC; cancelled meetings show neither.
 
 `speaker_minutes` (optional, a whole number 1–10, or `null`) is the per-speaker time limit stated by the same
 `source_url`. When it is set the kit adds `## Spoken comment (<m> minutes, about <130 × m> words)` after the
