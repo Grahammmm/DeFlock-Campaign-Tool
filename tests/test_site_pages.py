@@ -213,7 +213,7 @@ class ContentPagesTests(unittest.TestCase):
         without = self.snapshot()
         top = {n for n in without if n.endswith(".html") and "/" not in n}
         self.assertEqual(top, {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html",
-                               "corrections.html", "404.html"})
+                               "corrections.html", "404.html", "methods.html"})
         self.page("README.md", "Pages go here.")
         build_site(self.root)
         self.assertTrue(self.snapshot() == without, "an ignored file in pages/ changed the output")

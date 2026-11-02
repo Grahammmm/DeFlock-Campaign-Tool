@@ -240,6 +240,12 @@ Not-found page: `404.html` is always generated (site shell, links to findings, a
 that corrections and withdrawals are on `corrections.html`). It is `noindex`, has no canonical or share tags and
 is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-assets/404.html` is refused.
 
+How to read our findings: `methods.html` is always generated and is not editable. It defines every classification
+and confidence label (`#classification-<code>`, `#confidence-<code>`), explains record numbers and the factual,
+legal and privacy review by two people other than the author. The definitions live in `campaign_tool/site.py` next to
+the label tables; each badge on finding pages and the findings index links to its definition. It is in the footer and
+`sitemap.xml`; the slug `methods` and `public-assets/methods.html` are refused. `feed.xml` and `data/findings.json` keep plain labels.
+
 Photos: a phone or camera photo usually carries metadata, often including the GPS position where it was taken
 (an organizer's home, say). `build` and `content-check` therefore refuse a `.jpg`, `.jpeg`, `.png` or `.webp` in
 `content/public-assets/` that carries EXIF (`EXIF GPS` when it has a GPS block), XMP, IPTC, a JPEG comment, PNG text

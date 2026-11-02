@@ -171,7 +171,7 @@ class SiteMobileTests(unittest.TestCase):
             pages = {p.relative_to(root / "public").as_posix(): Page(p.read_text())
                      for p in (root / "public").rglob("*.html")}
             # 404.html (RF1510-5) is a generated page outside PAGES; it marks no nav item current by design.
-            self.assertEqual(set(pages), set(PAGES) | {"404.html"})
+            self.assertEqual(set(pages), set(PAGES) | {"404.html", "methods.html"})
             for name, page in pages.items():
                 self.assertEqual(page.viewport, 1, name)
                 self.assertEqual(len(page.navs), 1, name)
