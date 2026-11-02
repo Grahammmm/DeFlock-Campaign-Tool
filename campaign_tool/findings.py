@@ -447,11 +447,13 @@ def _resolve_sources(root, prefixes):
     for prefix in prefixes:
         if not isinstance(prefix, str) or not HEX_PREFIX.fullmatch(prefix):
             raise ValueError(f"--source {prefix!r}: give 12-64 lowercase hex characters of a library sha256")
-        matches = {entry["sha256"]: entry["title"] for entry in library if entry["sha256"].startswith(prefix)}
+        # Count entries, not distinct hashes: two entries sharing one sha256 (say, two fragments of one
+        # file) are as ambiguous as two files, so neither title is silently chosen.
+        matches = [entry for entry in library if entry["sha256"].startswith(prefix)]
         if len(matches) != 1:
             raise ValueError(f"--source {prefix}: " + ("matches no content/sources.json entry" if not matches
-                                                       else f"is ambiguous ({len(matches)} records match)"))
-        (sha, title), = matches.items()
+                                                       else f"is ambiguous ({len(matches)} entries match)"))
+        sha, title = matches[0]["sha256"], matches[0]["title"]
         if any(source["sha256"] == sha for source in resolved):
             raise ValueError(f"--source {prefix}: names a record already cited by an earlier --source")
         resolved.append({"sha256": sha, "title": title, "locator": EDIT + "page or section]"})

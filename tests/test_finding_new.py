@@ -127,6 +127,17 @@ class FindingNewTests(unittest.TestCase):
         self.assertIn("c3c3c3c3c3c3", result.stderr)
         self.assertFalse(self.drafts.exists())
 
+    def test_two_entries_sharing_one_sha256_are_ambiguous(self):
+        # Same file listed twice (different fragment and title): exactly one entry is required, never "the last".
+        library = json.loads((self.content / "sources.json").read_text())
+        library.append(dict(library[0], title="Synthetic record 0, second fragment", fragment="other-records"))
+        (self.content / "sources.json").write_text(json.dumps(library))
+        self.before = (tree(self.content), tree(self.root / "public"))
+        self.refused(f"--source {SHA_A[:12]}: is ambiguous \\(2 entries match\\)", sources=[SHA_A[:12]])
+        self.refused(f"--source {SHA_A}: is ambiguous \\(2 entries match\\)", sources=[SHA_A])
+        self.assertEqual([s["title"] for s in findings.load_draft(self.new(sources=[SHA_B])["written"])["sources"]],
+                         ["Synthetic record 1"])
+
     def test_existing_id_skipped_and_five_collisions_refused(self):
         self.drafts.mkdir(parents=True, mode=0o700)
         taken = self.drafts / "fnd_aaaaaaaaaaaa.json"
