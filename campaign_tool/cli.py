@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import fixes
+
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
 OUTCOMES = ("stored", "present", "symlink", "not_regular", "too_large", "hidden")
@@ -609,6 +611,12 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
+    for flag in ("--directory", "--agency", "--date"):
+        response_p.add_argument(flag, required=True)
+    response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
+                                                               "produced", "denied", "closed"))
+    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -636,7 +644,7 @@ def main():
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
         except (OSError, ValueError) as exc:
-            print("Stopped: " + str(exc), file=sys.stderr)
+            fixes.emit(exc)
             sys.exit(1)
         return
     root = Path(args.directory).expanduser().resolve()
@@ -694,8 +702,12 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-response":
+            from .kit_track import record_step
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
+            print("Recorded only. Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        print("Stopped: " + str(exc), file=sys.stderr)
+        fixes.emit(exc)
         sys.exit(1)
