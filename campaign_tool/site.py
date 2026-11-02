@@ -20,8 +20,8 @@ from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, map_controller
-from .content import CITY_KINDS, ContentError, load_content, utc_moment
+from . import agency_cards, camera_counts, map_controller
+from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .markdown_lite import render as markdown
 from .shell import render
@@ -32,7 +32,7 @@ ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "404.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
-                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor"}
+                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings"}
 CLASSIFICATION_LABELS = {
     "documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
     "confirmed_conflict": "Confirmed conflict", "information_gap": "Information gap",
@@ -335,7 +335,7 @@ class Site:
 
     def meeting_item(self, meeting):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a>'
-                  if meeting["agenda_url"] else "")
+                  if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">Meeting page</a>'
         item = f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = "Cancelled: " if meeting.get("status") == "cancelled" else ""
@@ -612,6 +612,24 @@ class Site:
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
         return self.page("meetings", "Meetings", "Public meetings and comment kits", "/meetings.html", main)
 
+    def meeting_html(self, meeting):
+        """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
+        cancelled = meeting.get("status") == "cancelled"
+        agenda = (f'<p><a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a></p>'
+                  if meeting["agenda_url"] else "")
+        kit = (markdown(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
+               else '<p>No comment kit has been staged for this meeting.</p>')
+        main = ('    <article class="section finding-body" id="content"><p class="eyebrow">Meeting</p>'
+                f'<h2>{"Cancelled: " if cancelled else ""}{e(meeting["body"])}</h2>'
+                f'<p><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time></p>'
+                + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
+                + (f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
+                + ('<p class="notice">This meeting was cancelled. The comment kit is kept for the record.</p>' if cancelled else "")
+                + f'<h3>Public comment kit</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
+                '<p><a href="/meetings.html">All meetings</a></p></article>\n')
+        return self.page("meetings", f'{meeting["body"]}, {meeting["starts_at"][:10]}',
+                         meeting["agenda_item"] or "Public meeting and comment kit", f'/meetings/{meeting["id"]}.html', main)
+
     def about_html(self):
         contact = (f'<p>Contact: <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
                    if self.site["contact_email"] else "")
@@ -644,8 +662,25 @@ class Site:
                 "default_fragment": "library", "source_aliases": aliases,
                 "source_link_label": self.site["source_link_label"]}
 
+    def mapped_counts(self):
+        """``({boundary name: points inside}, problems)``, computed once from the map files; empty without a map."""
+        if not hasattr(self, "_mapped_counts"):
+            docs = []
+            for key in ("cameras_path", "boundary_path") if self.map else ():  # the copy's own checks, then the loader caps
+                _check_copy(self.map[key], MAX_GEOJSON_BYTES)
+                docs.append(_read_json(self.map[key], MAX_GEOJSON_BYTES))
+            self._mapped_counts = camera_counts.count_by_name(*docs) if docs else ({}, [])
+        return self._mapped_counts
+
+    def camera_notes(self):  # boundary names matching no picker city, then every boundary problem
+        counts, problems = self.mapped_counts()
+        picker = {agency["slug"] for agency in self.picker_cities()}
+        names = {entry["name"] for slug, entry in self.cities().items() if slug in picker}
+        return [f"boundary {name} matches no city agency" for name in counts if name not in names] + problems
+
     def cities(self):
         cities = {}
+        counts = self.mapped_counts()[0] if self.map else {}
         for agency in self.picker_cities():
             entry = {"name": agency["jurisdiction_name"] or agency["name"], "displayName": agency["name"]}
             if self.map:
@@ -654,6 +689,9 @@ class Site:
                 if city["name"]:
                     entry["name"] = city["name"]
             entry.update(agency["profile"], **({"flockTransparencyUrl": agency["flock_transparency_url"]} if agency["flock_transparency_url"] else {}))
+            if entry["cameraCount"] == "" and entry["name"] in counts:  # an organizer-typed value always wins
+                n = counts[entry["name"]]
+                entry["cameraCount"] = f"{n} community-mapped point{'' if n == 1 else 's'} inside city limits; ownership unconfirmed"
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
@@ -725,6 +763,7 @@ class Site:
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
+        paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
         return paths
 
     def sitemap_xml(self):
@@ -857,7 +896,7 @@ def _asset_plan(model):
     return plan
 
 
-def _plan_site(root, today=None):
+def _plan_site(root, today=None, notes=None):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
     root = Path(root)
@@ -877,6 +916,8 @@ def _plan_site(root, today=None):
     }
     for finding in model["findings"]:
         pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
+    for meeting in model["meetings"]:
+        pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     css = pages["index.html"]["css"] + EXTRA_CSS
     files = {name: page["html"] for name, page in pages.items()}
     files.update({
@@ -898,14 +939,17 @@ def _plan_site(root, today=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    if isinstance(notes, list):
+        notes.extend(site.camera_notes())
     return files, plan
 
 
-def build_site(root, today=None):
+def build_site(root, today=None, notes=None):
     """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
 
     ``today`` (a ``datetime.date``, default the build date) splits meetings into
-    upcoming (on or after it) and past.
+    upcoming (on or after it) and past. ``notes``, when a list, receives
+    boundary names that match no city agency and boundary feature problems.
 
     Falls back to the neutral starter when ``content/`` does not exist.
     Raises ``ContentError``/``ValueError`` and writes nothing when content is
@@ -914,7 +958,7 @@ def build_site(root, today=None):
     from .cli import read_config
     root = Path(root)
     public = root / "public"
-    planned = _plan_site(root, today)
+    planned = _plan_site(root, today, notes)
     if planned is None:
         return build_starter(read_config(root), public)
     files, plan = planned
