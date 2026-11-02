@@ -1,5 +1,7 @@
 # Contributing
 
+Forking to run your own campaign? See [docs/FORK-AND-RUN.md](docs/FORK-AND-RUN.md).
+
 Start with a roadmap issue and a small reproducible synthetic fixture.
 Never attach real mailboxes, credentials, subscriber lists, signed URLs or private records.
 
