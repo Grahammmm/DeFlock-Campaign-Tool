@@ -76,6 +76,10 @@ Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
 
+Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) and every non-null `sources[].rule_id` must be a
+rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
+`content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
+
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the

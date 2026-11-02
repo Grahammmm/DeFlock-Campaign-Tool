@@ -646,6 +646,10 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)"
                         ).add_argument("--directory", required=True)
+    coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
+                                     "records, sources, findings (read-only)")
+    coverage_p.add_argument("--directory", required=True)
+    coverage_p.add_argument("--csv", action="store_true", help="RFC 4180 CSV on stdout instead of a table")
     due_p = commands.add_parser("kit-due", help="Open requests by provisional determination date; exit 3 when any is past")
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
@@ -657,6 +661,11 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
+    for flag in ("--directory", "--agency"):
+        followup_p.add_argument(flag, required=True)
+    followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
+    followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -830,6 +839,10 @@ def main():
         elif args.command == "kit-status":
             from .kit_track import status as kit_track_status
             print(json.dumps(kit_track_status(root), indent=2))
+        elif args.command == "kit-coverage":
+            from .kit_track import coverage, format_coverage
+            sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of)
@@ -841,6 +854,10 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
                                          records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-followup":
+            from .kit_track import followup
+            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
             print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,

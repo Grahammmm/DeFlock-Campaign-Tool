@@ -16,6 +16,7 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 FINDING = "content/findings/cedar-policy-posted.json"
 MEETING = "content/meetings/2026-10-cedar-council.json"
 EMAIL = "planted.person@example.invalid"
+PACKAGE = "law package us-ca: draft"  # DF1507-01: informational line after the count when campaign.json exists
 
 
 class ContentCheckTests(unittest.TestCase):
@@ -58,7 +59,7 @@ class ContentCheckTests(unittest.TestCase):
         self.assertIsNotNone(load_content(self.root))
         result = self.cli()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["content/: 0 problem(s)"])
+        self.assertEqual(result.stdout.splitlines(), ["content/: 0 problem(s)", PACKAGE])
 
     def test_every_broken_file_named_in_one_pass_and_nothing_written(self):
         self.write("content/findings/a-bad-json.json", "{not json")
@@ -75,7 +76,7 @@ class ContentCheckTests(unittest.TestCase):
             self.assertTrue(line.startswith(label), line)
         result = self.cli()
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["content/: 4 problem(s)", *problems])
+        self.assertEqual(result.stdout.splitlines(), ["content/: 4 problem(s)", PACKAGE, *problems])
         self.assertEqual(self.tree(), before)
         self.assertFalse((self.root / "public").exists())
         self.assertFalse((self.root / "private").exists())
@@ -143,7 +144,7 @@ class ContentCheckTests(unittest.TestCase):
         self.assertTrue(problems[1].startswith("map/map-config.json: group_slug: "), problems)
         result = self.cli()
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["content/: 2 problem(s)", *problems])
+        self.assertEqual(result.stdout.splitlines(), ["content/: 2 problem(s)", PACKAGE, *problems])
 
     def test_every_broken_map_file_named_in_one_pass(self):
         self.write("content/map/cameras.geojson", {"type": "FeatureCollection", "features": [{"geometry": None}]})
@@ -246,7 +247,7 @@ class ContentCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         lines = result.stdout.splitlines()
         self.assertEqual(lines[0], "content/: 250 problem(s)")
-        self.assertEqual(lines[1:], problems)
+        self.assertEqual(lines[1:], [PACKAGE, *problems])
 
     def test_no_content_directory_exits_zero_and_creates_nothing(self):
         shutil.rmtree(self.root / "content")
