@@ -185,7 +185,12 @@ the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
 no footer link, and `build` notes the skip on stderr), `feed.xml` (Atom of
 findings), `findings/agency/<slug>.xml` (the same Atom entries for one agency,
 only for an agency with at least one published finding; linked as "Findings
-feed" from its `agencies.html` entry), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
+feed" from its `agencies.html` entry), `agencies/<slug>.html` (one page per agency with at least one
+published finding or `sources.json` entry: its card facts and official links, its findings, its source records
+with 12-character hash prefixes and `sources.html#<fragment>` links, that body's upcoming meetings by `agency_id`,
+its findings feed when it has findings; linked as "Agency page" from `agencies.html` and from each of its finding
+pages, listed in the sitemap; other agencies get no page and no link; a `public-assets/agencies/` file is refused),
+`site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
 a picker-only bootstrap without a map), `data/*.geojson` and `vendor/*` when
