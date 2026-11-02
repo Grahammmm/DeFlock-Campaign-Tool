@@ -79,6 +79,7 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "5: --out is a symlink; choose a real private folder outside public/ and content/",
         "5: --out is inside 5/; choose a private folder outside public/ and content/",
         "5: must be a real folder, not a symlink or a file", "finding preview needs content/ (run content init first)",
+        "5: slug 5 is already used by finding 5; build would refuse the duplicate", "draft 5; build would refuse it",
     ), "finding preview message that already names the option or folder to change; not in the table"),
 }
 

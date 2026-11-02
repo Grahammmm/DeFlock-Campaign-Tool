@@ -551,7 +551,7 @@ def finding_preview(root, draft_path, out, now=None):
     """DF1822-02: one draft's finding page as build renders it (plus banner + noindex) written privately to
     ``out``/findings/<slug>.html and ``out``/style.css. public/, feed, sitemap and data/ are never touched."""
     import tempfile
-    from . import findings
+    from . import finding_law, findings
     from .content import load_content, load_finding_preview
     from .site import EXTRA_CSS, Site
     out = Path(out).expanduser()
@@ -570,6 +570,16 @@ def finding_preview(root, draft_path, out, now=None):
     model = load_content(root)
     if model is None:
         raise ValueError("finding preview needs content/ (run content init first)")
+    # Render with the draft in the model, as build will after `finding publish` (review t_608228c8): Site reads the
+    # law package's citations and status only when a model finding cites a rule. In memory only; content/ unchanged.
+    others = [f for f in model["findings"] if f["id"] != finding["id"]]  # a published copy of this draft is replaced
+    clash = next((f["id"] for f in others if f["slug"] == finding["slug"]), None)
+    if clash:
+        raise ValueError(f"{draft_path}: slug {finding['slug']} is already used by finding {clash}; build would refuse the duplicate")
+    problems = finding_law.check_findings(root, [finding])
+    if problems:
+        raise ValueError(f"draft {problems[0]}; build would refuse it")
+    model = dict(model, findings=sorted(others + [finding], key=lambda f: (f["published_at"], f["slug"]), reverse=True))
     page = Site(root, read_config(root), model).finding_preview_html(finding)
     if not target.exists():
         target.mkdir(mode=0o700, parents=True)

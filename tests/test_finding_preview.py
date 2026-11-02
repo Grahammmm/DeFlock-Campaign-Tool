@@ -3,6 +3,7 @@
 Run from the repository root: python3 -m unittest tests.test_finding_preview -v
 """
 import hashlib
+import html
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+from campaign_tool import law  # noqa: E402
 from campaign_tool.cli import finding_preview  # noqa: E402
 from campaign_tool.findings import MAX_DRAFT_BYTES  # noqa: E402
 from campaign_tool.site import build_site  # noqa: E402
@@ -25,6 +27,7 @@ NOW = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
 SLUG, DRAFT_ID = "cedar-draft-preview", "fnd_00000000000000d1"
 BANNER = '    <p class="draft-banner" role="note">Draft - not published</p>'
 NOINDEX = '  <meta name="robots" content="noindex">'
+RULE_ID = "ca-civ-1798.90.51-usage-and-privacy-policy"
 LIBRARY_TITLES = ("Synthetic Cedar Police ALPR policy", "Synthetic Cedar Police vendor agreement excerpt")
 
 
@@ -103,18 +106,51 @@ class FindingPreviewTests(unittest.TestCase):
                          ["findings", f"findings/{SLUG}.html", "style.css"])
         self.assertFalse(self.public.exists())
 
-    def test_page_equals_build_page_except_banner_and_noindex(self):
+    def assert_preview_equals_build(self, document):
+        """Preview ``document``, then publish the same finding into content/ and build: the pages differ only by
+        the banner and noindex lines, and style.css is the build's own."""
+        self.write_draft(document)
         finding_preview(self.root, self.draft, self.out, now=NOW)
-        preview = self.page().splitlines()
+        preview = self.page()
         build_site(self.root)
         css = (self.public / "style.css").read_text(encoding="utf-8")
-        published = dict(draft(), state="published", published_at=NOW.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        published = dict(document, state="published", published_at=NOW.strftime("%Y-%m-%dT%H:%M:%SZ"))
         (self.root / "content" / "findings" / f"{SLUG}.json").write_text(json.dumps(published), encoding="utf-8")
         build_site(self.root)
         built = (self.public / "findings" / f"{SLUG}.html").read_text(encoding="utf-8").splitlines()
-        self.assertEqual([line for line in preview if line not in (BANNER, NOINDEX)], built)
-        self.assertEqual(len(preview), len(built) + 2)
+        self.assertEqual([line for line in preview.splitlines() if line not in (BANNER, NOINDEX)], built)
+        self.assertEqual(len(preview.splitlines()), len(built) + 2)
         self.assertEqual((self.out / "style.css").read_text(encoding="utf-8"), css)
+        return preview
+
+    def test_page_equals_build_page_except_banner_and_noindex(self):
+        self.assert_preview_equals_build(draft())
+
+    def test_first_rule_citing_draft_shows_citation_and_package_status_as_build_will(self):
+        # Review t_608228c8: no published example finding cites a rule, so the law package is read only because
+        # the draft itself is in the preview's rendering model. Shipped us-ca package, read-only.
+        package = law.load_package("us-ca")
+        rule = next(r for r in package["rules"] if r["rule_id"] == RULE_ID)
+        status = ("reviewed on " + package["reviewed_at"] if package["status"] == "reviewed"
+                  else "draft, not legally reviewed")
+        published = json.loads((self.root / "content" / "findings" / "cedar-policy-posted.json").read_text())
+        self.assertFalse(published.get("rule_ids") or any(s.get("rule_id") for s in published["sources"]))
+        preview = self.assert_preview_equals_build(draft(rule_ids=[RULE_ID]))
+        self.assertIn(f"<li><code>{RULE_ID}</code> — {html.escape(rule['citation'])}</li>", preview)
+        self.assertIn(f'<p class="notice">Law package status: {html.escape(status)}.</p>', preview)
+        self.assertNotIn("citation unavailable", preview)
+
+    def test_draft_replaces_its_published_copy_and_clashes_and_law_problems_are_refused(self):
+        published = json.loads((self.root / "content" / "findings" / "cedar-policy-posted.json").read_text())
+        self.write_draft(draft(slug=published["slug"]))
+        self.refused(f"slug {published['slug']} is already used by finding {published['id']}; build would refuse")
+        self.write_draft(draft(rule_ids=["ca-made-up"]))
+        self.refused(f"draft findings/{SLUG}: rule ca-made-up is not in the us-ca law package; build would refuse it")
+        self.write_draft(dict(published, summary="An edited synthetic summary."))
+        self.preview()
+        page = (self.out / "findings" / f"{published['slug']}.html").read_text(encoding="utf-8")
+        self.assertIn("An edited synthetic summary.", page)
+        self.assertNotIn('id="related"', page)  # its published copy is replaced, never listed as related to itself
 
     def test_public_untouched_and_rebuild_has_no_trace_of_draft(self):
         build_site(self.root)
