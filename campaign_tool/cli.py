@@ -796,6 +796,11 @@ def main():
         batch.add_argument(flag, required=True)
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
+    verify = sources.add_parser("verify-copy", help="Hash a copy you downloaded from an entry's public_url and record "
+                                "whether it is the same file; nothing is fetched")
+    for flag in ("--directory", "--sha256", "--file", "--checked-on"):
+        verify.add_argument(flag, required=True)
+    verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
     content_cmds.add_parser(
@@ -962,6 +967,13 @@ def main():
             from .sources_cmd import add_batch
             print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
                                        dry_run=args.dry_run)))
+        elif args.command == "sources" and args.sources_command == "verify-copy":
+            from .sources_cmd import verify_copy
+            try:
+                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because)))
+            except ValueError as exc:
+                print(f"Stopped: {exc}", file=sys.stderr)
+                sys.exit(3)
         elif args.command == "sources":
             from .sources_cmd import edit_source, remove_source
             print(json.dumps(remove_source(root, args.sha256, args.fragment) if args.sources_command == "remove" else

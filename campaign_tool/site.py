@@ -32,7 +32,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "404.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings"}
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # findings/filter.js (RF1510-3): ES5, no dependency, same-origin under script-src 'self'. Without it the index is the
@@ -65,7 +65,8 @@ PUBLIC_CORRECTION_FIELDS = ("date", "note")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
 # data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
 PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages",
-                         "cited_by")
+                         "cited_by", "public_copy")
+PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
@@ -174,6 +175,23 @@ OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Cont
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
           "November", "December")
+
+
+COPY_DIFFERS = {"redacted": "redacted copy", "converted": "converted copy", "unknown": "reason unknown"}
+COPY_HOWTO = ('<p class="copy-howto" id="check-a-copy"><strong>How to check a copy:</strong> download the public copy and '
+              'compute its SHA-256 with <code>sha256sum FILE</code> (Linux), <code>shasum -a 256 FILE</code> (macOS) or '
+              '<code>Get-FileHash FILE</code> (Windows PowerShell). If the result starts with the record number, it is '
+              'the same file.</p>')
+
+
+def copy_status(source):
+    """' · Public copy checked D: same file as this record number' (DF2037-05); "" when no check is recorded."""
+    check = (source or {}).get("public_copy")
+    if not check or not source.get("public_url"):
+        return ""
+    verdict = ("same file as this record number" if check["matches"]
+               else f'differs ({COPY_DIFFERS[check["reason"]]})')
+    return f' · <span class="copy-check">Public copy checked {time_tag(check["checked_on"])}: {verdict}</span>'
 
 
 def meeting_outcome_html(meeting):
@@ -301,7 +319,7 @@ class Site:
                                for link in self.site["social"])
             parts.append(f'<p>{links}</p>')
         if self.map:
-            parts.append(f'<p>{e(self.map["attribution"])}</p>')
+            parts.append(f'<p>{e(self.map["attribution"])} · <a href="/cameras.html">Mapped points</a></p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}</p>')
@@ -447,7 +465,8 @@ class Site:
         return ('    <section class="hero" id="map"><div class="hero-map-wrap">'
                 f'<div id="county-map" class="map" role="region" aria-label="{self.t("map.region_label")}"></div>'
                 f'<p class="map-fallback">{fallback} {self.t("map.still_choose")} '
-                f'<a href="{e(self.map["controller"]["source_map_url"])}" rel="noopener noreferrer">{self.t("map.source_map")}</a>.</p>'
+                f'<a href="{e(self.map["controller"]["source_map_url"])}" rel="noopener noreferrer">{self.t("map.source_map")}</a>. '
+                '<a href="/cameras.html">Read the list of mapped points</a>.</p>'
                 f'<div class="map-key county-map-badge"><div class="county-map-identity"><span class="county-map-monogram">{e(self.cfg["county"][:2].upper())}</span>'
                 f'<div><span class="county-map-region">{self.t("map.region")}</span><strong>{self.county}</strong></div></div>'
                 f'<div class="county-map-legend"><span class="camera-dot"></span><span id="map-selection-count">{self.t("map.count", count=self.map["camera_count"])}</span></div>'
@@ -611,7 +630,7 @@ class Site:
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
             number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
-            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}</p></li>')
+            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
         agency = self.agencies_by_id.get(finding["agency_id"])
@@ -699,11 +718,13 @@ class Site:
                 cited = (f' · {self.t("sources.cited_by")} ' + ", ".join(f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in citing)
                          if citing else f' · {self.t("sources.not_cited")}')
                 sentence, record = source_line(source, source, self.agencies_by_id.get(source["agency_id"], {}).get("name"))
-                items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}{note}{cited}</p></li>')
+                items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}'
+                             f'{copy_status(source)}{note}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
+        howto = COPY_HOWTO if any(copy_status(s) for s in self.model["sources"]) else ""  # unchanged page without checks
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
                 f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
-                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p></div>'
+                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p>{howto}</div>'
                 + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
@@ -756,6 +777,50 @@ class Site:
         return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
                          f'/{page["slug"]}.html', main)
 
+    def cameras_html(self):
+        """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
+        by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
+        self.mapped_counts()
+        cameras, boundaries = self._map_docs
+        picker = {agency["slug"] for agency in self.picker_cities()}
+        names = sorted({entry["name"] for slug, entry in self.cities().items() if slug in picker})
+        shapes = {name: [] for name in names}
+        for feature in boundaries.get("features") or []:
+            name = camera_counts._name(feature) if isinstance(feature, dict) else None
+            polygons = camera_counts._polygons(feature.get("geometry")) if name in shapes else ""
+            for rings in [] if isinstance(polygons, str) else polygons:
+                xs, ys = [p[0] for p in rings[0]], [p[1] for p in rings[0]]
+                shapes[name].append(((min(xs), max(xs), min(ys), max(ys)), camera_counts._Ring(rings[0]),
+                                     [camera_counts._Ring(hole) for hole in rings[1:]]))
+        groups, features = {name: [] for name in names + [None]}, cameras.get("features") or []
+        for feature in features:
+            props, (x, y) = feature.get("properties") or {}, feature["geometry"]["coordinates"]
+            home = next((name for name in names for (w, east, s, n), outer, holes in shapes[name]
+                         if w <= x <= east and s <= y <= n and outer.contains(x, y)
+                         and not any(hole.contains(x, y) for hole in holes)), None)
+            url = props.get("url") if isinstance(props.get("url"), str) else None
+            node = re.fullmatch(r"https://www\.openstreetmap\.org/node/(\d+)", url or "")
+            cells = [e(str(props.get(key)).strip() or "not tagged") if props.get(key) is not None else "not tagged"
+                     for key in ("manufacturer", "operator")]
+            link = (f'<a href="{e(url)}" rel="noopener noreferrer">node {node.group(1)}</a>' if node else "no OSM link")
+            groups[home].append((url is None, url or "", "".join(f"<td>{c}</td>" for c in cells + [link])))
+        sections = ""
+        for name in names + [None]:
+            rows = sorted(groups[name], key=lambda row: row[:2])
+            shown = rows[:500] if len(features) > 2000 else rows
+            table = ('<table><thead><tr><th scope="col">Manufacturer</th><th scope="col">Operator</th>'
+                     '<th scope="col">OpenStreetMap</th></tr></thead><tbody>'
+                     + "".join(f"<tr>{row[2]}</tr>" for row in shown) + '</tbody></table>') if rows else ""
+            more = f'<p>and {len(rows) - len(shown)} more on the map</p>' if len(shown) < len(rows) else ""
+            sections += (f'<section class="camera-group"><h3>{e(name or self.map["group_label"])}</h3>'
+                         f'<p>{len(rows)} mapped point{"" if len(rows) == 1 else "s"}</p>{table}{more}</section>')
+        main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
+                '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
+                '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
+                f'<p>{e(self.map["attribution"])}</p><p class="map-date">{self.map_date_line()}</p>{sections}</section>\n')
+        return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
+                         "/cameras.html", main)
+
     # -- scripts and data ----------------------------------------------------
 
     def county_profile(self):
@@ -785,6 +850,7 @@ class Site:
                 _check_copy(self.map[key], MAX_GEOJSON_BYTES)
                 docs.append(_read_json(self.map[key], MAX_GEOJSON_BYTES))
             self._mapped_counts = camera_counts.count_by_name(*docs) if docs else ({}, [])
+            self._map_docs = docs
         return self._mapped_counts
 
     def camera_notes(self):  # boundary names matching no picker city, then every boundary problem
@@ -877,6 +943,7 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
+        paths += ["/cameras.html"] if self.map else []
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
@@ -964,14 +1031,16 @@ class Site:
         return {"sha256_prefix": short_hash(source["sha256"]), "title": source["title"], "agency_id": source["agency_id"],
                 "agency_name": agency["name"] if agency else None, "received_at": source["received_at"],
                 "public_url": source["public_url"] or None, "pages": source["pages"],
-                "cited_by": [f["id"] for f in self.cited_by.get(source["sha256"], [])]}
+                "cited_by": [f["id"] for f in self.cited_by.get(source["sha256"], [])],
+                "public_copy": source.get("public_copy") if source["public_url"] else None}
 
     def sources_json(self):
         """``data/sources.json``: the source library as open data; refuses any non-public key or full hash."""
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
-        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL, {"sources": (PUBLIC_LIBRARY_FIELDS, {})})
+        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL,
+                       {"sources": (PUBLIC_LIBRARY_FIELDS, {"public_copy": (PUBLIC_COPY_FIELDS, {})})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
@@ -1056,6 +1125,10 @@ def _plan_site(root, today=None, notes=None):
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     for page in model["pages"]:
         pages[f'{page["slug"]}.html'] = site.content_page_html(page)
+    if site.map:
+        if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
+            raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
+        pages["cameras.html"] = site.cameras_html()
     css = pages["index.html"]["css"] + EXTRA_CSS
     files = {name: page["html"] for name, page in pages.items()}
     files.update({

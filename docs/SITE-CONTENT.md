@@ -163,6 +163,15 @@ one existing fragment. It prints `{"added": [12-char prefixes],
 "already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
 second run adds nothing. Nothing is fetched or published.
 
+`sources verify-copy --directory D --sha256 PREFIX --file DOWNLOADED --checked-on YYYY-MM-DD
+[--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an entry's `public_url`
+(a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and records
+`public_copy: {"matches", "checked_on", "reason"?}` on every entry of that record that has a `public_url`. A differing
+copy needs `--differs-because`; a matching one refuses it. `checked_on` may not be in the future or before
+`received_at`. Refusals print `Stopped: <reason>`, exit 3 and write nothing. `sources.html`, the citing finding pages
+and `data/sources.json` then show "Public copy checked D: same file as this record number" or "differs (redacted
+copy)", with a short "How to check a copy" note. `sources edit --public-url`/`--clear-public-url` drops the check.
+
 ### Pages (`content/pages/<slug>.json`, optional)
 
 Each file becomes `/<slug>.html`: `{"title", "body_md", "description"?, "nav"?}`, nothing else. `title` is
@@ -185,7 +194,11 @@ the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
 no footer link, and `build` notes the skip on stderr), `feed.xml` (Atom of
 findings), `findings/agency/<slug>.xml` (the same Atom entries for one agency,
 only for an agency with at least one published finding; linked as "Findings
-feed" from its `agencies.html` entry), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
+feed" from its `agencies.html` entry), `cameras.html` (only with a map: the no-JS list of mapped points, one section
+per picker city by name, each point in the first city boundary holding it by the counts' half-open rule, then the
+`group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
+section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
+`site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
 a picker-only bootstrap without a map), `data/*.geojson` and `vendor/*` when

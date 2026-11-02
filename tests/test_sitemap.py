@@ -19,7 +19,7 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 BASE = "https://cedar-records.example.invalid"
 S = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 FIXED = ["/agencies.html", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
-         "/meetings/cedar-council-2026-10.html"]  # DF2022-03: the example's one meeting page
+         "/meetings/cedar-council-2026-10.html", "/cameras.html"]  # DF2022-03: the example's one meeting page
 NOTE = "sitemap.xml skipped: content/site.json has no base_url"
 
 

@@ -1,4 +1,7 @@
-"""`sources add | add-batch | list | edit | remove`: look after content/sources.json, the public source library.
+"""`sources add | add-batch | list | edit | remove | verify-copy`: look after content/sources.json, the source library.
+
+`verify-copy` hashes a local copy the organizer downloaded from an entry's public_url (nothing is fetched) and
+records `public_copy` {matches, checked_on, reason?}; `edit` drops that check when public_url changes.
 
 `add` resolves the hash against the private ledger (read-only); `add-batch` appends every not-yet-listed record
 of one ingest source_id (read via `status --list`'s in-memory ledger copy); `list` prints every entry with the slugs of the
@@ -7,18 +10,19 @@ of its library hash (+ `--fragment`); `remove` deletes one, refused while a publ
 no other entry for it remains. Writers validate the whole new list with the content loader, then replace the file
 atomically. The ledger and private/objects/ are never touched. Nothing is fetched, uploaded or published.
 """
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import stat
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from .agency_cards import visible
-from .content import (MAX_JSON_BYTES, ContentError, _read_json, default_agencies, load_agencies, load_finding,
-                      load_sources)
+from .content import (COPY_REASONS, MAX_JSON_BYTES, ContentError, _read_json, default_agencies, load_agencies,
+                      load_finding, load_sources)
 
 PREFIX = re.compile(r"[0-9a-f]{12,64}")
 
@@ -289,8 +293,73 @@ def edit_source(root, prefix, fragment=None, *, title=None, note=None, public_ur
     changed = sorted(key for key in changes if updated_entry.get(key) != entry.get(key))
     if not changed:
         raise ContentError("nothing to change")
+    dropped = "public_url" in changed and updated_entry.pop("public_copy", None) is not None  # old check is stale
     _rewrite(path, document[:index] + [updated_entry] + document[index + 1:])
-    return {"edited": entry["sha256"][:12], "fragment": entry["fragment"], "changed": changed}
+    return {"edited": entry["sha256"][:12], "fragment": entry["fragment"], "changed": changed,
+            **({"public_copy_removed": True} if dropped else {})}
+
+
+COPY_MAX = 200 * 1024 * 1024
+
+
+def _hash_copy(file):
+    """sha256 of a regular local file (no symlink, <= COPY_MAX), read in 1 MiB chunks; never copied or stored."""
+    try:
+        fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # a FIFO never blocks the run
+    except FileNotFoundError:
+        raise ValueError(f"--file: {file} does not exist") from None
+    except OSError as exc:
+        reason = "is a symlink; give the downloaded file itself" if Path(file).is_symlink() else f"cannot be read ({exc})"
+        raise ValueError(f"--file: {file} {reason}") from None
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > COPY_MAX:
+        os.close(fd)
+        raise ValueError(f"--file: {file} is not a regular file" if not stat.S_ISREG(info.st_mode)
+                         else f"--file: larger than {COPY_MAX // (1024 * 1024)} MiB; nothing hashed")
+    with os.fdopen(fd, "rb") as handle:
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None):
+    """Hash a copy the organizer downloaded from an entry's public_url; record public_copy on that record's entries."""
+    path, document = _library(root)
+    if not isinstance(prefix, str) or not PREFIX.fullmatch(prefix):
+        raise ValueError("--sha256: give 12 to 64 lowercase hex characters of a library entry's hash")
+    records = {entry["sha256"] for entry in document if entry["sha256"].startswith(prefix)}
+    if not records:
+        raise ValueError(f"no library entry starts with {prefix}")
+    if len(records) > 1:
+        raise ValueError(f"prefix matches {len(records)} entries; give more characters")
+    sha = records.pop()
+    targets = [index for index, entry in enumerate(document) if entry["sha256"] == sha and entry["public_url"]]
+    if not targets:
+        raise ValueError("entry has no public_url; nothing to compare")
+    if differs_because is not None and differs_because not in COPY_REASONS:
+        raise ValueError("--differs-because: one of " + ", ".join(COPY_REASONS))
+    try:
+        day = datetime.strptime(checked_on, "%Y-%m-%d").date() if isinstance(checked_on, str) else None
+    except ValueError:
+        day = None
+    if day is None or day.isoformat() != checked_on:
+        raise ValueError("--checked-on: a real YYYY-MM-DD date")
+    if day > (today or date.today()):
+        raise ValueError("--checked-on: must not be in the future")
+    received = max(document[index]["received_at"][:10] for index in targets)
+    if checked_on < received:
+        raise ValueError(f"--checked-on: must not be before the record was received ({received})")
+    digest = _hash_copy(file)
+    matches = digest == sha
+    if not matches and differs_because is None:
+        raise ValueError("copy differs from the record; pass --differs-because redacted|converted|unknown")
+    if matches and differs_because is not None:
+        raise ValueError("copy matches; --differs-because is only for a differing copy")
+    check = {"matches": matches, "checked_on": checked_on, **({} if matches else {"reason": differs_because})}
+    _rewrite(path, [{**entry, "public_copy": check} if index in targets else entry
+                    for index, entry in enumerate(document)])
+    return {"sha256_prefix": sha[:12], **check, **({} if matches else {"copy_sha256_prefix": digest[:12]})}
 
 
 def remove_source(root, prefix, fragment=None):
