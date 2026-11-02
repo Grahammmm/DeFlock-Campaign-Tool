@@ -417,7 +417,10 @@ def check_public_tree(public):
 def build(root, check=False):
     from .site import build_site
     public = root / "public"
-    written = build_site(root)
+    notes = []
+    written = build_site(root, notes=notes)
+    for note in notes:  # informational: the exit code is unchanged
+        print(f"note: {note}", file=sys.stderr)
     content_mode = (root / "content").is_dir()
     print(("Site" if content_mode else "Starter") + " written to " + str(public)
           + ". No private documents exported.")
@@ -715,6 +718,11 @@ def main():
         publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
+    correct_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--date", "--note"):
+        correct_p.add_argument(flag, required=True)
+    correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
     roster_cmds = finding_cmds.add_parser("reviewers", help="Private roster in private/reviewers.json (roles, not identity)"
                                           ).add_subparsers(dest="reviewers_command", required=True)
     roster_add = roster_cmds.add_parser("add", help="Add a reviewer or merge roles into an existing one")
@@ -807,6 +815,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "correct":
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
             if args.finding_command == "publish":
                 result = findings.publish(root, args.draft, args.approved_by)
                 print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
