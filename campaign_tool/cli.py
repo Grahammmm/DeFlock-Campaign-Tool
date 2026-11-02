@@ -636,6 +636,8 @@ def main():
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed"))
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
+                            help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -748,7 +750,8 @@ def main():
             print(json.dumps(kit_track_status(root), indent=2))
         elif args.command == "kit-response":
             from .kit_track import record_step
-            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note), indent=2))
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
+                                         records=args.record), indent=2))
             print("Recorded only. Nothing was sent.")
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
