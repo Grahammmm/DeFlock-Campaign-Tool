@@ -168,6 +168,11 @@ Printing: `style.css` ends with one `@media print` block. Nav, signup, map and p
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
 kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
 
+## Phones
+At widths up to 850 px, content-page menus wrap with 44 px tap targets and a visible keyboard focus outline.
+Agency cards use a single column; long finding, agency and meeting text wraps, and wide finding tables scroll locally.
+Filter and signup controls have 44 px minimum heights. Starter and print layouts and the CSP are unchanged.
+
 ## Content-Security-Policy
 
 `_headers` is generated exactly from the content model:

@@ -527,6 +527,11 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    setup_p = commands.add_parser("setup", help="Guided offline setup; nothing sent or published")
+    setup_p.add_argument("--directory", required=True)
+    for flag in ("--name", "--county", "--state", "--location"):
+        setup_p.add_argument(flag)
+    setup_p.add_argument("--yes", action="store_true", help="Use flags only; never prompt")
     for name in ("init", "ingest", "doctor", "status", "build"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--directory", required=True)
@@ -680,6 +685,9 @@ def main():
     try:
         if args.command == "init":
             initialize(args, root)
+        elif args.command == "setup":
+            from .setup_cmd import run_cli
+            run_cli(args, root, parser, sys.stdin, sys.stdout)
         elif args.command == "ingest":
             ingest(args, root)
         elif args.command == "kit":
