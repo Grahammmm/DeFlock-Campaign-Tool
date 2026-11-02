@@ -729,10 +729,16 @@ def main():
         batch.add_argument(flag, required=True)
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
-    commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
-        dest="content_command", required=True).add_parser(
+    content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+        dest="content_command", required=True)
+    content_cmds.add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
     ).add_argument("--directory", required=True)
+    strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
+                                      "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
+    strip_p.add_argument("file")
+    strip_p.add_argument("--out", default=None, help="Default <stem>.clean<suffix> beside FILE; never overwritten")
+    strip_p.set_defaults(directory=".")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -922,6 +928,9 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content" and args.content_command == "strip-metadata":
+            from .image_meta import strip_file
+            print(json.dumps(strip_file(args.file, args.out), indent=2))
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root), indent=2))
