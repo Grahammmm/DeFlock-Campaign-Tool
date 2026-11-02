@@ -65,6 +65,7 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--record #5: the same record is given twice", "--record #5: already linked on 5",
         "--record #5: name",  # wraps the resolve_hash refusal (not ingested / no ledger / 12 hex / ambiguous)
     ), "kit-response --record message that names the record number and the rule to change; not in the table"),
+    "--as-of must be a real YYYY-MM-DD date": "kit-due message that already names the option and the format",
     "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
     "must be 0-5": "argparse keep-count message; already names the range",
 }

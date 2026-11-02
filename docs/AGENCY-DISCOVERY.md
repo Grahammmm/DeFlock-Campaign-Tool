@@ -178,6 +178,12 @@ is once only and not after `determination`, `produced` or `denied`. `determinati
 control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
 `closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
 
+`kit-due --directory D [--as-of YYYY-MM-DD]` (default today) lists requests still waiting on the agency under `open`,
+sorted by provisional `due` date (extended when recorded), with `days` left (negative once past) and `state`
+`past_due`, `due_today` or `upcoming`. Requests with a `determination`, `produced` or `denied` step appear under
+`answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
+request is past due, else 0. These are reminders, not lateness conclusions.
+
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
