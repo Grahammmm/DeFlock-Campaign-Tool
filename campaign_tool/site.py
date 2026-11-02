@@ -63,6 +63,10 @@ PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classific
 PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
+# data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
+PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages",
+                         "cited_by")
+PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
 /* Content-model pages */
@@ -677,7 +681,8 @@ class Site:
                 items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}{note}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
-                f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")}</p></div>'
+                f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
+                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p></div>'
                 + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
@@ -717,7 +722,8 @@ class Site:
         main = (f'    <section class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.about")}</p>'
                 f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
-                '<a href="/data/findings.json" type="application/json">data/findings.json</a>.</p>'
+                '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
+                '<a href="/data/sources.json" type="application/json">data/sources.json</a>.</p>'
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
@@ -927,25 +933,42 @@ class Site:
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
-        _assert_public(doc)
+        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
+        _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def _public_library_entry(self, source):
+        """One library entry, copied key by key (never ``note``, ``fragment`` or the full sha256)."""
+        agency = self.agencies_by_id.get(source["agency_id"])
+        return {"sha256_prefix": short_hash(source["sha256"]), "title": source["title"], "agency_id": source["agency_id"],
+                "agency_name": agency["name"] if agency else None, "received_at": source["received_at"],
+                "public_url": source["public_url"] or None, "pages": source["pages"],
+                "cited_by": [f["id"] for f in self.cited_by.get(source["sha256"], [])]}
+
+    def sources_json(self):
+        """``data/sources.json``: the source library as open data; refuses any non-public key or full hash."""
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
+        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL, {"sources": (PUBLIC_LIBRARY_FIELDS, {})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
-def _assert_public(doc):
-    """Raise ``ContentError`` if ``doc`` holds a key outside the public allowlists or a 40+ hex string."""
+def _assert_public(doc, name, top, nested):
+    """Raise ``ContentError`` naming ``name`` if ``doc`` holds a key outside the public allowlists (``top`` at the top
+    level, ``nested`` maps a key to its ``(allowed, nested)`` pair) or a 40+ hex string."""
     def walk(value, allowed, nested):
         if isinstance(value, dict):
             for key, item in value.items():
                 if key not in allowed:
-                    raise ContentError(f"data/findings.json: non-public key {key}")
+                    raise ContentError(f"{name}: non-public key {key}")
                 walk(item, *nested.get(key, ((), {})))
         elif isinstance(value, list):
             for item in value:
                 walk(item, allowed, nested)
         elif isinstance(value, str) and FULL_HASH.search(value):
-            raise ContentError("data/findings.json: a string holds a full hash; publish 12-character prefixes only")
-    finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
-    walk(doc, PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
+            raise ContentError(f"{name}: a string holds a full hash; publish 12-character prefixes only")
+    walk(doc, top, nested)
 
 
 # --- file emission -----------------------------------------------------------
@@ -1017,6 +1040,7 @@ def _plan_site(root, today=None, notes=None):
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(),
+        "data/sources.json": site.sources_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = FILTER_JS
