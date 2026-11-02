@@ -14,6 +14,7 @@ from xml.etree import ElementTree as ET
 
 from campaign_tool.cli import read_config
 from campaign_tool.content import ContentError, load_content
+from campaign_tool.content_check import content_problems
 from campaign_tool.site import Site, build_site
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -215,6 +216,34 @@ class MeetingPageTests(unittest.TestCase):
         after = {p.relative_to(self.public).as_posix(): p.read_bytes() for p in self.public.rglob("*") if p.is_file()}
         self.assertEqual(sorted(after), sorted(before))
         self.assertTrue(all(after[name] == before[name] for name in before))
+
+    # 10. two meetings resolving to one id (filename-derived vs explicit, explicit vs explicit) are
+    #     refused before publication: no page is overwritten and public/ stays byte-identical
+    def test_duplicate_meeting_id_refused(self):
+        self.build()
+        before = {p.relative_to(self.public).as_posix(): p.read_bytes() for p in self.public.rglob("*") if p.is_file()}
+        derived = self.meetings / f"{EXAMPLE_ID}.json"  # no "id": the filename gives the example's explicit id
+        derived.write_text(json.dumps({"body": "Other board (fictional)", "starts_at": "2026-11-05T18:00:00-07:00",
+                                       "comment_kit_md": "Later kit (fictional)."}), encoding="utf-8")
+        explicit = self.meetings / "zz-other.json"
+        explicit.write_text(json.dumps({"id": "second", "body": "Second board (fictional)",
+                                        "starts_at": "2026-11-06T18:00:00-07:00"}), encoding="utf-8")
+        self.add("second", "2026-11-07T18:00:00-07:00")
+        cases = ((derived, f"duplicate meeting id '{EXAMPLE_ID}'"), (explicit, "duplicate meeting id 'second'"))
+        for path, message in cases:
+            with self.subTest(path.name), self.assertRaises(ContentError) as caught:
+                self.build()
+            self.assertIn(message, str(caught.exception))
+            self.assertEqual(problems_for(self.root, path.name), [f"meetings/{path.name}: duplicate meeting id"])
+            after = {p.relative_to(self.public).as_posix(): p.read_bytes()
+                     for p in self.public.rglob("*") if p.is_file()}
+            self.assertEqual(after, before)
+            path.unlink()
+        self.assertIn("meetings/second.html", self.build())  # unique ids again: builds
+
+
+def problems_for(root, name):
+    return [p for p in content_problems(root) if p.startswith(f"meetings/{name}")]
 
 
 if __name__ == "__main__":

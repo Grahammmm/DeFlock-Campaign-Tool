@@ -136,9 +136,15 @@ def content_problems(root, limit=LIMIT):
         slugs.add(finding["slug"])
         ids.add(finding["id"])
 
+    meeting_ids = set()
     for path in _files(content_dir, "meetings"):
         label = "meetings/" + path.name
-        _attempt(problems, label, lambda: _meeting(path, label))
+        meeting = _attempt(problems, label, lambda: _meeting(path, label))
+        if meeting is None:
+            continue
+        if meeting["id"] in meeting_ids:
+            problems.append(f"meetings/{path.name}: duplicate meeting id")
+        meeting_ids.add(meeting["id"])
 
     sources_path = content_dir / "sources.json"
     if sources_path.is_file():

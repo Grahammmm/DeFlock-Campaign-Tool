@@ -169,7 +169,9 @@ Every meeting (upcoming, past or cancelled) also gets `meetings/<id>.html`: when
 where, agenda item and link, and its comment kit shown open for linking and
 printing; a cancelled meeting is headed `Cancelled:` with a notice and keeps its
 kit. Home and `meetings.html` link it as "Meeting page", and `sitemap.xml` lists
-it. `content/public-assets/meetings/` is refused as a generated path.
+it. `content/public-assets/meetings/` is refused as a generated path, and two
+meeting files resolving to the same id (explicit `id` or filename) are refused
+before `public/` changes.
 
 Pages contain no inline scripts, iframes or images other than those under
 `public-assets/`; all script tags are `defer` references to the self-hosted

@@ -655,10 +655,14 @@ def load_content(root):
         findings.append(finding)
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
 
-    meetings = []
+    meetings, meeting_ids = [], {}
     for path in sorted((content_dir / "meetings").glob("*.json")) if (content_dir / "meetings").is_dir() else []:
         meeting = load_meeting(_read_json(path), "meetings/" + path.name)
         meeting["id"] = meeting["id"] or _slug(path.stem, "meetings/" + path.name + " filename")
+        if meeting["id"] in meeting_ids:  # each id names one meetings/<id>.html page
+            raise ContentError(f"meetings/{path.name}: duplicate meeting id {meeting['id']!r} "
+                               f"(also meetings/{meeting_ids[meeting['id']]})")
+        meeting_ids[meeting["id"]] = path.name
         meetings.append(meeting)
     meetings.sort(key=lambda m: m["starts_at"])
 
