@@ -742,10 +742,15 @@ def main():
                                       " kit run drafts requests for selected law-enforcement agencies"
                                       ).add_subparsers(dest="agency_command", required=True)
     for name, text in (("select", "Mark one agency selected"), ("deselect", "Mark one agency not selected"),
-                       ("add", "Append an organizer-added agency (selected, verified: false)")):
+                       ("add", "Append an organizer-added agency (selected, verified: false)"),
+                       ("import", "Append many organizer-added agencies from one CSV, all or none")):
         agency_p = agency_cmds.add_parser(name, help=text, description=text + "; the next kit run drafts requests for"
                                           " selected law-enforcement agencies. Nothing is sent.")
         agency_p.add_argument("--directory", required=True)
+        if name == "import":
+            agency_p.add_argument("--csv", required=True, help="Header agency_id,name,kind[,note]; 1-500 rows")
+            agency_p.add_argument("--check", action="store_true", help="Validate only; write nothing")
+            continue
         agency_p.add_argument("--id", required=True, dest="agency_id")
         if name == "add":
             agency_p.add_argument("--name", required=True)
@@ -913,12 +918,18 @@ def main():
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
-    for flag in ("--directory", "--id"):
-        pack.add_argument(flag, required=True)
+    pack.add_argument("--directory", required=True)
+    pack_which = pack.add_mutually_exclusive_group(required=True)
+    pack_which.add_argument("--id")
+    pack_which.add_argument("--upcoming", action="store_true", help="Every staged meeting in the next --within-days")
+    pack.add_argument("--within-days", type=int, help="With --upcoming: 1..90 days (default 14)")
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
+    if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
+        if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
+            pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
@@ -977,6 +988,12 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meeting-pack" and args.upcoming:
+            from .meeting_pack import build_upcoming
+            report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
+                                    max_findings=args.max_findings, replace=args.replace)
+            print(json.dumps(report, indent=2))
+            sys.exit(3 if report["skipped"] else 0)
         elif args.command == "meeting-pack":
             from .meeting_pack import build as pack_build
             print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
@@ -1105,6 +1122,8 @@ def main():
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
                              if args.agency_command == "add" else
+                             kit_agencies.import_csv(root, Path(args.csv).expanduser(), check=args.check)
+                             if args.agency_command == "import" else
                              kit_agencies.set_selected(root, args.agency_id, args.agency_command == "select"),
                              indent=2, ensure_ascii=False))
             print("Nothing was sent.")
