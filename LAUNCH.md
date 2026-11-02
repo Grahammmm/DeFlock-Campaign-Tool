@@ -33,6 +33,9 @@ python3 -B -m runner --once --fake                                # exit 3 = idl
 ```
 
 Edit `../my-campaign/kit/agencies.json` to untick agencies; re-run `kit` and your edits persist.
+`doctor --directory ../my-campaign --stale-days 90` adds `stale_inputs`: the meetings scan, map snapshot, agency
+seed and law package sources dated more than 90 days ago, each with its refresh command. Undated inputs are
+`unknown` and missing ones `absent`, never assumed fresh. It only reads; nothing is refreshed.
 Add `content/` (see `docs/SITE-CONTENT.md` and `examples/fictional-campaign/content/`) to turn
 the starter into a real site.
 `python3 -m campaign_tool content init --directory ../my-campaign` writes a minimal valid `content/`

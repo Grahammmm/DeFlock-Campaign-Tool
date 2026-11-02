@@ -338,11 +338,11 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root, contact_max_age_days=None):
-    print(json.dumps(doctor_report(root, contact_max_age_days), indent=2))
+def doctor(root, contact_max_age_days=None, stale_days=None):
+    print(json.dumps(doctor_report(root, contact_max_age_days, stale_days), indent=2))
 
 
-def doctor_report(root, contact_max_age_days=None):
+def doctor_report(root, contact_max_age_days=None, stale_days=None):
     cfg = read_config(root)
     law = law_package_report(cfg)
     report = {
@@ -368,6 +368,12 @@ def doctor_report(root, contact_max_age_days=None):
     if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
         report.update(stale_contacts=found[:100], **({"stale_contacts_more": len(found) - 100} if found[100:] else {}))
         report["next_actions"] += [f"Re-check {len(found)} agency contact(s) on their official sites (kit-verify-agency)."] * bool(found)
+    if stale_days is not None:
+        from .freshness import stale_inputs
+        found = stale_inputs(root, cfg, stale_days)
+        report.update(stale_inputs=found[:100], **({"stale_inputs_more": len(found) - 100} if found[100:] else {}))
+        if names := sorted({e["input"] for e in found if e["status"] != "absent"}):
+            report["next_actions"].append("Refresh stale inputs: " + ", ".join(names))
     from .meeting_stage import stale_kits
     stale = report["stale_comment_kits"] = stale_kits(root)
     if stale:
@@ -586,6 +592,7 @@ def main():
                              help="With --list: only objects not registered in content/sources.json")
         if name == "doctor":
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
+            cmd.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
             cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
@@ -596,8 +603,9 @@ def main():
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
                               "city_council, district_attorney, chp")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
-    commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing"
-                        ).add_argument("--directory", required=True)
+    social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
+    social_p.add_argument("--directory", required=True)
+    social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
     press_draft.add_argument("--directory", required=True)
@@ -639,6 +647,11 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
+    for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
+        outcome_p.add_argument(flag, required=True)
+    outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
+    outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
                         ).add_argument("--directory", required=True)
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
@@ -752,6 +765,8 @@ def main():
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
+    if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
+        parser.error("--stale-days must be 1 to 3650")
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
     if args.command in ("verify", "backup-drill", "backup-list"):
@@ -777,6 +792,11 @@ def main():
             ingest(args, root)
         elif args.command == "kit":
             kit(args, root)
+        elif args.command == "social" and args.check:
+            from .social import check_social
+            report = check_social(root)
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root)
         elif args.command == "press":
@@ -805,6 +825,11 @@ def main():
                                         replace=args.replace, allow_past=args.allow_past)))
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "meetings-outcome":
+            from .meeting_outcome import record_outcome
+            print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
+                                            args.vote, args.replace), indent=2))
+            print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -901,13 +926,13 @@ def main():
             print("Draft only. Nothing was sent.")
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
-            print(render(doctor_report(root, args.contact_max_age_days), args.directory, as_json=args.json,
+            print(render(doctor_report(root, args.contact_max_age_days, args.stale_days), args.directory, as_json=args.json,
                          agency_list_exists=(root / "kit" / "agencies.json").is_file()))
         else:
             if args.command == "status":
                 status(root, check=args.check, fix=args.fix_modes)
             else:
-                doctor(root, args.contact_max_age_days)
+                doctor(root, args.contact_max_age_days, args.stale_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(1)
