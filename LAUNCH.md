@@ -20,6 +20,8 @@ engine has been deployed to a real account yet. The SLO pilot still runs its own
 
 ## Try it in ten minutes (no accounts)
 
+Guided alternative after cloning: `python3 -m campaign_tool setup --directory ../my-campaign` runs init → offline kit → build → doctor and lists drafts for review; nothing is sent or published.
+
 ```sh
 git clone https://github.com/Grahammmm/DeFlock-Campaign-Tool.git && cd DeFlock-Campaign-Tool
 python3 -m campaign_tool init --directory ../my-campaign --county "San Luis Obispo" --state CA --name "My Campaign"
