@@ -137,9 +137,9 @@ describe("wizard flow (DRY_RUN=1)", () => {
     await req("/setup/3", { method: "POST", form: {} });
     await req("/setup/4", { method: "POST", form: {} });
     const accounts = { cf_token: "cf-test-token-not-a-real-credential", cf_account_id: "a".repeat(32), cf_zone_id: "b".repeat(32), cf_access_team: "example-team" };
-    const imap = await req("/setup/5", { method: "POST", form: { ...accounts, mail_mode: "imap_smtp", imap_host: "mail.example.invalid", imap_user: "synthetic", imap_password: "synthetic-password" } });
+    const imap = await req("/setup/5", { method: "POST", form: { ...accounts, mail_mode: "imap_smtp", imap_host: "mail.example.invalid", imap_user: "synthetic", imap_password: "synthetic-password" } }); // pragma: allowlist secret -- synthetic test credential only
     expect(imap.status).toBe(303);
-    const off = await req("/setup/5", { method: "POST", form: { ...accounts, mail_mode: "none", smtp_password: "synthetic-stale" } });
+    const off = await req("/setup/5", { method: "POST", form: { ...accounts, mail_mode: "none", smtp_password: "synthetic-stale" } }); // pragma: allowlist secret -- synthetic stale credential only
     expect(off.status).toBe(303);
     expect((await sessionState()).accounts?.mailbox).toEqual({ mode: "none", address: "" });
     const html = await (await req("/setup/5")).text();

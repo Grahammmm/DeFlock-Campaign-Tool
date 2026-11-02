@@ -33,7 +33,7 @@ export function fullState(): WizardState {
 describe("plan", () => {
   it("mail-off creates no mail steps or mailbox secrets", () => {
     const s = fullState();
-    s.accounts!.mailbox = { mode: "none", address: "", imap_password: "synthetic-stale", smtp_password: "synthetic-stale" };
+    s.accounts!.mailbox = { mode: "none", address: "", imap_password: "synthetic-stale", smtp_password: "synthetic-stale" }; // pragma: allowlist secret -- synthetic stale credentials only
     const ids = buildPlan(s).map((p) => p.id);
     expect(ids.some((id) => id.startsWith("email."))).toBe(false);
     expect(ids.some((id) => /^secret\.(IMAP|SMTP)_/.test(id))).toBe(false);
