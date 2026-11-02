@@ -17,7 +17,8 @@ review-required, not a legal conclusion.
 - Human redaction and names review of each `text` (the pipeline's redaction gate; names are not machine-checked).
 
 ## Before you approve
-- `python3 tools/flock_review_queue.py show STORE [--agency SLUG] --out NEWDIR` writes a private review queue.
+- `python3 tools/flock_review_queue.py show STORE [--agency SLUG] --out NEWDIR [--json]` writes a private review queue.
+  With `--json` it also writes `review-queue.json` (`flock-review-queue-v1`: ids, statuses, verdicts, warning codes, not-reviewable reasons and counts, no finding text), both files or neither; it is review-required and approves nothing.
 - Read each independent challenge, warning, citation and receipt; this report approves nothing.
 
 ## Approve
@@ -34,9 +35,9 @@ review-required, not a legal conclusion.
   review and G's re-approval. Only a FACTS.csv edit is allowed past its drift gate; any other drift refuses (exit 1, no write).
 
 ## Stage
-- `python3 tools/flock_publish.py stage RUNDIR --copy COPY.json --out DIR` (DIR outside the repo, absent or empty) turns
+- `python3 tools/flock_publish.py stage RUNDIR --copy COPY.json --out DIR [--dry-run]` (DIR outside the repo, absent or empty) turns
   approved entries plus the human-written copy into private `content/findings/*.json` (`state: "staged"`, schema-checked)
-  and `STAGE-MANIFEST.json`; never builds or deploys. The operator copies them into the site PR and sets `state`/`published_at` there.
+  and `STAGE-MANIFEST.json`; never builds or deploys. `--dry-run` replaces `--out`: run it first; it writes nothing. The operator copies them into the site PR and sets `state`/`published_at` there.
 
 ## Merge
 - Merge the site PR (staging deploy only).

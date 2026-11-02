@@ -1,5 +1,6 @@
 """Flock monitor: scan official agency index pages listed in WATCHLIST.csv into a private MONITOR.csv, and write a daily
-digest. Index pages only: links (PDFs included) are recorded by URL and never fetched."""
+digest. Index pages only: links (PDFs included) are recorded by URL and never fetched.
+leads --store DIR [--state S] [--agency SLUG] [--date D]: read-only LEADS.csv triage list (age, per-state counts)."""
 import argparse, contextlib, csv, datetime, fcntl, hashlib, html.parser, os, re, sys, tempfile, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import unquote, urldefrag, urljoin, urlsplit
@@ -234,10 +235,33 @@ def alpr_terms(row, pattern):  # title plus percent-decoded URL path with -, _ a
     path = re.sub(r"[-_/]", " ", unquote(urlsplit(absolute(row["url"])).path))
     return list(dict.fromkeys(m.group(0).lower() for m in pattern.finditer(row["title"] + " " + path)))
 
-def leads_rows(path):  # rows of <store>/LEADS.csv (missing = none); a linked, wrong-kind or malformed file is refused
+def leads_rows(path, numbered=False):  # rows of <store>/LEADS.csv (missing = none); linked/wrong-kind/malformed: refused
     _real(path, "LEADS.csv")
-    try: return [r for _, r in read_csv(path, LEADS_HEADER, missing_ok=True)]
+    try: rows = read_csv(path, LEADS_HEADER, missing_ok=True)
     except Fail as err: raise Fail("LEADS.csv %s" % err) from None
+    return rows if numbered else [r for _, r in rows]
+
+def iso_day(text):  # a strict YYYY-MM-DD calendar date, else None
+    try: return datetime.date.fromisoformat(text) if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", text) else None
+    except ValueError: return None
+
+def leads(store, state, agency, date):  # read-only triage list: no lock, no mkdir, no write; never state_by/state_at/titles/URLs
+    rows, shown = leads_rows(private_store(store) / "LEADS.csv", numbered=True), []
+    for n, r in rows:  # every row is validated before anything is printed
+        seen = iso_day(r["first_seen"])
+        checks = (("item_id", re.fullmatch(r"M-[0-9a-f]{12}", r["item_id"])), ("state", r["state"] in MOVES),
+                  ("first_seen", seen is not None and seen <= date))
+        bad = next((field for field, ok in checks if not ok), None)
+        if bad: raise Fail("LEADS.csv row %d: %s is invalid" % (n, bad))
+        if state in (None, r["state"]) and agency in (None, slug(r["agency"])): shown.append((seen, r["item_id"], r))
+    lines = ["lead | %s | %s | %s | first_seen=%s | age=%dd" % (i, slug(r["agency"]), r["state"], s.isoformat(),
+                                                                 (date - s).days) for s, i, r in sorted(shown, key=lambda e: e[:2])]
+    counts = " ".join("%s=%d" % (k, sum(r["state"] == k for *_, r in shown)) for k in MOVES)
+    return lines + ["leads=%d shown=%d %s" % (len(rows), len(shown), counts)]
+
+def agency_slug(text):  # --agency: an F1 slug, else argparse usage exit 2
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", text): raise argparse.ArgumentTypeError("is not a lowercase slug")
+    return text
 
 def new_leads(path, date, relevant):  # call only under the store lock: add unknown relevant items, list date's leads
     rows, ids, add = leads_rows(path), set(), []
@@ -326,9 +350,12 @@ def main(argv=None):
     lead_p.add_argument("--item", required=True)
     lead_p.add_argument("--state", required=True, help="requested or ignored")
     lead_p.add_argument("--by", required=True)
+    leads_p = sub.add_parser("leads", help="list LEADS.csv leads with age and per-state counts (read-only, no lock)")
+    leads_p.add_argument("--state", choices=tuple(MOVES))
+    leads_p.add_argument("--agency", type=agency_slug)
     digest_p.add_argument("--unreachable-after", type=scans, default=3, metavar="N",
                           help="list pages whose last N logged scans (2..30, default 3) were all refused")
-    for p, required in ((scan_p, False), (digest_p, True), (lead_p, False)):
+    for p, required in ((scan_p, False), (digest_p, True), (lead_p, False), (leads_p, False)):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
     args = parser.parse_args(argv)
@@ -336,6 +363,7 @@ def main(argv=None):
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
+              else "\n".join(leads(args.store, args.state, args.agency, args.date)) if args.command == "leads"
               else digest(args.store, args.date.isoformat(), args.unreachable_after))
     except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)

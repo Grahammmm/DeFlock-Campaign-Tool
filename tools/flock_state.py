@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Flock state (BF-df-status-fields): one explicit state per request and per email run, from recorded fields only.
-  flock_state.py state STORE [--json]    STORE is a private folder outside the repository
+  flock_state.py state STORE [--json] [--agency SLUG]...    STORE is a private folder outside the repository
+--agency (1-20 distinct plain slugs) reads only those agency folders, so another agency's broken file cannot hide them; an
+unknown slug is refused before any folder is read (exit 1), a malformed or repeated one is usage (exit 2).
   flock_state.py diff OLD.json NEW.json [--json]    two saved `state --json` snapshots: what is new, gone or moved
 Request states come from REQUESTS.csv cells (flock_requests.load decides what is an error); run states come from flock_email's
 stage with flock_approve's signature check. Free text (evidence, a draft body, a `Sent by:` sentence) never changes a state.
@@ -37,7 +39,7 @@ SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 BANNED = re.compile(r"late|overdue|violat|unlawful|illegal|non-complian|breach", re.I)  # no output line may carry these
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 NOTE = "recorded fields only; not a legal status; the canonical ledger wins"
-USAGE = ("usage: flock_state.py state STORE [--json] | diff OLD.json NEW.json [--json]  (one state per request and email run; "
+USAGE = ("usage: flock_state.py state STORE [--json] [--agency SLUG]... | diff OLD.json NEW.json [--json]  (one state per request and email run; "
          "prints only, writes nothing)")
 SNAP_MAX = 5 * 1024 * 1024
 SNAP_KEYS = {"schema", "review_required", "requests", "runs", "totals", "errors"}
@@ -134,14 +136,18 @@ def folder_runs(folder, stage):
     return out
 
 
-def collect(store):
+def collect(store, only=None):
     root = Path(store).resolve()
     if root == REPO or REPO in root.parents:
         raise Refuse("store is inside the repository")
     base = root / "agencies"
     if not root.is_dir() or base.is_symlink() or not base.is_dir():
         raise Refuse("store is not a folder with an agencies folder")
-    folders, stage, reqs, runs = sorted(p for p in base.iterdir() if p.is_symlink() or p.is_dir()), stage_fn(), [], []
+    for s in only or ():  # every named agency must exist before any agency folder is read
+        if not ((base / s).is_symlink() or (base / s).is_dir()):
+            raise Refuse("unknown agency (%s)" % s)
+    folders = sorted(base / s for s in only) if only else sorted(p for p in base.iterdir() if p.is_symlink() or p.is_dir())
+    stage, reqs, runs = stage_fn(), [], []
     for folder in folders:
         if not folder.is_symlink():
             reqs += [(label(folder.name),) + r for r in folder_requests(folder)]
@@ -149,7 +155,7 @@ def collect(store):
     return sorted(reqs, key=lambda r: r[:2]), sorted(runs, key=lambda r: r[:2])
 
 
-def render(reqs, runs, as_json):
+def render(reqs, runs, as_json, only=None):
     states = collections.Counter([r[2] for r in reqs] + [r[2] for r in runs])
     totals = {s: states[s] for s in REQUEST_STATES + RUN_STATES}  # every state, zero included, in vocabulary order
     unmapped = [r for r in runs if not r[3]]
@@ -158,12 +164,12 @@ def render(reqs, runs, as_json):
         print(json.dumps({"schema": "flock-state-v1", "review_required": True,
                           "requests": [{"agency": a, "request_id": i, "state": s, "basis": b} for a, i, s, b in reqs],
                           "runs": [{"agency": a, "run": d, "state": s} for a, d, s, _ in runs],
-                          "totals": totals, "errors": errors}, ensure_ascii=True))
+                          "totals": totals, "errors": errors, **({"agency_filter": sorted(only)} if only else {})}, ensure_ascii=True))
     else:
         lines = ["state | request | %s | %s | state=%s | basis=%s" % (a, i, s, ",".join(b)) for a, i, s, b in reqs]
         lines += ["state | run | %s | %s | state=%s | basis=email-stage" % (a, d, s) for a, d, s, _ in runs]
         lines += ["state | unmapped stage | %s | %s" % (a, d) for a, d, _, _ in unmapped]
-        lines.append("state | requests=%d runs=%d %s | %s" % (len(reqs), len(runs), " ".join("%s=%d" % kv for kv in totals.items()), NOTE))
+        lines.append("state | requests=%d runs=%d%s %s | %s" % (len(reqs), len(runs), " agencies=%d" % len(only) if only else "", " ".join("%s=%d" % kv for kv in totals.items()), NOTE))
         print("\n".join(lines))
     return 1 if errors else 0
 
@@ -250,13 +256,26 @@ def main(argv):
             return render_diff(load_snapshot(argv[1], "OLD"), load_snapshot(argv[2], "NEW"), argv[3:] == ["--json"])
         except Refuse as exc:
             return print("diff: " + str(exc), file=sys.stderr) or 1
-    if not (len(argv) in (2, 3) and argv[0] == "state" and argv[2:] in ([], ["--json"])):
+    if not (len(argv) >= 2 and argv[0] == "state" and (opts := state_opts(argv[2:]))):
         return print(USAGE, file=sys.stderr) or 2
     try:
-        reqs, runs = collect(argv[1])
+        reqs, runs = collect(argv[1], opts[1])
     except (Refuse, OSError, UnicodeDecodeError, csv.Error) as exc:
         return print("state: " + (str(exc) if isinstance(exc, Refuse) else "store unreadable (%s)" % type(exc).__name__), file=sys.stderr) or 1
-    return render(reqs, runs, argv[2:] == ["--json"])
+    return render(reqs, runs, *opts)
+
+
+def state_opts(rest):  # (as_json, [slug]): at most one --json and 1-20 distinct plain --agency slugs in any order; None is usage
+    as_json, only, words = False, [], iter(rest)
+    for word in words:
+        s = next(words, None) if word == "--agency" else None
+        if word == "--json" and not as_json:
+            as_json = True
+        elif s is None or s in only or len(only) == 20 or not SAFE.fullmatch(s) or BANNED.search(s):
+            return None
+        else:
+            only.append(s)
+    return as_json, only
 
 
 if __name__ == "__main__":

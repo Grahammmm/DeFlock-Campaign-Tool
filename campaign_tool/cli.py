@@ -201,6 +201,9 @@ def ingest(args, root):
     if getattr(args, "zip", None) is not None:
         from .ingest_zip import ingest_zip
         return ingest_zip(args, root)
+    if getattr(args, "eml", None) is not None:
+        from .ingest_eml import ingest_eml
+        return ingest_eml(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -646,6 +649,8 @@ def main():
             source.add_argument("--dir", help="One local production folder; symlinks are never followed")
             source.add_argument("--zip", help="One production .zip: archive and regular members stored by hash, "
                                 "never extracted to disk; nested archives are stored, not opened")
+            source.add_argument("--eml", help="One emailed production .eml: message stored as is, each attachment "
+                                "stored and linked to it; headers never printed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
@@ -769,6 +774,7 @@ def main():
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
+    status_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv tracker (0600) outside public/ and content/")
     check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
@@ -1146,6 +1152,10 @@ def main():
         elif args.command == "kit-copy":
             from .kit_copy import run_cli as kit_copy_cli
             kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
+        elif args.command == "kit-status" and args.csv:
+            from .kit_export import status_csv
+            print(json.dumps(status_csv(root, args.csv, request=args.request), indent=2))
+            print("Private file; nothing was sent or published.")
         elif args.command == "kit-status":
             from .kit_track import OVER_CAP, status as kit_track_status
             report = kit_track_status(root, request=args.request)
