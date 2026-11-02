@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import fixes
+
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
 OUTCOMES = ("stored", "present", "symlink", "not_regular", "too_large", "hidden")
@@ -567,7 +569,7 @@ def main():
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
         except (OSError, ValueError) as exc:
-            print("Stopped: " + str(exc), file=sys.stderr)
+            fixes.emit(exc)
             sys.exit(1)
         return
     root = Path(args.directory).expanduser().resolve()
@@ -628,5 +630,5 @@ def main():
         else:
             status(root, check=args.check) if args.command == "status" else doctor(root, args.contact_max_age_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        print("Stopped: " + str(exc), file=sys.stderr)
+        fixes.emit(exc)
         sys.exit(1)
