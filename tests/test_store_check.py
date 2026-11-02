@@ -30,6 +30,7 @@ class StoreCheckTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-store-check-")
         self.addCleanup(temporary.cleanup)
+        self.addCleanup(os.umask, os.umask(0o077))  # planted fixtures stay owner-only (RF2010-5 loose_mode)
         self.base = Path(temporary.name)
         self.root = self.base / "campaign"
         self.objects = self.root / "private" / "objects"
