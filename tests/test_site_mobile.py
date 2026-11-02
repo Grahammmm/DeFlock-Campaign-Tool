@@ -23,8 +23,8 @@ PRINT_SHA = (
     "6d2514e54ef168aa"  # pragma: allowlist secret
     "64bda5cc2fd1c252"  # pragma: allowlist secret
 )
-# Re-pinned after 07edf7a4 (#620) deliberately appended .record-no and .provenance-note to
-# styles.css.tmpl for the plain-language provenance markup; previous pin b6701371...c7cc.
+# Re-pinned after 07edf7a4 (#620) added only .record-no and .provenance-note to
+# styles.css.tmpl for plain-language provenance; previous pin b6701371...c7cc.
 STARTER_SHA = (
     "a8499bf6ae152ec0"  # pragma: allowlist secret
     "968e94a52033936c"  # pragma: allowlist secret
