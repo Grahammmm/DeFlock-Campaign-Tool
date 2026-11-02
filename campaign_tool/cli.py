@@ -8,7 +8,7 @@ import re
 import sqlite3
 import stat
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import fixes
@@ -373,6 +373,19 @@ def doctor_report(root, contact_max_age_days=None):
     if stale:
         report["next_actions"].append("Re-stage meetings with corrected findings: meetings-stage --id "
                                       + ", ".join(sorted({e["meeting"] for e in stale})) + " --replace")
+    from .content import ContentError, load_content
+    try:
+        model = load_content(root)
+    except (ContentError, OSError):
+        model = None  # build/content-check name the problem; doctor stays as before
+    if model is not None:
+        ending = report["contracts_ending"] = [
+            {"agency_id": a["agency_id"], "end": a["contract"]["end"], "days": days}
+            for a in sorted((a for a in model["agencies"] if a["contract"]), key=lambda a: a["contract"]["end"])
+            if 0 <= (days := (date.fromisoformat(a["contract"]["end"]) - date.today()).days) <= 90]
+        if ending:
+            report["next_actions"].append("Contract terms ending within 90 days: "
+                                          + ", ".join(f'{c["agency_id"]} ({c["end"]})' for c in ending))
     return report
 
 
