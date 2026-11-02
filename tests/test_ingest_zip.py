@@ -5,8 +5,10 @@ ledger `contains` row. Every archive is built here from synthetic bytes. Run fro
 python3 -B -m unittest tests.test_ingest_zip -v
 """
 
+import bz2
 import hashlib
 import json
+import lzma
 import os
 from pathlib import Path
 import resource
@@ -25,6 +27,13 @@ MAX_BYTES = 50 * 1024 * 1024
 def deflate(data):
     packer = zlib.compressobj(6, zlib.DEFLATED, -zlib.MAX_WBITS)
     return packer.compress(data) + packer.flush()
+
+
+def zip_lzma(data):
+    """A zip LZMA (method 14) member body: version, properties size 5, lc/lp/pb byte, dictionary, raw stream."""
+    packer = lzma.LZMACompressor(lzma.FORMAT_RAW, filters=[{"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20,
+                                                            "lc": 3, "lp": 0, "pb": 2}])
+    return struct.pack("<BBHBI", 9, 20, 5, (2 * 5 + 0) * 9 + 3, 1 << 20) + packer.compress(data) + packer.flush()
 
 
 def build_zip(entries):
@@ -185,6 +194,27 @@ class IngestZipTests(unittest.TestCase):
         report = self.ingest(path, preexec_fn=limit_memory)
         self.assertEqual(self.skipped(report), {"huge.bin": "too_large"})
         self.assertEqual([m["path"] for m in report["members"]], ["ok.txt"])
+
+    def test_bzip2_and_lzma_measured_on_the_real_stream_not_the_header(self):
+        text = b"synthetic record line\n" * 50
+        prefix = text[:10]  # a forged header: size 10 and the CRC of exactly those first 10 bytes
+        forged = {"size": 10, "crc": zlib.crc32(prefix)}
+        path = self.archive([
+            ("ok-bz.txt", text, {"method": 12, "raw": bz2.compress(text)}),
+            ("ok-xz.txt", text, {"method": 14, "raw": zip_lzma(text), "flags": 0x802}),
+            ("short-bz.txt", b"", {"method": 12, "raw": bz2.compress(text), **forged}),
+            ("short-xz.txt", b"", {"method": 14, "raw": zip_lzma(text), "flags": 0x802, **forged}),
+            ("bomb-bz.bin", b"", {"method": 12, "raw": bz2.compress(bytes(2_000_000)), "size": 10,
+                                  "crc": zlib.crc32(bytes(10))}),
+            ("cut-xz.txt", text, {"method": 14, "raw": zip_lzma(text)[:-8], "flags": 0x802})])
+        report = self.ingest(path)
+        self.assertEqual(self.skipped(report), {"short-bz.txt": "unreadable", "short-xz.txt": "unreadable",
+                                                "bomb-bz.bin": "ratio", "cut-xz.txt": "unreadable"})
+        digest = hashlib.sha256(text).hexdigest()
+        self.assertEqual(report["members"], [{"path": "ok-bz.txt", "sha256": digest, "outcome": "stored"},
+                                             {"path": "ok-xz.txt", "sha256": digest, "outcome": "present"}])
+        self.assertEqual((self.root / "private" / "objects" / digest).read_bytes(), text)
+        self.assertFalse((self.root / "private" / "objects" / hashlib.sha256(prefix).hexdigest()).exists())
 
     def test_2001_entries_refused_before_any_write_and_non_zip_stopped(self):
         many = self.archive([(f"f{i}.txt", b"%d" % i, {"method": 0}) for i in range(2001)])

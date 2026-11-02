@@ -4,9 +4,11 @@ The archive bytes are read once (no link followed) and stored first. Each accept
 bytes in memory with a hard output cap, stored with its own receipt named `<archive>/<member path>`, and linked
 to the archive by one ledger `contains` row. Nested archives are stored as ordinary members and never opened.
 Members that are not stored are listed by skip code; nothing is ever written outside private/objects."""
+import bz2
 import hashlib
 import io
 import json
+import lzma
 import os
 import re
 import stat
@@ -72,26 +74,50 @@ def _precheck(info, path, receipt_name, seen):
     return None
 
 
-def _member_bytes(archive, data, info):
-    """(bytes, None) or (None, skip code). Output stops at MAX_BYTES + 1 whatever the header claims."""
+def _lzma_decoder(raw, cap):
+    """(raw LZMA1 decoder, compressed stream) from a zip LZMA member: version(2) props size(2) props(5) stream.
+
+    The dictionary is clamped to the output cap (no back-reference can reach further) so a forged 4 GiB
+    dictionary is never allocated."""
+    _version, props_size = struct.unpack_from("<HH", raw)
+    if props_size != 5:
+        raise ValueError("unexpected LZMA properties size")
+    first, dict_size = struct.unpack_from("<BI", raw, 4)
+    if first >= 9 * 5 * 5:
+        raise ValueError("bad LZMA properties")
+    lc, rest = first % 9, first // 9
+    lzma_filter = {"id": lzma.FILTER_LZMA1, "lc": lc, "lp": rest % 5, "pb": rest // 5,
+                   "dict_size": max(4096, min(dict_size, cap))}
+    return lzma.LZMADecompressor(lzma.FORMAT_RAW, filters=[lzma_filter]), raw[4 + props_size:]
+
+
+def _member_bytes(data, info):
+    """(bytes, None) or (None, skip code). Output stops at MAX_BYTES + 1 whatever the header claims.
+
+    Every method is decoded here from the member's raw bytes (zipfile's own reader trims bzip2/lzma output to
+    the header size, which would hide a longer real stream). The decoded length, ratio and CRC are therefore
+    measured on what the stream actually holds, and a stream that does not reach its end marker is unreadable."""
     cap = MAX_BYTES + 1
     try:
-        if info.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
-            signature, name_length, extra_length = _LOCAL_HEADER.unpack_from(data, info.header_offset)
-            start = info.header_offset + _LOCAL_HEADER.size + name_length + extra_length
-            raw = memoryview(data)[start:start + info.compress_size]
-            if signature != b"PK\x03\x04" or len(raw) != info.compress_size:
-                return None, "unreadable"
-            if info.compress_type == zipfile.ZIP_STORED:
-                out, complete = raw[:cap], True
+        signature, name_length, extra_length = _LOCAL_HEADER.unpack_from(data, info.header_offset)
+        start = info.header_offset + _LOCAL_HEADER.size + name_length + extra_length
+        raw = memoryview(data)[start:start + info.compress_size]
+        if signature != b"PK\x03\x04" or len(raw) != info.compress_size:
+            return None, "unreadable"
+        if info.compress_type == zipfile.ZIP_STORED:
+            out, complete = raw[:cap], True
+        else:
+            if info.compress_type == zipfile.ZIP_DEFLATED:
+                decoder, stream = zlib.decompressobj(-zlib.MAX_WBITS), raw
+            elif info.compress_type == zipfile.ZIP_BZIP2:
+                decoder, stream = bz2.BZ2Decompressor(), raw
+            elif info.compress_type == zipfile.ZIP_LZMA:
+                decoder, stream = _lzma_decoder(raw, cap)
             else:
-                inflater = zlib.decompressobj(-zlib.MAX_WBITS)
-                out = inflater.decompress(raw, cap)
-                complete = inflater.eof
-        else:  # bzip2/lzma: zipfile itself never returns more than the header size, already <= MAX_BYTES
-            with archive.open(info) as handle:
-                out, complete = handle.read(cap), True
-    except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, OSError, zlib.error, struct.error):
+                return None, "unreadable"
+            out = decoder.decompress(stream, cap)
+            complete = decoder.eof
+    except (EOFError, OSError, ValueError, MemoryError, lzma.LZMAError, zlib.error, struct.error):
         return None, "unreadable"
     if len(out) > MAX_BYTES:
         return None, "too_large"
@@ -148,7 +174,7 @@ def ingest_zip(args, root):
                 code = _precheck(info, path, receipt_name, seen)
                 blob = None
                 if code is None:
-                    blob, code = _member_bytes(archive, data, info)
+                    blob, code = _member_bytes(data, info)
                 if code:
                     skipped.append({"path": info.filename, "code": code})
                     continue
