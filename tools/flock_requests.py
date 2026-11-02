@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
-draft RUNDIR writes FOLLOWUP-DRAFT.md; RUNDIR must lie outside the repository."""
+draft RUNDIR writes FOLLOWUP-DRAFT.md and due --ics OUT a new private calendar; both must lie outside the repository."""
 import csv
 import hashlib
 import importlib.util
@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -99,10 +99,17 @@ def days(n):
     return f"{n} day" + ("" if n == 1 else "s")
 
 
+def reminder(pkg, r):
+    """(provisional determination date, basis text) for an open row with a receipt; shared by due and ics_text."""
+    lw, ext = pkg["records_law"], bool(r["extension_notice_date"])
+    basis = f"receipt {r['receipt_date']} + {lw['determination_days']} {lw['day_type']} days"
+    basis += f" + {lw['determination_extension_days']} extension notice" if ext else ""
+    return law.deadline(pkg, r["receipt_date"], extension=ext), basis
+
+
 def due(rows, as_of=None):
     """as_of (a date) adds a provisional distance cell per line and upcoming_7d/passed totals; reminder arithmetic only."""
     pkg = law.load_package("us-ca")
-    lw = pkg["records_law"]
     items, unknown, upcoming, passed = [], 0, 0, 0
     cell = f" | as of {as_of}: "
     for r in (r for r in rows if r["status"] == "open"):
@@ -115,11 +122,7 @@ def due(rows, as_of=None):
                 line += cell + (f"sent {days(k)} ago" if k >= 0 else "sent after the as-of date")
             items.append((1, "", r["request_id"], line))
             continue
-        ext = bool(r["extension_notice_date"])
-        when = law.deadline(pkg, r["receipt_date"], extension=ext)
-        basis = f"receipt {r['receipt_date']} + {lw['determination_days']} {lw['day_type']} days"
-        if ext:
-            basis += f" + {lw['determination_extension_days']} extension notice"
+        when, basis = reminder(pkg, r)
         line = f"{head}determination {when.isoformat()} | {basis} | Gov. Code 7922.535 | not a legal due date"
         if as_of:
             n = (when - as_of).days
@@ -131,6 +134,56 @@ def due(rows, as_of=None):
     extra = f" upcoming_7d={upcoming} passed={passed} as_of={as_of}" if as_of else ""
     lines.append(f"provisional reminder | open={len(items)} receipt_unknown={unknown}{extra} | " + law.HOLIDAY_NOTE)
     return lines
+
+
+def ics_line(name, value):  # RFC 5545 text value: \\ ; , and newlines escaped
+    return name + ":" + re.sub(r"\r\n|[\r\n]", r"\\n", re.sub(r"([\\;,])", r"\\\1", value))
+
+
+def fold(line):  # RFC 5545 3.1: at most 75 octets per line, continuations start with a space, never inside a character
+    out, cur = [], ""
+    for ch in line:
+        if len((cur + ch).encode("utf-8")) > 75:
+            out, cur = out + [cur], " "
+        cur += ch
+    return "\r\n".join(out + [cur])
+
+
+def ics_text(rows, today):
+    """(text, events, receipt_unknown): one all-day VEVENT per open request with a receipt, sorted by (date, request_id).
+    Request ids, agency slugs, dates and the basis only; never the agency's free-text name or evidence."""
+    pkg, events, opened = law.load_package("us-ca"), [], [r for r in rows if r["status"] == "open"]
+    for r in (r for r in opened if r["receipt_evidence"]):
+        (when, basis), rid, s = reminder(pkg, r), r["request_id"], slug(r["agency"])
+        events.append((when, rid, [
+            "BEGIN:VEVENT", ics_line("UID", f"{rid}-{s}@flock-requests.invalid"), f"DTSTAMP:{today:%Y%m%d}T000000Z",
+            f"DTSTART;VALUE=DATE:{when:%Y%m%d}", f"DTEND;VALUE=DATE:{when + timedelta(days=1):%Y%m%d}",
+            ics_line("SUMMARY", f"Provisional reminder: {rid} ({s})"),
+            ics_line("DESCRIPTION", f"{basis}\nNot a legal due date.\n{law.HOLIDAY_NOTE}"),
+            "TRANSP:TRANSPARENT", "END:VEVENT"]))
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock//flock-requests//EN", "CALSCALE:GREGORIAN"]
+    lines += [x for e in sorted(events, key=lambda e: e[:2]) for x in e[2]] + ["END:VCALENDAR"]
+    return "".join(fold(x) + "\r\n" for x in lines), len(events), len(opened) - len(events)
+
+
+def write_new(out, text):
+    """None, or why OUT was refused. A new 0600 file outside the repository: mkstemp + os.link never replaces a file."""
+    p, tmp = Path(os.path.abspath(out)), None
+    why = ("--ics must be outside the repository" if (real := p.parent.resolve() / p.name) == REPO or REPO in real.parents
+           else "--ics already exists" if os.path.lexists(p)
+           else "--ics parent folder is missing" if not p.parent.is_dir() else None)
+    try:
+        if not why:
+            fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+            os.link(tmp, p)
+    except OSError as exc:  # FileExistsError: OUT appeared between the check and the link; it is never replaced
+        why = "--ics already exists" if isinstance(exc, FileExistsError) else f"--ics cannot be written ({type(exc).__name__})"
+    finally:
+        if tmp:
+            os.unlink(tmp)
+    return why
 
 
 def inventory(path):
@@ -645,8 +698,8 @@ def reconcile(rows, data):
     return lines, 3 if n["disagreements"] + n["unmatched"] + n["report_only"] else 0
 
 
-USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] | summary PATH | "
-         "draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
+USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] [--ics OUT [--today YYYY-MM-DD]] | "
+         "summary PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
          "summary PATH [--inventory CSV] adds document counts; record STORE --agency SLUG --request ID "
          "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]; "
          "fees record STORE --agency SLUG --request ID --kind estimate|invoice|paid --amount-cents N --date D "
@@ -683,6 +736,23 @@ def main(argv):
         start, end = day(argv[5]), day(argv[7])
         if start and end and start <= end:
             return draft(argv[1], argv[3], argv[5], argv[7])
+    if argv[:1] == ["due"] and "--ics" in argv[2:]:  # flags in any order after PATH; --today only stamps DTSTAMP
+        keys, o = argv[2::2], dict(zip(argv[2::2], argv[3::2]))
+        today = day(o.get("--today", date.today().isoformat()))
+        as_of = day(o["--as-of"]) if "--as-of" in o else None
+        if not (len(argv) % 2 == 0 and len(set(keys)) == len(keys) and set(o) <= {"--ics", "--as-of", "--today"}
+                and today and (as_of or "--as-of" not in o)):
+            return print(USAGE, file=sys.stderr) or 2
+        rows, errs = load(argv[1])
+        try:  # stdout shows agency slugs, not the free-text name, beside the calendar it describes
+            got = None if errs else (due([dict(r, agency=slug(r["agency"])) for r in rows], as_of), *ics_text(rows, today))
+        except ValueError as exc:
+            got, errs = None, [f"due: {exc}"]
+        why = None if errs else write_new(o["--ics"], got[1])
+        if errs or why:
+            return print("\n".join(errs) or f"due: {why}", file=sys.stderr) or (2 if why else 1)
+        lines, _, events, unknown = got
+        return print("\n".join(lines + [f"ics | events={events} receipt_unknown={unknown} | {Path(o['--ics']).name}"])) or 0
     as_of = inv = None
     if len(argv) == 4 and argv[0] == "summary" and argv[2] == "--inventory":
         inv, argv = argv[3], argv[:2]
