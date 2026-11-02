@@ -431,6 +431,75 @@ def drill(archive, expected_manifest_sha256=None, *, doctor=None, store_check=No
     return receipt
 
 
+KEEP_LIMITS = {"keep_daily": 366, "keep_weekly": 260}
+
+
+def keep_count(top):
+    """argparse type for --keep-daily/--keep-weekly: an integer 0..top, else ValueError (exit 2)."""
+    def count(text):
+        if not 0 <= int(text) <= top:
+            raise ValueError(f"must be 0-{top}")
+        return int(text)
+    return count
+
+
+def _created(report):
+    """The manifest's created_at as an aware UTC datetime; BackupError when it is not one."""
+    try:
+        when = datetime.fromisoformat(report["created_at"])
+    except (TypeError, ValueError):
+        when = None
+    if when is None or when.tzinfo is None:
+        raise BackupError("invalid_manifest: created_at is not an ISO time with a UTC offset")
+    return when.astimezone(timezone.utc)
+
+
+def list_archives(folder, keep_daily=None, keep_weekly=None):
+    """Re-verify every ``*.tar`` directly in ``folder`` and name what a keep rule would keep; writes nothing."""
+    folder = Path(folder)
+    if folder.is_symlink() or not folder.is_dir():
+        raise BackupError(f"{folder}: not a directory (a symlink is refused)")
+    for key, value in (("keep_daily", keep_daily), ("keep_weekly", keep_weekly)):
+        if value is not None and (type(value) is not int or not 0 <= value <= KEEP_LIMITS[key]):
+            raise BackupError(f"{key} must be an integer 0-{KEEP_LIMITS[key]}")
+    good, failed, skipped = [], [], []
+    with os.scandir(folder) as entries:
+        entries = sorted(entries, key=lambda entry: entry.name)
+    for entry in entries:
+        if not entry.name.lower().endswith(".tar"):
+            continue
+        if entry.is_symlink():
+            skipped.append({"name": entry.name, "reason": "symlink"})
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        item = {"name": entry.name, "bytes": entry.stat(follow_symlinks=False).st_size, "created_at": None,
+                "manifest_sha256": None, "engine_version": None, "files": None}
+        try:
+            report = verify(entry.path)
+            when = _created(report)
+        except (BackupError, tarfile.TarError, OSError, ValueError) as exc:
+            failed.append(dict(item, verify="failed", reason=str(exc).replace(entry.path, entry.name)[:200]))
+            continue
+        item.update({key: report[key] for key in ("created_at", "manifest_sha256", "engine_version", "files")})
+        good.append((when, dict(item, verify="ok")))
+    good.sort(key=lambda pair: pair[0], reverse=True)  # stable: equal times stay in name order
+    result: dict = {"archives": [item for _, item in good] + failed, "skipped": skipped}
+    if keep_daily is None and keep_weekly is None:
+        return result
+    keep = set()
+    for count, period in ((keep_daily, lambda when: when.date()), (keep_weekly, lambda when: when.isocalendar()[:2])):
+        newest = {}
+        for when, item in good:  # newest first, so the first archive seen in a period is its newest
+            newest.setdefault(period(when), item["name"])
+        keep.update(list(newest.values())[:count or 0])
+    result["rule"] = {"keep_daily": keep_daily, "keep_weekly": keep_weekly,
+                      "keep": [item["name"] for _, item in good if item["name"] in keep],
+                      "would_not_keep": [item["name"] for _, item in good if item["name"] not in keep],
+                      "failed_never_kept": [item["name"] for item in failed]}
+    return result
+
+
 def _safe_name(name):
     if not isinstance(name, str) or not name or name.startswith("/") or "\\" in name or "\x00" in name:
         return False

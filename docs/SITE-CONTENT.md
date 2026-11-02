@@ -142,7 +142,17 @@ feed" from its `agencies.html` entry), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
 a picker-only bootstrap without a map), `data/*.geojson` and `vendor/*` when
-present. `public/` is regenerated from scratch on every content build; do not
+present. `data/findings.json` is the published findings as open data
+(`schemas/findings-open-data.schema.json`), linked from `findings/index.html` and
+`about.html`: per finding `id`, `slug`, `title`, `summary`, `body_md`,
+`classification`, `confidence`, `event_date`, `published_at`, `updated_at`,
+`agency_id`, `url` (absolute only when `base_url` is set; top-level `url_kind`
+says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
+`sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
+`locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
+`duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
+nothing if any other key or a 40+ hex string would appear. `public/` is
+regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
 over the output and fails on any hit. The command prints a manifest of every
 written file with its size. Meetings on or after the build date (the typed
