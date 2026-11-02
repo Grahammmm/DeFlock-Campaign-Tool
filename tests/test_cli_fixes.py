@@ -48,6 +48,8 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "--date must be a real YYYY-MM-DD date", "--date 5 must be between 2000-01-01 and today",
         "--channel must be one of name", "5 already recorded as sent on 5; use --replace to correct it",
         "5 has recorded steps; its entry sent on 5 cannot be replaced",
+        "--note must be plain text without <, > or control characters",
+        "--note must be 1-5 characters after collapsing whitespace",
     ), "kit-sent message that already names the option to change; not in the table"),
     "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
     "must be 0-5": "argparse keep-count message; already names the range",
