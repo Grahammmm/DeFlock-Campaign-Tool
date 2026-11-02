@@ -94,13 +94,16 @@ class CountTests(unittest.TestCase):
                     feature("Inf", "MultiPolygon", [[square(0.1, 0.1, 0.3, 0.3)], [inf_ring]]),
                     feature("Hole", "Polygon", [square(0.5, 0.5, 1.5, 1.5), inf_ring]),
                     feature("Cedar", "Polygon", [square(0.5, 0.5, 1.5, 1.5)]),
-                    feature("Huge", "Polygon", [square(-1e308, -1e308, 1e308, 1e308)])]  # span overflows to inf
+                    feature("Huge", "Polygon", [square(-1e308, -1e308, 1e308, 1e308)]),  # span overflows to inf
+                    feature("BigInt", "Polygon", [square(0, 0, 2, 10 ** 309)]),  # int beyond float range
+                    feature("HugeInt", "Polygon", [square(-10 ** 308, -10 ** 308, 10 ** 308, 10 ** 308)])]
         cameras = json.loads('{"features": [{"geometry": {"coordinates": [1.0, 1.0]}},'
-                             ' {"geometry": {"coordinates": [NaN, 1.0]}}, {"geometry": {"coordinates": [1.0, Infinity]}}]}')
+                             ' {"geometry": {"coordinates": [NaN, 1.0]}}, {"geometry": {"coordinates": [1.0, Infinity]}},'
+                             ' {"geometry": {"coordinates": [1, 1' + "0" * 309 + ']}}]}')
         counts, problems = count_by_name(cameras, collection(features))
-        self.assertEqual(counts, {"Cedar": 1, "Huge": 1})
+        self.assertEqual(counts, {"Cedar": 1, "Huge": 1, "HugeInt": 1})
         self.assertEqual(problems, [f"city boundary feature {i}: invalid ring (needs 4 or more finite numeric positions)"
-                                    for i in (0, 1, 2)])
+                                    for i in (0, 1, 2, 5)])
 
     def test_twenty_thousand_points_in_a_two_thousand_vertex_boundary_under_five_seconds(self):
         side = 500  # 4 x 500 = 2000 vertices on a square with subdivided sides
@@ -192,18 +195,22 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn("0.123456", result.stderr + result.stdout)
 
     def test_overflowing_json_boundary_number_with_no_cameras_is_a_note_and_the_build_succeeds(self):
-        self.write_map([feature("Cedar", "Polygon", [square(0.5, 0.5, 1.5, 1.5)]),
-                        feature("Elm", "Polygon", [[[0, 0], [1, 0], [1, 7.5], [0, 1], [0, 0]]])], points())
-        path = self.map_dir / "city-boundaries.geojson"
-        path.write_text(path.read_text().replace("7.5", "1e309"))  # standard JSON syntax; loads as infinity
-        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "build", "--directory", str(self.root)],
-                                cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        notes = [line for line in result.stderr.splitlines() if line.startswith("note: ")]
-        self.assertEqual(notes, ["note: city boundary feature 1: invalid ring (needs 4 or more finite numeric positions)"])
-        self.assertNotIn("1e309", result.stderr + result.stdout)
-        cities, _, _ = self.build()
-        self.assertEqual(cities["cedar"]["cameraCount"], "0 community-mapped points" + TAIL)
+        # Standard JSON syntax: 1e309 loads as infinity; a 310-digit integer loads as an int beyond float range.
+        for literal in ("1e309", "1" + "0" * 309):
+            with self.subTest(literal=literal[:8]):
+                self.write_map([feature("Cedar", "Polygon", [square(0.5, 0.5, 1.5, 1.5)]),
+                                feature("Elm", "Polygon", [[[0, 0], [1, 0], [1, 7.5], [0, 1], [0, 0]]])], points())
+                path = self.map_dir / "city-boundaries.geojson"
+                path.write_text(path.read_text().replace("7.5", literal))
+                result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "build", "--directory",
+                                         str(self.root)], cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                notes = [line for line in result.stderr.splitlines() if line.startswith("note: ")]
+                self.assertEqual(notes, ["note: city boundary feature 1: invalid ring"
+                                         " (needs 4 or more finite numeric positions)"])
+                self.assertNotIn(literal, result.stderr + result.stdout)
+                cities, _, _ = self.build()
+                self.assertEqual(cities["cedar"]["cameraCount"], "0 community-mapped points" + TAIL)
 
     def test_no_map_computes_nothing_and_site_data_is_unchanged(self):
         shutil.rmtree(self.map_dir)

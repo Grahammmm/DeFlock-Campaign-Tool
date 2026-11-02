@@ -8,8 +8,11 @@ from .agency_cards import text as plain_text
 
 
 def _number(n):
-    """A finite int or float; NaN and +/-Infinity (which json.loads accepts) are rejected."""
-    return isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(n)
+    """A finite int or float; NaN, +/-Infinity and ints beyond float range (json.loads accepts all) are rejected."""
+    try:
+        return isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(float(n))
+    except OverflowError:
+        return False
 
 
 def valid_ring(ring):
@@ -19,8 +22,9 @@ def valid_ring(ring):
 
 
 def _edges(ring):
-    """Non-horizontal edges as (x1, y1, x2, y2); a horizontal edge never crosses the ray."""
-    return [(a[0], a[1], b[0], b[1]) for a, b in zip(ring, ring[1:] + ring[:1]) if a[1] != b[1]]
+    """Non-horizontal edges as float (x1, y1, x2, y2), so big ints cannot overflow; horizontal edges never cross."""
+    return [(float(a[0]), float(a[1]), float(b[0]), float(b[1]))
+            for a, b in zip(ring, ring[1:] + ring[:1]) if a[1] != b[1]]
 
 
 def _crosses(x, y, edges):
@@ -45,7 +49,7 @@ def point_in_polygon(pt, rings):
 class _Ring:
     """Edges bucketed into horizontal bands, so a point tests only the edges that span its y."""
     def __init__(self, ring):
-        edges, ys = _edges(ring), [p[1] for p in ring]
+        edges, ys = _edges(ring), [float(p[1]) for p in ring]
         span = max(ys) - min(ys)  # finite inputs can still overflow; one band then
         self.low, self.count = min(ys), max(1, int(len(edges) ** 0.5)) if math.isfinite(span) else 1
         self.step = span / self.count or 1.0
@@ -87,7 +91,7 @@ def _points(cameras_doc):
     features = cameras_doc.get("features") if isinstance(cameras_doc, dict) else None
     coords = [f.get("geometry", {}).get("coordinates") if isinstance(f, dict) and isinstance(f.get("geometry"), dict)
               else None for f in (features if isinstance(features, list) else [])]
-    return [(c[0], c[1]) for c in coords if isinstance(c, list) and len(c) >= 2 and _number(c[0]) and _number(c[1])]
+    return [(float(c[0]), float(c[1])) for c in coords if isinstance(c, list) and len(c) >= 2 and _number(c[0]) and _number(c[1])]
 
 
 def count_by_name(cameras_doc, boundaries_doc):
