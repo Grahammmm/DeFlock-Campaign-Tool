@@ -221,8 +221,10 @@ class LabelsTest(unittest.TestCase):
                     left = [p for p in phrases if p in page or html_text(p) in page]
                     self.assertEqual(left, [], f"{name}: {path}")
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
+        # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         absent = ["classification.apparent_conflict", "classification.confirmed_conflict", "classification.no_conflict",
-                  "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other"]
+                  "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
+                  "officials.heading", "officials.listed", "officials.source"]
         self.assertEqual(sorted(set(DEFAULTS) - seen), absent)
 
     def test_non_page_outputs_and_starter_ignore_labels(self):

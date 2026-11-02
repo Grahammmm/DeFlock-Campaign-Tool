@@ -83,6 +83,18 @@ class OfficialsTests(unittest.TestCase):
         self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING})
         self.assertNotIn("who-decides", self.read(POLICE_PAGE))
 
+    # labels: every officials.* string comes from Site.t(), so labels.json replaces each one
+    def test_officials_labels_replaceable(self):
+        self.council(official())
+        (self.content / "labels.json").write_text(json.dumps({"schema_version": 1, "labels": {
+            "officials.heading": "XheadX", "officials.source": "XsrcX",
+            "officials.listed": "XlistX {source} XonX {date} XendX"}}), encoding="utf-8")
+        self.build()
+        html = self.read(COUNCIL_MEETING)
+        self.assertIn('<h3>XheadX</h3>', html)
+        self.assertIn('<p>XlistX <a href="https://cedar.example/council">XsrcX</a> XonX <time>2026-09-01</time> XendX</p>', html)
+        self.assertNotIn("Who decides", html)
+
     # 5. no officials.json: model empty, no section anywhere, and removing the file restores every byte
     def test_absent_file_is_byte_identical(self):
         self.build()
