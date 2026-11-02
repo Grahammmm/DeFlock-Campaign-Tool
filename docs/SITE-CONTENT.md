@@ -163,6 +163,15 @@ one existing fragment. It prints `{"added": [12-char prefixes],
 "already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
 second run adds nothing. Nothing is fetched or published.
 
+`sources verify-copy --directory D --sha256 PREFIX --file DOWNLOADED --checked-on YYYY-MM-DD
+[--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an entry's `public_url`
+(a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and records
+`public_copy: {"matches", "checked_on", "reason"?}` on every entry of that record that has a `public_url`. A differing
+copy needs `--differs-because`; a matching one refuses it. `checked_on` may not be in the future or before
+`received_at`. Refusals print `Stopped: <reason>`, exit 3 and write nothing. `sources.html`, the citing finding pages
+and `data/sources.json` then show "Public copy checked D: same file as this record number" or "differs (redacted
+copy)", with a short "How to check a copy" note. `sources edit --public-url`/`--clear-public-url` drops the check.
+
 ### Pages (`content/pages/<slug>.json`, optional)
 
 Each file becomes `/<slug>.html`: `{"title", "body_md", "description"?, "nav"?}`, nothing else. `title` is
