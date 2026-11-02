@@ -155,3 +155,10 @@ The updated intake manifest pin binds this reviewed engine revision.
 Current main's site shell, map controller and agency cards are preserved. Its
 shell CI installs optional records test dependencies only on disposable runners.
 No canonical ledger, host packages, schedule or production site is changed.
+
+## Listing ingested receipts
+
+`status --directory D --list` prints each ledger receipt (hash prefix, bytes, source_id, original name,
+received_at) from the ledger opened read-only; `--source-id S`, `--since YYYY-MM-DD` (or an ISO timestamp with
+offset) and `--not-in-sources` (ingested but not yet in `content/sources.json`) narrow it. Nothing is written.
+Prefixes are 12 chars; give `sources add` more characters if it reports an ambiguous prefix.
