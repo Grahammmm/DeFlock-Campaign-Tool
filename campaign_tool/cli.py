@@ -661,6 +661,10 @@ def main():
         sources_edit.add_argument(flag, default=None)
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
+    commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
+        dest="content_command", required=True).add_parser(
+        "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
+    ).add_argument("--directory", required=True)
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one self-asserted review receipt for a draft")
@@ -760,6 +764,10 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content":
+            from .content_init import init_content
+            print(json.dumps(init_content(root), indent=2))
+            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
