@@ -471,6 +471,93 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
     return {"published": finding["slug"], "path": f"content/findings/{target.name}"}
 
 
+STATUS_ORDER = ("draft", "in_review", "blocked", "ready", "published", "corrected", "pending correction",
+                "unreadable", "withdrawn")
+_EMPTY_ROW = {"id": None, "slug": None, "state": "unreadable", "receipts_current": 0, "receipts_stale": 0,
+              "blockers": [], "published_at": None, "updated_at": None, "corrections": 0}
+
+
+def _identified(document, path, what):
+    if not isinstance(document, dict) or not isinstance(document.get("id"), str) or not _ID.fullmatch(document["id"]):
+        raise ValueError(f"{path}: {what} must be a JSON object whose 'id' matches [A-Za-z0-9_-]{{1,64}}")
+    return document
+
+
+def _status_row(root, document, state=None):
+    """Counts and blocker names only: never a reviewer name, rationale or correction note."""
+    receipts = _load_receipts(_receipts_path(root, document))
+    digest = reviewed_hash(document)
+    current = sum(isinstance(r, dict) and r.get("content_sha256") == digest for r in receipts)
+    blockers = [] if state else review_blockers(reviewed_view(document), receipts)
+    if state is None:  # docs/PUBLICATION.md "States" applied to the offline files
+        structural = set(blockers) - content.RECEIPT_BLOCKERS - {"unresolved_challenge"}
+        state = ("ready" if not blockers else "blocked" if "unresolved_challenge" in blockers
+                 or (structural and current) else "in_review" if current else "draft")
+    corrections = document.get("corrections")
+    text = {k: v if isinstance(v := document.get(k), str) else None for k in ("slug", "published_at", "updated_at")}
+    return dict(_EMPTY_ROW, id=document["id"], state=state, receipts_current=current,
+                receipts_stale=len(receipts) - current, blockers=blockers, **text,
+                corrections=len(corrections) if isinstance(corrections, list) else 0)
+
+
+def status_rows(root, extra_drafts=()):
+    """Read-only: one row per published or withdrawn finding and per draft (private/drafts/*.json, one level, plus
+    ``extra_drafts``). An unreadable file or folder is an ``unreadable`` row naming its path, never a crash or a skip."""
+    rows, found = [], {"published finding": [], "withdrawn finding": []}
+
+    def attempt(path, build):
+        try:
+            return build()
+        except ValueError as exc:
+            rows.append(dict(_EMPTY_ROW, path=str(path), error=str(exc)))
+
+    def files(folder):
+        return attempt(folder, lambda: sorted(folder.glob("*.json")) if _real_dir(folder) else []) or []
+
+    for what, folder in (("published finding", root / "content" / "findings"),
+                         ("withdrawn finding", root / "private" / "withdrawn")):
+        for path in files(folder):
+            document = attempt(path, lambda: _identified(_read_json(path, MAX_DRAFT_BYTES, what), path, what))
+            if document is not None:
+                found[what].append((path, document))
+    withdrawn_ids, leftovers, live_ids = {d["id"] for _, d in found["withdrawn finding"]}, {}, set()
+    for path, document in found["published finding"]:
+        if document["id"] in withdrawn_ids:  # withdraw could not unlink it (DF2237-04): withdrawn wins
+            leftovers.setdefault(document["id"], []).append(f"content/findings/{path.name}")
+            continue
+        live_ids.add(document["id"])
+        state = "corrected" if isinstance(document.get("corrections"), list) and document["corrections"] else "published"
+        rows.extend(attempt(path, lambda: [_status_row(root, document, state)]) or [])
+    for path, document in found["withdrawn finding"]:
+        extra = {"leftover": leftovers.pop(document["id"])} if document["id"] in leftovers else {}
+        bare = {k: v for k, v in document.items() if k != "withdrawn"}  # receipts bind to the text without it
+        rows.extend(attempt(path, lambda: [dict(_status_row(root, bare, "withdrawn"), **extra)]) or [])
+    seen = set()
+    for path in files(root / "private" / "drafts") + list(extra_drafts):
+        if os.path.abspath(path) in seen:
+            continue
+        seen.add(os.path.abspath(path))
+
+        def draft_row():
+            row = _status_row(root, load_draft(path))
+            row["state"] = ("withdrawn" if row["id"] in withdrawn_ids else
+                            "pending correction" if row["id"] in live_ids else row["state"])
+            return [row]
+        rows.extend(attempt(path, draft_row) or [])
+    return sorted(rows, key=lambda r: (STATUS_ORDER.index(r["state"]), r["id"] or "", r.get("path", "")))
+
+
+def status_table(rows):
+    def cells(row):
+        notes = (row["blockers"] + [f"leftover {p}" for p in row.get("leftover", [])]
+                 + ([f"unreadable {row['path']}"] if "path" in row else []))
+        receipts = f"{row['receipts_current']}" + (f" (+{row['receipts_stale']} stale)" if row["receipts_stale"] else "")
+        return [row["id"] or "-", row["slug"] or "-", row["state"], receipts, ",".join(notes) or "-"]
+    table = [["ID", "SLUG", "STATE", "RECEIPTS", "BLOCKERS"]] + [cells(row) for row in rows]
+    widths = [max(len(line[i]) for line in table) for i in range(4)]
+    return "\n".join("  ".join(c.ljust(w) for c, w in zip(line, widths)) + "  " + line[4] for line in table)
+
+
 def withdrawn_names(root):
     """(ids, slugs) kept taken by private/withdrawn/*.json; an unreadable or non-JSON file is named, never skipped."""
     return _taken(root / "private" / "withdrawn", "withdrawn finding")

@@ -742,6 +742,12 @@ def main():
         publish_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    status_p = finding_cmds.add_parser("status", help="Every draft, published and withdrawn finding with its state "
+                                       "and blockers by name (read-only)")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--draft", dest="extra_drafts", action="append", default=[], metavar="PATH",
+                          help="Also list this draft (private/drafts/*.json are always listed); repeatable")
+    status_p.add_argument("--json", dest="as_json", action="store_true", help="Print the rows as JSON")
     correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
     correct_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--date", "--note"):
@@ -870,6 +876,10 @@ def main():
         elif args.command == "finding":
             from . import findings
             read_config(root)
+            if args.finding_command == "status":
+                rows = findings.status_rows(root, [Path(p).expanduser() for p in args.extra_drafts])
+                print(json.dumps(rows, indent=2, ensure_ascii=False) if args.as_json else findings.status_table(rows))
+                return
             if args.finding_command == "correct":
                 print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
