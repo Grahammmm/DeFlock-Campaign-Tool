@@ -249,8 +249,8 @@ class Site:
     def share(self, title, description, path, kind, published, modified):
         """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
         tags = [("property", "og:site_name", self.name),
-                ("property", "og:title", e(title if kind == "article" else _one_line(title))),
-                ("property", "og:description", e(description if kind == "article" else _one_line(description))),
+                ("property", "og:title", e(title if kind == "article" else _one_line(title)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
+                ("property", "og:description", e(description if kind == "article" else _one_line(description)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
                 ("property", "og:type", kind)]
         if self.base and (kind != "article" or _preview_origin(self.base)):
             tags.append(("property", "og:url", e(self.base + path)))
