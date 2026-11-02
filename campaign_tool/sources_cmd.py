@@ -1,6 +1,7 @@
-"""`sources add | list | edit | remove`: look after content/sources.json, the public source library.
+"""`sources add | add-batch | list | edit | remove`: look after content/sources.json, the public source library.
 
-`add` resolves the hash against the private ledger (read-only); `list` prints every entry with the slugs of the
+`add` resolves the hash against the private ledger (read-only); `add-batch` appends every not-yet-listed record
+of one ingest source_id (read via `status --list`'s in-memory ledger copy); `list` prints every entry with the slugs of the
 published findings citing its record; `edit` changes title/note/public_url/pages of one entry chosen by >= 12 hex
 of its library hash (+ `--fragment`); `remove` deletes one, refused while a published finding cites the record and
 no other entry for it remains. Writers validate the whole new list with the content loader, then replace the file
@@ -15,6 +16,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from .agency_cards import visible
 from .content import (MAX_JSON_BYTES, ContentError, _read_json, default_agencies, load_agencies, load_finding,
                       load_sources)
 
@@ -117,6 +119,90 @@ def add_source(root, *, sha, title, agency_id, received_at, fragment, public_url
         raise ContentError("sources.json: file too large")
     _write_atomic(path, text)
     return {"added": digest[:12], "fragment": fragment, "entries": len(updated)}
+
+
+BATCH_MAX = 500
+TAG = re.compile(r"<[^>]*>?")
+
+
+def _batch_title(name):
+    """Plain-text title from an original file name stem (<= 120 chars), marked for an organizer edit."""
+    stem = re.split(r"[\\/]", TAG.sub(" ", name))[-1]
+    stem = stem.rsplit(".", 1)[0] if "." in stem.lstrip(".") else stem
+    stem = "".join(char if visible(char) and char not in "<>\t\n" else " " for char in stem)
+    stem = " ".join(stem.split())[:120].rstrip() or "Untitled record"
+    return stem + " [EDIT ME: title]"
+
+
+def _full_hashes(root, prefixes):
+    """Map each 12-char prefix to its one full ledger hash, from DF2237-17's in-memory ledger copy."""
+    from .ledger_list import _snapshot
+    db = _snapshot(Path(root) / "private" / "ledger.sqlite")
+    try:
+        found = {}
+        for (sha,) in db.execute("SELECT sha256 FROM objects ORDER BY sha256"):
+            if sha[:12] in prefixes:
+                found.setdefault(sha[:12], []).append(sha)
+    finally:
+        db.close()
+    if any(len(found.get(prefix, [])) != 1 for prefix in prefixes):
+        raise ContentError("ledger changed or a 12-char prefix is ambiguous; use sources add for those records")
+    return {prefix: hashes[0] for prefix, hashes in found.items()}
+
+
+def add_batch(root, source_id, agency_id, received_at, fragment=None, dry_run=False):
+    """Add every receipt of ``source_id`` whose record is not yet in the library, in one validated write."""
+    from .ledger_list import list_receipts
+    content = Path(root) / "content"
+    if content.is_symlink() or not content.is_dir():
+        raise ContentError("content/ is required")
+    try:
+        moment = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise ContentError("--received-at: use an ISO timestamp with a UTC offset") from None
+    if moment.tzinfo is None:
+        raise ContentError("--received-at: must include a time zone offset")
+    if agency_id not in {agency["agency_id"] for agency in _known_agencies(root)}:
+        raise ContentError(f"agency_id {agency_id!r} is not one of the campaign's agencies")
+    path = content / "sources.json"
+    raw, document = _read_existing(path)
+    load_sources(document)
+    if fragment is None:
+        fragments = sorted({entry["fragment"] for entry in document if entry["agency_id"] == agency_id})
+        if len(fragments) != 1:
+            raise ContentError(f"agency {agency_id!r} has {len(fragments)} existing fragments; give --fragment")
+        fragment = fragments[0]
+    if fragment == "library":
+        raise ContentError("--fragment: 'library' is the page anchor; choose another slug")
+    listing = list_receipts(root, source_id)
+    if listing.get("more"):
+        raise ContentError(f"more than {listing['count']} receipts for source_id; nothing written")
+    if not listing["receipts"]:
+        raise ContentError(f"no receipts for source_id {source_id!r}")
+    full = _full_hashes(root, {receipt["sha256_prefix"] for receipt in listing["receipts"]})
+    listed = {entry["sha256"] for entry in document}
+    new, already = {}, set()
+    for receipt in listing["receipts"]:
+        sha = full[receipt["sha256_prefix"]]
+        if sha in listed:
+            already.add(sha)
+        elif sha not in new:
+            new[sha] = {"sha256": sha, "title": _batch_title(receipt["original_name"]), "agency_id": agency_id,
+                        "received_at": received_at, "public_url": None, "fragment": fragment, "pages": None,
+                        "note": f"added in batch from {source_id}"}
+    if len(new) > BATCH_MAX:
+        raise ContentError(f"{len(new)} new records; at most {BATCH_MAX} per run, nothing written")
+    updated, text, existing = document + list(new.values()), raw or "", document
+    load_sources(updated)
+    for entry in new.values():  # the one-entry append path, applied in memory; one write below
+        text, existing = _append_text(text, existing, entry), True
+    if new and json.loads(text) != updated:
+        raise ContentError("sources.json: could not append without changing existing entries")
+    if new and len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        raise ContentError("sources.json: file too large")
+    if new and not dry_run:
+        _write_atomic(path, text)
+    return {"added": [sha[:12] for sha in new], "already_listed": len(already), "dry_run": dry_run}
 
 
 def _library(root):

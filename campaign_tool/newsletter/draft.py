@@ -7,7 +7,8 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
      "since": "<ISO>" | null,
      "findings": [{"title", "summary", "classification", "confidence", "path",
                    "published_at", "corrected": bool}],
-     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance"}]}
+     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance"}],
+     "decisions": [{"body", "on", "result", "vote", "source_url", "meeting_path"}]}  # optional, --from-content
 
 HTML is rendered from a Markdown subset through ``markdown_lite`` so raw HTML
 never reaches the draft; the only additions are a wrapper and the provider's
@@ -73,6 +74,38 @@ def _entries(items, label):
     return items
 
 
+# Same wording as site.OUTCOME_LABELS (DF2237-11); kept local so the draft builder stays standalone.
+DECISION_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
+                   "amended": "Approved with amendments", "no_action": "No action taken",
+                   "informational": "Informational item only"}
+
+
+def _decisions(items):
+    """Lines for ``decisions`` (DF2237-12): organizer-recorded outcomes only; nothing is inferred."""
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise DraftError("decisions must be a list")
+    lines = []
+    for index, item in enumerate(_entries(items, "decisions")):
+        label = f"decisions[{index}]"
+        result, on, url = item.get("result"), item.get("on"), item.get("source_url")
+        if not isinstance(result, str) or result not in DECISION_LABELS:
+            raise DraftError(f"{label}.result: must be one of {', '.join(DECISION_LABELS)}")
+        if not isinstance(on, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", on):
+            raise DraftError(f"{label}.on: YYYY-MM-DD date required")
+        day = _date(on + "T00:00:00+00:00", label + ".on")
+        if not isinstance(url, str) or not _HTTPS.fullmatch(url):
+            raise DraftError(f"{label}.source_url: must be an https:// URL")
+        body = _clean(item.get("body"), label + ".body", 200)
+        if not body:
+            raise DraftError(f"{label}.body: required")
+        vote = _clean(item.get("vote"), label + ".vote", 40)
+        entry = f"- **{body}**, {day.strftime('%b %d, %Y')}: {DECISION_LABELS[result]}"
+        lines.append(entry + (f" (vote {vote})" if vote else "") + f" [Official record]({url})")
+    return lines
+
+
 def _link(base_url, path, label):
     if not isinstance(path, str) or not _PATH.fullmatch(path) or ".." in path.split("/"):
         raise DraftError(f"{label}: invalid public path")
@@ -120,6 +153,7 @@ def build_draft(manifest, now=None):
     meetings = manifest.get("meetings") or []
     if not isinstance(findings, list) or not isinstance(meetings, list):
         raise DraftError("findings and meetings must be lists")
+    decisions = _decisions(manifest.get("decisions"))
     # The engine applies the documented window itself: findings published since the
     # last send, meetings that have not started yet (soonest first). Labels keep the
     # manifest index so a bad entry is named where the organizer can find it.
@@ -157,6 +191,12 @@ def build_draft(manifest, now=None):
         lines.append("No new findings were published in this period. Records requests are still open; "
                      "we publish only what independent reviewers have checked against the originals.")
     lines.append("")
+    if decisions:
+        lines.append("## Decisions")
+        lines += decisions[:MAX_MEETINGS]
+        if len(decisions) > MAX_MEETINGS:
+            lines.append(f"- and {len(decisions) - MAX_MEETINGS} more on the site.")
+        lines.append("")
     if meetings:
         lines.append("## Upcoming meetings")
         for index, meeting, starts in meetings[:MAX_MEETINGS]:
@@ -204,7 +244,8 @@ def build_draft(manifest, now=None):
         if UNSUBSCRIBE_PLACEHOLDER not in blob:
             raise DraftError(f"{label}: unsubscribe placeholder missing")
     return {"subject": subject[:200], "html": html, "text": text,
-            "counts": {"findings": len(findings), "meetings": len(meetings)}, "excluded": excluded,
+            "counts": {"findings": len(findings), "meetings": len(meetings),
+                       **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
             "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
 
 

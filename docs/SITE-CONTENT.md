@@ -142,6 +142,17 @@ loader as `build`, `agency_id` must be one of the campaign's agencies, and the
 file is replaced atomically; on any refusal it is left untouched. `--public-url`
 is only recorded, never fetched or uploaded, and nothing is published.
 
+`sources add-batch --directory D --source-id ID --agency-id A --received-at T
+[--fragment F] [--dry-run]` registers every record received under one ingest
+`source_id` (read through `status --list`'s in-memory ledger copy) whose hash
+is not yet in the library, in one validated atomic write of at most 500 new
+entries. Each title is the original file name stem as plain text (at most 120
+characters) followed by `[EDIT ME: title]`; `public_url` and `pages` are null
+and the note says which batch added it. `--fragment` defaults to the agency's
+one existing fragment. It prints `{"added": [12-char prefixes],
+"already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
+second run adds nothing. Nothing is fetched or published.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
@@ -193,6 +204,25 @@ is never in `sitemap.xml` or the feeds; the name is reserved, so a `public-asset
 Printing: `style.css` ends with one `@media print` block. Nav, signup, map and picker chrome are hidden; text is black on white;
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
 kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
+
+## Labels (`content/labels.json`, optional)
+Organizer-reviewed wording for the fixed UI strings of the HTML pages; the tool translates nothing. Without the file
+every page is byte-identical to the English defaults in `campaign_tool/labels.py` (`DEFAULTS`, one entry per key).
+```json
+{"schema_version": 1, "labels": {"nav.home": "Inicio", "heading.agencies": "Organismos públicos en {county}."}}
+```
+Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
+`intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
+`signup.*`, and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out keeps its English default.
+Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
+`<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
+`{state}`, `{count}`, `{date}` exist) or an unpaired brace; another top-level field, `schema_version` other than 1, a
+file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
+problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
+Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
+`data/findings.json`, all JavaScript (`site-data.js`, `agency-cards.js`, `app.js`, `findings/filter.js`, which
+rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
+(`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
 
 ## Phones
 At widths up to 850 px, content-page menus wrap with 44 px tap targets and a visible keyboard focus outline.

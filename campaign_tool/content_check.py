@@ -9,6 +9,7 @@ from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, 
                       _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
                       load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources, plain_text)
 from .finding_law import check_findings, jurisdiction, package_line
+from .labels import MAX_LABELS_BYTES, load_labels
 
 LIMIT = 200
 CAMERAS_MISSING = "map/cameras.geojson is missing; run tools/fetch_osm_alprs.py or supply reviewed data"
@@ -152,6 +153,10 @@ def content_problems(root, limit=LIMIT):
     sources_path = content_dir / "sources.json"
     if sources_path.is_file():
         _attempt(problems, "sources.json", lambda: load_sources(_read_json(sources_path)))
+
+    labels_path = content_dir / "labels.json"  # optional, read exactly as load_content: a symlink is named, not read
+    if labels_path.is_file() or labels_path.is_symlink():
+        _attempt(problems, "labels.json", lambda: load_labels(_read_json(labels_path, MAX_LABELS_BYTES)))
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
