@@ -67,6 +67,14 @@ non-zero). A finding published and corrected after `--since` stays a new finding
 "(corrected)". Without either flag it renders the empty template from `campaign.json`. The JSON
 names its `source` (`content`, `manifest` or `template`). Nothing is sent.
 
+`--from-content` also lists, under **Decisions** (after New findings and Corrections, before Upcoming meetings),
+each meeting outcome an organizer recorded with `meetings-outcome` (see MEETINGS.md) on or after
+the `--since` day (all of them without `--since`), oldest first: body, date, result label, vote
+when given and an "Official record" link to the https source. Only recorded outcomes appear; a
+meeting without one is never described as decided. At most 8 lines, then "and N more on the
+site."; `counts.decisions` is present only when the section is. Worker manifests carry no
+`decisions` key and render exactly as before.
+
 ## Approve & send
 
 Subscribers lists the draft jobs. Approve & send on a `done` draft creates a `send_newsletter`

@@ -24,6 +24,14 @@ def manifest_from_content(root, cfg, since=None):
     meetings = [{"body": m["body"], "starts_at": m["starts_at"], "agenda_item": m["agenda_item"],
                  "agenda_url": m["agenda_url"], "relevance": None}
                 for m in model["meetings"] if m.get("status") != "cancelled"]
+    # DF2237-12: only outcomes an organizer recorded (verified_at on or after the day of `since`);
+    # a meeting without one is never listed as decided.
+    day = since[:10] if since else ""
+    recorded = sorted((m for m in model["meetings"] if m.get("outcome") and m.get("status") != "cancelled"
+                       and m["outcome"]["verified_at"] >= day), key=lambda m: (m["outcome"]["on"], m["id"]))
+    decisions = [{"body": m["body"], "on": m["outcome"]["on"], "result": m["outcome"]["result"],
+                  "vote": m["outcome"].get("vote"), "source_url": m["outcome"]["source_url"],
+                  "meeting_path": f"/meetings/{m['id']}.html"} for m in recorded]
     return {"schema_version": 1,
             "campaign": {"name": cfg["name"], "base_url": model["site"]["base_url"], "county_name": cfg["county"]},
-            "since": since, "findings": findings, "meetings": meetings}
+            "since": since, "findings": findings, "meetings": meetings, "decisions": decisions}
