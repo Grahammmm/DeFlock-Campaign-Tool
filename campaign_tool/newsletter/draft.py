@@ -8,10 +8,13 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
      "findings": [{"title", "summary", "classification", "confidence", "path",
                    "published_at", "corrected": bool,
                    "corrections"?: [{"date": "YYYY-MM-DD", "note"}]}],
-     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance"}],
+     "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance",
+                   "participation"?: {...} | null}],  # --from-content: content.load_participation's dict
      "decisions": [{"body", "on", "result", "vote", "source_url", "meeting_path"}]}  # optional, --from-content
 
 ``corrections`` is optional (``--from-content`` sets it; Worker manifests omit it).
+``participation`` likewise: an object adds a "How to take part" line, null the
+posted-agenda sentence, and a meeting without the key renders as before.
 
 HTML is rendered from a Markdown subset through ``markdown_lite`` so raw HTML
 never reaches the draft; the only additions are a wrapper and the provider's
@@ -144,6 +147,44 @@ def _decisions(items):
     return lines
 
 
+def _how(value, label, excluded):
+    """Organizer ``how`` text, or "see official details" when it holds an email or phone (DF2037-15)."""
+    if isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value)):
+        excluded["contact_text_withheld"] = excluded.get("contact_text_withheld", 0) + 1
+        return "see official details"
+    return _clean(value, label, 200)
+
+
+def _participation(facts, starts, now, label, excluded):
+    """The indented "How to take part" line for one meeting's verified participation facts (DF2037-15)."""
+    if facts is None:
+        return "  Check the posted agenda for how to comment."
+    if not isinstance(facts, dict):
+        raise DraftError(f"{label}: must be an object or null")
+    remote, written, minutes = facts.get("remote"), facts.get("written_comment"), facts.get("speaker_minutes")
+    parts = [f"In person: {'yes' if facts['in_person'] else 'no'}"] if isinstance(facts.get("in_person"), bool) else []
+    if isinstance(remote, dict) and remote.get("available") is False:
+        parts.append("Remote: not offered")
+    elif isinstance(remote, dict) and remote.get("available") is True:
+        parts.append("Remote: " + (_how(remote.get("how"), label + ".remote.how", excluded) or "available"))
+    if isinstance(written, dict):
+        due = _date(written["deadline"], label + ".written_comment.deadline") if written.get("deadline") else None
+        if due is not None and due <= now:
+            excluded["comment_deadlines_passed"] = excluded.get("comment_deadlines_passed", 0) + 1
+        else:
+            how = _how(written.get("how"), label + ".written_comment.how", excluded) or "see official details"
+            by = due.astimezone(starts.tzinfo).strftime(", by %a %b %d, %H:%M %Z").rstrip() if due else ""
+            parts.append(f"Written comments: {how}{by}")
+    if type(minutes) is int and 1 <= minutes <= 10:
+        parts.append(f"Speaker limit: {minutes} minute{'s' if minutes != 1 else ''}")
+    url = facts.get("source_url")
+    if not isinstance(url, str) or not _HTTPS.fullmatch(url):
+        raise DraftError(f"{label}.source_url: must be an https:// URL")
+    checked = _day(facts.get("verified_at"), label + ".verified_at").isoformat()
+    return (f"  How to take part: {'; '.join(parts) or 'see official details'}"
+            f" (checked {checked}) [Official details]({url})")
+
+
 def _link(base_url, path, label):
     if not isinstance(path, str) or not _PATH.fullmatch(path) or ".." in path.split("/"):
         raise DraftError(f"{label}: invalid public path")
@@ -271,6 +312,8 @@ def build_draft(manifest, now=None):
             if isinstance(url, str) and _HTTPS.fullmatch(url):
                 entry += f" [Agenda]({url})"
             lines.append(entry)
+            if "participation" in meeting:  # Worker manifests carry no such key and render as before
+                lines.append(_participation(meeting["participation"], starts, now, label + ".participation", excluded))
         lines.append("")
     if base_url:
         lines.append(f"Read everything, with source hashes, at [{base_url}]({base_url}).")

@@ -128,7 +128,9 @@ class CamerasPageTests(unittest.TestCase):
         locs = [loc.text for loc in ET.fromstring(self.read("sitemap.xml")).iter(
             "{http://www.sitemaps.org/schemas/sitemap/0.9}loc")]
         self.assertEqual(locs, [BASE + p for p in ("/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html",
-                                                   "/meetings.html", "/about.html", "/findings/cedar-policy-posted.html",
+                                                   "/meetings.html", "/about.html",
+                                                   "/agencies/cedar.html",  # DF2237-08 agency page
+                                                   "/findings/cedar-policy-posted.html",
                                                    "/meetings/cedar-council-2026-10.html")])
 
     def test_with_map_linked_from_fallback_footer_and_sitemap(self):
