@@ -681,6 +681,12 @@ def main():
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
+    pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
+    for flag in ("--directory", "--id"):
+        pack.add_argument(flag, required=True)
+    pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
+    pack.add_argument("--replace", action="store_true")
+    pack.add_argument("--allow-past", action="store_true")
     args = parser.parse_args()
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
@@ -720,6 +726,10 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "meeting-pack":
+            from .meeting_pack import build as pack_build
+            print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
+                                        replace=args.replace, allow_past=args.allow_past)))
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "sources" and args.sources_command == "add":
