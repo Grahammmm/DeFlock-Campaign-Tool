@@ -181,6 +181,17 @@ one with no steps. `kit-status --directory D` lists each request with `determina
 the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
 
+### Several requests to one agency
+
+A second or narrowed request to an agency you already recorded gets its own name: draft it yourself in
+`kit/requests/<agency_id>--<name>.md`, then record it with `kit-sent ... --request <name>`. Names are 1-40 characters
+`a-z`, `0-9` or `-`, starting with a letter or digit; the first request is `main` (the default, drafted in
+`requests/<agency_id>.md`). Each request keeps its own date, channel, draft SHA-256 and steps, and `--replace` only
+touches the named one. In `kit/sent.json` a named request is keyed `<agency_id>#<name>`; files written before this
+change read unchanged, every entry being request `main` (a `#main` key is refused as malformed). `kit-status` and
+`kit-due` print `request` on every row and take `--request NAME` to list only that name; `kit-response --request NAME`
+records a step on it. A name with no recorded request is refused (`no sent request <agency>/<name>`).
+
 Record what the agency did, and when, with `kit-response --directory D --agency ID --date YYYY-MM-DD --kind K
 [--note TEXT]`. `K` is `acknowledged`, `extension`, `determination`, `produced`, `denied` or `closed`. Dates must
 not be before the send date or the previous step, or in the future. `acknowledged` is first and once only; `extension`

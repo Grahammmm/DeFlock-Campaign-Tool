@@ -28,9 +28,42 @@ def _day(value, pattern=kit.DATE, parse=date.fromisoformat):
         return None
 
 
-def _entry_ok(agency_id, entry):
-    return (kit.AGENCY_ID.match(agency_id) and isinstance(entry, dict) and _day(entry.get("sent_on"))
-            and entry.get("channel") in CHANNELS and entry.get("draft") == f"requests/{agency_id}.md"
+REQUEST = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")  # several requests per agency; "main" is the original one
+
+
+def _request(request):
+    if not isinstance(request, str) or not REQUEST.fullmatch(request):
+        raise ValueError("--request must be 1-40 characters a-z, 0-9 or -, starting with a letter or digit")
+    return request
+
+
+def _key(agency_id, request="main"):  # sent.json key: the bare agency id for main (old files read unchanged)
+    return agency_id if request == "main" else f"{agency_id}#{request}"
+
+
+def _split(key):  # (agency_id, request) of a sent.json key; None for "#main" or a bad request name
+    agency_id, mark, request = key.partition("#")
+    if mark and (request == "main" or not REQUEST.fullmatch(request)):
+        return None
+    return agency_id, request or "main"
+
+
+def _stem(agency_id, request="main"):  # draft file stem: requests/<agency>.md for main, <agency>--<request>.md else
+    return agency_id if request == "main" else f"{agency_id}--{request}"
+
+
+def _draft_path(agency_id, request="main"):
+    return f"requests/{_stem(agency_id, request)}.md"
+
+
+def _label(agency_id, request):
+    return agency_id if request == "main" else f"{agency_id}/{request}"
+
+
+def _entry_ok(key, entry):
+    parts = _split(key)
+    return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
+            and entry.get("channel") in CHANNELS and entry.get("draft") == _draft_path(*parts)
             and isinstance(entry.get("draft_sha256"), str) and SHA256.fullmatch(entry["draft_sha256"])
             and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list))
 
@@ -60,28 +93,41 @@ def read_sent(root):
     return document["requests"]
 
 
-def _draft(root, agency_id):
-    path = Path(root) / "kit" / "requests" / (agency_id + ".md")
+def _draft(root, agency_id, request="main"):
+    path = Path(root) / "kit" / _draft_path(agency_id, request)
     if path.is_symlink() or not path.is_file():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def record_sent(root, agency_id, sent_on, channel, *, replace=False, today=None):
+def _check(root, agency, request):  # main: kit-check's own report; a named request: the same check on its draft
+    if request == "main":
+        return kit_check.agency_report(root, agency)
+    text = (Path(root) / "kit" / _draft_path(agency["agency_id"], request)).read_text(encoding="utf-8",
+                                                                                       errors="replace")
+    hits = kit_check.draft_problems(text)
+    return {"placeholder_count": len(hits), "ok": not hits and agency.get("verified") is True}
+
+
+def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None):
     """Record one hand-sent request in kit/sent.json and return its entry."""
-    root = Path(root)
+    root, request = Path(root), _request(request)
     path = root / "kit" / "agencies.json"
     if not path.is_file() or path.is_symlink():
         raise ValueError("run kit first: kit/agencies.json is missing")
-    agency = next((entry for entry in kit._load_existing(path) if entry["agency_id"] == agency_id), None)
+    agencies = kit._load_existing(path)
+    agency = next((entry for entry in agencies if entry["agency_id"] == agency_id), None)
     if agency is None:
         raise ValueError(f"agency_id {agency_id!r} is not in kit/agencies.json")
-    digest = _draft(root, agency_id)
+    draft, stem = _draft_path(agency_id, request), _stem(agency_id, request)
+    if request != "main" and any(entry["agency_id"] == stem for entry in agencies):
+        raise ValueError(f"kit/requests/{stem}.md is another agency's draft; choose another --request name")
+    digest = _draft(root, agency_id, request)
     if digest is None:
-        raise ValueError(f"kit/requests/{agency_id}.md must be a regular file (not a symlink)")
-    check = kit_check.agency_report(root, agency)
+        raise ValueError(f"kit/requests/{stem}.md must be a regular file (not a symlink)")
+    check = _check(root, agency, request)
     if not check["ok"]:
-        raise ValueError(f"kit/requests/{agency_id}.md still has {check.get('placeholder_count', 0)} unfilled "
+        raise ValueError(f"kit/requests/{stem}.md still has {check.get('placeholder_count', 0)} unfilled "
                          "placeholder(s) or an unverified recipient; run kit-check")
     sent = _day(sent_on)
     if sent is None:
@@ -91,17 +137,18 @@ def record_sent(root, agency_id, sent_on, channel, *, replace=False, today=None)
     if channel not in CHANNELS:
         raise ValueError("--channel must be one of " + ", ".join(CHANNELS))
     requests = read_sent(root)
-    previous = requests.get(agency_id)
+    key, label = _key(agency_id, request), _label(agency_id, request)
+    previous = requests.get(key)
     if previous and not replace:
-        raise ValueError(f"{agency_id} already recorded as sent on {previous['sent_on']}; use --replace to correct it")
+        raise ValueError(f"{label} already recorded as sent on {previous['sent_on']}; use --replace to correct it")
     if previous and previous["steps"]:
-        raise ValueError(f"{agency_id} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
-    entry = {"sent_on": sent_on, "channel": channel, "draft": f"requests/{agency_id}.md", "draft_sha256": digest,
+        raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
+    entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
-    requests[agency_id] = entry
+    requests[key] = entry
     kit._write_json(root / "kit" / "sent.json",
                     {"schema_version": 1, "requests": dict(sorted(requests.items()))})
-    return {"agency_id": agency_id, **entry}
+    return {"agency_id": agency_id, "request": request, **entry}
 
 
 def _clean_note(note):
@@ -137,9 +184,9 @@ def _resolve_records(root, records, steps):  # every prefix is resolved before a
     return sorted(hashes)
 
 
-def record_step(root, agency_id, on, kind, *, note=None, today=None, records=()):
+def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main"):
     """Append one dated agency response step to a hand-sent request and return the updated entry."""
-    root = Path(root)
+    root, request = Path(root), _request(request)
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
     records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
@@ -149,13 +196,16 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=())
         raise ValueError(f"--record: at most {RECORDS_MAX} records per step")
     note = _clean_note(note)
     requests = read_sent(root)
-    entry = requests.get(agency_id)
+    entry = requests.get(_key(agency_id, request)) if "#" not in agency_id else None
+    if entry is None and request != "main":
+        raise ValueError(f"no sent request {agency_id}/{request}; run kit-sent --request {request} first")
     if entry is None:
         raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
+    label = _label(agency_id, request)
     steps = entry["steps"]
     if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on"))
                and _step_records(s) == s.get("records", []) for s in steps):
-        raise ValueError(f"kit/sent.json unreadable: malformed steps for {agency_id!r}")
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
     day = _day(on)
     if day is None:
         raise ValueError("--date must be a real YYYY-MM-DD date")
@@ -167,7 +217,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=())
         raise ValueError(f"--date {on} is in the future")
     kinds = [s["kind"] for s in steps]
     if "closed" in kinds:
-        raise ValueError(f"{agency_id} is closed; no step can follow closed")
+        raise ValueError(f"{label} is closed; no step can follow closed")
     if kind == "acknowledged" and kinds:
         raise ValueError("acknowledged is allowed only as the first step, once")
     if kind == "extension" and "extension" in kinds:
@@ -184,14 +234,15 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=())
     entry["steps"] = [*steps, step]
     kit._write_json(root / "kit" / "sent.json",
                     {"schema_version": 1, "requests": dict(sorted(requests.items()))})
-    return {"agency_id": agency_id, **entry, "steps": [
+    return {"agency_id": agency_id, "request": request, **entry, "steps": [
         {**s, "records": [h[:12] for h in s["records"]]} if "records" in s else s for s in entry["steps"]]}
 
 
-def status(root, today=None, law_base=None):
-    """Every recorded request with its provisional determination dates (read-only)."""
+def status(root, today=None, law_base=None, *, request=None):
+    """Every recorded request (or only those named ``request``) with provisional determination dates (read-only)."""
     from .cli import read_config  # local import: cli imports this module lazily
     root = Path(root)
+    request = None if request is None else _request(request)
     requests = read_sent(root)
     path = root / "kit" / "agencies.json"
     names = {entry["agency_id"]: entry["name"] for entry in kit._load_existing(path)} \
@@ -202,16 +253,19 @@ def status(root, today=None, law_base=None):
     except ValueError:
         package, package_status = None, "missing"
     rows = []
-    for agency_id, entry in sorted(requests.items(), key=lambda item: (item[1]["sent_on"], item[0])):
+    for (agency_id, name), entry in sorted(((_split(key), entry) for key, entry in requests.items()),
+                                           key=lambda item: (item[1]["sent_on"], *item[0])):
+        if request is not None and name != request:
+            continue
         steps = [s for s in entry["steps"] if isinstance(s, dict)]
         kinds = [s.get("kind") for s in steps]
         linked = sorted({digest for s in steps for digest in _step_records(s)})
         extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
         due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
             if package else None
-        rows.append({"agency_id": agency_id, "name": names.get(agency_id), "sent_on": entry["sent_on"],
-                     "channel": entry["channel"],
-                     "draft_changed_since_sent": _draft(root, agency_id) != entry["draft_sha256"],
+        rows.append({"agency_id": agency_id, "request": name, "name": names.get(agency_id),
+                     "sent_on": entry["sent_on"], "channel": entry["channel"],
+                     "draft_changed_since_sent": _draft(root, agency_id, name) != entry["draft_sha256"],
                      "determination_due": due, "with_extension": extended, "steps": len(entry["steps"]),
                      "extended": "extension" in kinds, "closed": "closed" in kinds,
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
@@ -255,7 +309,7 @@ def coverage(root):
     totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
               "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
               "with_records": sum(r["records"] > 0 for r in rows), "with_findings": sum(r["findings"] > 0 for r in rows),
-              "unselected_with_requests": len(set(requests) - set(selected))}
+              "unselected_with_requests": sum(_split(key)[0] not in selected for key in requests)}
     note = ("Read-only counts from kit/ and content/." if model else
             "No content/ folder: sources and findings are 0.") + " Agencies with no sent request come first."
     return {"rows": rows, "totals": totals, "note": note}
@@ -295,20 +349,23 @@ def format_coverage(report, as_csv=False):
     return "\n".join(lines + [report["note"]]) + "\n"
 
 
-def due(root, as_of=None, *, today=None, law_base=None):
+def due(root, as_of=None, *, today=None, law_base=None, request=None):
     """Open (unanswered, unclosed) requests with days to or past the provisional determination date (read-only)."""
     day = _day(as_of) if as_of is not None else (today or date.today())
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    report = status(root, law_base=law_base)
-    kinds = {agency_id: {s.get("kind") for s in entry["steps"] if isinstance(s, dict)}
-             for agency_id, entry in read_sent(root).items()}
+    report = status(root, law_base=law_base, request=request)
+    if request is not None and not report["requests"]:
+        raise ValueError(f"no sent request */{request}: no agency has a request recorded under that name")
+    kinds = {_split(key): {s.get("kind") for s in entry["steps"] if isinstance(s, dict)}
+             for key, entry in read_sent(root).items()}
     open_rows, answered = [], []
     for row in report["requests"]:
         if row["closed"]:
             continue
-        base = {"agency_id": row["agency_id"], "name": row["name"], "sent_on": row["sent_on"]}
-        if kinds.get(row["agency_id"], set()) & ANSWERED:
+        base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
+                "sent_on": row["sent_on"]}
+        if kinds.get((row["agency_id"], row["request"]), set()) & ANSWERED:
             answered.append({**base, "last_step": row["last_step"]})
         elif row["determination_due"] is None:
             open_rows.append({**base, "due": None, "days": None, "state": "no_law_package"})
@@ -316,7 +373,7 @@ def due(root, as_of=None, *, today=None, law_base=None):
             days = (date.fromisoformat(row["determination_due"]) - day).days
             open_rows.append({**base, "due": row["determination_due"], "days": days,
                               "state": "past_due" if days < 0 else "due_today" if days == 0 else "upcoming"})
-    open_rows.sort(key=lambda row: (row["due"] or "", row["agency_id"]))
+    open_rows.sort(key=lambda row: (row["due"] or "", row["agency_id"], row["request"]))
     missing = report["law_package_status"] == "missing"
     return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
             "answered": answered, "past_due": sum(row["state"] == "past_due" for row in open_rows),
@@ -353,7 +410,8 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     if answer:
         raise ValueError(f"request for {agency_id} was answered ({answer['kind']} on {answer.get('on')}); "
                          "no follow-up drafted")
-    row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"] if r["agency_id"] == agency_id), None)
+    row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"]
+                if (r["agency_id"], r["request"]) == (agency_id, "main")), None)
     if row is None or row["state"] == "no_law_package":
         raise ValueError("no law package: dates cannot be computed")
     if row["state"] != "past_due":
