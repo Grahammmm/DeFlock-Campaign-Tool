@@ -43,7 +43,7 @@ class HostedCommandTests(unittest.TestCase):
         opener, calls, rows = self.server(corrupt)
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.dict("os.environ", {"WORKSPACE_URL": "https://workspace.example.invalid", "RUNNER_TOKEN": "synthetic-runner-token"}, clear=True), \
-                patch("urllib.request.urlopen", opener), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                patch("runner.client.no_redirect_urlopen", opener), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = main(["export-hosted", "--out", str(out)])
         self.assertNotIn("synthetic-runner-token", stdout.getvalue() + stderr.getvalue())
         return result, stdout.getvalue(), stderr.getvalue(), calls, rows
@@ -78,7 +78,7 @@ class HostedCommandTests(unittest.TestCase):
                 client.get(path)
 
     def test_missing_environment_stops_before_network(self):
-        with patch.dict("os.environ", {}, clear=True), patch("urllib.request.urlopen") as opener, \
+        with patch.dict("os.environ", {}, clear=True), patch("runner.client.no_redirect_urlopen") as opener, \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exc:
             main(["export-hosted", "--out", "unused.tar"])
         self.assertEqual(exc.exception.code, 2)

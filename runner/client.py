@@ -59,6 +59,25 @@ def sha256_hex(data):
     return hashlib.sha256(data).hexdigest()
 
 
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect from the runner API.
+
+    urllib's default handler copies every header, including Authorization, onto
+    the redirected request whatever its origin or scheme, so following one could
+    hand the whole-database RUNNER_TOKEN to another host (an Access login page,
+    or an https->http downgrade). The runner API never redirects, so a 3xx is
+    surfaced as a non-retryable HTTPError instead of being followed.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def no_redirect_urlopen(request, timeout=None):
+    """Default Workspace transport: urlopen without redirect following."""
+    return urllib.request.build_opener(RefuseRedirects).open(request, timeout=timeout)
+
+
 class Workspace:
     """HTTP client bound to one campaign's runner token."""
 
@@ -77,7 +96,7 @@ class Workspace:
         self.timeout = timeout
         self.max_retries = max_retries
         self.sleep = sleep
-        self.opener = opener or urllib.request.urlopen
+        self.opener = opener or no_redirect_urlopen
         self.backoff_base = backoff_base
 
     # -- transport -----------------------------------------------------------
