@@ -133,7 +133,10 @@ is only recorded, never fetched or uploaded, and nothing is published.
 signup, meetings), `agencies.html`, `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
 `#<fragment>` section per source group), `meetings.html`, `about.html`,
-`style.css`, `_headers`, `robots.txt`, `sitemap.xml`, `feed.xml` (Atom of
+`style.css`, `_headers`, `robots.txt`, `sitemap.xml` (only when `base_url` is
+set: absolute `<loc>`s, finding pages and `/`, `/findings/` with the UTC day of
+the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
+no footer link, and `build` notes the skip on stderr), `feed.xml` (Atom of
 findings), `findings/agency/<slug>.xml` (the same Atom entries for one agency,
 only for an agency with at least one published finding; linked as "Findings
 feed" from its `agencies.html` entry), `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
