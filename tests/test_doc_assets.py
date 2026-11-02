@@ -83,6 +83,20 @@ class PdfKindsTests(unittest.TestCase):
         self.assertEqual(pdf_kinds(pdf(escaped_filter)), ["author metadata"])
         array_filter = flate(b"<< /EmbeddedFiles 9 0 R >>").replace(b"/Filter /FlateDecode", b"/Filter [/FlateDecode]")
         self.assertEqual(pdf_kinds(pdf(array_filter)), ["embedded files"])
+        for gap in (b" % comment\n", b"%\r", b" %% a % b\r\n %c\n", b"\n[ % x\n"):  # comments are whitespace
+            commented = flate(b"<< /JS (x) /Author (a) >>").replace(b"/Filter /", b"/Filter" + gap + b"/")
+            if gap.strip().startswith(b"["):
+                commented = commented.replace(b"/FlateDecode", b"/FlateDecode %y\n]")
+            self.assertEqual(pdf_kinds(pdf(commented)), ["JavaScript", "author metadata"], gap)
+
+    # 3b. a stream encoded other than Flate-only or image-only cannot be read for names: unreadable
+    def test_other_encodings(self):
+        image = b"<< /Subtype /Image /Filter [/DCTDecode] /Length 3 >>\nstream\nabc\nendstream"
+        self.assertEqual(pdf_kinds(pdf(image, image.replace(b"[/DCTDecode]", b"/JPXDecode"))), [])
+        for value in (b"/ASCIIHexDecode", b"/LZWDecode", b"[/ASCII85Decode /FlateDecode]", b"[/Fl /DCT]",
+                      b"5 0 R", b"/RunLengthDecode", b"[/FlateDecode", b"<< /FlateDecode 1 >>"):
+            other = b"<< /Filter %s /Length 3 >>\nstream\nabc\nendstream" % value
+            self.assertEqual(pdf_kinds(pdf(other)), [PDF_UNREADABLE], value)
 
     # 4. incremental updates are revisions; a linearized file may have exactly two %%EOF
     def test_revisions(self):
@@ -157,6 +171,10 @@ class SvgKindsTests(unittest.TestCase):
         for body, kinds in cases.items():
             self.assertEqual(svg_kinds(svg(body)), kinds, body)
         self.assertEqual(svg_kinds(svg(b"", b' onload="x()"')), ["event handler"])
+        for escape in (rb"\ffffff", rb"\110000", rb"\d800", rb"\0"):  # out of range: U+FFFD, never a crash
+            self.assertEqual(svg_kinds(svg(b"<style>rect { fill: red }%s</style>" % escape)), [], escape)
+            self.assertEqual(svg_kinds(svg(b'<rect style="fill:%s url(%s)"/>' % (escape, URL))),
+                             ["external reference"], escape)
         self.assertEqual(svg_kinds(b'<?xml-stylesheet href="%s"?>' % URL + CLEAN_SVG), ["external reference"])
 
     # 8. DOCTYPE/ENTITY refused on the bytes before any parse; malformed or non-UTF-8 is unreadable

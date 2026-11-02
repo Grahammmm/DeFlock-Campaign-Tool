@@ -2,7 +2,8 @@
 
 Stdlib only and bounded: input <= ``MAX_BYTES``; at most ``MAX_STREAMS`` Flate streams inflated, each to at most
 ``MAX_INFLATE`` bytes (``decompressobj().decompress(data, max_length)``, so memory stays bounded). Anything malformed
-or over a bound is ``unreadable PDF`` / ``unreadable SVG`` and is refused too. Only kind names leave this module.
+or over a bound, and any stream encoded other than Flate-only or image-only, is ``unreadable PDF`` / ``unreadable SVG``
+and is refused too. Only kind names leave this module.
 """
 import re
 import zlib
@@ -21,7 +22,12 @@ PDF_NAME = re.compile(rb"/([^\x00\t\n\x0c\r ()<>\[\]{}/%]+)")
 PDF_HEX = re.compile(rb"#([0-9A-Fa-f]{2})")
 XMP_AUTHOR = re.compile(rb"<(?:pdf:Author|dc:creator)\b|\bpdf:Author\s*=")
 STREAM = re.compile(rb"(?<![A-Za-z])stream\r?\n")
-FILTER = re.compile(rb"/Filter\s*\[?\s*/(FlateDecode|Fl)(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])")
+# whitespace and comments; a comment runs to end of line (the lookahead stops ``%%%...`` backtracking)
+PDF_GAP = rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*(?=[\r\n]|\Z))*"
+FILTER = re.compile(rb"/Filter(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])" + PDF_GAP)
+FILTER_ARRAY = re.compile(rb"\[(" + PDF_GAP + rb"(?:/[^\x00\t\n\x0c\r ()<>\[\]{}/%]+" + PDF_GAP + rb")*)\]")
+FLATE = {b"FlateDecode", b"Fl"}
+IMAGE_FILTERS = {b"DCTDecode", b"DCT", b"JPXDecode", b"CCITTFaxDecode", b"CCF", b"JBIG2Decode"}  # carry no names
 SVG_DOCTYPE = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 CSS_ESCAPE = re.compile(r"\\([0-9A-Fa-f]{1,6})\s?|\\(.)", re.DOTALL)
 CSS_URL = re.compile(r"url\(\s*['\"]?\s*([^)'\"\s]*)", re.IGNORECASE)
@@ -44,13 +50,39 @@ def _names(data, kinds):
         kinds.add("author metadata")
 
 
+def _filters(header):
+    """Each ``/Filter`` value in a stream header as a list of names; ``Unreadable`` if it is not a name or array."""
+    for match in FILTER.finditer(header):
+        at = match.end()
+        array = FILTER_ARRAY.match(header, at)
+        if array:
+            names = PDF_NAME.findall(re.sub(rb"%[^\r\n]*", b"", array[1]))
+        else:
+            name = PDF_NAME.match(header, at)
+            if not name:
+                raise Unreadable()  # an indirect reference or a malformed name: cannot tell what encodes it
+            names = [name[1]]
+        yield names
+
+
+def _is_flate(header):
+    """True for a Flate-only stream, False for none or image-only; other encodings could hide names: ``Unreadable``."""
+    flate = False
+    for names in _filters(header):
+        if len(names) == 1 and names[0] in FLATE:
+            flate = True
+        elif not set(names) <= IMAGE_FILTERS:
+            raise Unreadable()
+    return flate
+
+
 def _inflated(data):
     """Yield each ``/FlateDecode`` stream's inflated bytes; raises ``Unreadable`` past a bound or on bad data."""
     view, count = memoryview(data), 0
     for match in STREAM.finditer(data):
         start = match.end()
         header = _unhex(data[data.rfind(b"obj", 0, match.start()) + 3:match.start()])
-        if not FILTER.search(header):
+        if not _is_flate(header):
             continue
         count += 1
         end = data.find(b"endstream", start)
@@ -91,8 +123,16 @@ def _local(name):
     return name.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
 
 
+def _css_char(match):
+    """A CSS escape's character; zero, surrogates and code points past U+10FFFF become U+FFFD (CSS Syntax 4.3.7)."""
+    if not match[1]:
+        return match[2]
+    code = int(match[1], 16)
+    return chr(code) if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else "\ufffd"
+
+
 def _css_external(text):
-    text = CSS_ESCAPE.sub(lambda match: chr(int(match[1], 16)) if match[1] else match[2], text)
+    text = CSS_ESCAPE.sub(_css_char, text)
     if "@import" in text.lower():
         return True
     return any(not target.startswith("#") for target in CSS_URL.findall(text))
