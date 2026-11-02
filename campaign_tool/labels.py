@@ -1,0 +1,147 @@
+"""Fixed UI strings of the content-model site, replaceable by an organizer-reviewed ``content/labels.json``.
+
+``DEFAULTS`` is the exact English the pages always used, so a site without labels.json is byte-identical. The tool
+translates nothing: an organizer supplies reviewed wording key by key; see docs/SITE-CONTENT.md ("Labels")."""
+import re
+from html import escape
+
+from .content import ContentError
+
+MAX_LABELS_BYTES, MAX_LABEL_CHARS = 64 * 1024, 300
+CLASSIFICATION_LABELS = {"documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
+                         "confirmed_conflict": "Confirmed conflict", "information_gap": "Information gap",
+                         "redaction": "Redaction", "agency_assertion": "Agency assertion", "no_conflict": "No conflict found"}
+CONFIDENCE_LABELS = {"verified": "Verified against the record", "likely": "Likely; awaiting further records"}
+KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol", "district_attorney":
+               "District attorney", "county_board": "County board", "city_council": "City council", "other": "Other public body"}
+DEFAULTS = {
+    "nav.label": "Site", "nav.home": "Home", "nav.agencies": "Agencies", "nav.findings": "Findings",
+    "nav.sources": "Sources", "nav.meetings": "Meetings", "nav.about": "About", "nav.corrections": "Corrections",
+    "nav.home_page": "Home page", "header.skip": "Skip to content", "header.attend": "Attend a meeting",
+    "footer.credit": "{name} is an independent local initiative. Built with DeFlock Campaign Tool.",
+    "footer.contact": "Contact:", "footer.feed": "Findings feed", "footer.sitemap": "Sitemap",
+    "title.feed": "Findings", "title.home": "Home", "title.agencies": "Agencies",
+    "title.agencies_description": "Public bodies covered by the campaign", "title.findings": "Findings",
+    "title.findings_description": "Published, source-linked findings", "title.corrections": "Corrections",
+    "title.corrections_description": "Every correction issued on a published finding",
+    "title.not_found": "Page not found", "title.not_found_description": "This page does not exist on this site.",
+    "title.sources": "Sources", "title.sources_description": "Hashed source records behind published findings",
+    "title.meetings": "Meetings", "title.meetings_description": "Public meetings and comment kits",
+    "title.meeting_description": "Public meeting and comment kit", "title.about": "About",
+    "title.about_description": "About the campaign",
+    "eyebrow.agencies": "Agencies", "eyebrow.contracts": "Contracts", "eyebrow.meetings": "Meetings",
+    "eyebrow.mission": "Evidence before conclusions", "eyebrow.latest_findings": "Latest findings",
+    "eyebrow.findings": "Findings", "eyebrow.sources": "Source library", "eyebrow.meeting": "Meeting",
+    "eyebrow.about": "About", "eyebrow.agency_profile": "Agency profile", "eyebrow.open_questions": "Open questions",
+    "heading.contracts": "Contracts ending soon", "heading.agencies_home": "What the records show so far.",
+    "heading.meetings_home": "Show up informed.", "heading.findings_home": "Published with sources.",
+    "heading.participate": "Participate with evidence.", "heading.agencies": "Public bodies in {county}.",
+    "heading.findings": "Everything we publish cites a record.", "heading.corrections": "Corrections",
+    "heading.not_found": "Page not found", "heading.sources": "Every document we cite, and where it came from.",
+    "heading.meetings": "Official channels for informed questions.", "heading.past_meetings": "Past meetings",
+    "intro.step1_title": "Request", "intro.step2_title": "Understand", "intro.step3_title": "Participate",
+    "intro.step1": "Ask for policies, agreements, sharing settings and audit records.",
+    "intro.step2": "Preserve originals, compare applicable rules and independently challenge every material finding.",
+    "intro.step3": "Use reviewed evidence and official meeting channels to ask informed questions.",
+    "intro.agencies_home": "Choose an area to see its status, published facts and the source notes behind them.",
+    "intro.full_agency_list": "Full agency list", "intro.all_meetings": "All meetings and comment kits",
+    "intro.all_findings": "All findings", "intro.atom_feed": "Atom feed", "intro.open_data": "Open data (JSON)",
+    "intro.agencies": "Listing an agency here says only that we asked or intend to ask it for records. No agency is "
+                      "asserted to operate license plate readers unless a published finding says so with sources.",
+    "intro.findings": "Each finding names its classification, confidence, event date and the hashed source records behind it.",
+    "intro.corrections": "Every correction issued on a published finding, newest first.",
+    "intro.not_found": "This page does not exist on this site. Findings are never silently removed: corrections and "
+                       "withdrawals are listed on",
+    "intro.sources": "Originals stay in the private archive unless a public copy is linked. Each entry names the "
+                     "published findings that cite it.",
+    "intro.meetings": "Comment kits summarize reviewed findings; they are not legal advice and do not ask anyone to flood a meeting.",
+    "intro.open_data_about": "Published findings are also available as open data:",
+    "notice.no_findings": "No findings have been published yet.", "notice.no_upcoming": "No upcoming meetings are listed.",
+    "notice.past_meetings_link": "Past meetings and their comment kits", "notice.no_meetings": "No meetings are listed yet.",
+    "notice.no_agencies": "No agencies are configured yet.", "notice.no_filter_match": "No published finding matches these filters.",
+    "notice.no_corrections": "No corrections have been issued.", "notice.no_sources": "No source records have been catalogued yet.",
+    "notice.meeting_cancelled": "This meeting was cancelled. The comment kit is kept for the record.",
+    "notice.no_kit": "No comment kit has been staged for this meeting.",
+    "finding.corrected": "Corrected {date}", "finding.event_date": "Event date {date}", "finding.agency": "Agency:",
+    "finding.confidence": "Confidence:", "finding.published": "Published {date}", "finding.updated": "Updated {date}",
+    "finding.sources": "Sources", "finding.limitations": "Limitations", "finding.none_stated": "None stated.",
+    "finding.counterevidence": "Counterevidence considered", "finding.filter_count": "Showing {count} of {count}",
+    "finding.none_identified": "None identified at publication.", "finding.corrections": "Corrections",
+    "finding.all_corrections": "All corrections", "finding.ask_correction": "Ask for a correction",
+    "finding.related": "Related findings", "finding.same_agency": "Same agency",
+    "finding.shares_one": "Shares {count} source record", "finding.shares_many": "Shares {count} source records",
+    "finding.filter_label": "Filter findings", "finding.filter_agency": "Agency",
+    "finding.filter_all_agency": "All agencies", "finding.filter_no_agency": "No agency named",
+    "finding.filter_classification": "Classification", "finding.filter_all_classification": "All classifications",
+    "finding.filter_year": "Event year", "finding.filter_all_year": "All years",
+    "meeting.agenda": "Agenda", "meeting.page": "Meeting page", "meeting.agenda_item": "Agenda item:",
+    "meeting.cancelled": "Cancelled:", "meeting.kit": "Public comment kit", "meeting.all": "All meetings",
+    "sources.record_no": "Record no.", "sources.public_copy": "Public copy", "agency.official_source": "the official source",
+    "sources.private": "Original held in the private archive; not downloadable here", "sources.pages": "{count} page(s)",
+    "sources.cited_by": "Cited by:", "sources.not_cited": "Not cited by a published finding",
+    "agency.records": "Records request page", "agency.portal": "Portal ({name})",
+    "agency.flock_portal": "Flock transparency portal", "agency.sources": "{count} source record(s)",
+    "agency.feed": "Findings feed", "agency.findings": "{count} published finding(s):",
+    "agency.no_findings": "No published findings.", "agency.contact_checked": "Contact checked {date} on",
+    "agency.unverified": "Contact details unverified: confirm on the agency's official site.",
+    "agency.contract": "Contract with {name}", "agency.contract_ended": "ended", "agency.checked": "checked {date} on",
+    "agency.the_source": "the source", "agency.contract_ends": "contract with {name} ends {date}",
+    "agency.page": "Agency page", "agency.page_description": "Records and findings for {name}",
+    "agency.published_findings": "Published findings", "agency.source_records": "Source records",
+    "agency.received": "received {date}", "agency.in_library": "In the source library",
+    "agency.upcoming": "Upcoming meetings", "agency.no_upcoming": "No upcoming meetings are listed for this body.",
+    "officials.heading": "Who decides", "officials.source": "source",
+    "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
+                         "Contact officials only through the channels on that site."),
+    "map.picker_label": "Choose an area", "map.region_label": "Community-mapped ALPR points",
+    "map.unavailable": "Interactive map unavailable: the campaign has not self-hosted the MapLibre library yet.",
+    "map.loading": "Loading the interactive map.", "map.still_choose": "You can still choose an area below or",
+    "map.source_map": "open the DeFlock source map", "map.region": "Community-mapped points",
+    "map.count": "{count} mapped points", "map.hint": "Points are community reports, not confirmed agency ownership.",
+    "map.date": "Map data as of {date} (OpenStreetMap)", "map.date_unknown": "Map data date unknown (OpenStreetMap)",
+    "signup.email": "Email address", "signup.placeholder": "you@example.org",
+    "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
+    "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
+}
+for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
+    DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
+PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+ALLOWED = {key: set(PLACEHOLDER.findall(text)) for key, text in DEFAULTS.items()}  # each key: its default's set
+
+
+def html_text(text):
+    """Escape label text once for a text node or a double-quoted attribute; a ``'`` stays literal as in DEFAULTS."""
+    return escape(text, quote=False).replace('"', "&quot;")
+
+
+def load_labels(document):
+    """Validate a parsed ``labels.json`` and return DEFAULTS merged with its labels; ``ContentError`` names the key."""
+    if not isinstance(document, dict):
+        raise ContentError("labels.json: expected an object")
+    unknown = sorted(set(document) - {"schema_version", "labels"})
+    if unknown:
+        raise ContentError(f"labels.json: unknown field(s) {unknown}")
+    version = document.get("schema_version")
+    if type(version) is not int or version != 1:
+        raise ContentError("labels.json.schema_version: must be 1")
+    if not isinstance(document.get("labels"), dict):
+        raise ContentError("labels.json.labels: expected an object")
+    merged = dict(DEFAULTS)
+    for key, text in document["labels"].items():
+        where = f"labels.json.labels.{key}"
+        if key not in DEFAULTS:
+            raise ContentError(f"{where}: unknown label")
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_LABEL_CHARS:
+            raise ContentError(f"{where}: must be text of 1-{MAX_LABEL_CHARS} characters")
+        if "<" in text or ">" in text or CONTROL.search(text):
+            raise ContentError(f"{where}: must not contain <, > or control characters")
+        for name in PLACEHOLDER.findall(text):
+            if name not in ALLOWED[key]:
+                allowed = ", ".join("{" + n + "}" for n in sorted(ALLOWED[key])) or "none"
+                raise ContentError(f"{where}: placeholder {{{name}}} is not allowed here (allowed: {allowed})")
+        rest = PLACEHOLDER.sub("", text)
+        if "{" in rest or "}" in rest:
+            raise ContentError(f"{where}: unpaired brace {'{' if '{' in rest else '}'}")
+        merged[key] = text
+    return merged

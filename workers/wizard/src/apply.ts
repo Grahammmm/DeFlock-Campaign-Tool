@@ -49,9 +49,9 @@ export async function applyPlan(plan: PlanStep[], opts: ApplyOptions): Promise<D
     }
     if (result.ok && step.id === "zone.verify") {
       const zoneName = pick(result.data, "result.name");
-      const domain = step.zone_domain;
-      if (!zoneName || !domain || !(domain === zoneName || domain.endsWith("." + zoneName))) {
-        result = { ...result, ok: false, error: "zone does not serve the campaign domain" };
+      const domains = step.zone_domains;
+      if (!zoneName || !domains?.length || !domains.every((domain) => domain === zoneName || domain.endsWith("." + zoneName))) {
+        result = { ...result, ok: false, error: "zone does not serve the campaign domain or workspace hostname" };
       }
     }
     const captured: Record<string, string> = {};

@@ -135,8 +135,8 @@ class FindingsJsonTests(unittest.TestCase):
     def test_extra_model_key_is_never_emitted(self):
         real = site_module.load_content
 
-        def leaky(root):
-            model = real(root)
+        def leaky(root, today=None):
+            model = real(root, today)
             for finding in model["findings"]:
                 finding.update(reviewer_email="reviewer@example.invalid", author="synthetic-author", state="published",
                                rule_ids=["r1"], duty="d", rule_version="v", exceptions=[])

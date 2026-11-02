@@ -44,6 +44,14 @@ calls kanban or hermes and never writes into the store. Each model run stays its
 - Daily to-do: `python3 tools/flock_today.py --store S --watchlist W --roster R --date D [--findings SLUG=CSV ...]` ranks due
   reminders, stale-cited findings, new leads, review waits, unreviewed facts and receipt-unknown requests, each with its next
   command, then counts. Read-only; reminders are provisional, not legal status. A bad source is one `source-error` line (exit 1).
+  `--json` prints one `flock-today-v1` object instead (items, source errors, totals, `review_required`); same exit codes.
+
+## Agency timeline
+- Before a meeting: `python3 tools/flock_agency.py timeline S --agency SLUG [--as-of D] [--inventory CSV] [--json]` prints one
+  agency's recorded events oldest first, then `still open` lines with a provisional reminder. Ids, counts and amounts only;
+  read-only. A bad source is one `source-error` line (exit 1); a failing email-run state also exits 1.
+- Every agency at once: `python3 tools/flock_agency.py index S [--as-of D] [--json]` prints one status line per agency folder
+  (requests, open, last event, next provisional reminder, failing runs, errors per file); links and non-slug folders are `skipped`.
 
 ## Report
 - Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one

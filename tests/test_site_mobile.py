@@ -15,17 +15,21 @@ from tests.test_site_build import EXPECTED_CSP, PAGES
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/fictional-campaign"
 # Captured from main before this CSS-only change; not candidate-derived snapshots.
+# STARTER_SHA re-captured from main a9db9b0c: the only starter CSS change since the
+# mobile pin (5926dda5) is #620's .record-no and .provenance-note rules.
 PRINT_SHA = (
     "f7818cba38e2d518"  # pragma: allowlist secret
     "44cff79c0cfc3c58"  # pragma: allowlist secret
     "6d2514e54ef168aa"  # pragma: allowlist secret
     "64bda5cc2fd1c252"  # pragma: allowlist secret
 )
+# Re-pinned after DF1822-08 added only .comment-deadline{font-weight:700} to styles.css.tmpl;
+# previous pin a8499bf6...c1af (after #620's .record-no and .provenance-note).
 STARTER_SHA = (
-    "b67013717d1d9601"  # pragma: allowlist secret
-    "5f0153fd7b0fac0d"  # pragma: allowlist secret
-    "27cac03515f8eb37"  # pragma: allowlist secret
-    "2c9d352bbbd9c7cc"  # pragma: allowlist secret
+    "565079ca7824e359"  # pragma: allowlist secret
+    "ffd2c1a7633317cb"  # pragma: allowlist secret
+    "124e4ef068998fe7"  # pragma: allowlist secret
+    "7a22a46f26ee2100"  # pragma: allowlist secret
 )
 
 
@@ -166,11 +170,13 @@ class SiteMobileTests(unittest.TestCase):
         for root in self.roots:
             pages = {p.relative_to(root / "public").as_posix(): Page(p.read_text())
                      for p in (root / "public").rglob("*.html")}
-            self.assertEqual(set(pages), set(PAGES))
+            # 404.html (RF1510-5), cameras.html (DF1507-13) and methods.html (DF2037-14) are generated pages outside
+            # PAGES; 404.html and cameras.html mark no nav item current by design.
+            self.assertEqual(set(pages), set(PAGES) | {"404.html", "cameras.html", "methods.html"})
             for name, page in pages.items():
                 self.assertEqual(page.viewport, 1, name)
                 self.assertEqual(len(page.navs), 1, name)
-                self.assertEqual(len(page.current), 1, name)
+                self.assertEqual(len(page.current), 0 if name in ("404.html", "cameras.html") else 1, name)
                 self.assertTrue(all(inside for _, inside in page.current), name)
                 self.assertFalse(page.inline, name)
 

@@ -17,8 +17,8 @@ export interface PlanStep {
   literal_body?: boolean;
   /** Names of outputs captured from the response: { key: "result.id" } */
   captures: Record<string, string>;
-  /** Campaign hostname checked against the zone response before any writes. */
-  zone_domain?: string;
+  /** Public and workspace hostnames checked against the zone before any writes. */
+  zone_domains?: string[];
   rollback: { method: "DELETE" | "POST" | "PUT"; path: string; body?: unknown } | null;
   redact: string[]; // body keys never shown or stored
 }
@@ -71,7 +71,7 @@ export function planNames(state: WizardState): PlanNames {
     publicBucket: `${slug}-public`,
     kv: `${slug}-cache`,
     publicHostname: domain,
-    workspaceHostname: `workspace.${domain}`,
+    workspaceHostname: state.campaign.workspace_hostname || `workspace.${domain}`,
     mailAddress: `requests@${domain}`,
     accessAppName: `${state.campaign.name} workspace`,
   };
@@ -134,7 +134,7 @@ export function buildPlan(state: WizardState): PlanStep[] {
     ({ kind: "api", captures: {}, redact: [], ...s });
 
   steps.push(api({ id: "token.verify", title: "Verify the API token", resource: "token", method: "GET", path: "/user/tokens/verify", body: null, rollback: null }));
-  steps.push(api({ id: "zone.verify", title: `Confirm zone ${z} serves ${state.campaign.domain}`, resource: "zone", method: "GET", path: zone, body: null, captures: { zone_name: "result.name" }, zone_domain: state.campaign.domain, rollback: null }));
+  steps.push(api({ id: "zone.verify", title: `Confirm zone ${z} serves ${state.campaign.domain}`, resource: "zone", method: "GET", path: zone, body: null, captures: { zone_name: "result.name" }, zone_domains: [n.publicHostname, n.workspaceHostname], rollback: null }));
   steps.push(api({ id: "d1.create", title: `D1 database ${n.d1}`, resource: "d1", method: "POST", path: `${acct}/d1/database`, body: { name: n.d1 }, captures: { d1_id: "result.uuid" }, rollback: { method: "DELETE", path: `${acct}/d1/database/{{d1_id}}` } }));
   steps.push(api({ id: "r2.originals", title: `R2 bucket ${n.originalsBucket} (private originals)`, resource: "r2", method: "POST", path: `${acct}/r2/buckets`, body: { name: n.originalsBucket }, rollback: { method: "DELETE", path: `${acct}/r2/buckets/${n.originalsBucket}` } }));
   steps.push(api({ id: "r2.public", title: `R2 bucket ${n.publicBucket} (public site files)`, resource: "r2", method: "POST", path: `${acct}/r2/buckets`, body: { name: n.publicBucket }, rollback: { method: "DELETE", path: `${acct}/r2/buckets/${n.publicBucket}` } }));

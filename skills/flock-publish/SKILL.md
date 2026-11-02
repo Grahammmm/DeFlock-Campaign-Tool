@@ -16,6 +16,11 @@ review-required, not a legal conclusion.
 ## Redact
 - Human redaction and names review of each `text` (the pipeline's redaction gate; names are not machine-checked).
 
+## Before you approve
+- `python3 tools/flock_review_queue.py show STORE [--agency SLUG] --out NEWDIR [--json]` writes a private review queue.
+  With `--json` it also writes `review-queue.json` (`flock-review-queue-v1`: ids, statuses, verdicts, warning codes, not-reviewable reasons and counts, no finding text), both files or neither; it is review-required and approves nothing.
+- Read each independent challenge, warning, citation and receipt; this report approves nothing.
+
 ## Approve
 - **NEEDS G**: G approves the exact texts (approve all / a subset / hold).
 - The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id).

@@ -1,11 +1,13 @@
-"""Read-only summary of records-extract-outcomes-v1 files (RF0805-4). Usage: FILE... | --self-test
+"""Read-only summary of records-extract-outcomes-v1 files (RF0805-4). Usage: [--total] FILE... | --self-test
 One JSON line of counts per FILE; never a document hash, form, accept status, OCR page list, written_at or a path
 other than the basename. Writes nothing; wired into no stage. The extract stage (records.native_extract) owns the file.
+--total (RF0140-9) adds one last records-extract-summary-total-v1 line of counts and codes over all FILEs.
 """
 import json
 import os
 import stat
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from campaign_tool.records.native_extract import EXTRACTED, FAILED, OUTCOMES, refusal_code_histogram  # noqa: E402
@@ -37,6 +39,7 @@ def load(path):
 
 
 def summarize(data, name):
+    """(per-file line, full refusal-code histogram); the line keeps only the top 3 codes."""
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise Refused("wrong-schema")
     documents = data.get("documents")
@@ -45,18 +48,38 @@ def summarize(data, name):
     outcomes = dict.fromkeys(OUTCOMES, 0)
     known = [d["outcome"] for d in documents if isinstance(d.get("outcome"), str) and d["outcome"] in outcomes]
     outcomes.update((code, known.count(code)) for code in set(known))
-    top = sorted(refusal_code_histogram(documents).items(), key=lambda item: (-item[1], item[0]))[:3]
+    histogram = refusal_code_histogram(documents)
+    top = sorted(histogram.items(), key=lambda item: (-item[1], item[0]))[:3]
     run_id = data.get("run_id")
     return {"schema": "records-extract-summary-v1", "file": name, "run_id": run_id if isinstance(run_id, str) else None,
             "documents": len(documents), "outcomes": outcomes, "unknown_outcomes": len(documents) - len(known),
-            "extracted": outcomes[EXTRACTED], "failed": sum(outcomes[c] for c in FAILED), "top_refusal_codes": [list(t) for t in top]}
+            "extracted": outcomes[EXTRACTED], "failed": sum(outcomes[c] for c in FAILED), "top_refusal_codes": [list(t) for t in top]}, histogram
 
 
 def checked(read, name):
+    return checked_full(read, name)[0]
+
+
+def checked_full(read, name):
     try:
         return summarize(read(), name)
     except Refused as error:
-        return {"file": name, "error": str(error)}
+        return {"file": name, "error": str(error)}, {}
+
+
+def total(results):
+    """One line over (line, histogram) pairs: counts and codes only; repeated_run_ids is a count, never the ids."""
+    good = [(line, hist) for line, hist in results if "error" not in line]
+    outcomes, histogram = Counter(dict.fromkeys(OUTCOMES, 0)), Counter()
+    for line, hist in good:
+        outcomes.update(line["outcomes"])
+        histogram.update(hist)
+    runs = Counter(line["run_id"] for line, _ in good if isinstance(line["run_id"], str))
+    return {"schema": "records-extract-summary-total-v1", "files": len(results), "summarized_files": len(good),
+            "refused_files": dict(Counter(line["error"] for line, _ in results if "error" in line)),
+            **{key: sum(line[key] for line, _ in good) for key in ("documents", "unknown_outcomes", "extracted", "failed")},
+            "outcomes": dict(outcomes), "top_refusal_codes": [list(t) for t in sorted(histogram.items(), key=lambda item: (-item[1], item[0]))[:3]],
+            "repeated_run_ids": sum(n - 1 for n in runs.values())}
 
 
 def self_test():
@@ -71,6 +94,13 @@ def self_test():
     assert all(checked(lambda data=data: data, "x.json").get("error") == code for data, code in bad)
     empty = checked(lambda: {"schema": SCHEMA, "run_id": "r", "documents": []}, "e.json")
     assert empty["documents"] == empty["failed"] == 0 and not any(empty["outcomes"].values())
+    runs = [checked_full(lambda r=r, p=p: {"schema": SCHEMA, "run_id": r, "documents": [
+        {"outcome": sorted(FAILED)[0], "refusal_code": c} for c in [p + "a", p + "b", p + "c"] * 2 + ["x"]]}, "t.json")
+        for r, p in [("r", "p"), ("r", "q"), ("s", "s")]] + [checked_full(lambda: [], "w.json")]
+    summary = total(runs)
+    assert summary["top_refusal_codes"] == [["x", 3], ["pa", 2], ["pb", 2]] and summary["failed"] == 21
+    assert summary["refused_files"] == {"wrong-schema": 1} and (summary["files"], summary["summarized_files"]) == (4, 3)
+    assert summary["repeated_run_ids"] == 1
     print("extract summary: self-test OK")
     return 0
 
@@ -78,12 +108,14 @@ def self_test():
 def main(argv):
     if argv == ["--self-test"]:
         return self_test()
-    if not argv or any(arg.startswith("-") for arg in argv):
-        print("usage: records_extract_summary.py FILE... | --self-test", file=sys.stderr)
+    files = [arg for arg in argv if arg != "--total"]
+    if not files or argv.count("--total") > 1 or any(arg.startswith("-") for arg in files):
+        print("usage: records_extract_summary.py [--total] FILE... | --self-test", file=sys.stderr)
         return 2
-    lines = [checked(lambda path=path: load(path), os.path.basename(path)) for path in argv]
+    results = [checked_full(lambda path=path: load(path), os.path.basename(path)) for path in files]
+    lines = [line for line, _ in results] + ([total(results)] if "--total" in argv else [])
     print("\n".join(json.dumps(line, sort_keys=True) for line in lines))
-    return 1 if any("error" in line for line in lines) else 0
+    return 1 if any("error" in line for line, _ in results) else 0
 
 
 if __name__ == "__main__":

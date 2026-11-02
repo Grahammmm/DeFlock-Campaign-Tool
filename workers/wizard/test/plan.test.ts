@@ -31,6 +31,28 @@ export function fullState(): WizardState {
 }
 
 describe("plan", () => {
+  it("mail-off creates no mail steps or mailbox secrets", () => {
+    const s = fullState();
+    s.accounts!.mailbox = { mode: "none", address: "", imap_password: "synthetic-stale", smtp_password: "synthetic-stale" }; // pragma: allowlist secret -- synthetic stale credentials only
+    const ids = buildPlan(s).map((p) => p.id);
+    expect(ids.some((id) => id.startsWith("email."))).toBe(false);
+    expect(ids.some((id) => /^secret\.(IMAP|SMTP)_/.test(id))).toBe(false);
+  });
+
+  it("uses an explicit first-level workspace host everywhere, preserving the default", () => {
+    const s = fullState();
+    expect(planNames(s).workspaceHostname).toBe("workspace.campaign.example.invalid");
+    s.campaign!.domain = "tool.example.invalid";
+    s.campaign!.workspace_hostname = "tool-workspace.example.invalid";
+    const host = "tool-workspace.example.invalid";
+    expect(planNames(s).workspaceHostname).toBe(host);
+    const plan = buildPlan(s);
+    expect(plan.find((p) => p.id === "access.app")!.body).toMatchObject({ domain: host });
+    expect(plan.find((p) => p.id === "dns.workspace")!.body).toMatchObject({ name: host });
+    expect(plan.find((p) => p.id === "route.workspace")!.body).toMatchObject({ pattern: host + "/*" });
+    expect(seedSql(s)).toContain("'" + host + "'");
+  });
+
   it("lists every resource with its API call and rollback", () => {
     const s = fullState();
     const plan = buildPlan(s);
@@ -93,6 +115,24 @@ describe("apply", () => {
     const r = await applyPlan(buildPlan(fullState()), { client, bundles: BUNDLES });
     expect(r.status).toBe("applied");
     expect(r.outputs.zone_name).toBe(zoneName);
+  });
+
+  it.each([
+    ["workspace.example.invalid", "example.invalid", "applied"],
+    ["workspace.other.invalid", "example.invalid", "failed"],
+    ["workspace.example.invalid", "campaign.example.invalid", "failed"],
+  ])("checks sibling workspace %s against zone %s", async (hostname, zoneName, status) => {
+    const s = fullState();
+    s.campaign!.workspace_hostname = hostname;
+    const client = new CloudflareClient("t", { dryRun: true, dryZoneName: zoneName });
+    const r = await applyPlan(buildPlan(s), { client, bundles: BUNDLES });
+    expect(r.status).toBe(status);
+    if (status === "failed") {
+      expect(r.failed_step).toBe("zone.verify");
+      expect(r.receipts.map((receipt) => receipt.step_id)).toEqual(["token.verify", "zone.verify"]);
+      expect(r.rollback).toEqual([]);
+      expect(client.calls.every((call) => call.method === "GET")).toBe(true);
+    }
   });
 
   it("fails closed on a mismatched zone from the HTTP client before writes", async () => {

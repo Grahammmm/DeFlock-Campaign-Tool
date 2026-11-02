@@ -40,8 +40,8 @@ def leaking_content(text_for):
 
 
 def build_without(name):
-    def build(root, today=None):
-        written = REAL_BUILD_SITE(root, today)
+    def build(root, today=None, notes=None):
+        written = REAL_BUILD_SITE(root, today, notes)
         if (Path(root) / "content").is_dir():
             target = Path(root) / "public" / name
             target.unlink()

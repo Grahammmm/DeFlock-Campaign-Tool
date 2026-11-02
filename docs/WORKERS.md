@@ -56,8 +56,8 @@ application and an allow policy for the organizer email; Email Routing enable + 
 `requests@<domain>`; Worker secrets; cron triggers. Apply writes one receipt per resource,
 stops at the first failure, and returns the rollback list (newest first). The rollback calls
 are listed, not executed, unless `rollbackOnFailure` is set by the caller; the wizard UI does
-not execute them. Zone verification fails before any create step unless the campaign
-hostname equals the returned zone name or is its dot-delimited subdomain.
+not execute them. Zone verification fails before any create step unless both the public
+and workspace hostnames equal the returned zone name or are its dot-delimited subdomains.
 
 The wizard does not create or bind a Cloudflare Queue: jobs use the D1-backed runner
 poll loop. It does not upload IMAP/SMTP Worker secrets, because neither the Worker
