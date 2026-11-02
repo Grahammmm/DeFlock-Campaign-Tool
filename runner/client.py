@@ -139,6 +139,16 @@ class Workspace:
         return self._request("POST", f"/jobs/{job_id}/result", body)
 
     # -- originals -----------------------------------------------------------
+    def get(self, path):
+        """Raw bytes adapter for backup.export_hosted's absolute API paths."""
+        prefix = "/api/runner"
+        if path != prefix + "/export.json" and not re.fullmatch(prefix + r"/originals/[0-9a-f]{64}", path):
+            raise ValueError("unsupported hosted backup path")
+        response = self._request("GET", path[len(prefix):], raw=True)
+        if response is None:
+            raise WorkspaceError(204, "backup endpoint returned no bytes")
+        return response[0]
+
     def get_original(self, sha256):
         if not HEX64.match(sha256):
             raise ValueError("sha256 must be 64 lowercase hex")

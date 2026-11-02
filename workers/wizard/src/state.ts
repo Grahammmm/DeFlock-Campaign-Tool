@@ -10,6 +10,7 @@ export interface CampaignSettings {
   name: string;
   tagline: string;
   domain: string;
+  workspace_hostname?: string; // optional full hostname in the same Cloudflare zone
   privacy_tier: PrivacyTier;
   schedule_cron: string; // ';'-separated cron expressions
   timezone: string;
@@ -38,7 +39,7 @@ export interface CloudflareAccount {
   access_team: string; // <team>.cloudflareaccess.com
 }
 
-export type MailboxMode = "email_routing" | "imap_smtp";
+export type MailboxMode = "email_routing" | "imap_smtp" | "none";
 
 export interface Mailbox {
   mode: MailboxMode;
@@ -90,6 +91,7 @@ export interface WizardState {
   agencies: AgencyChoice[];
   requests: Record<string, RequestDraft>;
   accounts: Accounts | null;
+  mail_mode?: MailboxMode; // non-secret handoff setting; survives stripSecrets
   plan: PlanStep[] | null;
   deploy: DeployResult | null;
   handoff_at: string | null;

@@ -113,15 +113,17 @@ app.post("/setup/2", async (c) => {
   const f = await c.req.parseBody();
   const str = (k: string) => String(f[k] ?? "").trim();
   const domain = str("domain").toLowerCase();
+  const workspaceHostname = str("workspace_hostname").toLowerCase();
   const errors: string[] = [];
   if (!str("name")) errors.push("name is required");
   if (!isValidDomain(domain)) errors.push("domain must be a registrable hostname");
+  if (workspaceHostname && (!isValidDomain(workspaceHostname) || workspaceHostname === domain)) errors.push("workspace hostname must be a valid hostname different from the public domain");
   if (!isValidEmail(str("organizer_email"))) errors.push("organizer email is invalid");
   if (!isValidCron(str("schedule_cron"))) errors.push("schedule must be one or more 5-field cron expressions separated by ';'");
   const tier = str("privacy_tier") === "strict_local" ? "strict_local" : "redacted_cloud";
   const next: WizardState = {
     ...s,
-    campaign: { name: str("name"), tagline: str("tagline"), domain, privacy_tier: tier, schedule_cron: str("schedule_cron"), timezone: str("timezone") || "America/Los_Angeles", organizer_email: str("organizer_email").toLowerCase() },
+    campaign: { name: str("name"), tagline: str("tagline"), domain, workspace_hostname: workspaceHostname || undefined, privacy_tier: tier, schedule_cron: str("schedule_cron"), timezone: str("timezone") || "America/Los_Angeles", organizer_email: str("organizer_email").toLowerCase() },
     step: Math.max(s.step, 3),
   };
   if (errors.length) return page(c, 2, S.screenCampaign(next), errors.join("; "));
@@ -186,7 +188,9 @@ app.post("/setup/5", async (c) => {
   if (!/^[0-9a-f]{32}$/.test(str("cf_account_id"))) errors.push("account id must be 32 hex characters");
   if (!/^[0-9a-f]{32}$/.test(str("cf_zone_id"))) errors.push("zone id must be 32 hex characters");
   if (!/^[a-z0-9-]+$/.test(str("cf_access_team"))) errors.push("Zero Trust team name must be lowercase letters, digits or hyphens");
-  const mode = str("mail_mode") === "imap_smtp" ? "imap_smtp" : "email_routing";
+  const rawMode = str("mail_mode");
+  if (!["none", "email_routing", "imap_smtp"].includes(rawMode)) errors.push("invalid mail mode");
+  const mode = rawMode === "none" ? "none" : rawMode === "imap_smtp" ? "imap_smtp" : "email_routing";
   if (mode === "imap_smtp" && (!str("imap_host") || !str("imap_user") || !(str("imap_password") || prev?.mailbox.imap_password))) errors.push("IMAP host, user and password are required for imap_smtp");
   const modelUrl = str("model_base_url");
   if (s.campaign.privacy_tier === "strict_local") {
@@ -195,7 +199,7 @@ app.post("/setup/5", async (c) => {
   } else if (modelUrl && !/^https:\/\//.test(modelUrl) && !isStrictLocalUrl(modelUrl)) errors.push("model base URL must use https unless it is a local endpoint");
   const accounts: Accounts = {
     cloudflare: { api_token: token, account_id: str("cf_account_id"), zone_id: str("cf_zone_id"), access_team: str("cf_access_team") },
-    mailbox: {
+    mailbox: mode === "none" ? { mode, address: "" } : {
       mode,
       address: "requests@" + s.campaign.domain,
       imap_host: str("imap_host") || undefined,
@@ -209,7 +213,7 @@ app.post("/setup/5", async (c) => {
     model: modelUrl ? { base_url: modelUrl, api_key: str("model_api_key") || prev?.model?.api_key || "", model_id: str("model_id") } : null,
   };
   if (accounts.brevo && (!accounts.brevo.api_key || !accounts.brevo.list_id)) errors.push("Brevo needs both an API key and a list id, or leave both empty");
-  const next: WizardState = { ...s, accounts, plan: null, step: Math.max(s.step, 6) };
+  const next: WizardState = { ...s, accounts, mail_mode: mode, plan: null, step: Math.max(s.step, 6) };
   if (errors.length) return page(c, 5, S.screenAccounts({ ...next, accounts: { ...accounts, cloudflare: { ...accounts.cloudflare, api_token: "" } } }), errors.join("; "));
   return redirect("/setup/6", await save(c, next));
 });

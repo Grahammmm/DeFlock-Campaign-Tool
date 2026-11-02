@@ -32,7 +32,8 @@ export function screenCampaign(state: WizardState): Safe {
 <form method="post" action="/setup/2" class="stack">
 <label class="field">Campaign name <input type="text" name="name" required maxlength="120" value="${c?.name ?? (state.location ? `${state.location.place_name ?? state.location.county_name} ALPR Records` : "")}"></label>
 <label class="field">Tagline <input type="text" name="tagline" maxlength="200" value="${c?.tagline ?? "Public records, reviewed findings, local decisions."}"></label>
-<label class="field">Domain <input type="text" name="domain" required value="${c?.domain ?? ""}" placeholder="campaign.example.invalid"><span class="hint">Must already be a zone in the organizer's Cloudflare account. The workspace will be at workspace.&lt;domain&gt; and requests mail at requests@&lt;domain&gt;.</span></label>
+<label class="field">Domain <input type="text" name="domain" required value="${c?.domain ?? ""}" placeholder="campaign.example.invalid"><span class="hint">Must be in the organizer's Cloudflare zone. Requests mail uses requests@&lt;domain&gt; unless mail is off.</span></label>
+<label class="field">Workspace hostname (optional) <input type="text" name="workspace_hostname" value="${c?.workspace_hostname ?? ""}" placeholder="tool-workspace.example.invalid"><span class="hint">Blank uses workspace.&lt;domain&gt;. For a public host tool.example.invalid, choose tool-workspace.example.invalid in the same zone to avoid a nested hostname not covered by Universal SSL. Verify TLS coverage before apply.</span></label>
 <label class="field">Privacy tier <select name="privacy_tier"><option value="redacted_cloud" ${c?.privacy_tier !== "strict_local" ? raw("selected") : ""}>redacted_cloud (default): redact before any external model call</option><option value="strict_local" ${c?.privacy_tier === "strict_local" ? raw("selected") : ""}>strict_local: no external model call; loopback/Tailscale endpoint only</option></select></label>
 <label class="field">Schedule (cron expressions, ';' separated, UTC) <input type="text" name="schedule_cron" required value="${c?.schedule_cron ?? "0 7,13 * * *;30 20 * * *"}"></label>
 <label class="field">Timezone <input type="text" name="timezone" required value="${c?.timezone ?? "America/Los_Angeles"}"></label>
@@ -78,7 +79,7 @@ export function screenAccounts(state: WizardState): Safe {
 <label class="field">Zone id for ${state.campaign?.domain ?? "the domain"} <input type="text" name="cf_zone_id" required pattern="[0-9a-f]{32}" value="${a?.cloudflare.zone_id ?? ""}"></label>
 <label class="field">Zero Trust team name <input type="text" name="cf_access_team" required pattern="[a-z0-9-]+" value="${a?.cloudflare.access_team ?? ""}"><span class="hint">The &lt;team&gt; in &lt;team&gt;.cloudflareaccess.com; the workspace validates Access tokens against it.</span></label>
 <h2>Mailbox</h2>
-<label class="field">Inbound mode <select name="mail_mode"><option value="email_routing" ${a?.mailbox.mode !== "imap_smtp" ? raw("selected") : ""}>Cloudflare Email Routing -> workspace Worker (inbound only)</option><option value="imap_smtp" ${a?.mailbox.mode === "imap_smtp" ? raw("selected") : ""}>IMAP + SMTP mailbox</option></select></label>
+<label class="field">Inbound mode <select name="mail_mode"><option value="none" ${a?.mailbox.mode === "none" ? raw("selected") : ""}>Off: no mailbox or Email Routing changes</option><option value="email_routing" ${!a || a.mailbox.mode === "email_routing" ? raw("selected") : ""}>Cloudflare Email Routing -> workspace Worker (inbound only)</option><option value="imap_smtp" ${a?.mailbox.mode === "imap_smtp" ? raw("selected") : ""}>IMAP + SMTP mailbox</option></select></label>
 <label class="field">IMAP host <input type="text" name="imap_host" value="${a?.mailbox.imap_host ?? ""}"></label>
 <label class="field">IMAP user <input type="text" name="imap_user" value="${a?.mailbox.imap_user ?? ""}"></label>
 <label class="field">IMAP password <input type="password" name="imap_password" autocomplete="off"></label>
@@ -113,7 +114,7 @@ ${d ? html`<p>${d.status === "applied" ? html`<span class="pill ok">applied</spa
 <div class="cards">
 <div class="card"><h3>Workspace</h3><p><a href="${workspaceUrl}">${workspaceUrl}</a></p><p class="meta">Protected by Cloudflare Access; sign in as ${state.campaign?.organizer_email ?? "the organizer"}.</p></div>
 <div class="card"><h3>Public site</h3><p><a href="${publicUrl}">${publicUrl}</a></p><p class="meta">Serves 503 until a site version is approved on the Publish screen.</p></div>
-<div class="card"><h3>Requests inbox</h3><p>${state.campaign ? "requests@" + state.campaign.domain : ""}</p><p class="meta">Inbound mail is preserved by hash and shown in the workspace Inbox.</p></div>
+<div class="card"><h3>Requests inbox</h3>${state.mail_mode === "none" ? html`<p>Mail is off. No mailbox or Email Routing was configured.</p>` : html`<p>${state.campaign ? "requests@" + state.campaign.domain : ""}</p><p class="meta">Inbound mail is preserved by hash and shown in the workspace Inbox.</p>`}</div>
 </div>
 ${runnerToken ? html`<h2>Runner token (shown once)</h2><p class="notice warn">Copy this now; it is not stored anywhere after this page: <code>${runnerToken}</code></p>` : ""}
 <h2>Next steps</h2>
