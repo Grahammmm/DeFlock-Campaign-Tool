@@ -99,8 +99,22 @@ Python API: `backup.diff(archive, root, expected_manifest_sha256=None) -> report
   per day (idempotency key `backup:<day>:<email>`). The runner (not yet built, see
   [ROADMAP.md](ROADMAP.md)) is expected to execute `export_hosted(client, out)` and store the
   archive where the organizer configured, with the manifest counts and archive hash in the
-  job outputs. Until then the job sits queued and `export_hosted` can be run by hand with a
-  client bound to the runner token.
+  job outputs. Until then the job sits queued. For a manual export, G runs the following
+  **on the runner host**, using its existing `WORKSPACE_URL` and `RUNNER_TOKEN` environment:
+
+  ```sh
+  python3 -m runner export-hosted --out /private-backups/hosted.tar
+  ```
+
+  No token argument is accepted, and the token and remote error bodies are never printed.
+  The command writes a new private (0600) archive, verifies it, then prints JSON with
+  `manifest_sha256` and `objects`. Record that digest separately and verify after copying:
+  `python3 -m campaign_tool verify --file /private-backups/hosted.tar --expect-manifest-sha256 <digest>`.
+  Existing output files are never overwritten. Fetch/hash/size failures stop with exit 1
+  and remove the incomplete new archive; missing environment/invalid arguments exit 2.
+  This command only reads the hosted API and writes locally: it does not enqueue jobs,
+  send mail, publish, encrypt, or upload the backup. Raw `mail/` originals are included
+  through their original rows, fetched by hash just like other originals.
 
 ## Flock store
 
