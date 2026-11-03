@@ -27,7 +27,7 @@ This is a staged product build, not a completed automation service.
 11. Authenticate reviewers and bind receipts to exact evidence and public artifacts.
 12. Add publication/corrections, branded public materials and official meeting actions. *Partly done:* publication, correction and withdrawal flows with manifest-hashed rebuilds, manual meetings and comment kits; branded materials and verified participation remain.
 13. Add one scheduler, job budgets, stale-data reports and deduplicated incident reporting.
-14. Measure mobile experience and first-party load; never load-test external providers.
+14. Measure mobile experience and first-party load; never load-test external providers. *Partly done:* first-party weight budget (`build --budget`).
 15. Run independent security/privacy review and a new-organizer pilot before a stable release.
 
 ## Not in the starter
