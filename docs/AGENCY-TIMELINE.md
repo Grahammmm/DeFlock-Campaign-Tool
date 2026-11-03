@@ -158,3 +158,11 @@ restates it) records the agency's own stated production date; a date before that
 `kit-status` shows the latest one as `stated_production_date`. `kit due` lists a request whose stated date has
 passed with no `produced` step since (closed requests never) under `stated_passed` as `stated_date_passed`,
 counts it and exits 3: stated date passed — the agency's own date; provisional, not a legal deadline.
+
+## Private calendar (kit-calendar)
+
+`kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
+into your own calendar: an all-day event for each open request's provisional determination date (answered requests
+keep only the agency's stated production date) and a timed event for each staged, not cancelled meeting's verified
+written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
+link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.
