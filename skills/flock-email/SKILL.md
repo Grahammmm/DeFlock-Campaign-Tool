@@ -17,6 +17,7 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 ## Check
 - Before a draft: `python3 tools/flock_email.py check <store> --max-age-days 90` lists who is ready (`contact | <slug> | ready | domain=<domain>`) or `stale`; reads only.
   A domain warning (`warn: domain differs from source host <host>`, counted in `mismatch=N`) needs a human look at the source page before drafting.
+  Add `--json` for one `flock-email-contact-v1` document (per agency: state, domain only, stale date/age, first error, warn host; totals; same exit; review required).
 
 ## Draft
 - `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo> --max-age-days 90`. It prints

@@ -265,7 +265,7 @@ def iso_day(text):  # a strict YYYY-MM-DD calendar date, else None
     try: return datetime.date.fromisoformat(text) if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", text) else None
     except ValueError: return None
 
-def lead_list(store, state, agency, date):  # read-only: no lock, no mkdir, no write; (sorted (seen, id, row) shown, total)
+def lead_list(store, state, agency, date, older=None):  # read-only: no lock/mkdir/write; (sorted (seen, id, row), total)
     rows, shown = leads_rows(private_store(store) / "LEADS.csv", numbered=True), []
     for n, r in rows:  # every row is validated before anything is printed
         seen = iso_day(r["first_seen"])
@@ -273,28 +273,38 @@ def lead_list(store, state, agency, date):  # read-only: no lock, no mkdir, no w
                   ("first_seen", seen is not None and seen <= date))
         bad = next((field for field, ok in checks if not ok), None)
         if bad: raise Fail("LEADS.csv row %d: %s is invalid" % (n, bad))
-        if state in (None, r["state"]) and agency in (None, slug(r["agency"])): shown.append((seen, r["item_id"], r))
+        overdue = older is None or r["state"] == "new" and (date - seen).days > older  # --older-than: untriaged too long
+        if state in (None, r["state"]) and agency in (None, slug(r["agency"])) and overdue:
+            shown.append((seen, r["item_id"], r))
     return sorted(shown, key=lambda e: e[:2]), len(rows)
+
+def overdue_counts(older, shown):  # older_than/overdue after the counts, only with --older-than
+    return {} if older is None else dict(older_than=older, overdue=len(shown))
 
 def lead_counts(shown):  # per-state counts of the shown leads, in MOVES order
     return {k: sum(r["state"] == k for *_, r in shown) for k in MOVES}
 
-def leads(store, state, agency, date):  # text triage list; never state_by/state_at/titles/URLs
-    shown, total = lead_list(store, state, agency, date)
+def leads(store, state, agency, date, older=None):  # text triage list; never state_by/state_at/titles/URLs
+    shown, total = lead_list(store, state, agency, date, older)
     lines = ["lead | %s | %s | %s | first_seen=%s | age=%dd" % (i, slug(r["agency"]), r["state"], s.isoformat(),
                                                                  (date - s).days) for s, i, r in shown]
-    counts = " ".join("%s=%d" % kv for kv in lead_counts(shown).items())
+    counts = " ".join("%s=%d" % kv for kv in dict(lead_counts(shown), **overdue_counts(older, shown)).items())
     return lines + ["leads=%d shown=%d %s" % (total, len(shown), counts)]
 
-def leads_doc(store, state, agency, date):  # flock-monitor-leads-v1 and exit code; never state_by/state_at/titles/URLs
+def leads_doc(store, state, agency, date, older=None):  # flock-monitor-leads-v1 and exit code; never state_by/titles/URLs
     doc = dict(schema="flock-monitor-leads-v1", review_required=True, date=date.isoformat(), errors=[], leads=[],
                counts=None, filters=dict(state=state, agency=agency))
-    try: shown, total = lead_list(store, state, agency, date)
+    try: shown, total = lead_list(store, state, agency, date, older)
     except Fail as err: return dict(doc, errors=[str(err)]), 1
     except (OSError, UnicodeDecodeError, csv.Error) as err: return dict(doc, errors=["io error: " + type(err).__name__]), 1
     doc["leads"] = [dict(item_id=i, agency=slug(r["agency"]), state=r["state"], first_seen=s.isoformat(),
                          age_days=(date - s).days) for s, i, r in shown]
-    return dict(doc, counts=dict(leads=total, shown=len(shown), **lead_counts(shown))), 0
+    return dict(doc, counts=dict(leads=total, shown=len(shown), **lead_counts(shown), **overdue_counts(older, shown))), 0
+
+def days(text):  # --older-than: an integer 1..365, else argparse usage exit 2
+    if not re.fullmatch(r"[0-9]{1,3}", text) or not 1 <= int(text) <= 365:
+        raise argparse.ArgumentTypeError("must be an integer from 1 to 365")
+    return int(text)
 
 def agency_slug(text):  # --agency: an F1 slug, else argparse usage exit 2
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", text): raise argparse.ArgumentTypeError("is not a lowercase slug")
@@ -404,6 +414,7 @@ def main(argv=None):
     leads_p.add_argument("--state", choices=tuple(MOVES))
     leads_p.add_argument("--agency", type=agency_slug)
     leads_p.add_argument("--json", action="store_true", help="print one flock-monitor-leads-v1 JSON document")
+    leads_p.add_argument("--older-than", type=days, metavar="DAYS", help="only new leads first seen over DAYS (1..365) ago")
     digest_p.add_argument("--unreachable-after", type=scans, default=3, metavar="N",
                           help="list pages whose last N logged scans (2..30, default 3) were all refused")
     digest_p.add_argument("--dry-run", action="store_true", help="print the digest and leads it would write; write nothing")
@@ -411,19 +422,21 @@ def main(argv=None):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
     args = parser.parse_args(argv)
+    if args.command == "leads" and args.older_than and args.state in ("requested", "ignored"):
+        leads_p.error("--older-than lists only new leads, not --state " + args.state)  # already decided: usage exit 2
     try:
         if args.command == "check" and args.json:  # row errors are data here (exit 1); file-level refusals stay text
             doc = check_doc(args.watchlist)
             print(json.dumps(doc, sort_keys=True, indent=1, ensure_ascii=False))
             return 0 if doc["valid"] else 1
         if args.command == "leads" and args.json:  # refusals are data here (exit 1); usage errors stay argparse exit 2
-            doc, code = leads_doc(args.store, args.state, args.agency, args.date)
+            doc, code = leads_doc(args.store, args.state, args.agency, args.date, args.older_than)
             print(json.dumps(doc, sort_keys=True, indent=1, ensure_ascii=False))
             return code
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
-              else "\n".join(leads(args.store, args.state, args.agency, args.date)) if args.command == "leads"
+              else "\n".join(leads(args.store, args.state, args.agency, args.date, args.older_than)) if args.command == "leads"
               else digest(args.store, args.date.isoformat(), args.unreachable_after, args.dry_run))
     except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)

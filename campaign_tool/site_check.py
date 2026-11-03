@@ -209,3 +209,53 @@ def check_accessibility(public: Path) -> list:
             page = path.relative_to(public).as_posix()
             hits.update((page, code, detail) for code, detail in parser.hits)
     return sorted(hits)
+
+
+ASSET_RELS = {"stylesheet", "preload", "modulepreload"}
+
+
+class _AssetParser(HTMLParser):
+    """Site-local subresources a first visit downloads: stylesheets, preloads, scripts, img/source src."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.urls = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = {name: value for name, value in attrs if value is not None}
+        if tag == "link" and ASSET_RELS & set(attrs.get("rel", "").lower().split()):
+            self.urls.append(attrs.get("href"))
+        elif tag in ("script", "img", "source"):
+            self.urls.append(attrs.get("src"))
+
+    handle_startendtag = handle_starttag
+
+
+def page_weights(public: Path) -> list:
+    """Per-page first-party weight of ``public/``: on-disk (uncompressed) bytes of each page plus its assets.
+
+    One dict per ``*.html`` page, sorted by page: ``{"page", "html_bytes", "assets": [(path, bytes)], "total"}``.
+    Each asset counts once per page; external, missing, escaping and symlinked targets are skipped (``--check``
+    owns broken links) and never fetched. ``fetch()``/XHR targets inside scripts are not seen: only markup counts.
+    """
+    public = Path(public)
+    rows = []
+    for path in sorted(public.rglob("*.html")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        page = path.relative_to(public).as_posix()
+        parser = _AssetParser()
+        parser.feed(path.read_text(encoding="utf-8", errors="replace"))
+        parser.close()
+        assets = {}
+        for url in parser.urls:
+            if url is None or _external_or_empty(url):
+                continue
+            target = url.strip().partition("#")[0].split("?", 1)[0]
+            rel = _resolve(public, page, unquote(target)) if target else None
+            if rel is not None and rel != page and rel not in assets:
+                assets[rel] = (public / rel).stat().st_size
+        html_bytes = path.stat().st_size
+        rows.append({"page": page, "html_bytes": html_bytes, "assets": sorted(assets.items()),
+                     "total": html_bytes + sum(assets.values())})
+    return sorted(rows, key=lambda row: row["page"])

@@ -454,7 +454,7 @@ def _site_claim_notes(root):
     return site_notes(root)
 
 
-def build(root, check=False):
+def build(root, check=False, budget=None):
     from .site import build_site
     public = root / "public"
     notes = []
@@ -496,6 +496,28 @@ def build(root, check=False):
             raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
         print("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
               "not an accessibility audit; human review still required).")
+    return 0 if budget is None else weight_budget(public, budget)
+
+
+def weight_budget(public, budget):
+    from .site_check import page_weights
+    rows = page_weights(public)
+    print("Page weight (first-party: html + referenced site-local css/js/images, uncompressed):")
+    for row in rows:
+        print(f"  {row['page']} {row['total']} bytes")
+    over = [row for row in rows if row["total"] > budget * 1024]
+    for row in over:
+        named = ", ".join(f"{p} {n}" for p, n in sorted(row["assets"], key=lambda a: (-a[1], a[0]))[:3])
+        print(f"over budget: {row['page']} {row['total']} bytes > {budget} KB; largest: {named or '(no assets)'}")
+    if not over:
+        print(f"Page weight within {budget} KB (first-party, uncompressed).")
+    return 3 if over else 0
+
+
+def _positive_kb(value):
+    if not value.isdigit() or int(value) < 1:
+        raise argparse.ArgumentTypeError("must be a positive whole number of KB")
+    return int(value)
 
 
 def backup_cmd(args, root):
@@ -701,6 +723,8 @@ def main():
                                    "and fail on site-local links or #fragments that do not resolve")
             mode.add_argument("--preview", action="store_true",
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
+            cmd.add_argument("--budget", type=_positive_kb, metavar="KB", help="Print each page's first-party "
+                             "weight (html + referenced css/js/images, uncompressed); exit 3 when a page exceeds KB")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
@@ -819,6 +843,8 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
+    sent_p.add_argument("--reference", metavar="REF", help="The agency's own request number (1-40: A-Z a-z 0-9 - _ # .)")
+    sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -858,6 +884,8 @@ def main():
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
                             "own stated production date (provisional, not a legal deadline)")
+    response_p.add_argument("--reference", metavar="REF", help="The agency's own request number, stored once")
+    response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1006,6 +1034,8 @@ def main():
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
         parser.error("--check reads kit/social only; it cannot be combined with --platform")
+    if args.command == "build" and args.preview and args.budget is not None:
+        parser.error("--budget measures a written build; it cannot be combined with --preview")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -1047,7 +1077,9 @@ def main():
             print("Preview only; public/ was not changed.")
             sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
-            build(root, check=args.check)
+            code = build(root, check=args.check, budget=args.budget)
+            if code:
+                sys.exit(code)
         elif args.command == "backup":
             backup_cmd(args, root)
         elif args.command == "restore":
@@ -1198,7 +1230,8 @@ def main():
         elif args.command == "kit-sent":
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
-                                         replace=args.replace), indent=2))
+                                         replace=args.replace, reference=args.reference,
+                                         replace_reference=args.replace_reference), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
@@ -1242,7 +1275,8 @@ def main():
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
-                                         request=args.request, amount=args.amount, expected_on=args.expected_on),
+                                         request=args.request, amount=args.amount, expected_on=args.expected_on,
+                                         reference=args.reference, replace_reference=args.replace_reference),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
