@@ -82,7 +82,6 @@ class FlockReportTest(unittest.TestCase):
                  ("Sample hidden log", "row SC-01: denylisted string", basis("See Sample hidden log.")),
                  ("LOG-SUMMARY-by-user", "row SC-01: denylisted string",
                   dict(basis("See LOG-SUMMARY-by-user."), review__report_denylist=["LOG-SUMMARY-by-user"])),
-                 ("violated", "row SC-01: quote-gated wording", basis("The agency violated it.")),
                  ("name@city.example", "row SC-01: email-like string", basis("Ask name@city.example.")),
                  (HIDDEN, "row SC-01: cite resolves to an analysis-only record",
                   {"edit": lambda text, fact: text.replace("F-53baa6f20643", fact)}),
@@ -99,6 +98,16 @@ class FlockReportTest(unittest.TestCase):
                 self.assertFalse((p["CO"] / "report").exists())
                 for secret in (offending or HIDDEN, "99999999", "sample hidden log", HIDDEN):
                     self.assertNotIn(secret.lower(), out.lower())
+        # DF-4 ruling 1 (alert-only): quote-gated wording is a review-required note; the report is still written and the
+        # offending word is never echoed.
+        config, p = self.stage(**basis("The agency violated it."))
+        code, out = build(config)
+        self.assertEqual(code, 0, out)
+        self.assertIn("review-required: line 13: quote-gated wording\n", out)
+        self.assertIn("review-required: line 13: legal-claim wording (violation-verb)\n", out)
+        self.assertTrue(out.endswith("errors=0\n"), out)
+        self.assertNotIn("violated", out.lower())
+        self.assertTrue((p["CO"] / "report").exists())
         inside = ROOT / "tests" / "fixtures" / "flock" / "report" / "out"
         config, p = self.stage()
         self.assertEqual(build(config, "--out", inside), (1, "out: is inside the repository\nincluded=0 verified_agree=0 unchecked=0 "

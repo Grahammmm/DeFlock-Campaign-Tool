@@ -349,10 +349,12 @@ def build_draft(manifest, now=None):
             raise DraftError(f"{label}: unsubscribe placeholder missing")
     # DF-4 alert-only: wording that asserts a violation never blocks the draft; the notes travel with it to the approval card.
     review_flags = legal_claim_notes([("subject", subject)] + [("text line %d" % n, line) for n, line in enumerate(text.splitlines(), 1)])
-    result = {"subject": subject[:200], "html": html, "text": text, "review_flags": review_flags,
+    result = {"subject": subject[:200], "html": html, "text": text,
               "counts": {"findings": len(findings), "meetings": len(meetings),
                          **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
               "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
+    if review_flags:  # absent otherwise, so unflagged drafts stay byte-identical (same convention as corrections_listed)
+        result["review_flags"] = review_flags
     if corrections:  # absent otherwise, so drafts without listed corrections stay byte-identical
         result["corrections_listed"] = len(corrections)
     return result

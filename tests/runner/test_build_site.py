@@ -101,7 +101,7 @@ if __name__ == "__main__":
 class BuildSiteLegalClaimTests(unittest.TestCase):
     """DF-4 alert-only: wording that asserts a violation reaches the human deploy gate as notes and never stops the build."""
 
-    ASSERTION = "Cedar Police violated SB 34 when it shared the data."
+    ASSERTION = "Cedar Police is out of compliance with SB 34 when it shares the data."  # outside DF2037-02 LEGAL_TERMS (a separate blocker)
 
     def flagged_inputs(self):
         inputs = manifest_from_example()
@@ -115,9 +115,9 @@ class BuildSiteLegalClaimTests(unittest.TestCase):
             self.assertEqual(result.status, "done", result.error)
             self.assertTrue(ws.site_files)
             proposal = next(iter(ws.proposals.values()))["proposal"]
-            self.assertEqual(proposal["review_flags"], ["review-required: findings/cedar-policy-posted: legal-claim wording (violation-verb)"])
+            self.assertEqual(proposal["review_flags"], ["review-required: findings/cedar-policy-posted: legal-claim wording (non-compliant)"])
             self.assertEqual(result.outputs["review_flags"], proposal["review_flags"])
-            self.assertNotIn("Cedar Police violated", json.dumps(proposal))
+            self.assertNotIn("Cedar Police is out", json.dumps(proposal))
 
     def test_unflagged_site_carries_an_empty_list(self):
         with tempdir() as tmp:

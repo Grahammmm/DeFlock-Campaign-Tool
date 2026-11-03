@@ -83,6 +83,22 @@ class PublishSurfaceTest(unittest.TestCase):
 
 
 class PageSurfaceTest(unittest.TestCase):
+    @staticmethod
+    def lint_with(wording):
+        page_fix = ROOT / "tests" / "fixtures" / "flock" / "page"
+        with tempfile.TemporaryDirectory() as tmp:
+            story = Path(tmp) / "s-story.json"
+            args = ["--cards", page_fix / "cards.json", "--sources", page_fix / "sources.json", "--location", page_fix / "location.json",
+                    "--thread", page_fix / "thread.json", "--base-sources", 8]
+            subprocess.run([sys.executable, "-B", str(ROOT / "tools" / "flock_page.py"), "build", *map(str, args), "--out", story],
+                           capture_output=True, text=True, check=True)
+            doc = json.loads(story.read_text(encoding="utf-8"))
+            doc["dek"] += " " + wording
+            story.write_text(json.dumps(doc), encoding="utf-8")
+            return subprocess.run([sys.executable, "-B", str(ROOT / "tools" / "flock_page.py"), "lint", "--story", str(story),
+                                   "--location", str(page_fix / "location.json"), "--thread", str(page_fix / "thread.json"),
+                                   "--base-sources", "8"], capture_output=True, text=True, check=False)
+
     def test_page_flag_is_a_note_and_lint_still_passes(self):
         page_fix = ROOT / "tests" / "fixtures" / "flock" / "page"
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,7 +134,7 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
         self.assertFalse(any("Zed" in f for f in draft["review_flags"]))
         manifest = json.loads(json.dumps(self.MANIFEST))
         manifest["findings"][0]["summary"] = "The agency declined to answer. SB 34 requires a published policy."
-        self.assertEqual(build_draft(manifest)["review_flags"], [])
+        self.assertNotIn("review_flags", build_draft(manifest))  # absent when clean: unflagged drafts stay byte-identical
 
     def test_social_post_flag_is_a_note_and_the_draft_is_still_written(self):
         from campaign_tool import social
@@ -128,9 +144,11 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
             path = next((root / "content" / "findings").glob("*.json"))
             doc = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(social.review_notes(root), [])  # the shipped example reads as fact
-            doc["title"] = "Cedar Police violated SB 34 (fictional)"
+            # Wording outside DF2037-02's separately owned review blocker (campaign_tool/review.py LEGAL_TERMS), so this exercises
+            # DF-4's own advisory path; DF2037Retained below pins what that older blocker still does.
+            doc["title"] = "Cedar Police is out of compliance with SB 34 (fictional)"
             path.write_text(json.dumps(doc), encoding="utf-8")
-            self.assertEqual(social.review_notes(root), ["review-required: social/%s: legal-claim wording (violation-verb)" % doc["slug"]])
+            self.assertEqual(social.review_notes(root), ["review-required: social/%s: legal-claim wording (non-compliant)" % doc["slug"]])
             self.assertEqual(social.build_social(root)["written"], [doc["slug"]])  # still drafted
 
     def test_site_build_scan_flags_findings_and_never_raises(self):
@@ -147,27 +165,96 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
             self.assertEqual(cli._site_claim_notes(root), [])
             path = next((root / "content" / "findings").glob("*.json"))
             doc = json.loads(path.read_text(encoding="utf-8"))
-            doc["summary"] = "The department is in violation of SB 34 (fictional)."
+            doc["summary"] = "The department is out of compliance with SB 34 (fictional)."
             path.write_text(json.dumps(doc), encoding="utf-8")
-            self.assertEqual(cli._site_claim_notes(root), ["review-required: findings/%s: legal-claim wording (violation-noun)" % doc["slug"]])
+            self.assertEqual(cli._site_claim_notes(root), ["review-required: findings/%s: legal-claim wording (non-compliant)" % doc["slug"]])
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _fictional_with(field, text):
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name) / "campaign"
+    shutil.copytree(ROOT / "examples" / "fictional-campaign", root, ignore=shutil.ignore_patterns("public"))
+    path = next((root / "content" / "findings").glob("*.json"))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc[field] = text
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return tmp, root
 
 
 class ExplicitExampleTest(unittest.TestCase):
-    """'Agency X violated SB 34.' through each surface kind. The Flock report/page/publish lints already REFUSE that exact word
-    (compare.GATED, fail-closed, older than this guard and deliberately left alone); every other surface only NOTES it."""
+    """'Agency X violated SB 34.' driven through the real report, publish and page commands, the newsletter draft, and the site and
+    social scans. DF-4 ruling 1 (operator, 2026-11-02): the older compare.GATED word ban no longer refuses; it and this guard
+    both add review-required notes and the run carries on."""
     EXAMPLE = "Agency X violated SB 34."
 
     def test_guard_flags_it(self):
         self.assertEqual(privacy.legal_claims(self.EXAMPLE), ["violation-verb"])
 
-    def test_older_flock_word_ban_still_refuses_it_and_is_unchanged(self):
-        compare = load("flock_compare")
-        self.assertTrue(compare.GATED.search(self.EXAMPLE))
+    def test_report_build_notes_it_and_writes_the_draft(self):
+        t = ReportSurfaceTest()
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        config, p = t.stage(edit=lambda text, _: text.replace(BASIS, BASIS + " " + self.EXAMPLE))
+        code, out = build_report(config)
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"(?m)^review-required: line \d+: legal-claim wording \(violation-verb\)$")
+        self.assertRegex(out, r"(?m)^review-required: line \d+: quote-gated wording$")
+        self.assertNotIn("violated", out.lower())
+        self.assertTrue((p["CO"] / "report" / "REPORT-DRAFT.md").is_file())
 
-    def test_newsletter_and_site_surfaces_only_note_it(self):
+    def test_publish_export_notes_it_and_exports_it_pending(self):
+        t = PublishSurfaceTest()
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        with open(FIXTURES / "findings-sample.csv", newline="") as handle:
+            table = list(csv.reader(handle))
+        row = next(r for r in table if r[0] == "O1")
+        row[table[0].index("claim")] = self.EXAMPLE
+        with open(t.run_dir / "FINDINGS.csv", "w", newline="") as handle:
+            csv.writer(handle, lineterminator="\n").writerows(table)
+        code, out = t.export()
+        self.assertEqual(code, 0, out)
+        self.assertIn("review-required: finding O1: quote-gated wording\n", out)
+        self.assertIn("review-required: finding O1: legal-claim wording (violation-verb)\n", out)
+        self.assertNotIn("refused=1", out)
+        entry = next(f for f in json.loads(t.out.read_text())["findings"] if f["finding_id"] == "O1")
+        self.assertEqual(entry["review"]["status"], "pending")  # the human gate still decides
+        code, out = run("flock_publish.py", "--check", str(t.out))
+        self.assertEqual(code, 0, out)
+
+    def test_page_lint_notes_it_and_passes(self):
+        done = PageSurfaceTest.lint_with(self.EXAMPLE)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("review-required: dek 0: legal-claim wording (violation-verb)\n", done.stdout)
+        self.assertIn("quote-gated wording", done.stdout)
+        self.assertNotIn("violated", done.stdout.lower())
+
+    def test_newsletter_draft_notes_it(self):
         from campaign_tool.newsletter.draft import legal_claim_notes
         self.assertEqual(legal_claim_notes([("subject", self.EXAMPLE)]), ["review-required: subject: legal-claim wording (violation-verb)"])
+
+
+class DF2037RetainedTest(unittest.TestCase):
+    """NOT changed by DF-4: DF2037-02 (campaign_tool/review.py LEGAL_TERMS) is a separately owned, merged review blocker that
+    refuses legal-conclusion words in a site finding's title/summary/body_md. Ruling 1 covered compare.GATED only, so this pins
+    the retained behaviour: the site and social scans still never raise and still give the human a review-required note."""
+    EXAMPLE = ExplicitExampleTest.EXAMPLE
+
+    def test_site_scan_notes_unscannable_content_without_raising(self):
+        from campaign_tool import cli
+        tmp, root = _fictional_with("summary", self.EXAMPLE)
+        with tmp:
+            notes = cli._site_claim_notes(root)
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].startswith("review-required: "), notes)
+
+    def test_social_scan_notes_unscannable_content_without_raising(self):
+        from campaign_tool import social
+        tmp, root = _fictional_with("title", self.EXAMPLE)
+        with tmp:
+            self.assertEqual(social.review_notes(root),
+                             ["review-required: social: legal-claim wording (posts could not be scanned; read them before use)"])
+
+
+if __name__ == "__main__":
+    unittest.main()

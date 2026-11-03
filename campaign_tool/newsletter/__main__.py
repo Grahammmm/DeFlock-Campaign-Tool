@@ -62,7 +62,7 @@ def main(argv=None):
     except (OSError, ValueError, DraftError, ContentError, KeyError) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         return 1
-    for note in draft["review_flags"]:  # DF-4 alert-only: stderr, so the stdout contract is unchanged; exit stays 0
+    for note in draft.get("review_flags", []):  # DF-4 alert-only: stderr, so the stdout contract is unchanged; exit stays 0
         print(note, file=sys.stderr)
     print(json.dumps({"subject": draft["subject"], "counts": draft["counts"], "excluded": draft["excluded"],
                       "written": [str(p) for p in paths], "sent": False, "source": origin,
