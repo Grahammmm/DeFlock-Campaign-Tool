@@ -12,8 +12,8 @@ import { socialAdapterFor, socialReadiness } from "../src/executors/social_adapt
 import { seedCampaign } from "./helpers.ts";
 
 const ORG: AccessIdentity = { email: "organizer@example.invalid", sub: "o", issued_at: 0, expires_at: 0 };
-const SECRET = "mastodon-token-SECRET-0123456789abcdef";
-const ENV = { ...env, MASTODON_URL: "https://social.example.invalid", MASTODON_TOKEN: SECRET } as Env;
+const FAKE_TOKEN = "synthetic-mastodon-fixture-token";
+const ENV = { ...env, MASTODON_URL: "https://social.example.invalid", MASTODON_TOKEN: FAKE_TOKEN } as Env;
 const BODY = "Example Police Department kept no written ALPR retention policy, per records released 2026-09-01.";
 
 type Mode = "ok" | "timeout" | "5xx" | "4xx" | "no_id";
@@ -202,9 +202,9 @@ describe("post_social: one post, one platform, one recorded approval", () => {
     await run(repo, await card(repo, f), d);
     d.mode = "ok";
     const ok = await run(repo, await card(repo, await published(repo)), d);
-    expect(d.calls.every((c) => (c.init.headers as Record<string, string>).authorization === "Bearer " + SECRET)).toBe(true);
+    expect(d.calls.every((c) => (c.init.headers as Record<string, string>).authorization === "Bearer " + FAKE_TOKEN)).toBe(true);
     const stored = JSON.stringify([await repo.exportTable("external_action"), await repo.exportTable("incident"), await repo.exportTable("setting")]);
-    expect(stored).not.toContain(SECRET);
+    expect(stored).not.toContain(FAKE_TOKEN);
     for (const leak of [BODY, "campaign", "@"]) expect(ok.provider_receipt).not.toContain(leak);
     expect(JSON.stringify(await repo.incidents())).not.toContain(BODY);
     expect(JSON.stringify(await repo.exportTable("setting"))).not.toContain(BODY);
@@ -217,7 +217,7 @@ describe("post_social: one post, one platform, one recorded approval", () => {
     expect(socialReadiness(env as Env)).toBe("social_posting: not configured");
     expect(socialReadiness({ MASTODON_URL: "https://social.example.invalid" })).toBe("social_posting: not configured");
     expect(socialReadiness(ENV)).toBe("social_posting: configured (mastodon)");
-    expect(socialAdapterFor({ MASTODON_URL: "http://social.example.invalid", MASTODON_TOKEN: SECRET })).toBeNull();
+    expect(socialAdapterFor({ MASTODON_URL: "http://social.example.invalid", MASTODON_TOKEN: FAKE_TOKEN })).toBeNull();
   });
 
   it("static: the adapter can only create one post; no schedule, batch, edit, delete or recall path exists", () => {
