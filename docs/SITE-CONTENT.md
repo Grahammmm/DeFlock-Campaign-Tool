@@ -278,7 +278,12 @@ over the output and fails on any hit, and on any site-local `href`/`src` that
 names no written `public/` file or `#fragment` with no matching `id` on its
 target page (`public/<page>: broken link <href>`; external links are never
 fetched). The command prints a manifest of every
-written file with its size. Meetings on or after the build date (the typed
+written file with its size. `build --budget KB` then prints each page's first-party
+weight (HTML plus site-local stylesheets, preloads, scripts and `img`/`source` files it
+references, each once; on-disk bytes, uncompressed) and exits 3 naming every page over
+`KB*1024` bytes with its three largest assets. Files a script fetches at run time (map
+GeoJSON) are not counted; external hosts are never fetched; a failed `--check` wins.
+Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.
 Every meeting (upcoming, past or cancelled) also gets `meetings/<id>.html`: when,

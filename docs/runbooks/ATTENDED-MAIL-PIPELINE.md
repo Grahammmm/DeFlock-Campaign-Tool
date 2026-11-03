@@ -183,6 +183,8 @@ python3 -B tools/run_report_check.py </private/run-report.json> --baseline </pri
 The baseline is a reviewed, operator-supplied private JSON input, not a file
 bundled with this repository. Replace its entire angle-bracket token with the
 safely quoted absolute path; STOP if that baseline has not been supplied.
+Adding `--json` prints the same verdict as one `records-run-report-check-v1`
+JSON line with the same exit code; it is still review-required, not acceptance.
 
 STOP without reviewed T2/T5/T9 evidence, pre-stop GO, exact engine pin, backups,
 restore rehearsal and G-log 468 exact scope with G present. No live invocation is

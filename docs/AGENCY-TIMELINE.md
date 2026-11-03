@@ -167,6 +167,12 @@ While one is open, `kit-status` shows `waiting_on_you_since`, `kit due` lists it
 never past due, stated date passed or exit 3; the provisional date still shown) and `kit-followup` stops with exit 3,
 writing nothing. The tool makes no claim that a clarification pauses any legal period.
 
+## Agency reference number (kit requests)
+
+`kit-sent`/`kit-response --reference REF` (1-40 letters, digits, `- _ # .`) stores the agency's own number once per
+request; a different one exits 3 unless `--replace-reference`. `kit-status`/`kit due` rows show `reference`; the
+followup and denial-reply drafts add `(Your reference REF)` to the title and open `Regarding your reference REF,`.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import

@@ -86,7 +86,7 @@ class ExpectedOnTests(unittest.TestCase):
         report = self.due("2026-04-02", 3)
         self.assertEqual(report["stated_passed"], [{"agency_id": self.agency, "request": "main", "name": mock.ANY,
                                                     "sent_on": SENT_ON, "state": "stated_date_passed",
-                                                    "stated": "2026-04-01", "days": 1}])
+                                                    "stated": "2026-04-01", "days": 1, "reference": None}])
         self.assertEqual((report["stated_date_passed"], report["past_due"], report["open"]), (1, 0, []))
         self.assertEqual([r["agency_id"] for r in report["answered"]], [self.agency])
         self.assertIn(WORDING[0].upper() + WORDING[1:], report["note"])
