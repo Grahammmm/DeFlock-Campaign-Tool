@@ -104,13 +104,13 @@ class RequestsSummaryJsonTests(unittest.TestCase):
         self.assertEqual(a, b)
         for args in (["--json", "--json"], ["--json", "--inventory", inv, "--json"], ["--inventory", inv, "--inventory", inv],
                      ["--inventory", "--json"], ["--json", "--inventory"], ["--json", "extra"], ["--JSON"],
-                     ["--json", "--as-of", "2026-01-02"]):
+                     ["--json", "--today", "2026-01-02"]):
             done = run("summary", str(FIXTURE), *args)
             self.assertEqual((done.returncode, done.stdout), (2, ""), args)
             self.assertTrue(done.stderr.startswith("usage: flock_requests.py"), args)
         for args in (["due", str(FIXTURE), "--json"], ["--check", str(FIXTURE), "--json"], ["summary", "--json", str(FIXTURE)]):
             self.assertEqual(run(*args).returncode, 2, args)
-        self.assertIn("summary PATH [--inventory CSV] [--json]", run("--help").stdout)
+        self.assertIn("summary PATH [--inventory CSV] [--as-of YYYY-MM-DD] [--json]", run("--help").stdout)
 
     def test_header_only_store_empty_document(self):
         path = self.write("REQUESTS.csv", HEADER)

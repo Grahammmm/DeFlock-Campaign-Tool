@@ -157,7 +157,7 @@ class RequestsInventoryTests(unittest.TestCase):
         for args in (["due", str(FIXTURE), "--inventory", inv], ["--check", str(FIXTURE), "--inventory", inv],
                      ["summary", str(FIXTURE), "--inventory"], ["summary", "--inventory", inv, str(FIXTURE)],
                      ["summary", str(FIXTURE), "--inventory", inv, "--inventory", inv],
-                     ["summary", str(FIXTURE), "--as-of", "2026-01-02"]):
+                     ["summary", str(FIXTURE), "--as-of"]):
             done = run(*args)
             self.assertEqual((done.returncode, done.stdout), (2, ""), args)
             self.assertTrue(done.stderr.startswith("usage: flock_requests.py"), args)
