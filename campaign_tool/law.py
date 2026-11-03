@@ -462,13 +462,16 @@ def _write_private(out, write, prefix):
         os.unlink(temporary)
 
 
+def write_sheet(stream, rows):
+    """review-sheet's exact CSV text into any text stream; law review-packet reuses it unchanged."""
+    writer = csv.DictWriter(stream, fieldnames=SHEET_COLUMNS)
+    writer.writeheader()
+    writer.writerows(rows)
+
+
 def write_review_sheet(out, rows):
     """Plain CSV, mode 0600, written atomically; never overwrites and never inside the repository."""
-    def write(stream):
-        writer = csv.DictWriter(stream, fieldnames=SHEET_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
-    _write_private(out, write, ".review-sheet-")
+    _write_private(out, lambda stream: write_sheet(stream, rows), ".review-sheet-")
 
 
 def read_sheet(path, package):
