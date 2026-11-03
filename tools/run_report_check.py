@@ -21,7 +21,10 @@ from campaign_tool.records.run_report import STAGE_ORDER, validate_run_report
 
 CODE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
 RUN_ID = re.compile(r"run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}")
-COUNT_KEYS = {"input", "output", "failed", "skipped"}
+COUNT_ORDER = ("input", "output", "failed", "skipped")
+COUNT_KEYS = set(COUNT_ORDER)
+SCHEMA = "records-run-report-check-v1"
+NOTE = "machine checks only; review required; not production acceptance"
 KNOWN_OUTCOMES = {"EXTRACTED", "AWAITING_OCR", "CORRUPT_DOCUMENT", "EXTRACT_INCOMPLETE",
                   "WORKBOOK_POLICY_REQUIRED", "PARSER_MISSING", "DECODER_NEEDED", "EXTRACT_TIMEOUT",
                   "EXTRACT_NOT_ACCEPTED", "EXTRACT_ERROR", "PRESERVE_PENDING", "DEFERRED_RUN_BUDGET"}
@@ -91,6 +94,11 @@ def validate_inputs(report, baseline):
 
 def evaluate(report, baseline, prior=None, replay=False):
     """Return (exit code, safe lines); never include validation exception text."""
+    return render(assess(report, baseline, prior, replay))
+
+
+def assess(report, baseline, prior=None, replay=False):
+    """Return the verdict facts both output forms render; invalid input gives invalid()."""
     try:
         current, accepted = validate_inputs(report, baseline)
         if replay and prior is None:
@@ -98,25 +106,23 @@ def evaluate(report, baseline, prior=None, replay=False):
         if prior is not None:
             validate_inputs(prior, baseline)
     except (ValueError, TypeError, KeyError, OverflowError):
-        return invalid_result()
+        return invalid()
 
-    lines = [f"run_id={report['run_id']}",
-             "Exit gate: accounting + baseline + notify health + run assertions; not production acceptance.",
-             "Two consecutive scheduled runs: NA (one report supplied)."]
+    checks = []
     balanced = True
     for stage in report["stages"]:
         c = stage["counts"]
         ok = c["input"] == c["output"] + c["failed"] + c["skipped"]
         balanced &= ok
-        lines.append(f"CHECK {stage['name']} {'PASS' if ok else 'FAIL'} "
-                     f"input={c['input']} output={c['output']} failed={c['failed']} skipped={c['skipped']}")
+        checks.append(dict(name=stage["name"], status="PASS" if ok else "FAIL", **{k: c[k] for k in COUNT_ORDER}))
     widened = False
+    gaps = []
     for key in sorted(current.keys() | accepted.keys()):
         count, limit = current.get(key, 0), accepted.get(key, 0)
         ok = count <= limit
         widened |= not ok
-        lines.append(f"GAP {key[0]} {key[1]} {'PASS' if ok else 'FAIL'} "
-                     f"count={count} baseline={limit}")
+        gaps.append({"stage": key[0], "code": key[1], "status": "PASS" if ok else "FAIL",
+                     "count": count, "baseline": limit})
 
     stages = {s["name"]: s for s in report["stages"]}
     extract = stages["extract"]
@@ -161,13 +167,35 @@ def evaluate(report, baseline, prior=None, replay=False):
         p8,
         ("NA", "reviewed backup/rollback proof and receipt immutability evidence absent"),
     ]
-    lines.append("Criterion Status Reason")
-    lines.extend(f"P{i} {status} {reason}" for i, (status, reason) in enumerate(criteria, 1))
     extra = extra_criteria(report, baseline, prior, replay)
-    lines.extend(f"P{i} {status} {reason}" for i, (status, reason) in enumerate(extra, 10))
     exit_code = int(not balanced or widened or not notify_ok or any(s == "FAIL" for s, _ in extra))
-    lines.append(f"EXIT {exit_code}; machine checks only; review required")
-    return exit_code, lines
+    return {"valid": True, "run_id": report["run_id"], "stages": checks, "gaps": gaps,
+            "criteria": [{"id": f"P{i}", "status": status, "reason": reason}
+                         for i, (status, reason) in enumerate(criteria + extra, 1)],
+            "exit": exit_code}
+
+
+def render(facts):
+    """Render the text form of assess() facts: (exit code, lines)."""
+    if facts["valid"]:
+        lines = [f"run_id={facts['run_id']}",
+                 "Exit gate: accounting + baseline + notify health + run assertions; not production acceptance.",
+                 "Two consecutive scheduled runs: NA (one report supplied)."]
+        lines.extend(f"CHECK {s['name']} {s['status']} "
+                     + " ".join(f"{k}={s[k]}" for k in COUNT_ORDER) for s in facts["stages"])
+        lines.extend(f"GAP {g['stage']} {g['code']} {g['status']} count={g['count']} baseline={g['baseline']}"
+                     for g in facts["gaps"])
+    else:
+        lines = ["CHECK INPUT FAIL invalid report or baseline; values suppressed"]
+    lines.append("Criterion Status Reason")
+    lines.extend(f"{c['id']} {c['status']} {c['reason']}" for c in facts["criteria"])
+    lines.append(f"EXIT {facts['exit']}; machine checks only; review required")
+    return facts["exit"], lines
+
+
+def document(facts):
+    """One-line records-run-report-check-v1 JSON; still review-required, never acceptance."""
+    return json.dumps(dict(facts, schema=SCHEMA, note=NOTE), sort_keys=True)
 
 
 def outcome_counts(report):
@@ -212,11 +240,15 @@ def extra_criteria(report, baseline, prior, replay):
     ]
 
 
+def invalid():
+    """Facts for unusable input: no value from the input, no exception text."""
+    return {"valid": False, "run_id": None, "stages": [], "gaps": [], "exit": 1,
+            "criteria": [{"id": f"P{i}", "status": "NA", "reason": "invalid input prevents assessment"}
+                         for i in range(1, 18)]}
+
+
 def invalid_result():
-    return 1, ["CHECK INPUT FAIL invalid report or baseline; values suppressed",
-               "Criterion Status Reason",
-               *(f"P{i} NA invalid input prevents assessment" for i in range(1, 18)),
-               "EXIT 1; machine checks only; review required"]
+    return render(invalid())
 
 
 def unique_object(pairs):
@@ -243,17 +275,18 @@ def main(argv=None):
     parser.add_argument("--baseline", required=True, help="accepted stage/code counts JSON")
     parser.add_argument("--prior", help="prior synthetic or operator-local report")
     parser.add_argument("--replay", action="store_true", help="assert replay adds nothing; requires --prior")
+    parser.add_argument("--json", action="store_true",
+                        help=f"print one {SCHEMA} JSON line; still review-required")
     args = parser.parse_args(argv)
     try:
         prior = load_json(args.prior) if args.prior else None
         if args.prior and prior is None:
             raise ValueError("invalid prior")
-        result = evaluate(load_json(args.report), load_json(args.baseline), prior, args.replay)
+        facts = assess(load_json(args.report), load_json(args.baseline), prior, args.replay)
     except (OSError, ValueError, UnicodeError, RecursionError):
-        result = invalid_result()
-    exit_code, lines = result
-    print("\n".join(lines))
-    return exit_code
+        facts = invalid()
+    print(document(facts) if args.json else "\n".join(render(facts)[1]))
+    return facts["exit"]
 
 
 if __name__ == "__main__":
