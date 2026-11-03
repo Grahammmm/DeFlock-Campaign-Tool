@@ -138,7 +138,9 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand"}
+             "font_family", "not_legal_advice", "brand", "share_image"}
+SHARE_IMAGE_KEYS = {"path", "alt"}
+SHARE_RATIO, SHARE_RATIO_TOLERANCE = 1.905, 0.02  # 1200x630
 BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
 HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
 ASSET_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")  # site._asset_plan's plain-name rule
@@ -230,6 +232,22 @@ def load_brand(value, assets_dir=None):
     return brand
 
 
+def load_share_image(value, assets_dir=None):
+    """site.json.share_image: a PNG/JPEG public asset 1200x630 to 2400x1260 (ratio 1.905) plus required alt; refusals name the field."""
+    label = "site.json.share_image"
+    _require_keys(value, SHARE_IMAGE_KEYS, set(), label)
+    alt = value.get("alt")
+    if (not isinstance(alt, str) or not alt.strip() or len(alt) > 300
+            or any(ord(char) < 32 or ord(char) == 127 for char in alt)):  # "<" and quotes are fine: the page escapes them
+        raise ContentError(f"{label}.alt: required, 1-300 characters on one line, no control characters")
+    size = _brand_asset(value.get("path"), assets_dir, f"{label}.path", (".png", ".jpg", ".jpeg"))
+    if size:
+        width, height = size
+        if not (1200 <= width <= 2400 and 630 <= height <= 1260) or abs(width / height - SHARE_RATIO) > SHARE_RATIO_TOLERANCE:
+            raise ContentError(f"{label}.path: {width}x{height} px; use 1200x630 to 2400x1260 at a 1.905 ratio")
+    return {"path": value["path"], "alt": alt, "size": size}
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -294,6 +312,7 @@ def load_site(document, assets_dir=None):
                                           "published rules as of the event date; consult counsel "
                                           "before relying on them."),
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
+        **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
     }
 
 
