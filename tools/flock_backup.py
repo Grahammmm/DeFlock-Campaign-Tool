@@ -1,6 +1,7 @@
-"""Flock store backup: create, verify, list and restore one uncompressed tar of a private flock store (agencies/,
-regions/, LAW.csv) with a SHA-256 manifest (docs/BACKUP.md "Flock store"). Local files only: no network, upload or
-encryption. list shows per-agency, regions and LAW.csv file and byte counts of a verified archive, never a file name."""
+"""Flock store backup: create, verify (one archive or a whole folder), list and restore one uncompressed tar of a
+private flock store (agencies/, regions/, LAW.csv) with a SHA-256 manifest (docs/BACKUP.md "Flock store"). Local files
+only: no network, upload or encryption. list shows per-agency, regions and LAW.csv file and byte counts of a verified
+archive, never a file name."""
 import argparse, contextlib, hashlib, io, json, os, re, shutil, stat, sys, tarfile, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -214,6 +215,28 @@ def diff(path, store, expected_manifest_sha256=None):
         report["more"] = {key: max(len(names) - 200, 0) for key, names in lists.items()}
     return report
 
+def verify_all(folder):
+    """[(name, outcome, detail)] for every *.tar directly in FOLDER, by name; reads only, one failure never stops it."""
+    folder, rows = Path(folder), []
+    if folder.is_symlink() or not folder.is_dir(): raise Fail("DIR is not a folder")
+    for path in sorted(folder.glob("*.tar")):
+        mode, name = os.lstat(path).st_mode, path.name
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            rows.append((name, "skipped", "link" if stat.S_ISLNK(mode) else "not-a-file"))
+            continue
+        try: manifest, _, problems = verify(path)
+        except (Fail, OSError, tarfile.TarError) as err:
+            rows.append((name, "failed", str(err) if isinstance(err, Fail) else "io error: %s" % type(err).__name__))
+            continue
+        if problems:
+            rows.append((name, "failed", problems[0] + (" (+%d more)" % (len(problems) - 1) if len(problems) > 1 else "")))
+            continue
+        created = manifest.get("created_at")
+        rows.append((name, "ok", "created_at=%s files=%d bytes=%d" % (
+            created if isinstance(created, str) and CREATED_AT.fullmatch(created) else "-",
+            manifest["counts"]["files"], manifest["counts"]["bytes"])))
+    return rows
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -229,9 +252,18 @@ def main(argv=None):
     p.add_argument("--agency", metavar="SLUG", help="extract only agencies/SLUG/ (the whole archive is still verified)")
     p = sub.add_parser("diff", help="verify FILE, then name --store files added, removed or changed since it (exit 3)")
     p.add_argument("file"); p.add_argument("--store", required=True); p.add_argument("--manifest-sha256", metavar="HEX")
+    p = sub.add_parser("verify-all", help="re-verify every *.tar directly in FOLDER (exit 1 if any fails or none)")
+    p.add_argument("folder")
     args = parser.parse_args(argv)
     try:
-        if args.command == "create":
+        if args.command == "verify-all":
+            rows = verify_all(args.folder)
+            if not rows: raise Fail("verify-all: no *.tar archives in DIR")
+            print("\n".join("backup | %s | %s | %s" % (_shown(name), outcome, detail) for name, outcome, detail in rows))
+            totals = [sum(row[1] == key for row in rows) for key in ("ok", "failed", "skipped")]
+            print("verify-all | archives=%d ok=%d failed=%d skipped=%d" % (len(rows), *totals))
+            if totals[1]: return 1
+        elif args.command == "create":
             counts, digest = create(args.store, args.out)
             print("created files=%d bytes=%d manifest_sha256=%s" % (counts["files"], counts["bytes"], digest))
         elif args.command in ("verify", "list"):
