@@ -1,11 +1,12 @@
 [Unit]
 Description=DeFlock local schedule: deadline drafts (draft-only)
-# Gate-safe slot. Draft-only: writes reminder drafts, sends nothing. Reported missing until BF-df-deadline-engine merges.
+# Gate-safe slot. Draft-only: writes reminder drafts, sends nothing. The tool needs --date, so the
+# wrapper passes today's America/Los_Angeles day (the timer's zone, also on a catch-up after UTC midnight).
 
 [Service]
 Type=oneshot
 WorkingDirectory=@WORKDIR@
 UMask=0077
 # Per-slot overlap lock: a held lock skips this slot with exit 73, never queues.
-ExecStart=/usr/bin/flock -n -E 73 %t/deflock-deadlines.lock @PYTHON@ -B tools/flock_deadlines.py run --store @STORE@
+ExecStart=/usr/bin/flock -n -E 73 %t/deflock-deadlines.lock /bin/sh -c 'exec @PYTHON@ -B tools/flock_deadlines.py run --store @STORE@ --date "$(TZ=America/Los_Angeles date +%%Y-%%m-%%d)"'
 TimeoutStartSec=40min

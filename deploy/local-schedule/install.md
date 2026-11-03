@@ -9,7 +9,7 @@ on AgentOrange (CLAUDE.md: automation runs natively there, never in a cloud sche
 | `deflock-backup` | 03:00 | `campaign_tool backup --into %h/deflock-backups` (local tar, no upload) |
 | `deflock-reconcile` | 06:00 | `campaign_tool status --check` (exit 3 fails the unit: the alert) |
 | `deflock-stale-check` | 08:00 | `tools/stage_stale_check.py check --reports REPORTS` (records run reports, read-only) |
-| `deflock-deadlines` | 09:00 | `tools/flock_deadlines.py run` (drafts only; missing until it merges) |
+| `deflock-deadlines` | 09:00 | `tools/flock_deadlines.py run --date <today, America/Los_Angeles>` (drafts only) |
 | `deflock-run-report-review` | 14:00 | `tools/run_report_review.py summary --dir REPORTS` (records run reports, read-only) |
 | `deflock-site-build` | 21:30 | `campaign_tool build` (build only; publishing stays a human gate) |
 

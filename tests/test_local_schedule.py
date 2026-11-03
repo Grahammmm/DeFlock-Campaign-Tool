@@ -157,6 +157,17 @@ class RenderedSet(unittest.TestCase):
         self.edit('deflock-backup.service', 'ExecStart=/usr/bin/flock', 'ExecStart=+/usr/bin/flock')
         self.assert_refused('deflock-backup.service', 'ExecStart prefix')
 
+    def test_deadlines_slot_without_a_run_time_la_date_is_refused(self):
+        date_arg = ' --date "$(TZ=America/Los_Angeles date +%%Y-%%m-%%d)"'
+        self.edit('deflock-deadlines.service', date_arg, '')
+        self.assert_refused('deflock-deadlines.service', 'missing --date: tools/flock_deadlines.py run')
+        self.setUp()
+        self.edit('deflock-deadlines.service', date_arg, ' --date 2026-11-03')
+        self.assert_refused('deflock-deadlines.service', '--date must be the America/Los_Angeles day at run time')
+        self.setUp()
+        self.edit('deflock-deadlines.service', 'TZ=America/Los_Angeles date', 'date -u')
+        self.assert_refused('deflock-deadlines.service', 'shell body with operators')
+
     def test_same_time_and_records_slot_collisions_are_named(self):
         self.edit('deflock-deadlines.timer', '09:00:00', '08:00:00')
         self.edit('deflock-backup.timer', '03:00:00', '12:40:00')
@@ -268,6 +279,28 @@ class ShippedUnits(unittest.TestCase):
                 self.assertIn(f' {flag} @REPORTS@', execstart)
                 self.assertNotIn('@STORE@', execstart)
                 self.assertNotIn('run-reports', execstart)
+
+    def test_shipped_deadlines_command_passes_the_tool_usage_check(self):
+        """The shipped ExecStart, run as systemd would (%% -> %, sh -c), gets past flock_deadlines usage."""
+        tool = ROOT / 'tools' / 'flock_deadlines.py'
+        if not tool.is_file():
+            self.skipTest('tools/flock_deadlines.py not in this checkout')
+        execstart = lsc.parse_unit((SHIPPED / 'deflock-deadlines.service').read_text(encoding='utf-8'))['ExecStart'][0]
+        argv = lsc.shlex.split(execstart.replace('%%', '%'))
+        self.assertEqual(argv[5:7], ['/bin/sh', '-c'])
+        with tempfile.TemporaryDirectory() as tmp:
+            body = argv[7].replace('@PYTHON@', sys.executable).replace('@STORE@', f'{tmp}/absent-store')
+            utc = dict(os.environ, TZ='UTC')  # the LA day must not come from the host zone
+            proc = subprocess.run(['/bin/sh', '-c', body], cwd=ROOT, env=utc, capture_output=True, text=True,
+                                  timeout=60)
+            self.assertNotEqual(proc.returncode, 2, proc.stderr)  # 2 is usage: the bug this guards
+            self.assertNotIn('usage', proc.stderr.lower())
+            echo = re.sub(r'^exec .* --date ', 'printf %s ', body)
+            day = subprocess.run(['/bin/sh', '-c', echo], env=utc, capture_output=True, text=True).stdout
+            la_day = subprocess.run(['date', '+%Y-%m-%d'], env=dict(os.environ, TZ='America/Los_Angeles'),
+                                    capture_output=True, text=True).stdout.strip()
+            self.assertRegex(day, r'^\d{4}-\d\d-\d\d$')
+            self.assertEqual(day, la_day)
 
     def test_shipped_templates_report_every_slot(self):
         with tempfile.TemporaryDirectory() as reports:

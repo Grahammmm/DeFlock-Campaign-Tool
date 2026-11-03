@@ -23,6 +23,9 @@ WINDOW = 50  # minutes; a records run stops by 47 min, a slot fires up to 5 min 
 PLACEHOLDER = re.compile(r'@[A-Za-z_]+@')
 CALENDAR = re.compile(r'\*-\*-\* (\d\d):(\d\d):00 America/Los_Angeles')
 NOW_ARG = '"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"'
+# The America/Los_Angeles calendar day at run time (OnCalendar is that zone; a Persistent catch-up
+# can run after UTC midnight). The only other recognised substitution.
+TODAY_ARG = '"$(TZ=America/Los_Angeles date +%%Y-%%m-%%d)"'
 FLOCK = '/usr/bin/flock'
 # Gate-safe allowlist: (target, subcommand) -> flags that must be present.
 ALLOW = {
@@ -31,8 +34,10 @@ ALLOW = {
     ('-m campaign_tool', 'backup'): ('--into',),
     ('tools/stage_stale_check.py', 'check'): ('--reports',),
     ('tools/run_report_review.py', 'summary'): ('--dir',),
-    ('tools/flock_deadlines.py', 'run'): (),
+    ('tools/flock_deadlines.py', 'run'): ('--store', '--date'),
 }
+# Flags whose value must be a run-time substitution: a fixed value would be wrong every later day.
+PINNED = {('tools/flock_deadlines.py', 'run'): {'--date': 'TODAY'}}
 # Slots that read the records run reports (RUNTIME_DIR/<target>/reports/): the flag naming that
 # directory. The slot is only available when the directory exists (a missing one fails every run).
 READS_REPORTS = {('tools/stage_stale_check.py', 'check'): '--reports',
@@ -65,7 +70,7 @@ def split_command(execstart):
             return 'flock without a command'
         lock, argv = argv[i], argv[i + 1:]
     if argv[:2] == ['/bin/sh', '-c'] and len(argv) == 3:
-        body = argv[2].replace(NOW_ARG, 'NOW')
+        body = argv[2].replace(NOW_ARG, 'NOW').replace(TODAY_ARG, 'TODAY')
         if re.search(r'[;|&`$<>()\n]', body):
             return 'shell body with operators'
         argv = shlex.split(body)
@@ -89,7 +94,13 @@ def gate_problem(target, sub, args):
     if any(UNSAFE_WORDS.search(word) for word in [target, sub, *args] if not word.startswith(('/', '%'))):
         return 'sends, publishes or changes state'
     missing = [flag for flag in required if flag not in args]
-    return f'missing {" ".join(missing)}' if missing else None
+    if missing:
+        return f'missing {" ".join(missing)}'
+    for flag, value in PINNED.get((target, sub), {}).items():
+        i = args.index(flag)
+        if args[i + 1:i + 2] != [value]:
+            return f'{flag} must be the America/Los_Angeles day at run time, not a fixed value'
+    return None
 
 
 def minutes(hhmm):
