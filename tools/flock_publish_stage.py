@@ -158,6 +158,10 @@ def stage(run, copy, out, repo=REPO, dry_run=False):  # dry_run (out None): ever
     if errs:
         return refuse(errs)
     files, rows = [], []
+    notes = publish.privacy.review_notes([("stage %s %s" % (fid, key), v) for fid, site in staged
+                                          for key in ("title", "summary", "author", "limitations", "counterevidence")
+                                          for v in (site[key] if isinstance(site[key], list) else [site[key]])], compare.GATED)
+    print("".join(note + "\n" for note in notes), end="")  # DF-4 alert-only: the human reads these; staging carries on
     for fid, site in staged:
         data = (json.dumps(site, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         files.append((("content", "findings", site["slug"] + ".json"), data))

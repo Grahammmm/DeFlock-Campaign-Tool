@@ -81,7 +81,7 @@ def lint(story, thread, location, base, hidden_ids=(), hidden_titles=()):
         bad = [("R1", "outreach in story", OUTREACH.search(s)), ("R9", "email-like string", EMAIL.search(s)),
                ("R9", "phone-like string", PHONE.search(s)), ("R9", "plate-like string", PLATE.search(s)),
                ("R9", "access-link parameter", any(ACCESS.search(u) for u in URL.findall(s))),
-               ("tone", "always-banned wording", compare.ALWAYS.search(s)), ("tone", "quote-gated wording", compare.GATED.search(s))]
+               ("tone", "always-banned wording", compare.ALWAYS.search(s))]  # quote-gated wording: a note (claim_notes), DF-4
         errs += ["%s %d: %s %s" % (area, i, rule, why) for rule, why, hit in bad if hit]
         errs += ["%s %d: R8 inventory document not posted" % (area, i) for doc in INVDOC.findall(s)
                  if doc not in loc_docs or doc not in verified]
@@ -184,8 +184,8 @@ def assemble(cards, sources, location, base):
 def report(errs, n, story=None):
     print("\n".join(claim_notes(story) + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
     return 1 if errs else 0
-def claim_notes(story):  # DF-4 alert-only: review-required notes for wording that asserts a violation; never errors, never text
-    return privacy.legal_notes(("%s %d" % (area, i), text) for area, i, text in walk(story)) if isinstance(story, dict) else []
+def claim_notes(story):  # DF-4 alert-only: legal-claim and quote-gated wording notes; never errors, never text
+    return privacy.review_notes((("%s %d" % (area, i), text) for area, i, text in walk(story)), compare.GATED) if isinstance(story, dict) else []
 def dump(story): return json.dumps(story, indent=2, ensure_ascii=False) + "\n"
 def fresh(args):  # build's shared part: inputs -> assemble -> lint; -> (story | None, errs, counts), errors as build printed them
     errs, n = [], dict.fromkeys(COUNTS, 0)

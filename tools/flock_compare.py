@@ -119,8 +119,8 @@ def check_row(n, row, ctx):
     for field in ("claim", "next_step"):
         if ALWAYS.search(row[field]):
             errs.append(field + ' always-banned wording (say "found no responsive records")')
-        if GATED.search(row[field]) and not quoted:
-            errs.append(field + " quote-gated wording without a matching quote")
+        if GATED.search(row[field]) and not quoted:  # DF-4 ruling 1: alert-only, a note for --check, never an error
+            ctx["notes"].append("review-required: row %d: %s quote-gated wording without a matching quote" % (n, field))
         if ctx["vigilant_only"] and FLOCK.search(row[field]):
             errs.append(field + " vendor-gated wording (vendor facts do not name Flock)")
     return ["row %d: %s" % (n, e) for e in errs]
@@ -176,7 +176,7 @@ def input_errors(recorded, store, agency):  # names only: never a hash, path or 
     now = _input_hashes(store, agency)
     return ["inputs: %s changed since scaffold (compare again in a new run folder)" % n for n in INPUTS if recorded[n] != now[n]]
 
-def check(rundir, golden=None):
+def check(rundir, golden=None, notes=None):  # notes: an optional list that receives the review-required (alert-only) notes
     run = Path(rundir).resolve()
     if len(run.parents) < 4 or run.parent.name != "runs" or run.parents[2].name != "agencies":
         return ["run: not a <store>/agencies/<slug>/runs/<date> folder"], 0
@@ -198,6 +198,7 @@ def check(rundir, golden=None):
     errs += ["store: " + x for x in store_errs]
     vendors = [(r["value"] + " " + r["verbatim_quote"]).lower() for r in facts.values() if r["fact_type"] == "vendor"]
     ctx = {"facts": facts, "seen": set(), "law": set(law_ids), "policy": set(policy_ids), "package": package,
+           "notes": notes if notes is not None else [],
            "vigilant_only": any("vigilant" in v or "motorola" in v for v in vendors) and not any("flock" in v for v in vendors)}
     table = read_csv(run / "FINDINGS.csv") if (run / "FINDINGS.csv").is_file() else []
     if not table or table[0] != HEADER:
@@ -362,8 +363,9 @@ def _main(argv=None):
             return parser.error(usage)
         return diff(*args.diff, as_json=args.json) if args.diff else summary(args.summary, as_json=args.json)
     if args.check and not args.command:
-        errs, count = check(args.check, args.golden)
-        print("\n".join(errs + ["findings=%d errors=%d" % (count, len(errs))]))
+        notes = []
+        errs, count = check(args.check, args.golden, notes)
+        print("\n".join(notes + errs + ["findings=%d errors=%d" % (count, len(errs))]))
         return 1 if errs else 0
     fields = (args.store, args.agency, args.date, args.provider, (args.model or "").strip(), (args.applicability or "").strip())
     if args.command != "scaffold" or args.check or args.golden or not all(fields) \

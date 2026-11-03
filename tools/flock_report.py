@@ -198,7 +198,7 @@ def lint(c, report, sources_text, marks, body_end, entries, facts, inventory, er
     vigilant = any("vigilant" in v or "motorola" in v for v in vendors) and not any("flock" in v for v in vendors)
     def hits(line):
         found = ["denylisted string"] * any(d in line.lower() for d in deny)
-        found += [name for name, rx in (("always-banned wording", compare.ALWAYS), ("quote-gated wording", compare.GATED),
+        found += [name for name, rx in (("always-banned wording", compare.ALWAYS),  # quote-gated: a note (claim_notes), DF-4
                                         ("email-like string", EMAIL), ("phone-like string", PHONE),
                                         ("plate-like string", PLATE)) if rx.search(line)]
         return found + ["vendor-gated wording"] * bool(vigilant and compare.FLOCK.search(line))
@@ -223,8 +223,10 @@ def write(path, text):  # fresh exclusive 0600 temp (mkstemp: O_EXCL, random nam
     return tmp, path
 def fault(exc): return str(exc) if isinstance(exc, Fail) else "io: %s" % type(exc).__name__
 def summary(errs, n): return "\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)])
-def claim_notes(report):  # DF-4 alert-only: review-required notes for wording that asserts a violation; never errors, never text
-    return privacy.legal_notes(("line %d" % i, line) for i, line in enumerate((report or "").splitlines(), 1))
+def claim_notes(report, sources_text=None):  # DF-4 alert-only: legal-claim and quote-gated wording notes; never errors, never text
+    return privacy.review_notes([("line %d" % i, line) for i, line in enumerate((report or "").splitlines(), 1)] +
+                                [("line %d (SOURCES.json)" % i, line) for i, line in enumerate((sources_text or "").splitlines(), 1)],
+                                compare.GATED)
 def prepare(config, out):  # build and check share it: -> (c, report, sources_text, n, errs); writes nothing
     c, report, sources_text, errs, n = None, None, None, [], Counter({k: 0 for k in COUNTS})
     try:
@@ -248,7 +250,7 @@ def on_disk(path):  # -> bytes, or why not; read-only, O_NOFOLLOW never follows 
 def check(config, out):  # never writes, never prints draft text: names files, counts and the build errors only
     c, report, sources_text, n, errs = prepare(config, out)
     state = disk_state(c, report, sources_text, errs)
-    print("".join(note + "\n" for note in claim_notes(report)) + summary(errs := list(dict.fromkeys(errs)), n) + " state=" + state)
+    print("".join(note + "\n" for note in claim_notes(report, sources_text)) + summary(errs := list(dict.fromkeys(errs)), n) + " state=" + state)
     return 1 if errs else 0
 def disk_state(c, report, sources_text, errs):  # check and region: -> invalid|missing|stale|current; appends check: errors
     state = "invalid"
@@ -282,7 +284,7 @@ def build(config, out):
                 raise
     except (Fail, OSError, ValueError, KeyError, TypeError) as exc:
         errs.append(fault(exc))
-    print("".join(note + "\n" for note in claim_notes(report)) + summary(errs := list(dict.fromkeys(errs)), n))
+    print("".join(note + "\n" for note in claim_notes(report, sources_text)) + summary(errs := list(dict.fromkeys(errs)), n))
     return 1 if errs else 0
 ORDER, RNAMES = {"rejected": 0, "weak": 1, "medium": 2, "strong": 3}, ("REGION-REPORT-DRAFT.md", "SOURCES.json")
 RNOTE = ("Ratings come from the cross-agency matrix. Each agency is cited only from its own current findings draft, and only "
@@ -385,7 +387,7 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
             with contextlib.suppress(OSError): os.unlink(tmp)
         print(fault(exc))
         return 1
-    print("".join(note + "\n" for note in claim_notes(report)), end="")
+    print("".join(note + "\n" for note in claim_notes(report, sources_text)), end="")
     print("region topics=%(topics)d agencies=%(agencies)d current=%(current)d excluded=%(excluded)d sources=%(sources)d" % counts)
     return 0
 def region_check(args, parser):  # read-only: never writes, never creates --out, names files and states only, never draft text
@@ -395,7 +397,7 @@ def region_check(args, parser):  # read-only: never writes, never creates --out,
     if errs:
         print("\n".join(list(dict.fromkeys(errs)) + ["region-check: invalid"]))
         return 1
-    out, states, lines = Path(os.path.abspath(os.path.expanduser(args.out))), Counter(), []
+    out, states, lines = Path(os.path.abspath(os.path.expanduser(args.out))), Counter(), claim_notes(report, sources_text)
     for name, text in zip(RNAMES, (report, sources_text)):
         got = on_disk(out / name)  # O_NOFOLLOW: a link is named, its target never read; any other non-file is stale
         state = (("current" if got == text.encode("utf-8") else "stale") if isinstance(got, bytes) else
