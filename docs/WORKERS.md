@@ -49,17 +49,24 @@ and never contains a secret.
 
 The plan is an ordered list of Cloudflare API calls with placeholders resolved from earlier
 outputs: token and zone verification; D1 database; R2 buckets `<slug>-originals` and
-`<slug>-public`; KV namespace; Queue; the two Worker scripts (multipart upload of the built
+`<slug>-public`; KV namespace; the two Worker scripts (multipart upload of the built
 bundles with bindings); D1 migrations and a seed of the campaign, agencies and drafts; DNS
 (`AAAA 100::`, proxied) and Worker routes for `<domain>` and `workspace.<domain>`; an Access
 application and an allow policy for the organizer email; Email Routing enable + rule for
 `requests@<domain>`; Worker secrets; cron triggers. Apply writes one receipt per resource,
 stops at the first failure, and returns the rollback list (newest first). The rollback calls
 are listed, not executed, unless `rollbackOnFailure` is set by the caller; the wizard UI does
-not execute them.
+not execute them. Zone verification fails before any create step unless both the public
+and workspace hostnames equal the returned zone name or are its dot-delimited subdomains.
+
+The wizard does not create or bind a Cloudflare Queue: jobs use the D1-backed runner
+poll loop. It does not upload IMAP/SMTP Worker secrets, because neither the Worker
+nor runner consumes them; selecting that mailbox mode does not configure mail
+transport. A future adapter needs its own explicit configuration and review.
 
 `DRY_RUN=1` makes the client record every call without sending it and return synthetic ids,
-so the whole flow can be exercised offline. Production deployment still requires the owner
+including an assumed matching zone name, so the whole flow can be exercised offline.
+A dry run does not validate the real zone or its ownership. Production deployment still requires the owner
 approvals in AGENTS.md.
 
 ## Workspace (`workers/workspace`)
