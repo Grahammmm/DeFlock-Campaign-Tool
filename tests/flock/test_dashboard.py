@@ -274,6 +274,11 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(self.run_build()[0], 0)
         self.assertIn('not legal due dates', self.outputs()[0])
 
+    def test_empty_reminders_are_stated_not_blank(self):
+        with mock.patch.object(MOD.today, 'reminders', return_value=[]):
+            self.assertEqual(self.run_build()[0], 0)
+        self.assertIn('no reminders (source read: flock_today)', self.outputs()[0])
+
 
 if __name__ == '__main__':
     unittest.main()

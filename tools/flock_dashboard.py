@@ -155,7 +155,7 @@ def page(data):
     keys = ('agency', 'request_id', 'state', 'sent_date', 'next_step')
     text += fail('flock_state') if 'flock_state' in errors else '<p>open: %s</p>' % s['open_count'] + table(s['requests'], keys) + '<details><summary>Closed and withdrawn</summary>' + table(s['closed'], keys) + '</details>'
     text += '</section><section id="reminders"><h2>Reminders</h2><p class="src">Source: flock_today</p>'
-    text += fail('flock_today') if 'flock_today' in errors else table(s['reminders'], ('kind', 'date', 'agency', 'request_id'))
+    text += fail('flock_today') if 'flock_today' in errors else table(s['reminders'], ('kind', 'date', 'agency', 'request_id')) if s['reminders'] else '<p>no reminders (source read: flock_today)</p>'
     text += (fail('flock_sweep') if 'flock_sweep' in errors else '') + '<p>provisional; not a legal status</p></section><section id="alerts"><h2>Pipeline alerts</h2><p class="src">Source: flock-alerts-v1</p>'
     text += fail('alerts') if 'alerts' in errors else '<p>alerts: not provided</p>' if s['alerts'] is None else table(s['alerts'], ('id', 'kind', 'source', 'stage', 'agency', 'request_id'))
     return text + '</section></body></html>\n'
