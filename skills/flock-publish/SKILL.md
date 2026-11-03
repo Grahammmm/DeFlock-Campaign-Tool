@@ -17,7 +17,8 @@ review-required, not a legal conclusion.
 - Human redaction and names review of each `text` (the pipeline's redaction gate; names are not machine-checked).
 
 ## Before you approve
-- `python3 tools/flock_review_queue.py show STORE [--agency SLUG] --out NEWDIR [--json]` writes a private review queue.
+- `python3 tools/flock_review_queue.py show STORE [--agency SLUG [--run RUN]] --out NEWDIR [--json]` writes a private review queue.
+  `--run RUN` (needs `--agency`) shows that one run only and names it in the header and summary row; an unknown, malformed or linked run is refused before NEWDIR is made.
   With `--json` it also writes `review-queue.json` (`flock-review-queue-v1`: ids, statuses, verdicts, warning codes, not-reviewable reasons and counts, no finding text), both files or neither; it is review-required and approves nothing.
 - Read each independent challenge, warning, citation and receipt; this report approves nothing.
 
