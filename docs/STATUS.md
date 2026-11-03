@@ -23,6 +23,7 @@ mail or publishes anything.
 
 | Part | What it does | Evidence |
 | --- | --- | --- |
+| Threat model | Categories, existing safeguards, gaps and an advisory trust ranking. | [THREAT-MODEL.md](THREAT-MODEL.md) |
 | Flock facts, law-policy, compare | Cited facts, law and policy text, and policy comparison for one agency. | `tools/flock_facts.py`, `tools/flock_law_policy.py`, `tools/flock_compare.py`, `skills/flock-facts/`, `skills/flock-law-policy/`, `skills/flock-compare/` |
 | Flock verify | Independent check of a run's findings against their citations. | `tools/flock_verify.py`, `skills/flock-verify/` |
 | Flock follow-up and email drafts | Follow-up and email drafts and a request reminder list only; they write or print files and nothing sends. Approval is a signed `EMAIL-APPROVAL.json` field (docs/APPROVALS.md). | `tools/flock_email.py`, `tools/flock_approve.py`, `tools/flock_requests.py`, `skills/flock-followup/`, `skills/flock-email/`, `skills/flock-correspondence/` |
