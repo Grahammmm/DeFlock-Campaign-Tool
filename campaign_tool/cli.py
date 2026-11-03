@@ -506,7 +506,7 @@ def backup_drill_cmd(args):
     from .backup import drill
     if args.receipt and os.path.lexists(args.receipt):
         raise ValueError(f"{args.receipt} exists; the drill never overwrites a receipt")
-    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report)
+    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report, gnupg_home=args.gnupg_home)
     text = json.dumps(receipt, indent=2)
     if args.receipt:
         with os.fdopen(os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
@@ -518,7 +518,7 @@ def backup_drill_cmd(args):
 
 def backup_list_cmd(args):
     from .backup import list_archives
-    report = list_archives(args.dir, args.keep_daily, args.keep_weekly)
+    report = list_archives(args.dir, args.keep_daily, args.keep_weekly, gnupg_home=args.gnupg_home)
     print(json.dumps(report, indent=2) + "\nReport only; nothing was deleted.")
     sys.exit(3 if any(item["verify"] == "failed" for item in report["archives"]) else 0)
 
@@ -715,8 +715,10 @@ def main():
     drill_p.add_argument("--file", required=True)
     drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
     drill_p.add_argument("--receipt", help="Also write the receipt JSON here (must not exist)")
-    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar in a folder; report what a keep rule keeps (deletes nothing)")
+    drill_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
+    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar and *.tar.gpg in a folder; report what a keep rule keeps (deletes nothing)")
     list_p.add_argument("--dir", required=True)
+    list_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     from .backup import KEEP_LIMITS, keep_count
     for flag, key, period in (("--keep-daily", "keep_daily", "UTC day"), ("--keep-weekly", "keep_weekly", "ISO week")):
         list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
