@@ -67,6 +67,12 @@ finding or in the subject, and is counted in the JSON's `corrections_listed` (pr
 non-zero). A finding published and corrected after `--since` stays a new finding marked
 "(corrected)". Without either flag it renders the empty template from `campaign.json`. The JSON
 names its `source` (`content`, `manifest` or `template`). Nothing is sent.
+`--site PUBLIC` (an existing folder, not a symlink, else `Stopped:` exit 1 and no draft) then checks
+every campaign-site link of the written draft against that built `public/`: HTML links under `base_url`
+(finding pages, `#ids`, the home link) or, without `base_url`, the plain-text `/findings/...` paths,
+using the `build --check` resolver. The JSON gains `site_links` (`public`, `checked`, `external_skipped`,
+`missing` as `{link, reason}` with `no_page` or `no_fragment`); each missing link is also printed to
+stderr as `newsletter: link LINK not in PUBLIC (REASON)` and the exit is 3. Other hosts are only counted.
 
 `--from-content` also lists, under **Decisions** (after New findings and Corrections, before Upcoming meetings),
 each meeting outcome an organizer recorded with `meetings-outcome` (see MEETINGS.md) on or after
