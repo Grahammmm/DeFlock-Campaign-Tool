@@ -1,0 +1,4 @@
+{
+  "--replace-reference needs --reference": "kit-sent/kit-response --reference message that already names the option and the rule; not in the table",
+  "--reference must be 1-40 letters, digits, - _ # or .": "kit-sent/kit-response --reference message that already names the option and the rule; not in the table"
+}
