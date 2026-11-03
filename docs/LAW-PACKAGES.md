@@ -114,6 +114,18 @@ not legal advice and not a review: it never changes `status`, `reviewed_by`,
 `reviewed_at` or any `review` label. Only a human reviewer moves a package to
 reviewed, through the process above.
 
+## Reading a filled worksheet back (not a review)
+
+`python3 -m campaign_tool.law apply-sheet us-ca --sheet FILLED.csv --out PROPOSED.json
+[--base DIR]` copies each `reviewer_conclusion` (`verified`, `likely` or
+`needs_attorney_review`) into that rule's `review` label and writes the whole package
+as a new private file (mode 0600, refused inside the repository or over an existing
+file). A row with a conclusion needs `reviewer_name` and a `reviewed_on` date not after
+today; any refused row stops the run and nothing is written. Edited `duty`,
+`exceptions` or `remedy` text is listed in `text_edited`, never applied. It never sets
+`status`, `reviewed_by` or `reviewed_at`: check the result with
+`tools/check_law_review.py`, then record the reviewers through the process above.
+
 ## Current state
 
 `us-ca` is a draft authored from leginfo.legislature.ca.gov and the California

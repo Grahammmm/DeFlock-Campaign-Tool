@@ -99,8 +99,22 @@ Python API: `backup.diff(archive, root, expected_manifest_sha256=None) -> report
   per day (idempotency key `backup:<day>:<email>`). The runner (not yet built, see
   [ROADMAP.md](ROADMAP.md)) is expected to execute `export_hosted(client, out)` and store the
   archive where the organizer configured, with the manifest counts and archive hash in the
-  job outputs. Until then the job sits queued and `export_hosted` can be run by hand with a
-  client bound to the runner token.
+  job outputs. Until then the job sits queued. For a manual export, G runs the following
+  **on the runner host**, using its existing `WORKSPACE_URL` and `RUNNER_TOKEN` environment:
+
+  ```sh
+  python3 -m runner export-hosted --out /private-backups/hosted.tar
+  ```
+
+  No token argument is accepted, and the token and remote error bodies are never printed.
+  The command writes a new private (0600) archive, verifies it, then prints JSON with
+  `manifest_sha256` and `objects`. Record that digest separately and verify after copying:
+  `python3 -m campaign_tool verify --file /private-backups/hosted.tar --expect-manifest-sha256 <digest>`.
+  Existing output files are never overwritten. Fetch/hash/size failures stop with exit 1
+  and remove the incomplete new archive; missing environment/invalid arguments exit 2.
+  This command only reads the hosted API and writes locally: it does not enqueue jobs,
+  send mail, publish, encrypt, or upload the backup. Raw `mail/` originals are included
+  through their original rows, fetched by hash just like other originals.
 
 ## Flock store
 
@@ -114,6 +128,7 @@ first with `kind: "flock-store"`, members 0600 uid/gid 0); local files only, no 
 python3 tools/flock_backup.py create STORE --out FILE.tar
 python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
+python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR --agency SLUG
 python3 tools/flock_backup.py diff FILE.tar --store STORE [--manifest-sha256 HEX]
 ```
 
@@ -125,6 +140,9 @@ re-hashes on disk. Their output is counts only; file names appear only in errors
 first (a bad one stops, exit 1, no diff), then prints JSON naming store files `added`, `removed` or
 `changed` (sha256 or size) since it, each capped at 200 (rest under `more`), plus `unchanged` and
 `store_skipped`; names only, nothing written. Exit 0 when `current`, 3 on drift (a new backup is due).
+`restore --agency SLUG` still verifies the whole archive first (a bad member anywhere refuses it), then extracts and
+re-hashes only `agencies/SLUG/` and prints `restored agency=SLUG files=N bytes=M`; an agency not in the archive exits 1
+and creates nothing. It never writes into a live store: copy the restored folder back by hand.
 
 ## Limits and cautions
 

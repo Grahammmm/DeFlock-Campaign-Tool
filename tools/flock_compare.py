@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flock compare: scaffold a run folder; check FINDINGS.csv fail-closed (+ golden); --summary RUNDIR counts what a clean run
+"""Flock compare: scaffold a run folder; check FINDINGS.csv fail-closed (+ golden); --summary RUNDIR [--json] counts what a clean run
 cited and left uncited (a report, not a review verdict). Prints row numbers, fields, ids, counts only."""
 import argparse, contextlib, csv, hashlib, importlib.util, json, os, re, sys, tempfile
 from pathlib import Path
@@ -215,43 +215,60 @@ def check(rundir, golden=None):
         return errs + ["golden: missing or not a regular file"], len(rows)
     return errs + (golden_errors(golden, rows) if golden else []), len(rows)
 
-def summary(rundir):  # report, not a gate: ids and counts of what a clean run cited; never claim, quote or fact text
+def summary_data(rundir):  # (refusal or None, document): ids, fixed labels, the date and counts; never claim, quote or fact text
     errs, count = check(rundir)
     if errs:
-        print("summary refused: errors=%d (run --check)" % len(errs))
-        return 1
+        return "errors=%d (run --check)" % len(errs), {}
     _, facts, law_ids, policies, package = _inputs(run := Path(rundir).resolve())
     on = json.loads((run / "RUN.json").read_text(encoding="utf-8")).get("date")  # check() parsed it already
     if not isinstance(on, str) or not law_policy.day(on):
-        print("summary refused: RUN.json date")
-        return 1
+        return "RUN.json date", {}
     rows = [dict(zip(HEADER, map(str.strip, rec))) for rec in read_csv(run / "FINDINGS.csv")[1:] if any(map(str.strip, rec))]
     topics, status = {}, {f: r["status"] for f, r in facts.items()}  # DF1537-02: unreviewed is a count, never a gate
     for r in rows:
-        n = topics.setdefault((r["topic"], r["claim_class"]), dict.fromkeys((*RANK, "unreviewed"), 0))
+        n = topics.setdefault((r["topic"], r["claim_class"]), dict.fromkeys((*RANK, "unreviewed_cited"), 0))
         n[r["rating"]] += 1
-        n["unreviewed"] += any(status.get(f) == "unreviewed" for f in ids(r["fact_ids"]) + [r["quote_fact_id"]])
-    out = ["topic | %s | %s | strong=%d medium=%d weak=%d unreviewed_cited=%d" % (t, c, n["strong"], n["medium"], n["weak"],
-           n["unreviewed"]) for (t, c), n in sorted(topics.items())]
+        n["unreviewed_cited"] += any(status.get(f) == "unreviewed" for f in ids(r["fact_ids"]) + [r["quote_fact_id"]])
     rules, cited = set(law_ids), {x for r in rows for x in ids(r["rule_ids"])}
-    out.append("law | rules=%d cited=%d uncited=%d attorney_review_cited=%d" % (len(rules), len(cited & rules), len(rules - cited),
-               sum(package.get(x) == "needs_attorney_review" for x in cited)))
-    out += ["law uncited | " + x for x in sorted(rules - cited)]
+    law_doc = {"rules": len(rules), "cited": len(cited & rules), "uncited": len(rules - cited), "uncited_ids": sorted(rules - cited),
+               "attorney_review_cited": sum(package.get(x) == "needs_attorney_review" for x in cited)}
     policy, cited = set(policies), {x.partition("#")[0] for r in rows for x in ids(r["policy_refs"])}  # clean: P-<12hex>#...
-    out.append("policy | rows=%d cited=%d uncited=%d" % (len(policy), len(cited & policy), len(policy - cited)))
-    out += ["policy uncited | " + x for x in sorted(policy - cited)]
+    policy_doc = {"rows": len(policy), "cited": len(cited & policy), "uncited": len(policy - cited), "uncited_ids": sorted(policy - cited)}
     cited, quoted = {x for r in rows for x in ids(r["fact_ids"])}, {r["quote_fact_id"] for r in rows if r["quote_fact_id"]}
-    out.append("facts | rows=%d cited=%d uncited=%d unreadable=%d quoted=%d unreviewed_cited_facts=%d checked_cited=%d" % (
-               len(facts), len(cited & set(facts)), len(set(facts) - cited), sum(r["value"].strip() == "UNREADABLE"
-               for r in facts.values()), len(quoted), *(sum(status.get(f) == s for f in cited) for s in ("unreviewed", "checked"))))
+    facts_doc = dict(zip(("rows", "cited", "uncited", "unreadable", "quoted", "unreviewed_cited_facts", "checked_cited"), (
+        len(facts), len(cited & set(facts)), len(set(facts) - cited), sum(r["value"].strip() == "UNREADABLE" for r in facts.values()),
+        len(quoted), *(sum(status.get(f) == s for f in cited) for s in ("unreviewed", "checked")))))
     state = {p: governs(r, on) for p, r in policies.items()}  # ids, fixed labels and the date only; never adoption text
-    out += ["policy governs | %s | %s on %s" % (p, state[p], on)
-            for p in sorted(state, key=lambda p: (policies[p]["footer_version_date"], p))]
     off = [(r["finding_id"], ref.partition("#")[0]) for r in rows for ref in ids(r["policy_refs"])
-           if state[ref.partition("#")[0]] != "yes"]  # one per cited clause; lines one per (finding, row)
-    out += ["policy off-date | %s | %s" % pair for pair in dict.fromkeys(off)]
-    out.append("policy | off_date_citations=%d findings_affected=%d" % (len(off), len({f for f, _ in off})))
-    print("\n".join(out + ["findings=%d | counts of what this run cited, not a review verdict" % count]))
+           if state[ref.partition("#")[0]] != "yes"]  # one per cited clause; rows one per (finding, row)
+    policy_doc.update(governs=[{"policy": p, "state": state[p]} for p in sorted(state, key=lambda p: (policies[p]["footer_version_date"], p))],
+                      off_date=[{"finding_id": f, "policy": p} for f, p in dict.fromkeys(off)], off_date_citations=len(off),
+                      findings_affected=len({f for f, _ in off}))
+    return None, {"schema": "flock-compare-summary-v1", "review_required": True, "note": "counts of what this run cited, not a review verdict",
+                  "date": on, "findings": count, "topics": [{"topic": t, "claim_class": c, **n} for (t, c), n in sorted(topics.items())],
+                  "law": law_doc, "policy": policy_doc, "facts": facts_doc}
+
+def summary(rundir, as_json=False):  # report, not a gate; --json prints the same facts as one document
+    refusal, d = summary_data(rundir)
+    if refusal:
+        print("summary refused: " + refusal)
+        return 1
+    if as_json:
+        print(json.dumps(d, indent=2, sort_keys=True, ensure_ascii=False))
+        return 0
+    law_doc, policy_doc = d["law"], d["policy"]
+    out = ["topic | %(topic)s | %(claim_class)s | strong=%(strong)d medium=%(medium)d weak=%(weak)d unreviewed_cited=%(unreviewed_cited)d" % t
+           for t in d["topics"]]
+    out.append("law | rules=%(rules)d cited=%(cited)d uncited=%(uncited)d attorney_review_cited=%(attorney_review_cited)d" % law_doc)
+    out += ["law uncited | " + x for x in law_doc["uncited_ids"]]
+    out.append("policy | rows=%(rows)d cited=%(cited)d uncited=%(uncited)d" % policy_doc)
+    out += ["policy uncited | " + x for x in policy_doc["uncited_ids"]]
+    out.append("facts | rows=%(rows)d cited=%(cited)d uncited=%(uncited)d unreadable=%(unreadable)d quoted=%(quoted)d "
+               "unreviewed_cited_facts=%(unreviewed_cited_facts)d checked_cited=%(checked_cited)d" % d["facts"])
+    out += ["policy governs | %s | %s on %s" % (g["policy"], g["state"], d["date"]) for g in policy_doc["governs"]]
+    out += ["policy off-date | %(finding_id)s | %(policy)s" % x for x in policy_doc["off_date"]]
+    out.append("policy | off_date_citations=%(off_date_citations)d findings_affected=%(findings_affected)d" % policy_doc)
+    print("\n".join(out + ["findings=%(findings)d | %(note)s" % d]))
     return 0
 
 def _findings(run, label):  # {finding_id: row} from FINDINGS.csv alone (--check not required), or a refusal reason
@@ -269,12 +286,19 @@ def _labels(row):  # a label prints only in a form --check accepts: an unchecked
     return {k: row[k] if good else "invalid" for k, good in zip(("topic", "claim_class", "rating"), ok)}
 
 def _changes(a, b):  # labels old->new, id-set counts, which texts changed (squashed); never a text, fact, rule or ref
-    parts = ["%s %s->%s" % (k, _labels(a)[k], _labels(b)[k]) for k in ("rating", "claim_class", "topic") if a[k] != b[k]]
-    parts += ["%s +%d -%d" % (k, len(set(ids(b[k])) - set(ids(a[k]))), len(set(ids(a[k])) - set(ids(b[k]))))
-              for k in ("fact_ids", "rule_ids", "policy_refs") if set(ids(a[k])) != set(ids(b[k]))]
-    return parts + [k + " changed" for k in ("claim", "quote", "quote_fact_id", "next_step") if squash(a[k]) != squash(b[k])]
+    return {"label_changes": [{"field": k, "old": _labels(a)[k], "new": _labels(b)[k]} for k in ("rating", "claim_class", "topic")
+                              if a[k] != b[k]],
+            "id_sets": [{"field": k, "added": len(set(ids(b[k])) - set(ids(a[k]))), "removed": len(set(ids(a[k])) - set(ids(b[k])))}
+                        for k in ("fact_ids", "rule_ids", "policy_refs") if set(ids(a[k])) != set(ids(b[k]))],
+            "texts_changed": [k for k in ("claim", "quote", "quote_fact_id", "next_step") if squash(a[k]) != squash(b[k])]}
 
-def diff(olddir, newdir):  # read-only: both FINDINGS.csv and the old PUBLIC-OK.csv; finding ids, labels and counts only
+def _parts(row):  # the text renderer's parts of one diff row, in today's order
+    if row["kind"] != "changed":
+        return ["%(topic)s/%(claim_class)s %(rating)s" % row["labels"]]
+    return (["%(field)s %(old)s->%(new)s" % x for x in row["label_changes"]] + ["%(field)s +%(added)d -%(removed)d" % x
+            for x in row["id_sets"]] + [k + " changed" for k in row["texts_changed"]])
+
+def _diff_rows(olddir, newdir):  # read-only: both FINDINGS.csv and the old PUBLIC-OK.csv -> (refusal or None, rows, totals)
     old, new = Path(olddir).resolve(), Path(newdir).resolve()
     a = ("not a <store>/agencies/<slug>/runs/<date> folder" if not all(len(p.parents) >= 4 and p.parent.name == "runs" and
          p.parents[2].name == "agencies" for p in (old, new)) else "same run folder twice" if old == new else "different stores"
@@ -284,15 +308,30 @@ def diff(olddir, newdir):  # read-only: both FINDINGS.csv and the old PUBLIC-OK.
     with contextlib.suppress(OSError, UnicodeDecodeError, csv.Error):  # unreadable stays [] and is refused below
         public = None if public is None else read_csv(old / "PUBLIC-OK.csv")
     if isinstance(b, str) or public is not None and public[:1] != [HEADER[:4] + HEADER[5:8]]:
-        print("diff refused: " + (b if isinstance(b, str) else "old PUBLIC-OK.csv unreadable"))
-        return 1
-    ok, out = {rec[0].strip() for rec in (public or [])[1:] if rec}, []
+        return (b if isinstance(b, str) else "old PUBLIC-OK.csv unreadable"), [], {}
+    ok, rows = {rec[0].strip() for rec in (public or [])[1:] if rec}, []
+    none = dict.fromkeys(("label_changes", "id_sets", "texts_changed"), ())  # added/removed rows carry no change parts
     for fid, kind in sorted((f, "added" if f not in a else "removed" if f not in b else "changed") for f in set(a) | set(b)):
-        parts = _changes(a[fid], b[fid]) if kind == "changed" else ["%(topic)s/%(claim_class)s %(rating)s" % _labels(b.get(fid) or a[fid])]
-        out += ["%s | %s | %s%s" % (kind, fid, ", ".join(parts), " [old public-ok]" * (kind != "added" and fid in ok))] * bool(parts)
-    n = [sum(x.startswith(k) for x in out) for k in ("added |", "removed |", "changed |")] + [sum(x.endswith("public-ok]") for x in out)]
+        row = {"kind": kind, "finding_id": fid, "labels": _labels(b.get(fid) or a[fid]), "old_public_ok": kind != "added" and fid in ok,
+               **(_changes(a[fid], b[fid]) if kind == "changed" else none)}
+        rows += [row] * (kind != "changed" or any(row[k] for k in none))  # a changed row only when something changed
+    n = {k: sum(r["kind"] == k for r in rows) for k in ("added", "removed", "changed")}
+    return None, rows, {"old_count": len(a), "new_count": len(b), **n, "unchanged": len(set(a) & set(b)) - n["changed"],
+                        "public_ok_affected": None if public is None else sum(r["old_public_ok"] for r in rows)}
+
+def diff(olddir, newdir, as_json=False):  # finding ids, labels and counts only; --json is the same facts as one document
+    refusal, rows, t = _diff_rows(olddir, newdir)
+    if refusal:
+        print("diff refused: " + refusal)
+        return 1
+    if as_json:
+        print(json.dumps({"schema": "flock-compare-diff-v1", "review_required": True, "note": "finding ids only, not a review verdict",
+                          **t, "findings": rows}, indent=2, sort_keys=True, ensure_ascii=False))
+        return 0
+    out = ["%s | %s | %s%s" % (r["kind"], r["finding_id"], ", ".join(_parts(r)), " [old public-ok]" * r["old_public_ok"]) for r in rows]
     print("\n".join(out + ["old=%d new=%d added=%d removed=%d changed=%d unchanged=%d public_ok_affected=%s | finding ids only, not a "
-                           "review verdict" % (len(a), len(b), *n[:3], len(set(a) & set(b)) - n[2], "-" if public is None else n[3])]))
+                           "review verdict" % (t["old_count"], t["new_count"], t["added"], t["removed"], t["changed"], t["unchanged"],
+                                               "-" if t["public_ok_affected"] is None else t["public_ok_affected"])]))
     return 0
 
 def main(argv=None):
@@ -310,13 +349,18 @@ def _main(argv=None):
     parser.add_argument("--provider", choices=PROVIDERS)
     parser.add_argument("--summary")
     parser.add_argument("--diff", nargs=2, metavar=("OLDRUN", "NEWRUN"))
+    parser.add_argument("--json", action="store_true")  # valid only with --diff or --summary
     args = parser.parse_args(argv)
     usage = ("usage: scaffold --store DIR --agency SLUG --date YYYY-MM-DD --provider P --model M "
-             "--applicability TEXT | --check RUNDIR [--golden CSV] | --summary RUNDIR | --diff OLDRUN NEWRUN")
+             "--applicability TEXT | --check RUNDIR [--golden CSV] | --summary RUNDIR [--json] | --diff OLDRUN NEWRUN [--json]")
+    if args.json and args.diff is None and args.summary is None:
+        return parser.error(usage)
     if args.summary is not None or args.diff is not None:
         others = (args.command, args.check, args.golden, args.store, args.agency, args.date, args.provider, args.model,
                   args.applicability, args.diff and args.summary)  # any other flag, even empty, is a usage error
-        return parser.error(usage) if any(v is not None for v in others) else diff(*args.diff) if args.diff else summary(args.summary)
+        if any(v is not None for v in others):
+            return parser.error(usage)
+        return diff(*args.diff, as_json=args.json) if args.diff else summary(args.summary, as_json=args.json)
     if args.check and not args.command:
         errs, count = check(args.check, args.golden)
         print("\n".join(errs + ["findings=%d errors=%d" % (count, len(errs))]))

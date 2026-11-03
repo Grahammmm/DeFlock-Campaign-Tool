@@ -33,8 +33,18 @@ python3 -B -m runner --once --fake                                # exit 3 = idl
 ```
 
 Edit `../my-campaign/kit/agencies.json` to untick agencies; re-run `kit` and your edits persist.
+`doctor --directory ../my-campaign --stale-days 90` adds `stale_inputs`: the meetings scan, map snapshot, agency
+seed and law package sources dated more than 90 days ago, each with its refresh command. Undated inputs are
+`unknown` and missing ones `absent`, never assumed fresh. It only reads; nothing is refreshed.
 Add `content/` (see `docs/SITE-CONTENT.md` and `examples/fictional-campaign/content/`) to turn
 the starter into a real site.
+`python3 -m campaign_tool content init --directory ../my-campaign` writes a minimal valid `content/`
+with `[EDIT ME: ...]` placeholders to start from (it refuses an existing `content/`).
+
+**Daily use:** `python3 -m campaign_tool today --directory ../my-campaign [--as-of YYYY-MM-DD] [--json]` prints one
+ranked to-do list: written-comment deadlines in the next 7 days, past-due and due-today hand-sent requests, findings
+ready or blocked, stale comment kits and contacts checked over 180 days ago, each with the command to run. A broken
+input file becomes its own "fix <file>" item. It only reads; nothing is sent, filed or published.
 
 ## Hosted path (what the wizard does)
 

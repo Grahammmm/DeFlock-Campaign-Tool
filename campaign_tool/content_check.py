@@ -1,13 +1,19 @@
 """Name every content/ problem in one pass, with exactly the rules ``build`` enforces (read-only).
 
 ``load_content`` stops at the first refusal; this calls the same loaders file by file and keeps going. Parity
-invariant: ``content_problems(root) == []`` iff ``load_content(root)`` returns. Cross-file rules use loaded files.
+invariant: ``content_problems(root) == []`` iff ``load_content(root)`` returns and no public-assets image carries
+metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files.
 """
 from pathlib import Path
 
 from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
-                      load_finding, load_map, load_meeting, load_site, load_sources, plain_text)
+                      load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources, plain_text)
+from .finding_law import check_findings, jurisdiction, package_line
+from .doc_assets import check_asset as check_doc_asset
+from .image_meta import check_asset
+from .labels import MAX_LABELS_BYTES, load_labels
+from .redirects import check_file as check_redirects
 
 LIMIT = 200
 CAMERAS_MISSING = "map/cameras.geojson is missing; run tools/fetch_osm_alprs.py or supply reviewed data"
@@ -70,7 +76,7 @@ def _map(problems, content_dir):
         return config
     config_named = problems[-1].startswith("map/map-config.json")  # else load_map passed the config's head
     checks = {"cameras.geojson": lambda p, n: _validate_cameras(_read_json(p, MAX_GEOJSON_BYTES), "map/" + n),
-              "cities.json": _cities}
+              "cities.json": _cities, "snapshot.json": lambda p, _n: load_snapshot(p)}  # snapshot: optional
     missing = {"cameras.geojson": CAMERAS_MISSING}
     document = None
     try:
@@ -123,9 +129,9 @@ def content_problems(root, limit=LIMIT):
     if not site_path.is_file():
         problems.append("content/site.json is required when content/ exists")
     else:
-        _attempt(problems, "site.json", lambda: load_site(_read_json(site_path)))
+        _attempt(problems, "site.json", lambda: load_site(_read_json(site_path), content_dir / "public-assets"))
 
-    slugs, ids = set(), set()
+    slugs, ids, findings = set(), set(), []
     for path in _files(content_dir, "findings"):
         label = "findings/" + path.name
         finding = _attempt(problems, label, lambda: load_finding(_read_json(path), label))
@@ -135,14 +141,26 @@ def content_problems(root, limit=LIMIT):
             problems.append(f"findings/{path.name}: duplicate finding slug or id")
         slugs.add(finding["slug"])
         ids.add(finding["id"])
+        findings.append(finding)
+    _attempt(problems, "campaign.json", lambda: problems.extend(check_findings(root, findings)))
 
+    meeting_ids = set()
     for path in _files(content_dir, "meetings"):
         label = "meetings/" + path.name
-        _attempt(problems, label, lambda: _meeting(path, label))
+        meeting = _attempt(problems, label, lambda: _meeting(path, label))
+        if meeting is None:
+            continue
+        if meeting["id"] in meeting_ids:
+            problems.append(f"meetings/{path.name}: duplicate meeting id")
+        meeting_ids.add(meeting["id"])
 
     sources_path = content_dir / "sources.json"
     if sources_path.is_file():
         _attempt(problems, "sources.json", lambda: load_sources(_read_json(sources_path)))
+
+    labels_path = content_dir / "labels.json"  # optional, read exactly as load_content: a symlink is named, not read
+    if labels_path.is_file() or labels_path.is_symlink():
+        _attempt(problems, "labels.json", lambda: load_labels(_read_json(labels_path, MAX_LABELS_BYTES)))
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
@@ -158,6 +176,13 @@ def content_problems(root, limit=LIMIT):
             if slug not in known:
                 problems.append(f"map/map-config.json.bounding_box_fallbacks: {slug!r} is not a "
                                 "police/city_council agency slug")
+    assets_dir = content_dir / "public-assets"  # collected exactly as load_content; build refuses image metadata
+    for path in sorted(assets_dir.rglob("*")) if assets_dir.is_dir() else []:
+        if path.is_file() and not path.is_symlink():
+            relative = path.relative_to(assets_dir)
+            _attempt(problems, f"public-assets/{relative}", lambda: check_asset(path, relative))
+            _attempt(problems, f"public-assets/{relative}", lambda: check_doc_asset(path, relative))
+    check_redirects(root, problems)  # DF2037-16: content/redirects.json with build's own refusal text
     return _cap(sorted(set(problems)), limit)
 
 
@@ -168,6 +193,12 @@ def run_cli(root):
         print("no content/ directory")
         return
     print(f"content/: {len(problems)} problem(s)")
+    try:
+        name = jurisdiction(root)
+    except ContentError:  # an unreadable campaign.json is already a listed problem when a rule is cited
+        name = None
+    if name is not None:
+        print(package_line(name))
     for line in _cap(problems, LIMIT):
         print(line)
     if problems:

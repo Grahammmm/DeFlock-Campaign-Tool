@@ -134,7 +134,7 @@ class RelatedFindingsTests(unittest.TestCase):
         self.assertIn("Public tree check passed", result.stdout)
         page = self.page("x-anchor")
         self.assertIn('<li><a href="/findings/x-other.html">Tricky &amp; &quot;quoted&quot; title</a> · '
-                      '<span class="status-pill">Documented fact</span> · Event date '
+                      '<a class="status-pill" href="/methods.html#classification-documented_fact">Documented fact</a> · Event date '
                       '<time datetime="2026-01-20">2026-01-20</time> · <span class="related-why">Same agency</span></li>', page)
         self.assertLess(page.index('Counterevidence considered'), page.index('id="related"'))
         self.assertLess(page.index('id="related"'), page.index('id="corrections"'))

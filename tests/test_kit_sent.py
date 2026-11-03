@@ -13,6 +13,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, kit, kit_track, law  # noqa: E402
+from tests.test_kit_check import ready_drafts  # noqa: E402
 
 
 def run(*arguments):
@@ -47,6 +48,7 @@ class KitSentTests(unittest.TestCase):
         self.assertGreaterEqual(len(drafts), 2)
         self.agency, self.other = drafts[0].stem, drafts[1].stem
         self.draft = drafts[0]
+        ready_drafts(self.root)  # kit-sent refuses unfilled placeholders and unverified recipients (DF1507-07)
 
     def send(self, agency=None, sent_on="2026-03-02", channel="email", *extra):
         return run("kit-sent", "--directory", self.root, "--agency", agency or self.agency, "--date", sent_on,
