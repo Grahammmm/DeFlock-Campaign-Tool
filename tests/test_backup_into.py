@@ -148,7 +148,7 @@ class PlainIntoTests(IntoBase):
         self.assertEqual(len(self.names()), 1)  # the lock is gone after a finished run
 
     def test_bad_config_value_is_refused_before_anything_is_written(self):
-        for value in ("a string", ["encrypt_to"], {"encrypt_to": 5}, {"encrypt_to": ["k.asc"]},
+        for value in ("a string", ["encrypt_to"], None, {"encrypt_to": None}, {"encrypt_to": 5}, {"encrypt_to": ["k.asc"]},
                       {"encrypt_to": "missing.asc"}, {"encrypt_to": ""}):
             with self.subTest(value=value):
                 self.set_backup_config(value)
@@ -158,6 +158,19 @@ class PlainIntoTests(IntoBase):
                 self.assertEqual(self.names(), [])
         self.set_backup_config({})
         self.assertEqual(self.go()[0], 0)  # an empty backup object means plain
+
+    def test_unreadable_campaign_json_is_refused_not_treated_as_plain(self):
+        path, good = self.root / "campaign.json", (self.root / "campaign.json").read_text()
+        for text in ("{not json", "[]", "null", None):
+            with self.subTest(text=text):
+                path.unlink(missing_ok=True) if text is None else path.write_text(text)
+                for extra in ((), ("--encrypt-to", self.base / "k.asc")):
+                    code, out, err = self.go(*extra)
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertRegex(err, r"\Abackup failed: campaign\.json backup\.encrypt_to[^\n]*\n\Z")
+                    self.assertEqual(self.names(), [])
+        path.write_text(good)
+        self.assertEqual(self.go()[0], 0)  # no "backup" key at all means plain
 
 
 @unittest.skipUnless(GPG, "gpg is not installed")
