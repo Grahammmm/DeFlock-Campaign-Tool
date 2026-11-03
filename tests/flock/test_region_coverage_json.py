@@ -125,7 +125,7 @@ class RegionCoverageJsonTest(unittest.TestCase):
 
     def test_usage_errors_exit_2(self):  # 7
         cfg, seed, target = str(self.cfg_path), str(self.seed_dir), str(self.tmp / "x.json")
-        for args in (("coverage", cfg, "--json", "--json-out", target), ("--check", cfg, "--json"),
+        for args in (("coverage", cfg, "--json", "--json-out", target), ("--check", cfg, "--json", "--json-out", target),
                      ("init", cfg, "--store", str(self.tmp / "s"), "--json"), ("--check", cfg, "--json-out", target),
                      ("init", cfg, "--store", str(self.tmp / "s"), "--json-out", target),
                      ("new", "--county-fips", "06999", "--region", "t", "--out", str(self.tmp / "n.json"), "--json")):

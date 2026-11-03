@@ -38,6 +38,7 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
 - List reminders: `python3 tools/flock_requests.py due <file or store dir>`. One line per open
   row, soonest first, unknown receipts last. With any error it prints nothing and exits 1.
   Relate it to a day: `python3 tools/flock_requests.py due <file or store dir> --as-of YYYY-MM-DD`.
+  One agency only: add `--agency SLUG` (repeatable, any order with `--as-of`; not with `--ics`).
 
 ## Alerts
 
