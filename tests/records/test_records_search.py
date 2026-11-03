@@ -22,7 +22,7 @@ rs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rs)
 from campaign_tool.records import public_scan  # noqa: E402
 
-SECRET_PHRASE = "zebra quartz lantern"
+NEEDLE_PHRASE = "zebra quartz lantern"
 EMAIL, PHONE, PLATE, NAME = "jane.roe@example.org", "(805) 555-0142", "7ABC123", "Marguerite Okonkwo-Tal"
 PREFIX = "Résumé — "  # multi-byte prefix: offsets are UTF-8 bytes
 
@@ -44,7 +44,7 @@ class Store:
         texts = {
             ("slo-county", "doc-01"): units((1, "Intro page"), (2, PREFIX + "the ALPR camera contract")),
             ("slo-county", "doc-02"): units((1, "Retention policy: thirty days")),
-            ("slo-county", "doc-03"): units((1, "Audit log for " + SECRET_PHRASE + " and " + EMAIL)),
+            ("slo-county", "doc-03"): units((1, "Audit log for " + NEEDLE_PHRASE + " and " + EMAIL)),
             ("slo-county", "doc-04"): units((3, "Contact " + PHONE + " plate " + PLATE + " officer " + NAME)),
             ("slo-county", "doc-05"): None,
             ("arroyo-grande", "doc-06"): units((1, "Sharing agreement"), (4, "camera placement map")),
@@ -160,14 +160,14 @@ class DoneWhenTest(Base):
 class NoTextEverPrintedTest(Base):
     def test_planted_phrase_and_personal_data_never_printed(self):
         outputs = [self.index()]
-        for terms in ('"%s"' % SECRET_PHRASE, '"%s"' % EMAIL, "lantern", PLATE, '"Okonkwo-Tal"', "officer"):
+        for terms in ('"%s"' % NEEDLE_PHRASE, '"%s"' % EMAIL, "lantern", PLATE, '"Okonkwo-Tal"', "officer"):
             outputs.append(self.query(terms))
             self.assertEqual(len(self.rows(outputs[-1][1])), 1, terms)
         outputs += [run("stat", "--index", str(self.out)), self.query('"zebra'), self.query("zebra.*")]
         folder = self.base / "outputs"
         folder.mkdir()
         for n, (_, out, err) in enumerate(outputs):
-            for value in (SECRET_PHRASE, "zebra", "quartz", "lantern", EMAIL, "555-0142", PLATE, NAME, "Okonkwo",
+            for value in (NEEDLE_PHRASE, "zebra", "quartz", "lantern", EMAIL, "555-0142", PLATE, NAME, "Okonkwo",
                           "Marguerite", "Audit log", "officer"):
                 self.assertNotIn(value, out + err)
             (folder / ("out-%02d.txt" % n)).write_text(out + err)
