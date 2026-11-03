@@ -130,6 +130,7 @@ python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR --agency SLUG
 python3 tools/flock_backup.py diff FILE.tar --store STORE [--manifest-sha256 HEX]
+python3 tools/flock_backup.py list FILE.tar [--manifest-sha256 HEX] [--json]   # verify, then files/bytes per agency, regions, LAW.csv
 ```
 
 `create` refuses a store inside the repo and an `--out` that exists or lies in the store or repo; it
