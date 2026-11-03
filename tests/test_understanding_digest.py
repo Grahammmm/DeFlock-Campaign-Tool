@@ -306,6 +306,10 @@ class DigestTests(unittest.TestCase):
         db = sqlite3.connect(portal / "portal.sqlite")
         db.execute("CREATE TABLE portal_items(id TEXT)")
         db.close()
+        # The extract stage's per-run list (input to the DOC-2 text-state pair).
+        (processing / "runs").mkdir(mode=0o700)
+        (processing / "runs" / f"extract-{RUN}.json").write_text(json.dumps(
+            {"schema": "records-extract-outcomes-v1", "run_id": RUN, "documents": []}))
         return [processing / "ledger.sqlite", portal / "portal.sqlite"]
 
     def test_stage_outputs_real_enabled_seam_and_unchanged_snapshot_inputs(self):

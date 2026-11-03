@@ -17,9 +17,17 @@ The county profile uses the existing name/vendor/status/summary/cameraCount/fact
 open/flags fields. Source destinations must be local HTML filenames and safe
 fragment slugs. Explicit alias mappings handle a group's differently named source
 section without hard-coding a jurisdiction in the engine.
+A city's empty `cameraCount` is filled by the site build with a computed "N community-mapped points inside city
+limits; ownership unconfirmed" label when the campaign has a map (docs/SITE-CONTENT.md); a typed value is kept.
 `agency_cards.problems(config)` lists every problem at once (sorted, dotted field names such as `county_profile.vendor`, never a value); `render` raises them joined by `; `.
 
-New county text rejects angle-bracket markup. The selected-agency CITIES object
+**Check a config.** `python3 -m campaign_tool.agency_cards --check cards.json` (≤ 2 MB UTF-8 JSON object;
+`NaN`/`Infinity` refused) builds nothing and prints each problem, then `problems=N`. Exit 0 none, 1 problems,
+2 unreadable file or usage (one stderr line, no value echoed).
+
+New county text rejects angle-bracket markup, control characters other than newline/tab, invisible format and
+direction-override characters (Unicode `Cc`/`Cf`, e.g. U+200B, U+202E, U+2066, U+FEFF) and U+2028/U+2029: the field is a
+named problem, never rewritten or stripped. The selected-agency CITIES object
 remains **trusted, reviewed campaign source**, not an arbitrary JSON upload or
 record-extraction result. Its legacy list rendering uses innerHTML for compatibility;
 this is not an HTML sanitization boundary. Do not wire user input or AI drafts
@@ -28,6 +36,26 @@ before this compatibility global is retired.
 
 The synthetic example makes no real agency allegation and supplies no real
 contact address, subscriber, production configuration or private record.
+
+## Agency contract term
+
+An agency's `profile.contract` is `{vendor, start, end, renewal_note?, source_url, checked_on}`, checked by an organizer
+on the official source and never fetched. `vendor` (≤ 80) and `renewal_note` (≤ 200) are plain text; `start`/`end` are
+YYYY-MM-DD dates with `end` not before `start`; `source_url` is https; `checked_on` is not after the build date. A
+contract without `source_url` or `checked_on` stops the build. `agencies.html` shows it on the card; the home page lists
+contracts ending within 180 days of the build date, soonest first; `doctor` reports `contracts_ending` within 90 days.
+It never enters the CITIES card config, and `site.json` `county_profile` has no `contract` key.
+
+## Confirmed, not known, asked
+
+Each agency on `agencies.html` has three blocks after its summary, from organizer-reviewed `content/agencies.json`
+only. "What is confirmed": `profile.facts` plus "N published finding(s) with sources", else "Nothing is confirmed by
+a published finding yet." "What is not known": `profile.open` then `profile.flags`, else "Nothing listed yet." "What
+we asked": each `asked` item, newest `asked_on` first, as "<topic> — asked <date>. <state sentence>", else "No request
+is listed for this agency yet." Wording is neutral and fixed: "No written response recorded as of <updated_on, else
+the build date>", "Acknowledged <date>; no records yet.", "Partly answered <date>.", "Answered <date>.", "Declined in
+writing on <date>.", "We withdrew this request <date>." (without a date when `updated_on` is absent). Never
+"ignored", "refused", "late", "overdue" or "violated"; no legal characterisation is made.
 
 ## Pilot preservation and remaining work
 

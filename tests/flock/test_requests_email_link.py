@@ -1,9 +1,13 @@
 """flock_requests --check STORE: a run whose email is recorded sent needs a request with that sent date (NB-DF-05)."""
-import shutil, subprocess, sys, tempfile, unittest
+import contextlib, importlib.util, io, shutil, subprocess, tempfile, unittest
 from pathlib import Path
+
+from tests.flock.approval_field import APPROVAL_LINE, trusted, write_field
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIXTURE = ROOT / "tools" / "flock_requests.py", ROOT / "tests" / "fixtures" / "flock" / "requests-sample.csv"
+_SPEC = importlib.util.spec_from_file_location("_requests_email_link", TOOL)
+TOOL_MODULE = _SPEC.loader.exec_module(_m := importlib.util.module_from_spec(_SPEC)) or _m
 HEADER = "request_id,agency,sent,receipt_evidence,receipt_date,determination_date,extension_notice_date,status,source_sha256\n"
 HEAD = "DRAFT - not sent - G approval required"
 NAME, ADDR, SUBJ = "Opname Zedward", "planted-local@city.example", "Subject: planted subject words"
@@ -12,7 +16,11 @@ A, B = "sample-city", "second-town"
 
 
 def run(*argv):
-    return subprocess.run([sys.executable, "-B", str(TOOL), *map(str, argv)], capture_output=True, text=True)
+    """flock_requests in-process inside trusted(): a subprocess would never trust the test approver key."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), trusted():
+        code = TOOL_MODULE.main([str(a) for a in argv])
+    return subprocess.CompletedProcess(argv, code, out.getvalue(), err.getvalue())
 
 
 def snapshot(base):
@@ -38,9 +46,11 @@ class SentRunLinkTests(unittest.TestCase):
         rundir.mkdir(parents=True, exist_ok=True)
         (rundir / "FOLLOWUP-DRAFT.md").write_text(HEAD + "\n", encoding="utf-8")
         if sent is not None:
-            text = [HEAD, f"To: {ADDR}", SUBJ, "---", "body", "---", f"G APPROVED: {approve or '____'}",
+            text = [HEAD, f"To: {ADDR}", SUBJ, "---", "body", "---", APPROVAL_LINE,
                     f"Sent by: {sent or '____ (operator, by hand, after G' + chr(39) + 's reply)'}"]
             (rundir / "EMAIL-DRAFT.md").write_text("\n".join(text) + "\n", encoding="utf-8")
+            if approve and approve.strip():  # the state field, never a line
+                write_field(rundir)
         return rundir
 
     def check(self, path=None):

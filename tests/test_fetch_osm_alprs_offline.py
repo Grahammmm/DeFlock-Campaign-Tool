@@ -63,6 +63,8 @@ class OfflineBuildTests(unittest.TestCase):
 
     def run_tool(self, *extra, path=None):
         argv = ["--directory", str(self.campaign), "--from-file", str(path or self.saved()), *extra]
+        self.campaign.mkdir(exist_ok=True)  # RF1730-11: --directory must be a campaign (holds campaign.json)
+        (self.campaign / "campaign.json").touch()
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = tool.main(argv)

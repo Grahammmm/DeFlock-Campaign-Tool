@@ -10,7 +10,7 @@
     '0000000000000000000000000000000000000000000000000000000000000005': '1ad3d51fabf2dba0cfc3b112f9fef9825cf5344daa1ffd598c3adb23d9cd3394',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '0000000000000000000000000000000000000000000000000000000000000006': '2825d09e60945d3c22555141f17cabe40e28eb2af3284009df55ff1367cd6cee',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     # Re-pin after the combined outputs-stage outcome writers and disabled private digest seam.
-    '0000000000000000000000000000000000000000000000000000000000000007': '44bbea73882a25e1e29615e00a8b9ca89ed095a8b1b26ad8e4f69aa9ad60fdd4',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+    '0000000000000000000000000000000000000000000000000000000000000007': '20cf66ca3425b9adeda6906d47bed1ab16eaa0df1a37032448df378291f3a486',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '0000000000000000000000000000000000000000000000000000000000000008': '4dbba442fd931c7f589a1dafe8c3dd6c440a2cd58a39fadfbb2a0ac0ce3f71e6',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '0000000000000000000000000000000000000000000000000000000000000009': '593e07418bb7c85c3cd806d5d795872da1e6cc4cf07eaf169908ef6ed94299af',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '000000000000000000000000000000000000000000000000000000000000000a': '5ed0b87eece77d6792f057e7bb006c3ef139b4cf11970ffceee9772759479f39',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash

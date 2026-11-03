@@ -79,6 +79,15 @@ Python API: `backup.export(root, out_path) -> manifest` (with `manifest_sha256`)
 `backup.restore(path, root) -> report`, `backup.export_hosted(client, out_path) -> manifest`
 where `client.get(path) -> bytes` is bound to the runner token.
 
+`python3 -m campaign_tool backup-diff --file backup.tar --directory D [--expect-manifest-sha256 <digest>]`
+answers "is my backup current?". It re-verifies the archive first (a damaged or rewritten
+archive stops with `Stopped: ...`, exit 1, and no diff), then compares the manifest with the
+files a new `backup` of D would include and prints JSON: `current`, sorted `added`, `removed`
+and `changed` names (each capped at 200, the rest counted under `more`) and `unchanged`.
+Names only, no hashes or content. Exit 0 when current, 3 on drift. The ledger is hashed from
+a temporary snapshot, as in `backup`; nothing is written in D or the archive.
+Python API: `backup.diff(archive, root, expected_manifest_sha256=None) -> report`.
+
 ## Hosted campaigns
 
 - `GET /api/export.json` (Access-protected) streams every D1 table for the campaign, table
@@ -90,8 +99,22 @@ where `client.get(path) -> bytes` is bound to the runner token.
   per day (idempotency key `backup:<day>:<email>`). The runner (not yet built, see
   [ROADMAP.md](ROADMAP.md)) is expected to execute `export_hosted(client, out)` and store the
   archive where the organizer configured, with the manifest counts and archive hash in the
-  job outputs. Until then the job sits queued and `export_hosted` can be run by hand with a
-  client bound to the runner token.
+  job outputs. Until then the job sits queued. For a manual export, G runs the following
+  **on the runner host**, using its existing `WORKSPACE_URL` and `RUNNER_TOKEN` environment:
+
+  ```sh
+  python3 -m runner export-hosted --out /private-backups/hosted.tar
+  ```
+
+  No token argument is accepted, and the token and remote error bodies are never printed.
+  The command writes a new private (0600) archive, verifies it, then prints JSON with
+  `manifest_sha256` and `objects`. Record that digest separately and verify after copying:
+  `python3 -m campaign_tool verify --file /private-backups/hosted.tar --expect-manifest-sha256 <digest>`.
+  Existing output files are never overwritten. Fetch/hash/size failures stop with exit 1
+  and remove the incomplete new archive; missing environment/invalid arguments exit 2.
+  This command only reads the hosted API and writes locally: it does not enqueue jobs,
+  send mail, publish, encrypt, or upload the backup. Raw `mail/` originals are included
+  through their original rows, fetched by hash just like other originals.
 
 ## Flock store
 
@@ -105,13 +128,22 @@ first with `kind: "flock-store"`, members 0600 uid/gid 0); local files only, no 
 python3 tools/flock_backup.py create STORE --out FILE.tar
 python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
+python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR --agency SLUG
+python3 tools/flock_backup.py diff FILE.tar --store STORE [--manifest-sha256 HEX]
+python3 tools/flock_backup.py list FILE.tar [--manifest-sha256 HEX] [--json]   # verify, then files/bytes per agency, regions, LAW.csv
 ```
 
 `create` refuses a store inside the repo and an `--out` that exists or lies in the store or repo; it
 writes a temp file, verifies it, then links it into place, leaving nothing on failure. Record the
 printed `manifest_sha256` elsewhere. `verify` and `restore` name each bad member (codes as above, plus
 `duplicate_member`) and exit 1; `restore` verifies first, never overwrites, extracts 0700/0600 and
-re-hashes on disk. Output is counts only; file names appear only in errors.
+re-hashes on disk. Their output is counts only; file names appear only in errors. `diff` verifies the archive
+first (a bad one stops, exit 1, no diff), then prints JSON naming store files `added`, `removed` or
+`changed` (sha256 or size) since it, each capped at 200 (rest under `more`), plus `unchanged` and
+`store_skipped`; names only, nothing written. Exit 0 when `current`, 3 on drift (a new backup is due).
+`restore --agency SLUG` still verifies the whole archive first (a bad member anywhere refuses it), then extracts and
+re-hashes only `agencies/SLUG/` and prints `restored agency=SLUG files=N bytes=M`; an agency not in the archive exits 1
+and creates nothing. It never writes into a live store: copy the restored folder back by hand.
 
 ## Limits and cautions
 
@@ -126,8 +158,80 @@ provide a transaction spanning mutable `content/` and `kit/` files, an inventory
 of the full records runtime, or recovery of hosted derived R2 text. The records
 recovery-v2 library has a separate declared-profile and caller-quiescence contract.
 
+## Restore drill
+
+`python3 -m campaign_tool backup-drill --file ARCHIVE [--expect-manifest-sha256 D] [--receipt OUT.json] [--gnupg-home DIR]`
+proves an archive restores into a working campaign without touching the source: it verifies the
+archive, restores it into a fresh `deflock-drill-*/campaign` temp directory, runs the store check
+(`status --check`) and `doctor` on that copy, then removes the copy. It prints one receipt JSON
+(archive basename, manifest digest, per-step result; no paths or file digests); `--receipt` also
+writes it with mode 0600 and never overwrites. Exit 0 pass, 3 fail, 1 when the archive is missing.
+An encrypted ARCHIVE is decrypted once, with your GnuPG key or the one in `--gnupg-home DIR`, into a
+private temp copy that every step uses and that is removed afterwards; the receipt says
+`"encrypted": true`. A key that cannot decrypt it is a failed `verify` step ("cannot decrypt"), exit 3.
+
+## Archive inventory and keep rule
+
+`python3 -m campaign_tool backup-list --dir DIR [--keep-daily N] [--keep-weekly M] [--gnupg-home DIR]`
+re-verifies every `*.tar` and `*.tar.gpg` directly in `DIR` (symlinks are listed under `skipped` and never opened; other files and
+subfolders are ignored) and prints each archive's `encrypted` flag (read from its content, not its name), `created_at`, size, manifest digest and verify
+result, newest first, failed ones last. With a keep rule it also names, among verified archives,
+the newest per UTC day for the `N` most recent days and the newest per ISO week for the `M` most
+recent weeks (`keep`), the rest (`would_not_keep`) and the failed ones (`failed_never_kept`). It is a
+report only: nothing is deleted, renamed or written. Exit 0, 3 when any archive failed, 1 for a bad folder.
+
+## Encrypted archives
+
+`python3 -m campaign_tool backup --directory D --out F --encrypt-to organizer.asc` writes `F` as an
+OpenPGP message encrypted to the public key in `organizer.asc` (GnuPG, the `gpg` binary). The plain
+tar is written and verified only inside a private temp folder; nothing unencrypted is left beside
+`F`, and a failed run leaves no `F`. Encryption uses a fresh empty GnuPG home, so your keyring is
+never read or changed and the private key does not need to be on the backup machine. Make a key
+once on the organizer's own computer and export only the public half:
+
+    gpg --quick-gen-key "Campaign Backups <you@example.org>" default default never
+    gpg --armor --export "Campaign Backups" > organizer.asc
+
+`verify --file F` and `restore --file F --directory NEW` recognise an encrypted archive and decrypt
+it into a private temp copy (removed afterwards) with your normal GnuPG key, or the one in
+`--gnupg-home DIR`. `--expect-manifest-sha256` works as for plain archives. Plain `.tar` archives
+read exactly as before. `backup` names the key's fingerprint instead of the unencrypted warning.
+Decryption needs the private key and its passphrase: keep them apart from the archives. Losing the
+private key loses every backup encrypted to it. `backup-drill` and `backup-list` read encrypted archives
+(see above); `backup-diff` does not read them yet.
+
+## Scheduled backups
+
+`backup --directory D --into DIR [--encrypt-to KEY]` writes a new `DIR/deflock-backup-<UTC YYYYmmddTHHMMSSZ>.tar`
+(`.tar.gpg` when encrypting) and prints one line, `backup ok: NAME encrypted|UNENCRYPTED files=N bytes=B manifest_sha256=HEX`;
+a failure prints one `backup failed: ...` line on stderr and exits 1, leaving no partial archive. `DIR` must exist, be a
+real folder (not a link) and not be group- or other-writable. It never overwrites; `DIR/.deflock-backup.lock` stops
+overlapping runs (remove it by hand only after a crash). The key is `--encrypt-to`, else `"backup": {"encrypt_to":
+"organizer.asc"}` in `campaign.json` (relative to the campaign folder); with neither the line says `UNENCRYPTED`.
+
+User timer, two files in `~/.config/systemd/user/`
+(then `systemctl --user enable --now deflock-backup.timer`):
+
+    # deflock-backup.service
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/python3 -m campaign_tool backup --directory %h/campaign --into %h/backups
+    WorkingDirectory=%h/DeFlock-Campaign-Tool
+
+    # deflock-backup.timer
+    [Timer]
+    OnCalendar=daily
+    Persistent=true
+    [Install]
+    WantedBy=timers.target
+
+Or one crontab line: `17 2 * * * cd ~/DeFlock-Campaign-Tool && python3 -m campaign_tool backup --directory ~/campaign --into ~/backups`
+
+Keep rule: `python3 -m campaign_tool backup-list --dir ~/backups --keep-daily 7 --keep-weekly 8` shows what it would
+retain. It covers `*.tar` and `*.tar.gpg` (encrypted archives need your GnuPG key or `--gnupg-home DIR`). This installs nothing; deleting stays manual.
+
 ## Not done
 
-Encryption inside the tool, incremental or scheduled backups from cron, restore of a hosted
+Restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
-script is straightforward but not written), and retention policy.
+script is straightforward but not written), and retention deletion (`backup-list` only reports).

@@ -118,10 +118,20 @@ ${actions.length ? html`<h2>Approval cards</h2><table class="data"><tr><th>Card<
 <h2>Finding JSON</h2>${jsonBlock(JSON.parse(f.finding_json))}`;
 }
 
-export function approvals(rows: ExternalActionRow[], notice: string | null): Safe {
+/** DF-4: advisory "review-required" notes (place + rule, never the text) from the legal-claim wording guard. Never throws. */
+export function reviewFlagsOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string").slice(0, 50) : [];
+}
+
+function reviewFlagsNotice(flags: string[]): Safe | string {
+  return flags.length ? html`<div class="notice warn"><strong>Wording review required before approving</strong> - the legal-claim guard flagged text that may assert a legal violation. Advisory only; it does not block approval.<ul>${flags.map((f) => html`<li>${f}</li>`)}</ul></div>` : "";
+}
+
+export function approvals(rows: ExternalActionRow[], notice: string | null, buildFlags: Record<string, string[]> = {}): Safe {
   const proposed = rows.filter((a) => a.state === "proposed");
   const other = rows.filter((a) => a.state !== "proposed");
   const card = (a: ExternalActionRow) => html`<div class="card"><h3>${a.kind} ${statePill(a.state)}</h3><p class="meta">${a.action_id} - subject ${a.subject_id ?? "n/a"} - proposed by ${a.proposed_by} ${a.created_at}${a.approved_by ? html`<br>approved by ${a.approved_by} ${a.approved_at}` : ""}${a.executed_at ? html`<br>executed ${a.executed_at}` : ""}${a.error && !executionClaimId(a) ? html`<br><span class="pill bad">${a.error}</span>` : ""}</p>
+${reviewFlagsNotice([...reviewFlagsOf((JSON.parse(a.proposal_json) as { review_flags?: unknown }).review_flags), ...(buildFlags[a.action_id] ?? [])])}
 ${jsonBlock(JSON.parse(a.proposal_json))}
 ${a.state === "proposed" ? html`<form method="post" action="/approvals/${a.action_id}/approve" style="display:inline"><button class="primary" type="submit">Approve</button></form>
 <form method="post" action="/approvals/${a.action_id}/edit" class="stack" style="margin-top:.6rem"><label class="field">Edit proposal (JSON merged over the current one)<textarea name="proposal" style="min-height:5rem">{}</textarea></label><button class="secondary" type="submit">Save edit</button></form>
@@ -160,7 +170,9 @@ export function subscribers(events: SubscriberEventRow[], drafts: JobRow[], send
     const subject = draft && typeof draft.subject === "string" ? draft.subject : "(no draft yet)";
     const text = draft && typeof draft.text === "string" ? draft.text : "";
     const inputs = JSON.parse(j.inputs_json) as { trigger?: string; month?: string };
+    const flags = reviewFlagsOf(draft?.review_flags);
     return html`<div class="card"><h3>${subject} ${statePill(j.state)}</h3><p class="meta">${j.job_id} - ${inputs.trigger ?? "?"}${inputs.month ? " " + inputs.month : ""} - enqueued ${j.enqueued_at}${j.error ? html`<br><span class="pill bad">${j.error}</span>` : ""}</p>
+${reviewFlagsNotice(flags)}
 ${text ? html`<pre class="json">${text.slice(0, 3000)}</pre>` : ""}
 ${j.state === "done" && draft ? html`<form method="post" action="/subscribers/drafts/${j.job_id}/propose"><button class="primary" type="submit">Approve &amp; send (creates a send_newsletter card)</button></form>` : html`<p class="meta">The runner builds the draft; it appears here when the job is done.</p>`}</div>`;
   };

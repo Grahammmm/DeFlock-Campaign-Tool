@@ -1,7 +1,6 @@
 ---
 name: flock-compare
 description: Use when comparing one agency's Flock/ALPR facts with California law and its policy. Scaffolds a private run folder, then fails closed on findings without a rating, cited fact, rule or policy clause, or with banned wording.
-skill_version: 1.4
 ---
 
 # Flock compare
@@ -17,23 +16,31 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
 - Provider and model from the worker's actual runtime line, never a profile name.
 - One applicability line (≤ 200 characters): the agency's role and which law applies to it.
 
-## Steps
-1. Scaffold: `python3 tools/flock_compare.py scaffold --store DIR --agency SLUG --date YYYY-MM-DD
-   --provider P --model M --applicability TEXT` (P in anthropic, openai, xai, google, local).
-   It writes `agencies/<slug>/runs/<date>/` with RUN.json, a header-only FINDINGS.csv and FINDINGS.md.
-2. Model run per `skills/flock-compare/PROMPT.md`, writing only inside the run folder.
-3. Check: `python3 tools/flock_compare.py --check RUNDIR`; exit 0 only (`findings=F errors=K`).
-   A finding citing a `disputed` fact (`fact_ids` or `quote_fact_id`) is an error: review the fact again or drop it.
-4. Summary: `python3 tools/flock_compare.py --summary RUNDIR`; a `policy off-date` line (a cited POLICY version not governing
-   on the RUN.json date) is a PROMPT/finding fix (cite the governing version), never a POLICY.csv edit.
-   Compare with the previous run: `python3 tools/flock_compare.py --diff OLDRUN NEWRUN`
-5. Morro Bay: add `--golden tests/fixtures/flock/morrobay-golden.csv`. A mismatch becomes a
-   PROMPT.md fix and a rerun, never a hand edit of the findings.
+## Scaffold
+- `python3 tools/flock_compare.py scaffold --store DIR --agency SLUG --date YYYY-MM-DD
+  --provider P --model M --applicability TEXT` (P in anthropic, openai, xai, google, local).
+  It writes `agencies/<slug>/runs/<date>/` with RUN.json, a header-only FINDINGS.csv and FINDINGS.md.
+
+## Model run
+- Model run per `skills/flock-compare/PROMPT.md`, writing only inside the run folder.
+
+## Check
+- `python3 tools/flock_compare.py --check RUNDIR`; exit 0 only (`findings=F errors=K`).
+  A finding citing a `disputed` fact (`fact_ids` or `quote_fact_id`) is an error: review the fact again or drop it.
+- Morro Bay: add `--golden tests/fixtures/flock/morrobay-golden.csv`. A mismatch becomes a
+  PROMPT.md fix and a rerun, never a hand edit of the findings.
+
+## Summary
+- `python3 tools/flock_compare.py --summary RUNDIR`; a `policy off-date` line (a cited POLICY version not governing
+  on the RUN.json date) is a PROMPT/finding fix (cite the governing version), never a POLICY.csv edit.
+  Each `topic |` line ends `unreviewed_cited=K` (findings citing an `unreviewed` fact; a count, not a gate); `facts |` ends `unreviewed_cited_facts= checked_cited=`.
+
+## Diff
+- Compare with the previous run: `python3 tools/flock_compare.py --diff OLDRUN NEWRUN`
 
 ## Outputs
 - Row numbers, field names, ids and counts. Never claim, quote or fact text.
 - `--summary` (clean runs only, else refused) gives rating counts per topic and cited/uncited LAW rules, POLICY rows and facts; a report, not a review verdict.
-  Each `topic |` line ends `unreviewed_cited=K` (findings citing an `unreviewed` fact; a count, not a gate); `facts |` ends `unreviewed_cited_facts= checked_cited=`.
 - `--diff` (read-only; no clean `--check` needed) lists findings added, removed and changed by id, flags `[old public-ok]` ids, and never prints text, fact ids, rule ids or policy refs.
 - RUN.json records the input hashes; if FACTS, LAW, POLICY or the law package change, `--check`
   fails until the comparison is redone in a new run folder.
@@ -51,10 +58,3 @@ or legal acceptance. The verify step (flock-verify) is a separate run by a diffe
   `--golden tests/fixtures/flock/morrobay-golden.csv` (`findings=7 errors=0`).
 - Morro Bay golden: topics, classes, cited rule or clause and maximum ratings from the private
   LEGAL-DEEPDIVE §§1–5. Omitting a class is allowed (more conservative).
-
-## Changelog
-- 1.0: run scaffold, findings checker, banned wording and golden check.
-- 1.1: `--summary` read-only cited/uncited counts.
-- 1.2: RUN.json `inputs` hashes; `--check` names an input changed since scaffold.
-- 1.3: `--summary` says which POLICY rows govern on the run date and names off-date policy citations.
-- 1.4: `--diff OLDRUN NEWRUN` lists findings added, removed and changed between two runs.

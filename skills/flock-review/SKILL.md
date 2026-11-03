@@ -1,7 +1,6 @@
 ---
 name: flock-review
 description: Use when driving one agency through the agency-review method (facts, rules, compare, F3) with tools/flock_review.py. One resumable command; never runs a model.
-skill_version: 1.1
 ---
 # flock-review: one agency config -> facts -> rules -> compare
 
@@ -10,22 +9,32 @@ private agency-review method scripts (outside this repository; they need PyYAML)
 inputs are unchanged, and stops at each model-authored step (`wait` stage) until that step is marked. It never runs a model, makes
 no network call and never deletes: superseded outputs move to `<out>/.review/superseded/`.
 
-## Steps
-1. Convert the agency YAML to JSON once with the private method helper
-   `config_to_json.py CONFIG.yaml OUT.json` (run with the method python). Keep the JSON outside the repository.
-2. Add the `review` block (schema 1, slug, method_dir, method_python, out, run_date, added_by, roster_doc_id, ocr_log_doc_ids,
-   training_join, region_config, f3_findings). `out` and the config stay outside the repository.
-3. `python3 tools/flock_review.py --check CONFIG` must end `errors=0`. Fix the named `config: <field>` first.
-4. `python3 tools/flock_review.py run CONFIG`. Exit 3 prints `stage <id> WAITING (<reason>)`:
-   - `fact-drafts`: the named model card writes `FO/drafts/*.yaml` per the facts-intake skill;
-   - `rules-read`: the card reads every rules source and spec per the rules-intake skill;
-   - `assess`: the card writes `compare.assessments` per the compare skill;
-   - `f3-findings`: the card writes `review.f3_findings`; its provider/model become the F3 run author.
-5. The card that wrote the input runs
-   `python3 tools/flock_review.py mark CONFIG <stage> --provider <its provider> --model <its actual model>`.
-   The operator uses `--provider local` only for input it wrote itself.
-6. `run` again. Unchanged stages print `cached`; a changed input re-runs only what depends on it.
-7. `python3 tools/flock_review.py status CONFIG` is read-only and shows each stage, its mark and `next=`.
+## Convert
+- Convert the agency YAML to JSON once with the private method helper
+  `config_to_json.py CONFIG.yaml OUT.json` (run with the method python). Keep the JSON outside the repository.
+
+## Configure
+- Add the `review` block (schema 1, slug, method_dir, method_python, out, run_date, added_by, roster_doc_id, ocr_log_doc_ids,
+  training_join, region_config, f3_findings). `out` and the config stay outside the repository.
+
+## Check
+- `python3 tools/flock_review.py --check CONFIG` must end `errors=0`. Fix the named `config: <field>` first.
+
+## Run
+- `python3 tools/flock_review.py run CONFIG`. Exit 3 prints `stage <id> WAITING (<reason>)`:
+  - `fact-drafts`: the named model card writes `FO/drafts/*.yaml` per the facts-intake skill;
+  - `rules-read`: the card reads every rules source and spec per the rules-intake skill;
+  - `assess`: the card writes `compare.assessments` per the compare skill;
+  - `f3-findings`: the card writes `review.f3_findings`; its provider/model become the F3 run author.
+- `run` again after a mark. Unchanged stages print `cached`; a changed input re-runs only what depends on it.
+
+## Mark
+- The card that wrote the input runs
+  `python3 tools/flock_review.py mark CONFIG <stage> --provider <its provider> --model <its actual model>`.
+  The operator uses `--provider local` only for input it wrote itself.
+
+## Status
+- `python3 tools/flock_review.py status CONFIG` is read-only and shows each stage, its mark and `next=`.
 
 Exit codes: 0 done, 1 failed/validation/lock, 2 usage, 3 waiting. Logs: `<out>/.review/logs/<stage>.log`.
 
@@ -58,6 +67,7 @@ unreviewed rows (disagree / needs-source rows are withheld downstream, and verif
    and `SOURCES.json` only when its final lint passes; a lint error fails the stage, which re-runs on the next `run`. The manual
    `python3 tools/flock_report.py build CONFIG` still works for a re-run after an upstream wording fix.
 2. Before handing the draft on, `python3 tools/flock_report.py check CONFIG` exits 0 (last line ends `state=current`).
+   For a machine copy add `--json` (`check CONFIG --json`: flock-report-check-v1; `region --check ... --json`: flock-report-region-check-v1).
 3. Shown: priority rows (contradicted / not met) and sample rows the independent check agreed with, each with numbered cites to a
    record page or rule section. Withheld and only counted: not-posted rows and rows the check disputed or could not source.
 4. On `row <id>: <rule>` or `line N: <rule>`, fix the wording in ASSESSMENTS (G1 `assess` re-mark) or add the derived name to

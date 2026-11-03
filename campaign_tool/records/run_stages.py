@@ -980,6 +980,14 @@ def stage_outputs(args):
         raise  # Preserve the run's hard deadline, not a recoverable register warning.
     except Exception:  # noqa: BLE001 - isolate register errors; never expose private exception text
         warning = "OUTPUTS_REGISTER_UNAVAILABLE"
+    # Additive per-record text state (DOC-2): its own code; never suppresses the snapshot, register or digest.
+    try:
+        from .outcomes.textstate import write_run_textstate
+        write_run_textstate(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate text-state errors; never expose private exception text
+        warning = warning or "OUTPUTS_TEXTSTATE_UNAVAILABLE"
     produced = 1
     if prepared_digest is not None:
         try:

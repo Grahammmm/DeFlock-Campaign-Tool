@@ -24,10 +24,12 @@ and verified before it is stored under ``private/objects/<sha256>``, and
 ``campaign.json`` is derived from the campaign row. ``client`` needs a single
 method ``get(path) -> bytes``; the runner supplies one bound to its token.
 """
+import contextlib
 import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -36,7 +38,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__
+from . import __version__, backup_crypt
 
 SCHEMA_VERSION = 1
 MANIFEST = "manifest.json"
@@ -263,8 +265,12 @@ def _snapshot_ledger(ledger, tmpdir):
     return target
 
 
-def export(root, out_path):
-    """Write the archive; returns the manifest dict. Refuses to overwrite ``out_path``."""
+def export(root, out_path, encrypt_to=None):
+    """Write the archive; returns the manifest dict. Refuses to overwrite ``out_path``.
+
+    With ``encrypt_to`` (a public key file) the plain tar exists only in a private
+    temp dir and ``out_path`` is the OpenPGP message encrypted to that key.
+    """
     root = Path(root).resolve()
     out_path = Path(out_path)
     if not (root / "campaign.json").is_file():
@@ -273,6 +279,8 @@ def export(root, out_path):
         raise BackupError(f"{out_path} exists; choose a new file name")
     if (root / "private").is_symlink():
         raise BackupError("unsafe_private_directory: private must not be a symlink")
+    if encrypt_to is not None:
+        backup_crypt.recipient_ids(encrypt_to)
     files = {}
     with tempfile.TemporaryDirectory(prefix="deflock-backup-") as tmp:
         ledger = root / "private" / "ledger.sqlite"
@@ -304,7 +312,8 @@ def export(root, out_path):
         manifest = _manifest(files, counts, {"kind": "local", "root_name": root.name})
         manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         manifest["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
-        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        tar_path = Path(tmp) / "plain.tar" if encrypt_to is not None else out_path
+        fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             with os.fdopen(fd, "wb") as handle, tarfile.open(fileobj=handle, mode="w", format=tarfile.PAX_FORMAT) as tar:
                 _add_bytes(tar, MANIFEST, manifest_bytes)
@@ -316,11 +325,237 @@ def export(root, out_path):
                     with open(path, "rb") as source:
                         tar.addfile(info, source)
             # Detect source files changing between hashing and archive writing.
-            verify(out_path, expected_manifest_sha256=manifest["manifest_sha256"])
+            verify(tar_path, expected_manifest_sha256=manifest["manifest_sha256"])
+            if encrypt_to is not None:
+                manifest["recipient"] = backup_crypt.encrypt(tar_path, out_path, encrypt_to)
+                manifest["encrypted"] = True
         except BaseException:
-            out_path.unlink(missing_ok=True)
+            if encrypt_to is None:
+                out_path.unlink(missing_ok=True)
             raise
     return manifest
+
+
+def scheduled_name(now=None):
+    return "deflock-backup-" + (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".tar"
+
+
+def export_into(root, folder, encrypt_to=None, now=None):
+    """New timestamped archive in ``folder``, never overwriting; returns ``(name, manifest)``. ``backup: `` messages are whole lines."""
+    folder, root = Path(folder), Path(root)
+    mode = os.lstat(folder).st_mode if os.path.lexists(folder) else 0
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode) or mode & 0o022:
+        raise BackupError("backup: --into: must be an existing real folder that group and others cannot write")
+    try:
+        cfg = json.loads((root / "campaign.json").read_text(encoding="utf-8")).get("backup")
+    except (OSError, ValueError, AttributeError):
+        cfg = None  # export() reports a missing campaign.json
+    key = cfg.get("encrypt_to") if isinstance(cfg, dict) else None
+    if cfg is not None and not (isinstance(cfg, dict) and (key is None or isinstance(key, str))):
+        raise BackupError('campaign.json backup.encrypt_to: "backup" must be an object holding a key-file path')
+    if encrypt_to is None and key is not None:
+        encrypt_to = root / key
+        try:
+            backup_crypt.recipient_ids(encrypt_to)
+        except BackupError as exc:
+            raise BackupError(f"campaign.json backup.encrypt_to: {exc}") from None
+    name, lock = scheduled_name(now) + (".gpg" if encrypt_to else ""), folder / ".deflock-backup.lock"
+    try:
+        os.close(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        raise BackupError("another backup is running") from None
+    try:
+        if os.path.lexists(folder / name):
+            raise BackupError(f"backup: {name} exists; not overwritten")
+        return name, export(root, folder / name, encrypt_to=encrypt_to)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+DIFF_NAME_CAP = 200
+
+
+def diff(archive, root, expected_manifest_sha256=None):
+    """Names added/removed/changed in ``root`` since the backup; re-verifies first, writes nothing in ``root``."""
+    report = verify(archive, expected_manifest_sha256=expected_manifest_sha256)
+    with tarfile.open(archive, mode="r:") as tar:
+        manifest = _read_manifest(tar)
+    if manifest["manifest_sha256"] != report["manifest_sha256"]:
+        raise BackupError("manifest_digest_mismatch: archive changed during diff")
+    root = Path(root).resolve()
+    if not (root / "campaign.json").is_file():
+        raise BackupError("campaign.json not found; is this a campaign directory?")
+    if (root / "private").is_symlink():
+        raise BackupError("unsafe_private_directory: private must not be a symlink")
+    with tempfile.TemporaryDirectory(prefix="deflock-diff-") as tmp:
+        members = dict(_members(root))
+        ledger = root / "private" / "ledger.sqlite"
+        if ledger.exists() or ledger.is_symlink():
+            if not ledger.is_file() or ledger.is_symlink():
+                raise BackupError("invalid_ledger: expected a regular non-symlink file")
+            # Same rule as export: hash a consistent temp snapshot, never the live file.
+            members["private/ledger.sqlite"] = _snapshot_ledger(ledger, tmp)
+        live = {name: {"sha256": _sha256(path), "bytes": path.stat().st_size} for name, path in members.items()}
+    old = manifest["files"]
+    lists = {"added": sorted(set(live) - set(old)), "removed": sorted(set(old) - set(live)),
+             "changed": sorted(n for n in set(old) & set(live)
+                               if (old[n]["sha256"], old[n]["bytes"]) != (live[n]["sha256"], live[n]["bytes"]))}
+    result = {"archive_created_at": manifest.get("created_at"), "current": not any(lists.values())}
+    result.update({key: names[:DIFF_NAME_CAP] for key, names in lists.items()})
+    result["unchanged"] = len(set(old) & set(live)) - len(lists["changed"])
+    more = {key: len(names) - DIFF_NAME_CAP for key, names in lists.items() if len(names) > DIFF_NAME_CAP}
+    if more:
+        result["more"] = more
+    return result
+
+
+DRILL_STEPS = ("verify", "restore", "store_check", "doctor")
+
+
+_ABS_PATH = re.compile(
+    r"(?<![\w>.<])/[^\s'\"<>:;,)]+"          # POSIX absolute
+    r"|(?<![\w])[A-Za-z]:[\\/][^\s'\"<>;,)]+"  # Windows drive
+    r"|\\\\[^\s'\"<>;,)]+")                 # Windows UNC
+
+
+def _drill_detail(exc, tmp, archive=None):
+    """Failure text for a receipt: no absolute paths, no temp path, no member digests, bounded."""
+    text = f"{type(exc).__name__}: {exc}".replace(tmp, "<copy>")
+    if archive is not None:
+        archive = Path(archive)
+        for shown in {str(archive), str(archive.absolute()), str(archive.resolve())}:
+            text = text.replace(shown, archive.name)
+    text = _ABS_PATH.sub("<path>", text)
+    return re.sub(r"[0-9a-fA-F]{64}", "<sha256>", text)[:300]
+
+
+def drill(archive, expected_manifest_sha256=None, *, doctor=None, store_check=None, tmp_parent=None, gnupg_home=None):
+    """Restore ``archive`` into a fresh temp dir, check the copy, remove it; returns a receipt.
+
+    Only the archive is read: the source campaign directory is never opened. An encrypted archive is
+    decrypted once into a private temp copy that every step uses and that is removed afterwards.
+    """
+    if store_check is None:
+        from .store_check import check_store as store_check
+    if doctor is None:
+        from .cli import doctor_report as doctor
+    archive = Path(archive)
+    if not archive.is_file():
+        raise BackupError(f"{archive.name}: archive not found")
+    steps = []
+    try:
+        encrypted = backup_crypt.is_encrypted(archive)
+    except OSError:  # unreadable: the verify step records it
+        encrypted = False
+    receipt = {"schema": "deflock-backup-drill-v1", "archive_name": archive.name,
+               "encrypted": encrypted, "manifest_sha256": None,
+               "created_at": None, "drilled_at": _now(), "engine_version": None, "files": None,
+               "passed": False, "steps": steps}
+    with tempfile.TemporaryDirectory(prefix="deflock-drill-", dir=tmp_parent) as tmp, contextlib.ExitStack() as stack:
+        copy = Path(tmp) / "campaign"
+        source = [archive]
+
+        def run_verify():
+            if receipt["encrypted"]:
+                source[0] = stack.enter_context(backup_crypt.decrypted(archive, gnupg_home))
+            report = verify(source[0], expected_manifest_sha256=expected_manifest_sha256)
+            receipt.update({key: report[key] for key in ("manifest_sha256", "created_at", "engine_version", "files")})
+            return f"{report['verified']} of {report['files']} files re-hashed"
+
+        def run_store_check():
+            count = len(store_check(copy)["problems"])
+            return count == 0, f"{count} problem" + ("" if count == 1 else "s")
+
+        def run_doctor():
+            report = doctor(copy)
+            return report.get("config_readable") is True, {
+                "law_package_status": report.get("law_package_status"),
+                "agencies_selected": report.get("agencies_selected")}
+
+        actions = {"verify": lambda: (True, run_verify()),
+                   "restore": lambda: (True, f"{restore(source[0], copy)['files']} files restored to a temp copy"),
+                   "store_check": run_store_check, "doctor": run_doctor}
+        for name in DRILL_STEPS:
+            if steps and steps[-1]["ok"] is not True:
+                steps.append({"step": name, "ok": None, "detail": "not run"})
+                continue
+            try:
+                ok, detail = actions[name]()
+            except Exception as exc:  # a drill records every failure instead of stopping
+                ok, detail = False, _drill_detail(exc, tmp, archive)
+            steps.append({"step": name, "ok": ok, "detail": detail})
+    receipt["passed"] = all(step["ok"] is True for step in steps)
+    return receipt
+
+
+KEEP_LIMITS = {"keep_daily": 366, "keep_weekly": 260}
+
+
+def keep_count(top):
+    """argparse type for --keep-daily/--keep-weekly: an integer 0..top, else ValueError (exit 2)."""
+    def count(text):
+        if not 0 <= int(text) <= top:
+            raise ValueError(f"must be 0-{top}")
+        return int(text)
+    return count
+
+
+def _created(report):
+    """The manifest's created_at as an aware UTC datetime; BackupError when it is not one."""
+    try:
+        when = datetime.fromisoformat(report["created_at"])
+    except (TypeError, ValueError):
+        when = None
+    if when is None or when.tzinfo is None:
+        raise BackupError("invalid_manifest: created_at is not an ISO time with a UTC offset")
+    return when.astimezone(timezone.utc)
+
+
+def list_archives(folder, keep_daily=None, keep_weekly=None, gnupg_home=None):
+    """Re-verify every ``*.tar`` and ``*.tar.gpg`` directly in ``folder`` and name what a keep rule would keep; writes nothing."""
+    folder = Path(folder)
+    if folder.is_symlink() or not folder.is_dir():
+        raise BackupError(f"{folder}: not a directory (a symlink is refused)")
+    for key, value in (("keep_daily", keep_daily), ("keep_weekly", keep_weekly)):
+        if value is not None and (type(value) is not int or not 0 <= value <= KEEP_LIMITS[key]):
+            raise BackupError(f"{key} must be an integer 0-{KEEP_LIMITS[key]}")
+    good, failed, skipped = [], [], []
+    with os.scandir(folder) as entries:
+        entries = sorted(entries, key=lambda entry: entry.name)
+    for entry in entries:
+        if not entry.name.lower().endswith((".tar", ".tar.gpg")):
+            continue
+        if entry.is_symlink():
+            skipped.append({"name": entry.name, "reason": "symlink"})
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        item = {"name": entry.name, "encrypted": False, "bytes": entry.stat(follow_symlinks=False).st_size,
+                "created_at": None, "manifest_sha256": None, "engine_version": None, "files": None}
+        try:
+            item["encrypted"] = backup_crypt.is_encrypted(entry.path)  # by content, not by file name
+            report = verify(entry.path, gnupg_home=gnupg_home)
+            when = _created(report)
+        except (BackupError, tarfile.TarError, OSError, ValueError) as exc:
+            failed.append(dict(item, verify="failed", reason=str(exc).replace(entry.path, entry.name)[:200]))
+            continue
+        item.update({key: report[key] for key in ("created_at", "manifest_sha256", "engine_version", "files")})
+        good.append((when, dict(item, verify="ok")))
+    good.sort(key=lambda pair: pair[0], reverse=True)  # stable: equal times stay in name order
+    result: dict = {"archives": [item for _, item in good] + failed, "skipped": skipped}
+    if keep_daily is None and keep_weekly is None:
+        return result
+    keep = set()
+    for count, period in ((keep_daily, lambda when: when.date()), (keep_weekly, lambda when: when.isocalendar()[:2])):
+        newest = {}
+        for when, item in good:  # newest first, so the first archive seen in a period is its newest
+            newest.setdefault(period(when), item["name"])
+        keep.update(list(newest.values())[:count or 0])
+    result["rule"] = {"keep_daily": keep_daily, "keep_weekly": keep_weekly,
+                      "keep": [item["name"] for _, item in good if item["name"] in keep],
+                      "would_not_keep": [item["name"] for _, item in good if item["name"] not in keep],
+                      "failed_never_kept": [item["name"] for item in failed]}
+    return result
 
 
 def _safe_name(name):
@@ -406,7 +641,15 @@ def _check_member(member, expected):
     return None
 
 
-def verify(path, expected_manifest_sha256=None):
+def verify(path, expected_manifest_sha256=None, gnupg_home=None):
+    """Verify a plain or OpenPGP-encrypted archive (decrypted with the organizer's key into a temp copy)."""
+    if backup_crypt.is_encrypted(path):
+        with backup_crypt.decrypted(path, gnupg_home) as plain:
+            return dict(_verify_tar(plain, expected_manifest_sha256), path=str(Path(path)), encrypted=True)
+    return _verify_tar(path, expected_manifest_sha256)
+
+
+def _verify_tar(path, expected_manifest_sha256=None):
     """Re-hash every member against the manifest. Returns a report; raises on any problem.
 
     With ``expected_manifest_sha256`` (recorded out of band at export time) a
@@ -463,7 +706,15 @@ def verify(path, expected_manifest_sha256=None):
     return report
 
 
-def restore(path, root):
+def restore(path, root, gnupg_home=None):
+    """Restore a plain or OpenPGP-encrypted archive (decrypted into a temp copy first)."""
+    if backup_crypt.is_encrypted(path):
+        with backup_crypt.decrypted(path, gnupg_home) as plain:
+            return dict(_restore_tar(plain, root), path=str(Path(path)), encrypted=True)
+    return _restore_tar(path, root)
+
+
+def _restore_tar(path, root):
     """Extract into an empty ``root`` with private modes, then re-verify on disk."""
     path = Path(path)
     root = Path(root)

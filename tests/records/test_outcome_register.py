@@ -271,6 +271,10 @@ class RegisterIntegrationTests(unittest.TestCase):
             con.execute("CREATE TABLE portal_items(id TEXT)")
 
     def test_actual_outputs_stage_writes_both_files_and_preserves_counts(self):
+        # The extract stage's per-run list (input to the DOC-2 text-state pair).
+        (self.processing / "runs").mkdir(mode=0o700)
+        (self.processing / "runs" / "extract-synthetic-run.json").write_text(json.dumps(
+            {"schema": "records-extract-outcomes-v1", "run_id": "synthetic-run", "documents": []}))
         before = self.ledger.read_bytes()
         entries = set(self.processing.iterdir())
         out = io.StringIO()

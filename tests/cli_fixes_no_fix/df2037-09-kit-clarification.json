@@ -1,0 +1,5 @@
+{
+  "clarification_requested is not allowed after a produced or denied step": "kit-response message that already names the option or the step order rule; not in the table",
+  "a clarification request is already open since 5": "kit-response message that already names the option or the step order rule; not in the table",
+  "no open clarification request to answer": "kit-response message that already names the option or the step order rule; not in the table"
+}

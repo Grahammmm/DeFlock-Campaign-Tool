@@ -66,6 +66,27 @@ class ApprovedOutboxGateway:
         self.clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
         self.lock = threading.Lock()
 
+    def attest(self, row, evidence):
+        """Outbox attestor: re-check a stored frame's MAC and that it names this row's exact draft.
+
+        Returns the attested approver. Called on approve and again before every send, so a
+        journal row edited to 'approved' without an authentic frame for its text never sends.
+        """
+        try:
+            if set(evidence) != {"kind", "frame", "mac"} or not isinstance(evidence["mac"], str):
+                raise ValueError("evidence")
+            raw = evidence["frame"].encode("utf-8")
+            if not hmac.compare_digest(signature(self.secret, raw), evidence["mac"]):
+                raise ValueError("mac")
+            frame = json.loads(raw, object_pairs_hook=_unique_object)
+            draft = RequestDraft(**frame["draft"], from_addr=self.from_addr)
+            if frame["campaign_id"] != self.campaign_id or frame["canonical_key"] != row["idempotency_key"] \
+                    or draft.to_json() != row["draft_json"]:
+                raise ValueError("frame names another draft")
+            return _text(frame["approved_by"], 320)
+        except (ValueError, TypeError, KeyError, AttributeError, UnicodeError) as exc:
+            raise OutboxError("gateway approval does not verify") from exc
+
     def dispatch(self, raw, supplied_signature):
         if not isinstance(raw, bytes) or len(raw) > MAX_FRAME_BYTES:
             return 413, {"code": "frame_too_large"}
@@ -128,21 +149,22 @@ class ApprovedOutboxGateway:
                 # Provider may have accepted the message: preserve the journal hold.
                 raise AmbiguousFailure("invalid provider receipt") from exc
             return receipt
+        evidence = {"kind": "gateway", "frame": raw.decode("utf-8"), "mac": supplied_signature}
         with self.lock:
             box = None
             try:
-                box = Outbox(self.journal, campaign_fee_cap_cents=self.fee_cap,
+                box = Outbox(self.journal, campaign_fee_cap_cents=self.fee_cap, attestor=self.attest,
                     clock=lambda: self.clock().astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z"))
                 row = box.propose(draft)
                 if row["draft_json"] != draft.to_json():
                     return 409, {"code": "draft_conflict"}
                 if row["state"] == "proposed":
-                    box.approve(key, frame["approved_by"])
+                    box.approve(key, evidence)
                 elif row["state"] == "approved" and row["approved_by"] != frame["approved_by"]:
                     return 409, {"code": "approval_conflict"}
                 if row["state"] == "failed":
                     try:
-                        box.approve_retry(key, frame["approved_by"], frame["approved_at"])
+                        box.approve_retry(key, evidence, frame["approved_at"])
                     except OutboxError:
                         return 409, {"code": "fresh_outbox_approval_required"}
                 row = box.send(key, checked_transport)

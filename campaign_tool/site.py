@@ -8,35 +8,104 @@ configured, the MapLibre controller. All generated JavaScript is self-hosted;
 pages contain no inline scripts, and the emitted ``_headers`` file carries a
 Content-Security-Policy that names only the hosts the content model declared.
 """
+import hashlib
 import json
+import os
 import re
 import shutil
+import sys
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, map_controller
-from .content import CITY_KINDS, ContentError, load_content
+from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
+from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
+from .corrections_policy import policy_html
+from .timeline import render_timeline, timeline_events
+from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
 from .shell import render
+from .provenance_text import EXPLAINER, source_line
+from .redirects import load_redirects
+from .review import ROLES
 
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
-GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html",
-                       "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
-                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor"}
-CLASSIFICATION_LABELS = {
-    "documented_fact": "Documented fact", "apparent_conflict": "Apparent conflict",
-    "confirmed_conflict": "Confirmed conflict", "information_gap": "Information gap",
-    "redaction": "Redaction", "agency_assertion": "Agency assertion", "no_conflict": "No conflict found",
+GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
+                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
+                       "_redirects", "methods.html"}
+# CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
+# methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
+CLASSIFICATION_DEFINITIONS = {
+    "documented_fact": "A record states this directly. We report what the record says, not our interpretation of it.",
+    "apparent_conflict": "A record appears to differ from a stated rule or policy; not a finding that anyone broke a "
+                         "law. The agency may have an explanation the records we hold do not show.",
+    "confirmed_conflict": "The conflict was checked against the rule in force on the event date and passed legal-role "
+                          "review. It describes a difference between records and a rule, not a court's judgment.",
+    "information_gap": "Records we expected were not provided, not found, or do not answer the question asked. A gap is "
+                       "not evidence that something did or did not happen.",
+    "redaction": "Part of a record was withheld or blacked out by the agency. We note what was withheld and the reason "
+                 "given, if any.",
+    "agency_assertion": "The agency says this in a record or a reply. We report the statement; we have not "
+                        "independently confirmed it.",
+    "no_conflict": "We compared the records with the applicable rule or policy and found no difference. This covers "
+                   "only the records we hold.",
 }
-CONFIDENCE_LABELS = {"verified": "Verified against the record", "likely": "Likely; awaiting further records"}
-KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol",
-               "district_attorney": "District attorney", "county_board": "County board",
-               "city_council": "City council", "other": "Other public body"}
+CONFIDENCE_DEFINITIONS = {
+    "verified": "Each statement was checked against the cited source records by a reviewer other than the author.",
+    "likely": "The cited records support this reading, but records we have asked for or expect could change it.",
+}
+
+
+def check_definitions():
+    """Raise ValueError when a definition table's keys differ from its label table (no silent missing entry)."""
+    for name, labels, definitions in (("classification", CLASSIFICATION_LABELS, CLASSIFICATION_DEFINITIONS),
+                                      ("confidence", CONFIDENCE_LABELS, CONFIDENCE_DEFINITIONS)):
+        if set(labels) != set(definitions):
+            raise ValueError(f"{name} definitions must match the label keys exactly: "
+                             f"missing {sorted(set(labels) - set(definitions))}, extra {sorted(set(definitions) - set(labels))}")
+
+
+check_definitions()
+# findings/filter.js (RF1510-3): ES5, no dependency, same-origin under script-src 'self'. Without it the index is the
+# full list. Hash state: #agency=<id>&classification=<code>&year=<yyyy>; unknown keys and values are ignored.
+FILTER_JS = """// Generated by campaign_tool build. Findings index filter; the full list shows without JavaScript.
+(function(){var form=document.getElementById("finding-filter");if(!form)return;
+var keys=["agency","classification","year"],items=document.querySelectorAll(".finding-list li");
+var count=document.getElementById("filter-count"),empty=document.getElementById("filter-empty");
+function pick(k){return document.getElementById("filter-"+k);}
+function apply(keep){var shown=0,parts=[],i,j,s,ok;
+for(j=0;j<keys.length;j++){s=pick(keys[j]);if(s&&s.value!=="all")parts.push(keys[j]+"="+encodeURIComponent(s.value));}
+for(i=0;i<items.length;i++){ok=true;for(j=0;j<keys.length;j++){s=pick(keys[j]);
+if(s&&s.value!=="all"&&items[i].getAttribute("data-"+keys[j])!==s.value)ok=false;}items[i].hidden=!ok;if(ok)shown++;}
+count.textContent="Showing "+shown+" of "+items.length;empty.hidden=shown>0;
+if(keep!==true&&window.history&&history.replaceState)history.replaceState(null,"",parts.length?"#"+parts.join("&"):location.pathname+location.search);
+return shown;}
+function has(s,v){for(var i=0;i<s.options.length;i++)if(s.options[i].value===v)return true;return false;}
+var pairs=location.hash.slice(1).split("&"),found=false;
+for(var n=0;n<pairs.length;n++){var kv=pairs[n].split("="),v;if(keys.indexOf(kv[0])<0)continue;found=true;
+try{v=decodeURIComponent(kv.slice(1).join("="));}catch(err){continue;}var s=pick(kv[0]);if(s&&v!=="all"&&has(s,v))s.value=v;}
+form.addEventListener("change",function(){apply();});form.hidden=false;apply(!found);
+window.findingFilter={apply:apply};})();
+"""
+# data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
+PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
+                         "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
+                         "counterevidence", "corrections", "url")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
+PUBLIC_CORRECTION_FIELDS = ("date", "note")
+PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
+# data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
+PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages",
+                         "cited_by", "public_copy")
+PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
+PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
+FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
 /* Content-model pages */
 .site-nav{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.6rem}.site-nav a{color:#d8e7e3;text-decoration:none;font-size:.9rem}.site-nav a[aria-current=page]{color:#fff;text-decoration:underline}
@@ -45,11 +114,33 @@ EXTRA_CSS = """
 .finding-body{max-width:760px}.finding-body h3{margin-top:2rem}
 .source-table{list-style:none;padding:0;margin:0}.source-table li{padding:.9rem 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.source-table code{font-size:.85rem;background:var(--paper);padding:.1rem .3rem}
 .notice{border-left:3px solid var(--coral);background:var(--paper);padding:1rem 1.25rem;margin:1.5rem 0}
-.agency-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}.agency-list article{background:#fff;padding:1.4rem;border-top:3px solid var(--coral)}.agency-list h3{margin:.4rem 0}.agency-list a{color:var(--ink)}
+.agency-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr));gap:1rem}.agency-list article{background:#fff;padding:1.4rem;border-top:3px solid var(--coral)}.agency-list h3{margin:.4rem 0}.agency-list a{color:var(--ink)}
 .meeting-list article{padding:1.4rem 0;border-bottom:1px solid var(--line)}.meeting-list time{font-weight:700}
 .signup-form{max-width:480px}.signup-row{display:flex;gap:.5rem}.signup-row input{flex:1;padding:.75rem;font:inherit;border:1px solid var(--line)}.signup-row button{font:inherit;font-weight:700;background:var(--coral);color:#fff;border:0;padding:.75rem 1.1rem;cursor:pointer}
 .city-panel-static{position:relative}.city-panel-static .city-picker{position:static;margin-bottom:1.5rem;box-shadow:none;padding:0}
+.finding-filter{display:flex;gap:1rem;flex-wrap:wrap;align-items:end;margin:0 0 1.5rem}.finding-filter[hidden]{display:none}.finding-filter label{display:block;font-size:.8rem;color:var(--muted)}.finding-filter select{font:inherit;padding:.4rem}.filter-count{flex-basis:100%;margin:0;font-size:.9rem}
+.site-nav a:focus-visible{outline:3px solid var(--mint);outline-offset:2px}
+@media(max-width:850px){
+.campaign-banner .site-nav{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.5rem}
+.campaign-banner .site-nav a{display:inline-flex;align-items:center;min-height:44px;padding:0 .7rem;font-size:1rem}
+.campaign-banner .site-nav a[aria-current=page]{background:#ffffff1f}
+.agency-list{grid-template-columns:minmax(0,1fr)}
+.finding-body,.agency-list article,.meeting-list article,.finding-list li{overflow-wrap:anywhere}
+.finding-filter select,.signup-row input,.signup-row button{min-height:44px}
+.finding-body img,.finding-body table{max-width:100%}.finding-body table{display:block;overflow-x:auto}
+}
 .site-footer p{margin:0}.site-footer a{color:inherit}
+@media print{
+/* Print: chrome removed, black on white, external link addresses after the text */
+.skip-link,.site-nav,.banner-signup-link,.hero,.city-picker,.map-key,.map-credit,.signup-form,.signup-embed,iframe,dialog,.finding-filter,.filter-count,.filter-empty{display:none!important}
+.finding-list li[hidden]{display:list-item}
+body,.topbar,.campaign-banner,.site-footer,.finding-list li,.notice,.source-table code{background:#fff!important;color:#000!important;box-shadow:none!important}
+.section{padding:0 0 1rem;max-width:none}a{color:#000}
+a[href^="http"]::after{content:" (" attr(href) ")";font-size:.85em;overflow-wrap:anywhere}
+.finding-body h3,.source-table li,.meeting-list article,.agency-document-group{break-inside:avoid}h2,h3{break-after:avoid}
+.packet-finding{break-inside:avoid-page}.packet-finding+.packet-finding{break-before:auto}
+details::details-content{content-visibility:visible;display:block}details>summary{list-style:none}
+}
 """
 
 
@@ -91,12 +182,100 @@ def e(value):
     return escape(str(value), quote=True)
 
 
+def _one_line(text):
+    return " ".join(str(text).split())
+
+
+def finding_path(finding):
+    """Existing root-relative route; the content loader validates the slug."""
+    return f'/findings/{finding["slug"]}.html'
+
+
+def _preview_origin(base):
+    """Only a validated root HTTPS origin can identify an absolute finding URL."""
+    parts = urlsplit(base)
+    return (parts.scheme == "https" and bool(parts.hostname)
+            and parts.netloc.lower() == parts.hostname and parts.path in ("", "/")
+            and not parts.query and not parts.fragment and "?" not in base and "#" not in base)
+
+
 def short_hash(sha256):
     return sha256[:12]
 
 
 def date_label(value):
     return e(value[:10])
+
+
+def time_tag(value):
+    return f'<time datetime="{e(value)}">{e(value)}</time>'
+
+
+def policy_line(policy):  # links a posted ALPR usage policy an organizer found; fixed wording only
+    if not policy:
+        return ""
+    return (f'<p class="policy-link"><a href="{e(policy["url"])}" rel="noopener noreferrer">Posted ALPR usage policy</a> '
+            f'(checked {date_label(policy["checked_on"])}, <a href="{e(policy["source_url"])}" '
+            'rel="noopener noreferrer">where we found it</a>)</p>')
+
+
+OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
+                  "amended": "Approved with amendments", "no_action": "No action taken",
+                  "informational": "Informational item only"}
+# English names, independent of the host locale (DF1822-08 deadline line).
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December")
+
+
+COPY_DIFFERS = {"redacted": "redacted copy", "converted": "converted copy", "unknown": "reason unknown"}
+COPY_HOWTO = ('<p class="copy-howto" id="check-a-copy"><strong>How to check a copy:</strong> download the public copy and '
+              'compute its SHA-256 with <code>sha256sum FILE</code> (Linux), <code>shasum -a 256 FILE</code> (macOS) or '
+              '<code>Get-FileHash FILE</code> (Windows PowerShell). If the result starts with the record number, it is '
+              'the same file.</p>')
+
+
+def page_link(entry, page):
+    """DF2037-04: 'Open page N of the public copy' (``#page=N`` on a PDF path without a fragment); "" without page."""
+    if page is None or not entry or not entry.get("public_url"):
+        return ""
+    url, parts = entry["public_url"], urlsplit(entry["public_url"])
+    if parts.path.lower().endswith(".pdf") and not parts.fragment and "#" not in url:
+        return f'<p class="record-page"><a href="{e(f"{url}#page={page}")}" rel="noopener noreferrer">Open page {page} of the public copy</a></p>'
+    return f'<p class="record-page"><a href="{e(url)}" rel="noopener noreferrer">Open the public copy (page {page})</a></p>'
+
+
+def copy_status(source):
+    """' · Public copy checked D: same file as this record number' (DF2037-05); "" when no check is recorded."""
+    check = (source or {}).get("public_copy")
+    if not check or not source.get("public_url"):
+        return ""
+    verdict = ("same file as this record number" if check["matches"]
+               else f'differs ({COPY_DIFFERS[check["reason"]]})')
+    return f' · <span class="copy-check">Public copy checked {time_tag(check["checked_on"])}: {verdict}</span>'
+
+
+def meeting_outcome_html(meeting):
+    """The organizer-verified outcome line (DF2237-11); "" when none was recorded."""
+    outcome = meeting.get("outcome")
+    if not outcome:
+        return ""
+    vote = f' ({e(outcome["vote"])})' if outcome.get("vote") else ""
+    return (f'<p class="meeting-outcome">Outcome: {e(OUTCOME_LABELS[outcome["result"]])} on {time_tag(outcome["on"])}{vote}'
+            f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">Official record</a>'
+            f' · verified by {e(outcome["verified_by"])}</p>')
+
+
+def _day(value):
+    return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+
+
+def finding_updated(finding):
+    """Latest of updated_at, published_at and each correction date (a date read as midnight UTC), as the winner's
+    own string; a tie keeps that order."""
+    candidates = [finding["updated_at"], finding["published_at"]]
+    candidates += [_day(c["date"]) + "T00:00:00+00:00" for c in finding["corrections"]]
+    return max((value for value in candidates if value), key=utc_moment)
 
 
 def js_json(value):
@@ -108,6 +287,8 @@ class Site:
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
+        self.timeline = timeline_events(model, today or date.today())
+        self.today = today or date.today()  # build date: contract terms
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
         cutoff = (today or date.today()).isoformat()
@@ -125,9 +306,50 @@ class Site:
         self.fragment_for_sha = {}
         for source in model["sources"]:
             self.fragment_for_sha.setdefault(source["sha256"], source["fragment"])
+        self.cited_by = {}  # sha256 -> published findings citing it, model order, each finding once
+        for finding in model["findings"]:
+            for sha in dict.fromkeys(s["sha256"] for s in finding["sources"]):
+                self.cited_by.setdefault(sha, []).append(finding)
         self.city_agencies = [a for a in model["agencies"] if a["kind"] in CITY_KINDS]
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
+        self.labels = model.get("labels") or DEFAULTS  # content/labels.json merged over the English defaults
+        # DF1822-13: "/<relative>" -> (width, height) of each readable PNG/JPEG/WebP public asset, for markdown images.
+        self.image_sizes = {}
+        for source in model.get("public_assets", ()):
+            if (source.suffix.lower() in image_meta.FORMATS and not source.is_symlink() and source.is_file()
+                    and source.stat().st_size <= ASSET_MAX_BYTES):
+                size = image_meta.image_size(source.read_bytes(), source.suffix)
+                if size:
+                    self.image_sizes["/" + source.relative_to(model["assets_dir"]).as_posix()] = size
+        # Legal basis (DF1507-02): the package is read once, only when a finding cites a rule.
+        self.rule_citations, self.law_status = {}, None
+        if any(finding_law.cited(f) for f in model["findings"]):
+            name = finding_law.jurisdiction(self.root)
+            try:
+                package = law.load_package(name) if name else None
+            except (OSError, ValueError):
+                package = None
+            if package is not None:
+                self.rule_citations = {rule["rule_id"]: rule["citation"] for rule in package["rules"]}
+                self.law_status = ("reviewed on " + package["reviewed_at"] if package["status"] == "reviewed"
+                                   else "draft, not legally reviewed")
+        # DF2237-08: agencies with a published finding or a sources.json entry get /agencies/<slug>.html.
+        qualifying = {f["agency_id"] for f in model["findings"]} | {s["agency_id"] for s in model["sources"]}
+        self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
+                              for a in model["agencies"] if a["agency_id"] in qualifying}
+
+    def agency_pages(self):
+        """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
+        return self._agency_pages
+
+    def t(self, key, **values):
+        """Label ``key`` escaped once; ``values`` are HTML the page already escaped (a name, a <time> tag, a count)."""
+        return html_text(self.labels[key]).format(**values)
+
+    def md(self, text):
+        """``markdown_lite`` with this site's public-asset image sizes (own-line ``![alt](/path)`` images render)."""
+        return markdown(text, images=self.image_sizes) if self.image_sizes else markdown(text)
 
     # -- shared frame ------------------------------------------------------
 
@@ -138,76 +360,165 @@ class Site:
         return [a for a in self.city_agencies if a["slug"] in self.map["cities"]]
 
     def nav(self, current):
-        items = [("/", "Home", "index"), ("/agencies.html", "Agencies", "agencies"),
-                 ("/findings/", "Findings", "findings"), ("/sources.html", "Sources", "sources"),
-                 ("/meetings.html", "Meetings", "meetings"), ("/about.html", "About", "about")]
+        items = [("/", "home", "index"), ("/agencies.html", "agencies", "agencies"), ("/findings/", "findings", "findings"),
+                 ("/sources.html", "sources", "sources"), ("/meetings.html", "meetings", "meetings"), ("/about.html", "about", "about")]
         links = "".join(
-            f'<a href="{href}"' + (' aria-current="page"' if key == current else "") + f'>{label}</a>'
+            f'<a href="{href}"' + (' aria-current="page"' if key == current else "") + f'>{self.t("nav." + label)}</a>'
             for href, label, key in items)
-        return f'<nav class="site-nav" aria-label="Site">{links}</nav>'
+        links += "".join(  # content pages with nav: true (DF2237-07), after About, labelled by their own title
+            f'<a href="/{page["slug"]}.html"' + (' aria-current="page"' if current == "page:" + page["slug"] else "")
+            + f'>{e(page["title"])}</a>' for page in self.model.get("pages", []) if page["nav"])
+        links += '<a href="/timeline.html"' + (' aria-current="page"' if current == "timeline" else "") + ">Timeline</a>"
+        return f'<nav class="site-nav" aria-label="{self.t("nav.label")}">{links}</nav>'
 
     def header(self, current):
         cta = ('<a class="banner-signup-link" href="/#participate">' + e(self.site["signup"]["label"]) + '</a>'
                if self.site["signup"]["mode"] != "none" else
-               '<a class="banner-signup-link" href="/meetings.html">Attend a meeting</a>')
-        return ('  <a class="skip-link" href="#content">Skip to content</a>\n'
+               f'<a class="banner-signup-link" href="/meetings.html">{self.t("header.attend")}</a>')
+        brand = self.site.get("brand", {})
+        logo = (f'<img class="brand-logo" src="/{e(brand["logo"])}" alt="{e(brand["logo_alt"])}" '
+                f'width="{brand["logo_size"][0]}" height="{brand["logo_size"][1]}">' if "logo" in brand else "")
+        return (f'  <a class="skip-link" href="#content">{self.t("header.skip")}</a>\n'
                 '  <header class="topbar campaign-banner"><div class="banner-intro">'
-                f'<a class="brand" href="/">{self.name}</a><h1>{e(self.site["tagline"])}</h1>'
+                f'<a class="brand" href="/">{logo}{self.name}</a><h1>{e(self.site["tagline"])}</h1>'
                 f'<p>{self.county}, {self.state}</p>{self.nav(current)}</div>{cta}</header>\n')
 
     def footer(self):
-        parts = [f'<p>{self.name} is an independent local initiative. Built with DeFlock Campaign Tool.</p>']
+        parts = [f'<p>{self.t("footer.credit", name=self.name)}</p>']
         if self.site["contact_email"]:
             mail = e(self.site["contact_email"])
-            parts.append(f'<p>Contact: <a href="mailto:{mail}">{mail}</a></p>')
+            parts.append(f'<p>{self.t("footer.contact")} <a href="mailto:{mail}">{mail}</a></p>')
         if self.site["social"]:
             links = " · ".join(f'<a href="{e(link["url"])}" rel="noopener noreferrer">{e(link["label"])}</a>'
                                for link in self.site["social"])
             parts.append(f'<p>{links}</p>')
         if self.map:
-            parts.append(f'<p>{e(self.map["attribution"])}</p>')
+            parts.append(f'<p>{e(self.map["attribution"])} · <a href="/cameras.html">Mapped points</a></p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
-        parts.append('<p><a href="/feed.xml">Findings feed</a> · <a href="/sitemap.xml">Sitemap</a></p>')
+        sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
+        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}'
+                     ' · <a href="/methods.html">How to read our findings</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
-    def head(self, title, description, path, scripts=(), stylesheets=()):
-        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base else ""
+    def share(self, title, description, path, kind, published, modified):
+        """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
+        tags = [("property", "og:site_name", self.name),
+                ("property", "og:title", e(title if kind == "article" else _one_line(title)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
+                ("property", "og:description", e(description if kind == "article" else _one_line(description)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
+                ("property", "og:type", kind)]
+        if self.base and (kind != "article" or _preview_origin(self.base)):
+            tags.append(("property", "og:url", e(self.base + path)))
+        tags += [("name", "twitter:card", "summary"), ("name", "twitter:title", e(_one_line(title))),
+                 ("name", "twitter:description", e(_one_line(description)))]
+        if kind == "article":
+            tags.append(("property", "article:published_time", e(_one_line(published))))
+            if modified:
+                tags.append(("property", "article:modified_time", e(_one_line(modified))))
+        return "".join(f'  <meta {attr}="{key}" content="{value}">\n' for attr, key, value in tags)
+
+    def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None,
+             index=True):
+        """``index=False``: a robots noindex tag instead of the share tags, and no canonical link."""
+        canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base and index else ""
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
+        favicon = self.site.get("brand", {}).get("favicon")
+        icon = f'  <link rel="icon" href="/{e(favicon)}">\n' if favicon else ""
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
-                f'  <meta name="description" content="{e(description)}">\n  <title>{e(title)} | {self.name}</title>\n'
-                '  <link rel="stylesheet" href="/style.css">\n'
-                '  <link rel="alternate" type="application/atom+xml" title="Findings" href="/feed.xml">\n'
+                f'  <meta name="description" content="{e(description)}">\n'
+                + (self.share(title, description, path, kind, published, modified) if index
+                   else '  <meta name="robots" content="noindex">\n')
+                + f'  <title>{e(title)} | {self.name}</title>\n'
+                '  <link rel="stylesheet" href="/style.css">\n' + icon
+                + f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.feed")}" href="/feed.xml">\n'
                 + canonical + extra)
 
-    def page(self, current, title, description, path, main, scripts=(), stylesheets=()):
+    def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
+             kind="website", published=None, modified=None, index=True):
         return render({
             "schema_version": 1,
             "language": self.site["language"],
-            "html": {"head": self.head(title, description, path, scripts, stylesheets),
+            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified, index),
                      "header": self.header(current), "main": main, "footer": self.footer()},
             "styles": {"font_family": self.site["font_family"], "font_faces": ""},
         })
 
     # -- fragments -----------------------------------------------------------
 
-    def finding_item(self, finding):
-        return (f'<li><div class="finding-meta"><span class="status-pill">{e(CLASSIFICATION_LABELS[finding["classification"]])}</span>'
-                f'<span>{e(CONFIDENCE_LABELS[finding["confidence"]])}</span><span>Event date {date_label(finding["event_date"])}</span></div>'
-                f'<h3><a href="/findings/{e(finding["slug"])}.html">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
+    def pill(self, code):
+        """A classification label linked to its definition on /methods.html; the visible text is unchanged."""
+        return f'<a class="status-pill" href="/methods.html#classification-{e(code)}">{self.t("classification." + code)}</a>'
 
-    def findings_list(self, findings, empty="No findings have been published yet."):
+    def confidence_link(self, code):
+        return f'<a href="/methods.html#confidence-{e(code)}">{self.t("confidence." + code)}</a>'
+
+    def finding_item(self, finding, filter_attrs=False):
+        latest = max((c["date"] for c in finding["corrections"]), default=None)
+        corrected = (f'<span class="status-pill">{self.t("finding.corrected", date=time_tag(latest))}</span>'
+                     if latest else "")
+        attrs = (f' data-agency="{e(finding["agency_id"] or "none")}" data-classification="{e(finding["classification"])}"'
+                 f' data-year="{e(finding["event_date"][:4])}"' if filter_attrs else "")
+        return (f'<li{attrs}><div class="finding-meta">{self.pill(finding["classification"])}'
+                f'<span>{self.confidence_link(finding["confidence"])}</span><span>{self.t("finding.event_date", date=date_label(finding["event_date"]))}</span>{corrected}</div>'
+                f'<h3><a href="{e(finding_path(finding))}">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
+
+    def findings_list(self, findings, empty=None, filter_attrs=False):
         if not findings:
-            return f'<p>{empty}</p>'
-        return '<ul class="finding-list">' + "".join(self.finding_item(f) for f in findings) + '</ul>'
+            return f'<p>{empty or self.t("notice.no_findings")}</p>'
+        return '<ul class="finding-list">' + "".join(self.finding_item(f, filter_attrs) for f in findings) + '</ul>'
+
+    def finding_filter(self):
+        """Hidden filter form for the findings index (RF1510-3): "" below 4 findings or when no dimension varies.
+
+        A select appears only when its dimension has 2+ distinct values; findings/filter.js reveals and wires it."""
+        findings = self.model["findings"]
+        if len(findings) < 4:
+            return ""
+        names = {a["agency_id"]: a["name"] for a in self.model["agencies"]}
+        ids = sorted({f["agency_id"] for f in findings if f["agency_id"]}, key=lambda a: (names.get(a, a).casefold(), a))
+        agencies = [(a, names.get(a, a)) for a in ids] + (
+            [("none", self.labels["finding.filter_no_agency"])] if any(not f["agency_id"] for f in findings) else [])
+        codes = {f["classification"] for f in findings}
+        classifications = [(code, self.labels["classification." + code]) for code in CLASSIFICATION_LABELS if code in codes]
+        years = [(y, y) for y in sorted({f["event_date"][:4] for f in findings}, reverse=True)]
+        fields = "".join(
+            f'<div><label for="filter-{key}">{self.t("finding.filter_" + key)}</label><select id="filter-{key}" name="{key}">'
+            f'<option value="all">{self.t("finding.filter_all_" + key)}</option>' + "".join(f'<option value="{e(v)}">{e(t)}</option>' for v, t in options)
+            + '</select></div>'
+            for key, options in (("agency", agencies), ("classification", classifications), ("year", years)) if len(options) >= 2)
+        if not fields:
+            return ""
+        return (f'<form class="finding-filter" id="finding-filter" aria-label="{self.t("finding.filter_label")}" hidden>{fields}'
+                f'<p class="filter-count" id="filter-count" aria-live="polite">{self.t("finding.filter_count", count=len(findings))}</p></form>')
+
+    def _written_deadline(self, meeting):
+        """DF1822-08: the verified written-comment deadline line, in the deadline's own offset; "" when none or cancelled.
+
+        Closed when the deadline is at or before the build instant, which is the build date (``self.today``) at
+        00:00 UTC: the builder carries a date, not a clock time.
+        """
+        written = (meeting.get("participation") or {}).get("written_comment") or {}
+        if meeting.get("status") == "cancelled" or not written.get("deadline"):
+            return ""
+        due = datetime.fromisoformat(written["deadline"].replace("Z", "+00:00"))
+        if due <= datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc):
+            text = "Written comment period closed"
+        else:
+            offset = int(due.utcoffset().total_seconds()) // 60
+            text = (f'Written comments due {WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
+                    f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
+                    f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+        return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
 
     def meeting_item(self, meeting):
-        agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">Agenda</a>'
-                  if meeting["agenda_url"] else "")
-        item = f'<p>Agenda item: {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
+        agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
+                  if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
+        item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
+        item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
+        item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
-        cancelled = "Cancelled: " if meeting.get("status") == "cancelled" else ""
-        kit = ('<details><summary>Public comment kit</summary>' + markdown(meeting["comment_kit_md"]) + '</details>'
+        cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
+        kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + self.md(meeting["comment_kit_md"]) + '</details>'
                if meeting["comment_kit_md"] else "")
         return (f'<article id="meeting-{e(meeting["id"])}"><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time>'
                 f'{where}{agenda}<h3>{cancelled}{e(meeting["body"])}</h3>{item}{kit}</article>')
@@ -222,133 +533,370 @@ class Site:
             slug = self.map["controller"]["group_slug"]
             buttons.append(f'<button type="button" class="city-choice" data-city="{e(slug)}" aria-pressed="false">'
                            f'{e(self.map["group_label"])}</button>')
-        return '<div class="city-picker" role="group" aria-label="Choose an area">' + "".join(buttons) + '</div>'
+        return f'<div class="city-picker" role="group" aria-label="{self.t("map.picker_label")}">' + "".join(buttons) + '</div>'
 
     def card_panel(self):
         return ('<article class="city-panel" id="agency-profile" aria-live="polite"><div>'
-                '<p class="eyebrow">Agency profile</p><h3 id="city-name"></h3>'
+                f'<p class="eyebrow">{self.t("eyebrow.agency_profile")}</p><h3 id="city-name"></h3>'
                 '<p class="city-meta"><span class="status-pill" id="city-status"></span> <span class="city-vendor" id="city-vendor"></span> '
                 '<span id="city-camera-count" hidden></span></p><p class="city-summary" id="city-summary"></p>'
-                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library"></a></p></div>'
-                '<aside class="city-watch"><p class="eyebrow">Open questions</p><p id="city-open"></p>'
+                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library"></a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
+                f'{self.t("agency.flock_portal")}</a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
                 '<div class="policy-flags" id="city-flags"></div></aside></article>')
 
     def map_section(self):
         if not self.map:
             return ""
-        fallback = ("Interactive map unavailable: the campaign has not self-hosted the MapLibre library yet. "
-                    if not self.maplibre else "Loading the interactive map. ")
+        fallback = self.t("map.unavailable" if not self.maplibre else "map.loading")
         return ('    <section class="hero" id="map"><div class="hero-map-wrap">'
-                '<div id="county-map" class="map" role="region" aria-label="Community-mapped ALPR points"></div>'
-                f'<p class="map-fallback">{fallback}You can still choose an area below or '
-                f'<a href="{e(self.map["controller"]["source_map_url"])}" rel="noopener noreferrer">open the DeFlock source map</a>.</p>'
+                f'<div id="county-map" class="map" role="region" aria-label="{self.t("map.region_label")}"></div>'
+                f'<p class="map-fallback">{fallback} {self.t("map.still_choose")} '
+                f'<a href="{e(self.map["controller"]["source_map_url"])}" rel="noopener noreferrer">{self.t("map.source_map")}</a>. '
+                '<a href="/cameras.html">Read the list of mapped points</a>.</p>'
                 f'<div class="map-key county-map-badge"><div class="county-map-identity"><span class="county-map-monogram">{e(self.cfg["county"][:2].upper())}</span>'
-                f'<div><span class="county-map-region">Community-mapped points</span><strong>{self.county}</strong></div></div>'
-                f'<div class="county-map-legend"><span class="camera-dot"></span><span id="map-selection-count">{self.map["camera_count"]} mapped points</span></div>'
-                '<p class="county-map-hint">Points are community reports, not confirmed agency ownership.</p></div>'
-                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div></section>\n')
+                f'<div><span class="county-map-region">{self.t("map.region")}</span><strong>{self.county}</strong></div></div>'
+                f'<div class="county-map-legend"><span class="camera-dot"></span><span id="map-selection-count">{self.t("map.count", count=self.map["camera_count"])}</span></div>'
+                f'<p class="county-map-hint">{self.t("map.hint")}</p></div>'
+                f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div>'
+                f'<p class="map-date">{self.map_date_line()}</p></section>\n')
+
+    def map_date_line(self):
+        """The OpenStreetMap data day from map/snapshot.json; never the build date."""
+        day = self.map.get("snapshot_date")
+        return self.t("map.date", date=date_label(day)) if day else self.t("map.date_unknown")
 
     def signup_section(self):
         signup = self.site["signup"]
         if signup["mode"] == "brevo_hosted":
             form = (f'<form class="signup-form" method="post" action="{e(signup["url"])}">'
-                    '<div class="signup-row"><label class="visually-hidden" for="signup-email">Email address</label>'
-                    '<input id="signup-email" type="email" name="EMAIL" autocomplete="email" required placeholder="you@example.org">'
+                    f'<div class="signup-row"><label class="visually-hidden" for="signup-email">{self.t("signup.email")}</label>'
+                    f'<input id="signup-email" type="email" name="EMAIL" autocomplete="email" required placeholder="{self.t("signup.placeholder")}">'
                     f'<button type="submit">{e(signup["label"])}</button></div>'
-                    f'<p class="form-note">{e(signup["note"])} Submitting opens the provider\'s hosted confirmation page.</p></form>')
+                    f'<p class="form-note">{e(signup["note"])} {self.t("signup.provider_note")}</p></form>')
         else:
-            form = '<p>No email addresses are collected by this site. Follow meetings and findings here or by feed.</p>'
-        return ('    <section class="section movement-section" id="participate"><h2>Participate with evidence.</h2>'
+            form = f'<p>{self.t("signup.none")}</p>'
+        return (f'    <section class="section movement-section" id="participate"><h2>{self.t("heading.participate")}</h2>'
                 f'{form}</section>\n')
 
+    def contract_line(self, contract):
+        if not contract:
+            return ""
+        return (f'<p class="contract-term">{self.t("agency.contract", name=e(contract["vendor"]))}, {time_tag(contract["start"])} – '
+                f'{time_tag(contract["end"])}' + (", " + self.t("agency.contract_ended") if contract["end"] < self.today.isoformat() else "")
+                + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
+                + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
+                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>')
+
+    def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
+        first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
+        soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
+                      key=lambda a: (a["contract"]["end"], a["name"]))
+        items = "".join(f'<li><a href="/agencies.html#{e(a["slug"])}">{e(a["name"])}</a>: '
+                        f'{self.t("agency.contract_ends", name=e(a["contract"]["vendor"]), date=time_tag(a["contract"]["end"]))}</li>' for a in soon)
+        return (f'    <section class="section" id="contracts"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.contracts")}</p>'
+                f'<h2>{self.t("heading.contracts")}</h2></div></div><ul class="contract-list">{items}</ul></section>\n') if soon else ""
+
     # -- pages ---------------------------------------------------------------
+    def timeline_html(self):
+        return self.page("timeline", "Timeline", "Public campaign dates", "/timeline.html", render_timeline(self, self.timeline))
 
     def index_html(self):
-        mission = markdown(self.site["mission_md"]) if self.site["mission_md"] else (
-            '<div class="mission-grid"><article><span>01</span><h3>Request</h3><p>Ask for policies, agreements, sharing settings and audit records.</p></article>'
-            '<article><span>02</span><h3>Understand</h3><p>Preserve originals, compare applicable rules and independently challenge every material finding.</p></article>'
-            '<article><span>03</span><h3>Participate</h3><p>Use reviewed evidence and official meeting channels to ask informed questions.</p></article></div>')
-        cards = ('    <section class="section cities-section" id="agencies"><div class="section-heading"><div><p class="eyebrow">Agencies</p>'
-                 '<h2>What the records show so far.</h2></div><p>Choose an area to see its status, published facts and the source notes behind them. '
-                 '<a href="/agencies.html">Full agency list</a>.</p></div>'
+        mission = self.md(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
+            f'<article><span>0{n}</span><h3>{self.t(f"intro.step{n}_title")}</h3><p>{self.t(f"intro.step{n}")}</p></article>'
+            for n in (1, 2, 3)) + '</div>')
+        cards = (f'    <section class="section cities-section" id="agencies"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
+                 f'<h2>{self.t("heading.agencies_home")}</h2></div><p>{self.t("intro.agencies_home")} '
+                 f'<a href="/agencies.html">{self.t("intro.full_agency_list")}</a>.</p></div>'
                  + ('' if self.map else '<div class="city-panel-static">' + self.picker() + '</div>')
                  + self.card_panel() + '</section>\n')
-        empty = ('<p>No upcoming meetings are listed. <a href="/meetings.html#past-meetings">Past meetings and their comment kits</a>.</p>'
-                 if self.past else '<p>No meetings are listed yet.</p>')
-        meetings = ('    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">Meetings</p><h2>Show up informed.</h2></div>'
-                    '<p><a href="/meetings.html">All meetings and comment kits</a></p></div><div class="meeting-list">'
+        empty = (f'<p>{self.t("notice.no_upcoming")} <a href="/meetings.html#past-meetings">{self.t("notice.past_meetings_link")}</a>.</p>'
+                 if self.past else f'<p>{self.t("notice.no_meetings")}</p>')
+        meetings = (f'    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p><h2>{self.t("heading.meetings_home")}</h2></div>'
+                    f'<p><a href="/meetings.html">{self.t("intro.all_meetings")}</a></p></div><div class="meeting-list">'
                     + ("".join(self.meeting_item(m) for m in self.upcoming[:3]) or empty) + '</div></section>\n')
-        main = (self.map_section() + cards
-                + '    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">Evidence before conclusions</p>'
+        main = (self.map_section() + cards + self.contracts_section()
+                + f'    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.mission")}</p>'
                   f'<h2>{e(self.site["tagline"])}</h2></div></div>{mission}</section>\n'
-                + '    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">Latest findings</p><h2>Published with sources.</h2></div>'
-                  '<p><a href="/findings/">All findings</a> · <a href="/feed.xml">Atom feed</a></p></div>'
+                + f'    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.latest_findings")}</p><h2>{self.t("heading.findings_home")}</h2></div>'
+                  f'<p><a href="/findings/">{self.t("intro.all_findings")}</a> · <a href="/feed.xml">{self.t("intro.atom_feed")}</a></p></div>'
                 + self.findings_list(self.model["findings"][:5]) + '</section>\n'
                 + self.signup_section() + meetings)
         scripts = (["/vendor/maplibre-gl.js"] if self.map and self.maplibre else []) + ["/site-data.js", "/agency-cards.js", "/app.js"]
         stylesheets = ["/vendor/maplibre-gl.css"] if self.map and "maplibre-gl.css" in self.model["vendor"] else []
-        return self.page("index", "Home", self.site["tagline"], "/", main, scripts, stylesheets)
+        return self.page("index", self.labels["title.home"], self.site["tagline"], "/", main, scripts, stylesheets)
+
+    def official_links(self, agency):
+        """Records page, portal and Flock transparency links, as on ``agencies.html``."""
+        links = []
+        if agency["records_url"]:
+            links.append(f'<a href="{e(agency["records_url"])}" rel="noopener noreferrer">{self.t("agency.records")}</a>')
+        if agency["portal"]["url"]:
+            links.append(f'<a href="{e(agency["portal"]["url"])}" rel="noopener noreferrer">{self.t("agency.portal", name=e(agency["portal"]["vendor"]))}</a>')
+        if agency["flock_transparency_url"]:
+            links.append(f'<a href="{e(agency["flock_transparency_url"])}" rel="noopener noreferrer">{self.t("agency.flock_portal")}</a>')
+        return links
+
+    def agency_blocks(self, agency, findings):
+        """Confirmed / not known / asked, from organizer content only; awaiting with no update → the build date."""
+        profile, asked = agency["profile"], []
+        sentences = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
+                     "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
+                     "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
+        confirmed = [e(fact) for fact in profile["facts"]] + [f"{len(findings)} published finding(s) with sources"] * bool(findings)
+        unknown = [e(text) for text in [profile["open"]] * bool(profile["open"]) + profile["flags"]]
+        for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
+            when = item.get("updated_on") or (self.today.isoformat() if item["state"] == "awaiting_response" else "")
+            day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
+            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + sentences[item["state"]].format(
+                day=day, on=on) + (f' {e(item["note"])}' if item.get("note") else ""))
+        return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
+            "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
+            for title, values, empty in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet."),
+                                         ("What is not known", unknown, "Nothing listed yet."),
+                                         ("What we asked", asked, "No request is listed for this agency yet.")))
 
     def agencies_html(self):
         articles = []
         for agency in self.model["agencies"]:
             findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
             sources = [s for s in self.model["sources"] if s["agency_id"] == agency["agency_id"]]
-            links = []
-            if agency["records_url"]:
-                links.append(f'<a href="{e(agency["records_url"])}" rel="noopener noreferrer">Records request page</a>')
-            if agency["portal"]["url"]:
-                links.append(f'<a href="{e(agency["portal"]["url"])}" rel="noopener noreferrer">Portal ({e(agency["portal"]["vendor"])})</a>')
+            links = self.official_links(agency)
             if sources:
-                links.append(f'<a href="/sources.html#{e(self.fragment_for_agency[agency["agency_id"]])}">{len(sources)} source record(s)</a>')
-            body = (f'<p class="eyebrow">{e(KIND_LABELS[agency["kind"]])}</p><h3>{e(agency["name"])}</h3>'
+                links.append(f'<a href="/sources.html#{e(self.fragment_for_agency[agency["agency_id"]])}">{self.t("agency.sources", count=len(sources))}</a>')
+            if findings:
+                links.append(f'<a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a>')
+            if agency["agency_id"] in self.agency_pages():
+                links.append(f'<a href="{e(self.agency_pages()[agency["agency_id"]])}">{self.t("agency.page")}</a>')
+            body = (f'<p class="eyebrow">{self.t("kind." + agency["kind"])}</p><h3>{e(agency["name"])}</h3>'
                     f'<p>{e(agency["jurisdiction_name"])}</p><p><span class="status-pill">{e(agency["profile"]["status"])}</span></p>'
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
-                    + (f'<p>{len(findings)} published finding(s): ' + ", ".join(
-                        f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else '<p>No published findings.</p>')
-                    + (f'<p>{" · ".join(links)}</p>' if links else "")
-                    + ('' if agency["verified"] else '<p class="archive-hint">Contact details unverified: confirm on the agency\'s official site.</p>'))
+                    + self.agency_blocks(agency, findings)
+                    + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
+                        f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
+                    + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
+                    + self.contract_line(agency["contract"])
+                    + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
+                       f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
+                       if agency["verified"] and agency["verification"] else "")
+                    + ('' if agency["verified"] else f'<p class="archive-hint">{self.t("agency.unverified")}</p>'))
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
-        main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Agencies</p>'
-                f'<h2>Public bodies in {self.county}.</h2></div><p>Listing an agency here says only that we asked or intend to ask it for records. '
-                'No agency is asserted to operate license plate readers unless a published finding says so with sources.</p></div>'
-                + ('<div class="agency-list">' + "".join(articles) + '</div>' if articles else '<p>No agencies are configured yet.</p>')
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
+                f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")}</p></div>'
+                + ('<div class="agency-list">' + "".join(articles) + '</div>' if articles else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
-        return self.page("agencies", "Agencies", "Public bodies covered by the campaign", "/agencies.html", main)
+        return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
+
+    def who_decides(self, agency_id):
+        """DF2237-13: the body's organizer-checked officials, or "" when ``content/officials.json`` lists none."""
+        people = self.model.get("officials", {}).get(agency_id)
+        if not people:
+            return ""
+
+        def name(p):
+            return (f'<a href="{e(p["profile_url"])}" rel="noopener noreferrer">{e(p["name"])}</a>'
+                    if p["profile_url"] else e(p["name"]))
+        items = "".join(f'<li>{name(p)}, {e(p["role"])}</li>' for p in people)
+        newest = max(people, key=lambda p: p["checked_on"])  # first listed wins a tie
+        source = f'<a href="{e(newest["source_url"])}">{self.t("officials.source")}</a>'
+        return (f'<section class="who-decides"><h3>{self.t("officials.heading")}</h3><ul>{items}</ul><p>'
+                + self.t("officials.listed", source=source, date=f'<time>{e(newest["checked_on"])}</time>')
+                + '</p></section>')
+
+    def agency_html(self, agency):
+        """``agencies/<slug>.html`` (DF2237-08): one agency's card facts, findings, source records and upcoming meetings."""
+        aid, profile = agency["agency_id"], agency["profile"]
+        findings = [f for f in self.model["findings"] if f["agency_id"] == aid]
+        records = "".join(
+            f'<li><p>{e(s["title"])}</p><p class="record-no">sha256 <code>{e(short_hash(s["sha256"]))}</code> · '
+            f'{self.t("agency.received", date=date_label(s["received_at"]))} · '
+            f'<a href="/sources.html#{e(s["fragment"])}">{self.t("agency.in_library")}</a></p></li>'
+            for s in self.model["sources"] if s["agency_id"] == aid)
+        meetings = "".join(self.meeting_item(m) for m in self.upcoming if m.get("agency_id") == aid)
+        links = self.official_links(agency)
+        main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("kind." + agency["kind"])}</p>'
+                f'<h2>{e(agency["name"])}</h2><p>{e(agency["jurisdiction_name"])}</p>'
+                f'<p><span class="status-pill">{e(profile["status"])}</span></p>'
+                + (f'<p>{e(profile["summary"])}</p>' if profile["summary"] else "")
+                + ('<ul>' + "".join(f'<li>{e(fact)}</li>' for fact in profile["facts"]) + '</ul>' if profile["facts"] else "")
+                + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
+                + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
+                   if profile["flags"] else "")
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.who_decides(aid)
+                + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
+                + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
+                   if findings else "")
+                + f'<h3>{self.t("agency.source_records")}</h3>'
+                + (f'<ul class="source-table">{records}</ul>' if records else f'<p>{self.t("notice.no_sources")}</p>')
+                + f'<h3>{self.t("agency.upcoming")}</h3>'
+                + f'<div class="meeting-list">{meetings or "<p>" + self.t("agency.no_upcoming") + "</p>"}</div>'
+                + ('' if agency["verified"] else f'<p class="archive-hint">{self.t("agency.unverified")}</p>')
+                + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
+        description = profile["summary"] or self.labels["agency.page_description"].format(name=agency["name"])
+        return self.page("agencies", agency["name"], description, self.agency_pages()[aid], main)
 
     def findings_index_html(self):
-        main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Findings</p>'
-                '<h2>Everything we publish cites a record.</h2></div><p>Each finding names its classification, confidence, event date and the '
-                f'hashed source records behind it. <a href="/feed.xml">Atom feed</a>.</p></div>{self.findings_list(self.model["findings"])}'
+        form = self.finding_filter()
+        empty = (f'<p class="filter-empty" id="filter-empty" hidden>{self.t("notice.no_filter_match")}</p>'
+                 if form else "")
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
+                f'<h2>{self.t("heading.findings")}</h2></div><p>{self.t("intro.findings")} <a href="/feed.xml">{self.t("intro.atom_feed")}</a> · '
+                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
+                '<p><a href="/methods.html">How to read our findings</a> defines each classification and confidence label.</p></div>'
+                f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
-        return self.page("findings", "Findings", "Published, source-linked findings", "/findings/", main)
+        return self.page("findings", self.labels["title.findings"], self.labels["title.findings_description"], "/findings/", main,
+                         ["/findings/filter.js"] if form else [])
+
+    def packet_html(self):
+        findings = self.model["findings"]
+        contents = ''.join(f'<li><a href="#f-{e(f["slug"])}">{e(f["title"])}</a></li>' for f in findings)
+        articles = []
+        for f in findings:
+            sources = []
+            for source in f["sources"]:
+                fragment = self.fragment_for_sha.get(source["sha256"])
+                title = e(source["title"])
+                if fragment:
+                    title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
+                rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
+                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}</li>')
+            agency = self.agencies_by_id.get(f["agency_id"])
+            agency_line = (f'<p>Agency: <a href="{e(self.agency_pages().get(agency["agency_id"], "/agencies.html#" + agency["slug"]))}">{e(agency["name"])}</a></p>' if agency else '')
+            limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
+            corrections = ''.join(f'<li>{time_tag(c["date"])}: {e(c["note"])}</li>' for c in sorted(f["corrections"], key=lambda c: c["date"]))
+            corrections = f'<ul>{corrections}</ul>' if corrections else f'<p>{self.t("notice.no_corrections")}</p>'
+            updated = f' · Updated {date_label(f["updated_at"])}' if f["updated_at"] else ''
+            url = self.base + f'/findings/{f["slug"]}.html'
+            articles.append(f'<article class="packet-finding" id="f-{e(f["slug"])}"><h3>{e(f["title"])}</h3>'
+                f'<p>{self.pill(f["classification"])} · {self.confidence_link(f["confidence"])} · {time_tag(f["event_date"])} · '
+                f'Published {date_label(f["published_at"])}{updated}</p><p>{e(f["summary"])}</p>{agency_line}'
+                f'<h4>Sources</h4><ul>{"".join(sources)}</ul><h4>Limitations</h4><ul>{limits}</ul>'
+                f'<h4>Corrections</h4>{corrections}<p>Finding {e(f["id"])} · <a href="{e(url)}">{e(url)}</a></p></article>')
+        main = (f'<section class="section" id="content"><h2>Findings packet</h2><p>As of {e(self.today.isoformat())} · '
+                f'{len(findings)} published findings · print or save as PDF</p>'
+                + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else f'<p>{self.t("notice.no_findings")}</p>')
+                + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
+
+    def related_findings(self, finding, limit=5):
+        """Up to `limit` other published findings with the same (non-empty) agency_id or a shared cited sha256, as
+        (other, shared_count, same_agency): most shared records, then same agency, then newest published_at, then slug."""
+        own = {source["sha256"] for source in finding["sources"]}
+        related = []
+        for other in self.model["findings"]:
+            if other["id"] == finding["id"]:
+                continue
+            shared = len(own & {source["sha256"] for source in other["sources"]})
+            same_agency = bool(finding["agency_id"]) and other["agency_id"] == finding["agency_id"]
+            if shared or same_agency:
+                related.append((other, shared, same_agency))
+        related.sort(key=lambda r: (-r[1], not r[2], -utc_moment(r[0]["published_at"]).timestamp(), r[0]["slug"]))
+        return related[:limit]
+
+    def legal_basis(self, finding):
+        """The finding's own rule_version/duty/exceptions and each cited rule's package citation; "" when none."""
+        cited = finding_law.cited(finding)
+        version, duty, exceptions = (finding.get(key) for key in ("rule_version", "duty", "exceptions"))
+        if not cited and not version and not duty and not exceptions:
+            return ""
+        parts = ['<section class="legal-basis"><h3 id="legal-basis">Legal basis</h3>']
+        if version:
+            parts.append(f'<p>Rule version: {e(version)}</p>')
+        if duty:
+            parts.append(f'<p>Duty: {e(duty)}</p>')
+        if isinstance(exceptions, list) and exceptions:
+            parts.append("<p>Exceptions:</p><ul>" + "".join(f"<li>{e(item)}</li>" for item in exceptions) + "</ul>")
+        elif exceptions and not isinstance(exceptions, list):
+            parts.append(f"<p>Exceptions: {e(exceptions)}</p>")
+        if cited:
+            parts.append("<ul>" + "".join(
+                f"<li><code>{e(rule_id)}</code> — {e(self.rule_citations.get(rule_id, 'citation unavailable'))}</li>"
+                for rule_id in cited) + "</ul>")
+            if self.law_status:
+                parts.append(f'<p class="notice">Law package status: {e(self.law_status)}.</p>')
+        return "".join(parts) + "</section>"
 
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
             fragment = self.fragment_for_sha.get(source["sha256"])
-            title = (f'<a href="/sources.html#{e(fragment)}">{e(source["title"])}</a>' if fragment else e(source["title"]))
-            rule = f' · rule {e(source["rule_id"])}' if source["rule_id"] else ""
-            sources.append(f'<li>{title} · <code>sha256 {e(short_hash(source["sha256"]))}</code> · {e(source["locator"])}{rule}</li>')
+            entry = next((s for s in self.model["sources"] if s["sha256"] == source["sha256"]), None)
+            owner = self.agencies_by_id.get(entry["agency_id"], {}) if entry else {}
+            sentence, record = source_line(entry, source, owner.get("name"))
+            number = f'{self.t("sources.record_no")} <code>{record}</code>'
+            number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
+            sources.append(f'<li><p>{sentence}</p>{page_link(entry, source.get("page"))}'
+                           f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
-                       or '<li>No corrections have been issued.</li>')
+                       or f'<li>{self.t("notice.no_corrections")}</li>')
         agency = self.agencies_by_id.get(finding["agency_id"])
-        agency_line = (f'<p>Agency: <a href="/agencies.html#{e(agency["slug"])}">{e(agency["name"])}</a></p>' if agency else "")
-        limits = ("".join(f'<li>{e(item)}</li>' for item in finding["limitations"]) or "<li>None stated.</li>")
-        counter = ("".join(f'<li>{e(item)}</li>' for item in finding["counterevidence"]) or "<li>None identified at publication.</li>")
-        updated = f' · Updated {date_label(finding["updated_at"])}' if finding["updated_at"] else ""
+        agency_line = (f'<p>{self.t("finding.agency")} <a href="{e(self.agency_pages().get(agency["agency_id"], "/agencies.html#" + agency["slug"]))}">'
+                       f'{e(agency["name"])}</a></p>' if agency else "")
+        limits = ("".join(f'<li>{e(item)}</li>' for item in finding["limitations"]) or f'<li>{self.t("finding.none_stated")}</li>')
+        counter = ("".join(f'<li>{e(item)}</li>' for item in finding["counterevidence"]) or f'<li>{self.t("finding.none_identified")}</li>')
+        updated = f' · {self.t("finding.updated", date=date_label(finding["updated_at"]))}' if finding["updated_at"] else ""
+        rows = []
+        when = lambda f: f'<time datetime="{e(f["event_date"])}">{date_label(f["event_date"])}</time>'  # noqa: E731
+        for other, shared, same_agency in self.related_findings(finding):
+            why = ([self.labels["finding.same_agency"]] if same_agency else []) + (
+                [self.labels["finding.shares_one" if shared == 1 else "finding.shares_many"].format(count=shared)] if shared else [])
+            rows.append(f'<li><a href="/findings/{e(other["slug"])}.html">{e(other["title"])}</a> · '
+                        f'{self.pill(other["classification"])} · '
+                        f'{self.t("finding.event_date", date=when(other))} · '
+                        f'<span class="related-why">{e(" · ".join(why))}</span></li>')
+        related = f'<h3 id="related">{self.t("finding.related")}</h3><ul>{"".join(rows)}</ul>' if rows else ""
         main = ('    <article class="section finding-body" id="content">'
-                f'<div class="finding-meta"><span class="status-pill">{e(CLASSIFICATION_LABELS[finding["classification"]])}</span>'
-                f'<span>Confidence: {e(CONFIDENCE_LABELS[finding["confidence"]])}</span>'
-                f'<span>Event date <time datetime="{e(finding["event_date"])}">{date_label(finding["event_date"])}</time></span>'
-                f'<span>Published {date_label(finding["published_at"])}{updated}</span></div>'
+                f'<div class="finding-meta">{self.pill(finding["classification"])}'
+                f'<span>{self.t("finding.confidence")} {self.confidence_link(finding["confidence"])}</span>'
+                f'<span>{self.t("finding.event_date", date=when(finding))}</span>'
+                f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}{updated}</span></div>'
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
-                + (markdown(finding["body_md"]) if finding["body_md"] else "")
-                + f'<h3>Sources</h3><ul class="source-table">{"".join(sources)}</ul>'
-                + f'<h3>Limitations</h3><ul>{limits}</ul><h3>Counterevidence considered</h3><ul>{counter}</ul>'
-                + f'<h3 id="corrections">Corrections</h3><ul>{corrections}</ul>'
+                f'<p><a href="{e(finding_path(finding))}">Share this finding</a></p>'
+                + (self.md(finding["body_md"]) if finding["body_md"] else "")
+                + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
+                + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
+                + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>' + related
+                + f'<h3 id="corrections">{self.t("finding.corrections")}</h3><ul>{corrections}</ul>'
+                + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
+                + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
-        return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main)
+        return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
+                         kind="article", published=finding["published_at"], modified=finding["updated_at"])
+
+    def finding_preview_html(self, finding):
+        """``finding_html`` for a private draft preview (DF1822-02) plus exactly two lines: a robots noindex meta
+        and a "Draft - not published" banner at the top of ``<main>``. Never part of build output."""
+        page = self.finding_html(finding)
+        html, title, main = page["html"], "  <title>", '  <main id="top">\n'
+        if html.count(title) != 1 or html.count(main) != 1:
+            raise ValueError("finding preview: the page shell changed; refusing to place the draft banner")
+        html = html.replace(title, '  <meta name="robots" content="noindex">\n' + title)
+        html = html.replace(main, main + '    <p class="draft-banner" role="note">Draft - not published</p>\n')
+        return dict(page, html=html)
+
+    def corrections_html(self):
+        rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
+        rows.sort(key=lambda row: (row[0]["slug"], row[2]))
+        rows.sort(key=lambda row: row[1]["date"], reverse=True)  # stable: same-date rows keep slug/index order
+        items = "".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time> · '
+                        f'<a href="/findings/{e(f["slug"])}.html#corrections">{e(f["title"])}</a>: {e(c["note"])}</li>'
+                        for f, c, _ in rows)
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
+                f'<h2>{self.t("heading.corrections")}</h2></div><p>{self.t("intro.corrections")}</p></div>'
+                + policy_html(self.site["contact_email"])
+                + (f'<ul>{items}</ul>' if items else f'<p>{self.t("notice.no_corrections")}</p>') + '</section>\n')
+        return self.page("findings", self.labels["title.corrections"], self.labels["title.corrections_description"], "/corrections.html", main)
+
+    def not_found_html(self):
+        """``404.html`` for unknown paths: site shell, noindex, no canonical/share tags; never in sitemap or feeds."""
+        links = "".join(f'<li><a href="{href}">{self.t(key)}</a></li>' for href, key in (
+            ("/findings/", "nav.findings"), ("/agencies.html", "nav.agencies"), ("/meetings.html", "nav.meetings"), ("/", "nav.home_page")))
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div><h2>{self.t("heading.not_found")}</h2></div>'
+                f'<p>{self.t("intro.not_found")} <a href="/corrections.html">{self.t("nav.corrections")}</a>.</p></div>'
+                f'<ul>{links}</ul></section>\n')
+        # "not-found" matches no nav key, so no nav item is marked as the current page.
+        return self.page("not-found", self.labels["title.not_found"], self.labels["title.not_found_description"], "/404.html", main,
+                         index=False)
 
     def sources_html(self):
         groups = {}
@@ -360,36 +908,139 @@ class Site:
             heading = e(agency["name"]) if agency else e(entries[0]["agency_id"])
             items = []
             for source in entries:
-                link = (f'<a href="{e(source["public_url"])}" rel="noopener noreferrer">Public copy</a>' if source["public_url"]
-                        else "Original held in the private archive; not downloadable here")
-                pages = f' · {source["pages"]} page(s)' if source["pages"] is not None else ""
+                link = (f'<a href="{e(source["public_url"])}" rel="noopener noreferrer">{self.t("sources.public_copy")}</a>' if source["public_url"]
+                        else self.t("sources.private"))
+                pages = f' · {self.t("sources.pages", count=source["pages"])}' if source["pages"] is not None else ""
                 note = f' · {e(source["note"])}' if source["note"] else ""
-                items.append(f'<li><strong>{e(source["title"])}</strong> · <code>sha256 {e(short_hash(source["sha256"]))}</code> · '
-                             f'received {date_label(source["received_at"])}{pages} · {link}{note}</li>')
+                citing = self.cited_by.get(source["sha256"], [])
+                cited = (f' · {self.t("sources.cited_by")} ' + ", ".join(f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in citing)
+                         if citing else f' · {self.t("sources.not_cited")}')
+                sentence, record = source_line(source, source, self.agencies_by_id.get(source["agency_id"], {}).get("name"))
+                items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}'
+                             f'{copy_status(source)}{note}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
-        main = ('    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">Source library</p>'
-                '<h2>Every record we cite, by hash.</h2></div><p>Each entry lists the SHA-256 prefix of the original bytes as received. '
-                'Originals stay in the private archive unless a public copy is linked.</p></div>'
-                + ("".join(sections) or '<p>No source records have been catalogued yet.</p>') + '</section>\n')
-        return self.page("sources", "Sources", "Hashed source records behind published findings", "/sources.html", main)
+        howto = COPY_HOWTO if any(copy_status(s) for s in self.model["sources"]) else ""  # unchanged page without checks
+        main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
+                f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
+                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p>{howto}</div>'
+                + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
+        return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
     def meetings_html(self):
-        main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Meetings</p>'
-                '<h2>Official channels for informed questions.</h2></div><p>Comment kits summarize reviewed findings; they are not legal advice and do not ask anyone to flood a meeting.</p></div>'
-                '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or '<p>No upcoming meetings are listed.</p>')
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
+                f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")}</p></div>'
+                '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
-            main += ('    <section class="section" id="past-meetings"><h2>Past meetings</h2><div class="meeting-list">'
+            main += (f'    <section class="section" id="past-meetings"><h2>{self.t("heading.past_meetings")}</h2><div class="meeting-list">'
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
-        return self.page("meetings", "Meetings", "Public meetings and comment kits", "/meetings.html", main)
+        return self.page("meetings", self.labels["title.meetings"], self.labels["title.meetings_description"], "/meetings.html", main)
+
+    def meeting_html(self, meeting):
+        """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
+        cancelled = meeting.get("status") == "cancelled"
+        agenda = (f'<p><a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a></p>'
+                  if meeting["agenda_url"] else "")
+        kit = (self.md(meeting["comment_kit_md"]) if meeting["comment_kit_md"]
+               else f'<p>{self.t("notice.no_kit")}</p>')
+        main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.meeting")}</p>'
+                f'<h2>{self.t("meeting.cancelled") + " " if cancelled else ""}{e(meeting["body"])}</h2>'
+                f'<p><time datetime="{e(meeting["starts_at"])}">{e(meeting["starts_at"].replace("T", " ")[:16])}</time></p>'
+                + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
+                + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
+                + self.who_decides(meeting.get("agency_id"))
+                + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + self._written_deadline(meeting)
+                + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
+                + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
+                f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
+        return self.page("meetings", f'{meeting["body"]}, {meeting["starts_at"][:10]}',
+                         meeting["agenda_item"] or self.labels["title.meeting_description"], f'/meetings/{meeting["id"]}.html', main)
 
     def about_html(self):
-        contact = (f'<p>Contact: <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
+        contact = (f'<p>{self.t("footer.contact")} <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'
                    if self.site["contact_email"] else "")
-        main = ('    <section class="section finding-body" id="content"><p class="eyebrow">About</p>'
-                f'<h2>{self.name}</h2>{markdown(self.site["about_md"])}{contact}'
+        main = (f'    <section class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.about")}</p>'
+                f'<h2>{self.name}</h2>{self.md(self.site["about_md"])}{contact}'
+                f'<p>{self.t("intro.open_data_about")} '
+                '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
+                '<a href="/data/sources.json" type="application/json">data/sources.json</a>.</p>'
+                + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
-        return self.page("about", "About", "About the campaign", "/about.html", main)
+        return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
+
+    def content_page_html(self, page):
+        """``/<slug>.html`` from ``content/pages/<slug>.json`` (DF2237-07); body_md through markdown_lite."""
+        main = (f'    <article class="section finding-body" id="content"><h2>{e(page["title"])}</h2>{self.md(page["body_md"])}'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
+        return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
+                         f'/{page["slug"]}.html', main)
+
+    def methods_html(self):
+        """/methods.html (DF2037-14): label definitions from the badge tables, the record-number explainer and the
+        review gate from review.ROLES. Generated only; no organizer content."""
+        check_definitions()
+        tables = "".join(
+            f'<h3>{heading}</h3><dl>' + "".join(
+                f'<dt id="{name}-{e(code)}">{self.t(name + "." + code)}</dt><dd>{e(definitions[code])}</dd>'
+                for code in labels) + '</dl>'
+            for name, heading, labels, definitions in (
+                ("classification", "Classifications", CLASSIFICATION_LABELS, CLASSIFICATION_DEFINITIONS),
+                ("confidence", "Confidence", CONFIDENCE_LABELS, CONFIDENCE_DEFINITIONS)))
+        roles = sorted(ROLES)
+        gate = (f'Before a finding is published it needs {", ".join(roles[:-1])} and {roles[-1]} review by at least two '
+                'people other than the author. Until then the build refuses to publish it.')
+        main = ('    <section class="section finding-body" id="content"><h2>How to read our findings</h2>'
+                f'{tables}<h3 id="record-numbers">Record numbers</h3><p class="provenance-note">{e(EXPLAINER)}</p>'
+                f'<h3 id="review">Review before publication</h3><p>{e(gate)}</p>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("findings", "How to read our findings",
+                         "What each finding label means, what record numbers show and how findings are reviewed",
+                         "/methods.html", main)
+
+    def cameras_html(self):
+        """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
+        by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
+        self.mapped_counts()
+        cameras, boundaries = self._map_docs
+        picker = {agency["slug"] for agency in self.picker_cities()}
+        names = sorted({entry["name"] for slug, entry in self.cities().items() if slug in picker})
+        shapes = {name: [] for name in names}
+        for feature in boundaries.get("features") or []:
+            name = camera_counts._name(feature) if isinstance(feature, dict) else None
+            polygons = camera_counts._polygons(feature.get("geometry")) if name in shapes else ""
+            for rings in [] if isinstance(polygons, str) else polygons:
+                xs, ys = [p[0] for p in rings[0]], [p[1] for p in rings[0]]
+                shapes[name].append(((min(xs), max(xs), min(ys), max(ys)), camera_counts._Ring(rings[0]),
+                                     [camera_counts._Ring(hole) for hole in rings[1:]]))
+        groups, features = {name: [] for name in names + [None]}, cameras.get("features") or []
+        for feature in features:
+            props, (x, y) = feature.get("properties") or {}, feature["geometry"]["coordinates"]
+            home = next((name for name in names for (w, east, s, n), outer, holes in shapes[name]
+                         if w <= x <= east and s <= y <= n and outer.contains(x, y)
+                         and not any(hole.contains(x, y) for hole in holes)), None)
+            url = props.get("url") if isinstance(props.get("url"), str) else None
+            node = re.fullmatch(r"https://www\.openstreetmap\.org/node/(\d+)", url or "")
+            cells = [e(str(props.get(key)).strip() or "not tagged") if props.get(key) is not None else "not tagged"
+                     for key in ("manufacturer", "operator")]
+            link = (f'<a href="{e(url)}" rel="noopener noreferrer">node {node.group(1)}</a>' if node else "no OSM link")
+            groups[home].append((url is None, url or "", "".join(f"<td>{c}</td>" for c in cells + [link])))
+        sections = ""
+        for name in names + [None]:
+            rows = sorted(groups[name], key=lambda row: row[:2])
+            shown = rows[:500] if len(features) > 2000 else rows
+            table = ('<table><thead><tr><th scope="col">Manufacturer</th><th scope="col">Operator</th>'
+                     '<th scope="col">OpenStreetMap</th></tr></thead><tbody>'
+                     + "".join(f"<tr>{row[2]}</tr>" for row in shown) + '</tbody></table>') if rows else ""
+            more = f'<p>and {len(rows) - len(shown)} more on the map</p>' if len(shown) < len(rows) else ""
+            sections += (f'<section class="camera-group"><h3>{e(name or self.map["group_label"])}</h3>'
+                         f'<p>{len(rows)} mapped point{"" if len(rows) == 1 else "s"}</p>{table}{more}</section>')
+        main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
+                '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
+                '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
+                f'<p>{e(self.map["attribution"])}</p><p class="map-date">{self.map_date_line()}</p>{sections}</section>\n')
+        return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
+                         "/cameras.html", main)
 
     # -- scripts and data ----------------------------------------------------
 
@@ -412,8 +1063,26 @@ class Site:
                 "default_fragment": "library", "source_aliases": aliases,
                 "source_link_label": self.site["source_link_label"]}
 
+    def mapped_counts(self):
+        """``({boundary name: points inside}, problems)``, computed once from the map files; empty without a map."""
+        if not hasattr(self, "_mapped_counts"):
+            docs = []
+            for key in ("cameras_path", "boundary_path") if self.map else ():  # the copy's own checks, then the loader caps
+                _check_copy(self.map[key], MAX_GEOJSON_BYTES)
+                docs.append(_read_json(self.map[key], MAX_GEOJSON_BYTES))
+            self._mapped_counts = camera_counts.count_by_name(*docs) if docs else ({}, [])
+            self._map_docs = docs
+        return self._mapped_counts
+
+    def camera_notes(self):  # boundary names matching no picker city, then every boundary problem
+        counts, problems = self.mapped_counts()
+        picker = {agency["slug"] for agency in self.picker_cities()}
+        names = {entry["name"] for slug, entry in self.cities().items() if slug in picker}
+        return [f"boundary {name} matches no city agency" for name in counts if name not in names] + problems
+
     def cities(self):
         cities = {}
+        counts = self.mapped_counts()[0] if self.map else {}
         for agency in self.picker_cities():
             entry = {"name": agency["jurisdiction_name"] or agency["name"], "displayName": agency["name"]}
             if self.map:
@@ -421,7 +1090,10 @@ class Site:
                 entry["bounds"] = city["bounds"]
                 if city["name"]:
                     entry["name"] = city["name"]
-            entry.update(agency["profile"])
+            entry.update(agency["profile"], **({"flockTransparencyUrl": agency["flock_transparency_url"]} if agency["flock_transparency_url"] else {}))
+            if entry["cameraCount"] == "" and entry["name"] in counts:  # an organizer-typed value always wins
+                n = counts[entry["name"]]
+                entry["cameraCount"] = f"{n} community-mapped point{'' if n == 1 else 's'} inside city limits; ownership unconfirmed"
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
@@ -491,36 +1163,64 @@ class Site:
                 "  Content-Security-Policy: " + self.csp() + "\n")
 
     def page_paths(self):
-        paths = ["/", "/agencies.html", "/findings/", "/sources.html", "/meetings.html", "/about.html"]
+        paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
+                 "/methods.html", "/findings/packet-all.html", "/timeline.html"]
+        paths += ["/cameras.html"] if self.map else []
+        paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
+        paths += list(self.agency_pages().values())
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
+        paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
         return paths
 
     def sitemap_xml(self):
+        """Only built with a base_url (absolute <loc>); lastmod = UTC day of each finding's latest change."""
         root = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+        days = {f'/findings/{f["slug"]}.html': utc_moment(finding_updated(f)).astimezone(timezone.utc).date().isoformat()
+                for f in self.model["findings"]}
+        days["/"] = days["/findings/"] = days["/findings/packet-all.html"] = max(days.values(), default="")
         for path in self.page_paths():
             url = ET.SubElement(root, "url")
             ET.SubElement(url, "loc").text = self.base + path
+            if days.get(path):
+                ET.SubElement(url, "lastmod").text = days[path]
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
     def feed_xml(self):
+        return self._atom(self.cfg["name"] + " findings", "/feed.xml", "/", "", self.model["findings"])
+
+    def agency_feeds(self):
+        """``{"findings/agency/<slug>.xml": atom}`` for each agency with a published finding, model order."""
+        feeds = {}
+        for agency in self.model["agencies"]:
+            findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
+            if findings:
+                slug = agency["slug"]
+                feeds[f"findings/agency/{slug}.xml"] = self._atom(
+                    f'{self.cfg["name"]} findings: {agency["name"]}', f"/findings/agency/{slug}.xml",
+                    f"/agencies.html#{slug}", f":agency:{slug}", findings)
+        return feeds
+
+    def _atom(self, title, self_path, alternate_path, urn_suffix, findings):
         ns = "http://www.w3.org/2005/Atom"
         ET.register_namespace("", ns)
         feed = ET.Element(f"{{{ns}}}feed")
-        ET.SubElement(feed, f"{{{ns}}}title").text = self.cfg["name"] + " findings"
-        ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + "/feed.xml") if self.base else "urn:deflock-campaign:" + re.sub(r"[^a-z0-9]+", "-", self.cfg["name"].lower())
-        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/feed.xml", rel="self")
-        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/")
-        latest = max((f["updated_at"] or f["published_at"] for f in self.model["findings"]), default=None)
+        ET.SubElement(feed, f"{{{ns}}}title").text = title
+        campaign_urn = "urn:deflock-campaign:" + re.sub(r"[^a-z0-9]+", "-", self.cfg["name"].lower())
+        ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + self_path) if self.base else campaign_urn + urn_suffix
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + self_path, rel="self")
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + alternate_path)
+        latest = max((finding_updated(f) for f in findings), key=utc_moment, default=None)
         ET.SubElement(feed, f"{{{ns}}}updated").text = latest or datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
         ET.SubElement(ET.SubElement(feed, f"{{{ns}}}author"), f"{{{ns}}}name").text = self.cfg["name"]
-        for finding in self.model["findings"]:
+        for finding in findings:
             entry = ET.SubElement(feed, f"{{{ns}}}entry")
             ET.SubElement(entry, f"{{{ns}}}title").text = finding["title"]
             ET.SubElement(entry, f"{{{ns}}}id").text = "urn:deflock-finding:" + finding["id"]
-            ET.SubElement(entry, f"{{{ns}}}link", href=f'{self.base}/findings/{finding["slug"]}.html')
+            ET.SubElement(entry, f"{{{ns}}}link", href=self.base + finding_path(finding))
             ET.SubElement(entry, f"{{{ns}}}published").text = finding["published_at"]
-            ET.SubElement(entry, f"{{{ns}}}updated").text = finding["updated_at"] or finding["published_at"]
-            ET.SubElement(entry, f"{{{ns}}}summary").text = (
+            ET.SubElement(entry, f"{{{ns}}}updated").text = finding_updated(finding)
+            corrected = max((_day(c["date"]) for c in finding["corrections"]), default=None)
+            ET.SubElement(entry, f"{{{ns}}}summary").text = (f"Corrected {corrected}. " if corrected else "") + (
                 f'[{CLASSIFICATION_LABELS[finding["classification"]]}; {CONFIDENCE_LABELS[finding["confidence"]]}; '
                 f'event date {finding["event_date"]}] {finding["summary"]}')
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
@@ -528,6 +1228,61 @@ class Site:
 
     def robots_txt(self):
         return "User-agent: *\nAllow: /\n" + (f"Sitemap: {self.base}/sitemap.xml\n" if self.base else "")
+
+    def _public_finding(self, finding):
+        """One published finding, copied key by key from the allowlists (never a dict copy)."""
+        value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS if key not in ("sources", "corrections", "url")}
+        value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
+        value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
+                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {})}
+                            for s in finding["sources"]]
+        value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
+        value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
+        return value
+
+    def findings_json(self):
+        """``data/findings.json``: published findings as open data; refuses any non-public key or full hash."""
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "findings": [self._public_finding(f) for f in self.model["findings"]]}
+        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
+        _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def _public_library_entry(self, source):
+        """One library entry, copied key by key (never ``note``, ``fragment`` or the full sha256)."""
+        agency = self.agencies_by_id.get(source["agency_id"])
+        return {"sha256_prefix": short_hash(source["sha256"]), "title": source["title"], "agency_id": source["agency_id"],
+                "agency_name": agency["name"] if agency else None, "received_at": source["received_at"],
+                "public_url": source["public_url"] or None, "pages": source["pages"],
+                "cited_by": [f["id"] for f in self.cited_by.get(source["sha256"], [])],
+                "public_copy": source.get("public_copy") if source["public_url"] else None}
+
+    def sources_json(self):
+        """``data/sources.json``: the source library as open data; refuses any non-public key or full hash."""
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
+        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL,
+                       {"sources": (PUBLIC_LIBRARY_FIELDS, {"public_copy": (PUBLIC_COPY_FIELDS, {})})})
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _assert_public(doc, name, top, nested):
+    """Raise ``ContentError`` naming ``name`` if ``doc`` holds a key outside the public allowlists (``top`` at the top
+    level, ``nested`` maps a key to its ``(allowed, nested)`` pair) or a 40+ hex string."""
+    def walk(value, allowed, nested):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key not in allowed:
+                    raise ContentError(f"{name}: non-public key {key}")
+                walk(item, *nested.get(key, ((), {})))
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, allowed, nested)
+        elif isinstance(value, str) and FULL_HASH.search(value):
+            raise ContentError(f"{name}: a string holds a full hash; publish 12-character prefixes only")
+    walk(doc, top, nested)
 
 
 # --- file emission -----------------------------------------------------------
@@ -553,7 +1308,10 @@ def _copy(source, target, written, limit):
 
 
 def _asset_plan(model):
+    from .image_meta import check_asset  # local: the only site.py change for the image-metadata gate
+    from .doc_assets import check_asset as check_doc_asset
     assets_dir, plan = model["assets_dir"], []
+    page_files = {f'{page["slug"]}.html' for page in model.get("pages", [])}
     for source in model["public_assets"]:
         relative = source.relative_to(assets_dir)
         if source.suffix.lower() not in ASSET_EXTENSIONS:
@@ -561,48 +1319,65 @@ def _asset_plan(model):
                                f"({', '.join(sorted(ASSET_EXTENSIONS))})")
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}", part) for part in relative.parts):
             raise ContentError(f"public-assets/{relative}: use plain file and folder names")
-        if relative.parts[0] in GENERATED_TOP_LEVEL:
+        if relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files:
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
+        check_asset(source, relative, ASSET_MAX_BYTES)
+        check_doc_asset(source, relative, ASSET_MAX_BYTES)  # PDF/SVG: active content, revisions, author fields
         plan.append((source, relative))
     return plan
 
 
-def build_site(root, today=None):
-    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
-
-    ``today`` (a ``datetime.date``, default the build date) splits meetings into
-    upcoming (on or after it) and past.
-
-    Falls back to the neutral starter when ``content/`` does not exist.
-    Raises ``ContentError``/``ValueError`` and writes nothing when content is
-    not publishable.
-    """
+def _plan_site(root, today=None, notes=None):
+    """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
     root = Path(root)
     cfg = read_config(root)
-    public = root / "public"
-    if public.is_symlink():
+    if (root / "public").is_symlink():
         raise ContentError("public/ must not be a symlink")
-    model = load_content(root)
+    model = load_content(root, today)
     if model is None:
-        return build_starter(cfg, public)
+        return None
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
-        "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
+        "findings/index.html": site.findings_index_html(), "findings/packet-all.html": site.packet_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
+        "corrections.html": site.corrections_html(), "404.html": site.not_found_html(), "methods.html": site.methods_html(),
+        "timeline.html": site.timeline_html(),
     }
+
+    for meeting in model["meetings"]:
+        pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
+    for page in model["pages"]:
+        pages[f'{page["slug"]}.html'] = site.content_page_html(page)
+    for agency in model["agencies"]:
+        if agency["agency_id"] in site.agency_pages():
+            pages[site.agency_pages()[agency["agency_id"]][1:]] = site.agency_html(agency)
+    if site.map:
+        if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
+            raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
+        pages["cameras.html"] = site.cameras_html()
     for finding in model["findings"]:
-        pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
-    css = pages["index.html"]["css"] + EXTRA_CSS
+        path = f'findings/{finding["slug"]}.html'
+        if path in pages:
+            raise ContentError(f'published finding {finding["id"]} ({path}): collides with generated page {path}')
+        pages[path] = site.finding_html(finding)
+    brand = model["site"].get("brand", {})  # site.json brand: one appended rule per set part, nothing without it
+    colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
+    css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
+           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else ""))
     files = {name: page["html"] for name, page in pages.items()}
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
-        "sitemap.xml": site.sitemap_xml(), "feed.xml": site.feed_xml(),
+        **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
-        "app.js": site.app_js(),
+        "app.js": site.app_js(), "data/findings.json": site.findings_json(),
+        "data/sources.json": site.sources_json(),
     })
+    if site.finding_filter():  # written only when the findings index loads it
+        files["findings/filter.js"] = FILTER_JS
+    files.update(site.agency_feeds())
     plan = []
     if model["map"]:
         found = model["map"]
@@ -613,6 +1388,35 @@ def build_site(root, today=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    if "redirects" in model:  # DF2037-16: any present file, even JSON null, is checked against every path written
+        from .findings import withdrawn_names  # local, as the other optional site steps
+        written = [*files, *(Path(relative).as_posix() for _, relative, _ in plan)]
+        files["_redirects"] = load_redirects(model["redirects"], written, withdrawn_names(root)[1])
+        if not files["_redirects"]:  # an empty list writes no file
+            del files["_redirects"]
+    if isinstance(notes, list):
+        notes.extend(site.camera_notes())
+    return files, plan
+
+
+def build_site(root, today=None, notes=None):
+    """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
+
+    ``today`` (a ``datetime.date``, default the build date) splits meetings into
+    upcoming (on or after it) and past. ``notes``, when a list, receives
+    boundary names that match no city agency and boundary feature problems.
+
+    Falls back to the neutral starter when ``content/`` does not exist.
+    Raises ``ContentError``/``ValueError`` and writes nothing when content is
+    not publishable.
+    """
+    from .cli import read_config
+    root = Path(root)
+    public = root / "public"
+    planned = _plan_site(root, today, notes)
+    if planned is None:
+        return build_starter(read_config(root), public)
+    files, plan = planned
     staging = Path(tempfile.mkdtemp(dir=root, prefix=".public.new-"))  # swapped in only when complete
     new, written = staging / "public", []
     try:
@@ -633,4 +1437,37 @@ def build_site(root, today=None):
             new.rename(public)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    if "sitemap.xml" not in files:  # planned exactly when content/site.json has a base_url
+        print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
     return [public / path.relative_to(new) for path in written]
+
+
+def preview_site(root, today=None):
+    """Compare a fresh render with the current ``public/`` by path, size and SHA-256; writes nothing."""
+    public = Path(root) / "public"
+    planned = _plan_site(root, today)
+    if planned is None:
+        raise ValueError("build --preview needs content/; the starter has nothing to compare")
+    files, plan = planned
+
+    def sized(data):
+        return len(data), hashlib.sha256(data).hexdigest()
+    new = {name: sized(text.encode("utf-8")) for name, text in files.items()}
+    new.update({Path(relative).as_posix(): sized(Path(source).read_bytes()) for source, relative, _ in plan})
+    old, unreadable = {}, []
+    if public.is_dir():
+        for folder, dirs, names in os.walk(public, followlinks=False):
+            for name in names + [d for d in dirs if (Path(folder) / d).is_symlink()]:
+                path = Path(folder) / name
+                relative = path.relative_to(public).as_posix()
+                if path.is_symlink() or not path.is_file():  # never followed or opened
+                    unreadable.append(relative)
+                else:
+                    old[relative] = sized(path.read_bytes())
+    both = sorted(new.keys() & old.keys())
+    changed = [{"path": p, "bytes_before": old[p][0], "bytes_after": new[p][0], "delta": new[p][0] - old[p][0]}
+               for p in both if old[p] != new[p]]
+    return {"public_exists": public.exists(),
+            "added": [{"path": p, "bytes": new[p][0]} for p in sorted(new.keys() - old.keys())],
+            "removed": [{"path": p, "bytes": old[p][0]} for p in sorted(old.keys() - new.keys())],
+            "changed": changed, "unchanged": len(both) - len(changed), "unreadable": sorted(unreadable)}

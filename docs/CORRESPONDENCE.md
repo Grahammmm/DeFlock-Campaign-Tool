@@ -33,6 +33,21 @@ assertions remain proposals and do not modify canonical request status or certif
 production completeness. The skill can be read directly from this checkout; this
 change does not install it into an agent's runtime or alter discovery settings.
 
+## Readable version
+
+Render an already-produced private JSON report without opening a ledger or mailbox:
+
+```sh
+python3 -B tools/correspondence_readable.py --report /absolute/private/report.json --output-dir /absolute/private/new-thread
+```
+
+Both paths must be absolute and normalized; the output directory must not exist,
+and its parent must contain no symlinks. Input is bounded to 32 MiB.
+The new directory is 0700 and `correspondence.md` is 0600. Keep it outside git.
+The Markdown groups recorded request dates and deliveries by agency and request;
+reply links remain unverified, gaps remain explicit, and follow-ups are proposals.
+It makes no fulfillment or legal assessment and sends or publishes nothing.
+
 ## Existing interfaces and compatibility
 
 The projection uses the existing authority rather than copying its schema:

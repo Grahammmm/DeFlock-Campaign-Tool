@@ -2,7 +2,7 @@
 """Flock publish: a verified run's confirmed strong findings -> PUBLISH.json for human review (every entry pending).
 Exit 1 = errors/empty, 2 = usage, 3 = family refusal. Only a human approves (skills/flock-publish).
 recheck: 3 = entries moved to needs-review. export and recheck RUNDIR must lie outside the repository."""
-import argparse, collections, contextlib, datetime, importlib.util, io, json, operator, re, sys
+import argparse, collections, contextlib, csv, datetime, importlib.util, io, json, operator, os, re, sys
 from pathlib import Path
 from urllib.parse import urlsplit
 _spec = importlib.util.spec_from_file_location("_flock_verify", Path(__file__).resolve().parent / "flock_verify.py")
@@ -19,8 +19,8 @@ PRIVACY = (("email", privacy.EMAIL), ("phone", privacy.PHONE), ("url", re.compil
            ("plate", privacy.PLATE), ("hex", re.compile(r"[0-9a-f]{32,}", re.I)))
 FINDING_KEYS = {"finding_id", "topic", "claim_class", "rating", "text", "cites", "review"}
 TOP_KEYS = {"schema_version", "slug", "agency", "run_date", "header", "author_family", "verifier_family", "findings"}
-def text_rules(text, vigilant_only):  # categories that refuse publication; GATED is banned even with a quote (PLAN §3)
-    cats = [name for name, rx in ((("always", compare.ALWAYS), ("gated", compare.GATED)) + PRIVACY) if rx.search(text)]
+def text_rules(text, vigilant_only):  # categories that refuse publication; quote-gated wording is a note, not a refusal (DF-4 ruling 1)
+    cats = [name for name, rx in (("always", compare.ALWAYS),) + PRIVACY if rx.search(text)]
     return cats + (["vendor"] if vigilant_only and compare.FLOCK.search(text) else [])
 def matches(pattern, value):
     return isinstance(value, str) and bool(re.fullmatch(pattern, value))
@@ -108,6 +108,7 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
         out.append({"finding_id": f["finding_id"], "topic": f["topic"], "claim_class": f["claim_class"], "rating": "strong",
                     "text": text, "cites": cites,
                     "review": {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": ""}})
+    flags = claim_notes(out)  # DF-4 alert-only: the entry is still exported, pending; its human approval is the gate
     if not out:
         return 1, lines + ["exported=0 refused=%d" % len(lines)], None
     meta = json.loads((run / "RUN.json").read_text(encoding="utf-8"))
@@ -115,7 +116,10 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
     doc = {"schema_version": 1, "slug": site_slug, "agency": agency.name, "run_date": run.name, "header": HEADLINE,
            "author_family": meta["author_provider"].strip().lower(), "verifier_family": signed["verifier_provider"].strip().lower(),
            "findings": out}
-    return 0, lines + ["exported=%d refused=%d" % (len(out), len(lines))], doc
+    return 0, lines + flags + ["exported=%d refused=%d" % (len(out), len(lines))], doc
+def claim_notes(findings):  # DF-4: review-required notes naming the finding id and rules, never the text; not errors
+    return privacy.review_notes([("finding %s" % (f["finding_id"] if isinstance(f, dict) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", str(f.get("finding_id"))) else "#%d" % n), f.get("text") if isinstance(f, dict) else None)
+                                 for n, f in enumerate(findings, 1)], compare.GATED)
 def export(run, site_slug):
     code, lines, doc = derive(run, site_slug, new=True)
     print("".join(line + "\n" for line in lines[:-1]), end="")
@@ -141,7 +145,31 @@ def drift(doc, run, recheck=False):  # RF1130-2: every entry but its `review` mu
     if any(f["review"]["status"] == "approved" for f in doc["findings"]):
         return [], errs + ["run: finding %s eligible but missing from the file" % fid[:40] for fid in missing]
     return ["note: run has %d eligible findings not in the file" % len(missing)] if missing else [], errs
-def finding_errors(f):
+ACTIONS, CHANGES, CHANGE_HEADER = {"withdrawn": "withdraw", "superseded": "correct"}, "PUBLISH-CHANGES.csv", \
+    ["finding_id", "action", "on", "by", "approval_ref", "replaced_by"]  # DF1537-11: terminal status -> change-log action
+def short(fid): return fid if isinstance(fid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", fid) else "?"  # noqa: E704 - plain ids only
+def change_log(run):  # PUBLISH-CHANGES.csv data rows ([] when absent); None when it is a link or its header or widths differ
+    log = run / CHANGES
+    table = None if log.is_symlink() else compare.read_csv(log) if log.is_file() else [CHANGE_HEADER]
+    return table[1:] if table and table[0] == CHANGE_HEADER and all(len(r) == len(CHANGE_HEADER) for r in table[1:]) else None
+def history(doc, run):  # DF1537-11: change log matches the terminal entries; no approved text was withdrawn/superseded earlier
+    if (rows := change_log(run)) is None: return ["PUBLISH-CHANGES.csv: a link, or its header or row widths differ"]  # noqa: E701
+    want = collections.Counter((f["finding_id"], ACTIONS[f["review"]["status"]]) for f in doc["findings"] if f["review"]["status"] in ACTIONS)
+    have = collections.Counter((r[0], r[1]) for r in rows)
+    errs = ["finding %s: change log does not match" % short(k) for k in dict.fromkeys(k[0] for k in [*want, *have] if want[k] != have[k])]
+    gone, docs = {}, []
+    for other in sorted(run.parent.iterdir()):  # the agency's runs; links are never followed, unreadable files are skipped
+        path = other / "PUBLISH.json"
+        with contextlib.suppress(OSError, ValueError):
+            docs += [] if other.is_symlink() or path.is_symlink() or not path.is_file() else [(other.name, json.loads(path.read_text(encoding="utf-8")))]
+    for date, d in docs + [(run.name, doc)]:
+        for f in d["findings"] if isinstance(d, dict) and isinstance(d.get("findings"), list) else []:
+            r = f.get("review") if isinstance(f, dict) else None
+            if isinstance(r, dict) and r.get("status") in ACTIONS and isinstance(f.get("text"), str):
+                gone.setdefault(compare.squash(f["text"]), (r["status"], date if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", date) else "?"))
+    return errs + ["finding %s: text was %s in run %s" % ((short(f["finding_id"]),) + gone[compare.squash(f["text"])])
+                   for f in doc["findings"] if f["review"]["status"] == "approved" and compare.squash(f["text"]) in gone]
+def finding_errors(f, logged=None):  # logged (recheck): [finding_id, action] rows a terminal status needs; None = any
     if not isinstance(f, dict) or set(f) != FINDING_KEYS:
         return ["keys differ from the schema"]
     errs = [] if f["rating"] == "strong" else ["rating is not strong"]
@@ -164,12 +192,12 @@ def finding_errors(f):
     r = f["review"] if isinstance(f["review"], dict) else {}
     if set(r) != {"status", "approved_by", "approved_on", "approval_ref"} or not all(isinstance(v, str) for v in r.values()):
         return errs + ["review keys or values differ from the schema"]
-    if r["status"] not in ("pending", "approved", "needs-review"):  # needs-review (DF1537-10) counts as not approved
+    if r["status"] not in ("pending", "approved", "needs-review") + tuple(s for s in ACTIONS if logged is None or [f["finding_id"], ACTIONS[s]] in logged):
         errs.append("review status is not pending, approved or needs-review")
-    elif r["status"] == "approved" and not (r["approved_by"].strip() and r["approval_ref"].strip() and iso_day(r["approved_on"])):
+    elif r["status"] in ("approved",) + tuple(ACTIONS) and not (r["approved_by"].strip() and r["approval_ref"].strip() and iso_day(r["approved_on"])):
         errs.append("approved needs approved_by, an ISO approved_on and approval_ref")
     return errs
-def check(path, run=None):
+def check(path, run=None, logged=None):
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -183,11 +211,12 @@ def check(path, run=None):
     for n, f in enumerate(doc["findings"], 1):
         fid = f.get("finding_id") if isinstance(f, dict) else None
         name = fid if isinstance(fid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", fid) else "#%d" % n
-        errs += ["finding %s: %s" % (name, e) for e in finding_errors(f)]
+        errs += ["finding %s: %s" % (name, e) for e in finding_errors(f, logged)]
         approved += isinstance(f, dict) and isinstance(f.get("review"), dict) and f["review"].get("status") == "approved"
     notes, moved = drift(doc, run) if run and not errs else ([], [])
+    errs += history(doc, run) if run and not errs and not moved else []
     last = "findings=%d approved=%d errors=%d" % (len(doc["findings"]), approved, len(errs + moved))
-    print("\n".join(notes + errs + moved + [last + (" drift=%d" % len(moved) if run else "")]))
+    print("\n".join(notes + claim_notes(doc["findings"]) + errs + moved + [last + (" drift=%d" % len(moved) if run else "")]))
     return 1 if errs or moved else 0
 def stage(run):  # RF1130-3 -> (stage, counts); check's per-entry lines are captured, never printed
     if not (run / "PUBLISH.json").exists():
@@ -202,8 +231,11 @@ def stage(run):  # RF1130-3 -> (stage, counts); check's per-entry lines are capt
     counts = (n["findings"], n["findings"] - n["approved"], n["approved"], n["errors"])
     return ("invalid" if n["errors"] > n["drift"] else "drifted" if n["drift"] else "pending" if not n["approved"]
             else "approved" if n["approved"] == n["findings"] else "partly-approved"), counts
-def status(store):  # RF1130-3: one publication-stage line per verified run (agencies/*/runs/*), read-only
+def status(store, as_json=False):  # RF1130-3: one publication-stage line per verified run (agencies/*/runs/*), read-only
+    schema, note = "flock-publish-status-v1", "review-required; G decides any site use"  # RF0910-11: --json, same rows and exit
     if (store / "agencies").is_symlink() or not (store / "agencies").is_dir():
+        if as_json:
+            return print(json.dumps({"error": "no agencies folder", "schema": schema}, sort_keys=True)) or 2
         return print("status: no agencies folder", file=sys.stderr) or 2
     name, rows = lambda p: p.name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", p.name) else "?", []  # noqa: E731
     for agency in sorted(store.joinpath("agencies").iterdir()):
@@ -217,16 +249,21 @@ def status(store):  # RF1130-3: one publication-stage line per verified run (age
             elif run.is_dir() and (run / "VERIFY.json").exists():  # earlier stages belong to flock_sweep
                 rows.append((name(agency), name(run)) + stage(run))
     tally, line = collections.Counter(row[2] for row in rows), "publish | %s | %s | %s | findings=%s pending=%s approved=%s errors=%s"
+    stages, code = ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"), 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
+    if as_json:  # counts are integers, or null where the text shows "-"; link_refused is a JSON-only total
+        keys = ("agency", "run", "stage", "findings", "pending", "approved", "errors")
+        totals = {"runs": len(rows), **{k.replace("-", "_"): tally[k] for k in stages + ("link-refused",)}}
+        doc = {"schema": schema, "runs": [dict(zip(keys, row[:3] + (row[3] or (None,) * 4))) for row in rows], "totals": totals, "note": note}
+        return print(json.dumps(doc, sort_keys=True, ensure_ascii=False)) or code
     print("".join(line % (row[:3] + (row[3] or ("-",) * 4)) + "\n" for row in rows), end="")
-    print("publish | runs=%d %s | review-required; G decides any site use" % (len(rows), " ".join("%s=%d" % (
-        k.replace("-", "_"), tally[k]) for k in ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"))))
-    return 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
+    print("publish | runs=%d %s | %s" % (len(rows), " ".join("%s=%d" % (k.replace("-", "_"), tally[k]) for k in stages), note))
+    return code
 def recheck(run, today, dry):  # DF1537-10: approved entries citing a disputed, missing or expired fact -> needs-review (exit 3)
     target, buf = run / "PUBLISH.json", io.StringIO()
     if target.is_symlink() or not target.is_file():
         return print("PUBLISH.json: missing\nrecheck refused | nothing written") or 1
     with contextlib.redirect_stdout(buf):
-        bad = check(target)  # schema gate, unchanged
+        bad = check(target, logged=[r[:2] for r in change_log(run) or []])  # schema gate; a terminal status needs its change row
     doc = None if bad else json.loads(target.read_text(encoding="utf-8"))
     notes, moved = drift(doc, run, recheck=True) if doc else ([], [])  # drift gate: a FACTS.csv edit is the one allowance
     if bad or moved:
@@ -245,28 +282,80 @@ def recheck(run, today, dry):  # DF1537-10: approved entries citing a disputed, 
         verify_tool.write(target, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     print("\n".join(lines + ["recheck | approved=%d moved=%d | review-required; G decides any site use" % (approved, len(lines))]))
     return 3 if lines else 0
+def gate(run):  # check's lines are captured (ids and rules only) -> (failed, lines, doc)
+    buf, target = io.StringIO(), run / "PUBLISH.json"
+    if target.is_symlink() or not target.is_file(): return True, ["PUBLISH.json: missing or a link"], None  # noqa: E701
+    with contextlib.redirect_stdout(buf):
+        failed = check(target, run)
+    return failed, buf.getvalue().splitlines(), None if failed else json.loads(target.read_text(encoding="utf-8"))
+def change(run, a, dry=False):  # DF1537-11 withdraw/correct: approved or needs-review -> withdrawn/superseded; change-log row first
+    log, status, replaced = run / CHANGES, "withdrawn" if a.command == "withdraw" else "superseded", ""
+    failed, lines, doc = gate(run)
+    errs = lines if failed else []
+    entry = next((f for f in doc["findings"] if f["finding_id"] == a.finding), None) if doc else None
+    if doc and (not entry or entry["review"]["status"] not in ("approved", "needs-review") or
+                finding_errors({**entry, "review": {**entry["review"], "status": status}})):  # needs-review keeps its approval fields
+        errs.append("--finding: not an approved or needs-review entry")
+    elif entry and not (iso_day(a.on) and entry["review"]["approved_on"] <= a.on <= datetime.date.today().isoformat()):
+        errs.append("--on: not a YYYY-MM-DD from approved_on to today")
+    errs += ["--%s: empty, over 80 characters or has a newline" % k for k, v in (("by", a.by), ("approval-ref", a.approval_ref))
+             if not (v.strip() and re.fullmatch(r"[^\r\n]{1,80}", v))]
+    errs += ["PUBLISH-CHANGES.csv: is a symlink"] if log.is_symlink() else []
+    if a.command == "correct" and not errs:
+        path, _, new_id = a.replaced_by.rpartition(":")
+        new = Path(path).resolve()
+        failed, lines, fresh = (True, ["--replaced-by: not a run of the same agency"], None) if not path or new.parent != run.parent or \
+            new == verify_tool.REPO or verify_tool.REPO in new.parents else gate(new)
+        other = next((f for f in fresh["findings"] if f["finding_id"] == new_id), None) if fresh else None
+        errs += ["--replaced-by: " + line for line in lines] if failed else ["--replaced-by: not an approved entry"] if \
+            not other or other["review"]["status"] != "approved" else ["--replaced-by: is the same entry"] if (new, new_id) == (run, a.finding) \
+            else ["--replaced-by: text equals the old text"] if compare.squash(other["text"]) == compare.squash(entry["text"]) else []
+        replaced = "%s:%s" % (new.name, new_id)
+    if errs:
+        return print("\n".join(errs + ["%s refused | nothing written%s" % (a.command, " (dry run)" if dry else "")])) or 1
+    if dry:  # RF0910-10: every check above ran; no open, truncate, unlink or write is reached
+        return print("would %s | %s | %s%s\ndry run | nothing written" % (status, short(a.finding), "by %s | " % replaced if replaced else "", a.on)) or 0
+    row, before = io.StringIO(), log.read_bytes() if log.exists() else None
+    csv.writer(row, lineterminator="\n").writerows(([] if before else [CHANGE_HEADER]) + [[a.finding, a.command, a.on, a.by, a.approval_ref, replaced]])
+    with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600), "ab") as out: out.write(row.getvalue().encode())  # noqa: E701
+    entry["review"]["status"] = status  # approved_by/on/ref stay as the audit trail
+    try:
+        verify_tool.write(run / "PUBLISH.json", json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    except BaseException:  # the log row is taken back: the file is byte-identical to before (or absent again)
+        log.unlink() if before is None else os.truncate(log, len(before))
+        raise
+    return print("%s | %s | %s%s" % (status, short(a.finding), "by %s | " % replaced if replaced else "", a.on)) or 0
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", choices=["export", "status", "stage", "brief", "recheck"])
+    parser.add_argument("command", nargs="?", choices=["export", "status", "stage", "brief", "recheck", "withdraw", "correct"],
+                        metavar="{export,status,stage,brief,recheck}|{withdraw,correct}")
     parser.add_argument("rundir", nargs="?")
     parser.add_argument("--site-slug"); parser.add_argument("--check"); parser.add_argument("--run")
     parser.add_argument("--copy"); parser.add_argument("--out")  # stage only (NB-DF-17, tools/flock_publish_stage.py)
     parser.add_argument("--agency")  # brief only (DF1537-12, tools/flock_publish_brief.py; --out FILE)
-    parser.add_argument("--today"); parser.add_argument("--dry-run", action="store_true")  # recheck only (DF1537-10)
+    parser.add_argument("--today"); parser.add_argument("--dry-run", action="store_true")  # recheck (DF1537-10) or stage without --out (RF0310-7)
+    parser.add_argument("--json", action="store_true")  # status only (RF0910-11)
+    for flag in ("--finding", "--on", "--by", "--approval-ref", "--replaced-by"): parser.add_argument(flag)  # noqa: E701 - DF1537-11
     args = parser.parse_args(argv)
-    usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE | stage RUNDIR --copy FILE --out DIR"
-             " | brief STORE --agency SLUG --out FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]")
+    usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE [--json] | stage RUNDIR --copy FILE --out DIR"
+             " | stage RUNDIR --copy FILE --dry-run | brief STORE --agency SLUG --out FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]"
+             " | withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF [--dry-run] | correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID"
+             " --on D --by NAME --approval-ref REF [--dry-run]")
+    changing = args.command in ("withdraw", "correct") and args.rundir and None not in (args.finding, args.on, args.by, args.approval_ref) and \
+        (args.replaced_by is None) == (args.command == "withdraw") and (args.check, args.run, args.site_slug, args.copy, args.out, args.agency) == (None,) * 6
+    if (args.finding, args.on, args.by, args.approval_ref, args.replaced_by) != (None,) * 5 and not changing: parser.error(usage)  # noqa: E701
     rechecking = args.command == "recheck" and args.rundir and (args.check, args.run, args.site_slug, args.copy, args.out, args.agency) == (None,) * 6
-    if (args.today is not None or args.dry_run) and not rechecking or rechecking and args.today is not None and not iso_day(args.today):
+    staging = args.command == "stage" and args.rundir and args.copy and (args.out is None) == args.dry_run and (args.check, args.run, args.site_slug) == (None,) * 3
+    if args.today is not None and not rechecking or args.dry_run and not (rechecking or staging or changing) or rechecking and args.today is not None and not iso_day(args.today):
         parser.error(usage)
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
     listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
-    staging = args.command == "stage" and args.rundir and args.copy and args.out and (args.check, args.run, args.site_slug) == (None,) * 3
+    if args.json and not listing: parser.error(usage)  # noqa: E701
     briefing = args.command == "brief" and args.rundir and args.agency and args.out and (args.check, args.run, args.site_slug, args.copy) == (None,) * 4
     if (args.copy is not None or args.out is not None) and not (staging or briefing) or args.agency is not None and not briefing: parser.error(usage)  # noqa: E701
     if checking and args.run is None:
         return check(args.check)
-    if not (checking or listing or staging or briefing or rechecking) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
+    if not (checking or listing or staging or briefing or rechecking or changing) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
                                                  not SLUG.fullmatch(args.site_slug or "")):
         parser.error(usage)
     run = Path(args.run if checking else args.rundir).resolve()
@@ -275,11 +364,13 @@ def main(argv=None):
     try:
         if rechecking:
             return recheck(run, args.today or datetime.date.today().isoformat(), args.dry_run)
+        if changing:
+            return change(run, args, args.dry_run)
         if staging or briefing:  # loaded only for its verb; --out/--copy are refused inside the same repository root
             spec = importlib.util.spec_from_file_location("_flock_publish_" + args.command, Path(__file__).resolve().with_name("flock_publish_%s.py" % args.command))
             spec.loader.exec_module(verb := importlib.util.module_from_spec(spec))
-            return verb.brief(run, args.agency, args.out, verify_tool.REPO) if briefing else verb.stage(run, args.copy, args.out, verify_tool.REPO)
-        return status(run) if listing else check(args.check, run) if checking else export(run, args.site_slug)
+            return verb.brief(run, args.agency, args.out, verify_tool.REPO) if briefing else verb.stage(run, args.copy, args.out, verify_tool.REPO, args.dry_run)
+        return status(run, args.json) if listing else check(args.check, run) if checking else export(run, args.site_slug)
     except (OSError, ValueError) as exc:  # the class only, never a path or record text
         return print("io: %s" % type(exc).__name__) or 1
 if __name__ == "__main__":

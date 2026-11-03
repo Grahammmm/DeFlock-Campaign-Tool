@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIXTURES = ROOT / "tools" / "flock_email.py", ROOT / "tests" / "fixtures" / "flock"
 HEADER = "agency,role,email,source_url,source_sha256,checked_at,added_by"
-TAIL = " | draft only; G approval required before any send"
+TAIL = " mismatch=0 | draft only; G approval required before any send"
 LOCAL = "zz-local-part"
 TODAY = "2026-10-31"
 

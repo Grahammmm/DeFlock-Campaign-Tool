@@ -16,7 +16,7 @@ sending path.
 `outbox.sqlite` lives in a 0700 directory at mode 0600. Columns: `idempotency_key`
 (primary key), `kind`, `request_id`, `agency_id`, `scope_version`, `channel`, `draft_json`
 (the exact `RequestDraft` that will be sent), `fee_cap_cents`, `state`, `approved_by`,
-`approved_at`, `sending_at`, `sent_at`, `provider_receipt`, `error`, `resolved_by`,
+`approved_at`, `approval_evidence`, `sending_at`, `sent_at`, `provider_receipt`, `error`, `resolved_by`,
 timestamps.
 
 Requests/legacy key: `sha256(kind \0 request_id \0 scope_version)`. The same request and scope version is one
@@ -24,6 +24,10 @@ row forever, however many times a job retries or an organizer clicks. A new scop
 a new row.
 
 States: `proposed → approved → sending → sent | failed | blocked`.
+
+Approval is a verified owner signature, never a typed name (DF-2, [APPROVALS.md](APPROVALS.md)):
+`approved_by` is the principal from the root-owned trust file, and `send` re-verifies the stored
+`approval_evidence` against the current `draft_json`, so a row edited to `approved` never sends.
 
 ## Follow-up intent identity
 
@@ -95,7 +99,9 @@ recipients were refused remains a definite `failed` attempt with no DATA sent.
 
 ```
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite propose draft.json
-python3 -m campaign_tool.outbox --journal private/outbox.sqlite approve <key> --by organizer@example.org
+python3 -m campaign_tool.outbox --journal private/outbox.sqlite payload <key> > approve.txt
+ssh-keygen -Y sign -f ~/.ssh/deflock_approver -n deflock-approval approve.txt    # the owner, after reading it
+python3 -m campaign_tool.outbox --journal private/outbox.sqlite approve <key> --signature approve.txt.sig
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite --fee-cap-cents 5000 send <key> --smtp-host smtp.example.org --smtp-user requests@example.org
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite reconcile <key> delivered --by organizer@example.org
 python3 -m campaign_tool.outbox --journal private/outbox.sqlite list --state sending
@@ -126,8 +132,10 @@ require an identity, CLI round trip.
 
 ## Explicit approval after a definite failure
 
-The trusted hosted signer can call `Outbox.approve_retry(key, approved_by, approved_at)`
-for an unchanged draft after a definite failure. Approval must be strictly later
+The hosted gateway calls `Outbox.approve_retry(key, evidence, approved_at)` with its attested
+frame; on an organizer's machine `approve-retry KEY --signature FILE` does the same with an owner
+signature over `payload KEY`, which prints the next approval round for a definitely failed row
+(docs/APPROVALS.md). Either way it is for an unchanged draft after a definite failure. Approval must be strictly later
 than the failure; merely replaying or refreshing the old envelope is refused.
 The row must be failed without a sending/sent timestamp or provider receipt.
 Approval history and failure/resolver evidence are appended to the private
@@ -135,4 +143,4 @@ Approval history and failure/resolver evidence are appended to the private
 not send, lift agency/fee caps or reconcile uncertainty. An independently verified
 not-delivered reconciliation needs a subsequent fresh approval. Do not alter the
 canonical key or request scope to escape an unresolved effect. The CLI's ordinary
-`approve` remains proposed-only; this API requires an authenticated trusted caller.
+`approve` remains proposed-only; no approval, first or retry, accepts a typed name.

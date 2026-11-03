@@ -5,6 +5,11 @@ data, signed links, credentials and analysis out of source control. The CLI sets
 a restrictive umask and private storage permissions, but does not encrypt disk:
 use appropriate host encryption, access controls and backups.
 
+A campaign copied by hand (`cp -r`, `rsync`, unzip) under a loose umask can leave
+records and the ledger readable by other users. `status --check` names each such
+`private/` entry as `loose_mode`; `status --fix-modes` sets exactly those to 0700
+(directories) or 0600 (files), never follows symlinks, then re-runs the check.
+
 For each receipt record stable provider/message/attachment identity, original name,
 source agency/request, receipt time and SHA-256. The starter captures only the
 minimal source ID, name, time and bytes; full provenance relationships are planned.

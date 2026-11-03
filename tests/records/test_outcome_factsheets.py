@@ -145,14 +145,18 @@ class FactSheetsTests(unittest.TestCase):
         self.assertIn("not resolved automatically", fs.markdown(report))
 
     def test_stage_writes_both_formats_snapshot_unchanged_and_readonly_sources(self):
+        # The extract stage's per-run list (input to the DOC-2 text-state pair).
+        (self.processing / "runs").mkdir(mode=0o700)
+        (self.processing / "runs" / "extract-test-run.json").write_text(json.dumps(
+            {"schema": "records-extract-outcomes-v1", "run_id": "test-run", "documents": []}))
         before = self.tree()
         code, result = self.stage()
         self.assertEqual((code, result["status"], result["counts"]["output"]), (0, "ok", 1))
         output = self.project / "run-outputs" / "test-run"
-        # The per-run directory also carries the comparison and request-register pairs.
+        # The per-run directory also carries the comparison, request-register and text-state pairs.
         own = {"agency-factsheets.json", "agency-factsheets.md"}
         self.assertEqual({p.name for p in output.iterdir()} - {
-            "comparison.json", "comparison.md",
+            "comparison.json", "comparison.md", "text-state.json", "text-state.md",
             "CURRENT-REQUEST-REGISTER.json", "CURRENT-REQUEST-REGISTER.md"}, own)
         report = json.loads((output / "agency-factsheets.json").read_text())
         text = (output / "agency-factsheets.md").read_text()

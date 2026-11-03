@@ -41,10 +41,38 @@ row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v1: `fact_id,from
 mode 0600); a fact already at the target is `unchanged` and not logged. `--check` validates the log and names a fact whose
 FACTS status differs from its last logged `to_status` (a hand edit). Ids and counts only; the note is never printed.
 
+**Review history** (`reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]`, read-only): after the same full check as
+`review`, one `reviews | slug | fact_id | from -> to | reviewed_at` line per log row (file order, `--since` inclusive), then counts
+and `reversals` (facts changed into both checked and disputed). No log: zero counts. Never a reviewer, note, value or quote.
+
+**Unreadable pages** (`unreadable --store DIR --out FILE.csv [--agency SLUG]`): writes a new private 0600 CSV `agency,source_sha256,page,fact_rows` (distinct pages with an `UNREADABLE` row; header only when none) outside the repo and `DIR/agencies`; stdout counts agencies checked, pages, documents and rows only.
+
 ## Store check
 
 `python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N] [--today YYYY-MM-DD]` runs the facts,
 law/policy, requests, contact, watch list and publish checkers in-process, then `slugs` (a ROSTER slug or WATCHLIST agency
 with no agency folder is an error; a folder in no ROSTER is a note; linked folders are named, never followed) and `backup`
 (the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
-`flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. It writes nothing.
+`flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. `--json` prints the same lines as one `flock-store-check-v1` document; `--json-out NEWFILE` also writes it to a new 0600 file outside STORE, backups and the repo, its only write.
+`--section NAME` (repeatable, no repeats) runs only those checks, in the order above, and the summary reads `sections=K of 8 (<names>)`; `--json` then lists only those sections plus `"selected"`.
+An agency folder with no `CONTACT.csv` adds nothing to `contacts`; with none in any folder it reads `contacts | none`.
+
+## Starting a new store
+
+`python3 tools/flock_store_init.py STORE --agency SLUG [--agency SLUG ...]` creates an empty private store: `STORE/LAW.csv`
+and, per agency, `agencies/<slug>/FACTS.csv` (v2) and `POLICY.csv`, header rows only (folders 0700, files 0600). STORE
+must be outside the repository, missing or an empty folder, not a link, with an existing parent; slugs match
+`[a-z0-9]+(-[a-z0-9]+)*`, at most 64 characters, no repeats. Every refusal is named before any write and nothing is
+written (exit 1); the tree is built in `STORE.tmp-<pid>` and renamed into place. Stdout names slugs, never the path. The
+store check passes on the result; import facts with `flock_facts.py import` and back it up with `flock_backup.py`.
+`flock_store_init.py add STORE --agency SLUG [...]` adds empty `agencies/<slug>/` folders to an existing store (each built as `.<slug>.tmp-<pid>`, renamed in); every existing file keeps its bytes and mode. A slug already there (folder, file or link) or a store check exit 2 refuses it, nothing written; check errors are only counted (`errors=E`). A bare `STORE --agency …` is `init`.
+
+## Report text state
+
+`tools/flock_report.py` reads an optional `review.text_state_file` (absolute path outside the repository to the extraction run's
+`run-outputs/<run>/text-state.json`, schema `records-text-state-v1`). Each cited record that is not `text_reviewed` there is
+labelled on its bullet, its Sources line (and so in `region`) and as `text_state` in `SOURCES.json`: `(OCR text, not
+visually reviewed)`, `(text state: <words>)`, or `(text state not recorded)` when the file does not list it. A missing,
+linked, oversize or invalid file is a `config:` error and nothing is written. The label never changes which findings are
+included. Operators should point live report configs at the latest text-state file; without the key a report makes no
+claim about text state.

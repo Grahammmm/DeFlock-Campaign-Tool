@@ -64,7 +64,6 @@ class FlockCompareTest(unittest.TestCase):
         cases = [
             (2, {"fact_ids": "F-000000000000"}, "row 2: fact_ids"),
             (3, {"rule_ids": ""}, "row 3: rule_ids and policy_refs are both empty"),
-            (4, {"claim": "The sample department admitted outside access."}, "row 4: claim quote-gated"),
             (6, {"claim": "There are no audit records."}, "row 6: claim always-banned"),
             (7, {"claim": "Flock cameras keep reads for a year."}, "row 7: claim vendor-gated"),
         ]
@@ -76,6 +75,11 @@ class FlockCompareTest(unittest.TestCase):
                 self.assertIn(expected, out)
                 self.assertTrue(out.endswith("errors=1\n"), out)
                 self.assertNotIn(fields.get("claim", "\0"), out)
+        # DF-4 ruling 1 (alert-only): quote-gated wording is a review-required note, not an error; the text is never echoed.
+        claim = "The sample department admitted outside access."
+        self.mutate(4, claim=claim)
+        self.assertEqual(self.check(), (0, "review-required: row 4: claim quote-gated wording without a matching quote\n"
+                                           "findings=7 errors=0\n"))
         self.assertEqual(self.scaffold()[0], 1)
         self.mutate(1)
         (self.store / "agencies" / AGENCY / "POLICY.csv").unlink()

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIXTURES = ROOT / "tools" / "flock_email.py", ROOT / "tests" / "fixtures" / "flock"
 SLUG = "sample-city-police-department"
 HEADER = "agency,role,email,source_url,source_sha256,checked_at,added_by"
-TAIL = " | draft only; G approval required before any send"
+TAIL = " mismatch=0 | draft only; G approval required before any send"
 LAYOUT = "draft: RUNDIR must be <store>/agencies/<slug>/runs/<date>\n"
 
 

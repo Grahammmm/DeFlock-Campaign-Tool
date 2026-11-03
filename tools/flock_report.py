@@ -2,10 +2,16 @@
 """Flock report: one agency's FINDINGS.csv + its independent VERIFY.csv -> REPORT-DRAFT.md + SOURCES.json (numbered cites).
   build CONFIG [--out DIR]    (G1 config; default DIR is <compare.out>/report, refused inside the repository)
   check CONFIG [--out DIR]    (read-only: are REPORT-DRAFT.md + SOURCES.json byte-equal to a fresh build? last line state=)
+  Optional config review.text_state_file: absolute path (outside the repository, regular file, no link, <= 64 MiB) to a
+      records-text-state-v1 JSON. Each cited record not text_reviewed in it is labelled on its bullet, its Sources line and
+      as SOURCES.json text_state, e.g. "(OCR text, not visually reviewed)"; a record it does not list says "(text state not
+      recorded)". Inclusion is unchanged. Without the key a report makes no claim about text state; bad file: config error.
   region --matrix DIR --agency SLUG=CONFIG ... --out DIR [--replace]   (private REGION-REPORT-DRAFT.md + SOURCES.json from
       COMPARE-MATRIX.csv; one --agency per matrix column; an agency whose report is stale or missing is excluded, counted only)
   region --check --matrix DIR --agency SLUG=CONFIG ... --out DIR   (read-only: both region files vs a fresh build, each
       current|stale|missing|link, then each agency's state; never writes or creates --out; exit 0 only when both are current)
+  --json (check and region --check only): one flock-report-check-v1 / flock-report-region-check-v1 document (names, states,
+      counts, the same error lines) instead of the text lines; same exit codes; never draft text or paths
 Rows from not-posted records and rows the verifier disputed or could not source never appear; a final lint refuses to write
 otherwise. Prints counts and `line N: <rule>` / `row <id>: <rule>` errors only, never the offending text. No network.
 Exit 0 written (check: current), 1 validation/lint/IO (check: stale/missing/invalid), 2 usage. The draft is private: public use
@@ -71,7 +77,32 @@ def context(config, out):
     if not ((co / "VERIFY.csv").is_file() and (co / "VERIFY-PLAN.json").is_file()):
         raise Fail("verify: missing (run the G2 verify first)")
     return {"FO": store.parent, "RO": ro, "CO": co, "slug": slug, "agency": squash(agency), "out": out,
-            "deny": [s for d in deny for s in d or ()]}
+            "deny": [s for d in deny for s in d or ()], "ts": text_state(rv["text_state_file"]) if "text_state_file" in rv else None}
+TEXT_STATES, TS_MAX = ("text_reviewed", "ocr_unreviewed", "awaiting_ocr", "could_not_be_read", "waiting", "unknown_state"), 64 << 20
+def text_state(value):  # DOC-2 text-state file -> {sha256: label suffix, "" when reviewed}; any doubt fails closed
+    why, raw = "config: review.text_state_file %s", os.path.expanduser(value) if isinstance(value, str) else ""
+    if not os.path.isabs(raw):
+        raise Fail(why % "must be an absolute path")
+    if under(Path(raw).resolve(), REPO):
+        raise Fail(why % "is inside the repository")
+    try:
+        with os.fdopen(os.open(raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise Fail(why % "is not a regular file")
+            data = handle.read(TS_MAX + 1)
+        if len(data) > TS_MAX:
+            raise Fail(why % "is larger than 64 MiB")
+        doc = json.loads(data.decode("utf-8"))
+    except OSError as exc:
+        raise Fail(why % ("is a link (refused)" if exc.errno == errno.ELOOP else "cannot be read (%s)" % type(exc).__name__)) from None
+    except ValueError:
+        raise Fail(why % "is not valid JSON") from None
+    recs = doc.get("records") if isinstance(doc, dict) and doc.get("schema") == "records-text-state-v1" else None
+    if not isinstance(recs, list) or not all(isinstance(r, dict) and isinstance(r.get("sha256"), str) and isinstance(r.get("words"), str)
+                                             and r.get("state") in TEXT_STATES for r in recs) or len({r["sha256"] for r in recs}) != len(recs):
+        raise Fail(why % "is not a records-text-state-v1 file (schema; records of unique sha256 with state and words)")
+    return {r["sha256"]: "" if r["state"] == "text_reviewed" else "OCR text, not visually reviewed" if r["state"] == "ocr_unreviewed"
+            else "text state: " + (clean(r["words"]) or r["state"].replace("_", " ")) for r in recs}
 def load(c):
     raw = (c["CO"] / "FINDINGS.csv").read_bytes()
     plan = json.loads((c["CO"] / "VERIFY-PLAN.json").read_text(encoding="utf-8"))
@@ -107,7 +138,7 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
     def source(key, **entry):
         return sources.setdefault(key, dict(entry, n=len(sources) + 1, pages=[], sections=[]))
     def bullet(f):
-        fid, items = f["finding_id"], {}
+        fid, items, notes = f["finding_id"], {}, []
         for fact_id in compare.ids(f["fact_ids"]):
             fact = facts.get(fact_id)
             inv = by_sha.get(fact["source_sha256"].strip(), []) if fact else []
@@ -117,8 +148,10 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
                 continue
             doc, page = inv[0], fact["page"].strip()
             e = source(("record", doc["sha256"]), kind="record", request=doc["request"], document_id=doc["doc_id"], sha256=doc["sha256"],
-                       base="%sdocument %s (%s)" % ("Request %s, " % doc["request"] if doc["request"] else "", doc["doc_id"], stem(doc)))
+                       base="%sdocument %s (%s)" % ("Request %s, " % doc["request"] if doc["request"] else "", doc["doc_id"], stem(doc)),
+                       ts="" if c["ts"] is None else c["ts"].get(doc["sha256"], "text state not recorded"))
             e["pages"] += [page] * (page not in e["pages"])
+            notes.append(e["ts"])
             items.setdefault(e["n"], []).append("p." + clean(page))
         req = reqs.get(f["req_id"]) if f["req_id"] else None
         if f["req_id"] and not req:
@@ -132,7 +165,8 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
         errs.extend("row %s: %s" % (fid, why) for why, bad in (("bullet has no cite", not items),
                                                                ("verdict has no report phrase", f["verdict"] not in PHRASE)) if bad)
         cite = "[%s]" % ", ".join("%d %s" % (k, " and ".join(dict.fromkeys(v))) for k, v in items.items())
-        return squash("- **%s** - %s. %s %s" % (squash(f["requirement"]), PHRASE.get(f["verdict"], ""), squash(f["basis"]), cite))
+        return squash("- **%s** - %s. %s %s" % (squash(f["requirement"]), PHRASE.get(f["verdict"], ""), squash(f["basis"]), cite)
+                      + "".join(" (%s)" % t for t in dict.fromkeys(notes) if t))  # the text-state label follows the cite
     lines = [LINE1, "", "# %s license-plate reader records review - findings draft" % c["agency"], "", "## What this covers", "",
              "Rows reviewed: %d. Rows from records not posted publicly: %d (withheld, counted only). Rows the independent check "
              "disputed or could not source: %d (withheld). Rows not independently checked: %d (counted only, not described). Rows "
@@ -153,8 +187,9 @@ def render(c, findings, plan, verify, facts, inventory, reqs, errs):
     for e in sorted(sources.values(), key=lambda e: e["n"]):
         e["pages"].sort(key=lambda v: (not v.isdigit(), int(v) if v.isdigit() else 0, v))
         extra = (", section " + "; ".join(e["sections"]) if e["sections"] else "") + (", page " + ", ".join(e["pages"]) if e["pages"] else "")
-        entries.append({"n": e["n"], "kind": e["kind"], "label": squash(e["base"] + extra), "request": e["request"],
-                        "document_id": e["document_id"], "sha256": e["sha256"], "pages": e["pages"]})
+        ts = {"text_state": e["ts"]} if e.get("ts") else {}  # record sources only; a rule source never has one
+        entries.append({"n": e["n"], "kind": e["kind"], "label": squash(e["base"] + extra) + (" (%s)" % e["ts"] if ts else ""),
+                        "request": e["request"], "document_id": e["document_id"], "sha256": e["sha256"], "pages": e["pages"], **ts})
     lines += ["", "## Sources", ""] + ["[%d] %s" % (e["n"], e["label"]) for e in entries]
     n["sources"] = len(entries)
     return "\n".join(lines) + "\n", json.dumps(entries, indent=1, ensure_ascii=False) + "\n", marks, body_end, entries, n
@@ -165,7 +200,7 @@ def lint(c, report, sources_text, marks, body_end, entries, facts, inventory, er
     vigilant = any("vigilant" in v or "motorola" in v for v in vendors) and not any("flock" in v for v in vendors)
     def hits(line):
         found = ["denylisted string"] * any(d in line.lower() for d in deny)
-        found += [name for name, rx in (("always-banned wording", compare.ALWAYS), ("quote-gated wording", compare.GATED),
+        found += [name for name, rx in (("always-banned wording", compare.ALWAYS),  # quote-gated: a note (claim_notes), DF-4
                                         ("email-like string", EMAIL), ("phone-like string", PHONE),
                                         ("plate-like string", PLATE)) if rx.search(line)]
         return found + ["vendor-gated wording"] * bool(vigilant and compare.FLOCK.search(line))
@@ -190,6 +225,10 @@ def write(path, text):  # fresh exclusive 0600 temp (mkstemp: O_EXCL, random nam
     return tmp, path
 def fault(exc): return str(exc) if isinstance(exc, Fail) else "io: %s" % type(exc).__name__
 def summary(errs, n): return "\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)])
+def claim_notes(report, sources_text=None):  # DF-4 alert-only: legal-claim and quote-gated wording notes; never errors, never text
+    return privacy.review_notes([("line %d" % i, line) for i, line in enumerate((report or "").splitlines(), 1)] +
+                                [("line %d (SOURCES.json)" % i, line) for i, line in enumerate((sources_text or "").splitlines(), 1)],
+                                compare.GATED)
 def prepare(config, out):  # build and check share it: -> (c, report, sources_text, n, errs); writes nothing
     c, report, sources_text, errs, n = None, None, None, [], Counter({k: 0 for k in COUNTS})
     try:
@@ -210,16 +249,29 @@ def on_disk(path):  # -> bytes, or why not; read-only, O_NOFOLLOW never follows 
     except OSError as exc:
         return {errno.ENOENT: "missing (run build)", errno.ELOOP: "is a link (refused)"}.get(exc.errno, "unreadable (%s)"
                                                                                                % type(exc).__name__)
-def check(config, out):  # never writes, never prints draft text: names files, counts and the build errors only
+FSTATE = (("missing", "missing"), ("is a link", "link"), ("is not a regular", "not-a-file"), ("unreadable", "unreadable"))
+def dump(doc): print(json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False))
+def _check(config, out):  # check's text and --json forms: -> (code, errs, n, state, files, notes); writes nothing
     c, report, sources_text, n, errs = prepare(config, out)
-    state = disk_state(c, report, sources_text, errs)
-    print(summary(errs := list(dict.fromkeys(errs)), n) + " state=" + state)
-    return 1 if errs else 0
-def disk_state(c, report, sources_text, errs):  # check and region: -> invalid|missing|stale|current; appends check: errors
+    files = dict.fromkeys(("REPORT-DRAFT.md", "SOURCES.json"), "not-checked")  # build errors stop the comparison
+    state = disk_state(c, report, sources_text, errs, files)
+    return 1 if (errs := list(dict.fromkeys(errs))) else 0, errs, n, state, files, claim_notes(report, sources_text)
+def check(config, out, as_json=False):  # never writes, never prints draft text: names files, counts and the build errors only
+    code, errs, n, state, files, notes = _check(config, out)
+    if as_json:
+        dump({"schema": "flock-report-check-v1", "review_required": True, "state": state, "files": files,
+              "counts": {k: n[k] for k in COUNTS}, "errors": errs})
+    else:
+        print("".join(note + "\n" for note in notes) + summary(errs, n) + " state=" + state)
+    return code
+def disk_state(c, report, sources_text, errs, files=None):  # check and region: -> invalid|missing|stale|current; appends check: errors
     state = "invalid"
     if not errs:
         names = (("REPORT-DRAFT.md", report), ("SOURCES.json", sources_text))
         got = {name: on_disk(c["out"] / name) for name, _ in names}
+        for name, text in names if files is not None else ():  # per-file state for check --json; same reads, nothing new
+            files[name] = (("current" if got[name] == text.encode("utf-8") else "stale") if isinstance(got[name], bytes)
+                           else next(v for k, v in FSTATE if got[name].startswith(k)))
         missing = [k for k, v in got.items() if isinstance(v, str) and v.startswith("missing")]
         hard = [k for k, v in got.items() if isinstance(v, str) and k not in missing]  # link / not a file / unreadable first
         errs += ["check: %s %s" % (k, got[k]) for k in hard or missing]
@@ -247,7 +299,7 @@ def build(config, out):
                 raise
     except (Fail, OSError, ValueError, KeyError, TypeError) as exc:
         errs.append(fault(exc))
-    print(summary(errs := list(dict.fromkeys(errs)), n))
+    print("".join(note + "\n" for note in claim_notes(report, sources_text)) + summary(errs := list(dict.fromkeys(errs)), n))
     return 1 if errs else 0
 ORDER, RNAMES = {"rejected": 0, "weak": 1, "medium": 2, "strong": 3}, ("REGION-REPORT-DRAFT.md", "SOURCES.json")
 RNOTE = ("Ratings come from the cross-agency matrix. Each agency is cited only from its own current findings draft, and only "
@@ -350,27 +402,38 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
             with contextlib.suppress(OSError): os.unlink(tmp)
         print(fault(exc))
         return 1
+    print("".join(note + "\n" for note in claim_notes(report, sources_text)), end="")
     print("region topics=%(topics)d agencies=%(agencies)d current=%(current)d excluded=%(excluded)d sources=%(sources)d" % counts)
     return 0
-def region_check(args, parser):  # read-only: never writes, never creates --out, names files and states only, never draft text
+def _region_check(args, parser):  # region --check text and --json: -> (code, errs, files, agencies, counts); writes nothing
     if args.replace:
         parser.error("--check and --replace cannot be combined")
     errs, report, sources_text, counts, agencies = _region_build(args, parser)
     if errs:
-        print("\n".join(list(dict.fromkeys(errs)) + ["region-check: invalid"]))
-        return 1
-    out, states, lines = Path(os.path.abspath(os.path.expanduser(args.out))), Counter(), []
+        return 1, list(dict.fromkeys(errs)), {}, {}, {}, []
+    out, files = Path(os.path.abspath(os.path.expanduser(args.out))), {}
     for name, text in zip(RNAMES, (report, sources_text)):
         got = on_disk(out / name)  # O_NOFOLLOW: a link is named, its target never read; any other non-file is stale
-        state = (("current" if got == text.encode("utf-8") else "stale") if isinstance(got, bytes) else
-                 "missing" if got.startswith("missing") else "link" if got.startswith("is a link") else "stale")
-        states[state] += 1
-        lines.append("region-check: %s %s" % (name, state))
-    lines += ["region-check: agency %s %s" % (slug, a[2]) for slug, a in agencies.items()]
-    print("\n".join(lines + ["region-check: current=%d stale=%d missing=%d link=%d agencies_current=%d excluded=%d | draft vs a "
-                             "fresh build, not a review verdict" % (states["current"], states["stale"], states["missing"],
-                                                                    states["link"], counts["current"], counts["excluded"])]))
-    return 0 if states["current"] == len(RNAMES) else 1
+        files[name] = (("current" if got == text.encode("utf-8") else "stale") if isinstance(got, bytes) else
+                       "missing" if got.startswith("missing") else "link" if got.startswith("is a link") else "stale")
+    states = Counter(files.values())
+    counts = {**{k: states[k] for k in ("current", "stale", "missing", "link")}, "agencies_current": counts["current"],
+              "excluded": counts["excluded"]}
+    return (0 if states["current"] == len(RNAMES) else 1, [], files, {slug: a[2] for slug, a in agencies.items()}, counts,
+            claim_notes(report, sources_text))
+def region_check(args, parser):  # read-only: never writes, never creates --out, names files and states only, never draft text
+    code, errs, files, agencies, n, notes = _region_check(args, parser)
+    if args.json:
+        dump({"schema": "flock-report-region-check-v1", "review_required": True, "files": files, "counts": n, "errors": errs,
+              "agencies": [{"slug": slug, "state": agencies[slug]} for slug in sorted(agencies)]})
+    elif errs:
+        print("\n".join(errs + ["region-check: invalid"]))
+    else:
+        print("\n".join(notes + ["region-check: %s %s" % kv for kv in files.items()] +
+                        ["region-check: agency %s %s" % kv for kv in agencies.items()] +
+                        ["region-check: current=%(current)d stale=%(stale)d missing=%(missing)d link=%(link)d agencies_current="
+                         "%(agencies_current)d excluded=%(excluded)d | draft vs a fresh build, not a review verdict" % n]))
+    return code
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["region"]:
@@ -378,11 +441,17 @@ def main(argv=None):
         rp.add_argument("--matrix", required=True), rp.add_argument("--out", required=True)
         rp.add_argument("--agency", action="append", required=True, metavar="SLUG=CONFIG")
         rp.add_argument("--replace", action="store_true"), rp.add_argument("--check", action="store_true")
+        rp.add_argument("--json", action="store_true", help="with --check: one flock-report-region-check-v1 document")
         args = rp.parse_args(argv[1:])
+        if args.json and not args.check:
+            rp.error("--json needs --check")
         return (region_check if args.check else region)(args, rp)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["build", "check"]), parser.add_argument("config"), parser.add_argument("--out")
+    parser.add_argument("--json", action="store_true", help="check only: one flock-report-check-v1 document")
     args = parser.parse_args(argv)
-    return (check if args.command == "check" else build)(args.config, args.out)
+    if args.json and args.command == "build":
+        parser.error("--json works with check only")
+    return check(args.config, args.out, args.json) if args.command == "check" else build(args.config, args.out)
 if __name__ == "__main__":
     sys.exit(main())

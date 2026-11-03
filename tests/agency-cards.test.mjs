@@ -41,3 +41,22 @@ test('missing optional source-link elements do not break the profile',()=>{
   const {context:c,nodes}=setup(false);assert.doesNotThrow(()=>c.setCityText('cedar'));
   assert.equal(nodes['city-summary'].textContent,'No real claims');
 });
+test('Flock transparency link shows only for a payload URL on the transparency host',()=>{
+  const {context:c,nodes}=setup();nodes['city-flock-link']={};
+  c.CITIES.example={...c.CITIES.cedar,flockTransparencyUrl:'https://transparency.flocksafety.com/example-pd'};
+  c.setCityText('example');
+  assert.equal(nodes['city-flock-link'].href,'https://transparency.flocksafety.com/example-pd');
+  assert.equal(nodes['city-flock-link'].hidden,false);
+  assert.equal(nodes['city-records-link'].href,'sources.html#example');
+  c.setCityText('cedar');
+  assert.equal(nodes['city-flock-link'].hidden,true);
+  assert.equal(nodes['city-flock-link'].href,'');
+  assert.equal(nodes['city-records-link'].href,'sources.html#cedar');
+  assert.equal(nodes['city-method-link'].href,'sources.html#cedar');
+  for(const bad of ['javascript:alert(1)','https://evil.example/x','https://transparency.flocksafety.com/a/../b',7]){
+    c.CITIES.example.flockTransparencyUrl=bad;c.setCityText('example');
+    assert.equal(nodes['city-flock-link'].hidden,true,String(bad));
+  }
+  const {context:d}=setup(false);d.CITIES.cedar.flockTransparencyUrl='https://transparency.flocksafety.com/example-pd';
+  assert.doesNotThrow(()=>d.setCityText('cedar'));
+});

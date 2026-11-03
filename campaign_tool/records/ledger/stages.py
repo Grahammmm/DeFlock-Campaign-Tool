@@ -119,7 +119,7 @@ class _Writer:
                 ",".join("?" for _ in columns) + ")", values)
 
 
-def _install_base(connection):
+def _install_base(connection, *, readonly=False):
     marker, checksum = "extension:" + migration.NAME, _hash(migration.SQL.encode())
     current = connection.execute("SELECT value FROM ledger_meta WHERE key=?", (marker,)).fetchone()
     if current:
@@ -133,6 +133,7 @@ def _install_base(connection):
             _require(row is not None and row[0].strip().rstrip(";") == sql,
                      "controller_protection_missing")
         return
+    _require(not readonly, "controller_schema_missing")
     _require(connection.execute(
         "SELECT 1 FROM stage_state WHERE status IN ('done','inapplicable') LIMIT 1"
     ).fetchone() is None, "uncontrolled_stage_history_requires_migration")
@@ -141,8 +142,8 @@ def _install_base(connection):
     connection.execute("INSERT INTO ledger_meta VALUES(?,?)", (marker, checksum))
 
 
-def _install(connection):
-    _install_base(connection)
+def _install(connection, *, readonly=False):
+    _install_base(connection, readonly=readonly)
     marker, checksum = "extension:" + authority.NAME, _hash(authority.SQL.encode())
     current = connection.execute("SELECT value FROM ledger_meta WHERE key=?", (marker,)).fetchone()
     if current:
@@ -153,6 +154,7 @@ def _install(connection):
                                      (kind.lower(), name)).fetchone()
             _require(row is not None and row[0].strip().rstrip(";") == sql, "authority_protection_missing")
         return
+    _require(not readonly, "authority_schema_missing")
     _require(connection.execute("SELECT 1 FROM stage_transitions LIMIT 1").fetchone() is None,
              "preauthority_acceptance_requires_migration")
     for sql in _statements(authority.SQL):
@@ -161,13 +163,13 @@ def _install(connection):
 
 
 @contextmanager
-def _transaction(database):
-    with store.ledger(database) as connection:
+def _transaction(database, *, readonly=False):
+    with store.ledger(database, readonly=readonly) as connection:
         _require(connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1, "foreign_keys_required")
         writer = _Writer(connection)
-        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
         try:
-            _install(connection)
+            _install(connection, readonly=readonly)
             yield connection, writer
             connection.commit()
         except BaseException:
@@ -747,9 +749,9 @@ def promote(runner, subject, stage, receipt_bytes, *, claim_id=None):
     return result
 
 
-def counts(database):
+def counts(database, *, readonly=True):
     """Authoritative stage totals; unknown/malformed slots never disappear from counts."""
-    with _transaction(database) as (connection, writer):
+    with _transaction(database, readonly=readonly) as (connection, writer):
         total = connection.execute("SELECT count(*) FROM originals").fetchone()[0]
         _require(total <= 10000, "counts_metadata_bound_exceeded")
         completed, synthetic_completed, candidate_completed = 0, 0, 0
@@ -800,4 +802,4 @@ def _json_inputs(value):
 
 def query_counts(database):
     """Runner-facing alias: numeric verified counts with an explicit candidate qualifier."""
-    return counts(database)
+    return counts(database, readonly=False)

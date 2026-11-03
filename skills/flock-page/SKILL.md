@@ -1,7 +1,6 @@
 ---
 name: flock-page
 description: Use when turning one agency's checked Flock report into records-page story data. Builds <slug>-story.json from a model-written CARDS.json plus SOURCES.json and lints it fail-closed against the site rules (records emails only, one fact per card, number chains, cite everything, not-posted files invisible).
-skill_version: 1.0.1
 ---
 
 # Flock page
@@ -17,24 +16,37 @@ skill). A clean lint is machine-valid and review-required, not editorial or lega
   Morro Bay 8). Take it from the location copy, never guess it.
 - The not-posted ids and titles from the agency config / INVENTORY `analysis_only=yes` rows.
 
-## Steps
-1. Run flock-report for the agency; use only its checked SOURCES.json.
-2. The page card's model writes private `CARDS.json` (schema 1): `meta`, `programEvents`, `keyDates`,
-   `admissions`, `findings`, `retention`, `milestones`, `extra_sources`. Each card lists `sources`
-   as SOURCES numbers (`2`) or extra keys (`"x:meeting-2026-10-13"`). One fact per card; a change
-   in a number is a chain (`107 → 80 → 75`), never "27 cut". Card text is 2–4 sentences.
-3. Build (output outside the repository, 0600; an existing file needs `--replace`, which moves it aside):
-   `python3 tools/flock_page.py build --cards CARDS.json --sources SOURCES.json --location L --thread T
-   --base-sources N --not-posted ID… --not-posted-title TITLE… --out <private>/<slug>-story.json`
-4. Fix every error in CARDS.json and build again. Errors read `<area> <index>: <rule> <reason>`;
-   the tool never prints card text. Re-check a story at any time with `lint --story … --thread …
-   --location … --base-sources N --not-posted …`.
-4a. Before adopting a story, run `check` with build's flags (`--story F` for `--out`): it rebuilds in memory, writes
-   nothing, and must end `state=current` (stale/missing/link/invalid exit 1; rebuild with `--replace`).
-5. A reviewer checks rules 5 and 6 by hand: say what is missing with dates; the policy card names
-   what the policy fails to limit.
-6. Hand the story JSON to the operator's site card. Adoption and publication go through the site's
-   PR, checks and the G-gated deploy.
+## Report
+- Run flock-report for the agency; use only its checked SOURCES.json.
+
+## Cards
+- The page card's model writes private `CARDS.json` (schema 1): `meta`, `programEvents`, `keyDates`,
+  `admissions`, `findings`, `retention`, `milestones`, `extra_sources`. Each card lists `sources`
+  as SOURCES numbers (`2`) or extra keys (`"x:meeting-2026-10-13"`). One fact per card; a change
+  in a number is a chain (`107 → 80 → 75`), never "27 cut". Card text is 2–4 sentences.
+
+## Build
+- Build (output outside the repository, 0600; an existing file needs `--replace`, which moves it aside):
+  `python3 tools/flock_page.py build --cards CARDS.json --sources SOURCES.json --location L --thread T
+  --base-sources N --not-posted ID… --not-posted-title TITLE… --out <private>/<slug>-story.json`
+- Fix every error in CARDS.json and build again. Errors read `<area> <index>: <rule> <reason>`;
+  the tool never prints card text.
+
+## Lint
+- Re-check a story at any time with `lint --story … --thread …
+  --location … --base-sources N --not-posted …`.
+
+## Check
+- Before adopting a story, run `check` with build's flags (`--story F` for `--out`): it rebuilds in memory, writes
+  nothing, and must end `state=current` (stale/missing/link/invalid exit 1; rebuild with `--replace`).
+
+## Review
+- A reviewer checks rules 5 and 6 by hand: say what is missing with dates; the policy card names
+  what the policy fails to limit.
+
+## Hand off
+- Hand the story JSON to the operator's site card. Adoption and publication go through the site's
+  PR, checks and the G-gated deploy.
 
 ## What build does
 - Cites become `"[a, b]"`, numbered N+1, N+2, … in first-use order over admissions, findings,
