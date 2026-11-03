@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date), gaps, changes (policy-kind
 FACTS types that differ between consecutive adopted versions), coverage (us-ca package rules with no LAW row) and compare
-(agencies' governing policy facts on one date grouped into value classes by fact id). Prints ids, labels, dates, fact
-types, counts only."""
+(agencies' governing policy facts on one date grouped into value classes by fact id) and stale (LAW rows whose text was
+accessed more than N days before today, or after it). Prints ids, labels, dates, fact types, counts only."""
 import csv
 import hashlib
 import importlib.util
@@ -213,6 +213,17 @@ def coverage(law_rows, rules, on=None):  # per package rule (sorted id): no LAW 
     return out + [f"rules={total} covered={total - len(flagged)} " + " ".join(f"{k}={v}" for k, v in n.items())
                   + " | research view, not a legal conclusion"]
 
+def stale(law_rows, today, max_age):  # per LAW row (rule_id, then CSV row): accessed > max_age days before today, or after
+    out, n = [], {"stale": 0, "future": 0}
+    for _, r in sorted(law_rows, key=lambda x: (x[1]["rule_id"], x[0])):
+        age = (today - day(r["accessed"])).days
+        kind = "stale" if age > max_age else "future" if age < 0 else None
+        if kind:
+            out.append(f"{kind} | {r['rule_id']} | accessed {r['accessed']} | {age} days | {r['status']}"
+                       " | research view, not a legal conclusion")
+            n[kind] += 1
+    return out + [f"law={len(law_rows)} stale={n['stale']} future={n['future']} max_age_days={max_age} today={today}"]
+
 def policy_facts(store, agencies):  # -> ({slug: policy-kind FACTS rows}, errors); a folder without FACTS.csv has none
     spec = importlib.util.spec_from_file_location("_flock_facts", Path(__file__).resolve().parent / "flock_facts.py")
     tool, out, errs = importlib.util.module_from_spec(spec), {}, []  # the sibling tool by file path, never a copy
@@ -297,7 +308,8 @@ def compare(policy_rows, facts, on, types=None):  # per fact type: agencies grou
 
 USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
          " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]"
-         " | coverage STORE [--on YYYY-MM-DD] | compare STORE --on YYYY-MM-DD [--types T1,T2]")
+         " | coverage STORE [--on YYYY-MM-DD] | compare STORE --on YYYY-MM-DD [--types T1,T2]"
+         " | stale STORE --max-age-days N [--today YYYY-MM-DD]")
 
 def main(argv):
     try:
@@ -335,6 +347,20 @@ def run(argv):
         except (ValueError, KeyError, TypeError, OSError):
             errs = ["row 1: law package unreadable"]
         out = errs or coverage(law_rows, rules, on)
+        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
+        return 1 if errs else 3 if len(out) > 1 else 0
+    if argv[:1] == ["stale"]:  # STORE a directory with LAW.csv; N 1..3650 days; any load error -> stderr only, exit 1
+        on = argv[5] if len(argv) == 6 else None
+        if len(argv) not in (4, 6) or argv[2] != "--max-age-days" or not re.fullmatch("[0-9]{1,4}", argv[3]) \
+                or not 1 <= int(argv[3]) <= 3650 or (on is not None and (argv[4] != "--today" or not day(on))) \
+                or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        if not (Path(argv[1]) / "LAW.csv").is_file():
+            print("store: no LAW.csv", file=sys.stderr)
+            return 1
+        law_rows, _, errs = load_all(argv[1])
+        out = errs or stale(law_rows, day(on) if on else date.today(), int(argv[3]))
         print("\n".join(out), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 3 if len(out) > 1 else 0
     if argv[:1] == ["changes"]:  # a report, not findings: exit 0 clean; any POLICY or in-scope FACTS error -> stderr, exit 1
