@@ -92,7 +92,7 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(len(opened), 1)
         self.assertTrue(opened[0].startswith("still open | R-2 | open-receipt-recorded | reminder 2026-"), opened)
         self.assertRegex(opened[0], r"reminder [0-9-]{10} \(provisional\), (in [0-9]+ days?|today|passed [0-9]+ days? ago)$")
-        self.assertEqual(out.splitlines()[-1], "totals | events=10 open=1 errors=0 failing_runs=0")
+        self.assertEqual(out.splitlines()[-1], "totals | events=10 open=1 errors=0 failing_runs=0 before=0 after=0")
         self.assertNotRegex(out, r"Planted|planted|Opname|ack|D1|1111")
 
     def test_out_of_order_steps_sort_and_same_date_ties_are_fixed(self):
@@ -125,7 +125,7 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(["2026-10-02", "email-approval-unverified", "-", "-"], self.events(out))
         self.assertNotIn("approved-not-sent", out)
-        self.assertTrue(out.splitlines()[-1].endswith("failing_runs=1"))
+        self.assertTrue(out.splitlines()[-1].endswith("failing_runs=1 before=0 after=0"))
 
     def test_failing_source_is_named_and_other_sources_still_shown(self):
         self.full_store()
@@ -192,8 +192,8 @@ class TimelineTests(unittest.TestCase):
         data = json.loads(raw)
         self.assertEqual((code, data["schema"], data["review_required"], data["agency"]), (0, "flock-agency-timeline-v1", True, SLUG))
         self.assertEqual([[e["date"], e["kind"], e["request"], e["detail"]] for e in data["events"]], self.events(text))
-        self.assertEqual(text.splitlines()[-1], "totals | events=%d open=%d errors=%d failing_runs=%d"
-                         % (len(data["events"]), len(data["open"]), len(data["errors"]), data["failing_runs"]))
+        self.assertEqual(text.splitlines()[-1], "totals | events=%d open=%d errors=%d failing_runs=%d before=%d after=%d"
+                         % (len(data["events"]), len(data["open"]), len(data["errors"]), data["failing_runs"], data["before"], data["after"]))
         for argv in ([], ["timeline", "s"], ["timeline", "s", "--agency"], ["timeline", "s", "--agency", SLUG, "--as-of", "2026-02-30"],
                      ["timeline", "s", "--agency", SLUG, "--as-of", "10/20/2026"], ["timeline", "s", "--agency", SLUG, "--agency", SLUG],
                      ["timeline", "s", "--agency", SLUG, "--out", "x"], ["show", "s", "--agency", SLUG]):
