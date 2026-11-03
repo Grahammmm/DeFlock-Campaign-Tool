@@ -38,6 +38,8 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 - After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_approve.py status STORE` must exit 0
   (one `email | <slug> | <date> | <stage>` line per run, signatures checked; reads only, prints no address or filled value).
   `flock_email.py status` cannot check signatures and shows an approval only as `approval unverified`.
+  `python3 tools/flock_email.py status STORE --json` and `python3 tools/flock_approve.py status STORE --json` print the same stages,
+  counts and exit code as one `flock-email-status-v1` document (`signatures_checked` true only for flock_approve; review required).
   `python3 tools/flock_requests.py --check STORE` then needs a REQUESTS row of that agency with `sent` equal to that date.
 
 ## Open

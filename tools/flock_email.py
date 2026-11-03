@@ -18,8 +18,9 @@ USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.m
          "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)\n"
          "       check and draft also take [--max-age-days N [--today YYYY-MM-DD]]  (a contact checked more than N days ago is stale)\n"
          "       check and draft warn (never refuse) when the address domain is not the source_url host's site; a human checks the page\n"
-         "       flock_email.py status STORE  (each run's email stage; exit 1 on malformed or sent without approval;\n"
-         "                                      signatures are not checked here, see flock_approve.py status STORE)\n"
+         "       flock_email.py status STORE [--json]  (each run's email stage; exit 1 on malformed or sent without approval;\n"
+         "                                      signatures are not checked here, see flock_approve.py status STORE;\n"
+         "                                      --json prints one flock-email-status-v1 document instead, same exit code)\n"
          "       flock_email.py lint RUNDIR --drafts DIR  (run after any edit and before asking G to approve; reads only, exit 1 on findings)")
 PLACEHOLDER = re.compile(r"\{\{|\}\}|(?<![a-z])(?:todo|xxx|tbd)|[\[<]insert|____", re.I)
 STAGES = ("follow-up drafted", "email drafted", "approval recorded", "sent recorded", "malformed", "inconsistent: sent without approval",
@@ -178,10 +179,11 @@ def stage(run, verify=None):
     if yes and not (verify and verify(run, yes) is True): return STAGES[7] if sent else STAGES[6]
     return ("sent recorded" if yes else STAGES[5]) if sent else "approval recorded" if yes else "email drafted"
 
-def status(folders, verify=None):
-    """One stage line per agency run holding a draft, then totals. Prints no address, subject or filled value.
-    With a verifier an unverified approval fails (exit 1); without one it is reported, never counted as approved."""
-    lines, seen = [], []
+def _status(folders, verify=None):
+    """(runs, refused, counts, code): one {agency, run, stage} per agency run holding a draft, in line order; the symlinked
+    agency folders (never entered); the totals over LABELS. With a verifier an unverified approval fails (exit 1); without
+    one it is reported, never counted as approved. Holds no address, subject or filled value."""
+    found, refused = [], []
     for folder in folders:
         runs = folder / "runs"
         try: dates = [] if folder.is_symlink() or runs.is_symlink() or not runs.is_dir() else sorted(p for p in runs.iterdir()
@@ -189,12 +191,31 @@ def status(folders, verify=None):
         except OSError: dates = [None]  # an unreadable runs folder fails closed
         for run in dates:
             got = stage(run, verify) if run else "malformed"
-            if got: seen.append(got); lines.append(f"email | {folder.name} | {run.name if run else 'runs'} | {got}")
-        if folder.is_symlink(): lines.append(f"email | {folder.name} | link refused")  # never entered
-    n = [len(seen)] + [seen.count(s) for s in STAGES]
-    note = "; signatures not checked here (flock_approve.py status STORE checks them)" * bool(not verify and (n[7] or n[8]))
-    print("\n".join(lines + ["email | " + " ".join(f"{k}={v}" for k, v in zip(LABELS, n)) + " | records only what the files say" + note]))
-    return 1 if n[5] or n[6] or verify and (n[7] or n[8]) else 0
+            if got: found.append({"agency": folder.name, "run": run.name if run else "runs", "stage": got})
+        if folder.is_symlink(): refused.append(folder.name)  # never entered
+    n = [len(found)] + [[r["stage"] for r in found].count(s) for s in STAGES]
+    return found, refused, dict(zip(LABELS, n)), 1 if n[5] or n[6] or verify and (n[7] or n[8]) else 0
+
+def _note(counts, verify):
+    return "signatures not checked here (flock_approve.py status STORE checks them)" * bool(
+        not verify and (counts["unverified_approval"] or counts["unverified_sent"]))
+
+def status(folders, verify=None):
+    """One stage line per agency run holding a draft, a `link refused` line per linked agency folder, then totals."""
+    found, refused, counts, code = _status(folders, verify)
+    lines = sorted([(r["agency"], f"email | {r['agency']} | {r['run']} | {r['stage']}") for r in found]
+                   + [(name, f"email | {name} | link refused") for name in refused], key=lambda x: x[0])  # stable: today's order
+    note = _note(counts, verify)
+    print("\n".join([x[1] for x in lines] + ["email | " + " ".join(f"{k}={v}" for k, v in counts.items())
+                                              + " | records only what the files say" + f"; {note}" * bool(note)]))
+    return code
+
+def status_json(folders, verify=None):
+    """The same runs, counts and exit code as `status`, as one flock-email-status-v1 document (machine copy, review required)."""
+    found, refused, counts, code = _status(folders, verify)
+    print(json.dumps({"schema": "flock-email-status-v1", "review_required": True, "signatures_checked": bool(verify), "runs": found,
+                      "refused_links": refused, "counts": counts, "note": _note(counts, verify)}, indent=1, sort_keys=True, ensure_ascii=False))
+    return code
 
 def lint(rundir, drafts):
     """One `lint | slug | date | rule` line per broken rule, then a summary. Never prints the offending text; writes nothing."""
@@ -237,7 +258,7 @@ def main(argv):
     if argv in (["--help"], ["-h"]): return print(USAGE) or 0
     opt = ages(argv[2:] if argv[:1] == ["check"] else argv[4:] if argv[:1] == ["draft"] and argv[2:3] == ["--drafts"] else [])
     if opt and len(argv) >= 2 and argv[0] == "check": return check(argv[1], None, *opt)
-    if len(argv) == 2 and argv[0] == "status": return check(argv[1], status)
+    if len(argv) in (2, 3) and argv[0] == "status" and argv[2:] in ([], ["--json"]): return check(argv[1], status_json if argv[2:] else status)
     if opt and len(argv) >= 4 and argv[0] == "draft" and argv[2] == "--drafts": return draft(argv[1], argv[3], *opt)
     if len(argv) == 4 and argv[0] == "lint" and argv[2] == "--drafts": return lint(argv[1], argv[3])
     return print(USAGE, file=sys.stderr) or 2
