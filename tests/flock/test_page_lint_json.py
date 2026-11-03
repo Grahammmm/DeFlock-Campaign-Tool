@@ -100,8 +100,7 @@ class FlockPageLintJsonTest(unittest.TestCase):
 
     def test_json_only_on_lint(self):
         common = ("--location", FIX / "location.json", "--thread", FIX / "thread.json", "--base-sources", 8, "--json")
-        for verb, extra in (("build", ("--cards", FIX / "cards.json", "--sources", FIX / "sources.json", "--out", self.tmp / "x.json")),
-                            ("check", ("--cards", FIX / "cards.json", "--sources", FIX / "sources.json", "--story", self.out))):
+        for verb, extra in (("build", ("--cards", FIX / "cards.json", "--sources", FIX / "sources.json", "--out", self.tmp / "x.json")),):
             with self.subTest(verb=verb):
                 done = base.subprocess.run([base.sys.executable, "-B", str(TOOL), verb, *map(str, extra + common)],
                                            capture_output=True, text=True, check=False)

@@ -3,6 +3,7 @@
   build --cards C --sources S --location L --thread T --base-sources N --out F [--replace] [--not-posted ID..] [--not-posted-title T..]
   lint  --story S --location L --thread T --base-sources N [--not-posted ID..] [--not-posted-title T..] [--json]
   check --cards C --sources S --location L --thread T --base-sources N --story F [--not-posted ID..] [--not-posted-title T..]
+  check … --json  prints one flock-page-check-v1 document (state, differing_keys, counts, errors, superseded); same exit
 build turns a model-written CARDS.json plus G3's SOURCES.json into <slug>-story.json (the keys of the site's morrobay-story.mjs),
 numbering cites after the page's N base sources; it lints its own result first and writes nothing on any error. lint checks story,
 thread and location against site rules 1, 2, 3, 4, 7, 8, 9 and the draft tone; it prints `<area> <index>: <rule> <reason>` errors
@@ -260,7 +261,7 @@ def superseded(f):  # regular files named <F>.superseded-* beside F; links are n
     return 0
 def check(args):  # read-only: the story on disk vs a fresh in-memory build; never writes, never follows a final link
     f, errs, n, state = Path(os.path.expanduser(args.story)), [], dict.fromkeys(COUNTS, 0), "invalid"
-    story = None
+    story, differing = None, []
     if os.path.islink(f):
         state = "link"
     elif f.resolve() == REPO or REPO in f.resolve().parents:
@@ -275,16 +276,23 @@ def check(args):  # read-only: the story on disk vs a fresh in-memory build; nev
                 if state == "stale":
                     old = json.loads(disk.decode("utf-8"))
                     old = old if isinstance(old, dict) else {}
-                    errs.append("story 0: differs from a fresh build (keys: %s)" % (", ".join(k for k in KEYS if old.get(k) != story[k])
-                                                                                     or "none"))
+                    differing = [k for k in KEYS if old.get(k) != story[k]]  # one list: the text line and the JSON key list
+                    errs.append("story 0: differs from a fresh build (keys: %s)" % (", ".join(differing) or "none"))
         except FileNotFoundError:
             state = "missing"
         except ValueError:  # not UTF-8, not JSON or truncated
             errs.append("story 0: unreadable JSON")
         except OSError as exc:
             state, errs = "invalid", ["io 0: %s" % type(exc).__name__]
-    print("\n".join(claim_notes(story) + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d superseded=%d state=%s"
-                            % (len(errs), superseded(f), state)]))
+    notes, sup = claim_notes(story), superseded(f)
+    if args.json:  # check --json: one flock-page-check-v1 document from the same state/errs/counts; DF-4 notes go to stderr
+        if notes:
+            print("\n".join(notes), file=sys.stderr)
+        print(json.dumps(dict(schema="flock-page-check-v1", review_required=True, state=state, differing_keys=differing,
+                              counts={k: n[k] for k in COUNTS}, errors=errs, superseded=sup), sort_keys=True, indent=1, ensure_ascii=False))
+    else:
+        print("\n".join(notes + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d superseded=%d state=%s"
+                                        % (len(errs), sup, state)]))
     return 0 if state == "current" else 1
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -299,7 +307,7 @@ def main(argv=None):
         p.add_argument("--not-posted-title", nargs="*", default=[], action="extend")
         if name == "build":
             p.add_argument("--replace", action="store_true")
-        if name == "lint":
+        if name in ("lint", "check"):
             p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     return {"build": build, "lint": run_lint, "check": check}[args.command](args)
