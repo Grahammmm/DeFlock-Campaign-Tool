@@ -804,6 +804,8 @@ def main():
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
+                            "own stated production date (provisional, not a legal deadline)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1176,12 +1178,13 @@ def main():
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"]:
+            if report["past_due"] + report["stated_date_passed"]:
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
-            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
-                                         records=args.record, request=args.request, amount=args.amount), indent=2))
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
+                                         request=args.request, amount=args.amount, expected_on=args.expected_on),
+                             indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)

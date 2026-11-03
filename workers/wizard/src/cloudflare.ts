@@ -34,7 +34,7 @@ export class CloudflareClient {
   readonly calls: CallRecord[] = [];
   constructor(
     private readonly token: string,
-    readonly opts: { dryRun: boolean; fetcher?: typeof fetch; base?: string; dryResult?: (method: string, path: string, body: unknown) => unknown } = { dryRun: false },
+    readonly opts: { dryRun: boolean; dryZoneName?: string; fetcher?: typeof fetch; base?: string; dryResult?: (method: string, path: string, body: unknown) => unknown } = { dryRun: false },
   ) {}
 
   get base(): string {
@@ -47,6 +47,8 @@ export class CloudflareClient {
 
   private syntheticResult(method: string, path: string, body: unknown): unknown {
     if (this.opts.dryResult) return this.opts.dryResult(method, path, body);
+    // Offline rehearsal only: this is not evidence about the real zone.
+    if (method === "GET" && /^\/zones\/[^/]+$/.test(path)) return { name: this.opts.dryZoneName };
     const tail = path.split("/").filter(Boolean).pop() ?? "resource";
     const id = "dry-" + tail.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
     return { id, uuid: id, queue_id: id, aud: "dry-aud-" + id, name: (body as { name?: string })?.name ?? tail, status: "active" };
